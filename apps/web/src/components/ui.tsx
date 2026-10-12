@@ -1,0 +1,187 @@
+import { cva, type VariantProps } from 'class-variance-authority'
+import { Loader2 } from 'lucide-react'
+import type { ComponentProps, ReactNode } from 'react'
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  'inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-50 cursor-pointer',
+  {
+    variants: {
+      variant: {
+        primary: 'bg-accent text-white hover:bg-accent/90 shadow-sm',
+        secondary: 'bg-surface text-ink border border-border hover:bg-canvas shadow-xs',
+        ghost: 'text-muted hover:bg-black/5 hover:text-ink',
+        danger: 'bg-surface text-danger border border-border hover:bg-danger/5',
+      },
+      size: { sm: 'h-8 px-3', md: 'h-9 px-4', icon: 'h-8 w-8' },
+    },
+    defaultVariants: { variant: 'secondary', size: 'md' },
+  },
+)
+
+export function Button({
+  className,
+  variant,
+  size,
+  loading,
+  children,
+  disabled,
+  ...props
+}: ComponentProps<'button'> & VariantProps<typeof buttonVariants> & { loading?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={cn(buttonVariants({ variant, size }), className)}
+      disabled={disabled || loading}
+      {...props}
+    >
+      {loading && <Loader2 className="size-4 animate-spin" />}
+      {children}
+    </button>
+  )
+}
+
+export function Input({ className, ...props }: ComponentProps<'input'>) {
+  return (
+    <input
+      className={cn(
+        'h-9 w-full rounded-md border border-border bg-surface px-3 text-sm shadow-xs outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/20',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+export function Label({ className, ...props }: ComponentProps<'label'>) {
+  // biome-ignore lint/a11y/noLabelWithoutControl: generic wrapper; callers pass htmlFor or nest the control
+  return <label className={cn('text-sm font-medium text-ink', className)} {...props} />
+}
+
+export function Card({ className, ...props }: ComponentProps<'div'>) {
+  return <div className={cn('rounded-xl border border-border bg-surface shadow-xs', className)} {...props} />
+}
+
+export function Badge({
+  className,
+  tone = 'neutral',
+  ...props
+}: ComponentProps<'span'> & { tone?: 'neutral' | 'accent' | 'success' | 'danger' }) {
+  const tones = {
+    neutral: 'bg-black/5 text-muted',
+    accent: 'bg-accent-soft text-accent',
+    success: 'bg-success/10 text-success',
+    danger: 'bg-danger/10 text-danger',
+  }
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+        tones[tone],
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+export function Avatar({ name, src, className }: { name: string; src?: string | null; className?: string }) {
+  const initials = name
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join('')
+  return src ? (
+    <img src={src} alt="" referrerPolicy="no-referrer" className={cn('size-7 rounded-full', className)} />
+  ) : (
+    <span
+      className={cn(
+        'inline-flex size-7 items-center justify-center rounded-full bg-accent-soft text-xs font-semibold text-accent',
+        className,
+      )}
+    >
+      {initials}
+    </span>
+  )
+}
+
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string
+  description?: string
+  actions?: ReactNode
+}) {
+  return (
+    <div className="mb-6 flex items-start justify-between gap-4">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        {description && <p className="mt-1 text-sm text-muted">{description}</p>}
+      </div>
+      {actions && <div className="flex items-center gap-2">{actions}</div>}
+    </div>
+  )
+}
+
+export function EmptyState({
+  icon,
+  title,
+  children,
+}: {
+  icon: ReactNode
+  title: string
+  children?: ReactNode
+}) {
+  return (
+    <Card className="flex flex-col items-center px-6 py-16 text-center">
+      <div className="mb-4 rounded-xl bg-accent-soft p-3 text-accent">{icon}</div>
+      <h2 className="font-semibold">{title}</h2>
+      {children && <div className="mt-1 max-w-md text-sm text-muted">{children}</div>}
+    </Card>
+  )
+}
+
+export function ErrorNote({ error }: { error: unknown }) {
+  if (!error) return null
+  return (
+    <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
+      {error instanceof Error ? error.message : String(error)}
+    </p>
+  )
+}
+
+export function Spinner() {
+  return (
+    <div className="flex justify-center py-12 text-muted">
+      <Loader2 className="size-5 animate-spin" />
+    </div>
+  )
+}
+
+export function Table({ children }: { children: ReactNode }) {
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full text-left text-sm">{children}</table>
+    </Card>
+  )
+}
+
+export function Th({ children, className }: { children?: ReactNode; className?: string }) {
+  return (
+    <th
+      className={cn(
+        'border-b border-border bg-canvas px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted',
+        className,
+      )}
+    >
+      {children}
+    </th>
+  )
+}
+
+export function Td({ className, ...props }: ComponentProps<'td'>) {
+  return <td className={cn('border-b border-border px-4 py-3 align-middle', className)} {...props} />
+}

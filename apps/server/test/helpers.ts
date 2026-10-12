@@ -1,0 +1,86 @@
+import { createDb, type Db } from '@ow/db'
+import { startTestDatabase } from '@ow/db/testing'
+import type { FastifyInstance } from 'fastify'
+import { buildApp } from '../src/api/app'
+import { hashPassword } from '../src/auth/password'
+import { loadConfig } from '../src/config'
+import { provisionUser } from '../src/services/users'
+
+export interface TestEnv {
+  app: FastifyInstance
+  db: Db
+  stop: () => Promise<void>
+}
+
+export async function startTestApp(overrides: Record<string, string> = {}): Promise<TestEnv> {
+  const pg = await startTestDatabase()
+  const config = loadConfig({
+    DATABASE_URL: pg.url,
+    SESSION_SECRET: 'test-secret-test-secret-test-secret-1234',
+    LOCAL_LOGIN_ENABLED: 'true',
+    NODE_ENV: 'test',
+    ...overrides,
+  })
+  const { db, close } = createDb(pg.url, { max: 5 })
+  const app = await buildApp({ db, config, logger: false })
+  return {
+    app,
+    db,
+    stop: async () => {
+      await app.close()
+      await close()
+      await pg.stop()
+    },
+  }
+}
+
+export const PASSWORD = 'correct horse battery staple'
+
+export async function createLocalUser(db: Db, email: string, opts: { admin?: boolean } = {}) {
+  return provisionUser(
+    db,
+    { email, name: email.split('@')[0]!, passwordHash: await hashPassword(PASSWORD) },
+    { makeAdmin: opts.admin },
+  )
+}
+
+/** Logs in via the local endpoint and returns a Cookie header value. */
+export async function login(app: FastifyInstance, email: string, password = PASSWORD): Promise<string> {
+  const res = await app.inject({ method: 'POST', url: '/api/auth/local', payload: { email, password } })
+  if (res.statusCode !== 200) throw new Error(`login failed: ${res.statusCode} ${res.body}`)
+  const cookie = res.cookies.find((c) => c.name === 'ow_session')
+  if (!cookie) throw new Error('no session cookie')
+  return `ow_session=${cookie.value}`
+}
+
+/** Minimal tRPC-over-HTTP client for tests (no batching; speaks the superjson envelope). */
+export function trpc(app: FastifyInstance, cookie?: string) {
+  const headers = cookie ? { cookie } : {}
+  return {
+    async query(path: string, input?: unknown) {
+      const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify({ json: input }))}`
+      const res = await app.inject({ method: 'GET', url: `/api/trpc/${path}${qs}`, headers })
+      return { status: res.statusCode, body: unwrap(res.json()) }
+    },
+    async mutate(path: string, input?: unknown) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/trpc/${path}`,
+        headers: { ...headers, 'content-type': 'application/json' },
+        payload: JSON.stringify({ json: input ?? null }),
+      })
+      return { status: res.statusCode, body: unwrap(res.json()) }
+    },
+  }
+}
+
+/** Strips the superjson envelope (`{ json, meta }`) so assertions see plain JSON. */
+function unwrap(raw: { result?: { data?: { json?: unknown } }; error?: { json?: unknown } }): TrpcBody {
+  return {
+    result: raw.result ? { data: raw.result.data?.json } : undefined,
+    error: raw.error?.json as TrpcBody['error'],
+  }
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: test helper over untyped JSON
+type TrpcBody = { result?: { data: any }; error?: { message: string; data?: { code: string } } }

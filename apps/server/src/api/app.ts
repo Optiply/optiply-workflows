@@ -1,0 +1,51 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import fastifyCookie from '@fastify/cookie'
+import fastifyStatic from '@fastify/static'
+import type { Db } from '@ow/db'
+import { type FastifyTRPCPluginOptions, fastifyTRPCPlugin } from '@trpc/server/adapters/fastify'
+import Fastify, { type FastifyBaseLogger } from 'fastify'
+import pino from 'pino'
+import { authRoutes } from '../auth/routes'
+import type { Config } from '../config'
+import { contextFactory } from '../trpc/init'
+import { type AppRouter, appRouter } from '../trpc/router'
+
+/** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
+export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyBaseLogger | false }) {
+  const { db, config } = deps
+  const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
+  const app = Fastify({ loggerInstance: logger, trustProxy: config.TRUST_PROXY, bodyLimit: 10 * 1024 * 1024 })
+
+  await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
+
+  app.get('/api/health', async () => {
+    await db.execute('select 1')
+    return { ok: true }
+  })
+
+  await app.register(authRoutes, { db, config })
+
+  await app.register(fastifyTRPCPlugin, {
+    prefix: '/api/trpc',
+    trpcOptions: {
+      router: appRouter,
+      createContext: contextFactory({ db, config }),
+      onError({ error, path }) {
+        if (error.code === 'INTERNAL_SERVER_ERROR') app.log.error({ err: error, path }, 'tRPC error')
+      },
+    } satisfies FastifyTRPCPluginOptions<AppRouter>['trpcOptions'],
+  })
+
+  // Production: serve the built SPA, falling back to index.html for client-side routes.
+  const webDist = config.WEB_DIST_DIR ? resolve(config.WEB_DIST_DIR) : undefined
+  if (webDist && existsSync(resolve(webDist, 'index.html'))) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false })
+    app.setNotFoundHandler((req, reply) => {
+      if (req.method === 'GET' && !req.url.startsWith('/api/')) return reply.sendFile('index.html')
+      return reply.code(404).send({ error: 'Not found' })
+    })
+  }
+
+  return app
+}
