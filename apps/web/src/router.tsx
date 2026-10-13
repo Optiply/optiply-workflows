@@ -4,6 +4,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Outlet,
   redirect,
 } from '@tanstack/react-router'
@@ -22,6 +23,7 @@ import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
 import { UsersPage } from './pages/settings/users'
+import { WorkflowsPage } from './pages/workflows/list'
 
 export interface RouterContext {
   queryClient: QueryClient
@@ -60,7 +62,14 @@ const indexRoute = createRoute({
 const workflowsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows',
-  component: () => <ComingSoon section="workflows" />,
+  component: WorkflowsPage,
+})
+/** The editor (canvas, validator, later Monaco) is its own chunk, loaded when a workflow is opened. */
+const workflowEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/workflows/$workflowId',
+  staticData: { fullBleed: true },
+  component: lazyRouteComponent(() => import('./pages/workflows/editor'), 'WorkflowEditorPage'),
 })
 const resourcesRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -118,6 +127,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     indexRoute,
     workflowsRoute,
+    workflowEditorRoute,
     resourcesRoute,
     resourceDetailRoute,
     runsRoute,
@@ -142,5 +152,9 @@ export const router = createRouter({
 declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router
+  }
+  interface StaticDataRouteOption {
+    /** The page fills the whole content area instead of the centred, padded column. */
+    fullBleed?: boolean
   }
 }

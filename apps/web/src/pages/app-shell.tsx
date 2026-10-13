@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { getRouteApi, Link, Outlet, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
 import { Database, History, LogOut, Plug, Settings, Workflow } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Avatar } from '@/components/ui'
@@ -16,6 +16,7 @@ export function AppShell() {
   const { me } = route.useRouteContext()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const fullBleed = useMatches({ select: (matches) => matches.some((m) => m.staticData.fullBleed) })
 
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' })
@@ -63,10 +64,14 @@ export function AppShell() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-8 py-8">
+      <main className={fullBleed ? 'min-w-0 flex-1 overflow-hidden' : 'min-w-0 flex-1 overflow-y-auto'}>
+        {fullBleed ? (
           <Outlet />
-        </div>
+        ) : (
+          <div className="mx-auto max-w-6xl px-8 py-8">
+            <Outlet />
+          </div>
+        )}
       </main>
     </div>
   )

@@ -26,3 +26,22 @@
     font-feature-settings: "cv11", "ss01";
   }
 }
+
+/* Workflow editor canvas (React Flow). */
+.react-flow .ow-handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--color-surface);
+  background: var(--color-muted);
+}
+.react-flow .ow-handle.ow-handle-error {
+  background: var(--color-danger);
+}
+.react-flow .react-flow__edge.ow-edge-error .react-flow__edge-path {
+  stroke: var(--color-danger);
+  stroke-dasharray: 5 4;
+}
+.react-flow .react-flow__edge.ow-edge-broken .react-flow__edge-path {
+  stroke: var(--color-danger);
+  stroke-width: 2;
+}
