@@ -233,6 +233,37 @@ importers:
         specifier: 5.0.4
         version: 5.0.4(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/engine:
+    dependencies:
+      '@ow/connectors':
+        specifier: workspace:*
+        version: link:../connectors
+      '@ow/crypto':
+        specifier: workspace:*
+        version: link:../crypto
+      '@ow/db':
+        specifier: workspace:*
+        version: link:../db
+      '@ow/definition':
+        specifier: workspace:*
+        version: link:../definition
+      '@ow/expressions':
+        specifier: workspace:*
+        version: link:../expressions
+      '@ow/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
+      vitest:
+        specifier: 5.0.4
+        version: 5.0.4(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/expressions:
     dependencies:
       acorn:
