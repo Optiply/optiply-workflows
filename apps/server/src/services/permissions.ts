@@ -22,11 +22,12 @@ interface Grant {
 }
 
 /**
- * What one user may do with resources. A user's level on a resource in an environment is the highest of the grants
- * their groups hold on that resource, on all resources (`objectId` null), or on any folder containing it, scoped to
- * that environment or to all (`environmentId` null). Admins implicitly own everything.
+ * What one user may do with resources and workflows. A user's level on a resource in an environment is the highest
+ * of the grants their groups hold on that resource, on all resources (`objectId` null), or on any folder containing
+ * it, scoped to that environment or to all (`environmentId` null). Workflows work the same way without environments:
+ * only grants for all environments count. Admins implicitly own everything.
  */
-export class ResourceAccess {
+export class Access {
   constructor(
     readonly isAdmin: boolean,
     private readonly grants: Grant[],
@@ -77,6 +78,35 @@ export class ResourceAccess {
     )
   }
 
+  /** The user's level on a workflow, or null for no access. Use = run and view runs, Edit = change the draft. */
+  workflowLevel(workflow: { id: string; folderId: string | null }): PermissionLevel | null {
+    if (this.isAdmin) return 'own'
+    const folderIds = this.ancestors(workflow.folderId)
+    let best: PermissionLevel | null = null
+    for (const g of this.grants) {
+      if (g.environmentId !== null) continue
+      const matches =
+        (g.objectType === 'workflow' && (g.objectId === null || g.objectId === workflow.id)) ||
+        (g.objectType === 'folder' && g.objectId !== null && folderIds.has(g.objectId))
+      if (matches) best = higher(best, g.level)
+    }
+    return best
+  }
+
+  /** Creating workflows needs Edit on all workflows. */
+  get canCreateWorkflows(): boolean {
+    return (
+      this.isAdmin ||
+      this.grants.some(
+        (g) =>
+          g.objectType === 'workflow' &&
+          g.objectId === null &&
+          g.environmentId === null &&
+          atLeast(g.level, 'edit'),
+      )
+    )
+  }
+
   private ancestors(folderId: string | null): Set<string> {
     const seen = new Set<string>()
     for (let id = folderId; id && !seen.has(id); id = this.folderParents.get(id) ?? null) seen.add(id)
@@ -84,11 +114,8 @@ export class ResourceAccess {
   }
 }
 
-export async function loadResourceAccess(
-  db: Db,
-  user: { id: string; isAdmin: boolean },
-): Promise<ResourceAccess> {
-  if (user.isAdmin) return new ResourceAccess(true, [], new Map())
+export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean }): Promise<Access> {
+  if (user.isAdmin) return new Access(true, [], new Map())
   const memberships = await db
     .select({ groupId: groupMembers.groupId })
     .from(groupMembers)
@@ -108,7 +135,7 @@ export async function loadResourceAccess(
   const folderRows = grants.some((g) => g.objectType === 'folder')
     ? await db.select({ id: folders.id, parentId: folders.parentId }).from(folders)
     : []
-  return new ResourceAccess(false, grants, new Map(folderRows.map((f) => [f.id, f.parentId])))
+  return new Access(false, grants, new Map(folderRows.map((f) => [f.id, f.parentId])))
 }
 
 export function requireLevel(level: PermissionLevel | null, required: PermissionLevel, what: string): void {

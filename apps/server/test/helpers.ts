@@ -4,12 +4,13 @@ import { startTestDatabase } from '@ow/db/testing'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/api/app'
 import { hashPassword } from '../src/auth/password'
-import { loadConfig } from '../src/config'
+import { type Config, loadConfig } from '../src/config'
 import { provisionUser } from '../src/services/users'
 
 export interface TestEnv {
   app: FastifyInstance
   db: Db
+  config: Config
   /** The test database itself, e.g. to point a Postgres resource at it. */
   databaseUrl: string
   stop: () => Promise<void>
@@ -30,6 +31,7 @@ export async function startTestApp(overrides: Record<string, string> = {}): Prom
   return {
     app,
     db,
+    config,
     databaseUrl: pg.url,
     stop: async () => {
       await app.close()

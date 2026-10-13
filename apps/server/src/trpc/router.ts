@@ -8,6 +8,7 @@ import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
 import { resourcesRouter } from './routers/resources'
 import { usersRouter } from './routers/users'
+import { workflowsRouter } from './routers/workflows'
 
 export const appRouter = router({
   /** What the login page needs to render. */
@@ -36,6 +37,7 @@ export const appRouter = router({
   folders: foldersRouter,
   permissions: permissionsRouter,
   configVars: configVarsRouter,
+  workflows: workflowsRouter,
 })
 
 export type AppRouter = typeof appRouter

@@ -38,6 +38,12 @@ importers:
       '@ow/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ow/definition':
+        specifier: workspace:*
+        version: link:../../packages/definition
+      '@ow/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@ow/expressions':
         specifier: workspace:*
         version: link:../../packages/expressions

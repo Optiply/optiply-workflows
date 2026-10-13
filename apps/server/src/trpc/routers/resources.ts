@@ -4,7 +4,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
-import { loadResourceAccess, type ResourceAccess, requireLevel } from '../../services/permissions'
+import { type Access, loadAccess, requireLevel } from '../../services/permissions'
 import {
   applySecretPatch,
   decryptConfigSecrets,
@@ -47,7 +47,7 @@ async function getResource(db: Db, id: string): Promise<Resource> {
 
 /** Loads a resource the user can see in at least one environment; otherwise it doesn't exist for them. */
 async function visibleResource(ctx: AuthedContext, id: string) {
-  const access = await loadResourceAccess(ctx.db, ctx.user)
+  const access = await loadAccess(ctx.db, ctx.user)
   const resource = await getResource(ctx.db, id).catch(() => null)
   const envIds = await environmentIds(ctx.db)
   if (!resource || !envIds.some((e) => access.level(resource, e))) {
@@ -87,7 +87,7 @@ function toJson(value: unknown): unknown {
   return text === undefined ? null : JSON.parse(text)
 }
 
-function levelsByEnv(access: ResourceAccess, resource: Resource, envIds: string[]) {
+function levelsByEnv(access: Access, resource: Resource, envIds: string[]) {
   return Object.fromEntries(envIds.map((e) => [e, access.level(resource, e)]))
 }
 
@@ -98,7 +98,7 @@ export const resourcesRouter = router({
   ),
 
   list: authedProcedure.query(async ({ ctx }) => {
-    const access = await loadResourceAccess(ctx.db, ctx.user)
+    const access = await loadAccess(ctx.db, ctx.user)
     const envIds = await environmentIds(ctx.db)
     const [all, configs] = await Promise.all([
       ctx.db.select().from(resources).orderBy(asc(resources.name)),
@@ -168,7 +168,7 @@ export const resourcesRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const access = await loadResourceAccess(ctx.db, ctx.user)
+      const access = await loadAccess(ctx.db, ctx.user)
       if (!access.canCreateResources) {
         throw new TRPCError({
           code: 'FORBIDDEN',

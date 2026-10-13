@@ -41,6 +41,8 @@ const ConfigSchema = z
     ENCRYPTION_KEYS: z.string().min(1),
     /** Version used for new encryptions; defaults to the last key in ENCRYPTION_KEYS. */
     ENCRYPTION_KEY_CURRENT: z.string().optional(),
+    /** Workflow runs one worker process executes at once. */
+    WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring
