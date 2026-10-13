@@ -12,6 +12,7 @@
     "build": "node build.mjs",
     "migrate": "ROLE=migrate tsx src/main.ts",
     "create-admin": "tsx src/cli/create-admin.ts",
+    "rekey": "tsx src/cli/rekey.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
