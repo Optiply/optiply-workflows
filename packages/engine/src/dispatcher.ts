@@ -243,6 +243,7 @@ export class Dispatcher {
         services: { sandbox, pool: this.opts.pool, resources: this.opts.resources },
         store,
         checkpoints,
+        only: run.targetBlocks ?? undefined,
         responded: run.response !== null,
         signal,
         deadline,

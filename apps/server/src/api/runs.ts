@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
 import { type Access, loadAccess } from '../services/permissions'
-import { RunRequestError, startManualRun } from '../services/workflow-runs'
+import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
 
 /**
  * The runs API: start a manual run and read runs, block results and logs. Signed-in users authenticate with their
@@ -62,6 +62,38 @@ export const runsApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
       ip: req.ip,
       userAgent: req.headers['user-agent'],
       metadata: { runId: run.id, version: body.version },
+    })
+    return reply.code(202).send({ run: runView(run, workflow, environment.slug) })
+  })
+
+  /**
+   * The editor's "Run block": runs one block of the draft with its ancestors' results reused from an earlier run
+   * (`fromRunId`, default the latest finished run in the environment).
+   */
+  app.post('/workflows/:slug/blocks/:block/runs', async (req, reply) => {
+    const { slug, block } = parse(z.object({ slug: z.string(), block: z.string() }), req.params)
+    const query = parse(z.object({ environment: z.string().optional() }), req.query)
+    const body = parse(
+      z.object({ fromRunId: z.string().uuid().optional(), input: z.unknown().optional() }),
+      req.body ?? {},
+    )
+    const { access, workflow } = await visibleWorkflow(req, slug)
+    const environment = await findEnvironment(query.environment)
+    const run = await startBlockRun(db, access, req.user!, {
+      workflow,
+      environmentId: environment.id,
+      block,
+      ...body,
+    })
+    await recordAudit(db, {
+      action: 'workflow.block_run_started',
+      objectType: 'workflow',
+      objectId: workflow.id,
+      environmentId: environment.id,
+      actorUserId: req.user!.id,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      metadata: { runId: run.id, block },
     })
     return reply.code(202).send({ run: runView(run, workflow, environment.slug) })
   })
@@ -214,6 +246,7 @@ function runView(run: WorkflowRun, workflow: Workflow, environment: string) {
     workflow: { id: workflow.id, slug: workflow.slug },
     environment,
     version: run.releaseId ? 'live' : 'draft',
+    targetBlocks: run.targetBlocks,
     status: run.status,
     triggerType: run.triggerType,
     input: run.input,

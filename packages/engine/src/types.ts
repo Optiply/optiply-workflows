@@ -88,6 +88,11 @@ export interface ExecuteRunOptions {
   store: RunStore
   /** Results committed by an earlier lease; those blocks don't run again. */
   checkpoints?: readonly BlockResult[]
+  /**
+   * Run only these blocks (the editor's "Run block"), plus whichever of their ancestors have no checkpoint.
+   * Everything else is left alone. Omit to run the whole workflow.
+   */
+  only?: readonly string[]
   /** A Response block already replied in an earlier lease. */
   responded?: boolean
   /** Interrupts the run without finishing it (shutdown, lease lost); in-flight blocks re-run on resume. */

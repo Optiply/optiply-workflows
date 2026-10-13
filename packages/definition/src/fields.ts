@@ -24,6 +24,8 @@ export interface FieldRef {
   name: string
   start: number
   end: number
+  /** A shorthand property (`{ name }`): renaming must keep the key. */
+  shorthand?: true
 }
 
 /** Every field of a block that holds code or templates, in a stable order. */
@@ -75,7 +77,7 @@ export function fieldRefs(field: CodeField): { refs: FieldRef[]; errors: Templat
   const collect = (code: string, kind: CodeKind, offset: number) => {
     try {
       for (const ref of freeIdentifierRefs(code, kind)) {
-        refs.push({ name: ref.name, start: ref.start + offset, end: ref.end + offset })
+        refs.push({ ...ref, start: ref.start + offset, end: ref.end + offset })
       }
     } catch (err) {
       if (!(err instanceof TemplateError)) throw err

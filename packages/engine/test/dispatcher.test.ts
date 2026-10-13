@@ -8,6 +8,7 @@ import {
   type Claim,
   Dispatcher,
   type DispatcherOptions,
+  enqueueRun,
   finishRun,
   LeaseLostError,
   loadCheckpoints,
@@ -167,6 +168,56 @@ describe('dispatcher', () => {
       dsql`select distinct epoch from workflow_runs where id in ${runs.map((r) => r.id)}`,
     )
     expect(owners).toEqual([{ epoch: 1 }])
+  })
+})
+
+describe('run block', () => {
+  it('runs one block with upstream results seeded from an earlier run', async () => {
+    await dispatcher().start()
+    const definition = wf(
+      [
+        hit('load'),
+        { name: 'double', type: 'code', config: { code: 'return load.data[0].id * 2' } },
+        hit('after'),
+      ],
+      [
+        ['startTrigger', 'load'],
+        ['load', 'double'],
+        ['double', 'after'],
+      ],
+    )
+    const first = await queueRun(db, definition)
+    await waitForFinish(db, first.id)
+    const seed = (await loadCheckpoints(db, first.id))
+      .filter((c) => c.key === 'startTrigger' || c.key === 'load')
+      .map((c) => ({ ...c, metadata: { ...c.metadata, cachedFrom: first.id } }))
+
+    const again = await enqueueRun(
+      db,
+      {
+        workflowId: first.workflowId,
+        releaseId: first.releaseId,
+        environmentId: first.environmentId,
+        triggerType: 'manual',
+        targetBlocks: ['double'],
+      },
+      { seed },
+    )
+    const done = await waitForFinish(db, again.id)
+    expect(done.status).toBe('succeeded')
+    // `load` wasn't executed again and `after` didn't run at all.
+    expect(await hitsOf(db, again.id)).toEqual({})
+    expect(await blocksOf(db, again.id)).toEqual({
+      startTrigger: { status: 'succeeded', epoch: 0, attempt: 1, port: 'out' },
+      load: { status: 'succeeded', epoch: 0, attempt: 1, port: 'out' },
+      double: { status: 'succeeded', epoch: 1, attempt: 1, port: 'out' },
+    })
+    const loadId = (await loadCheckpoints(db, first.id)).find((c) => c.key === 'load')!.data as {
+      id: number
+    }[]
+    expect((await loadCheckpoints(db, again.id)).find((c) => c.key === 'double')!.data).toBe(
+      loadId[0]!.id * 2,
+    )
   })
 })
 

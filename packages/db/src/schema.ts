@@ -435,6 +435,8 @@ export const workflowRuns = pgTable(
     /** The schedule fire time this run is for, so each fire runs once. */
     scheduledFor: timestamp({ withTimezone: true }),
     parentRunId: uuid().references((): AnyPgColumn => workflowRuns.id, { onDelete: 'set null' }),
+    /** The editor's "Run block": only these blocks (and ancestors without a seeded result) run. Null = all. */
+    targetBlocks: text().array(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     startedAt: timestamp({ withTimezone: true }),

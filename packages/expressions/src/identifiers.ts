@@ -9,6 +9,8 @@ export interface IdentifierRef {
   /** Offsets into the code passed in. */
   start: number
   end: number
+  /** The reference is a shorthand property (`{ name }`), so renaming it must keep the key: `{ name: other }`. */
+  shorthand?: true
 }
 
 export type CodeKind =
@@ -64,12 +66,30 @@ export function freeIdentifierRefs(code: string, kind: CodeKind = 'expression'):
   } as unknown as ESTree.Program
   const scopes = analyze(program, { ecmaVersion: 2025, sourceType: 'script' })
 
+  const shorthands = shorthandValueStarts(expr)
   return scopes
-    .globalScope!.through.map((ref) => {
+    .globalScope!.through.map((ref): IdentifierRef => {
       const id = ref.identifier as ESTree.Identifier & { start: number; end: number }
-      return { name: id.name, start: id.start - offset, end: id.end - offset }
+      const found: IdentifierRef = { name: id.name, start: id.start - offset, end: id.end - offset }
+      if (shorthands.has(id.start)) found.shorthand = true
+      return found
     })
     .sort((a, b) => a.start - b.start)
+}
+
+/** Start offsets of the identifiers in shorthand object properties (`{ a }`), patterns included. */
+function shorthandValueStarts(root: Node): Set<number> {
+  const starts = new Set<number>()
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) return value.forEach(visit)
+    if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return
+    const node = value as Node & { shorthand?: boolean; value?: Node }
+    if (node.type === 'Property' && node.shorthand && node.value?.type === 'Identifier')
+      starts.add(node.value.start)
+    for (const [key, child] of Object.entries(node)) if (key !== 'loc') visit(child)
+  }
+  visit(root)
+  return starts
 }
 
 /** Unique free identifier names, in order of first use. */

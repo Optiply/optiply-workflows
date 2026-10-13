@@ -22,13 +22,42 @@ function notify(db: Executor, channel: string, payload = '') {
   return db.execute(sql`select pg_notify(${channel}, ${payload})`)
 }
 
-/** Inserts a run as `queued` and wakes the workers when the transaction commits. */
-export async function enqueueRun(db: Db, values: typeof workflowRuns.$inferInsert): Promise<WorkflowRun> {
+/**
+ * Inserts a run as `queued` and wakes the workers when the transaction commits. `seed` pre-commits block results
+ * (the editor's "Run block" reuses another run's upstream results), so the run treats them as checkpoints.
+ */
+export async function enqueueRun(
+  db: Db,
+  values: typeof workflowRuns.$inferInsert,
+  opts: { seed?: readonly BlockResult[] } = {},
+): Promise<WorkflowRun> {
   return db.transaction(async (tx) => {
     const [run] = await tx
       .insert(workflowRuns)
       .values({ ...values, status: 'queued' })
       .returning()
+    for (const result of opts.seed ?? []) {
+      const [row] = await tx
+        .insert(blockRuns)
+        .values({
+          runId: run!.id,
+          blockKey: result.key,
+          status: result.status,
+          attempt: result.attempt,
+          epoch: 0,
+          port: result.port,
+          error: result.error as Record<string, unknown> | null,
+          metadata: result.metadata,
+          startedAt: result.startedAt,
+          finishedAt: result.finishedAt,
+        })
+        .returning({ id: blockRuns.id })
+      if (result.status === 'succeeded') {
+        await tx
+          .insert(blockRunPayloads)
+          .values({ blockRunId: row!.id, data: result.data, sizeBytes: result.sizeBytes })
+      }
+    }
     await notify(tx, RUNS_QUEUED_CHANNEL)
     return run!
   })

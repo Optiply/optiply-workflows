@@ -318,6 +318,59 @@ describe('runs API', () => {
   })
 })
 
+describe('run block', () => {
+  it('runs one block, reusing its ancestors from the latest run and skipping what comes after', async () => {
+    const wf = await workflowWith(
+      'block-runs',
+      [
+        query('order', 'select customer, amount from orders where id = {{ startTrigger.data.id }}'),
+        code('shape', 'return order.data[0].customer.toUpperCase()'),
+        code('after', 'return shape.data + "!"'),
+      ],
+      [
+        ['startTrigger', 'order'],
+        ['order', 'shape'],
+        ['shape', 'after'],
+      ],
+    )
+    const full = (await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, { input: { id: 1 } })).body
+      .run
+    await waitForRun(full.id)
+
+    const started = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, {})
+    expect(started.status).toBe(202)
+    expect(started.body.run).toMatchObject({ targetBlocks: ['shape'], input: { data: { id: 1 } } })
+    const partial = await waitForRun(started.body.run.id)
+    expect(partial.status).toBe('succeeded')
+
+    const { body } = await rest(adminCookie, 'GET', `/runs/${partial.id}/blocks`)
+    const byKey = Object.fromEntries(body.blocks.map((b: { key: string }) => [b.key, b]))
+    expect(Object.keys(byKey).sort()).toEqual(['order', 'shape', 'startTrigger'])
+    expect(byKey.order.metadata).toMatchObject({ cachedFrom: full.id })
+    expect(byKey.startTrigger.metadata).toMatchObject({ cachedFrom: full.id })
+    expect(byKey.shape.metadata.cachedFrom).toBeUndefined()
+    expect((await rest(adminCookie, 'GET', `/runs/${partial.id}/blocks/shape`)).body.block.data).toBe('ACME')
+
+    // New input runs every ancestor fresh.
+    const fresh = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, { input: { id: 2 } })
+    ).body.run
+    await waitForRun(fresh.id)
+    const freshBlocks = (await rest(adminCookie, 'GET', `/runs/${fresh.id}/blocks`)).body.blocks
+    expect(freshBlocks.every((b: { metadata: object }) => !('cachedFrom' in b.metadata))).toBe(true)
+    expect((await rest(adminCookie, 'GET', `/runs/${fresh.id}/blocks/shape`)).body.block.data).toBe('GLOBEX')
+
+    expect((await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/nope/runs`, {})).status).toBe(404)
+    expect(
+      (
+        await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, {
+          fromRunId: '00000000-0000-7000-8000-000000000000',
+        })
+      ).status,
+    ).toBe(404)
+  })
+})
+
 describe('run permissions', () => {
   it('hides workflows and runs from users without access', async () => {
     const wf = await workflowWith('private', [code('a', 'return 1')], [['startTrigger', 'a']])
