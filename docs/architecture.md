@@ -461,7 +461,7 @@ packages/
 4. `curl -X POST -H 'X-Api-Key: …' /api/workflows/<slug>/run -d '{"customerId":1}'` returns the Response body synchronously. Repeat with `?environment=staging` and check that it hits the staging database.
 5. Add a 1-minute cron: runs appear in history with per-block data and logs, and none overlap.
 6. Run `kill -9` on a worker mid-run. The run resumes on the other worker and completed blocks are not re-run.
-7. Automated: `pnpm turbo test` (Vitest unit and golden-semantics tests, with Testcontainers for Postgres/MySQL connectors) and `pnpm --filter web e2e` (Playwright).
+7. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
 
 ## 2.9 Open items (defaults chosen; change later if needed)
 - Importing existing Retool workflows: block names, `{{ }}` semantics and settings were kept compatible, so an importer is cheap. It is not in scope yet.

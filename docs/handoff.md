@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-13 (end of session 3).
+Last updated: 2026-10-13 (end of session 3, which finished M2 and M3).
 
 | | |
 |---|---|
-| **Branch** | `feat/m2-engine`, 6 commits on top of `main`, pushed |
-| **PR** | [#2 M2: Headless engine](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/2), **ready for review, not merged**, CI green on every commit |
-| **`main`** | `8edaa51`, the merge of [PR #1](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/1) (M1), kept as a merge commit so the step commits stay in history |
+| **Branch** | `feat/m3-editor`, 6 commits on top of `main`, pushed |
+| **PR** | [#3 M3: Editor](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/3), **ready for review, not merged**, CI green on every commit (now three jobs: check, e2e, docker) |
+| **`main`** | `4a8356e`, the merge of [PR #2](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/2) (M2), after `8edaa51` (PR #1, M1). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -21,13 +21,14 @@ Last updated: 2026-10-13 (end of session 3).
 | Build plan and architecture | ✅ Approved. Part 2 of `architecture.md` |
 | **M0 Foundations** | ✅ On `main` (§3) |
 | **M1 Resources** | ✅ On `main` (§4) |
-| **M2 Headless engine** | ✅ **Done on `feat/m2-engine`, PR #2 ready for review.** All three "done when" criteria pass (§5). |
-| **M3 Editor** | ⏭️ **Next**, after PR #2 is merged |
-| M4–M9 | Not started |
+| **M2 Headless engine** | ✅ On `main` (§5) |
+| **M3 Editor** | ✅ **Done on `feat/m3-editor`, PR #3 ready for review.** The Playwright "done when" passes locally and in CI (§6). |
+| **M4 Releases & triggers** | ⏭️ **Next**, after PR #3 is merged (§11) |
+| M5–M9 | Not started |
 
 **Start the next session with:**
-1. Review and merge PR #2. Merge with a merge commit, like PR #1, unless you prefer squashing.
-2. Then start M3 on a new branch (§11).
+1. Review and merge PR #3 with a merge commit, like PR #1 and #2.
+2. Then start M4 on a new branch (§12).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -37,8 +38,10 @@ Last updated: 2026-10-13 (end of session 3).
 - **Stack:** TypeScript full stack. React + Vite frontend, Node backend, Postgres. pnpm + Turborepo monorepo.
 - **Workflow engine:** our own Postgres-backed orchestrator, not Temporal and not pg-boss. Rationale in `architecture.md` §2.1; semantics specified in §2.2.
 - **Licences:** write our own code. AGPL projects (ToolJet, Windmill, Lowcoder) and n8n are for ideas only. Libraries under permissive licences are fine as dependencies:
-  - MIT: acorn, undici.
+  - MIT: acorn, undici, @xyflow/react, @dagrejs/dagre, zustand, monaco-editor, @monaco-editor/react.
+  - Apache-2.0: @playwright/test.
   - BSD-2-Clause: eslint-scope. Flagged to the user in session 2; no objection.
+  - **elkjs (EPL-2.0) was declined** in session 3; autolayout uses dagre.
 - **Git workflow:**
   - Repo-local identity `fabioceriaco <fabioceriaco@optiply.nl>`.
   - **Commit only when the user asks.** End commit messages with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
@@ -94,6 +97,18 @@ Last updated: 2026-10-13 (end of session 3).
   - Workflow slugs allow dashes and underscores (they'll appear in webhook URLs).
 - **APIs:** managing workflows is tRPC (`workflows.*`). Starting and reading runs is REST under `/api/v1` (session cookie now, API keys in M4), as the architecture plans for public routes. Errors are `{ error: { code, message, details? } }`.
 
+### Taken in M3 (keep these unless there's a reason to change)
+- **Renaming a block** (`renameBlock` in `@ow/definition`) rewrites only real references (locals, property names, strings and comments are untouched), keeps shorthand keys (`{ old }` → `{ old: renamed }`), and **refuses a name a local variable would capture**. Fields with syntax errors are renamed where possible and reported.
+- **Run block** reuses the ancestors' results from the latest finished run in that environment (or `fromRunId`), marked `cachedFrom`; ancestors without a result run first; nothing after the block runs. **New input means nothing is reused**, since every block depends on the start trigger. Stored as `workflow_runs.target_blocks`.
+- **Live status** comes from NOTIFY `ow_run_events`, sent inside the fenced commits, so a fenced-off worker can't publish. One LISTEN connection per process fans out to SSE subscribers. Clients never step a block back from a final status.
+- **Editor:**
+  - Validation runs in the browser on every edit (`@ow/definition`), and drafts save while invalid. **Run is disabled while there are errors.**
+  - Autosave 0.8 s after the last edit, with the draft revision; a conflict shows a Reload banner. Run saves first, because runs execute the saved draft.
+  - New blocks are connected after the selected block (not after a branch, whose outputs are per condition).
+  - Monaco's own TypeScript checking is off: **our validator is the single source of problems**, shown as markers. Completions come from a `.d.ts` typed from the latest finished run (results up to 512 KB each).
+  - The editor is a lazy chunk; Monaco is a second lazy chunk loaded with the first code field.
+- `/runs` lists runs across the workflows you can see; each opens in the editor with `?run=<id>`.
+
 ## 3. What M0 built (on `main`)
 
 - **Monorepo:**
@@ -119,75 +134,56 @@ Last updated: 2026-10-13 (end of session 3).
 
 M1's "done when" proofs: `apps/server/test/resources.test.ts` (no secret in any of 77+ responses), `packages/connectors/test/postgres.test.ts` (injection inert, `pg_stat_activity` shows `$1`), `packages/crypto/test/aead.test.ts` (swapped ciphertext fails).
 
-## 5. What M2 built (on `feat/m2-engine`)
+## 5. What M2 built (on `main`)
 
-**The three "done when" criteria, and the test that proves each:**
-
-| Criterion | Proven by |
+| Commit | What |
 |---|---|
-| Golden semantics tests cover every rule in §2.2 | `architecture.md` §2.2a maps each rule to its tests. Rules for M4/M5 (loops, functions, waits, schedules, HTTP mapping) are marked as such. Session 3 filled three gaps (idempotency key default, run timeout bounds, never overwriting a committed result). |
-| A `kill -9` of a worker mid-run resumes without re-running completed blocks | `packages/engine/test/crash.test.ts`: a worker in a child process (`test/fixtures/worker.ts`, run with tsx) is SIGKILLed while `pg_sleep` runs. Another worker recovers it (recoveries 1, epoch 3). The block that had finished executed once, and its row still carries epoch 1. |
-| The zombie-worker fencing test passes | `packages/engine/test/dispatcher.test.ts` "fences off a zombie worker": worker A stops renewing mid-block; B recovers and finishes the run; A's own commit is refused ("Lost the lease … (epoch 1)"), and every write at the old epoch is rejected. |
+| `dd1e7ed` | **`packages/definition`**: the strict zod schema (startTrigger, code, resourceQuery, branch, filter, response; ports `out`/`error`/`cond:<id>`/`else`; sparse block settings), `validateDefinition` (diagnostics with paths and offsets; queries checked by their connector server side), `buildGraph`, `codeFields`/`fieldRefs`, canonical JSON and `definitionHash`. |
+| `12eff1b` | **Schema** (`0002_workflows.sql`): workflows, draft snapshots, releases, triggers (basic), runs (the queue: lease, fencing `epoch`, CHECKs), block runs, payloads (10 MB), logs. Bug caught: `\.` in a `sql` template literal became `.` (SemVer CHECK accepted `1x2x3`). |
+| `141e19b` | **Engine** `executeRun`: readiness, dead-path elimination, parallel fan-out (max 10), branch, `finally` stop/continue, retries, timeouts, run deadline, first Response replies; results committed before children start, so `checkpoints` resume. |
+| `11db86f` | **Dispatcher**: `claimRuns` (`FOR UPDATE SKIP LOCKED`, epoch bump), leases renewed, LISTEN wake-ups, `reapExpiredLeases` (`worker_lost` after 3), `PgRunStore` (every write share-locks the run row and checks the epoch), graceful `stop()`. |
+| `776e888` | **Server**: the worker runs the Dispatcher; tRPC `workflows` (CRUD, `saveDraft` with revisions); REST runs API under `/api/v1`; run checks (draft runs need Edit + Use on resources; draft snapshots); workflow permissions; `Access`. |
+| `2db92b3` | §2.2a coverage table, three gap tests, docs. |
 
-### Step 1, `dd1e7ed`: `packages/definition`
-- `workflowDefinitionSchema` (zod v4, strict): `schemaVersion: 1`, `settings.timeoutMs` (1 s–6 h, default 15 min), `triggers` (first cut), `blocks` (startTrigger, code, resourceQuery, branch, filter, response; max 500), `edges {from, port, to}` (max 2000), `layout`.
-- `blockPorts`, `resolveBlockSettings`, `DEFAULT_BLOCK_SETTINGS`.
-- `validateDefinition(input, { resolveResource? })` returns `{ ok, definition?, diagnostics }`. Each diagnostic has a severity, code, path, block and source offsets; codes are listed in `validate.ts`. With `resolveResource` (server side), each query is checked by its connector's `querySchema` and `validateQuery`.
-- `codeFields`, `fieldRefs` and `referencedNames`; `buildGraph` (stable topological order, cycle, memoised ancestors and descendants).
-- `canonicalize`, `canonicalJson` (keys sorted by code unit, integer-like keys included), `definitionHash` (SHA-256 via Web Crypto, layout excluded). The package bundles for the browser.
+M2's "done when" proofs: `architecture.md` §2.2a (every §2.2 rule mapped to its tests); `packages/engine/test/crash.test.ts` (a SIGKILLed worker's run resumes elsewhere without re-running finished blocks); `packages/engine/test/dispatcher.test.ts` "fences off a zombie worker".
 
-### Step 2, `12eff1b`: schema (migration `0002_workflows.sql`)
-- `workflows`, `workflow_draft_snapshots`, `workflow_releases` (SemVer CHECK, hash CHECK), `workflow_triggers` (basic), `workflow_runs`, `block_runs`, `block_run_payloads` (10 MB CHECK), `run_logs`.
-- `workflow_runs` CHECKs: exactly one of release or snapshot; a running run has a lease; `finished_at` is set exactly when final. Partial unique indexes on the idempotency key and on `(trigger_id, scheduled_for)`. Partial indexes on the foreign keys that bulk deletes touch.
-- **Bug caught in review:** `\.` inside the `sql` template literal became a bare `.`, so the SemVer CHECK accepted `1x2x3`. It's now `\\.`, with a test.
-- `@ow/db` depends on `@ow/definition` for the `WorkflowDefinition` type. That's why `@ow/definition` must not depend on `@ow/connectors`, even in tests.
+## 6. What M3 built (on `feat/m3-editor`)
 
-### Step 3, `141e19b`: `packages/engine` run logic
-- `executeRun(opts)` validates, then runs: readiness, dead-path elimination, ports, parallel fan-out (max 10), retries with backoff, block timeouts, the run deadline, `finally: stop` (cancels in-flight blocks) and `continue`, and the first Response block as the reply.
-  - Results are committed through `RunStore` before children start, so `checkpoints` resume a run without re-running finished blocks.
-  - Outcomes are `succeeded | failed | interrupted`.
-- Block executors in `blocks.ts`. Errors are normalised by `toEngineError` and scrubbed of secrets.
-- `MemoryRunStore` for tests. 33 semantics tests plus 4 against real Postgres (including a block timeout cancelling `pg_sleep` on the server).
+**"Done when"**: Playwright builds "query → branch → code → response", runs it, renames a block, and its references update. Proven by `apps/web/e2e/editor.spec.ts`, which does exactly that through the UI and then runs the renamed workflow again. It passes locally (four runs, about 8 s each) and in CI's `e2e` job.
 
-### Step 4, `11db86f`: dispatcher
-- `queue.ts`:
-  - `enqueueRun` (NOTIFY `ow_runs_queued`);
-  - `claimRuns` (`FOR UPDATE SKIP LOCKED`, bumps the epoch, lease on the database clock);
-  - `renewLease`, `ensureDeadline` and `finishRun` (NOTIFY `ow_run_finished` with the run id);
-  - `releaseRun`;
-  - `reapExpiredLeases` (requeue with the epoch bumped, `worker_lost` after `maxRecoveries`, running blocks marked `interrupted`);
-  - `loadCheckpoints`.
-- `PgRunStore`: every write first takes `FOR SHARE` on the run row and checks the epoch and status, and throws `LeaseLostError` otherwise. A committed row is never overwritten. Logs are buffered.
-- `Dispatcher`: a claim loop up to `concurrency`, woken by LISTEN with a poll fallback; renews leases every third of the lease; reaps on a timer; one `IvmRuntime` per run; `drain()` and `stop()`.
-- `block_runs.port` added. Migration 0002 was regenerated rather than adding 0003: it had only run on throwaway test databases.
+### Step 1, `9b6bcbf`: rename and Run block (backend)
+- `@ow/expressions` flags shorthand references; `renameBlock` in `@ow/definition` (see §2).
+- `executeRun({ only })`, `enqueueRun(…, { seed })`, `workflow_runs.target_blocks` (migration `0003_run_targets.sql`), `startBlockRun` and `POST /api/v1/workflows/:slug/blocks/:block/runs`.
+- Caught by the type checker: `ancestors()` returns the graph's memoised set; mutating it would have corrupted later lookups.
 
-### Step 5, `776e888`: server
-- `worker/index.ts` runs the `Dispatcher` (`WORKER_CONCURRENCY`, default 4) with `dbResourceProvider` (slug → decrypted config) and `dbRunContext` (config vars).
-- `services/workflow-runs.ts` `startManualRun` (the checks in §2), `RunRequestError`.
-- tRPC `workflows`: list, get (with diagnostics), create, update, `saveDraft` (CONFLICT on a stale revision), delete.
-- REST `api/runs.ts` under `/api/v1`: `POST /workflows/:slug/runs`; `GET /workflows/:slug/runs`, `/runs/:id`, `/runs/:id/blocks`, `/runs/:id/blocks/:key`, `/runs/:id/logs`.
-- `Access.workflowLevel` and `canCreateWorkflows`; the permissions router accepts workflow targets. `ResourceAccess`/`loadResourceAccess` were renamed to `Access`/`loadAccess`.
+### Step 2, `2a6f783`: live run events
+- `RUN_EVENTS_CHANNEL` (`ow_run_events`): block events from `PgRunStore` inside the fenced transaction; run events from claim (in the claim statement), finish, release and the reaper.
+- `RunEventHub` (one LISTEN per process) and `GET /api/v1/runs/:id/events` (SSE: `snapshot`, `block`, `run`, `end`; subscribe before snapshot; 15 s pings). `buildApp` takes the postgres.js `listener`.
 
-### Step 6 (this commit): coverage review and docs
-- `architecture.md` §2.2a, the three gap tests, and this file and the README.
+### Step 3, `86593aa`: workflows list and canvas
+- `/workflows` list and "New workflow" (slug from name); the editor route is lazy and full-bleed (`staticData.fullBleed`).
+- `@xyflow/react` canvas: a handle per port, connect/delete/move, dagre "Arrange", minimap; diagnostics as badges, broken edges red; autosave with conflicts. State in zustand (`editor/store.ts`).
 
-### Totals at the end of M2
-`biome ci` is clean. Typecheck passes **9/9** packages. **320 tests pass**:
+### Step 4, `6cd5064`: inspectors, Monaco, completions, rename UI
+- A form per block type plus timeout/retries/failure and description (`editor/inspectors.tsx`).
+- Monaco 0.57 bundled locally (`editor/monaco.ts`, `code-field.tsx`): `MonacoEnvironment.getWorker` supplies Vite `?worker` module workers (`vite.config` `worker.format: 'es'`); markers from our diagnostics; `{{ }}` completions in SQL/text.
+- `.d.ts` from the latest run (`scope-types.ts`, `last-run.ts`).
+- **Bugs found in the browser** (all fixed): Monaco's editor worker didn't load without `getWorker`; Monaco inside a `<label>` couldn't be focused (code fields use `EditorField`, a div); React Flow's document key handlers swallowed spaces typed in Monaco and Backspace could delete the selected block (the side panel is `nokey`).
 
-| Package | Tests |
-|---|---|
-| expressions | 72 |
-| connectors | 54 |
-| definition | 52 |
-| engine | 47 |
-| server | 38 |
-| crypto | 25 |
-| db | 20 |
-| sandbox | 12 |
+### Step 5, `3e1d591`: running from the editor
+- Run (saves first, test input, environment picker), Run block, live statuses on the canvas (outlines, fired edges), the run panel (blocks with data/errors, logs, output, JSON export, recent runs), `/runs` (`GET /api/v1/runs`).
+- **Bug found in the browser:** a zustand selector returning a new array each call looped React forever (#185). Select stable state and derive with `useMemo`.
 
-CI is green on every M2 commit, both jobs, including the crash test on Linux.
+### Step 6 (this commit): Playwright e2e, CI, docs
+- `apps/web/playwright.config.ts`, `e2e/global-setup.ts` (embedded Postgres + seeded `customers`, admin via the bundled `create-admin`, the bundled server serving the built web app, a Postgres resource via the API), `e2e/editor.spec.ts`.
+- CI job `e2e`: builds web and server, installs Chromium, runs the test, uploads the report and traces on failure.
 
-## 6. How things were verified (and how to repeat it)
+### Totals at the end of M3
+`biome ci` is clean. Typecheck passes **9/9** packages. **337 tests pass** (expressions 73, definition 58, connectors 54, engine 52, server 43, crypto 25, db 20, sandbox 12) plus **1 Playwright e2e**.
+
+Bundles: main 568 kB, editor chunk 431 kB, Monaco about 4 MB (≈1 MB gzipped) loaded with the first code field, the JS language worker 6.9 MB loaded with the first JS field.
+
+## 7. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after steps 3 and 4 with no flakes.
 - **Bundled server, session 3:** `node --no-node-snapshot dist/main.js` with ROLE=all against the dev database. A Python script drove the session login, `workflows.create`, `workflows.saveDraft` and `POST /api/v1/workflows/<slug>/runs`.
@@ -195,17 +191,27 @@ CI is green on every M2 commit, both jobs, including the crash test on Linux.
   - SIGTERM logged "dispatcher stopped".
   - The script lived in the session scratchpad and isn't committed.
 - **To run the bundled server locally**, set `MIGRATIONS_DIR=../../packages/db/migrations` (and `WEB_DIST_DIR=../web/dist` to serve the UI). `@fastify/static` lists files once at startup, so restart it after rebuilding the web app.
-- **Headless browser walkthrough (M1):** puppeteer-core plus local Chrome, kept in the scratchpad. Gotchas: `::-p-text()` matches substrings; input values aren't in `innerText`; top-level `await` errors don't fire `unhandledRejection`. Playwright e2e arrives in M3.
+- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`).
+- **Headless browser walkthroughs (session 3, not committed):** puppeteer-core scripts in the session scratchpad (`pptr/walk-editor.mjs`, `walk-inspector.mjs`, `walk-run.mjs`) drove the bundled server against the dev database for each M3 step, with screenshots read back. Gotchas:
+  - Typing into Monaco: wait for `.monaco-editor.focused` first; it auto-closes brackets and quotes, then types over them, so typing balanced text works.
+  - Monaco wraps long lines on screen: rendered text contains extra line breaks.
+  - Click empty canvas away from the floating toolbar (top left), controls (bottom left) and minimap (bottom right).
+  - Chrome logs expected 4xx responses as console errors.
+  - `::-p-text()` matches substrings; input values aren't in `innerText`.
+- **Restart the bundled server after rebuilding the web app**: `@fastify/static` lists files once at startup, and stale asset names return the SPA's HTML (a MIME-type error in the browser).
 
-## 7. Local environment quirks (this Mac)
+## 8. Local environment quirks (this Mac)
 
 - Node v24.15.0 (arm64). **No global pnpm, no Docker, no system Postgres.**
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
-- **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It contains a `demo_customers` table (5 rows), **no resources yet**, and since session 3 the M2 tables (migration 0002) plus one smoke-test workflow (`smoke-…`).
+- **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It contains:
+  - a `demo_customers` table (id, email, plan, created_at; 5 rows, created by hand in session 2);
+  - a **"Demo DB" Postgres resource** (`demo_db`, production only) pointing at the dev database itself, created in session 3;
+  - migrations up to `0003`, and test workflows from session 3 (`smoke-…`, `editor-smoke-…`, `inspector-…`, `runs-…`) with their runs. All safe to delete.
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 when unset.
 - **Dev admins:**
   - `admin@optiply.nl`: the password was reset in session 2 and given to the user then.
-  - `m2-smoke@optiply.nl`: created in session 3 for the smoke test, with a random password that wasn't kept. Harmless; delete it or reset it with `create-admin`.
+  - `m2-smoke@optiply.nl`: created in session 3 for the smoke tests and browser walkthroughs (random password kept only in that session's scratchpad). Harmless; delete it or reset it with `create-admin`.
 
   To set a password:
   ```bash
@@ -214,12 +220,12 @@ CI is green on every M2 commit, both jobs, including the crash test on Linux.
   It prompts for a password, or reads `ADMIN_PASSWORD`.
 - **Everything was stopped** at the end of the session (database, server).
 
-## 8. Still unverified
+## 9. Still unverified
 
 1. **Google SSO** against real Google. This needs an OAuth client with redirect URI `<PUBLIC_URL>/api/auth/oidc/callback`, plus `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` from the user.
 2. **`docker compose up`** locally (Docker isn't installed). CI's `docker build` passes. Compose requires `ENCRYPTION_KEYS` in `.env`; its two worker containers now actually run workflows.
 
-## 9. Known gaps and TODOs carried forward
+## 10. Known gaps and TODOs carried forward
 
 - **Engine:**
   - **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.
@@ -230,34 +236,41 @@ CI is green on every M2 commit, both jobs, including the crash test on Linux.
 - **Pool invalidation across processes:** there's still no `NOTIFY resource_changed`. Pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load. Add it if long-lived worker pools cause stale-config problems.
 - **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
 - **APIs:** no OpenAPI document for the REST routes yet, and no API keys (M4). The runs list paginates by run id (UUIDv7, so creation order).
-- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function), and Playwright e2e (M3).
-- **Web:** no toast or confirm system (`confirm()` is used), no code-splitting (544 kB bundle), and textareas instead of Monaco (M3). There's no workflow UI at all yet.
+- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has no unit tests; it's covered by the Playwright test and the (uncommitted) walkthroughs.
+- **Web:**
+  - No toast or confirm system (`confirm()` is used).
+  - The main bundle is 568 kB; the editor and Monaco are split out, the other pages aren't.
+  - The editor has no undo/redo across blocks (Monaco has per-field undo), no copy/paste of blocks, and no "create function from selection" (functions are M5).
+  - The run panel's logs tab shows the first 500 lines.
+  - The resources playground still uses textareas; it could reuse `CodeField`.
+- **Editor completions** cover the latest finished run only, typed from samples (array items merged); there's no environment choice for them.
 - **Not built yet:** MySQL, BigQuery and multipart REST bodies (M6); the `api_keys` table and UI (M4); `oauth_tokens` (M9); releases and their permission check at publish time (M4).
 
-## 10. Next step: M3 Editor
+## 11. Next step: M4 Releases & triggers
 
-From `architecture.md` §2.6 and §2.7: the canvas (React Flow per block type, ports for `out`/`error`/`cond:*`/`else`, elk autolayout, minimap); block inspectors; Monaco with a `.d.ts` generated from the last run's outputs; autosave with `draftRevision`; Run (with test JSON) and Run block (cached upstream outputs); SSE live status; the run history panel. **Done when** Playwright builds "query → branch → code → response", runs it, renames a block, and its references update.
+From `architecture.md` §2.2 (schedules), §2.3 and §2.7: semver releases and rollback; projecting the live release's triggers into `workflow_triggers`; webhooks (sync and async, aliases with `:params`, API keys, `?environment=`, `Idempotency-Key`); schedules (cron or interval, timezone default Europe/Amsterdam, overlap `skip`/`queue`/`allow`, catch up with one run after downtime); per-workflow `max_concurrent_runs`. **Done when:** sync webhook p50 under 50 ms; tests pass across the Amsterdam DST change; a 1-minute cron with a 2-minute run never overlaps.
 
-M2 already provides:
-- `@ow/definition` for the editor: validation diagnostics with offsets, `blockPorts`, `buildGraph` and `codeFields`. It bundles for the browser.
-- The tRPC `workflows` router, including `saveDraft` with conflicts.
-- The REST runs API and NOTIFY `ow_run_finished` for live status.
+Already in place:
+- `workflow_releases` (SemVer, `definitionHash`), `workflows.live_release_id`, `workflow_triggers` (basic), `workflow_runs.idempotency_key` / `scheduled_for` unique indexes with the `ON CONFLICT` insert tested.
+- `@ow/crypto` API-key helpers (`ow_` prefix, sha256, timing-safe compare); no `api_keys` table or UI yet.
+- NOTIFY `ow_run_finished` (run id) and `ow_run_events` for waiting on a sync webhook's response; `workflow_runs.response`.
+- Live runs need Use on the workflow; **publishing must check Use on every resource the release queries** (§2).
 
-Still needed for M3:
-- **A rename refactor** in `@ow/expressions`, using `freeIdentifierRefs` offsets.
-- **"Run block"**, which `executeRun` doesn't support yet: a block on its own with given upstream results.
-- **An SSE endpoint**, fed by the `block_runs` changes or a new NOTIFY channel.
+Watch out for:
+- Strip the API-key header before it reaches `startTrigger.headers`.
+- Sync webhooks run in-process in the API under a semaphore (architecture §2.1); the engine and `RunStore` already allow that.
+- Releases should store `canonicalize(definition)` and its hash; the editor needs a Releases tab (publish, rollback).
 
-## 11. How to start the next session
+## 12. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git fetch && git status                          # PR #2 merged? Then: git switch main && git pull
-gh pr view 2                                     # ready for review → merge, if not done yet
+git fetch && git status                          # PR #3 merged? Then: git switch main && git pull
+gh pr view 3                                     # ready for review → merge (merge commit), if not done yet
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m3-editor                     # then open a draft PR after the first commit
+git switch -c feat/m4-releases-triggers          # then open a draft PR after the first commit
 ```
