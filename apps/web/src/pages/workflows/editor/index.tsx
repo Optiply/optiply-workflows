@@ -3,15 +3,17 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { TRPCClientError } from '@trpc/client'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, ArrowLeft, CheckCircle2, LayoutGrid, Loader2, Plus, Trash2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, LayoutGrid, Loader2, Plus } from 'lucide-react'
 import { useCallback, useEffect } from 'react'
 import { Badge, Button, ErrorNote, Spinner } from '@/components/ui'
 import { errorMessage, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
-import { Canvas, removeFrom } from './canvas'
+import { Canvas } from './canvas'
 import { ADDABLE, BLOCK_KINDS, newBlock, nextName } from './catalog'
+import { Inspector } from './inspectors'
+import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
-import { problemsOf, type SaveStatus, useEditor } from './store'
+import { type SaveStatus, useEditor } from './store'
 
 const route = getRouteApi('/app/workflows/$workflowId')
 
@@ -40,10 +42,32 @@ export function WorkflowEditorPage() {
 
   const canEdit = workflow.data.level !== 'use'
   return (
+    <EditorLayout
+      name={workflow.data.name}
+      slug={workflow.data.slug}
+      canEdit={canEdit}
+      onReload={() => workflow.refetch()}
+    />
+  )
+}
+
+function EditorLayout({
+  name,
+  slug,
+  canEdit,
+  onReload,
+}: {
+  name: string
+  slug: string
+  canEdit: boolean
+  onReload: () => void
+}) {
+  useLastRunSamples(slug)
+  return (
     <ReactFlowProvider>
       <div className="flex h-full flex-col">
-        <Header name={workflow.data.name} slug={workflow.data.slug} canEdit={canEdit} />
-        <ConflictBanner onReload={() => workflow.refetch()} />
+        <Header name={name} slug={slug} canEdit={canEdit} />
+        <ConflictBanner onReload={onReload} />
         <div className="flex min-h-0 flex-1">
           <div className="relative min-w-0 flex-1" data-testid="canvas">
             <Canvas />
@@ -242,47 +266,14 @@ function SidePanel() {
   const block = definition.blocks.find((b) => b.name === selected)
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-surface" data-testid="side-panel">
-      {block ? (
-        <BlockDetails name={block.name} type={block.type} problems={problemsOf(diagnostics, block.name)} />
-      ) : (
-        <Problems diagnostics={diagnostics} />
-      )}
+    // `nokey`: React Flow listens for Space (pan) and Backspace/Delete (delete the selection) on the whole document
+    // and doesn't recognise Monaco's input element as a text field; it ignores keys from inside `.nokey`.
+    <aside
+      className="nokey flex w-[26rem] shrink-0 flex-col overflow-y-auto border-l border-border bg-surface"
+      data-testid="side-panel"
+    >
+      {block ? <Inspector key={block.name} name={block.name} /> : <Problems diagnostics={diagnostics} />}
     </aside>
-  )
-}
-
-function BlockDetails({ name, type, problems }: { name: string; type: BlockType; problems: Diagnostic[] }) {
-  const update = useEditor((s) => s.update)
-  const select = useEditor((s) => s.select)
-  const kind = BLOCK_KINDS[type]
-  const Icon = kind.icon
-  return (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="flex items-center gap-2">
-        <span className={cn('rounded-md p-1.5', kind.tone)}>
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-mono font-medium">{name}</div>
-          <div className="text-xs text-muted">{kind.label}</div>
-        </div>
-        {type !== 'startTrigger' && (
-          <Button
-            size="icon"
-            variant="ghost"
-            title="Delete block"
-            onClick={() => {
-              update((def) => removeFrom(def, new Set([name])))
-              select(null)
-            }}
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        )}
-      </div>
-      <ProblemList diagnostics={problems} empty="No problems in this block." />
-    </div>
   )
 }
 

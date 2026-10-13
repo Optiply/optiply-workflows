@@ -1,5 +1,6 @@
 import { type Diagnostic, validateDefinition, type WorkflowDefinition } from '@ow/definition'
 import { create } from 'zustand'
+import type { SampleResult } from './scope-types'
 
 export type SaveStatus = 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
 
@@ -12,6 +13,8 @@ interface EditorState {
   saveError: string | null
   selected: string | null
   diagnostics: Diagnostic[]
+  /** Results of the latest finished run, by block, for autocompletion. */
+  samples: Record<string, SampleResult>
 
   load(workflowId: string, definition: WorkflowDefinition, revision: number): void
   /** Applies an edit; the draft becomes dirty and is re-validated. */
@@ -22,6 +25,7 @@ interface EditorState {
   saved(revision: number, savedJson: string): void
   conflict(): void
   failed(message: string): void
+  setSamples(samples: Record<string, SampleResult>): void
 }
 
 const EMPTY: WorkflowDefinition = { schemaVersion: 1, blocks: [], edges: [] }
@@ -35,6 +39,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   saveError: null,
   selected: null,
   diagnostics: [],
+  samples: {},
 
   load: (workflowId, definition, revision) =>
     set({
@@ -60,7 +65,19 @@ export const useEditor = create<EditorState>()((set, get) => ({
     set({ revision, status: JSON.stringify(get().definition) === savedJson ? 'saved' : 'dirty' }),
   conflict: () => set({ status: 'conflict' }),
   failed: (message) => set({ status: 'error', saveError: message }),
+  setSamples: (samples) => set({ samples }),
 }))
+
+/** Applies an edit to one block, by name. */
+export function updateBlock<B extends WorkflowDefinition['blocks'][number]>(
+  name: string,
+  edit: (block: B) => B,
+) {
+  useEditor.getState().update((def) => ({
+    ...def,
+    blocks: def.blocks.map((b) => (b.name === name ? edit(b as B) : b)),
+  }))
+}
 
 /** Problems that belong to a block (by name). */
 export function problemsOf(diagnostics: Diagnostic[], block: string): Diagnostic[] {
