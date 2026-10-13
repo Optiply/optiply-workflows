@@ -1,3 +1,4 @@
+import { generateKey } from '@ow/crypto'
 import { createDb, type Db } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import type { FastifyInstance } from 'fastify'
@@ -17,6 +18,7 @@ export async function startTestApp(overrides: Record<string, string> = {}): Prom
   const config = loadConfig({
     DATABASE_URL: pg.url,
     SESSION_SECRET: 'test-secret-test-secret-test-secret-1234',
+    ENCRYPTION_KEYS: `v1:${generateKey()}`,
     LOCAL_LOGIN_ENABLED: 'true',
     NODE_ENV: 'test',
     ...overrides,

@@ -29,6 +29,9 @@ importers:
       '@fastify/static':
         specifier: 10.1.6
         version: 10.1.6
+      '@ow/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@ow/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -136,6 +139,12 @@ importers:
       vite:
         specifier: 8.3.4
         version: 8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)
+
+  packages/crypto:
+    devDependencies:
+      vitest:
+        specifier: 5.0.4
+        version: 5.0.4(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
   packages/db:
     dependencies:

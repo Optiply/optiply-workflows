@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { type Keyring, parseKeyring } from '@ow/crypto'
 import { z } from 'zod'
 
 const bool = z
@@ -36,12 +37,29 @@ const ConfigSchema = z
     LOCAL_LOGIN_ENABLED: bool,
     /** Directory with the built web app to serve (production). */
     WEB_DIST_DIR: z.string().optional(),
+    /** Resource credentials and secret config vars: `v1:<base64 32 bytes>[,v2:…]`. Losing these loses every secret. */
+    ENCRYPTION_KEYS: z.string().min(1),
+    /** Version used for new encryptions; defaults to the last key in ENCRYPTION_KEYS. */
+    ENCRYPTION_KEY_CURRENT: z.string().optional(),
   })
-  .transform((c) => ({
-    ...c,
-    oidcEnabled: Boolean(c.OIDC_CLIENT_ID && c.OIDC_CLIENT_SECRET),
-    secureCookies: c.PUBLIC_URL.startsWith('https://'),
-  }))
+  .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
+    let keyring: Keyring
+    try {
+      keyring = parseKeyring(ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT)
+    } catch (err) {
+      // Keyring errors read "<VAR>: <problem>"; report them under that variable.
+      const [, variable = 'ENCRYPTION_KEYS', message = ''] =
+        /^(\w+): (.*)$/.exec((err as Error).message) ?? []
+      ctx.addIssue({ code: 'custom', path: [variable], message })
+      return z.NEVER
+    }
+    return {
+      ...c,
+      keyring,
+      oidcEnabled: Boolean(c.OIDC_CLIENT_ID && c.OIDC_CLIENT_SECRET),
+      secureCookies: c.PUBLIC_URL.startsWith('https://'),
+    }
+  })
 
 export type Config = z.output<typeof ConfigSchema>
 
