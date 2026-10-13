@@ -60,6 +60,13 @@ describe('workflowDefinitionSchema', () => {
     }
   })
 
+  it('bounds the run timeout between 1 second and 6 hours', () => {
+    const withTimeout = (timeoutMs: number) => wf([start], [], { settings: { timeoutMs } })
+    expect(workflowDefinitionSchema.safeParse(withTimeout(6 * 60 * 60_000)).success).toBe(true)
+    expect(workflowDefinitionSchema.safeParse(withTimeout(6 * 60 * 60_000 + 1)).success).toBe(false)
+    expect(workflowDefinitionSchema.safeParse(withTimeout(999)).success).toBe(false)
+  })
+
   it('needs exactly one of cron or intervalMs on a schedule', () => {
     const schedule = (s: object) =>
       wf([start], [], { triggers: { schedules: [{ name: 's', enabled: true, ...s }] } })

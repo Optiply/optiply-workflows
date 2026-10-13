@@ -10,6 +10,7 @@ import {
   type DispatcherOptions,
   finishRun,
   LeaseLostError,
+  loadCheckpoints,
   PgRunStore,
   type ResourceProvider,
   reapExpiredLeases,
@@ -131,6 +132,21 @@ describe('dispatcher', () => {
     expect(done.error).toMatchObject({ code: 'query', block: 'bad' })
   })
 
+  it("exposes the caller's idempotency key to code, or the run id when there's none", async () => {
+    await dispatcher().start()
+    const definition = wf(
+      [{ name: 'key', type: 'code', config: { code: 'return idempotencyKey' } }],
+      [['startTrigger', 'key']],
+    )
+    const plain = await queueRun(db, definition)
+    const keyed = await queueRun(db, definition, {}, { idempotencyKey: 'order-42' })
+    await waitForFinish(db, plain.id)
+    await waitForFinish(db, keyed.id)
+    const keyOf = async (id: string) => (await loadCheckpoints(db, id)).find((c) => c.key === 'key')!.data
+    expect(await keyOf(plain.id)).toBe(plain.id)
+    expect(await keyOf(keyed.id)).toBe('order-42')
+  })
+
   it('wakes on NOTIFY rather than waiting for the next poll', async () => {
     await dispatcher({ pollIntervalMs: 60_000 }).start()
     await new Promise((r) => setTimeout(r, 200)) // Let it go idle.
@@ -221,6 +237,32 @@ describe('fencing', () => {
     ).rejects.toBeInstanceOf(LeaseLostError)
     expect(await finishRun(db, stale, { status: 'failed', error: null })).toBe(false)
     expect(await getRun(db, run.id)).toMatchObject({ status: 'succeeded', epoch: 3 })
+  })
+
+  it('never overwrites a committed result, even from the lease that wrote it', async () => {
+    const run = await queueRun(db, wf([hit('a')], [['startTrigger', 'a']]))
+    await db
+      .update(workflowRuns)
+      .set({ status: 'running', leaseOwner: 'test', leaseExpiresAt: new Date(Date.now() + 60_000), epoch: 1 })
+      .where(eq(workflowRuns.id, run.id))
+    const store = new PgRunStore(db, { runId: run.id, epoch: 1 })
+    const result = (data: unknown) => ({
+      key: 'a',
+      status: 'succeeded' as const,
+      data,
+      sizeBytes: JSON.stringify(data).length,
+      error: null,
+      metadata: {},
+      port: 'out',
+      attempt: 1,
+      startedAt: null,
+      finishedAt: new Date(),
+    })
+    await store.blockFinished(result('first'))
+    await store.blockFinished(result('second'))
+    await store.blockStarted('a', 2, new Date())
+    const [committed] = await loadCheckpoints(db, run.id)
+    expect(committed).toMatchObject({ key: 'a', status: 'succeeded', data: 'first', attempt: 1 })
   })
 
   it('recovers runs whose lease expired and fails one that keeps losing its worker', async () => {

@@ -57,7 +57,12 @@ export function wf(blocks: object[], edges: [string, string, string?][]): Workfl
 
 let n = 0
 /** Creates a workflow with a 1.0.0 release of `definition` and queues a run of it. */
-export async function queueRun(db: Db, definition: WorkflowDefinition, input: Record<string, unknown> = {}) {
+export async function queueRun(
+  db: Db,
+  definition: WorkflowDefinition,
+  input: Record<string, unknown> = {},
+  extra: { idempotencyKey?: string } = {},
+) {
   const [env] = await db.select().from(environments).where(eq(environments.slug, 'production'))
   const [workflow] = await db
     .insert(workflows)
@@ -73,6 +78,7 @@ export async function queueRun(db: Db, definition: WorkflowDefinition, input: Re
     environmentId: env!.id,
     triggerType: 'manual',
     input,
+    ...extra,
   })
 }
 
