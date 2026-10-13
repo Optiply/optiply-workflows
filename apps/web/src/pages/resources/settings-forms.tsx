@@ -1,0 +1,478 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { CircleCheck, Plus } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { useTRPC } from '@/lib/trpc'
+import {
+  ConnectorErrorNote,
+  type KeyValue,
+  KeyValueEditor,
+  type ResourceDetail,
+  type SecretEdit,
+  SecretField,
+} from './shared'
+
+type Config = Record<string, unknown>
+/** Secret edits by field; REST secret headers nest one level (`headers: { name: edit }`). */
+type SecretEdits = Record<string, SecretEdit | Record<string, SecretEdit>>
+type Mask = Record<string, unknown> | null
+
+const DEFAULTS: Record<string, Config> = {
+  postgres: {
+    host: '',
+    port: 5432,
+    database: '',
+    user: '',
+    ssl: 'prefer',
+    poolSize: 5,
+    readOnly: false,
+    maxRows: 10_000,
+    statementTimeoutMs: 120_000,
+  },
+  rest: {
+    baseUrl: '',
+    headers: [],
+    params: [],
+    auth: { type: 'none' },
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    maxResponseBytes: 10 * 1024 * 1024,
+  },
+}
+
+/** Turns edits into the write-only patch the API expects: omitted = keep, null = clear, string = set. */
+function buildPatch(edits: SecretEdits): Record<string, unknown> | undefined {
+  const patch: Record<string, unknown> = {}
+  for (const [key, edit] of Object.entries(edits)) {
+    if (edit === undefined || edit === '') continue
+    if (edit !== null && typeof edit === 'object') {
+      const nested = buildPatch(edit)
+      if (nested) patch[key] = nested
+    } else patch[key] = edit
+  }
+  return Object.keys(patch).length ? patch : undefined
+}
+
+interface FieldsProps {
+  config: Config
+  set: (key: string, value: unknown) => void
+  secrets: Mask
+  edits: SecretEdits
+  setEdit: (key: string, edit: SecretEdits[string]) => void
+  disabled: boolean
+}
+
+export function SettingsPanel({
+  resource,
+  environmentId,
+  canEdit,
+}: {
+  resource: ResourceDetail
+  environmentId: string
+  canEdit: boolean
+}) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const stored = resource.environments.find((e) => e.environmentId === environmentId)
+  const [config, setConfig] = useState<Config>(() => ({
+    ...DEFAULTS[resource.type],
+    ...(stored?.config ?? {}),
+  }))
+  const [edits, setEdits] = useState<SecretEdits>({})
+
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: trpc.resources.get.queryKey({ id: resource.id }) }),
+      queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
+    ])
+  const save = useMutation(
+    trpc.resources.saveConfig.mutationOptions({
+      onSuccess: async () => {
+        setEdits({})
+        await refresh()
+      },
+    }),
+  )
+  const test = useMutation(trpc.resources.test.mutationOptions())
+  const remove = useMutation(trpc.resources.deleteConfig.mutationOptions({ onSuccess: refresh }))
+
+  const props: FieldsProps = {
+    config,
+    set: (key, value) => setConfig((c) => ({ ...c, [key]: value })),
+    secrets: (stored?.secrets as Mask) ?? null,
+    edits,
+    setEdit: (key, edit) => setEdits((e) => ({ ...e, [key]: edit })),
+    disabled: !canEdit,
+  }
+  const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
+
+  return (
+    <div className="space-y-4">
+      {!canEdit && (
+        <p className="rounded-md bg-canvas px-3 py-2 text-sm text-muted">
+          You can use this resource here but not change its settings.
+        </p>
+      )}
+      {!stored?.config && canEdit && (
+        <p className="rounded-md bg-accent-soft px-3 py-2 text-sm text-accent">
+          Not configured in this environment yet. Fill in the settings and save.
+        </p>
+      )}
+      <Card className="space-y-5 p-5">
+        {resource.type === 'postgres' ? <PostgresFields {...props} /> : <RestFields {...props} />}
+      </Card>
+
+      {canEdit && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(request)}>
+              Save
+            </Button>
+            <Button loading={test.isPending} onClick={() => test.mutate(request)}>
+              Test connection
+            </Button>
+            {stored?.config && (
+              <Button
+                variant="danger"
+                className="ml-auto"
+                loading={remove.isPending}
+                onClick={() => {
+                  if (confirm('Remove this environment’s settings and credentials?')) {
+                    remove.mutate({ resourceId: resource.id, environmentId })
+                  }
+                }}
+              >
+                Remove from this environment
+              </Button>
+            )}
+          </div>
+          <ErrorNote error={save.error ?? test.error ?? remove.error} />
+          {save.isSuccess && !save.isPending && <p className="text-sm text-success">Saved.</p>}
+          {test.data?.ok && (
+            <p className="flex items-center gap-2 text-sm text-success">
+              <CircleCheck className="size-4" /> Connected{test.data.message ? ` · ${test.data.message}` : ''}{' '}
+              · {test.data.durationMs} ms
+            </p>
+          )}
+          {test.data && !test.data.ok && <ConnectorErrorNote error={test.data.error} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const isSet = (secrets: Mask, key: string) => !!secrets && key in secrets
+const num = (v: string) => (v === '' ? undefined : Number(v))
+
+function Grid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>
+}
+
+function Checkbox({
+  checked,
+  onChange,
+  disabled,
+  label,
+  hint,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+  label: string
+  hint: string
+}) {
+  return (
+    <label className="flex items-start gap-2.5 text-sm">
+      <input
+        type="checkbox"
+        className="mt-0.5 size-4 accent-accent"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>
+        <span className="font-medium">{label}</span>
+        <span className="block text-xs text-muted">{hint}</span>
+      </span>
+    </label>
+  )
+}
+
+function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const text = (key: string) => ({
+    value: String(config[key] ?? ''),
+    disabled,
+    onChange: (e: { target: { value: string } }) => set(key, e.target.value),
+  })
+  const number = (key: string) => ({
+    type: 'number',
+    value: config[key] === undefined ? '' : String(config[key]),
+    disabled,
+    onChange: (e: { target: { value: string } }) => set(key, num(e.target.value)),
+  })
+  return (
+    <>
+      <Grid>
+        <Field label="Host">
+          <Input {...text('host')} placeholder="db.internal.optiply.nl" />
+        </Field>
+        <Field label="Port">
+          <Input {...number('port')} />
+        </Field>
+        <Field label="Database">
+          <Input {...text('database')} />
+        </Field>
+        <Field label="User" hint="For read-only use, connect as a user that only has SELECT.">
+          <Input {...text('user')} />
+        </Field>
+        <Field label="Password">
+          <SecretField
+            isSet={isSet(secrets, 'password')}
+            edit={edits.password as SecretEdit}
+            onChange={(e) => setEdit('password', e)}
+            disabled={disabled}
+          />
+        </Field>
+        <Field label="SSL">
+          <Select value={String(config.ssl)} disabled={disabled} onChange={(e) => set('ssl', e.target.value)}>
+            <option value="prefer">Prefer (try TLS, fall back)</option>
+            <option value="require">Require</option>
+            <option value="verify-full">Verify certificate and hostname</option>
+            <option value="disable">Disable</option>
+          </Select>
+        </Field>
+      </Grid>
+      {config.ssl === 'verify-full' && (
+        <Field label="CA certificate (PEM)" hint="Only needed for a private certificate authority.">
+          <Textarea
+            rows={4}
+            className="font-mono text-xs"
+            value={String(config.caCert ?? '')}
+            disabled={disabled}
+            onChange={(e) => set('caCert', e.target.value || undefined)}
+          />
+        </Field>
+      )}
+      <Grid>
+        <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
+          <Input {...number('maxRows')} />
+        </Field>
+        <Field label="Statement timeout (ms)">
+          <Input {...number('statementTimeoutMs')} />
+        </Field>
+        <Field label="Connection pool size">
+          <Input {...number('poolSize')} />
+        </Field>
+      </Grid>
+      <Checkbox
+        checked={!!config.readOnly}
+        disabled={disabled}
+        onChange={(v) => set('readOnly', v)}
+        label="Read-only"
+        hint="Runs every query in a read-only transaction. A guard against mistakes; use a SELECT-only user for security."
+      />
+    </>
+  )
+}
+
+type Auth = { type: string; [key: string]: unknown }
+
+function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const auth = (config.auth ?? { type: 'none' }) as Auth
+  const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
+  const secret = (key: string, label: string) => (
+    <Field label={label}>
+      <SecretField
+        isSet={isSet(secrets, key)}
+        edit={edits[key] as SecretEdit}
+        onChange={(e) => setEdit(key, e)}
+        disabled={disabled}
+      />
+    </Field>
+  )
+  const authText = (key: string, label: string, placeholder?: string) => (
+    <Field label={label}>
+      <Input
+        value={String(auth[key] ?? '')}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(e) => setAuth({ [key]: e.target.value || undefined })}
+      />
+    </Field>
+  )
+  return (
+    <>
+      <Field
+        label="Base URL"
+        hint="Queries add a path to this; they can't reach other hosts unless allowed below."
+      >
+        <Input
+          value={String(config.baseUrl ?? '')}
+          placeholder="https://api.example.com/v1"
+          disabled={disabled}
+          onChange={(e) => set('baseUrl', e.target.value)}
+        />
+      </Field>
+
+      <Field label="Authentication">
+        <Select
+          value={auth.type}
+          disabled={disabled}
+          onChange={(e) =>
+            set('auth', {
+              type: e.target.value,
+              ...(e.target.value === 'apiKey' ? { in: 'header', name: 'X-API-Key' } : {}),
+            })
+          }
+        >
+          <option value="none">None</option>
+          <option value="apiKey">API key</option>
+          <option value="bearer">Bearer token</option>
+          <option value="basic">Basic auth</option>
+          <option value="oauth2ClientCredentials">OAuth 2.0 client credentials</option>
+        </Select>
+      </Field>
+      {auth.type === 'apiKey' && (
+        <Grid>
+          <Field label="Send in">
+            <Select
+              value={String(auth.in ?? 'header')}
+              disabled={disabled}
+              onChange={(e) => setAuth({ in: e.target.value })}
+            >
+              <option value="header">Header</option>
+              <option value="query">Query parameter</option>
+            </Select>
+          </Field>
+          {authText('name', 'Name', 'X-API-Key')}
+          {secret('apiKey', 'API key')}
+        </Grid>
+      )}
+      {auth.type === 'bearer' && <Grid>{secret('bearerToken', 'Token')}</Grid>}
+      {auth.type === 'basic' && (
+        <Grid>
+          {authText('username', 'Username')}
+          {secret('password', 'Password')}
+        </Grid>
+      )}
+      {auth.type === 'oauth2ClientCredentials' && (
+        <Grid>
+          {authText('tokenUrl', 'Token URL', 'https://auth.example.com/oauth/token')}
+          {authText('clientId', 'Client ID')}
+          {secret('clientSecret', 'Client secret')}
+          {authText('scope', 'Scope (optional)')}
+          {authText('audience', 'Audience (optional)')}
+          <Field label="Send client secret">
+            <Select
+              value={String(auth.clientAuth ?? 'body')}
+              disabled={disabled}
+              onChange={(e) => setAuth({ clientAuth: e.target.value })}
+            >
+              <option value="body">In the request body</option>
+              <option value="basic">As basic auth</option>
+            </Select>
+          </Field>
+        </Grid>
+      )}
+
+      <Field label="Headers" hint="Sent with every request. Put credentials in secret headers below instead.">
+        <KeyValueEditor
+          rows={(config.headers as KeyValue[]) ?? []}
+          onChange={(rows) => set('headers', rows)}
+          disabled={disabled}
+          keyPlaceholder="Header"
+        />
+      </Field>
+      <SecretHeaders secrets={secrets} edits={edits} setEdit={setEdit} disabled={disabled} />
+      <Field label="Query parameters" hint="Added to every request.">
+        <KeyValueEditor
+          rows={(config.params as KeyValue[]) ?? []}
+          onChange={(rows) => set('params', rows)}
+          disabled={disabled}
+          keyPlaceholder="Parameter"
+        />
+      </Field>
+      <Field
+        label="Other allowed hosts"
+        hint="One per line; *.example.com allows subdomains. Redirects are checked too."
+      >
+        <Textarea
+          rows={2}
+          className="font-mono"
+          value={((config.allowedHosts as string[]) ?? []).join('\n')}
+          disabled={disabled}
+          onChange={(e) =>
+            set(
+              'allowedHosts',
+              e.target.value
+                .split('\n')
+                .map((h) => h.trim())
+                .filter(Boolean),
+            )
+          }
+        />
+      </Field>
+      <Checkbox
+        checked={!!config.allowPrivateNetwork}
+        disabled={disabled}
+        onChange={(v) => set('allowPrivateNetwork', v)}
+        label="Allow private network addresses"
+        hint="Off by default: requests to localhost, internal IPs and cloud metadata are blocked."
+      />
+    </>
+  )
+}
+
+function SecretHeaders({
+  secrets,
+  edits,
+  setEdit,
+  disabled,
+}: Pick<FieldsProps, 'secrets' | 'edits' | 'setEdit' | 'disabled'>) {
+  const stored = Object.keys((secrets?.headers as Record<string, unknown>) ?? {})
+  const headerEdits = (edits.headers as Record<string, SecretEdit>) ?? {}
+  const names = [...new Set([...stored, ...Object.keys(headerEdits)])]
+  const [name, setName] = useState('')
+  const setHeader = (header: string, edit: SecretEdit) =>
+    setEdit('headers', { ...headerEdits, [header]: edit })
+  return (
+    <Field label="Secret headers" hint="Values are encrypted and never shown again.">
+      <div className="space-y-2">
+        {names.map((header) => (
+          <div key={header} className="flex items-center gap-3">
+            <span className="w-48 truncate font-mono text-sm">{header}</span>
+            <div className="flex-1">
+              <SecretField
+                isSet={stored.includes(header)}
+                edit={headerEdits[header]}
+                onChange={(e) => setHeader(header, e)}
+                disabled={disabled}
+              />
+            </div>
+          </div>
+        ))}
+        {!disabled && (
+          <div className="flex gap-2">
+            <Input
+              className="font-mono"
+              placeholder="Header name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!name.trim()}
+              onClick={() => {
+                setHeader(name.trim(), '')
+                setName('')
+              }}
+            >
+              <Plus className="size-4" /> Add secret header
+            </Button>
+          </div>
+        )}
+      </div>
+    </Field>
+  )
+}

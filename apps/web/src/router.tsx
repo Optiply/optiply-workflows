@@ -13,7 +13,10 @@ import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { LoginPage } from './pages/login'
 import { ComingSoon } from './pages/placeholders'
+import { ResourceDetailPage } from './pages/resources/detail'
+import { ResourcesPage } from './pages/resources/list'
 import { AuditPage } from './pages/settings/audit'
+import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
 import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
@@ -62,7 +65,12 @@ const workflowsRoute = createRoute({
 const resourcesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/resources',
-  component: () => <ComingSoon section="resources" />,
+  component: ResourcesPage,
+})
+const resourceDetailRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/resources/$resourceId',
+  component: ResourceDetailPage,
 })
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -98,6 +106,11 @@ const environmentsRoute = createRoute({
   path: '/environments',
   component: EnvironmentsPage,
 })
+const configVarsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/config-vars',
+  component: ConfigVarsPage,
+})
 const auditRoute = createRoute({ getParentRoute: () => settingsRoute, path: '/audit', component: AuditPage })
 
 const routeTree = rootRoute.addChildren([
@@ -106,6 +119,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     workflowsRoute,
     resourcesRoute,
+    resourceDetailRoute,
     runsRoute,
     settingsRoute.addChildren([
       settingsIndexRoute,
@@ -113,6 +127,7 @@ const routeTree = rootRoute.addChildren([
       groupsRoute,
       groupDetailRoute,
       environmentsRoute,
+      configVarsRoute,
       auditRoute,
     ]),
   ]),

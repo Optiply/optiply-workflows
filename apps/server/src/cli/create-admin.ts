@@ -9,8 +9,10 @@ import { createDb } from '@ow/db'
 import { hashPassword } from '../auth/password'
 import { loadConfig } from '../config'
 import { provisionUser } from '../services/users'
+import { cliArgs } from './args'
 
 const { values } = parseArgs({
+  args: cliArgs(),
   options: { email: { type: 'string' }, name: { type: 'string' } },
 })
 if (!values.email) {

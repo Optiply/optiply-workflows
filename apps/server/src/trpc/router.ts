@@ -2,7 +2,11 @@ import { environments } from '@ow/db'
 import { asc, desc } from 'drizzle-orm'
 import { authedProcedure, publicProcedure, router } from './init'
 import { auditRouter } from './routers/audit'
+import { configVarsRouter } from './routers/config-vars'
+import { foldersRouter } from './routers/folders'
 import { groupsRouter } from './routers/groups'
+import { permissionsRouter } from './routers/permissions'
+import { resourcesRouter } from './routers/resources'
 import { usersRouter } from './routers/users'
 
 export const appRouter = router({
@@ -28,6 +32,10 @@ export const appRouter = router({
   users: usersRouter,
   groups: groupsRouter,
   audit: auditRouter,
+  resources: resourcesRouter,
+  folders: foldersRouter,
+  permissions: permissionsRouter,
+  configVars: configVarsRouter,
 })
 
 export type AppRouter = typeof appRouter

@@ -1,6 +1,4 @@
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { buildSync } from 'esbuild'
+import { STDLIB_BUNDLE } from './stdlib.generated'
 
 /**
  * Code that runs once inside the snapshot after the stdlib bundle. Every context created from the snapshot
@@ -42,23 +40,7 @@ const PRELUDE = `
 })();
 `
 
-let cached: string | undefined
-
 /** The full source baked into the isolate snapshot: lodash (`_`), dayjs (+utc/timezone/…), console shim. */
 export function stdlibSource(): string {
-  if (cached) return cached
-  const here = dirname(fileURLToPath(import.meta.url))
-  const result = buildSync({
-    entryPoints: [join(here, 'stdlib-entry.js')],
-    bundle: true,
-    format: 'iife',
-    platform: 'neutral',
-    mainFields: ['module', 'main'],
-    target: 'es2022',
-    minify: true,
-    write: false,
-    logLevel: 'silent',
-  })
-  cached = result.outputFiles[0]!.text + PRELUDE
-  return cached
+  return STDLIB_BUNDLE + PRELUDE
 }

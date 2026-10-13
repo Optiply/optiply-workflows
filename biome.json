@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/migrations", "!**/routeTree.gen.ts", "!docs"]
+    "includes": ["**", "!**/migrations", "!**/routeTree.gen.ts", "!docs", "!**/stdlib.generated.ts"]
   },
   "formatter": {
     "enabled": true,
@@ -29,6 +29,18 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["packages/expressions/test/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ],
   "css": {
     "parser": {
       "tailwindDirectives": true

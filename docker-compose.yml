@@ -10,6 +10,8 @@ x-app: &app
     DATABASE_URL: postgres://ow:ow@postgres:5432/optiply_workflows
     PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
     SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+    ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?set ENCRYPTION_KEYS in .env}
+    ENCRYPTION_KEY_CURRENT: ${ENCRYPTION_KEY_CURRENT:-}
     OIDC_ISSUER: ${OIDC_ISSUER:-https://accounts.google.com}
     OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
     OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
