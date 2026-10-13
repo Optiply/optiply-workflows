@@ -45,3 +45,17 @@
   stroke: var(--color-danger);
   stroke-width: 2;
 }
+
+.react-flow .react-flow__edge.ow-edge-fired .react-flow__edge-path {
+  stroke: var(--color-success);
+  stroke-width: 2;
+}
+.react-flow .ow-block-running {
+  box-shadow: 0 0 0 2px var(--color-accent);
+  animation: ow-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ow-pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--color-accent) 25%, transparent);
+  }
+}

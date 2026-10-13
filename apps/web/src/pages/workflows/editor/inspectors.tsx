@@ -6,7 +6,7 @@ import {
   renameBlock,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Plus, Trash2, X } from 'lucide-react'
+import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
 import { BLOCK_KINDS } from './catalog'
 import type { CodeFieldProps, FieldProblem } from './code-field'
+import { runBlock, useRun } from './run-state'
 import { updateBlock, useEditor } from './store'
 
 // Monaco is big: it loads the first time a code field is shown.
@@ -77,6 +78,7 @@ export function Inspector({ name }: { name: string }) {
           <NameField name={name} />
           <div className="mt-1 text-xs text-muted">{kind.label}</div>
         </div>
+        {block.type !== 'startTrigger' && <RunBlockButton name={name} />}
         {block.type !== 'startTrigger' && <DeleteBlock name={name} />}
       </div>
 
@@ -156,6 +158,24 @@ function NameField({ name }: { name: string }) {
         </p>
       )}
     </div>
+  )
+}
+
+/** Runs just this block, reusing the results of the blocks before it from the latest run. */
+function RunBlockButton({ name }: { name: string }) {
+  const starting = useRun((s) => s.starting)
+  const errors = useEditor((s) => s.diagnostics.some((d) => d.severity === 'error'))
+  return (
+    <Button
+      size="icon"
+      variant="ghost"
+      loading={starting}
+      disabled={errors}
+      title={errors ? 'Fix the problems first' : 'Run this block (earlier results are reused)'}
+      onClick={() => runBlock(name)}
+    >
+      {!starting && <Play className="size-4" />}
+    </Button>
   )
 }
 

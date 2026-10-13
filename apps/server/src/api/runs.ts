@@ -10,7 +10,7 @@ import {
   workflows,
 } from '@ow/db'
 import type { RunEvent } from '@ow/engine'
-import { and, asc, desc, eq, gt, lt } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, lt } from 'drizzle-orm'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
@@ -125,6 +125,39 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       .limit(query.limit)
     return {
       runs: rows.map((r) => runView(r.run, workflow, r.environment)),
+      next: rows.length === query.limit ? rows.at(-1)!.run.id : null,
+    }
+  })
+
+  /** Recent runs of every workflow you can see, newest first, optionally only one status. */
+  app.get('/runs', async (req) => {
+    const query = parse(
+      z.object({
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+        before: z.string().uuid().optional(),
+        status: z.enum(['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']).optional(),
+      }),
+      req.query,
+    )
+    const access = await loadAccess(db, req.user!)
+    const visible = (await db.select().from(workflows)).filter((w) => access.workflowLevel(w) !== null)
+    if (!visible.length) return { runs: [], next: null }
+    const byId = new Map(visible.map((w) => [w.id, w]))
+    const rows = await db
+      .select({ run: workflowRuns, environment: environments.slug })
+      .from(workflowRuns)
+      .innerJoin(environments, eq(environments.id, workflowRuns.environmentId))
+      .where(
+        and(
+          access.isAdmin ? undefined : inArray(workflowRuns.workflowId, [...byId.keys()]),
+          query.status ? eq(workflowRuns.status, query.status) : undefined,
+          query.before ? lt(workflowRuns.id, query.before) : undefined,
+        ),
+      )
+      .orderBy(desc(workflowRuns.id))
+      .limit(query.limit)
+    return {
+      runs: rows.map((r) => runView(r.run, byId.get(r.run.workflowId)!, r.environment)),
       next: rows.length === query.limit ? rows.at(-1)!.run.id : null,
     }
   })
@@ -314,7 +347,7 @@ function sendError(reply: FastifyReply, err: RunRequestError) {
 function runView(run: WorkflowRun, workflow: Workflow, environment: string) {
   return {
     id: run.id,
-    workflow: { id: workflow.id, slug: workflow.slug },
+    workflow: { id: workflow.id, slug: workflow.slug, name: workflow.name },
     environment,
     version: run.releaseId ? 'live' : 'draft',
     targetBlocks: run.targetBlocks,

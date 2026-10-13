@@ -318,6 +318,31 @@ describe('runs API', () => {
   })
 })
 
+describe('runs across workflows', () => {
+  it('lists recent runs of the workflows you can see, with a status filter', async () => {
+    const mine = await workflowWith('listed-a', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const other = await workflowWith('listed-b', [code('a', 'throw new Error("x")')], [['startTrigger', 'a']])
+    const ok = (await rest(adminCookie, 'POST', `/workflows/${mine.slug}/runs`, {})).body.run
+    const bad = (await rest(adminCookie, 'POST', `/workflows/${other.slug}/runs`, {})).body.run
+    await waitForRun(ok.id)
+    await waitForRun(bad.id)
+
+    const all = (await rest(adminCookie, 'GET', '/runs?limit=200')).body.runs
+    expect(all.map((r: { id: string }) => r.id)).toEqual(expect.arrayContaining([ok.id, bad.id]))
+    expect(all.find((r: { id: string }) => r.id === bad.id).workflow).toEqual({
+      id: other.id,
+      slug: 'listed-b',
+      name: 'listed-b',
+    })
+    const failed = (await rest(adminCookie, 'GET', '/runs?status=failed&limit=200')).body.runs
+    expect(failed.every((r: { status: string }) => r.status === 'failed')).toBe(true)
+    expect(failed.map((r: { id: string }) => r.id)).toContain(bad.id)
+
+    // The member sees no workflows, so no runs.
+    expect((await rest(memberCookie, 'GET', '/runs')).body).toEqual({ runs: [], next: null })
+  })
+})
+
 describe('run block', () => {
   it('runs one block, reusing its ancestors from the latest run and skipping what comes after', async () => {
     const wf = await workflowWith(

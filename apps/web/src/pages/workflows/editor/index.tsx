@@ -1,18 +1,21 @@
-import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
+import type { BlockType, Diagnostic } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
-import { TRPCClientError } from '@trpc/client'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, ArrowLeft, CheckCircle2, LayoutGrid, Loader2, Plus } from 'lucide-react'
-import { useCallback, useEffect } from 'react'
-import { Badge, Button, ErrorNote, Spinner } from '@/components/ui'
-import { errorMessage, trpcClient, useTRPC } from '@/lib/trpc'
+import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
+import { useEffect } from 'react'
+import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { ADDABLE, BLOCK_KINDS, newBlock, nextName } from './catalog'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
+import { useRunEvents } from './live'
+import { RunPanel } from './run-panel'
+import { runWorkflow, useRun } from './run-state'
+import { saveDraftNow } from './save'
 import { type SaveStatus, useEditor } from './store'
 
 const route = getRouteApi('/app/workflows/$workflowId')
@@ -62,15 +65,37 @@ function EditorLayout({
   canEdit: boolean
   onReload: () => void
 }) {
+  const trpc = useTRPC()
+  const { data: environments } = useQuery(trpc.environments.list.queryOptions())
+  const { run: runFromUrl } = route.useSearch()
+  const panelOpen = useRun((s) => s.panelOpen)
+
+  useEffect(() => {
+    const current = useRun.getState()
+    // Keep the chosen environment while staying on the same workflow.
+    current.init(slug, current.slug === slug ? current.environment : null)
+    if (runFromUrl) useRun.getState().open(runFromUrl)
+  }, [slug, runFromUrl])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `slug` re-picks the default after `init` cleared it
+  useEffect(() => {
+    const fallback = environments?.find((e) => e.isDefault) ?? environments?.[0]
+    if (fallback && !useRun.getState().environment) useRun.getState().setEnvironment(fallback.slug)
+  }, [environments, slug])
   useLastRunSamples(slug)
+  useRunEvents()
+
   return (
     <ReactFlowProvider>
       <div className="flex h-full flex-col">
-        <Header name={name} slug={slug} canEdit={canEdit} />
+        <Header name={name} slug={slug} canEdit={canEdit} environments={environments ?? []} />
         <ConflictBanner onReload={onReload} />
         <div className="flex min-h-0 flex-1">
-          <div className="relative min-w-0 flex-1" data-testid="canvas">
-            <Canvas />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="relative min-h-0 flex-1" data-testid="canvas">
+              <Canvas />
+              {canEdit && <Toolbar />}
+            </div>
+            {panelOpen && <RunPanel />}
           </div>
           <SidePanel />
         </div>
@@ -80,7 +105,17 @@ function EditorLayout({
   )
 }
 
-function Header({ name, slug, canEdit }: { name: string; slug: string; canEdit: boolean }) {
+function Header({
+  name,
+  slug,
+  canEdit,
+  environments,
+}: {
+  name: string
+  slug: string
+  canEdit: boolean
+  environments: { slug: string; name: string }[]
+}) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
       <Link
@@ -96,7 +131,8 @@ function Header({ name, slug, canEdit }: { name: string; slug: string; canEdit: 
       </div>
       <SaveIndicator />
       <div className="flex-1" />
-      {canEdit ? <Toolbar /> : <Badge>Read only</Badge>}
+      {!canEdit && <Badge>Read only</Badge>}
+      <RunControls canEdit={canEdit} environments={environments} />
     </header>
   )
 }
@@ -142,7 +178,7 @@ function Toolbar() {
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
       {ADDABLE.map((type) => {
         const kind = BLOCK_KINDS[type]
         const Icon = kind.icon
@@ -168,6 +204,67 @@ function Toolbar() {
         onClick={() => update((def) => ({ ...def, layout: { ...def.layout, blocks: autoLayout(def) } }))}
       >
         <LayoutGrid className="size-4" /> Arrange
+      </Button>
+    </div>
+  )
+}
+
+/** Environment, Run (saves first, then runs with the test input) and the run panel toggle. */
+function RunControls({
+  canEdit,
+  environments,
+}: {
+  canEdit: boolean
+  environments: { slug: string; name: string }[]
+}) {
+  const environment = useRun((s) => s.environment)
+  const starting = useRun((s) => s.starting)
+  const startError = useRun((s) => s.startError)
+  const panelOpen = useRun((s) => s.panelOpen)
+  const errors = useEditor((s) => s.diagnostics.filter((d) => d.severity === 'error').length)
+
+  return (
+    <div className="flex items-center gap-2">
+      {startError && (
+        <span className="max-w-72 truncate text-xs text-danger" title={startError} data-testid="run-error">
+          {startError}
+        </span>
+      )}
+      <Select
+        aria-label="Environment"
+        className="h-8"
+        value={environment ?? ''}
+        onChange={(e) => useRun.getState().setEnvironment(e.target.value)}
+      >
+        {environments.map((e) => (
+          <option key={e.slug} value={e.slug}>
+            {e.name}
+          </option>
+        ))}
+      </Select>
+      <Button
+        size="sm"
+        variant="primary"
+        loading={starting}
+        disabled={!canEdit || errors > 0}
+        title={
+          !canEdit
+            ? 'You need edit access to run the draft'
+            : errors
+              ? 'Fix the problems first'
+              : "Save and run with the start trigger's test input"
+        }
+        onClick={() => runWorkflow()}
+      >
+        {!starting && <Play className="size-3.5" />} Run
+      </Button>
+      <Button
+        size="sm"
+        variant={panelOpen ? 'secondary' : 'ghost'}
+        title="Show runs"
+        onClick={() => useRun.getState().togglePanel()}
+      >
+        <History className="size-4" /> Runs
       </Button>
     </div>
   )
@@ -221,31 +318,12 @@ function Autosave() {
   const status = useEditor((s) => s.status)
   const definition = useEditor((s) => s.definition)
 
-  const save = useCallback(async () => {
-    const state = useEditor.getState()
-    if (state.status !== 'dirty' || !state.workflowId) return
-    const snapshot: WorkflowDefinition = state.definition
-    const json = JSON.stringify(snapshot)
-    state.saving()
-    try {
-      const result = await trpcClient.workflows.saveDraft.mutate({
-        id: state.workflowId,
-        revision: state.revision,
-        definition: snapshot,
-      })
-      useEditor.getState().saved(result.revision, json)
-    } catch (err) {
-      if (err instanceof TRPCClientError && err.data?.code === 'CONFLICT') useEditor.getState().conflict()
-      else useEditor.getState().failed(errorMessage(err))
-    }
-  }, [])
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: `definition` restarts the timer on every edit
   useEffect(() => {
     if (status !== 'dirty') return
-    const timer = setTimeout(save, AUTOSAVE_MS)
+    const timer = setTimeout(saveDraftNow, AUTOSAVE_MS)
     return () => clearTimeout(timer)
-  }, [status, definition, save])
+  }, [status, definition])
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {

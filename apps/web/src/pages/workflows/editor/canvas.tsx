@@ -19,9 +19,10 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { BLOCK_KINDS, summary } from './catalog'
 import { NODE_WIDTH, positionsFor } from './layout'
+import { type LiveBlock, useRun } from './run-state'
 import { problemsOf, useEditor } from './store'
 
-type BlockNodeData = { block: Block; problems: Diagnostic[] }
+type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock }
 type BlockNode = Node<BlockNodeData, 'block'>
 
 const nodeTypes = { block: memo(BlockNodeView) }
@@ -34,14 +35,15 @@ export function Canvas() {
   const update = useEditor((s) => s.update)
   const select = useEditor((s) => s.select)
 
+  const live = useRun((s) => s.blocks)
   const derived = useMemo(
-    () => toNodes(definition, diagnostics, selected),
-    [definition, diagnostics, selected],
+    () => toNodes(definition, diagnostics, selected, live),
+    [definition, diagnostics, selected, live],
   )
   // React Flow owns node state while dragging; it's rebuilt whenever the definition changes.
   const [nodes, setNodes] = useState<BlockNode[]>(derived)
   useEffect(() => setNodes(derived), [derived])
-  const edges = useMemo(() => toEdges(definition, diagnostics), [definition, diagnostics])
+  const edges = useMemo(() => toEdges(definition, diagnostics, live), [definition, diagnostics, live])
 
   const onNodesChange = useCallback(
     (changes: NodeChange<BlockNode>[]) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -122,19 +124,28 @@ export function removeFrom(def: WorkflowDefinition, toRemove: Set<string>, edgeI
 
 const edgeId = (e: { from: string; port: string; to: string }) => `${e.from}|${e.port}|${e.to}`
 
-function toNodes(def: WorkflowDefinition, diagnostics: Diagnostic[], selected: string | null): BlockNode[] {
+function toNodes(
+  def: WorkflowDefinition,
+  diagnostics: Diagnostic[],
+  selected: string | null,
+  live: Record<string, LiveBlock>,
+): BlockNode[] {
   const positions = positionsFor(def)
   return def.blocks.map((block) => ({
     id: block.name,
     type: 'block',
     position: positions[block.name] ?? { x: 0, y: 0 },
-    data: { block, problems: problemsOf(diagnostics, block.name) },
+    data: { block, problems: problemsOf(diagnostics, block.name), live: live[block.name] },
     selected: block.name === selected,
     deletable: block.type !== 'startTrigger',
   }))
 }
 
-function toEdges(def: WorkflowDefinition, diagnostics: Diagnostic[]): FlowEdge[] {
+function toEdges(
+  def: WorkflowDefinition,
+  diagnostics: Diagnostic[],
+  live: Record<string, LiveBlock>,
+): FlowEdge[] {
   const broken = new Set(
     diagnostics.flatMap((d) => (d.path[0] === 'edges' && typeof d.path[1] === 'number' ? [d.path[1]] : [])),
   )
@@ -144,13 +155,18 @@ function toEdges(def: WorkflowDefinition, diagnostics: Diagnostic[]): FlowEdge[]
     sourceHandle: e.port,
     target: e.to,
     type: 'smoothstep',
-    animated: false,
-    className: cn(e.port === 'error' && 'ow-edge-error', broken.has(i) && 'ow-edge-broken'),
+    // The connections the open run took (their source finished on that port).
+    animated: live[e.to]?.status === 'running' && live[e.from]?.port === e.port,
+    className: cn(
+      e.port === 'error' && 'ow-edge-error',
+      broken.has(i) && 'ow-edge-broken',
+      live[e.from]?.port === e.port && 'ow-edge-fired',
+    ),
   }))
 }
 
 function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
-  const { block, problems } = data
+  const { block, problems, live } = data
   const kind = BLOCK_KINDS[block.type]
   const Icon = kind.icon
   const ports = blockPorts(block)
@@ -164,8 +180,10 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       className={cn(
         'rounded-lg border bg-surface shadow-sm transition-shadow',
         errors ? 'border-danger/60' : 'border-border',
+        live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
       )}
+      data-status={live?.status}
     >
       {block.type !== 'startTrigger' && (
         <Handle type="target" position={Position.Left} className="ow-handle" />
@@ -175,6 +193,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
           <Icon className="size-3.5" />
         </span>
         <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{block.name}</span>
+        {live && <RunStatusDot status={live.status} />}
         {(errors > 0 || warnings > 0) && (
           <span
             title={problems.map((p) => p.message).join('\n')}
@@ -213,6 +232,29 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       )}
     </div>
   )
+}
+
+/** How the open run left each block: a coloured outline. */
+const RUN_RING: Record<string, string> = {
+  running: 'ow-block-running',
+  succeeded: 'ring-2 ring-success/70',
+  errored: 'ring-2 ring-danger/70',
+  failed: 'ring-2 ring-danger',
+  cancelled: 'ring-2 ring-muted/50',
+  interrupted: 'ring-2 ring-muted/50',
+  skipped: 'opacity-55',
+}
+
+function RunStatusDot({ status }: { status: string }) {
+  const tone =
+    status === 'succeeded'
+      ? 'bg-success'
+      : status === 'running'
+        ? 'animate-pulse bg-accent'
+        : status === 'failed' || status === 'errored'
+          ? 'bg-danger'
+          : 'bg-muted/50'
+  return <span title={status} className={cn('size-2 shrink-0 rounded-full', tone)} />
 }
 
 function portLabel(block: Block, port: string): string {
