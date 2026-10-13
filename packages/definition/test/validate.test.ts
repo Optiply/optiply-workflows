@@ -1,5 +1,6 @@
-import { postgresConnector, restConnector } from '@ow/connectors'
+import { compileSql, TemplateError } from '@ow/expressions'
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { type Diagnostic, type QueryValidator, validateDefinition } from '../src'
 import { code, sql, start, wf } from './helpers'
 
@@ -333,7 +334,20 @@ describe('validateDefinition', () => {
   })
 
   describe('queries against connectors', () => {
-    const resources: Record<string, QueryValidator> = { warehouse: postgresConnector, crm: restConnector }
+    // Shaped like @ow/connectors' Postgres connector (which @ow/definition can't depend on).
+    const postgresLike: QueryValidator = {
+      querySchema: z.object({ sql: z.string().min(1) }),
+      validateQuery(query: { sql: string }) {
+        try {
+          compileSql(query.sql)
+          return []
+        } catch (err) {
+          if (err instanceof TemplateError) return [err]
+          throw err
+        }
+      },
+    }
+    const resources: Record<string, QueryValidator> = { warehouse: postgresLike }
     const resolveResource = (slug: string) => resources[slug]
     const check = (block: { name: string; [key: string]: unknown }) =>
       validateDefinition(wf([start, block], [['startTrigger', block.name]]), { resolveResource }).diagnostics

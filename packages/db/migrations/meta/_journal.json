@@ -15,6 +15,13 @@
       "when": 1791881279779,
       "tag": "0001_resources",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791915026432,
+      "tag": "0002_workflows",
+      "breakpoints": true
     }
   ]
 }

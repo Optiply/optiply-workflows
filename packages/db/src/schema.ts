@@ -1,3 +1,4 @@
+import type { WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
   type AnyPgColumn,
@@ -6,6 +7,7 @@ import {
   check,
   index,
   inet,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -251,6 +253,305 @@ export const configVarValues = pgTable(
   ],
 )
 
+// ── Workflows ───────────────────────────────────────────────────────────────
+
+export const workflows = pgTable(
+  'workflows',
+  {
+    id: id(),
+    /** Stable identifier for webhook URLs and child-workflow calls (renaming keeps the slug). */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** What the editor autosaves; validated by `@ow/definition` before it's stored. */
+    draftDefinition: jsonb().$type<WorkflowDefinition>().notNull(),
+    /** Bumped on every draft save; a save names the revision it started from (optimistic concurrency). */
+    draftRevision: integer().notNull().default(1),
+    /** The release that schedules and webhooks run. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => workflowReleases.id, { onDelete: 'set null' }),
+    /** Null = no limit. Enforced by the dispatcher (M4). */
+    maxConcurrentRuns: integer(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('workflows_slug_uq').on(t.slug),
+    index('workflows_folder_idx').on(t.folderId),
+    check(
+      'workflows_max_concurrent_runs_ck',
+      sql`${t.maxConcurrentRuns} is null or ${t.maxConcurrentRuns} > 0`,
+    ),
+  ],
+)
+
+/**
+ * Frozen copies of the draft: kept as history, and pinned by editor runs so a run keeps executing the
+ * definition it started with while the draft changes underneath it.
+ */
+export const workflowDraftSnapshots = pgTable(
+  'workflow_draft_snapshots',
+  {
+    id: id(),
+    workflowId: uuid()
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    /** The `draftRevision` this copies; one snapshot per revision. */
+    revision: integer().notNull(),
+    definition: jsonb().$type<WorkflowDefinition>().notNull(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('workflow_draft_snapshots_revision_uq').on(t.workflowId, t.revision)],
+)
+
+/** Published, immutable versions. Only the live release runs from schedules and webhooks. */
+export const workflowReleases = pgTable(
+  'workflow_releases',
+  {
+    id: id(),
+    workflowId: uuid()
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    /** SemVer `major.minor.patch`. */
+    version: text().notNull(),
+    /** Canonical form (`canonicalize` from `@ow/definition`). */
+    definition: jsonb().$type<WorkflowDefinition>().notNull(),
+    /** `definitionHash`: SHA-256 of the canonical definition without layout. */
+    definitionHash: text().notNull(),
+    notes: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('workflow_releases_version_uq').on(t.workflowId, t.version),
+    index('workflow_releases_workflow_idx').on(t.workflowId, t.createdAt.desc()),
+    check(
+      'workflow_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('workflow_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+export const TRIGGER_KINDS = ['webhook', 'schedule'] as const
+
+/**
+ * The runtime projection of the live release's triggers, rewritten when a release goes live (M4). Schedules
+ * are ticked off `nextFireAt`.
+ */
+export const workflowTriggers = pgTable(
+  'workflow_triggers',
+  {
+    id: id(),
+    workflowId: uuid()
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    releaseId: uuid()
+      .notNull()
+      .references(() => workflowReleases.id, { onDelete: 'cascade' }),
+    kind: text({ enum: TRIGGER_KINDS }).notNull(),
+    /** The schedule's name from the definition; `webhook` for the webhook. */
+    name: text().notNull(),
+    enabled: boolean().notNull().default(true),
+    /** The trigger's settings from the definition (cron or interval, timezone, overlap). */
+    config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    nextFireAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
+    index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
+    check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule')`),
+  ],
+)
+
+// ── Runs ────────────────────────────────────────────────────────────────────
+
+/** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
+export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
+export const RUN_TRIGGER_TYPES = ['manual', 'webhook', 'schedule', 'workflow'] as const
+export const BLOCK_STATUSES = [
+  'pending',
+  'running',
+  'succeeded',
+  /** Failed with `finally: continue`: the error port fired and the run went on. */
+  'errored',
+  /** Failed with `finally: stop`: the run failed. */
+  'failed',
+  'skipped',
+  'waiting',
+  'cancelled',
+  /** Its worker died mid-block; the next lease runs it again. */
+  'interrupted',
+] as const
+
+/**
+ * One execution of a workflow, and the job queue. Workers claim `queued`/`waiting` rows whose `availableAt` has
+ * passed with `FOR UPDATE SKIP LOCKED`, which sets the lease and bumps `epoch`. Every write a worker makes
+ * afterwards is conditional on the epoch it claimed with, so a worker whose lease expired (a "zombie") can't
+ * overwrite the work of the one that took over.
+ */
+export const workflowRuns = pgTable(
+  'workflow_runs',
+  {
+    id: id(),
+    workflowId: uuid()
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    /** What runs: exactly one of a release or a draft snapshot (editor runs). */
+    releaseId: uuid().references(() => workflowReleases.id),
+    draftSnapshotId: uuid().references(() => workflowDraftSnapshots.id),
+    environmentId: uuid()
+      .notNull()
+      .references(() => environments.id, { onDelete: 'cascade' }),
+    triggerType: text({ enum: RUN_TRIGGER_TYPES }).notNull(),
+    triggerId: uuid().references(() => workflowTriggers.id, { onDelete: 'set null' }),
+    status: text({ enum: RUN_STATUSES }).notNull().default('queued'),
+    /** What the start trigger receives: `{ data, headers, pathParams, urlParams }`. */
+    input: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /** The first Response block's reply: `{ status, headers, body }`. */
+    response: jsonb().$type<Record<string, unknown>>(),
+    /** Why the run failed: `{ message, code?, block? }`, redacted. */
+    error: jsonb().$type<Record<string, unknown>>(),
+
+    // Queue and lease.
+    /** Not claimable before this (retry backoff, durable waits). */
+    availableAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    leaseOwner: text(),
+    leaseExpiresAt: timestamp({ withTimezone: true }),
+    /** Fencing token, incremented by every claim. */
+    epoch: integer().notNull().default(0),
+    /** Claims after a lost lease; the run fails after 3. */
+    recoveries: integer().notNull().default(0),
+    /** Run timeout; time spent waiting extends it (M5). Set when the run first starts. */
+    deadlineAt: timestamp({ withTimezone: true }),
+
+    /** From the webhook's `Idempotency-Key` header: a repeat returns the existing run. */
+    idempotencyKey: text(),
+    /** The schedule fire time this run is for, so each fire runs once. */
+    scheduledFor: timestamp({ withTimezone: true }),
+    parentRunId: uuid().references((): AnyPgColumn => workflowRuns.id, { onDelete: 'set null' }),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    startedAt: timestamp({ withTimezone: true }),
+    finishedAt: timestamp({ withTimezone: true }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('workflow_runs_claim_idx').on(t.availableAt).where(sql`${t.status} in ('queued', 'waiting')`),
+    index('workflow_runs_lease_idx').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
+    index('workflow_runs_workflow_idx').on(t.workflowId, t.createdAt.desc()),
+    // Foreign keys that deletes have to check or clear (retention deletes runs in bulk).
+    index('workflow_runs_parent_idx').on(t.parentRunId).where(sql`${t.parentRunId} is not null`),
+    index('workflow_runs_trigger_idx').on(t.triggerId).where(sql`${t.triggerId} is not null`),
+    index('workflow_runs_draft_snapshot_idx')
+      .on(t.draftSnapshotId)
+      .where(sql`${t.draftSnapshotId} is not null`),
+    uniqueIndex('workflow_runs_idempotency_uq')
+      .on(t.workflowId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
+    uniqueIndex('workflow_runs_schedule_uq')
+      .on(t.triggerId, t.scheduledFor)
+      .where(sql`${t.triggerId} is not null and ${t.scheduledFor} is not null`),
+    check(
+      'workflow_runs_status_ck',
+      sql`${t.status} in ('queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled')`,
+    ),
+    check(
+      'workflow_runs_trigger_type_ck',
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow')`,
+    ),
+    check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
+    check(
+      'workflow_runs_lease_ck',
+      sql`${t.status} <> 'running' or (${t.leaseOwner} is not null and ${t.leaseExpiresAt} is not null)`,
+    ),
+    check(
+      'workflow_runs_finished_ck',
+      sql`(${t.status} in ('succeeded', 'failed', 'cancelled')) = (${t.finishedAt} is not null)`,
+    ),
+  ],
+)
+
+/**
+ * One block's execution in a run, keyed by block name (later also `loop1[17]` for loop iterations). The unique
+ * key plus the run's epoch check make each block's result commit exactly once, even though a block can execute
+ * more than once when a worker dies.
+ */
+export const blockRuns = pgTable(
+  'block_runs',
+  {
+    id: id(),
+    runId: uuid()
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    blockKey: text().notNull(),
+    status: text({ enum: BLOCK_STATUSES }).notNull(),
+    /** 1 for the first try; retries count up. */
+    attempt: integer().notNull().default(1),
+    /** The run epoch of the lease that wrote this row. */
+    epoch: integer().notNull(),
+    /** `{ message, code? }`, redacted. */
+    error: jsonb().$type<Record<string, unknown>>(),
+    /** Connector metadata, row counts, loop iterations… Small; the data itself is in `block_run_payloads`. */
+    metadata: jsonb().$type<Record<string, unknown>>(),
+    startedAt: timestamp({ withTimezone: true }),
+    finishedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('block_runs_key_uq').on(t.runId, t.blockKey),
+    check(
+      'block_runs_status_ck',
+      sql`${t.status} in ('pending', 'running', 'succeeded', 'errored', 'failed', 'skipped', 'waiting', 'cancelled', 'interrupted')`,
+    ),
+    check('block_runs_attempt_ck', sql`${t.attempt} >= 1`),
+  ],
+)
+
+export const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
+
+/** A block's output data, kept apart so listing a run's blocks stays cheap. Capped at 10MB. */
+export const blockRunPayloads = pgTable(
+  'block_run_payloads',
+  {
+    blockRunId: uuid()
+      .primaryKey()
+      .references(() => blockRuns.id, { onDelete: 'cascade' }),
+    data: jsonb().$type<unknown>(),
+    /** Size of the data as JSON text, checked by the engine before writing. */
+    sizeBytes: integer().notNull(),
+  },
+  (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 10485760`)],
+)
+
+export const LOG_LEVELS = ['log', 'info', 'warn', 'error'] as const
+
+/** `console.*` from code and engine messages, redacted before insert. */
+export const runLogs = pgTable(
+  'run_logs',
+  {
+    id: bigserial({ mode: 'number' }).primaryKey(),
+    runId: uuid()
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    /** Null for run-level messages. */
+    blockKey: text(),
+    level: text({ enum: LOG_LEVELS }).notNull(),
+    message: text().notNull(),
+    at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('run_logs_run_idx').on(t.runId, t.id),
+    check('run_logs_level_ck', sql`${t.level} in ('log', 'info', 'warn', 'error')`),
+  ],
+)
+
 // ── Audit ───────────────────────────────────────────────────────────────────
 
 export const auditEvents = pgTable(
@@ -287,4 +588,16 @@ export type Resource = typeof resources.$inferSelect
 export type ResourceConfig = typeof resourceConfigs.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect
+export type Workflow = typeof workflows.$inferSelect
+export type WorkflowDraftSnapshot = typeof workflowDraftSnapshots.$inferSelect
+export type WorkflowRelease = typeof workflowReleases.$inferSelect
+export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
+export type WorkflowRun = typeof workflowRuns.$inferSelect
+export type RunStatus = (typeof RUN_STATUSES)[number]
+export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
+export type BlockRun = typeof blockRuns.$inferSelect
+export type BlockStatus = (typeof BLOCK_STATUSES)[number]
+export type BlockRunPayload = typeof blockRunPayloads.$inferSelect
+export type RunLog = typeof runLogs.$inferSelect
+export type LogLevel = (typeof LOG_LEVELS)[number]
 export type AuditEvent = typeof auditEvents.$inferSelect
