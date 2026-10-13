@@ -228,7 +228,7 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 - **Identity:** `users`, `sessions`, `groups`, `group_members`, `permissions(group_id, object_type, object_id?, environment_id?, level)`, `environments`, `folders`.
 - **Resources:**
   - `resources`
-  - `resource_configs(resource_id, environment_id, config jsonb, secrets_ciphertext, iv, key_version)`
+  - `resource_configs(resource_id, environment_id, config jsonb, secrets)`. In M1, `secrets` became one self-describing token `<keyVersion>.<iv>.<ciphertext>.<tag>` instead of separate ciphertext, IV and key-version columns; see `docs/handoff.md` §2.
   - `oauth_tokens`
   - `config_vars` + `config_var_values` (per environment, optionally secret)
   - `api_keys` (prefix + sha256 hash, scoped to workflows and environments)
