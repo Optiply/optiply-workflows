@@ -2,7 +2,9 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import fastifyCookie from '@fastify/cookie'
 import fastifyStatic from '@fastify/static'
+import { PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
+import { IvmRuntime } from '@ow/sandbox'
 import { type FastifyTRPCPluginOptions, fastifyTRPCPlugin } from '@trpc/server/adapters/fastify'
 import Fastify, { type FastifyBaseLogger } from 'fastify'
 import pino from 'pino'
@@ -19,6 +21,12 @@ export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyB
 
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
 
+  const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
+  app.addHook('onClose', async () => {
+    await services.pool.closeAll()
+    services.sandbox.dispose()
+  })
+
   app.get('/api/health', async () => {
     await db.execute('select 1')
     return { ok: true }
@@ -30,7 +38,7 @@ export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyB
     prefix: '/api/trpc',
     trpcOptions: {
       router: appRouter,
-      createContext: contextFactory({ db, config }),
+      createContext: contextFactory({ db, config, services }),
       onError({ error, path }) {
         if (error.code === 'INTERNAL_SERVER_ERROR') app.log.error({ err: error, path }, 'tRPC error')
       },

@@ -185,3 +185,78 @@ export function Th({ children, className }: { children?: ReactNode; className?: 
 export function Td({ className, ...props }: ComponentProps<'td'>) {
   return <td className={cn('border-b border-border px-4 py-3 align-middle', className)} {...props} />
 }
+
+export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
+  return (
+    <textarea
+      className={cn(
+        'w-full rounded-md border border-border bg-surface px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-60',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+export function Select({ className, ...props }: ComponentProps<'select'>) {
+  return (
+    <select
+      className={cn(
+        'h-9 rounded-md border border-border bg-surface px-2 text-sm shadow-xs outline-none focus:border-accent disabled:opacity-60',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+/** A labelled form control with an optional hint underneath. */
+export function Field({
+  label,
+  hint,
+  className,
+  children,
+}: {
+  label: ReactNode
+  hint?: ReactNode
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the control is passed as children
+    <label className={cn('flex flex-col gap-1.5', className)}>
+      <span className="text-sm font-medium text-ink">{label}</span>
+      {children}
+      {hint && <span className="text-xs text-muted">{hint}</span>}
+    </label>
+  )
+}
+
+/** A row of tabs driven by local state. */
+export function Tabs<T extends string>({
+  value,
+  onChange,
+  tabs,
+}: {
+  value: T
+  onChange: (value: T) => void
+  tabs: { value: T; label: ReactNode }[]
+}) {
+  return (
+    <div className="mb-4 flex gap-1 border-b border-border">
+      {tabs.map((tab) => (
+        <button
+          key={tab.value}
+          type="button"
+          onClick={() => onChange(tab.value)}
+          className={cn(
+            '-mb-px cursor-pointer border-b-2 border-transparent px-3 py-2 text-sm text-muted hover:text-ink',
+            value === tab.value && 'border-accent font-medium text-ink',
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  )
+}

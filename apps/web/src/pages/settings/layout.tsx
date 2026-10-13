@@ -8,6 +8,7 @@ const TABS = [
   { to: '/settings/users', label: 'Users', adminOnly: true },
   { to: '/settings/groups', label: 'Groups', adminOnly: true },
   { to: '/settings/environments', label: 'Environments', adminOnly: false },
+  { to: '/settings/config-vars', label: 'Config vars', adminOnly: false },
   { to: '/settings/audit', label: 'Audit log', adminOnly: true },
 ] as const
 

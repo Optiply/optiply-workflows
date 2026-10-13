@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/migrations", "!**/routeTree.gen.ts", "!docs"]
+    "includes": ["**", "!**/migrations", "!**/routeTree.gen.ts", "!docs", "!**/stdlib.generated.ts"]
   },
   "formatter": {
     "enabled": true,

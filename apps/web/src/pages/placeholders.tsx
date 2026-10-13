@@ -1,4 +1,4 @@
-import { History, Plug, Workflow } from 'lucide-react'
+import { History, Workflow } from 'lucide-react'
 import { EmptyState, PageHeader } from '@/components/ui'
 
 const SECTIONS = {
@@ -7,12 +7,6 @@ const SECTIONS = {
     description: 'Automate backend processes with blocks, triggers and schedules.',
     icon: <Workflow className="size-6" />,
     empty: 'The workflow editor arrives in milestone M3. The execution engine comes first, in M2.',
-  },
-  resources: {
-    title: 'Resources',
-    description: 'Connections to databases and APIs, configured per environment.',
-    icon: <Plug className="size-6" />,
-    empty: 'Postgres and REST resources, with encrypted credentials per environment, arrive in milestone M1.',
   },
   runs: {
     title: 'Runs',

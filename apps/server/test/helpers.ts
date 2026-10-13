@@ -10,6 +10,8 @@ import { provisionUser } from '../src/services/users'
 export interface TestEnv {
   app: FastifyInstance
   db: Db
+  /** The test database itself, e.g. to point a Postgres resource at it. */
+  databaseUrl: string
   stop: () => Promise<void>
 }
 
@@ -28,6 +30,7 @@ export async function startTestApp(overrides: Record<string, string> = {}): Prom
   return {
     app,
     db,
+    databaseUrl: pg.url,
     stop: async () => {
       await app.close()
       await close()
@@ -55,13 +58,17 @@ export async function login(app: FastifyInstance, email: string, password = PASS
   return `ow_session=${cookie.value}`
 }
 
-/** Minimal tRPC-over-HTTP client for tests (no batching; speaks the superjson envelope). */
-export function trpc(app: FastifyInstance, cookie?: string) {
+/**
+ * Minimal tRPC-over-HTTP client for tests (no batching; speaks the superjson envelope). `record` collects every raw
+ * response body, so a test can assert something never appears in any response.
+ */
+export function trpc(app: FastifyInstance, cookie?: string, opts: { record?: string[] } = {}) {
   const headers = cookie ? { cookie } : {}
   return {
     async query(path: string, input?: unknown) {
       const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify({ json: input }))}`
       const res = await app.inject({ method: 'GET', url: `/api/trpc/${path}${qs}`, headers })
+      opts.record?.push(res.body)
       return { status: res.statusCode, body: unwrap(res.json()) }
     },
     async mutate(path: string, input?: unknown) {
@@ -71,6 +78,7 @@ export function trpc(app: FastifyInstance, cookie?: string) {
         headers: { ...headers, 'content-type': 'application/json' },
         payload: JSON.stringify({ json: input ?? null }),
       })
+      opts.record?.push(res.body)
       return { status: res.statusCode, body: unwrap(res.json()) }
     },
   }
