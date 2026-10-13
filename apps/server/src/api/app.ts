@@ -8,14 +8,22 @@ import { IvmRuntime } from '@ow/sandbox'
 import { type FastifyTRPCPluginOptions, fastifyTRPCPlugin } from '@trpc/server/adapters/fastify'
 import Fastify, { type FastifyBaseLogger } from 'fastify'
 import pino from 'pino'
+import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
+import { RunEventHub } from '../services/run-events'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { runsApi } from './runs'
 
 /** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
-export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyBaseLogger | false }) {
+export async function buildApp(deps: {
+  db: Db
+  config: Config
+  logger?: FastifyBaseLogger | false
+  /** The postgres.js client behind `db`, for LISTEN (live run events). Without it, run events aren't served. */
+  listener?: postgres.Sql
+}) {
   const { db, config } = deps
   const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
   const app = Fastify({ loggerInstance: logger, trustProxy: config.TRUST_PROXY, bodyLimit: 10 * 1024 * 1024 })
@@ -34,7 +42,11 @@ export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyB
   })
 
   await app.register(authRoutes, { db, config })
-  await app.register(runsApi, { prefix: '/api/v1', db })
+  const events = deps.listener ? new RunEventHub(deps.listener) : undefined
+  app.addHook('onClose', async () => {
+    await events?.close()
+  })
+  await app.register(runsApi, { prefix: '/api/v1', db, events })
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/api/trpc',

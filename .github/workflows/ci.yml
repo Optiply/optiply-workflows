@@ -21,6 +21,29 @@ jobs:
       # Tests boot an embedded Postgres (embedded-postgres npm binaries); no service container needed.
       - run: pnpm test
 
+  # Playwright against the bundled server serving the built web app (see apps/web/e2e/global-setup.ts).
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ow/web build && pnpm --filter @ow/server build
+      - run: pnpm --filter @ow/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @ow/web e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -187,7 +187,7 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 | JS sandbox | **isolated-vm.** One isolate per run lease and a fresh context per evaluation. A snapshotted stdlib (lodash, dayjs, uuid, papaparse, numbro). A watchdog calls `dispose()` at the timeout, and memory is capped (128MB by default). Host bridges provide `fetch` (SSRF-guarded), `console` (into run_logs, redacted), and `await fn()`. | No Node APIs are exposed, so `process.env` and `ENCRYPTION_KEY` stay out of reach. The `CodeRuntime` interface allows a QuickJS or remote fallback. Python comes later as a separate nsjail executor. |
 | Backend | Fastify v5 + **tRPC v11** for UI↔API calls, plus REST + zod with OpenAPI for public routes (webhooks, runs API). | End-to-end types, and clean public contracts. |
 | DB | Postgres 18 (native `uuidv7()`), Drizzle ORM with committed SQL migrations, postgres.js driver. | |
-| Frontend | Vite, React 19, TanStack Router + Query, **@xyflow/react** canvas + elkjs autolayout, **Monaco** (bundled locally), shadcn/ui + Tailwind v4, zustand for editor state. | |
+| Frontend | Vite, React 19, TanStack Router + Query, **@xyflow/react** canvas + dagre autolayout (`@dagrejs/dagre`, MIT; elkjs was dropped in M3 because it's EPL-2.0), **Monaco** (bundled locally), shadcn/ui + Tailwind v4, zustand for editor state. | |
 | Auth | Google Workspace OIDC limited to `optiply.nl`, plus a break-glass local admin. Groups `admins` and `all_users` plus custom groups. Use/Edit/Own permissions per object, set per environment. | Internal-only use. |
 | Secrets | AES-256-GCM with versioned keys (`ENCRYPTION_KEYS=v1:…,v2:…`), and **AAD = `table:rowId:envId`** so a ciphertext can't be swapped into another row. A `rekey` CLI re-encrypts existing rows. Secrets are never returned to the browser; responses show `{set:true}`. | |
 | Deploy | One Docker image (`node:<lts>-bookworm-slim`, which isolated-vm needs for glibc). `ROLE=api|worker|migrate|all`. Docker Compose for local and server use. | This mirrors Retool's `SERVICE_TYPE` pattern. |
@@ -330,7 +330,7 @@ packages/
 ```
 - **Files that carry the design:** `packages/definition/src/schema.ts`, `packages/engine/src/orchestrator.ts`, `packages/engine/src/dispatcher.ts`, `packages/db/src/schema.ts`, `packages/sandbox/src/ivm-runtime.ts`, `packages/connectors/src/types.ts`.
 - **Editor features:**
-  - **Canvas:** React Flow nodes per block type, ports for `out`, `error` and `cond:*`, an elk-based autolayout button, and a minimap.
+  - **Canvas:** React Flow nodes per block type, ports for `out`, `error` and `cond:*`, a dagre-based autolayout button, and a minimap.
   - **Inspector panel:** each block type has its own form. SQL and JS use Monaco, with a `.d.ts` generated from the last run's outputs so `query1.data[0].` autocompletes.
   - **Running:** Run (with test JSON), plus **Run block**, which uses the cached upstream outputs.
   - **Live status:** each block shows its status on the canvas, pushed over SSE.
@@ -461,7 +461,7 @@ packages/
 4. `curl -X POST -H 'X-Api-Key: …' /api/workflows/<slug>/run -d '{"customerId":1}'` returns the Response body synchronously. Repeat with `?environment=staging` and check that it hits the staging database.
 5. Add a 1-minute cron: runs appear in history with per-block data and logs, and none overlap.
 6. Run `kill -9` on a worker mid-run. The run resumes on the other worker and completed blocks are not re-run.
-7. Automated: `pnpm turbo test` (Vitest unit and golden-semantics tests, with Testcontainers for Postgres/MySQL connectors) and `pnpm --filter web e2e` (Playwright).
+7. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
 
 ## 2.9 Open items (defaults chosen; change later if needed)
 - Importing existing Retool workflows: block names, `{{ }}` semantics and settings were kept compatible, so an importer is cheap. It is not in scope yet.

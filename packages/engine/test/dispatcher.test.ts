@@ -8,11 +8,14 @@ import {
   type Claim,
   Dispatcher,
   type DispatcherOptions,
+  enqueueRun,
   finishRun,
   LeaseLostError,
   loadCheckpoints,
   PgRunStore,
   type ResourceProvider,
+  RUN_EVENTS_CHANNEL,
+  type RunEvent,
   reapExpiredLeases,
 } from '../src'
 import {
@@ -124,6 +127,58 @@ describe('dispatcher', () => {
     ).toEqual([{ message: 'big 42' }])
   })
 
+  it('publishes every run and block status change on the run events channel', async () => {
+    const events: RunEvent[] = []
+    const { unlisten } = await listener.listen(RUN_EVENTS_CHANNEL, (payload) =>
+      events.push(JSON.parse(payload)),
+    )
+    try {
+      await dispatcher().start()
+      const run = await queueRun(
+        db,
+        wf(
+          [
+            { name: 'pick', type: 'branch', config: { conditions: [{ id: 'yes', expression: 'false' }] } },
+            hit('onYes'),
+            hit('onNo'),
+          ],
+          [
+            ['startTrigger', 'pick'],
+            ['pick', 'onYes', 'cond:yes'],
+            ['pick', 'onNo', 'else'],
+          ],
+        ),
+      )
+      await waitForFinish(db, run.id)
+      await waitFor(async () =>
+        events.some((e) => e.runId === run.id && e.type === 'run' && e.status === 'succeeded'),
+      )
+      const mine = events
+        .filter((e) => e.runId === run.id)
+        .map((e) =>
+          e.type === 'run' ? `run ${e.status}` : `${e.key} ${e.status}${e.port ? ` ${e.port}` : ''}`,
+        )
+      expect(mine[0]).toBe('run running')
+      expect(mine.at(-1)).toBe('run succeeded')
+      expect(new Set(mine)).toEqual(
+        new Set([
+          'run running',
+          'startTrigger running',
+          'startTrigger succeeded out',
+          'pick running',
+          'pick succeeded else',
+          'onYes skipped',
+          'onNo running',
+          'onNo succeeded out',
+          'run succeeded',
+        ]),
+      )
+      expect(mine).toHaveLength(9)
+    } finally {
+      await unlisten()
+    }
+  })
+
   it('records a failed run with the failing block', async () => {
     await dispatcher().start()
     const run = await queueRun(db, wf([sql('bad', 'select * from nope')], [['startTrigger', 'bad']]))
@@ -167,6 +222,56 @@ describe('dispatcher', () => {
       dsql`select distinct epoch from workflow_runs where id in ${runs.map((r) => r.id)}`,
     )
     expect(owners).toEqual([{ epoch: 1 }])
+  })
+})
+
+describe('run block', () => {
+  it('runs one block with upstream results seeded from an earlier run', async () => {
+    await dispatcher().start()
+    const definition = wf(
+      [
+        hit('load'),
+        { name: 'double', type: 'code', config: { code: 'return load.data[0].id * 2' } },
+        hit('after'),
+      ],
+      [
+        ['startTrigger', 'load'],
+        ['load', 'double'],
+        ['double', 'after'],
+      ],
+    )
+    const first = await queueRun(db, definition)
+    await waitForFinish(db, first.id)
+    const seed = (await loadCheckpoints(db, first.id))
+      .filter((c) => c.key === 'startTrigger' || c.key === 'load')
+      .map((c) => ({ ...c, metadata: { ...c.metadata, cachedFrom: first.id } }))
+
+    const again = await enqueueRun(
+      db,
+      {
+        workflowId: first.workflowId,
+        releaseId: first.releaseId,
+        environmentId: first.environmentId,
+        triggerType: 'manual',
+        targetBlocks: ['double'],
+      },
+      { seed },
+    )
+    const done = await waitForFinish(db, again.id)
+    expect(done.status).toBe('succeeded')
+    // `load` wasn't executed again and `after` didn't run at all.
+    expect(await hitsOf(db, again.id)).toEqual({})
+    expect(await blocksOf(db, again.id)).toEqual({
+      startTrigger: { status: 'succeeded', epoch: 0, attempt: 1, port: 'out' },
+      load: { status: 'succeeded', epoch: 0, attempt: 1, port: 'out' },
+      double: { status: 'succeeded', epoch: 1, attempt: 1, port: 'out' },
+    })
+    const loadId = (await loadCheckpoints(db, first.id)).find((c) => c.key === 'load')!.data as {
+      id: number
+    }[]
+    expect((await loadCheckpoints(db, again.id)).find((c) => c.key === 'double')!.data).toBe(
+      loadId[0]!.id * 2,
+    )
   })
 })
 

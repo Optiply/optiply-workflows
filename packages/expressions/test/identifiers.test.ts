@@ -22,6 +22,17 @@ describe('freeIdentifiers (expressions)', () => {
     expect(freeIdentifiers(code)).toEqual(names)
   })
 
+  it('marks references that are shorthand properties', () => {
+    expect(freeIdentifierRefs('{ a, b: a, c }')).toEqual([
+      { name: 'a', start: 2, end: 3, shorthand: true },
+      { name: 'a', start: 8, end: 9 },
+      { name: 'c', start: 11, end: 12, shorthand: true },
+    ])
+    expect(freeIdentifierRefs('return { a }', 'function-body')).toEqual([
+      { name: 'a', start: 9, end: 10, shorthand: true },
+    ])
+  })
+
   it('reports each reference with offsets into the code', () => {
     const code = ' a + a.b '
     expect(freeIdentifierRefs(code)).toEqual([

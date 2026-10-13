@@ -476,6 +476,52 @@ describe('delivery and resume', () => {
   })
 })
 
+describe('run block (only)', () => {
+  // startTrigger → a → b → c, and startTrigger → other.
+  const graph = () =>
+    wf(
+      [
+        fakeQ('a', { value: '{{ startTrigger.data + 1 }}' }),
+        fakeQ('b', { value: '{{ a.data * 10 }}' }),
+        fakeQ('c'),
+        fakeQ('other'),
+      ],
+      [
+        ['startTrigger', 'a'],
+        ['a', 'b'],
+        ['b', 'c'],
+        ['startTrigger', 'other'],
+      ],
+    )
+
+  it('runs the target and the ancestors it needs, and nothing else', async () => {
+    const { outcome, statuses, data } = await run(services, graph(), { input: { data: 1 }, only: ['b'] })
+    expect(outcome.status).toBe('succeeded')
+    expect(statuses).toEqual({ startTrigger: 'succeeded', a: 'succeeded', b: 'succeeded' })
+    expect(data('b')).toBe(20)
+    expect([fake.count('c'), fake.count('other')]).toEqual([0, 0])
+  })
+
+  it('reuses checkpointed ancestors instead of running them again', async () => {
+    const first = await run(services, graph(), { input: { data: 1 } })
+    t.reset()
+    const upstream = first.store.checkpoints().filter((c) => c.key === 'startTrigger' || c.key === 'a')
+    const { data, store } = await run(services, graph(), {
+      input: { data: 1 },
+      only: ['b'],
+      checkpoints: upstream,
+    })
+    expect(data('b')).toBe(20)
+    expect([fake.count('a'), fake.count('b')]).toEqual([0, 1])
+    expect([...store.results.keys()]).toEqual(['b'])
+  })
+
+  it('fails when a target does not exist', async () => {
+    const { outcome } = await run(services, graph(), { only: ['nope'] })
+    expect(outcome.error).toEqual({ code: 'invalid_target', message: 'No block is named "nope"' })
+  })
+})
+
 describe('results, logs and validation', () => {
   it('stores results as plain JSON', async () => {
     const { data, outcome } = await run(

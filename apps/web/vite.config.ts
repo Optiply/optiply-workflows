@@ -8,6 +8,8 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  // Monaco's workers import modules dynamically, which needs module workers.
+  worker: { format: 'es' },
   server: {
     port: 5173,
     proxy: { '/api': 'http://localhost:3000' },

@@ -11,11 +11,18 @@ import {
   type WorkflowRun,
   workflowDraftSnapshots,
   workflowReleases,
+  workflowRuns,
   workflows,
 } from '@ow/db'
-import { type Diagnostic, validateDefinition, type WorkflowDefinition } from '@ow/definition'
-import { BlockFailure, enqueueRun, type ResourceProvider, type RunContextProvider } from '@ow/engine'
-import { and, eq, inArray } from 'drizzle-orm'
+import { buildGraph, type Diagnostic, validateDefinition, type WorkflowDefinition } from '@ow/definition'
+import {
+  BlockFailure,
+  enqueueRun,
+  loadCheckpoints,
+  type ResourceProvider,
+  type RunContextProvider,
+} from '@ow/engine'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { type Access, atLeast } from './permissions'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
@@ -23,7 +30,7 @@ import { decryptForRow } from './secrets'
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 503,
     readonly code: string,
     message: string,
     readonly details?: Record<string, unknown>,
@@ -50,6 +57,87 @@ export async function startManualRun(
   user: { id: string },
   opts: { workflow: Workflow; environmentId: string; version: RunVersion; input: unknown },
 ): Promise<WorkflowRun> {
+  const { source } = await prepareRun(db, access, user, opts)
+  return enqueueRun(db, {
+    workflowId: opts.workflow.id,
+    ...source,
+    environmentId: opts.environmentId,
+    triggerType: 'manual',
+    input: { data: opts.input ?? null },
+    createdBy: user.id,
+  })
+}
+
+/**
+ * The editor's "Run block": runs one block of the draft, reusing its ancestors' results from an earlier run
+ * (`fromRunId`, or the latest finished run in that environment) instead of running them again. Ancestors that run
+ * has no result for (blocks added since, or that failed) run first. Nothing after the block runs. The same checks as
+ * a draft run apply. Passing `input` runs every ancestor fresh with it; otherwise the earlier run's input is reused.
+ */
+export async function startBlockRun(
+  db: Db,
+  access: Access,
+  user: { id: string },
+  opts: { workflow: Workflow; environmentId: string; block: string; fromRunId?: string; input?: unknown },
+): Promise<WorkflowRun> {
+  const { definition, source } = await prepareRun(db, access, user, { ...opts, version: 'draft' })
+  if (!definition.blocks.some((b) => b.name === opts.block)) {
+    throw new RunRequestError(404, 'not_found', `The draft has no block named "${opts.block}"`)
+  }
+  const [earlier] = await db
+    .select()
+    .from(workflowRuns)
+    .where(
+      and(
+        eq(workflowRuns.workflowId, opts.workflow.id),
+        eq(workflowRuns.environmentId, opts.environmentId),
+        opts.fromRunId
+          ? eq(workflowRuns.id, opts.fromRunId)
+          : inArray(workflowRuns.status, ['succeeded', 'failed']),
+      ),
+    )
+    .orderBy(desc(workflowRuns.id))
+    .limit(1)
+  if (opts.fromRunId && !earlier) {
+    throw new RunRequestError(404, 'not_found', 'That run is not a run of this workflow in this environment')
+  }
+
+  // Every block depends on the start trigger, so new input means nothing upstream can be reused.
+  const ancestors = buildGraph(definition).ancestors(opts.block)
+  const seed =
+    earlier && opts.input === undefined
+      ? (await loadCheckpoints(db, earlier.id))
+          .filter((c) => ancestors.has(c.key) && c.status !== 'failed')
+          .map((c) => ({
+            ...c,
+            metadata: { ...c.metadata, cachedFrom: c.metadata.cachedFrom ?? earlier.id },
+          }))
+      : []
+  return enqueueRun(
+    db,
+    {
+      workflowId: opts.workflow.id,
+      ...source,
+      environmentId: opts.environmentId,
+      triggerType: 'manual',
+      input: opts.input !== undefined ? { data: opts.input } : (earlier?.input ?? { data: null }),
+      createdBy: user.id,
+      targetBlocks: [opts.block],
+    },
+    { seed },
+  )
+}
+
+/** The checks shared by every manual run; returns the definition to run and where it comes from. */
+async function prepareRun(
+  db: Db,
+  access: Access,
+  user: { id: string },
+  opts: { workflow: Workflow; environmentId: string; version: RunVersion },
+): Promise<{
+  definition: WorkflowDefinition
+  source: { releaseId: string } | { draftSnapshotId: string }
+}> {
   const { workflow, environmentId, version } = opts
   const level = access.workflowLevel(workflow)
   if (level === null) throw new RunRequestError(404, 'not_found', 'Workflow not found')
@@ -128,15 +216,7 @@ export async function startManualRun(
       )
     }
   }
-
-  return enqueueRun(db, {
-    workflowId: workflow.id,
-    ...source,
-    environmentId,
-    triggerType: 'manual',
-    input: { data: opts.input ?? null },
-    createdBy: user.id,
-  })
+  return { definition, source }
 }
 
 /** The snapshot of the current draft revision, created on first use. */

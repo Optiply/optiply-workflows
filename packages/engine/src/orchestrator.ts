@@ -51,6 +51,8 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<RunOutcome> {
 
 class RunExecution {
   private readonly graph: WorkflowGraph
+  /** The blocks this execution covers: all of them, or the `only` targets plus their ancestors. */
+  private readonly scope: Set<string>
   private readonly results = new Map<string, BlockResult>()
   /** Blocks in their attempts (aborted through `runAbort`). */
   private readonly executing = new Set<string>()
@@ -75,6 +77,9 @@ class RunExecution {
     definition: WorkflowDefinition,
   ) {
     this.graph = buildGraph(definition)
+    this.scope = opts.only
+      ? new Set(opts.only.flatMap((name) => [name, ...this.graph.ancestors(name)]))
+      : new Set(this.graph.blocks.keys())
     this.maxConcurrency = opts.maxConcurrency ?? DEFAULT_CONCURRENCY
     this.secrets = opts.secrets ?? []
     this.responded = opts.responded ?? false
@@ -90,6 +95,14 @@ class RunExecution {
           return this.settle('failed', { ...checkpoint.error!, block: checkpoint.key })
         }
         if (RESUMABLE.has(checkpoint.status)) this.results.set(checkpoint.key, checkpoint)
+      }
+
+      const unknown = this.opts.only?.filter((name) => !this.graph.blocks.has(name)) ?? []
+      if (unknown.length) {
+        return this.settle('failed', {
+          code: 'invalid_target',
+          message: `No block is named ${unknown.map((n) => `"${n}"`).join(', ')}`,
+        })
       }
 
       const { signal, deadline } = this.opts
@@ -111,6 +124,7 @@ class RunExecution {
   private pump() {
     if (this.done) return
     for (const name of this.graph.order!) {
+      if (!this.scope.has(name)) continue
       if (this.results.has(name) || this.executing.has(name) || this.committing.has(name)) continue
       if (this.queued.has(name)) continue
       const incoming = this.graph.incoming.get(name)!
@@ -132,7 +146,7 @@ class RunExecution {
       this.track(this.execute(this.graph.blocks.get(name)!))
     }
     if (!this.executing.size && !this.committing.size && !this.ready.length) {
-      if (this.results.size === this.graph.blocks.size) this.settle('succeeded', null)
+      if ([...this.scope].every((name) => this.results.has(name))) this.settle('succeeded', null)
       else this.settle('failed', { code: 'internal', message: 'The run stopped with blocks left unresolved' })
     }
   }

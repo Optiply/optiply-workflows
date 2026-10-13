@@ -26,3 +26,36 @@
     font-feature-settings: "cv11", "ss01";
   }
 }
+
+/* Workflow editor canvas (React Flow). */
+.react-flow .ow-handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--color-surface);
+  background: var(--color-muted);
+}
+.react-flow .ow-handle.ow-handle-error {
+  background: var(--color-danger);
+}
+.react-flow .react-flow__edge.ow-edge-error .react-flow__edge-path {
+  stroke: var(--color-danger);
+  stroke-dasharray: 5 4;
+}
+.react-flow .react-flow__edge.ow-edge-broken .react-flow__edge-path {
+  stroke: var(--color-danger);
+  stroke-width: 2;
+}
+
+.react-flow .react-flow__edge.ow-edge-fired .react-flow__edge-path {
+  stroke: var(--color-success);
+  stroke-width: 2;
+}
+.react-flow .ow-block-running {
+  box-shadow: 0 0 0 2px var(--color-accent);
+  animation: ow-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ow-pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--color-accent) 25%, transparent);
+  }
+}

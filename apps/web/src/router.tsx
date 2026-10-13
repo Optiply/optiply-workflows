@@ -4,6 +4,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Outlet,
   redirect,
 } from '@tanstack/react-router'
@@ -12,9 +13,9 @@ import { z } from 'zod'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { LoginPage } from './pages/login'
-import { ComingSoon } from './pages/placeholders'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
+import { RunsPage } from './pages/runs/list'
 import { AuditPage } from './pages/settings/audit'
 import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
@@ -22,6 +23,7 @@ import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
 import { UsersPage } from './pages/settings/users'
+import { WorkflowsPage } from './pages/workflows/list'
 
 export interface RouterContext {
   queryClient: QueryClient
@@ -60,7 +62,16 @@ const indexRoute = createRoute({
 const workflowsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows',
-  component: () => <ComingSoon section="workflows" />,
+  component: WorkflowsPage,
+})
+/** The editor (canvas, validator, later Monaco) is its own chunk, loaded when a workflow is opened. */
+const workflowEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/workflows/$workflowId',
+  staticData: { fullBleed: true },
+  /** `run` opens that run in the run panel (links from /runs). */
+  validateSearch: z.object({ run: z.string().uuid().optional() }),
+  component: lazyRouteComponent(() => import('./pages/workflows/editor'), 'WorkflowEditorPage'),
 })
 const resourcesRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -75,7 +86,7 @@ const resourceDetailRoute = createRoute({
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
-  component: () => <ComingSoon section="runs" />,
+  component: RunsPage,
 })
 
 const settingsRoute = createRoute({
@@ -118,6 +129,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     indexRoute,
     workflowsRoute,
+    workflowEditorRoute,
     resourcesRoute,
     resourceDetailRoute,
     runsRoute,
@@ -142,5 +154,9 @@ export const router = createRouter({
 declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router
+  }
+  interface StaticDataRouteOption {
+    /** The page fills the whole content area instead of the centred, padded column. */
+    fullBleed?: boolean
   }
 }
