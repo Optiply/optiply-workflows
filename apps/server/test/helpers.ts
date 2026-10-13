@@ -26,8 +26,8 @@ export async function startTestApp(overrides: Record<string, string> = {}): Prom
     NODE_ENV: 'test',
     ...overrides,
   })
-  const { db, close } = createDb(pg.url, { max: 5 })
-  const app = await buildApp({ db, config, logger: false })
+  const { db, sql, close } = createDb(pg.url, { max: 5 })
+  const app = await buildApp({ db, config, logger: false, listener: sql })
   return {
     app,
     db,

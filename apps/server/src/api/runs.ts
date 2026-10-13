@@ -9,19 +9,21 @@ import {
   workflowRuns,
   workflows,
 } from '@ow/db'
+import type { RunEvent } from '@ow/engine'
 import { and, asc, desc, eq, gt, lt } from 'drizzle-orm'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
 import { type Access, loadAccess } from '../services/permissions'
+import type { RunEventHub } from '../services/run-events'
 import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
 
 /**
  * The runs API: start a manual run and read runs, block results and logs. Signed-in users authenticate with their
  * session cookie; API keys arrive with webhooks in M4. Errors are `{ error: { code, message, details? } }`.
  */
-export const runsApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
+export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = async (app, { db, events }) => {
   app.decorateRequest('user', null)
   app.addHook('preHandler', async (req, reply) => {
     const user = await lookupSession(db, req.cookies[SESSION_COOKIE])
@@ -135,13 +137,70 @@ export const runsApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
   /** Every block's status and timing, without data. */
   app.get('/runs/:id/blocks', async (req) => {
     const { run } = await visibleRun(req)
-    const rows = await db
-      .select({ block: blockRuns, sizeBytes: blockRunPayloads.sizeBytes })
-      .from(blockRuns)
-      .leftJoin(blockRunPayloads, eq(blockRunPayloads.blockRunId, blockRuns.id))
-      .where(eq(blockRuns.runId, run.id))
-      .orderBy(asc(blockRuns.startedAt), asc(blockRuns.createdAt))
-    return { blocks: rows.map((r) => blockView(r.block, r.sizeBytes)) }
+    return { blocks: await blocksOf(run.id) }
+  })
+
+  /**
+   * Live status as server-sent events: `snapshot` ({ run, blocks }) first, then `block` ({ key, status, attempt,
+   * port }) and `run` ({ status }) as they commit, then `end` once the run is final, and the stream closes. Events
+   * that race the snapshot may repeat a state it already shows; clients apply them by key and attempt.
+   */
+  app.get('/runs/:id/events', async (req, reply) => {
+    const { run, workflow, environment } = await visibleRun(req)
+    if (!events) throw new RunRequestError(503, 'unavailable', 'Live run events are not available')
+
+    const early: RunEvent[] = []
+    let live: ((event: RunEvent) => void) | undefined
+    // Subscribe before reading the snapshot, so no change between the two is missed.
+    const unsubscribe = await events.subscribe(run.id, (event) => (live ? live(event) : early.push(event)))
+
+    reply.hijack()
+    const raw = reply.raw
+    raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    let ping: NodeJS.Timeout | undefined
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      clearInterval(ping)
+      unsubscribe()
+      raw.end()
+    }
+    req.raw.on('close', close)
+    const send = (name: string, data: unknown) => {
+      if (!closed) raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    const emit = (event: RunEvent) => {
+      if (event.type === 'block') {
+        const { key, status, attempt, port } = event
+        return send('block', { key, status, attempt, port })
+      }
+      send('run', { status: event.status })
+      if (FINAL_RUN_STATUSES.has(event.status)) {
+        send('end', {})
+        close()
+      }
+    }
+
+    try {
+      const [current] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      send('snapshot', { run: runView(current!, workflow, environment), blocks: await blocksOf(run.id) })
+      if (FINAL_RUN_STATUSES.has(current!.status)) {
+        send('end', {})
+        return close()
+      }
+      live = emit
+      for (const event of early.splice(0)) emit(event)
+      ping = setInterval(() => !closed && raw.write(': ping\n\n'), 15_000)
+    } catch (err) {
+      app.log.error({ err }, 'run events failed')
+      close()
+    }
   })
 
   /** One block with its data. */
@@ -184,6 +243,16 @@ export const runsApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
     return { logs, next: logs.at(-1)?.id ?? query.after }
   })
 
+  async function blocksOf(runId: string) {
+    const rows = await db
+      .select({ block: blockRuns, sizeBytes: blockRunPayloads.sizeBytes })
+      .from(blockRuns)
+      .leftJoin(blockRunPayloads, eq(blockRunPayloads.blockRunId, blockRuns.id))
+      .where(eq(blockRuns.runId, runId))
+      .orderBy(asc(blockRuns.startedAt), asc(blockRuns.createdAt))
+    return rows.map((r) => blockView(r.block, r.sizeBytes))
+  }
+
   async function visibleWorkflow(
     req: FastifyRequest,
     slug: string,
@@ -224,6 +293,8 @@ declare module 'fastify' {
     user: SessionUser | null
   }
 }
+
+const FINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 
 function parse<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const parsed = schema.safeParse(value)

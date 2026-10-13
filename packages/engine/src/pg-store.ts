@@ -9,7 +9,7 @@ import {
 } from '@ow/db'
 import { and, eq, isNull, notInArray, sql } from 'drizzle-orm'
 import { LeaseLostError } from './errors'
-import type { Claim } from './queue'
+import { type Claim, notifyRunEvent } from './queue'
 import type { BlockResult, RunResponse, RunStore } from './types'
 
 /** A committed result is never overwritten, not even by a later lease. */
@@ -38,8 +38,8 @@ export class PgRunStore implements RunStore {
   ) {}
 
   async blockStarted(key: string, attempt: number, startedAt: Date) {
-    await this.fenced((tx) =>
-      tx
+    await this.fenced(async (tx) => {
+      const written = await tx
         .insert(blockRuns)
         .values({
           runId: this.claim.runId,
@@ -63,8 +63,19 @@ export class PgRunStore implements RunStore {
             updatedAt: new Date(),
           },
           setWhere: notInArray(blockRuns.status, FINAL),
-        }),
-    )
+        })
+        .returning({ id: blockRuns.id })
+      if (written.length) {
+        await notifyRunEvent(tx, {
+          runId: this.claim.runId,
+          type: 'block',
+          key,
+          status: 'running',
+          attempt,
+          port: null,
+        })
+      }
+    })
   }
 
   async blockFinished(result: BlockResult, extra?: { response?: RunResponse }) {
@@ -89,6 +100,14 @@ export class PgRunStore implements RunStore {
         })
         .returning({ id: blockRuns.id })
       if (!row) return // Already committed.
+      await notifyRunEvent(tx, {
+        runId: this.claim.runId,
+        type: 'block',
+        key: result.key,
+        status: result.status,
+        attempt: result.attempt,
+        port: result.port,
+      })
       if (result.status === 'succeeded') {
         await tx
           .insert(blockRunPayloads)

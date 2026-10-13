@@ -27,7 +27,7 @@ async function main() {
   const stops: (() => Promise<void>)[] = []
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {
-    const app = await buildApp({ db, config, logger: log })
+    const app = await buildApp({ db, config, logger: log, listener: sql })
     await app.listen({ port: config.PORT, host: config.HOST })
     stops.push(() => app.close())
   }

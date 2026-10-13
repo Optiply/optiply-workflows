@@ -14,6 +14,8 @@ import {
   loadCheckpoints,
   PgRunStore,
   type ResourceProvider,
+  RUN_EVENTS_CHANNEL,
+  type RunEvent,
   reapExpiredLeases,
 } from '../src'
 import {
@@ -123,6 +125,58 @@ describe('dispatcher', () => {
     expect(
       await db.select({ message: runLogs.message }).from(runLogs).where(eq(runLogs.runId, run.id)),
     ).toEqual([{ message: 'big 42' }])
+  })
+
+  it('publishes every run and block status change on the run events channel', async () => {
+    const events: RunEvent[] = []
+    const { unlisten } = await listener.listen(RUN_EVENTS_CHANNEL, (payload) =>
+      events.push(JSON.parse(payload)),
+    )
+    try {
+      await dispatcher().start()
+      const run = await queueRun(
+        db,
+        wf(
+          [
+            { name: 'pick', type: 'branch', config: { conditions: [{ id: 'yes', expression: 'false' }] } },
+            hit('onYes'),
+            hit('onNo'),
+          ],
+          [
+            ['startTrigger', 'pick'],
+            ['pick', 'onYes', 'cond:yes'],
+            ['pick', 'onNo', 'else'],
+          ],
+        ),
+      )
+      await waitForFinish(db, run.id)
+      await waitFor(async () =>
+        events.some((e) => e.runId === run.id && e.type === 'run' && e.status === 'succeeded'),
+      )
+      const mine = events
+        .filter((e) => e.runId === run.id)
+        .map((e) =>
+          e.type === 'run' ? `run ${e.status}` : `${e.key} ${e.status}${e.port ? ` ${e.port}` : ''}`,
+        )
+      expect(mine[0]).toBe('run running')
+      expect(mine.at(-1)).toBe('run succeeded')
+      expect(new Set(mine)).toEqual(
+        new Set([
+          'run running',
+          'startTrigger running',
+          'startTrigger succeeded out',
+          'pick running',
+          'pick succeeded else',
+          'onYes skipped',
+          'onNo running',
+          'onNo succeeded out',
+          'run succeeded',
+        ]),
+      )
+      expect(mine).toHaveLength(9)
+    } finally {
+      await unlisten()
+    }
   })
 
   it('records a failed run with the failing block', async () => {

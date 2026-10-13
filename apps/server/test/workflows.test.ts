@@ -371,6 +371,83 @@ describe('run block', () => {
   })
 })
 
+/** Reads server-sent events until `end` (or the timeout), returning `[name, data]` pairs. */
+async function readEvents(url: string, cookie: string, timeoutMs = 15_000) {
+  const res = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(timeoutMs) })
+  expect(res.headers.get('content-type')).toMatch(/^text\/event-stream/)
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+  // biome-ignore lint/suspicious/noExplicitAny: untyped event payloads, asserted field by field
+  const events: [string, any][] = []
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) return events
+    buffer += value
+    let cut = buffer.indexOf('\n\n')
+    while (cut !== -1) {
+      const chunk = buffer.slice(0, cut)
+      buffer = buffer.slice(cut + 2)
+      cut = buffer.indexOf('\n\n')
+      const name = /^event: (.*)$/m.exec(chunk)?.[1]
+      const data = /^data: (.*)$/m.exec(chunk)?.[1]
+      if (name) events.push([name, JSON.parse(data!)])
+    }
+  }
+}
+
+describe('live run events', () => {
+  let base: string
+  beforeAll(async () => {
+    base = await env.app.listen({ port: 0, host: '127.0.0.1' })
+  })
+
+  it('streams a snapshot, then each change, then end', async () => {
+    const wf = await workflowWith(
+      'live',
+      [query('slow', 'select pg_sleep(0.5) is null as slept'), code('after', 'return slow.data[0].slept')],
+      [
+        ['startTrigger', 'slow'],
+        ['slow', 'after'],
+      ],
+    )
+    const { body } = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})
+    const events = await readEvents(`${base}/api/v1/runs/${body.run.id}/events`, adminCookie)
+
+    expect(events[0]![0]).toBe('snapshot')
+    expect(events[0]![1].run.id).toBe(body.run.id)
+    expect(events.at(-1)).toEqual(['end', {}])
+    expect(events.at(-2)).toEqual(['run', { status: 'succeeded' }])
+    // Whatever the snapshot missed arrives as events: the final state of every block is known.
+    const state = new Map<string, string>(
+      events[0]![1].blocks.map((b: { key: string; status: string }) => [b.key, b.status]),
+    )
+    for (const [name, data] of events) if (name === 'block') state.set(data.key, data.status)
+    expect(Object.fromEntries(state)).toEqual({
+      startTrigger: 'succeeded',
+      slow: 'succeeded',
+      after: 'succeeded',
+    })
+    expect(events).toContainEqual(['block', { key: 'after', status: 'succeeded', attempt: 1, port: 'out' }])
+  })
+
+  it('ends straight after the snapshot for a finished run', async () => {
+    const wf = await workflowWith('done-already', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const { body } = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})
+    await waitForRun(body.run.id)
+    const events = await readEvents(`${base}/api/v1/runs/${body.run.id}/events`, adminCookie)
+    expect(events.map(([name]) => name)).toEqual(['snapshot', 'end'])
+    expect(events[0]![1].run.status).toBe('succeeded')
+    expect(events[0]![1].blocks).toHaveLength(2)
+  })
+
+  it("doesn't stream runs you can't see", async () => {
+    const wf = await workflowWith('secret-live', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const { body } = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})
+    expect((await rest(memberCookie, 'GET', `/runs/${body.run.id}/events`)).status).toBe(404)
+    expect((await rest(undefined, 'GET', `/runs/${body.run.id}/events`)).status).toBe(401)
+  })
+})
+
 describe('run permissions', () => {
   it('hides workflows and runs from users without access', async () => {
     const wf = await workflowWith('private', [code('a', 'return 1')], [['startTrigger', 'a']])

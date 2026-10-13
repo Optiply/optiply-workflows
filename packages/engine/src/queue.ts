@@ -2,9 +2,23 @@ import { blockRunPayloads, blockRuns, type Db, type WorkflowRun, workflowRuns } 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { BlockResult, EngineError, FinalBlockStatus } from './types'
 
-/** NOTIFY channels. `RUNS_QUEUED` wakes workers; `RUN_FINISHED` carries the run id (sync webhooks, tests). */
+/**
+ * NOTIFY channels. `RUNS_QUEUED` wakes workers; `RUN_FINISHED` carries the run id (sync webhooks, tests);
+ * `RUN_EVENTS` carries a JSON `RunEvent` for every run and block status change (live status in the editor).
+ */
 export const RUNS_QUEUED_CHANNEL = 'ow_runs_queued'
 export const RUN_FINISHED_CHANNEL = 'ow_run_finished'
+export const RUN_EVENTS_CHANNEL = 'ow_run_events'
+
+/** A status change, as published on `RUN_EVENTS_CHANNEL`. Sent when the change commits. */
+export type RunEvent =
+  | { runId: string; type: 'run'; status: string }
+  | { runId: string; type: 'block'; key: string; status: string; attempt: number; port: string | null }
+
+/** Publishes an event when the surrounding transaction commits. */
+export function notifyRunEvent(db: Executor, event: RunEvent) {
+  return notify(db, RUN_EVENTS_CHANNEL, JSON.stringify(event))
+}
 
 /** Block statuses a resumed run treats as committed. */
 const CHECKPOINT_STATUSES: FinalBlockStatus[] = ['succeeded', 'errored', 'skipped', 'failed']
@@ -78,16 +92,21 @@ export async function claimRuns(db: Db, workerId: string, limit: number, leaseMs
       limit ${limit}
       for update skip locked
     )
-    update workflow_runs r
-    set status = 'running',
-        lease_owner = ${workerId},
-        lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}),
-        epoch = r.epoch + 1,
-        started_at = coalesce(r.started_at, now()),
-        updated_at = now()
-    from next
-    where r.id = next.id
-    returning r.id, r.epoch`)
+    , claimed as (
+      update workflow_runs r
+      set status = 'running',
+          lease_owner = ${workerId},
+          lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}),
+          epoch = r.epoch + 1,
+          started_at = coalesce(r.started_at, now()),
+          updated_at = now()
+      from next
+      where r.id = next.id
+      returning r.id, r.epoch
+    )
+    select id, epoch,
+      pg_notify(${RUN_EVENTS_CHANNEL}, json_build_object('runId', id, 'type', 'run', 'status', 'running')::text)
+    from claimed`)
   return rows.map((r) => ({ runId: r.id, epoch: r.epoch }))
 }
 
@@ -130,6 +149,7 @@ export async function finishRun(
       returning id`)
     if (!rows.length) return false
     await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
+    await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status: outcome.status })
     return true
   })
 }
@@ -148,6 +168,7 @@ export async function releaseRun(db: Db, claim: Claim): Promise<boolean> {
       returning id`)
     if (!rows.length) return false
     await notify(tx, RUNS_QUEUED_CHANNEL)
+    await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status: 'queued' })
     return true
   })
 }
@@ -206,6 +227,7 @@ export async function reapExpiredLeases(
     }
     if (requeued.length) await notify(tx, RUNS_QUEUED_CHANNEL)
     for (const id of failed) await notify(tx, RUN_FINISHED_CHANNEL, id)
+    for (const row of rows) await notifyRunEvent(tx, { runId: row.id, type: 'run', status: row.status })
     return { requeued, failed }
   })
 }
