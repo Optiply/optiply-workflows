@@ -29,6 +29,18 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["packages/expressions/test/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ],
   "css": {
     "parser": {
       "tailwindDirectives": true
