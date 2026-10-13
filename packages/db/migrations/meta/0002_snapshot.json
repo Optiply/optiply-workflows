@@ -1,5 +1,5 @@
 {
-  "id": "23940155-c9f1-40bf-8ea8-b2ffa34f8ead",
+  "id": "2a47fca1-8d58-453e-8572-992a080b3094",
   "prevId": "fb491da1-ff1a-4ed4-b7d8-00f0e196247f",
   "version": "7",
   "dialect": "postgresql",
@@ -259,6 +259,12 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "port": {
+          "name": "port",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "error": {
           "name": "error",

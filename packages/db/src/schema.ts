@@ -495,6 +495,8 @@ export const blockRuns = pgTable(
     attempt: integer().notNull().default(1),
     /** The run epoch of the lease that wrote this row. */
     epoch: integer().notNull(),
+    /** The output that fired (`out`, `error`, `cond:<id>`, `else`); null while running or when none did. */
+    port: text(),
     /** `{ message, code? }`, redacted. */
     error: jsonb().$type<Record<string, unknown>>(),
     /** Connector metadata, row counts, loop iterations… Small; the data itself is in `block_run_payloads`. */

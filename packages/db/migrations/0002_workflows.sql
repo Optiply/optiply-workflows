@@ -12,6 +12,7 @@ CREATE TABLE "block_runs" (
 	"status" text NOT NULL,
 	"attempt" integer DEFAULT 1 NOT NULL,
 	"epoch" integer NOT NULL,
+	"port" text,
 	"error" jsonb,
 	"metadata" jsonb,
 	"started_at" timestamp with time zone,
