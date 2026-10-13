@@ -12,6 +12,7 @@ import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
+import { runsApi } from './runs'
 
 /** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
 export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyBaseLogger | false }) {
@@ -33,6 +34,7 @@ export async function buildApp(deps: { db: Db; config: Config; logger?: FastifyB
   })
 
   await app.register(authRoutes, { db, config })
+  await app.register(runsApi, { prefix: '/api/v1', db })
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/api/trpc',

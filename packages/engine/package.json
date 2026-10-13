@@ -1,0 +1,28 @@
+{
+  "name": "@ow/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ow/connectors": "workspace:*",
+    "@ow/crypto": "workspace:*",
+    "@ow/db": "workspace:*",
+    "@ow/definition": "workspace:*",
+    "@ow/expressions": "workspace:*",
+    "@ow/sandbox": "workspace:*",
+    "zod": "4.6.7",
+    "drizzle-orm": "0.45.4"
+  },
+  "devDependencies": {
+    "postgres": "3.4.9",
+    "vitest": "5.0.4",
+    "tsx": "4.23.15"
+  }
+}

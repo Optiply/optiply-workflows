@@ -1,29 +1,47 @@
-import { type Db, environments, folders, groups, PERMISSION_LEVELS, permissions, resources } from '@ow/db'
+import {
+  type Db,
+  environments,
+  folders,
+  groups,
+  PERMISSION_LEVELS,
+  permissions,
+  resources,
+  workflows,
+} from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import { z } from 'zod'
-import { loadResourceAccess, requireLevel } from '../../services/permissions'
+import { loadAccess, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 
-/** Grants on one resource, on one folder, or (`objectId` null) on all resources. */
-const Target = z.object({ objectType: z.enum(['resource', 'folder']), objectId: Id.nullable() })
+/** Grants on one resource or workflow, on one folder, or (`objectId` null) on all resources or workflows. */
+const Target = z.object({ objectType: z.enum(['resource', 'workflow', 'folder']), objectId: Id.nullable() })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /**
- * Owners of a resource (in every environment) manage its grants; folder grants and grants on all resources are
- * admin-only, since they reach many resources at once.
+ * Owners of a resource (in every environment) or of a workflow manage its grants; folder grants and grants on all
+ * resources or workflows are admin-only, since they reach many objects at once.
  */
 async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target>): Promise<void> {
   if (ctx.user.isAdmin) return
-  if (target.objectType !== 'resource' || target.objectId === null) {
+  if (target.objectType === 'folder' || target.objectId === null) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Only admins manage folder-wide and type-wide access' })
+  }
+  if (target.objectType === 'workflow') {
+    const [workflow] = await ctx.db.select().from(workflows).where(eq(workflows.id, target.objectId)).limit(1)
+    const access = await loadAccess(ctx.db, ctx.user)
+    if (!workflow || access.workflowLevel(workflow) === null) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow not found' })
+    }
+    requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
+    return
   }
   const [resource] = await ctx.db.select().from(resources).where(eq(resources.id, target.objectId)).limit(1)
   if (!resource) throw new TRPCError({ code: 'NOT_FOUND', message: 'Resource not found' })
-  const access = await loadResourceAccess(ctx.db, ctx.user)
+  const access = await loadAccess(ctx.db, ctx.user)
   const envIds = (await ctx.db.select({ id: environments.id }).from(environments)).map((e) => e.id)
   requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
 }
@@ -44,7 +62,7 @@ async function describeTarget(db: Db, target: z.infer<typeof Target>): Promise<s
       .where(eq(folders.id, target.objectId))
     return `folder ${folder?.name ?? target.objectId}`
   }
-  return `resource ${target.objectId}`
+  return `${target.objectType} ${target.objectId}`
 }
 
 export const permissionsRouter = router({
@@ -75,6 +93,9 @@ export const permissionsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
+      if (input.objectType === 'workflow' && input.environmentId !== null) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Workflow access applies to every environment' })
+      }
       const [group] = await ctx.db
         .select({ name: groups.name })
         .from(groups)

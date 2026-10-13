@@ -11,13 +11,15 @@ TypeScript monorepo (pnpm + Turborepo):
 
 | Path | What |
 |---|---|
-| `apps/server` | Fastify v5 + tRPC v11 API, with Google OIDC and local break-glass login. Workflow worker (placeholder until M2). One entrypoint; `ROLE=api\|worker\|migrate\|all` picks what it runs. |
+| `apps/server` | Fastify v5 + tRPC v11 API, with Google OIDC and local break-glass login, plus the REST runs API. The workflow worker runs queued runs. One entrypoint; `ROLE=api\|worker\|migrate\|all` picks what it runs. |
 | `apps/web` | Vite + React 19, TanStack Router and Query, Tailwind v4 |
 | `packages/db` | Drizzle ORM schema and migrations (Postgres). Embedded Postgres for dev and tests. |
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
 | `packages/connectors` | Postgres and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
+| `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash |
+| `packages/engine` | Runs workflows: the orchestrator and block executors, and the Postgres queue (claims, leases with fencing epochs, recovery of runs whose worker died) |
 
 ## Local development
 
@@ -40,6 +42,18 @@ The first user to sign in becomes an admin. After that, admins manage access und
 ### Google SSO
 
 Create an OAuth client of type "Web application" in Google Cloud Console. Set its redirect URI to `<PUBLIC_URL>/api/auth/oidc/callback`, then fill in `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`. Only verified `@optiply.nl` accounts can sign in (`OIDC_ALLOWED_DOMAIN`).
+
+## Running a workflow
+
+There's no workflow editor yet (M3). Workflows are created and saved over tRPC (`workflows.create`, `workflows.saveDraft`) and run over the REST API, signed in with the session cookie:
+
+```bash
+curl -c jar -H 'content-type: application/json' -d '{"email":"you@optiply.nl","password":"…"}' localhost:3000/api/auth/local
+curl -b jar -H 'content-type: application/json' -d '{"input":{"id":2}}' 'localhost:3000/api/v1/workflows/<slug>/runs?environment=production'
+curl -b jar localhost:3000/api/v1/runs/<runId>          # also /blocks, /blocks/<name> (with data) and /logs
+```
+
+A draft run needs Edit on the workflow and Use on every resource it queries. With `ROLE=all` the same process runs the worker; `WORKER_CONCURRENCY` (default 4) sets how many runs it executes at once.
 
 ## Checks
 

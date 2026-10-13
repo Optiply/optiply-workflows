@@ -224,6 +224,32 @@ Part 1 explains how Retool works. Part 2 is the build plan.
   - After downtime the schedule catches up with one run, not a storm.
   - Timezone defaults to `Europe/Amsterdam`.
 
+## 2.2a How §2.2 is tested
+
+Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts` (in-memory store), `dispatcher.test.ts` and `crash.test.ts` (Postgres). Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
+
+| Rule | Status | Covered by |
+|---|---|---|
+| Block statuses | ✅ `running`, `succeeded`, `errored`, `failed`, `skipped`, `cancelled`, `interrupted`. `waiting` comes in M5. `pending` is never written: a block gets a row when it starts or is skipped. | semantics (all groups); dispatcher "recovers runs…" (`interrupted`) |
+| Edge ports | ✅ | semantics "branch", "errors"; validator "edges" |
+| Readiness: all edges resolved, at least one fired | ✅ | semantics "fans out in parallel, and a join waits for every parent" |
+| Dead-path elimination, join after if/else | ✅ | semantics "skips a block whose incoming edges are all dead…", "runs a join after if/else…", "skips blocks that nothing connects to" |
+| Branch: first truthy only; a throwing condition is a block error | ✅ | semantics "branch" |
+| `finally=stop`: run fails, in-flight siblings aborted | ✅. The global error handler is M5. | semantics "with finally=stop…" |
+| `finally=continue`, and "always run C" via both ports | ✅ | semantics "with finally=continue…", "always runs a block connected to both out and error" |
+| References: ancestors and globals only | ✅ | validator "references"; semantics "refuses an invalid definition…"; server "refuses to start runs that would fail anyway" |
+| A skipped ancestor reads as `{data:null, error:null, metadata:{status:'skipped'}}` | ✅ | semantics "runs a join after if/else…" |
+| Response: the first one replies, execution continues, later ones `ignored` | ✅, including across a resume | semantics "response", "does not reply again when an earlier lease already did" |
+| Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500) | M4 (webhooks). The engine reports `response: null`. | semantics "has no response when no Response block runs" |
+| Loop | M5 | |
+| Functions | M5 | |
+| Wait / sync child / User Task, `waiting` with `available_at` | M5. The run timeout (default 15 min, max 6 h) is ✅. | dispatcher "claims a queued run…" (15 min deadline); semantics "fails the run at its deadline…"; definition schema "bounds the run timeout…" |
+| Delivery: at least once, committed exactly once | ✅ | crash "resumes a run on another worker after kill -9…"; dispatcher "fences off a zombie worker…", "never overwrites a committed result…"; semantics "delivery and resume"; db "commits one result per block key" |
+| `idempotencyKey` in scope | ✅ (the caller's key, or the run id) | dispatcher "exposes the caller's idempotency key…" |
+| Webhook `Idempotency-Key` header | M4. The unique index is ✅. | db "accepts an idempotency key once per workflow" |
+| Fails after 3 recoveries | ✅ | dispatcher "recovers runs whose lease expired and fails one that keeps losing its worker" |
+| Schedules | M4. The `ON CONFLICT (trigger_id, scheduled_for)` insert is ✅. | db "records each schedule fire once…" |
+
 ## 2.3 Data model (Drizzle, `packages/db`)
 - **Identity:** `users`, `sessions`, `groups`, `group_members`, `permissions(group_id, object_type, object_id?, environment_id?, level)`, `environments`, `folders`.
 - **Resources:**
@@ -238,8 +264,8 @@ Part 1 explains how Retool works. Part 2 is the build plan.
   - `workflow_releases(version semver, definition frozen, definition_hash)`
   - `workflow_triggers`: the runtime projection of the live release's triggers, holding the webhook alias and `next_fire_at`
 - **Runs:**
-  - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`.
-  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`
+  - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`. In M2, `output` became `response` (the first Response block's reply), and each run points at exactly one release or draft snapshot.
+  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired).
   - `block_run_payloads` (data jsonb, 10MB cap)
   - `run_logs`
   - `user_tasks`

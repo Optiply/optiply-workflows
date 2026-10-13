@@ -2,7 +2,7 @@ import { folders, permissions } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { loadResourceAccess } from '../../services/permissions'
+import { loadAccess } from '../../services/permissions'
 import { uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -13,7 +13,7 @@ type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /** Resource folders are managed by whoever may create resources. */
 async function assertCanManage(ctx: AuthedContext) {
-  const access = await loadResourceAccess(ctx.db, ctx.user)
+  const access = await loadAccess(ctx.db, ctx.user)
   if (!access.canCreateResources) {
     throw new TRPCError({
       code: 'FORBIDDEN',

@@ -23,7 +23,7 @@ async function main() {
 
   if (config.AUTO_MIGRATE) await runMigrations(config.DATABASE_URL, process.env.MIGRATIONS_DIR)
 
-  const { db, close } = createDb(config.DATABASE_URL)
+  const { db, sql, close } = createDb(config.DATABASE_URL)
   const stops: (() => Promise<void>)[] = []
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {
@@ -32,7 +32,7 @@ async function main() {
     stops.push(() => app.close())
   }
   if (config.ROLE === 'worker' || config.ROLE === 'all') {
-    const worker = startWorker({ db, log })
+    const worker = await startWorker({ db, sql, config, log })
     stops.push(worker.stop)
   }
 

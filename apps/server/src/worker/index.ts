@@ -1,25 +1,34 @@
+import { PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
+import { Dispatcher } from '@ow/engine'
 import type { Logger } from 'pino'
+import type postgres from 'postgres'
+import type { Config } from '../config'
+import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
- * Placeholder for the workflow worker (claim loop, reaper, scheduler tick, retention) that lands in M2/M4.
- * For now it only proves the role wiring and DB connectivity with a periodic heartbeat.
+ * The workflow worker: claims queued runs and executes them (see `Dispatcher` in @ow/engine), renews their
+ * leases and recovers runs whose worker died. `stop()` hands in-flight runs back to the queue. The scheduler tick
+ * (M4) and retention (M6) join it later.
  */
-export function startWorker(deps: { db: Db; log: Logger }) {
-  const { db, log } = deps
-  const tick = async () => {
-    try {
-      await db.execute('select 1')
-      log.debug('worker heartbeat')
-    } catch (err) {
-      log.error({ err }, 'worker heartbeat failed')
-    }
-  }
-  const timer = setInterval(tick, 15_000)
-  log.info('worker started (engine arrives in M2)')
+export async function startWorker(deps: { db: Db; sql: postgres.Sql; config: Config; log: Logger }) {
+  const { db, sql, config, log } = deps
+  const pool = new PoolManager()
+  const dispatcher = new Dispatcher({
+    db,
+    listener: sql,
+    pool,
+    resources: dbResourceProvider(db, config.keyring),
+    context: dbRunContext(db, config.keyring),
+    concurrency: config.WORKER_CONCURRENCY,
+    log: log.child({ component: 'dispatcher' }),
+  })
+  await dispatcher.start()
   return {
+    dispatcher,
     stop: async () => {
-      clearInterval(timer)
+      await dispatcher.stop()
+      await pool.closeAll()
     },
   }
 }
