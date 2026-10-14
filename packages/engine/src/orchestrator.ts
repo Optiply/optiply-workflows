@@ -1,18 +1,20 @@
 import { scrubSecrets } from '@ow/crypto'
-import { type LogLevel, MAX_PAYLOAD_BYTES } from '@ow/db'
+import type { LogLevel } from '@ow/db'
 import {
   type Block,
   buildGraph,
+  type FunctionDefinition,
+  functionReturnBlock,
   referencedNames,
   resolveBlockSettings,
   validateDefinition,
-  type WorkflowDefinition,
   type WorkflowGraph,
 } from '@ow/definition'
-import { type BlockContext, type BlockOutput, executeBlock } from './blocks'
+import { type BlockContext, type BlockOutput, executeBlock, type LoopIterations } from './blocks'
 import { BlockFailure, RunCancelledError, toEngineError } from './errors'
+import { toJsonData } from './results'
 import { retryDelayMs, sleep } from './retry'
-import type { BlockResult, EngineError, ExecuteRunOptions, RunOutcome, RunResponse } from './types'
+import type { BlockResult, EngineError, ExecuteRunOptions, RunOutcome, RunResponse, RunStore } from './types'
 
 const DEFAULT_CONCURRENCY = 10
 /** Checkpointed statuses a resumed run treats as done. */
@@ -23,6 +25,11 @@ const DEFAULT_SUSPEND_AFTER_MS = 1000
 const DEFAULT_HANDLER_TIMEOUT_MS = 60_000
 /** setTimeout's limit; a longer wait just wakes early and waits again. */
 const MAX_TIMER_MS = 2 ** 31 - 1
+/** Loop iterations are committed in batches of this many, or after this long. */
+const ITERATION_BATCH = 200
+const ITERATION_FLUSH_MS = 250
+/** `loop1[17]`: an iteration's checkpoint key. */
+const ITERATION_KEY = /^(.+)\[(\d+)\]$/
 
 /**
  * Runs a workflow definition to completion (or interruption), following the semantics in architecture §2.2:
@@ -56,13 +63,48 @@ export async function executeRun(opts: ExecuteRunOptions): Promise<RunOutcome> {
       results: new Map(),
     }
   }
-  return new RunExecution(opts, validation.definition!).run()
+  const definition = validation.definition!
+  const functions = new Map<string, CompiledFunction>()
+  for (const fn of definition.functions ?? []) {
+    functions.set(fn.name, { fn, graph: buildGraph(fn), returns: functionReturnBlock(fn)! })
+  }
+  return new RunExecution(opts, { graph: buildGraph(definition), isFunction: false }, functions).run()
+}
+
+/** A function, with its graph built once per run. */
+interface CompiledFunction {
+  fn: FunctionDefinition
+  graph: WorkflowGraph
+  returns: string
+}
+
+/**
+ * Where a function call's blocks report: nowhere (calls aren't checkpointed), except logs, which go to the calling
+ * block's as `<function>.<block>: message`.
+ */
+class FunctionCallStore implements RunStore {
+  constructor(
+    private readonly fn: string,
+    private readonly forward: BlockContext['log'],
+  ) {}
+  async blockStarted() {}
+  async blockFinished() {}
+  async iterationsFinished() {}
+  async blockWaiting(): Promise<never> {
+    throw new BlockFailure('internal', "A function can't wait")
+  }
+  readonly log: RunStore['log'] = (entry) =>
+    this.forward(entry.level, `${this.fn}.${entry.blockKey}: ${entry.message}`)
 }
 
 type Phase = 'main' | 'handler'
 
 class RunExecution {
   private readonly graph: WorkflowGraph
+  /** A function call's graph: every block nothing connects into starts it, and it has no error handler. */
+  private readonly isFunction: boolean
+  /** Committed loop iterations, by loop and index (`loop1[17]` checkpoints). */
+  private readonly iterationCheckpoints = new Map<string, Map<number, BlockResult>>()
   /** The error handler block, if the workflow has one, and every block on its path. */
   private readonly handler: string | undefined
   private readonly handlerPath = new Set<string>()
@@ -100,10 +142,12 @@ class RunExecution {
 
   constructor(
     private readonly opts: ExecuteRunOptions,
-    definition: WorkflowDefinition,
+    source: { graph: WorkflowGraph; isFunction: boolean },
+    private readonly functions: ReadonlyMap<string, CompiledFunction>,
   ) {
-    this.graph = buildGraph(definition)
-    this.handler = definition.blocks.find((b) => b.type === 'errorTrigger')?.name
+    this.graph = source.graph
+    this.isFunction = source.isFunction
+    this.handler = [...this.graph.blocks.values()].find((b) => b.type === 'errorTrigger')?.name
     if (this.handler) {
       this.handlerPath.add(this.handler)
       for (const name of this.graph.descendants(this.handler)) this.handlerPath.add(name)
@@ -123,6 +167,15 @@ class RunExecution {
       this.resolveOutcome = resolve
       let failed: BlockResult | undefined
       for (const checkpoint of this.opts.checkpoints ?? []) {
+        const iteration = ITERATION_KEY.exec(checkpoint.key)
+        if (iteration && this.graph.blocks.get(iteration[1]!)?.type === 'loop') {
+          if (checkpoint.status === 'succeeded' || checkpoint.status === 'errored') {
+            const loop = iteration[1]!
+            if (!this.iterationCheckpoints.has(loop)) this.iterationCheckpoints.set(loop, new Map())
+            this.iterationCheckpoints.get(loop)!.set(Number(iteration[2]), checkpoint)
+          }
+          continue
+        }
         if (!this.graph.blocks.has(checkpoint.key)) continue
         if (checkpoint.status === 'failed') {
           this.results.set(checkpoint.key, checkpoint)
@@ -170,6 +223,7 @@ class RunExecution {
       const block = this.graph.blocks.get(name)!
       const fired =
         block.type === 'startTrigger' ||
+        (this.isFunction && incoming.length === 0) ||
         incoming.some((edge) => this.results.get(edge.from)!.port === edge.port)
       if (fired) {
         this.queued.add(name)
@@ -303,12 +357,13 @@ class RunExecution {
     const startedAt = new Date()
     this.startedAt.set(block.name, startedAt)
     const resuming = this.waitUntil.has(block.name)
+    const iterations = block.type === 'loop' ? this.iterationsOf(block.name) : undefined
     for (let attempt = 1; ; attempt++) {
       // A Wait resuming is already shown as waiting; it just finishes now.
       if (!resuming)
         await this.opts.store.blockStarted(block.name, attempt, attempt === 1 ? startedAt : new Date())
       try {
-        const output = await this.attempt(block, settings.timeoutMs, signal)
+        const output = await this.attempt(block, settings.timeoutMs, signal, iterations)
         if (output.suspendUntil) return { suspendUntil: output.suspendUntil, attempt }
         const { data, sizeBytes } = toJsonData(output.data)
         return {
@@ -349,7 +404,12 @@ class RunExecution {
   }
 
   /** One attempt, bounded by the block's timeout and aborted with the phase. */
-  private async attempt(block: Block, timeoutMs: number, phaseSignal: AbortSignal): Promise<BlockOutput> {
+  private async attempt(
+    block: Block,
+    timeoutMs: number,
+    phaseSignal: AbortSignal,
+    iterations?: LoopIterations,
+  ): Promise<BlockOutput> {
     const timeout = new AbortController()
     const ctx: BlockContext = {
       scope: this.scopeFor(block),
@@ -360,6 +420,11 @@ class RunExecution {
       timeoutMs,
       log: (level, message) => this.log(block.name, level, message),
       waitingUntil: this.waitUntil.get(block.name),
+      secrets: this.secrets,
+      functions: this.functionNames,
+      callFunction: (name, args, signal) =>
+        this.callFunction(name, args, signal, (level, message) => this.log(block.name, level, message)),
+      iterations,
     }
     let timer: NodeJS.Timeout | undefined
     let onAbort: (() => void) | undefined
@@ -383,6 +448,88 @@ class RunExecution {
     } finally {
       clearTimeout(timer)
       if (onAbort) phaseSignal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private get functionNames(): ReadonlySet<string> {
+    return new Set(this.functions.keys())
+  }
+
+  /**
+   * Runs a workflow function: its graph, in memory, with `params` in scope. Nothing is checkpointed (the calling
+   * block is); logs go to the calling block. Resolves to the return block's data (null if it was skipped).
+   */
+  private async callFunction(
+    name: string,
+    args: Record<string, unknown> | unknown[],
+    signal: AbortSignal,
+    log: BlockContext['log'],
+  ): Promise<unknown> {
+    const compiled = this.functions.get(name)
+    if (!compiled) throw new BlockFailure('unknown_function', `No function is named "${name}"`)
+    const params = Array.isArray(args)
+      ? Object.fromEntries((compiled.fn.params ?? []).map((p, i) => [p.name, args[i] ?? null]))
+      : args
+    const outcome = await new RunExecution(
+      {
+        ...this.opts,
+        globals: { ...this.opts.globals, params: toJsonData(params).data },
+        store: new FunctionCallStore(name, log),
+        checkpoints: undefined,
+        waits: undefined,
+        only: undefined,
+        responded: true,
+        signal,
+        deadline: undefined,
+      },
+      { graph: compiled.graph, isFunction: true },
+      this.functions,
+    ).run()
+    if (outcome.status === 'succeeded') return outcome.results.get(compiled.returns)?.data ?? null
+    if (outcome.status === 'failed' && outcome.error) {
+      const { block, ...error } = outcome.error
+      throw new BlockFailure(
+        error.code === 'cancelled' ? 'cancelled' : 'function_failed',
+        `${name}${block ? `.${block}` : ''}: ${error.message}`,
+        { function: name, ...(block && { block }), error },
+      )
+    }
+    // Interrupted or cancelled with the calling block.
+    throw signal.reason ?? new BlockFailure('cancelled', `${name} was stopped`)
+  }
+
+  /**
+   * A loop's iterations: those committed earlier, and a recorder that commits new ones in batches. A failed write
+   * (lease lost, database down) interrupts the run, like any store failure.
+   */
+  private iterationsOf(loop: string): LoopIterations {
+    const done = this.iterationCheckpoints.get(loop) ?? new Map<number, BlockResult>()
+    let buffer: BlockResult[] = []
+    let timer: NodeJS.Timeout | undefined
+    let writing: Promise<void> = Promise.resolve()
+    const flush = () => {
+      clearTimeout(timer)
+      timer = undefined
+      const batch = buffer
+      buffer = []
+      if (batch.length) {
+        writing = writing.then(() =>
+          this.opts.store.iterationsFinished(loop, batch).catch((err) => {
+            this.interrupt(err)
+            throw err
+          }),
+        )
+      }
+      return writing
+    }
+    return {
+      done,
+      record: (result) => {
+        buffer.push(result)
+        if (buffer.length >= ITERATION_BATCH) void flush().catch(() => {})
+        else timer ??= setTimeout(() => void flush().catch(() => {}), ITERATION_FLUSH_MS)
+      },
+      flush,
     }
   }
 
@@ -554,21 +701,4 @@ function scopeView(block: Block, result: BlockResult): Record<string, unknown> {
   if (block.type !== 'startTrigger') return view
   const { headers = {}, pathParams = {}, urlParams = {} } = result.metadata
   return { ...view, headers, pathParams, urlParams }
-}
-
-/** Block data is plain JSON (dates become strings), so a resumed run reads exactly what a fresh one did. */
-function toJsonData(value: unknown): { data: unknown; sizeBytes: number } {
-  let text: string | undefined
-  try {
-    text = JSON.stringify(value)
-  } catch (err) {
-    throw new BlockFailure('serialization', `The result isn't JSON-serializable: ${(err as Error).message}`)
-  }
-  if (text === undefined) return { data: null, sizeBytes: 4 }
-  const sizeBytes = Buffer.byteLength(text)
-  if (sizeBytes > MAX_PAYLOAD_BYTES) {
-    const mb = (sizeBytes / 1024 / 1024).toFixed(1)
-    throw new BlockFailure('too_large', `The result is ${mb} MB; blocks can return at most 10 MB`)
-  }
-  return { data: JSON.parse(text), sizeBytes }
 }

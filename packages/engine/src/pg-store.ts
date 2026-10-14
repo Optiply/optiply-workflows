@@ -162,6 +162,45 @@ export class PgRunStore implements RunStore {
     if (responded && extra?.response) this.hooks.onResponse?.(extra.response)
   }
 
+  async iterationsFinished(loop: string, results: readonly BlockResult[]) {
+    if (!results.length) return
+    await this.fenced(async (tx) => {
+      const rows = await tx
+        .insert(blockRuns)
+        .values(
+          results.map((r) => ({
+            runId: this.claim.runId,
+            blockKey: r.key,
+            status: r.status,
+            attempt: r.attempt,
+            epoch: this.claim.epoch,
+            port: r.port,
+            error: r.error as Record<string, unknown> | null,
+            metadata: r.metadata,
+            startedAt: r.startedAt,
+            finishedAt: r.finishedAt,
+          })),
+        )
+        // An iteration an earlier lease committed stays as it was.
+        .onConflictDoNothing({ target: [blockRuns.runId, blockRuns.blockKey] })
+        .returning({ id: blockRuns.id, key: blockRuns.blockKey })
+      const byKey = new Map(results.map((r) => [r.key, r]))
+      const payloads = rows.flatMap((row) => {
+        const r = byKey.get(row.key)!
+        return r.status === 'succeeded' ? [{ blockRunId: row.id, data: r.data, sizeBytes: r.sizeBytes }] : []
+      })
+      if (payloads.length) await tx.insert(blockRunPayloads).values(payloads)
+      if (rows.length) {
+        await notifyRunEvent(tx, {
+          runId: this.claim.runId,
+          type: 'iterations',
+          key: loop,
+          count: rows.length,
+        })
+      }
+    })
+  }
+
   log(entry: LogEntry) {
     this.logs.push(entry)
     if (this.logs.length >= LOG_BATCH) void this.flush()

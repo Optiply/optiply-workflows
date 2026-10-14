@@ -63,6 +63,11 @@ export interface RunStore {
    * then commits its result.
    */
   blockWaiting(key: string, attempt: number, until: Date): Promise<void>
+  /**
+   * Commits finished loop iterations (keys `<loop>[<index>]`) in one go. Like `blockFinished`, a committed
+   * iteration is never overwritten.
+   */
+  iterationsFinished(loop: string, results: readonly BlockResult[]): Promise<void>
   /** Buffered; failures to write logs never fail the run. */
   log(entry: { blockKey: string | null; level: LogLevel; message: string }): void
 }

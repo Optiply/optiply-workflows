@@ -246,6 +246,59 @@ describe('runs API', () => {
     expect(logs.map((l) => l.message)).toEqual(['got [REDACTED]'])
   })
 
+  it('runs loops and functions that query resources, listing iterations apart from blocks', async () => {
+    const created = data(await admin.mutate('workflows.create', { slug: 'loop-orders', name: 'loop-orders' }))
+    data(
+      await admin.mutate('workflows.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'each',
+              type: 'loop',
+              config: {
+                input: '{{ [1, 2] }}',
+                runner: {
+                  kind: 'query',
+                  resource: 'warehouse',
+                  query: { sql: 'select amount from orders where id = {{ value }}' },
+                },
+              },
+            },
+            { name: 'named', type: 'function', config: { function: 'customer', params: { id: '{{ 2 }}' } } },
+          ],
+          edges: [
+            { from: 'startTrigger', port: 'out', to: 'each' },
+            { from: 'startTrigger', port: 'out', to: 'named' },
+          ],
+          functions: [
+            {
+              name: 'customer',
+              params: [{ name: 'id' }],
+              blocks: [query('q', 'select customer from orders where id = {{ params.id }}')],
+              edges: [],
+            },
+          ],
+        },
+      }),
+    )
+    const started = await rest(adminCookie, 'POST', '/workflows/loop-orders/runs', {})
+    const run = await waitForRun(started.body.run.id)
+    expect(run.status).toBe('succeeded')
+    const { body } = await rest(adminCookie, 'GET', `/runs/${run.id}/blocks`)
+    expect(body.blocks.map((b: { key: string }) => b.key).sort()).toEqual(['each', 'named', 'startTrigger'])
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each`)).body.block.data).toEqual([
+      [{ amount: 100 }],
+      [{ amount: 250 }],
+    ])
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/named`)).body.block.data).toEqual([
+      { customer: 'globex' },
+    ])
+  })
+
   it('records a failed run with the failing block', async () => {
     const wf = await workflowWith('broken-query', [query('q', 'select * from nope')], [['startTrigger', 'q']])
     const { body } = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})

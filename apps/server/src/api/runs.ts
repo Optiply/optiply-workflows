@@ -11,7 +11,7 @@ import {
   workflows,
 } from '@ow/db'
 import type { RunEvent } from '@ow/engine'
-import { and, asc, desc, eq, gt, inArray, lt } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, lt, notLike } from 'drizzle-orm'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
@@ -225,6 +225,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
     }
     const emit = (event: RunEvent) => {
       if (event.type === 'response') return
+      if (event.type === 'iterations') return send('iterations', { key: event.key, count: event.count })
       if (event.type === 'block') {
         const { key, status, attempt, port } = event
         return send('block', { key, status, attempt, port })
@@ -297,7 +298,8 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       .select({ block: blockRuns, sizeBytes: blockRunPayloads.sizeBytes })
       .from(blockRuns)
       .leftJoin(blockRunPayloads, eq(blockRunPayloads.blockRunId, blockRuns.id))
-      .where(eq(blockRuns.runId, runId))
+      // Loop iterations (`loop1[17]`) aren't blocks; a loop can have 100k of them.
+      .where(and(eq(blockRuns.runId, runId), notLike(blockRuns.blockKey, '%[%')))
       .orderBy(asc(blockRuns.startedAt), asc(blockRuns.createdAt))
     return rows.map((r) => blockView(r.block, r.sizeBytes))
   }

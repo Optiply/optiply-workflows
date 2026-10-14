@@ -1,10 +1,11 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import { type Block, type BlockOf, MAX_WAIT_MS } from '@ow/definition'
+import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
-import type { RunOptions } from '@ow/sandbox'
+import type { HostFunction } from '@ow/sandbox'
 import { BlockFailure } from './errors'
-import type { EngineServices, RunInput } from './types'
+import { runLoop } from './loop'
+import type { BlockResult, EngineServices, RunInput } from './types'
 
 export interface BlockContext {
   /** Globals plus the results of the blocks this one references. */
@@ -18,6 +19,35 @@ export interface BlockContext {
   log: (level: LogLevel, message: string) => void
   /** A Wait that already started waiting: when it resumes (stored, so re-running the block doesn't move it). */
   waitingUntil?: Date
+  /** Scrubbed from error messages. */
+  secrets: readonly string[]
+  /** The workflow's function names (code can call the ones it references). */
+  functions: ReadonlySet<string>
+  /**
+   * Calls a workflow function: named arguments, or positional ones in the order of its parameters. Resolves to
+   * the data of its return block; rejects with a BlockFailure when it fails.
+   */
+  callFunction(name: string, args: Record<string, unknown> | unknown[], signal: AbortSignal): Promise<unknown>
+  /** A loop's iterations: those committed by an earlier lease, and where to record new ones. */
+  iterations?: LoopIterations
+}
+
+/** One piece of work: a block attempt, or a loop iteration (whose scope adds `value` and `index`). */
+export interface Work {
+  scope: Record<string, unknown>
+  signal: AbortSignal
+  timeoutMs: number
+  log: (level: LogLevel, message: string) => void
+}
+
+/** A loop's view of its iteration checkpoints. */
+export interface LoopIterations {
+  /** Results committed earlier (succeeded or errored), by index. */
+  done: ReadonlyMap<number, BlockResult>
+  /** Records a finished iteration; buffered and written in batches. */
+  record(result: BlockResult): void
+  /** Writes everything recorded so far. */
+  flush(): Promise<void>
 }
 
 export interface BlockOutput {
@@ -44,31 +74,12 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   },
 
   async code(block, ctx) {
-    const data = await withHostCalls(ctx, (host) =>
-      ctx.services.sandbox.runCode(block.config.code, ctx.scope, {
-        timeoutMs: ctx.timeoutMs,
-        onLog: (level, args) => ctx.log(level, formatLogArgs(args)),
-        ...host,
-      }),
-    )
-    return { data }
+    return { data: await runCode(block, block.config.code, ctx, ctx) }
   },
 
   async resourceQuery(block, ctx) {
-    const slug = block.config.resource
-    let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
-    try {
-      target = await ctx.services.resources.resolve(slug, ctx.environmentId)
-    } catch (err) {
-      if (err instanceof BlockFailure) throw err
-      throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
-    }
-    const result = await runQuery(ctx.services.pool, target.connector, target.resource, block.config.query, {
-      evaluate: templateEvaluator(ctx),
-      signal: ctx.signal,
-      timeoutMs: ctx.timeoutMs,
-    })
-    return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+    const { data, metadata } = await runResourceQuery(block.config.resource, block.config.query, ctx, ctx)
+    return { data, metadata }
   },
 
   async branch(block, ctx) {
@@ -118,9 +129,13 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     return { data: { status, headers, body } }
   },
 
-  // M5: these are defined (step 1) but run from later steps. The error handler never runs as a regular block.
-  loop: notYet('Loop'),
-  function: notYet('Function'),
+  loop: runLoop,
+
+  async function(block, ctx) {
+    return { data: await callWorkflowFunction(block.config.function, block.config.params, ctx, ctx) }
+  },
+
+  // M5 step 5.
   workflow: notYet('Workflow'),
   async wait(block, ctx) {
     const until = ctx.waitingUntil ?? (await waitUntil(block, ctx))
@@ -173,18 +188,23 @@ function notYet<T extends Block['type']>(label: string): Executor<T> {
 }
 
 /**
- * What code may call outside the sandbox: `fetch`, aborted with the block (timeout, run failure, cancel) and also
- * once the code finishes, so a request it didn't await doesn't outlive it.
+ * Runs code (a code block, or a loop's code runner) in the sandbox with what it may call outside: `fetch`, and the
+ * workflow functions it references (`await name(...)`). Host calls are aborted with the work (timeout, run
+ * failure, cancel) and once the code finishes, so a request it didn't await doesn't outlive it.
  */
-async function withHostCalls<T>(
-  ctx: BlockContext,
-  run: (host: Pick<RunOptions, 'fetch'>) => Promise<T>,
-): Promise<T> {
+export async function runCode(block: Block, code: string, work: Work, ctx: BlockContext): Promise<unknown> {
   const done = new AbortController()
-  const signal = AbortSignal.any([ctx.signal, done.signal])
+  const signal = AbortSignal.any([work.signal, done.signal])
   const fetcher = ctx.services.fetcher
+  const functions: Record<string, HostFunction> = {}
+  for (const name of calledFunctions(block, ctx.functions)) {
+    functions[name] = (args) => ctx.callFunction(name, args, signal)
+  }
   try {
-    return await run({
+    return await ctx.services.sandbox.runCode(code, work.scope, {
+      timeoutMs: work.timeoutMs,
+      onLog: (level, args) => work.log(level, formatLogArgs(args)),
+      functions,
       fetch: async (request) => {
         if (!fetcher) throw new Error("fetch isn't available here")
         try {
@@ -201,15 +221,57 @@ async function withHostCalls<T>(
   }
 }
 
+/** Runs a query (a query block, or a loop's query runner) against a resource in the run's environment. */
+export async function runResourceQuery(
+  slug: string,
+  query: Record<string, unknown>,
+  work: Work,
+  ctx: BlockContext,
+): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
+  let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
+  try {
+    target = await ctx.services.resources.resolve(slug, ctx.environmentId)
+  } catch (err) {
+    if (err instanceof BlockFailure) throw err
+    throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
+  }
+  const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
+    evaluate: evaluatorFor(work, ctx),
+    signal: work.signal,
+    timeoutMs: work.timeoutMs,
+  })
+  return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+}
+
+/** Calls a workflow function with argument templates (a Function block, or a loop's function runner). */
+export async function callWorkflowFunction(
+  name: string,
+  params: Record<string, string> | undefined,
+  work: Work,
+  ctx: BlockContext,
+): Promise<unknown> {
+  const evaluate = evaluatorFor(work, ctx)
+  const args: Record<string, unknown> = {}
+  for (const [param, template] of Object.entries(params ?? {})) {
+    args[param] = await renderTemplate(template, evaluate)
+  }
+  return ctx.callFunction(name, args, work.signal)
+}
+
 export function executeBlock(block: Block, ctx: BlockContext): Promise<BlockOutput> {
   return (executors[block.type] as Executor<Block['type']>)(block, ctx)
 }
 
 /** Evaluates `{{ }}` in the sandbox; failures name the expression, like resource queries do. */
 function templateEvaluator(ctx: BlockContext): Evaluate {
+  return evaluatorFor(ctx, ctx)
+}
+
+/** Evaluates `{{ }}` against a piece of work's scope (a loop iteration's includes `value` and `index`). */
+export function evaluatorFor(work: Work, ctx: BlockContext): Evaluate {
   return async (code) => {
     try {
-      return await ctx.services.sandbox.evalExpression(code, ctx.scope, { timeoutMs: ctx.timeoutMs })
+      return await ctx.services.sandbox.evalExpression(code, work.scope, { timeoutMs: work.timeoutMs })
     } catch (err) {
       throw new BlockFailure('expression', `Error in {{ ${code.trim()} }}: ${(err as Error).message}`)
     }
@@ -221,7 +283,7 @@ export function formatLogArgs(args: unknown[]): string {
   return args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
 }
 
-function describe(value: unknown): string {
+export function describe(value: unknown): string {
   if (value === null) return 'null'
   if (Array.isArray(value)) return 'an array'
   if (typeof value === 'string') return `"${value.length > 40 ? `${value.slice(0, 40)}…` : value}"`

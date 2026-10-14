@@ -6,6 +6,7 @@ export type StoreEvent =
   | { type: 'finished'; key: string; status: BlockResult['status'] }
   | { type: 'response'; key: string; response: RunResponse }
   | { type: 'waiting'; key: string; until: Date }
+  | { type: 'iterations'; key: string; count: number }
 
 /**
  * Keeps a run's progress in memory: for tests, and for runs that don't need to survive a crash. `beforeWrite`
@@ -39,6 +40,13 @@ export class MemoryRunStore implements RunStore {
     if (extra?.response) {
       this.events.push({ type: 'response', key: result.key, response: extra.response })
       this.response = extra.response
+    }
+  }
+
+  async iterationsFinished(loop: string, results: readonly BlockResult[]) {
+    this.write({ type: 'iterations', key: loop, count: results.length })
+    for (const result of results) {
+      if (!this.results.has(result.key)) this.results.set(result.key, result)
     }
   }
 

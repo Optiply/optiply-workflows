@@ -22,6 +22,8 @@ export type RunEvent =
   | { runId: string; type: 'run'; status: string }
   | { runId: string; type: 'block'; key: string; status: string; attempt: number; port: string | null }
   | { runId: string; type: 'response' }
+  /** `count` more iterations of loop `key` finished. */
+  | { runId: string; type: 'iterations'; key: string; count: number }
 
 /** Publishes an event when the surrounding transaction commits. */
 export function notifyRunEvent(db: Executor, event: RunEvent) {
