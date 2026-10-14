@@ -507,6 +507,8 @@ export const workflowRuns = pgTable(
     index('workflow_runs_draft_snapshot_idx')
       .on(t.draftSnapshotId)
       .where(sql`${t.draftSnapshotId} is not null`),
+    // Retention finds old finished runs by when they finished.
+    index('workflow_runs_finished_idx').on(t.finishedAt).where(sql`${t.finishedAt} is not null`),
     uniqueIndex('workflow_runs_idempotency_uq')
       .on(t.workflowId, t.idempotencyKey)
       .where(sql`${t.idempotencyKey} is not null`),
@@ -660,3 +662,15 @@ export type BlockRunPayload = typeof blockRunPayloads.$inferSelect
 export type RunLog = typeof runLogs.$inferSelect
 export type LogLevel = (typeof LOG_LEVELS)[number]
 export type AuditEvent = typeof auditEvents.$inferSelect
+
+/**
+ * Periodic housekeeping (retention). A worker claims a job by moving `lastStartedAt` on, so each one runs once per
+ * period across all workers without holding a lock while it works.
+ */
+export const maintenanceJobs = pgTable('maintenance_jobs', {
+  name: text().primaryKey(),
+  lastStartedAt: timestamp({ withTimezone: true }),
+  lastFinishedAt: timestamp({ withTimezone: true }),
+  /** What the last run did (counts, duration) or why it failed. */
+  lastResult: jsonb().$type<Record<string, unknown>>(),
+})

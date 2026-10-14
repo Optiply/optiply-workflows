@@ -1,6 +1,6 @@
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { Dispatcher, Scheduler } from '@ow/engine'
+import { Dispatcher, RetentionJob, Scheduler } from '@ow/engine'
 import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
@@ -9,8 +9,8 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 /**
  * The workflow worker: claims queued runs and executes them (see `Dispatcher` in @ow/engine), renews their
  * leases and recovers runs whose worker died, and fires due schedules every 5 s (`Scheduler`; every worker ticks,
- * and each due schedule is fired by one of them). `stop()` stops firing and hands in-flight runs back to the queue.
- * Retention (M6) joins it later.
+ * and each due schedule is fired by one of them), and once a day deletes runs older than `RUN_RETENTION_DAYS`
+ * (`RetentionJob`; one worker a day wins the job). `stop()` stops firing and hands in-flight runs back to the queue.
  */
 export async function startWorker(deps: { db: Db; sql: postgres.Sql; config: Config; log: Logger }) {
   const { db, sql, config, log } = deps
@@ -29,10 +29,18 @@ export async function startWorker(deps: { db: Db; sql: postgres.Sql; config: Con
   await dispatcher.start()
   const scheduler = new Scheduler({ db, log: log.child({ component: 'scheduler' }) })
   scheduler.start()
+  const retention = new RetentionJob({
+    db,
+    days: config.RUN_RETENTION_DAYS,
+    log: log.child({ component: 'retention' }),
+  })
+  retention.start()
   return {
     dispatcher,
     scheduler,
+    retention,
     stop: async () => {
+      await retention.stop()
       await scheduler.stop()
       await dispatcher.stop()
       await pool.closeAll()

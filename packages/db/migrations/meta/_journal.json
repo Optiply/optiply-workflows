@@ -57,6 +57,13 @@
       "when": 1791973483152,
       "tag": "0007_run_suspend_cancel",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791999264293,
+      "tag": "0008_retention",
+      "breakpoints": true
     }
   ]
 }

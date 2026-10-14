@@ -45,6 +45,8 @@ const ConfigSchema = z
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
     /** Sync webhook runs one API process executes itself at once; more go to the workers. 0 sends all of them. */
     WEBHOOK_INLINE_CONCURRENCY: z.coerce.number().int().min(0).max(100).default(8),
+    /** Workers delete runs (with their blocks and logs) that finished longer ago than this, once a day. 0 keeps all. */
+    RUN_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(30),
     /**
      * Lets `fetch` in workflow code reach private, loopback and link-local addresses. Off by default (SSRF guard);
      * for development and tests against local servers.

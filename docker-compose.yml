@@ -20,6 +20,7 @@ x-app: &app
     LOG_LEVEL: ${LOG_LEVEL:-info}
     # Lets fetch in workflow code reach private addresses (local test servers only).
     CODE_FETCH_ALLOW_PRIVATE_NETWORK: ${CODE_FETCH_ALLOW_PRIVATE_NETWORK:-false}
+    RUN_RETENTION_DAYS: ${RUN_RETENTION_DAYS:-30}
 
 services:
   postgres:

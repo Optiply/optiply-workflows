@@ -13,6 +13,15 @@ export { MemoryRunStore, type StoreEvent } from './memory-store'
 export { executeRun } from './orchestrator'
 export { PgRunStore } from './pg-store'
 export * from './queue'
+export {
+  claimMaintenanceJob,
+  deleteOldRuns,
+  finishMaintenanceJob,
+  RetentionJob,
+  type RetentionLogger,
+  type RetentionOptions,
+  type RetentionResult,
+} from './retention'
 export { retryDelayMs, sleep } from './retry'
 export { type ScheduleFire, Scheduler, type SchedulerLogger, tickSchedules } from './scheduler'
 export * from './types'
