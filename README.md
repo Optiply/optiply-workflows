@@ -139,3 +139,18 @@ docker compose up --build        # postgres:18, one-shot migrate, api (serves th
 Compose reads `.env`; set `PUBLIC_URL=http://localhost:3000` there (or in the shell) when the app is served by the `api` container rather than Vite. Create the first admin with `docker compose exec api node dist/cli/create-admin.js --email you@optiply.nl --name You`.
 
 The image (`Dockerfile`) runs on `node:24-bookworm-slim`, with `TZ=UTC` and `--no-node-snapshot` (both required by the sandbox).
+
+### Monitoring
+
+Every process serves Prometheus metrics at `/metrics`: the API on its own port, workers on `METRICS_PORT` (default 9464, with `/health` next to it; `0` turns it off). Set `METRICS_TOKEN` to require `Authorization: Bearer <token>`.
+
+- **Per process:** `ow_http_requests_total` and `ow_http_request_duration_seconds` (by route pattern, e.g. `/api/v1/runs/:id`), `ow_runs_settled_total` and `ow_run_duration_seconds` (runs that finished or paused here, by status and trigger), `ow_blocks_finished_total` and `ow_block_duration_seconds` (by block type), `ow_schedule_fires_total` (started or skipped), and Node's own (`ow_process_*`, `ow_nodejs_*`). Sum these across processes.
+- **Whole database, read when scraped:** `ow_runs{status}` (queued, running, waiting), `ow_queue_lag_seconds` (how long the oldest due run has waited for a worker), `ow_user_tasks_open`, `ow_retention_last_finished_timestamp_seconds` and `ow_retention_last_deleted_runs`. Every process reports the same values: use `max`, not `sum`.
+
+Worth alerting on: queue lag over a minute, `failed` runs rising, retention not finishing for two days, and a worker's metrics endpoint going missing.
+
+### Audit log and backups
+
+**Settings → Audit log** filters by action, person, object and dates, and **Export CSV** downloads what's filtered (admins only, up to 100,000 rows, newest first; `GET /api/v1/audit/export.csv` with the same filters as query parameters). Exports are themselves audited, and cells a spreadsheet would treat as formulas are quoted so opening the file can't run anything.
+
+Backups, restores and the quarterly restore drill: [docs/runbooks/backup.md](docs/runbooks/backup.md). After restoring (or before removing an old encryption key), `node --no-node-snapshot dist/cli/verify-secrets.js` in the image (`pnpm --filter @ow/server verify-secrets` locally) checks that every stored secret decrypts with the configured keys.

@@ -12,7 +12,7 @@ import { startTestDatabase } from '@ow/db/testing'
 import { eq } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { decryptForRow, encryptForRow, rekeyAll } from '../src/services/secrets'
+import { decryptForRow, encryptForRow, rekeyAll, verifySecrets } from '../src/services/secrets'
 
 const k1 = generateKey()
 const k2 = generateKey()
@@ -119,6 +119,19 @@ describe('rekeyAll', () => {
     expect(await rekeyAll(db, rotated)).toEqual([
       { table: 'resource_configs', rekeyed: 0, failed: [swapped.id] },
       { table: 'config_var_values', rekeyed: 0, failed: [] },
+    ])
+
+    // verifySecrets decrypts everything, whatever its key: only the swapped row fails. It counts keys in use.
+    expect(await verifySecrets(db, rotated, 3)).toEqual([
+      { table: 'resource_configs', ok: 6, failed: [swapped.id], keys: { v1: 1, v2: 6 } },
+      { table: 'config_var_values', ok: 1, failed: [], keys: { v2: 1 } },
+    ])
+    // With only the new key, the broken row (still under v1) can't be read either; with a wrong key, nothing can.
+    expect((await verifySecrets(db, newOnly))[0]).toMatchObject({ ok: 6, failed: [swapped.id] })
+    const wrong = await verifySecrets(db, parseKeyring(`v2:${generateKey()}`))
+    expect(wrong.map((r) => [r.ok, r.failed.length])).toEqual([
+      [0, 7],
+      [0, 1],
     ])
   })
 })

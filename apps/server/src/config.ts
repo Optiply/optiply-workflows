@@ -47,6 +47,10 @@ const ConfigSchema = z
     WEBHOOK_INLINE_CONCURRENCY: z.coerce.number().int().min(0).max(100).default(8),
     /** Workers delete runs (with their blocks and logs) that finished longer ago than this, once a day. 0 keeps all. */
     RUN_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(30),
+    /** When set, `/metrics` needs `Authorization: Bearer <token>`. */
+    METRICS_TOKEN: z.string().optional(),
+    /** Workers serve `/metrics` (and `/health`) on this port; 0 turns it off. The API serves it on PORT. */
+    METRICS_PORT: z.coerce.number().int().min(0).max(65535).default(9464),
     /**
      * Lets `fetch` in workflow code reach private, loopback and link-local addresses. Off by default (SSRF guard);
      * for development and tests against local servers.

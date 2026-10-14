@@ -138,7 +138,15 @@ export class Scheduler {
   private timer: NodeJS.Timeout | undefined
   private ticking: Promise<void> = Promise.resolve()
 
-  constructor(private readonly opts: { db: Db; intervalMs?: number; log?: SchedulerLogger }) {}
+  constructor(
+    private readonly opts: {
+      db: Db
+      intervalMs?: number
+      log?: SchedulerLogger
+      /** Every fire, run or skipped (overlap), e.g. for metrics. */
+      onFire?: (fire: ScheduleFire) => void
+    },
+  ) {}
 
   start() {
     this.timer ??= setInterval(() => {
@@ -162,6 +170,7 @@ export class Scheduler {
             { triggerId: f.triggerId, schedule: f.schedule, scheduledFor: f.scheduledFor, runId: f.runId },
             f.runId ? 'schedule fired' : 'schedule fire skipped',
           )
+          this.opts.onFire?.(f)
         }
         if (fires.length < 50) return
       }

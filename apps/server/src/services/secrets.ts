@@ -1,4 +1,12 @@
-import { DecryptionError, decryptJson, encryptJson, type Keyring, rekey, secretAad } from '@ow/crypto'
+import {
+  DecryptionError,
+  decrypt,
+  decryptJson,
+  encryptJson,
+  type Keyring,
+  rekey,
+  secretAad,
+} from '@ow/crypto'
 import type { Db } from '@ow/db'
 import { sql } from 'drizzle-orm'
 
@@ -80,6 +88,50 @@ export async function rekeyAll(
         return rows.length
       })
     } while (fetched === batchSize)
+    reports.push(report)
+  }
+  return reports
+}
+
+export interface VerifyReport {
+  table: EncryptedTable
+  /** Rows whose value decrypted. */
+  ok: number
+  /** Rows whose value didn't (wrong or missing key, or tampered): ids. */
+  failed: string[]
+  /** How many values use each key version, e.g. `{ v1: 12, v2: 3 }`. */
+  keys: Record<string, number>
+}
+
+/**
+ * Decrypts every stored secret with the configured keys, changing nothing: after restoring a backup (or before
+ * removing an old key), this shows whether the keys and the database belong together.
+ */
+export async function verifySecrets(db: Db, keyring: Keyring, batchSize = 500): Promise<VerifyReport[]> {
+  const reports: VerifyReport[] = []
+  for (const { table, column } of ENCRYPTED_COLUMNS) {
+    const report: VerifyReport = { table, ok: 0, failed: [], keys: {} }
+    const t = sql.identifier(table)
+    const c = sql.identifier(column)
+    let after = '00000000-0000-0000-0000-000000000000'
+    for (;;) {
+      const rows = await db.execute<{ id: string; environment_id: string; token: string }>(sql`
+        select id, environment_id, ${c} as token from ${t}
+        where id > ${after} and ${c} is not null order by id limit ${batchSize}`)
+      for (const row of rows) {
+        after = row.id
+        const version = row.token.split('.')[0] ?? '?'
+        report.keys[version] = (report.keys[version] ?? 0) + 1
+        try {
+          decrypt(keyring, row.token, secretAad(table, row.id, row.environment_id))
+          report.ok++
+        } catch (err) {
+          if (!(err instanceof DecryptionError)) throw err
+          report.failed.push(row.id)
+        }
+      }
+      if (rows.length < batchSize) break
+    }
     reports.push(report)
   }
   return reports
