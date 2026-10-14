@@ -18,6 +18,8 @@ x-app: &app
     OIDC_ALLOWED_DOMAIN: ${OIDC_ALLOWED_DOMAIN:-optiply.nl}
     LOCAL_LOGIN_ENABLED: ${LOCAL_LOGIN_ENABLED:-false}
     LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Lets fetch in workflow code reach private addresses (local test servers only).
+    CODE_FETCH_ALLOW_PRIVATE_NETWORK: ${CODE_FETCH_ALLOW_PRIVATE_NETWORK:-false}
 
 services:
   postgres:

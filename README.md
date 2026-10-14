@@ -58,12 +58,23 @@ A draft run needs Edit on the workflow and Use on every resource it queries. Wit
 
 Code blocks can call `await fetch(url, { method, headers, body })` (the body is a string; the response has `status`, `headers`, `text()` and `json()`). Requests to private, loopback and link-local addresses are refused unless `CODE_FETCH_ALLOW_PRIVATE_NETWORK=true` (for local test servers); responses are capped at 10 MB, and a request stops when its block times out or the run stops.
 
+### Loops, functions, child workflows and waits
+
+- **Loop**: runs code, a resource query, a function or a child workflow for each item of an array (`value`, `index`), in parallel (10 at a time by default), one at a time, or in batches with a pause between them. Each item has its own timeout and retries; a failed item fails the loop or, with "leave null and go on", leaves `null` in its slot. Finished items are saved as they go (`loop1[17]`), so a run that resumes after a crash only runs the rest. The run panel lists a loop's items.
+- **Functions** (side panel → **Functions**): reusable subflows on their own canvas. Call one from a **Function** block, a loop, or code with `await name(a, b)`; its blocks read the arguments as `params.name`, and it returns the data of its last block (or the one you choose). Function calls belong to the block that makes them.
+- **Workflow** block: runs another workflow's live release in the same environment. "Wait for it" makes its Response body this block's data (the run pauses while the child takes long, and wakes when it ends); "start it and go on" gives `{ runId }`. Calling a workflow needs Use on it (to run the draft and to publish); workflows can nest 10 levels deep.
+- **Wait**: for a while, or until a date and time (at most 60 days). The run gives up its worker while it waits, survives restarts, and waiting doesn't count toward the run's timeout. A sync webhook whose run pauses answers `202`.
+- **Error handler**: runs when the workflow fails (a block that stops on failure, or a run timeout); its blocks read `<handler>.data = { block, code, message }`. A Response block there answers a webhook instead of the usual 500; the run still ends as failed.
+- **Cancel** (run panel, or `POST /api/v1/runs/<id>/cancel`): queued and paused runs end at once; a running run stops its in-flight queries and requests, and its child runs are cancelled too.
+
 Runs can also be started and read over the REST API, signed in with the session cookie:
 
 ```bash
 curl -c jar -H 'content-type: application/json' -d '{"email":"you@optiply.nl","password":"…"}' localhost:3000/api/auth/local
 curl -b jar -H 'content-type: application/json' -d '{"input":{"id":2}}' 'localhost:3000/api/v1/workflows/<slug>/runs?environment=production'
 curl -b jar localhost:3000/api/v1/runs/<runId>          # also /blocks, /blocks/<name> (with data), /logs and /events (SSE)
+curl -b jar localhost:3000/api/v1/runs/<runId>/blocks/<loop>/iterations?status=errored   # a loop's items; /children lists child runs
+curl -b jar -X POST localhost:3000/api/v1/runs/<runId>/cancel
 ```
 
 ### Releases, webhooks and schedules
@@ -91,6 +102,7 @@ pnpm lint        # Biome
 pnpm typecheck
 pnpm test        # Vitest; server tests boot a throwaway embedded Postgres per file
 pnpm --filter @ow/server bench:webhooks   # sync webhook latency (p50 < 50 ms), run alone because it's timing-sensitive
+pnpm --filter @ow/sandbox bench           # a fresh sandbox context in under 10 ms, likewise
 
 # End-to-end (Playwright): builds, then drives the editor against the bundled server
 pnpm --filter @ow/web build && pnpm --filter @ow/server build
