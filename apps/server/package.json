@@ -14,7 +14,8 @@
     "create-admin": "tsx src/cli/create-admin.ts",
     "rekey": "tsx src/cli/rekey.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:webhooks": "WEBHOOK_LATENCY=1 vitest run test/webhook-latency.test.ts --reporter=verbose"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.3",

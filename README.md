@@ -18,8 +18,8 @@ TypeScript monorepo (pnpm + Turborepo):
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
 | `packages/connectors` | Postgres and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
-| `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash |
-| `packages/engine` | Runs workflows: the orchestrator and block executors, and the Postgres queue (claims, leases with fencing epochs, recovery of runs whose worker died) |
+| `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash, cron with time zones, webhook aliases, release versions |
+| `packages/engine` | Runs workflows: the orchestrator and block executors, the Postgres queue (claims with concurrency limits, leases with fencing epochs, recovery of runs whose worker died), the scheduler, and the in-process runner for sync webhooks |
 
 ## Local development
 
@@ -56,7 +56,7 @@ Open **Workflows** in the app to create one. The editor has:
 
 A draft run needs Edit on the workflow and Use on every resource it queries. With `ROLE=all` the same process runs the worker; `WORKER_CONCURRENCY` (default 4) sets how many runs it executes at once.
 
-Runs can also be started and read over the REST API, signed in with the session cookie (API keys come with webhooks in M4):
+Runs can also be started and read over the REST API, signed in with the session cookie:
 
 ```bash
 curl -c jar -H 'content-type: application/json' -d '{"email":"you@optiply.nl","password":"…"}' localhost:3000/api/auth/local
@@ -64,12 +64,31 @@ curl -b jar -H 'content-type: application/json' -d '{"input":{"id":2}}' 'localho
 curl -b jar localhost:3000/api/v1/runs/<runId>          # also /blocks, /blocks/<name> (with data), /logs and /events (SSE)
 ```
 
+### Releases, webhooks and schedules
+
+Editor runs use the draft. **Publish** (top right) releases the draft as a new semver version and makes it live; the **Releases** tab lists every release and can make an earlier one live again (rollback). Webhooks, schedules and `"version": "live"` runs execute the live release. Publishing or rolling back needs Edit on the workflow and Use on every resource it queries in every environment.
+
+Triggers are set on the start trigger and take effect when you publish:
+
+- **Webhook**: `POST /api/v1/workflows/<slug>/webhook`, plus `/api/v1/hooks/<alias>` with an alias such as `orders/:orderId` (params arrive in `startTrigger.pathParams`). Callers need an API key (**Settings → API keys**, admins only; shown once):
+
+  ```bash
+  curl -X POST 'localhost:3000/api/v1/hooks/orders/42?environment=staging' \
+    -H 'X-Api-Key: ow_…' -H 'Content-Type: application/json' -d '{"note":"hi"}'
+  ```
+
+  The call waits for the Response block (up to the webhook's timeout, 30 s by default) and answers with its status, headers and body; without a Response block it gets `200 {runId, status}`, and `500` if the run failed first. `Prefer: respond-async` (or a timeout) answers `202 {runId}` with a `Location` the same key can read. `Idempotency-Key` makes a retry return the same run. Sync webhook runs execute in the API process (`WEBHOOK_INLINE_CONCURRENCY`, default 8) when a slot is free.
+- **Schedules**: a cron expression on a time zone's wall clock (Europe/Amsterdam by default) or a fixed interval, in a chosen environment. Workers fire due schedules every 5 s, each fire once; after downtime a schedule catches up with one run. If the previous run is still going, the fire is skipped (default), queued, or allowed to overlap.
+
+**Settings → Runs at once** in the editor caps how many runs of a workflow execute at the same time.
+
 ## Checks
 
 ```bash
 pnpm lint        # Biome
 pnpm typecheck
 pnpm test        # Vitest; server tests boot a throwaway embedded Postgres per file
+pnpm --filter @ow/server bench:webhooks   # sync webhook latency (p50 < 50 ms), run alone because it's timing-sensitive
 
 # End-to-end (Playwright): builds, then drives the editor against the bundled server
 pnpm --filter @ow/web build && pnpm --filter @ow/server build
@@ -81,5 +100,7 @@ pnpm --filter @ow/web e2e   # uses the installed Chrome locally; CI installs Chr
 ```bash
 docker compose up --build        # postgres:18, one-shot migrate, api (serves the web app on :3000), 2 workers
 ```
+
+Compose reads `.env`; set `PUBLIC_URL=http://localhost:3000` there (or in the shell) when the app is served by the `api` container rather than Vite. Create the first admin with `docker compose exec api node dist/cli/create-admin.js --email you@optiply.nl --name You`.
 
 The image (`Dockerfile`) runs on `node:24-bookworm-slim`, with `TZ=UTC` and `--no-node-snapshot` (both required by the sandbox).

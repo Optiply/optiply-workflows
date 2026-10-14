@@ -226,7 +226,7 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 
 ## 2.2a How §2.2 is tested
 
-Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts` (in-memory store), `dispatcher.test.ts` and `crash.test.ts` (Postgres). Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
+Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts` (in-memory store), `dispatcher.test.ts`, `crash.test.ts`, `scheduler.test.ts` and `inline.test.ts` (Postgres). Server tests are in `apps/server/test/`. Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
 
 | Rule | Status | Covered by |
 |---|---|---|
@@ -240,15 +240,15 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
 | References: ancestors and globals only | ✅ | validator "references"; semantics "refuses an invalid definition…"; server "refuses to start runs that would fail anyway" |
 | A skipped ancestor reads as `{data:null, error:null, metadata:{status:'skipped'}}` | ✅ | semantics "runs a join after if/else…" |
 | Response: the first one replies, execution continues, later ones `ignored` | ✅, including across a resume | semantics "response", "does not reply again when an earlier lease already did" |
-| Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500) | M4 (webhooks). The engine reports `response: null`. | semantics "has no response when no Response block runs" |
+| Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500) | ✅ (M4 webhooks; the error handler's Response is M5) | server webhooks "answers with the Response block's status, headers and body", "answers 200 { runId, status } without a Response block, and 500 when the run fails first"; semantics "has no response when no Response block runs" |
 | Loop | M5 | |
 | Functions | M5 | |
 | Wait / sync child / User Task, `waiting` with `available_at` | M5. The run timeout (default 15 min, max 6 h) is ✅. | dispatcher "claims a queued run…" (15 min deadline); semantics "fails the run at its deadline…"; definition schema "bounds the run timeout…" |
 | Delivery: at least once, committed exactly once | ✅ | crash "resumes a run on another worker after kill -9…"; dispatcher "fences off a zombie worker…", "never overwrites a committed result…"; semantics "delivery and resume"; db "commits one result per block key" |
 | `idempotencyKey` in scope | ✅ (the caller's key, or the run id) | dispatcher "exposes the caller's idempotency key…" |
-| Webhook `Idempotency-Key` header | M4. The unique index is ✅. | db "accepts an idempotency key once per workflow" |
+| Webhook `Idempotency-Key` header | ✅ (M4) | server webhooks "gives a repeated Idempotency-Key the same run and reply"; engine inline "returns the earlier run for a repeated idempotency key"; db "accepts an idempotency key once per workflow" |
 | Fails after 3 recoveries | ✅ | dispatcher "recovers runs whose lease expired and fails one that keeps losing its worker" |
-| Schedules | M4. The `ON CONFLICT (trigger_id, scheduled_for)` insert is ✅. | db "records each schedule fire once…" |
+| Schedules: tick with SKIP LOCKED, each fire once, catch-up with one run, overlap `skip`/`queue`/`allow`, Europe/Amsterdam default | ✅ (M4) | engine scheduler (all groups, incl. the minute-by-minute "1-minute cron whose runs take 2 minutes" and "across the Amsterdam DST changes"); definition cron "daylight saving time in Europe/Amsterdam"; db "records each schedule fire once…"; server releases "runs the live release when a published schedule comes due" |
 
 ## 2.3 Data model (Drizzle, `packages/db`)
 - **Identity:** `users`, `sessions`, `groups`, `group_members`, `permissions(group_id, object_type, object_id?, environment_id?, level)`, `environments`, `folders`.
@@ -257,12 +257,12 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - `resource_configs(resource_id, environment_id, config jsonb, secrets)`. In M1, `secrets` became one self-describing token `<keyVersion>.<iv>.<ciphertext>.<tag>` instead of separate ciphertext, IV and key-version columns; see `docs/handoff.md` §2.
   - `oauth_tokens`
   - `config_vars` + `config_var_values` (per environment, optionally secret)
-  - `api_keys` (prefix + sha256 hash, scoped to workflows and environments)
+  - `api_keys` (prefix + sha256 hash, scoped to workflows and environments; built in M4 with expiry, revoke and last use). Runs record the key that started them (`workflow_runs.api_key_id`).
 - **Workflows:**
   - `workflows(draft_definition, draft_revision, live_release_id, max_concurrent_runs)`
   - `workflow_draft_snapshots`
   - `workflow_releases(version semver, definition frozen, definition_hash)`
-  - `workflow_triggers`: the runtime projection of the live release's triggers, holding the webhook alias and `next_fire_at`
+  - `workflow_triggers`: the runtime projection of the live release's triggers, holding the webhook alias and `next_fire_at`. M4: rows are matched by kind and name so ids survive releases; `alias_shape` (unique) keeps two live webhooks off the same URLs; `environment_id` and `last_fired_at` for schedules.
 - **Runs:**
   - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`. In M2, `output` became `response` (the first Response block's reply), and each run points at exactly one release or draft snapshot.
   - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired).

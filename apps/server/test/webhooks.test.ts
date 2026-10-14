@@ -429,34 +429,3 @@ describe('refusals', () => {
     expect((await call('GET', '/api/v1/workflows/getter/webhook?q=1')).json).toEqual({ q: '1' })
   })
 })
-
-describe('speed', () => {
-  it('answers a sync webhook in under 50 ms at the median (real HTTP, run executed in-process)', async () => {
-    await published('fast', [
-      code('double', 'return startTrigger.data.n * 2'),
-      respond({ body: '{"n": {{ double.data }}}' }),
-    ])
-    const address = await env.app.listen({ port: 0, host: '127.0.0.1' })
-    const hit = async (n: number) => {
-      const started = performance.now()
-      const res = await fetch(`${address}/api/v1/workflows/fast/webhook`, {
-        method: 'POST',
-        headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
-        body: JSON.stringify({ n }),
-      })
-      const body = await res.json()
-      const ms = performance.now() - started
-      expect(body).toEqual({ n: n * 2 })
-      return ms
-    }
-    for (let i = 0; i < 20; i++) await hit(i)
-    const times: number[] = []
-    for (let i = 0; i < 200; i++) times.push(await hit(i))
-    times.sort((a, b) => a - b)
-    const p = (q: number) => times[Math.floor((times.length - 1) * q)]!
-    console.info(
-      `sync webhook latency over ${times.length} calls: p50 ${p(0.5).toFixed(1)} ms, p90 ${p(0.9).toFixed(1)} ms, p99 ${p(0.99).toFixed(1)} ms`,
-    )
-    expect(p(0.5)).toBeLessThan(50)
-  })
-})

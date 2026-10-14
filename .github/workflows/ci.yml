@@ -20,6 +20,9 @@ jobs:
       - run: pnpm typecheck
       # Tests boot an embedded Postgres (embedded-postgres npm binaries); no service container needed.
       - run: pnpm test
+      # M4's done-when (sync webhook p50 under 50 ms), measured alone: during `pnpm test` every package's suite and
+      # its Postgres compete for the runner's CPUs.
+      - run: pnpm --filter @ow/server bench:webhooks
 
   # Playwright against the bundled server serving the built web app (see apps/web/e2e/global-setup.ts).
   e2e:
