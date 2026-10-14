@@ -57,14 +57,34 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   },
 }
 
-/** Block types the user can add (there's exactly one start trigger). The M5 blocks get their forms in step 7. */
+/** Block types the user can add (there's exactly one start trigger). */
 export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'resourceQuery',
   'code',
   'branch',
   'filter',
   'response',
+  'loop',
+  'function',
+  'workflow',
+  'wait',
+  'errorTrigger',
 ]
+
+/** What a function can't contain (see the validator's not_in_function). */
+const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'errorTrigger'])
+
+/** The block types that can be added to a graph: a function's, or the workflow's (one error handler at most). */
+export function addableIn(
+  inFunction: boolean,
+  blocks: readonly Block[],
+): Exclude<BlockType, 'startTrigger'>[] {
+  return ADDABLE.filter((type) =>
+    inFunction
+      ? !NOT_IN_FUNCTIONS.has(type)
+      : type !== 'errorTrigger' || !blocks.some((b) => b.type === 'errorTrigger'),
+  )
+}
 
 /** The first free `<prefix><n>` name. */
 export function nextName(type: BlockType, taken: Iterable<string>): string {
@@ -73,11 +93,15 @@ export function nextName(type: BlockType, taken: Iterable<string>): string {
   for (let n = 1; ; n++) if (!used.has(`${prefix}${n}`)) return `${prefix}${n}`
 }
 
-/** A new block with a working default config. Queries need a resource, so the caller picks one. */
+/**
+ * A new block with a working default config. Queries need a resource, so the caller picks one; Function blocks
+ * call the first function there is. Inside a function, child workflows start async (a function can't wait).
+ */
 export function newBlock(
   type: Exclude<BlockType, 'startTrigger'>,
   name: string,
   resource?: { slug: string; type: string },
+  context: { functions?: string[]; inFunction?: boolean } = {},
 ): Block {
   switch (type) {
     case 'resourceQuery':
@@ -103,9 +127,9 @@ export function newBlock(
     case 'loop':
       return { name, type, config: { input: '{{ [] }}', runner: { kind: 'code', code: 'return value' } } }
     case 'function':
-      return { name, type, config: { function: '' } }
+      return { name, type, config: { function: context.functions?.[0] ?? '' } }
     case 'workflow':
-      return { name, type, config: { workflow: '' } }
+      return { name, type, config: { workflow: '', ...(context.inFunction && { mode: 'async' as const }) } }
     case 'wait':
       return { name, type, config: { kind: 'duration', amount: '1', unit: 'minutes' } }
     case 'errorTrigger':
@@ -133,7 +157,9 @@ export function summary(block: Block): string {
     case 'loop':
       return `Each of ${block.config.input.trim()}`
     case 'function':
-      return block.config.function ? `${block.config.function}()` : 'No function chosen'
+      return block.config.function
+        ? `${block.config.function}(${Object.keys(block.config.params ?? {}).join(', ')})`
+        : 'No function chosen'
     case 'workflow':
       return block.config.workflow || 'No workflow chosen'
     case 'wait':

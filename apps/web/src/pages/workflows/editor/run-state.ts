@@ -20,6 +20,8 @@ interface RunState {
   run: RunView | null
   /** Live block statuses of that run. */
   blocks: Record<string, LiveBlock>
+  /** Loop iterations committed while watching, by loop (live progress). */
+  iterations: Record<string, number>
   panelOpen: boolean
   starting: boolean
   startError: string | null
@@ -32,6 +34,7 @@ interface RunState {
   snapshot(run: RunView, blocks: (LiveBlock & { key: string })[]): void
   applyBlock(event: LiveBlock & { key: string }): void
   applyRun(status: RunView['status']): void
+  applyIterations(key: string, count: number): void
   setRun(run: RunView): void
 }
 
@@ -41,14 +44,25 @@ export const useRun = create<RunState>()((set, get) => ({
   runId: null,
   run: null,
   blocks: {},
+  iterations: {},
   panelOpen: false,
   starting: false,
   startError: null,
 
   init: (slug, environment) =>
-    set({ slug, environment, runId: null, run: null, blocks: {}, panelOpen: false, startError: null }),
+    set({
+      slug,
+      environment,
+      runId: null,
+      run: null,
+      blocks: {},
+      iterations: {},
+      panelOpen: false,
+      startError: null,
+    }),
   setEnvironment: (environment) => set({ environment }),
-  open: (runId) => set({ runId, run: null, blocks: {}, panelOpen: runId !== null || get().panelOpen }),
+  open: (runId) =>
+    set({ runId, run: null, blocks: {}, iterations: {}, panelOpen: runId !== null || get().panelOpen }),
   togglePanel: (open) => set({ panelOpen: open ?? !get().panelOpen }),
   snapshot: (run, blocks) =>
     set({
@@ -74,8 +88,18 @@ export const useRun = create<RunState>()((set, get) => ({
     const run = get().run
     if (run) set({ run: { ...run, status } })
   },
+  applyIterations: (key, count) =>
+    set({ iterations: { ...get().iterations, [key]: (get().iterations[key] ?? 0) + count } }),
   setRun: (run) => set({ run }),
 }))
+
+/** Cancels the open run; a running run keeps `running` until its process has stopped it. */
+export async function cancelOpenRun() {
+  const { runId } = useRun.getState()
+  if (!runId) return
+  const run = await runsApi.cancel(runId)
+  if (useRun.getState().runId === runId) useRun.getState().setRun(run)
+}
 
 /** Saves the draft, then runs the whole workflow with the start trigger's test input. */
 export async function runWorkflow() {

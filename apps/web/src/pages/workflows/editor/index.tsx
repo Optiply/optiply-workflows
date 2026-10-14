@@ -8,7 +8,8 @@ import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
-import { ADDABLE, BLOCK_KINDS, newBlock, nextName } from './catalog'
+import { addableIn, BLOCK_KINDS, newBlock, nextName } from './catalog'
+import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
@@ -17,7 +18,7 @@ import { ReleaseControls, ReleasesTab } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
 import { saveDraftNow } from './save'
-import { type SaveStatus, type SideTab, useEditor } from './store'
+import { graphOf, type SaveStatus, type SideTab, updateGraph, useEditor } from './store'
 import { WorkflowSettingsTab } from './workflow-settings'
 
 const route = getRouteApi('/app/workflows/$workflowId')
@@ -100,6 +101,7 @@ function EditorLayout({
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
               {canEdit && <Toolbar />}
+              <FunctionBanner />
             </div>
             {panelOpen && <RunPanel />}
           </div>
@@ -146,21 +148,22 @@ function Header({
 
 function Toolbar() {
   const trpc = useTRPC()
-  const update = useEditor((s) => s.update)
   const select = useEditor((s) => s.select)
   const selected = useEditor((s) => s.selected)
+  const fn = useEditor((s) => s.graph)
+  const definition = useEditor((s) => s.definition)
   const { data: resources } = useQuery(trpc.resources.list.queryOptions())
   const queryable = resources?.resources ?? []
   const { fitView } = useReactFlow()
+  const types = addableIn(fn !== null, graphOf(definition, fn).blocks)
 
   const add = (type: Exclude<BlockType, 'startTrigger'>) => {
     let added = ''
-    update((def) => {
-      added = nextName(
-        type,
-        def.blocks.map((b) => b.name),
-      )
-      const block = newBlock(type, added, queryable[0])
+    const functions = (useEditor.getState().definition.functions ?? []).map((f) => f.name)
+    updateGraph((def) => {
+      // Block names can't be function names either (code calls functions by name).
+      added = nextName(type, [...def.blocks.map((b) => b.name), ...functions])
+      const block = newBlock(type, added, queryable[0], { functions, inFunction: fn !== null })
       const positions = positionsFor(def)
       // To the right of the selected block, or after the rightmost one.
       const anchor = selected && positions[selected]
@@ -169,7 +172,9 @@ function Toolbar() {
         : Math.max(0, ...Object.values(positions).map((p) => p.x)) + NODE_WIDTH + 80
       const y = anchor ? anchor.y : 0
       const edges =
-        selected && def.blocks.some((b) => b.name === selected && b.type !== 'branch')
+        type !== 'errorTrigger' &&
+        selected &&
+        def.blocks.some((b) => b.name === selected && b.type !== 'branch')
           ? [...def.edges, { from: selected, port: 'out', to: added }]
           : def.edges
       return {
@@ -186,29 +191,32 @@ function Toolbar() {
 
   return (
     <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
-      {ADDABLE.map((type) => {
+      <Plus className="mx-1 size-3.5 text-muted" />
+      {types.map((type) => {
         const kind = BLOCK_KINDS[type]
         const Icon = kind.icon
         const disabled = type === 'resourceQuery' && queryable.length === 0
+        const label = `Add a ${kind.label.toLowerCase()} block`
         return (
           <Button
             key={type}
-            size="sm"
-            className="whitespace-nowrap"
+            size="icon"
+            variant="ghost"
             disabled={disabled}
-            title={disabled ? 'Add a resource first' : `Add a ${kind.label.toLowerCase()} block`}
+            title={disabled ? 'Add a resource first' : label}
+            aria-label={label}
             onClick={() => add(type)}
           >
-            <Plus className="size-3.5" />
-            <Icon className="size-3.5" /> {kind.label}
+            <Icon className="size-4" />
           </Button>
         )
       })}
+      <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
         variant="ghost"
         title="Arrange blocks automatically"
-        onClick={() => update((def) => ({ ...def, layout: { ...def.layout, blocks: autoLayout(def) } }))}
+        onClick={() => updateGraph((g) => ({ ...g, layout: { ...g.layout, blocks: autoLayout(g) } }))}
       >
         <LayoutGrid className="size-4" /> Arrange
       </Button>
@@ -345,6 +353,7 @@ function Autosave() {
 
 const SIDE_TABS: { value: SideTab; label: string }[] = [
   { value: 'problems', label: 'Problems' },
+  { value: 'functions', label: 'Functions' },
   { value: 'releases', label: 'Releases' },
   { value: 'settings', label: 'Settings' },
 ]
@@ -355,7 +364,8 @@ function SidePanel({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean
   const definition = useEditor((s) => s.definition)
   const diagnostics = useEditor((s) => s.diagnostics)
   const tab = useEditor((s) => s.sideTab)
-  const block = definition.blocks.find((b) => b.name === selected)
+  const fn = useEditor((s) => s.graph)
+  const block = graphOf(definition, fn).blocks.find((b) => b.name === selected)
 
   return (
     // `nokey`: React Flow listens for Space (pan) and Backspace/Delete (delete the selection) on the whole document
@@ -365,11 +375,14 @@ function SidePanel({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean
       data-testid="side-panel"
     >
       {block ? (
-        <Inspector key={block.name} name={block.name} />
+        <Inspector key={`${fn ?? ''}/${block.name}`} name={block.name} />
+      ) : fn !== null ? (
+        <FunctionSettings key={fn} name={fn} canEdit={canEdit} />
       ) : (
         <div className="flex min-h-0 flex-col p-4">
           <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
           {tab === 'problems' && <Problems diagnostics={diagnostics} />}
+          {tab === 'functions' && <FunctionsTab canEdit={canEdit} />}
           {tab === 'releases' && <ReleasesTab workflow={workflow} canEdit={canEdit} />}
           {tab === 'settings' && <WorkflowSettingsTab workflow={workflow} canEdit={canEdit} />}
         </div>
@@ -393,7 +406,7 @@ function Problems({ diagnostics }: { diagnostics: Diagnostic[] }) {
 }
 
 function ProblemList({ diagnostics, empty }: { diagnostics: Diagnostic[]; empty: string }) {
-  const select = useEditor((s) => s.select)
+  const openGraph = useEditor((s) => s.openGraph)
   if (!diagnostics.length) {
     return (
       <p className="flex items-center gap-1.5 text-sm text-muted">
@@ -407,7 +420,9 @@ function ProblemList({ diagnostics, empty }: { diagnostics: Diagnostic[]; empty:
         <li key={`${d.code}:${d.path.join('.')}:${d.start ?? ''}`}>
           <button
             type="button"
-            onClick={() => d.block && select(d.block)}
+            onClick={() =>
+              d.block ? openGraph(d.function ?? null, d.block) : d.function && openGraph(d.function)
+            }
             className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-canvas"
           >
             <AlertCircle
@@ -417,7 +432,11 @@ function ProblemList({ diagnostics, empty }: { diagnostics: Diagnostic[]; empty:
               )}
             />
             <span className="min-w-0">
-              {d.block && <span className="font-mono text-xs text-muted">{d.block} · </span>}
+              {(d.function || d.block) && (
+                <span className="font-mono text-xs text-muted">
+                  {[d.function, d.block].filter(Boolean).join('.')} ·{' '}
+                </span>
+              )}
               {d.message}
               {d.hint && <span className="block text-xs text-muted">{d.hint}</span>}
             </span>

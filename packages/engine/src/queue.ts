@@ -415,9 +415,12 @@ async function wakeParents(tx: Executor, rows: readonly { parent_run_id?: string
   if (woken.length) await notify(tx, RUNS_QUEUED_CHANNEL)
 }
 
-/** Blocks left waiting (or running, after a lost worker) in runs that just ended without them. */
+/**
+ * Blocks left waiting (or running, after a lost worker) in runs that just ended without them, with a block event
+ * each so open editors update.
+ */
 async function cancelWaitingBlocks(tx: Executor, runIds: string[]) {
-  await tx
+  const rows = await tx
     .update(blockRuns)
     .set({
       status: 'cancelled',
@@ -428,6 +431,17 @@ async function cancelWaitingBlocks(tx: Executor, runIds: string[]) {
     .where(
       and(inArray(blockRuns.runId, runIds), inArray(blockRuns.status, ['waiting', 'running', 'interrupted'])),
     )
+    .returning({ runId: blockRuns.runId, key: blockRuns.blockKey, attempt: blockRuns.attempt })
+  for (const row of rows) {
+    await notifyRunEvent(tx, {
+      runId: row.runId,
+      type: 'block',
+      key: row.key,
+      status: 'cancelled',
+      attempt: row.attempt,
+      port: null,
+    })
+  }
 }
 
 /**

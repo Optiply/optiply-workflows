@@ -1,5 +1,6 @@
 import { Graph, layout } from '@dagrejs/dagre'
-import { type Block, blockPorts, type WorkflowDefinition } from '@ow/definition'
+import { type Block, blockPorts } from '@ow/definition'
+import type { GraphPart } from './store'
 
 export const NODE_WIDTH = 240
 
@@ -12,7 +13,7 @@ export function nodeHeight(block: Block): number {
 type Positions = Record<string, { x: number; y: number }>
 
 /** Left-to-right layered layout of every block (top-left corners, as React Flow expects). */
-export function autoLayout(def: Pick<WorkflowDefinition, 'blocks' | 'edges'>): Positions {
+export function autoLayout(def: Pick<GraphPart, 'blocks' | 'edges'>): Positions {
   const g = new Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80, marginx: 20, marginy: 20 })
   g.setDefaultEdgeLabel(() => ({}))
@@ -31,7 +32,7 @@ export function autoLayout(def: Pick<WorkflowDefinition, 'blocks' | 'edges'>): P
  * Saved positions, with dagre filling in any block that has none (e.g. a workflow created through the API). Filling
  * in doesn't change the definition; positions are only saved when the user moves blocks or runs autolayout.
  */
-export function positionsFor(def: WorkflowDefinition): Positions {
+export function positionsFor(def: GraphPart): Positions {
   const saved = def.layout?.blocks ?? {}
   if (def.blocks.every((b) => saved[b.name])) return saved
   return { ...autoLayout(def), ...saved }

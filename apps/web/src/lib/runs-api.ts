@@ -31,6 +31,8 @@ export interface RunView {
   response: { status: number; headers: Record<string, string>; body: unknown } | null
   error: RunError | null
   recoveries: number
+  /** The run that started this one (a Workflow block or loop), if any. */
+  parentRunId: string | null
   createdBy: string | null
   /** The API key a webhook call presented. */
   apiKeyId: string | null
@@ -49,6 +51,11 @@ export interface BlockView {
   sizeBytes: number | null
   startedAt: string | null
   finishedAt: string | null
+}
+
+/** A committed loop iteration, without its data. */
+export interface IterationView extends Omit<BlockView, 'key' | 'port'> {
+  index: number
 }
 
 export interface RunLog {
@@ -104,6 +111,22 @@ export const runsApi = {
       (r) => r.block,
     ),
   logs: (id: string, after = 0) => call<{ logs: RunLog[]; next: number }>(`/runs/${id}/logs?after=${after}`),
+  /** 200 with the cancelled run, or 202 while a running run is being stopped. */
+  cancel: (id: string) =>
+    call<{ run: RunView }>(`/runs/${id}/cancel`, { method: 'POST', body: {} }).then((r) => r.run),
+  children: (id: string) => call<{ runs: RunView[] }>(`/runs/${id}/children`).then((r) => r.runs),
+  iterations: (
+    id: string,
+    key: string,
+    params: { offset?: number; limit?: number; status?: string } = {},
+  ) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).flatMap(([k, v]) => (v === undefined ? [] : [[k, String(v)]])),
+    ).toString()
+    return call<{ iterations: IterationView[]; total: number }>(
+      `/runs/${id}/blocks/${encodeURIComponent(key)}/iterations${qs ? `?${qs}` : ''}`,
+    )
+  },
 }
 
 /** `1.2 s`, `350 ms`, or `—` while unknown. */

@@ -3,9 +3,15 @@ import {
   type BlockOf,
   type BlockSettings,
   DEFAULT_BLOCK_SETTINGS,
+  DEFAULT_LOOP_BATCH_SIZE,
+  DEFAULT_LOOP_CONCURRENCY,
   type Diagnostic,
   isTrigger,
+  MAX_LOOP_CONCURRENCY,
   renameBlock,
+  resolveBlockSettings,
+  WAIT_UNITS,
+  type WaitUnit,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
@@ -17,7 +23,7 @@ import { removeFrom } from './canvas'
 import { BLOCK_KINDS } from './catalog'
 import type { CodeFieldProps, FieldProblem } from './code-field'
 import { runBlock, useRun } from './run-state'
-import { updateBlock, useEditor } from './store'
+import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
 import { TriggersForm } from './triggers'
 
 // Monaco is big: it loads the first time a code field is shown.
@@ -55,18 +61,27 @@ function EditorField({ label, hint, children }: { label: ReactNode; hint?: React
 /** Everything about one block: name, its type's settings, retries and timeouts, and its problems. */
 export function Inspector({ name }: { name: string }) {
   const definition = useEditor((s) => s.definition)
-  const diagnostics = useEditor((s) => s.diagnostics)
+  const allDiagnostics = useEditor((s) => s.diagnostics)
   const workflowId = useEditor((s) => s.workflowId)
-  const index = definition.blocks.findIndex((b) => b.name === name)
-  const block = definition.blocks[index]
+  const fn = useEditor((s) => s.graph)
+  const graph = graphOf(definition, fn)
+  const index = graph.blocks.findIndex((b) => b.name === name)
+  const block = graph.blocks[index]
   if (!block) return null
+  const diagnostics = problemsOf(allDiagnostics, name, fn)
+  // Where this block sits in the definition: ['blocks', i], or ['functions', f, 'blocks', i].
+  const base =
+    fn === null
+      ? ['blocks', index]
+      : ['functions', (definition.functions ?? []).findIndex((f) => f.name === fn), 'blocks', index]
 
   /** Validator problems for a field of this block, as editor markers. */
   const problemsAt = (...path: (string | number)[]): FieldProblem[] =>
     diagnostics
-      .filter((d) => d.block === name && startsWith(d.path, ['blocks', index, ...path]))
+      .filter((d) => startsWith(d.path, [...base, ...path]))
       .map((d) => ({ start: d.start, end: d.end, message: d.message, severity: d.severity }))
-  const modelPath = (field: string) => `file:///${workflowId}/${name}/${field}`
+  // Block names repeat across functions, so the function is part of each field's model.
+  const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
   const ctx: FormContext = { problemsAt, modelPath }
   const kind = BLOCK_KINDS[block.type]
   const Icon = kind.icon
@@ -81,7 +96,7 @@ export function Inspector({ name }: { name: string }) {
           <NameField name={name} />
           <div className="mt-1 text-xs text-muted">{kind.label}</div>
         </div>
-        {block.type !== 'startTrigger' && <RunBlockButton name={name} />}
+        {fn === null && !isTrigger(block) && <RunBlockButton name={name} />}
         {block.type !== 'startTrigger' && <DeleteBlock name={name} />}
       </div>
 
@@ -103,7 +118,7 @@ export function Inspector({ name }: { name: string }) {
         />
       </Field>
 
-      <BlockProblems diagnostics={diagnostics.filter((d) => d.block === name)} />
+      <BlockProblems diagnostics={diagnostics} />
     </div>
   )
 }
@@ -129,7 +144,8 @@ function NameField({ name }: { name: string }) {
 
   const commit = () => {
     if (draft === name) return setError(null)
-    const result = renameBlock(useEditor.getState().definition, name, draft)
+    const { definition, graph } = useEditor.getState()
+    const result = renameBlock(definition, name, draft, graph === null ? {} : { function: graph })
     if (!result.ok) return setError(result.error)
     setError(null)
     setSkipped(result.skipped.map((s) => s.block))
@@ -189,7 +205,7 @@ function DeleteBlock({ name }: { name: string }) {
       variant="ghost"
       title="Delete block"
       onClick={() => {
-        useEditor.getState().update((def) => removeFrom(def, new Set([name])))
+        updateGraph((g) => removeFrom(g, new Set([name])))
         useEditor.getState().select(null)
       }}
     >
@@ -212,6 +228,16 @@ function TypeForm({ block, ctx }: { block: Block; ctx: FormContext }) {
       return <FilterForm block={block} ctx={ctx} />
     case 'response':
       return <ResponseForm block={block} ctx={ctx} />
+    case 'loop':
+      return <LoopForm block={block} ctx={ctx} />
+    case 'function':
+      return <FunctionCallForm block={block} ctx={ctx} />
+    case 'workflow':
+      return <WorkflowForm block={block} ctx={ctx} />
+    case 'wait':
+      return <WaitForm block={block} ctx={ctx} />
+    case 'errorTrigger':
+      return <ErrorTriggerForm block={block} />
   }
 }
 
@@ -276,43 +302,75 @@ function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) 
 }
 
 type KeyValue = { key: string; value: string }
-const DEFAULT_REST = { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } }
+const DEFAULT_REST: Record<string, unknown> = {
+  method: 'GET',
+  path: '',
+  params: [],
+  headers: [],
+  body: { type: 'none' },
+}
 
 function QueryForm({ block, ctx }: { block: BlockOf<'resourceQuery'>; ctx: FormContext }) {
+  return (
+    <QueryEditor
+      resource={block.config.resource}
+      query={block.config.query as Record<string, unknown>}
+      at={['config']}
+      models=""
+      ctx={ctx}
+      onChange={(next) =>
+        updateBlock<BlockOf<'resourceQuery'>>(block.name, (b) => ({
+          ...b,
+          config: { resource: next.resource, query: next.query as never },
+        }))
+      }
+    />
+  )
+}
+
+/** A resource and its query (SQL, or a REST request), at `at` in the block (a query block's config, a loop's runner). */
+function QueryEditor({
+  resource,
+  query,
+  onChange,
+  at,
+  models,
+  ctx,
+}: {
+  resource: string
+  query: Record<string, unknown>
+  onChange: (next: { resource: string; query: Record<string, unknown> }) => void
+  at: (string | number)[]
+  /** Prefix for its fields' Monaco models: `query.sql` in a query block, `runner.query.sql` in a loop. */
+  models: string
+  ctx: FormContext
+}) {
   const trpc = useTRPC()
   const { data } = useQuery(trpc.resources.list.queryOptions())
   const resources = data?.resources ?? []
-  const current = resources.find((r) => r.slug === block.config.resource)
-  const query = block.config.query as Record<string, unknown>
-  const setQuery = (patch: Record<string, unknown>) =>
-    updateBlock<BlockOf<'resourceQuery'>>(block.name, (b) => ({
-      ...b,
-      config: { ...b.config, query: { ...(b.config.query as object), ...patch } as never },
-    }))
+  const current = resources.find((r) => r.slug === resource)
+  const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
     <div className="flex flex-col gap-4">
       <Field label="Resource">
         <Select
-          value={block.config.resource}
+          value={resource}
           onChange={(e) => {
             const next = resources.find((r) => r.slug === e.target.value)
-            updateBlock<BlockOf<'resourceQuery'>>(block.name, (b) => ({
-              ...b,
-              config: {
-                resource: e.target.value,
-                // Switching kinds of resource starts a fresh query.
-                query:
-                  next && current && next.type === current.type
-                    ? b.config.query
-                    : next?.type === 'postgres'
-                      ? { sql: 'select 1' }
-                      : (DEFAULT_REST as never),
-              },
-            }))
+            onChange({
+              resource: e.target.value,
+              // Switching kinds of resource starts a fresh query.
+              query:
+                next && current && next.type === current.type
+                  ? query
+                  : next?.type === 'postgres'
+                    ? { sql: 'select 1' }
+                    : DEFAULT_REST,
+            })
           }}
         >
-          {!current && <option value={block.config.resource}>{block.config.resource} (not found)</option>}
+          {!current && <option value={resource}>{resource} (not found)</option>}
           {resources.map((r) => (
             <option key={r.slug} value={r.slug}>
               {r.name} ({r.slug})
@@ -323,16 +381,16 @@ function QueryForm({ block, ctx }: { block: BlockOf<'resourceQuery'>; ctx: FormC
       {current?.type === 'postgres' || (!current && typeof query.sql === 'string') ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
-            path={ctx.modelPath('query.sql')}
+            path={ctx.modelPath(`${models}query.sql`)}
             language="sql"
             height={200}
             value={String(query.sql ?? '')}
-            problems={ctx.problemsAt('config', 'query', 'sql')}
+            problems={ctx.problemsAt(...at, 'query', 'sql')}
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
       ) : (
-        <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} />
+        <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       )}
     </div>
   )
@@ -342,10 +400,14 @@ function RestQueryForm({
   query,
   setQuery,
   ctx,
+  at,
+  models,
 }: {
   query: Record<string, unknown>
   setQuery: (patch: Record<string, unknown>) => void
   ctx: FormContext
+  at: (string | number)[]
+  models: string
 }) {
   const body = (query.body ?? { type: 'none' }) as {
     type: string
@@ -404,11 +466,11 @@ function RestQueryForm({
       </Field>
       {body.type === 'json' && (
         <Code
-          path={ctx.modelPath('body.json')}
+          path={ctx.modelPath(`${models}body.json`)}
           language="plaintext"
           height={140}
           value={body.json ?? ''}
-          problems={ctx.problemsAt('config', 'query', 'body', 'json')}
+          problems={ctx.problemsAt(...at, 'query', 'body', 'json')}
           onChange={(json) => setQuery({ body: { type: 'json', json } })}
         />
       )}
@@ -535,7 +597,7 @@ function BranchForm({ block, ctx }: { block: BlockOf<'branch'>; ctx: FormContext
             disabled={conditions.length === 1}
             onClick={() =>
               // The condition's output goes with it.
-              useEditor.getState().update((def) => ({
+              updateGraph((def) => ({
                 ...def,
                 blocks: def.blocks.map((b) =>
                   b.name === block.name && b.type === 'branch'
@@ -625,14 +687,482 @@ function ResponseForm({ block, ctx }: { block: BlockOf<'response'>; ctx: FormCon
   )
 }
 
+/** A one-line `{{ }}` template. */
+function TemplateLine({
+  path,
+  value,
+  onChange,
+  problems,
+  placeholder,
+}: {
+  path: string
+  value: string
+  onChange: (value: string) => void
+  problems?: FieldProblem[]
+  placeholder?: string
+}) {
+  return (
+    <div title={placeholder}>
+      <Code
+        path={path}
+        language="plaintext"
+        singleLine
+        height={30}
+        value={value}
+        problems={problems}
+        onChange={onChange}
+      />
+    </div>
+  )
+}
+
+type LoopConfig = BlockOf<'loop'>['config']
+type Runner = LoopConfig['runner']
+
+function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.resources.list.queryOptions())
+  const functions = useEditor((s) => s.definition.functions) ?? []
+  const config = block.config
+  const set = (patch: Partial<LoopConfig>) =>
+    updateBlock<BlockOf<'loop'>>(block.name, (b) => {
+      const next = { ...b.config, ...patch } as Record<string, unknown>
+      for (const key of Object.keys(next)) if (next[key] === undefined) delete next[key]
+      return { ...b, config: next as LoopConfig }
+    })
+  const setRunner = (runner: Runner) => set({ runner })
+  const mode = config.mode ?? 'parallel'
+  const runner = config.runner
+  const num = (value: string, min = 0) =>
+    value === '' ? undefined : Math.max(min, Math.round(Number(value)))
+  const iteration = config.iteration ?? {}
+  const setIteration = (patch: Record<string, unknown>) => {
+    const next = { ...iteration, ...patch } as Record<string, unknown>
+    for (const key of Object.keys(next)) if (next[key] === undefined) delete next[key]
+    set({ iteration: Object.keys(next).length ? (next as LoopConfig['iteration']) : undefined })
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <EditorField label="Items" hint="A {{ }} that gives an array, e.g. {{ query1.data }}.">
+        <TemplateLine
+          path={ctx.modelPath('input.txt')}
+          value={config.input}
+          problems={ctx.problemsAt('config', 'input')}
+          onChange={(input) => set({ input })}
+        />
+      </EditorField>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Run">
+          <Select value={mode} onChange={(e) => set({ mode: e.target.value as LoopConfig['mode'] })}>
+            <option value="parallel">In parallel</option>
+            <option value="sequential">One at a time</option>
+            <option value="batch">In batches</option>
+          </Select>
+        </Field>
+        {mode === 'parallel' && (
+          <Field label="At once">
+            <Input
+              type="number"
+              min={1}
+              max={MAX_LOOP_CONCURRENCY}
+              placeholder={String(DEFAULT_LOOP_CONCURRENCY)}
+              value={config.concurrency ?? ''}
+              onChange={(e) => set({ concurrency: num(e.target.value, 1) })}
+            />
+          </Field>
+        )}
+        {mode === 'batch' && (
+          <>
+            <Field label="Batch size">
+              <Input
+                type="number"
+                min={1}
+                placeholder={String(DEFAULT_LOOP_BATCH_SIZE)}
+                value={config.batchSize ?? ''}
+                onChange={(e) => set({ batchSize: num(e.target.value, 1) })}
+              />
+            </Field>
+            <Field label="Pause between batches (ms)">
+              <Input
+                type="number"
+                min={0}
+                placeholder="0"
+                value={config.batchDelayMs ?? ''}
+                onChange={(e) => set({ batchDelayMs: num(e.target.value) })}
+              />
+            </Field>
+          </>
+        )}
+      </div>
+
+      <Field label="For each item, run">
+        <Select
+          value={runner.kind}
+          onChange={(e) => {
+            const kind = e.target.value as Runner['kind']
+            if (kind === runner.kind) return
+            const resource = data?.resources[0]
+            setRunner(
+              kind === 'code'
+                ? { kind, code: 'return value' }
+                : kind === 'query'
+                  ? {
+                      kind,
+                      resource: resource?.slug ?? '',
+                      query: (resource?.type === 'postgres' || !resource
+                        ? { sql: 'select {{ value }}' }
+                        : DEFAULT_REST) as never,
+                    }
+                  : kind === 'function'
+                    ? { kind, function: functions[0]?.name ?? '' }
+                    : { kind, workflow: '' },
+            )
+          }}
+        >
+          <option value="code">Code</option>
+          <option value="query">A resource query</option>
+          <option value="function">A function</option>
+          <option value="workflow">A workflow</option>
+        </Select>
+      </Field>
+      {runner.kind === 'code' && (
+        <EditorField
+          label="JavaScript"
+          hint="value is the item and index its position; return the item's result."
+        >
+          <Code
+            path={ctx.modelPath('runner.js')}
+            language="javascript"
+            height={180}
+            value={runner.code}
+            problems={ctx.problemsAt('config', 'runner', 'code')}
+            onChange={(code) => setRunner({ kind: 'code', code })}
+          />
+        </EditorField>
+      )}
+      {runner.kind === 'query' && (
+        <QueryEditor
+          resource={runner.resource}
+          query={runner.query as Record<string, unknown>}
+          at={['config', 'runner']}
+          models="runner."
+          ctx={ctx}
+          onChange={(next) =>
+            setRunner({ kind: 'query', resource: next.resource, query: next.query as never })
+          }
+        />
+      )}
+      {runner.kind === 'function' && (
+        <FunctionArgs
+          fn={runner.function}
+          params={runner.params}
+          at={['config', 'runner']}
+          ctx={ctx}
+          hint="Arguments may use value and index."
+          onChange={(fn, params) => setRunner({ kind: 'function', function: fn, ...(params && { params }) })}
+        />
+      )}
+      {runner.kind === 'workflow' && (
+        <ChildWorkflow
+          workflow={runner.workflow}
+          input={runner.input}
+          mode={runner.mode}
+          at={['config', 'runner']}
+          ctx={ctx}
+          onChange={(patch) => setRunner({ ...runner, ...patch })}
+        />
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="When an item fails">
+          <Select
+            value={config.onError ?? 'stop'}
+            onChange={(e) => set({ onError: e.target.value === 'stop' ? undefined : 'continue' })}
+          >
+            <option value="stop">Fail the loop</option>
+            <option value="continue">Leave null and go on</option>
+          </Select>
+        </Field>
+        <Field label="Per item: timeout (ms)">
+          <Input
+            type="number"
+            min={100}
+            placeholder={String(DEFAULT_BLOCK_SETTINGS.timeoutMs)}
+            value={iteration.timeoutMs ?? ''}
+            onChange={(e) => setIteration({ timeoutMs: num(e.target.value, 100) })}
+          />
+        </Field>
+        <Field label="Per item: retries">
+          <Input
+            type="number"
+            min={0}
+            max={10}
+            placeholder="0"
+            value={iteration.retry?.count ?? ''}
+            onChange={(e) => {
+              const count = num(e.target.value)
+              setIteration({ retry: count === undefined ? undefined : { ...iteration.retry, count } })
+            }}
+          />
+        </Field>
+      </div>
+    </div>
+  )
+}
+
+/** A function to call and a template for each of its parameters (a Function block, a loop's function runner). */
+function FunctionArgs({
+  fn,
+  params,
+  onChange,
+  at,
+  ctx,
+  hint,
+}: {
+  fn: string
+  params: Record<string, string> | undefined
+  onChange: (fn: string, params: Record<string, string> | undefined) => void
+  at: (string | number)[]
+  ctx: FormContext
+  hint?: string
+}) {
+  const functions = useEditor((s) => s.definition.functions) ?? []
+  const chosen = functions.find((f) => f.name === fn)
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Function">
+        <Select
+          value={fn}
+          onChange={(e) => {
+            // Keep the arguments the other function also takes.
+            const next = functions.find((f) => f.name === e.target.value)
+            const kept = Object.fromEntries(
+              Object.entries(params ?? {}).filter(([k]) => next?.params?.some((p) => p.name === k)),
+            )
+            onChange(e.target.value, Object.keys(kept).length ? kept : undefined)
+          }}
+        >
+          {!chosen && <option value={fn}>{fn ? `${fn} (not found)` : 'Choose a function…'}</option>}
+          {functions.map((f) => (
+            <option key={f.name} value={f.name}>
+              {f.name}({(f.params ?? []).map((p) => p.name).join(', ')})
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {functions.length === 0 && (
+        <p className="text-xs text-muted">Create a function in the Functions tab first.</p>
+      )}
+      {(chosen?.params ?? []).map((param) => (
+        <EditorField key={param.name} label={<span className="font-mono">{param.name}</span>}>
+          <TemplateLine
+            path={ctx.modelPath(`${at.join('.')}.params.${param.name}.txt`)}
+            value={params?.[param.name] ?? ''}
+            problems={ctx.problemsAt(...at, 'params', param.name)}
+            onChange={(value) => {
+              const next = { ...params }
+              if (value) next[param.name] = value
+              else delete next[param.name]
+              onChange(fn, Object.keys(next).length ? next : undefined)
+            }}
+          />
+        </EditorField>
+      ))}
+      {hint && chosen?.params?.length ? <p className="-mt-1 text-xs text-muted">{hint}</p> : null}
+    </div>
+  )
+}
+
+function FunctionCallForm({ block, ctx }: { block: BlockOf<'function'>; ctx: FormContext }) {
+  return (
+    <FunctionArgs
+      fn={block.config.function}
+      params={block.config.params}
+      at={['config']}
+      ctx={ctx}
+      onChange={(fn, params) =>
+        updateBlock<BlockOf<'function'>>(block.name, (b) => ({
+          ...b,
+          config: { function: fn, ...(params && { params }) },
+        }))
+      }
+    />
+  )
+}
+
+/** The child workflow to run, its input and whether to wait for it (a Workflow block, a loop's workflow runner). */
+function ChildWorkflow({
+  workflow,
+  input,
+  mode,
+  onChange,
+  at,
+  ctx,
+}: {
+  workflow: string
+  input: string | undefined
+  mode: 'sync' | 'async' | undefined
+  onChange: (patch: { workflow?: string; input?: string; mode?: 'sync' | 'async' }) => void
+  at: (string | number)[]
+  ctx: FormContext
+}) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.workflows.list.queryOptions())
+  const current = useEditor((s) => s.workflowId)
+  const workflows = (data ?? []).filter((w) => w.id !== current)
+  const chosen = workflows.find((w) => w.slug === workflow)
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Workflow">
+        <Select value={workflow} onChange={(e) => onChange({ workflow: e.target.value })}>
+          {!chosen && (
+            <option value={workflow}>{workflow ? `${workflow} (not found)` : 'Choose a workflow…'}</option>
+          )}
+          {workflows.map((w) => (
+            <option key={w.slug} value={w.slug}>
+              {w.name} ({w.slug}){w.liveReleaseId ? '' : ' · not published'}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <EditorField
+        label="Input"
+        hint="JSON with {{ }}; the child reads it as startTrigger.data. Its live release runs."
+      >
+        <Code
+          path={ctx.modelPath(`${at.join('.')}.input.txt`)}
+          language="plaintext"
+          height={90}
+          value={input ?? ''}
+          problems={ctx.problemsAt(...at, 'input')}
+          onChange={(next) => onChange({ input: next })}
+        />
+      </EditorField>
+      <Field label="Then">
+        <Select
+          value={mode ?? 'sync'}
+          onChange={(e) => onChange({ mode: e.target.value as 'sync' | 'async' })}
+        >
+          <option value="sync">Wait for it; its Response body is the result</option>
+          <option value="async">Start it and go on; the result is its run id</option>
+        </Select>
+      </Field>
+    </div>
+  )
+}
+
+function WorkflowForm({ block, ctx }: { block: BlockOf<'workflow'>; ctx: FormContext }) {
+  return (
+    <ChildWorkflow
+      workflow={block.config.workflow}
+      input={block.config.input}
+      mode={block.config.mode}
+      at={['config']}
+      ctx={ctx}
+      onChange={(patch) =>
+        updateBlock<BlockOf<'workflow'>>(block.name, (b) => {
+          const config = { ...b.config, ...patch }
+          if (!config.input) delete config.input
+          if (config.mode === 'sync') delete config.mode
+          return { ...b, config }
+        })
+      }
+    />
+  )
+}
+
+function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) {
+  const config = block.config
+  const set = (next: BlockOf<'wait'>['config']) =>
+    updateBlock<BlockOf<'wait'>>(block.name, (b) => ({ ...b, config: next }))
+  return (
+    <div className="flex flex-col gap-4">
+      <Field label="Wait">
+        <Select
+          value={config.kind}
+          onChange={(e) =>
+            set(
+              e.target.value === 'until'
+                ? { kind: 'until', until: '{{ dayjs().add(1, "day").toISOString() }}' }
+                : { kind: 'duration', amount: '1', unit: 'minutes' },
+            )
+          }
+        >
+          <option value="duration">For a while</option>
+          <option value="until">Until a date and time</option>
+        </Select>
+      </Field>
+      {config.kind === 'duration' ? (
+        <div className="grid grid-cols-[1fr_8rem] gap-2">
+          <EditorField label="How long">
+            <TemplateLine
+              path={ctx.modelPath('amount.txt')}
+              value={config.amount}
+              problems={ctx.problemsAt('config', 'amount')}
+              onChange={(amount) => set({ ...config, amount })}
+            />
+          </EditorField>
+          <Field label="Unit">
+            <Select
+              value={config.unit}
+              onChange={(e) => set({ ...config, unit: e.target.value as WaitUnit })}
+            >
+              {WAIT_UNITS.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      ) : (
+        <EditorField label="Until" hint="An ISO date and time, or a {{ }} that gives one.">
+          <TemplateLine
+            path={ctx.modelPath('until.txt')}
+            value={config.until}
+            problems={ctx.problemsAt('config', 'until')}
+            onChange={(until) => set({ kind: 'until', until })}
+          />
+        </EditorField>
+      )}
+      <p className="text-xs text-muted">
+        At most 60 days. The run gives up its worker while it waits, and the time doesn't count toward the
+        run's timeout.
+      </p>
+    </div>
+  )
+}
+
+function ErrorTriggerForm({ block }: { block: BlockOf<'errorTrigger'> }) {
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <p>
+        Runs when the workflow fails: when a block that stops on failure fails, or the run times out. Connect
+        the blocks that should run then after it.
+      </p>
+      <p className="text-muted">
+        They read the failure as <code className="font-mono">{block.name}.data</code> ={' '}
+        <code className="font-mono">{'{ block, code, message }'}</code>, and can read any block before the
+        failure (those that didn't run read as skipped). A Response block here answers a webhook instead of
+        the usual 500. The run still ends as failed.
+      </p>
+    </div>
+  )
+}
+
 type ExecutableBlock = Exclude<Block, BlockOf<'startTrigger' | 'errorTrigger'>>
 
-/** Timeout, retries and what happens on failure. Unset values show their defaults as placeholders. */
+/**
+ * Timeout, retries and what happens on failure. Unset values show their defaults as placeholders. A loop retries
+ * per item (in its own form) and a wait only has "on failure".
+ */
 function SettingsForm({ block }: { block: ExecutableBlock }) {
-  // Loops and waits have fewer settings; their forms arrive in M5 step 7.
   const settings: BlockSettings = block.settings ?? {}
   const retry = settings.retry ?? {}
-  const defaults = DEFAULT_BLOCK_SETTINGS
+  const defaults = resolveBlockSettings({ ...block, settings: undefined } as Block)
+  const hasTimeout = block.type !== 'wait'
+  const hasRetries = block.type !== 'wait' && block.type !== 'loop'
   const set = (patch: Record<string, unknown>) =>
     updateBlock<ExecutableBlock>(block.name, (b) => {
       const next = { ...b.settings, ...patch } as Record<string, unknown>
@@ -649,18 +1179,20 @@ function SettingsForm({ block }: { block: ExecutableBlock }) {
   return (
     <details className="group rounded-md border border-border">
       <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
-        Timeout, retries and failure
+        {hasRetries ? 'Timeout, retries and failure' : hasTimeout ? 'Timeout and failure' : 'Failure'}
       </summary>
       <div className="grid grid-cols-2 gap-3 border-t border-border p-3">
-        <Field label="Timeout (ms)">
-          <Input
-            type="number"
-            min={100}
-            placeholder={String(defaults.timeoutMs)}
-            value={settings.timeoutMs ?? ''}
-            onChange={(e) => set({ timeoutMs: num(e.target.value) })}
-          />
-        </Field>
+        {hasTimeout && (
+          <Field label="Timeout (ms)">
+            <Input
+              type="number"
+              min={100}
+              placeholder={String(defaults.timeoutMs)}
+              value={settings.timeoutMs ?? ''}
+              onChange={(e) => set({ timeoutMs: num(e.target.value) })}
+            />
+          </Field>
+        )}
         <Field label="On failure">
           <Select
             value={settings.finally ?? defaults.finally}
@@ -670,33 +1202,37 @@ function SettingsForm({ block }: { block: ExecutableBlock }) {
             <option value="continue">Continue on the error output</option>
           </Select>
         </Field>
-        <Field label="Retries">
-          <Input
-            type="number"
-            min={0}
-            max={10}
-            placeholder={String(defaults.retry.count)}
-            value={retry.count ?? ''}
-            onChange={(e) => setRetry({ count: num(e.target.value) })}
-          />
-        </Field>
-        <Field label="Retry interval (ms)">
-          <Input
-            type="number"
-            min={0}
-            placeholder={String(defaults.retry.intervalMs)}
-            value={retry.intervalMs ?? ''}
-            onChange={(e) => setRetry({ intervalMs: num(e.target.value) })}
-          />
-        </Field>
-        <label className="col-span-2 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={retry.exponential ?? defaults.retry.exponential}
-            onChange={(e) => setRetry({ exponential: e.target.checked || undefined })}
-          />
-          Double the interval after each retry (up to {defaults.retry.maxIntervalMs / 1000} s)
-        </label>
+        {hasRetries && (
+          <>
+            <Field label="Retries">
+              <Input
+                type="number"
+                min={0}
+                max={10}
+                placeholder={String(defaults.retry.count)}
+                value={retry.count ?? ''}
+                onChange={(e) => setRetry({ count: num(e.target.value) })}
+              />
+            </Field>
+            <Field label="Retry interval (ms)">
+              <Input
+                type="number"
+                min={0}
+                placeholder={String(defaults.retry.intervalMs)}
+                value={retry.intervalMs ?? ''}
+                onChange={(e) => setRetry({ intervalMs: num(e.target.value) })}
+              />
+            </Field>
+            <label className="col-span-2 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={retry.exponential ?? defaults.retry.exponential}
+                onChange={(e) => setRetry({ exponential: e.target.checked || undefined })}
+              />
+              Double the interval after each retry (up to {defaults.retry.maxIntervalMs / 1000} s)
+            </label>
+          </>
+        )}
       </div>
     </details>
   )
