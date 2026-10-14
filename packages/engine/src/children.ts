@@ -1,11 +1,13 @@
 import { type Db, workflowRuns, workflows } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { BlockFailure } from './errors'
 import { cancelRun, startRun } from './queue'
 import { sleep } from './retry'
 import type { ChildRunState, ChildRuns, EngineError, RunResponse } from './types'
 
 const FINAL = new Set(['succeeded', 'failed', 'cancelled'])
+/** How deep workflows may call workflows. Stops a workflow that (indirectly) calls itself from recursing forever. */
+export const MAX_CHILD_DEPTH = 10
 
 /**
  * Child runs in Postgres. A child runs its workflow's live release in the parent's environment, is linked by
@@ -31,6 +33,21 @@ export class PgChildRuns implements ChildRuns {
     }
     if (!workflow.liveReleaseId) {
       throw new BlockFailure('not_published', `Workflow "${request.workflow}" isn't published`)
+    }
+    // The parent's depth: how many runs up its chain of parents.
+    const [chain] = await this.db.execute<{ depth: number }>(sql`
+      with recursive up(id, parent, depth) as (
+        select id, parent_run_id, 1 from workflow_runs where id = ${request.parentRunId}
+        union all
+        select r.id, r.parent_run_id, up.depth + 1 from workflow_runs r join up on r.id = up.parent
+        where up.depth <= ${MAX_CHILD_DEPTH}
+      )
+      select max(depth)::int as depth from up`)
+    if ((chain?.depth ?? 1) >= MAX_CHILD_DEPTH) {
+      throw new BlockFailure(
+        'too_deep',
+        `Workflows can call workflows at most ${MAX_CHILD_DEPTH} levels deep; does "${request.workflow}" call itself?`,
+      )
     }
     const { run } = await startRun(this.db, {
       workflowId: workflow.id,

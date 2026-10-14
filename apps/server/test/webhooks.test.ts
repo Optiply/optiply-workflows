@@ -1,5 +1,4 @@
 import { apiKeys, createDb, workflowRuns } from '@ow/db'
-import { cancelRun } from '@ow/engine'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import postgres from 'postgres'
@@ -323,7 +322,11 @@ describe('sync webhooks', () => {
     const runId = String(res.headers['x-run-id'])
     expect(res.json).toEqual({ runId, status: 'running' })
     expect(await runRow(runId)).toMatchObject({ status: 'waiting' })
-    expect(await cancelRun(env.db, runId)).toBe('cancelled')
+    // The caller's API key can follow and cancel the run it started.
+    const cancelled = await call('POST', `/api/v1/runs/${runId}/cancel`)
+    expect(cancelled.status).toBe(200)
+    expect(cancelled.json).toMatchObject({ run: { id: runId, status: 'cancelled' } })
+    expect((await call('POST', `/api/v1/runs/${runId}/cancel`)).status).toBe(409)
   })
 
   it('picks the most specific alias and 404s on unknown ones', async () => {

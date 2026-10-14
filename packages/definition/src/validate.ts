@@ -52,6 +52,8 @@ export type DiagnosticCode =
   | 'function_call'
   | 'recursive_function'
   | 'invalid_wait'
+  | 'unknown_workflow'
+  | 'unpublished_workflow'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -81,6 +83,11 @@ export interface ValidateOptions {
    * resource query is checked against its connector. The browser can leave this out.
    */
   resolveResource?: (slug: string) => QueryValidator | undefined
+  /**
+   * Server side: whether a child workflow slug names a workflow, and whether it has a live release (what child runs
+   * execute). When given, every Workflow block and loop workflow runner is checked.
+   */
+  resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
 }
 
 export interface ValidationResult {
@@ -113,6 +120,33 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   }
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report)
+
+  // Child workflows exist and are published.
+  if (options.resolveWorkflow) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        const call =
+          block.type === 'workflow'
+            ? { slug: block.config.workflow, at: ['config', 'workflow'] }
+            : block.type === 'loop' && block.config.runner.kind === 'workflow'
+              ? { slug: block.config.runner.workflow, at: ['config', 'runner', 'workflow'] }
+              : undefined
+        if (!call) return
+        const state = options.resolveWorkflow!(call.slug)
+        if (state === 'published') return
+        report({
+          code: state === undefined ? 'unknown_workflow' : 'unpublished_workflow',
+          message:
+            state === undefined
+              ? `No workflow has the slug "${call.slug}"`
+              : `Workflow "${call.slug}" isn't published; publish it so this one can call it`,
+          path: [...path, 'blocks', i, ...call.at],
+          block: block.name,
+          ...(fn && { function: fn.name }),
+        })
+      })
+    }
+  }
 
   // Queries against their connectors.
   if (options.resolveResource) {

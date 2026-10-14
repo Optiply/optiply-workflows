@@ -10,21 +10,22 @@ import {
   workflowRuns,
   workflows,
 } from '@ow/db'
-import type { RunEvent } from '@ow/engine'
-import { and, asc, desc, eq, gt, inArray, lt, notLike } from 'drizzle-orm'
+import { cancelRun, type RunEvent } from '@ow/engine'
+import { and, asc, desc, eq, gt, inArray, lt, notLike, sql } from 'drizzle-orm'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
-import { type Access, loadAccess } from '../services/permissions'
+import { type Access, atLeast, loadAccess } from '../services/permissions'
 import type { RunEventHub } from '../services/run-events'
 import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
 
 /**
- * The runs API: start a manual run and read runs, block results and logs. Signed-in users authenticate with their
- * session cookie. An API key may read one run (`GET /runs/:id`) of a workflow and environment it's allowed, which is
- * how async webhook callers follow the run they started. Errors are `{ error: { code, message, details? } }`.
+ * The runs API: start a manual run, cancel runs, and read runs, their children, block results, loop iterations and
+ * logs. Signed-in users authenticate with their session cookie. An API key may read, cancel and list the children of
+ * one run (`GET /runs/:id`, `POST /runs/:id/cancel`, `GET /runs/:id/children`) of a workflow and environment it's
+ * allowed, which is how async webhook callers follow the run they started. Errors are `{ error: { code, message, details? } }`.
  */
 export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = async (app, { db, events }) => {
   app.decorateRequest('user', null)
@@ -36,7 +37,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       return
     }
     const presented = presentedApiKey(req.headers)
-    if (presented && req.method === 'GET' && req.routeOptions.url === '/api/v1/runs/:id') {
+    if (presented && API_KEY_ROUTES.has(`${req.method} ${req.routeOptions.url}`)) {
       const key = await authenticateApiKey(db, presented.key)
       if (key) {
         req.apiKey = key
@@ -180,6 +181,115 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
   app.get('/runs/:id', async (req) => {
     const { run, workflow, environment } = await visibleRun(req)
     return { run: runView(run, workflow, environment) }
+  })
+
+  /**
+   * Cancels a run. A queued or waiting run ends at once (`200`); a running one is stopped by the process holding it,
+   * aborting in-flight SQL and fetches (`202`, still `running`; follow it until `cancelled`). Its child workflows
+   * are cancelled too. Needs the access starting it took: Edit on the workflow for a draft run, Use for a live one.
+   * An API key may cancel the runs it may read.
+   */
+  app.post('/runs/:id/cancel', async (req, reply) => {
+    const { run, workflow, environment } = await visibleRun(req)
+    if (req.user) {
+      const level = (await loadAccess(db, req.user)).workflowLevel(workflow)
+      const needed = run.releaseId ? 'use' : 'edit'
+      if (!atLeast(level, needed)) {
+        throw new RunRequestError(
+          403,
+          'forbidden',
+          `You need ${needed} access to the workflow to cancel this run`,
+        )
+      }
+    }
+    const outcome = await cancelRun(db, run.id)
+    if (outcome === 'finished') {
+      throw new RunRequestError(
+        409,
+        'already_finished',
+        `The run already ${run.status === 'cancelled' ? 'was cancelled' : run.status}`,
+      )
+    }
+    if (outcome === 'not_found') throw new RunRequestError(404, 'not_found', 'Run not found')
+    await recordAudit(db, {
+      action: 'workflow.run_cancelled',
+      objectType: 'workflow',
+      objectId: workflow.id,
+      environmentId: run.environmentId,
+      actorUserId: req.user?.id ?? null,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      metadata: { runId: run.id, ...(req.apiKey && { apiKeyId: req.apiKey.id }) },
+    })
+    const [current] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+    return reply
+      .code(outcome === 'requested' ? 202 : 200)
+      .send({ run: runView(current!, workflow, environment) })
+  })
+
+  /** Runs this run started (Workflow blocks, loop workflow runners), oldest first; those of workflows you can't see are left out. */
+  app.get('/runs/:id/children', async (req) => {
+    const { run } = await visibleRun(req)
+    const rows = await db
+      .select({ run: workflowRuns, workflow: workflows, environment: environments.slug })
+      .from(workflowRuns)
+      .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
+      .innerJoin(environments, eq(environments.id, workflowRuns.environmentId))
+      .where(eq(workflowRuns.parentRunId, run.id))
+      .orderBy(asc(workflowRuns.id))
+      .limit(1000)
+    const access = req.user ? await loadAccess(db, req.user) : null
+    return {
+      runs: rows
+        .filter((r) =>
+          access
+            ? access.workflowLevel(r.workflow) !== null
+            : apiKeyAllows(req.apiKey!, r.workflow.id, r.run.environmentId),
+        )
+        .map((r) => runView(r.run, r.workflow, r.environment)),
+    }
+  })
+
+  /**
+   * A loop's iterations in index order, without data (read one with `GET /runs/:id/blocks/<loop>[<index>]`). Only
+   * committed iterations are listed: `succeeded`, `errored` (the loop continued past it) or `failed`.
+   */
+  app.get('/runs/:id/blocks/:key/iterations', async (req) => {
+    const { run } = await visibleRun(req)
+    const { key } = parse(z.object({ key: z.string() }), req.params)
+    const query = parse(
+      z.object({
+        offset: z.coerce.number().int().min(0).default(0),
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
+        status: z.enum(['succeeded', 'errored', 'failed']).optional(),
+      }),
+      req.query,
+    )
+    const prefix = `${key}[`
+    const where = and(
+      eq(blockRuns.runId, run.id),
+      sql`starts_with(${blockRuns.blockKey}, ${prefix})`,
+      query.status ? eq(blockRuns.status, query.status) : undefined,
+    )
+    const index = sql<number>`substring(${blockRuns.blockKey} from ${prefix.length + 1} for length(${blockRuns.blockKey}) - ${prefix.length + 1})::int`
+    const [rows, [count]] = await Promise.all([
+      db
+        .select({ block: blockRuns, sizeBytes: blockRunPayloads.sizeBytes, index })
+        .from(blockRuns)
+        .leftJoin(blockRunPayloads, eq(blockRunPayloads.blockRunId, blockRuns.id))
+        .where(where)
+        .orderBy(index)
+        .offset(query.offset)
+        .limit(query.limit),
+      db.select({ n: sql<number>`count(*)::int` }).from(blockRuns).where(where),
+    ])
+    return {
+      iterations: rows.map((r) => {
+        const { key: _key, port: _port, ...view } = blockView(r.block, r.sizeBytes)
+        return { index: r.index, ...view }
+      }),
+      total: count!.n,
+    }
   })
 
   /** Every block's status and timing, without data. */
@@ -351,6 +461,13 @@ declare module 'fastify' {
 
 const FINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 
+/** What an API key may call (besides webhooks): following and cancelling a run it may read. */
+const API_KEY_ROUTES = new Set([
+  'GET /api/v1/runs/:id',
+  'POST /api/v1/runs/:id/cancel',
+  'GET /api/v1/runs/:id/children',
+])
+
 function parse<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const parsed = schema.safeParse(value)
   if (!parsed.success) {
@@ -379,6 +496,7 @@ function runView(run: WorkflowRun, workflow: Workflow, environment: string) {
     response: run.response,
     error: run.error,
     recoveries: run.recoveries,
+    parentRunId: run.parentRunId,
     createdBy: run.createdBy,
     apiKeyId: run.apiKeyId,
     createdAt: run.createdAt,

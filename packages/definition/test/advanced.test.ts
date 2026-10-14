@@ -565,6 +565,36 @@ describe('validating M5 blocks', () => {
   })
 })
 
+describe('child workflows', () => {
+  it('checks every called workflow exists and is published, when the server can tell', () => {
+    const def = withFunctions(
+      [
+        start,
+        { name: 'a', type: 'workflow', config: { workflow: 'ready' } },
+        { name: 'b', type: 'workflow', config: { workflow: 'draft-only' } },
+        loop('c', { kind: 'workflow', workflow: 'gone' }),
+      ],
+      [
+        ['startTrigger', 'a'],
+        ['startTrigger', 'b'],
+        ['startTrigger', 'c'],
+      ],
+      [fnDef('f', [{ name: 'w', type: 'workflow', config: { workflow: 'gone', mode: 'async' } }])],
+    )
+    expect(codes(def)).toEqual([])
+    const states: Record<string, 'published' | 'unpublished'> = {
+      ready: 'published',
+      'draft-only': 'unpublished',
+    }
+    const d = validateDefinition(def, { resolveWorkflow: (slug) => states[slug] }).diagnostics
+    expect(d.map((x) => [x.code, x.path.join('.'), x.function])).toEqual([
+      ['unpublished_workflow', 'blocks.2.config.workflow', undefined],
+      ['unknown_workflow', 'blocks.3.config.runner.workflow', undefined],
+      ['unknown_workflow', 'functions.0.blocks.0.config.workflow', 'f'],
+    ])
+  })
+})
+
 describe('walking a definition', () => {
   it('finds every resource and child workflow, functions included', () => {
     const def = parse(

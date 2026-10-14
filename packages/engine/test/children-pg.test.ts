@@ -149,6 +149,28 @@ it("fails the block when the child workflow isn't published", async () => {
   })
 })
 
+it('stops a workflow that calls itself after 10 levels', async () => {
+  await start()
+  const self = wf(
+    [{ name: 'again', type: 'workflow', config: { workflow: 'recursive' } }],
+    [['startTrigger', 'again']],
+  )
+  await publishWorkflow(db, 'recursive', self)
+  const top = await queueRun(db, self)
+  const done = await waitForFinish(db, top.id, 60_000)
+  expect(done).toMatchObject({ status: 'failed', error: { block: 'again', code: 'child_failed' } })
+  expect((done.error as { message: string }).message).toContain('at most 10 levels deep')
+  // The top run is level 1; nine nested children below it, the deepest failing to start a tenth.
+  const [below] = await db.execute<{ n: number }>(dsql`
+    with recursive down(id) as (
+      select id from workflow_runs where parent_run_id = ${top.id}
+      union all
+      select r.id from workflow_runs r join down on r.parent_run_id = down.id
+    )
+    select count(*)::int as n from down`)
+  expect(below!.n).toBe(9)
+})
+
 it('runs a child per loop iteration', async () => {
   await start()
   const parent = await queueRun(
