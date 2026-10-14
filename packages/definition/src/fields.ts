@@ -1,5 +1,5 @@
 import { type CodeKind, freeIdentifierRefs, parseTemplate, TemplateError } from '@ow/expressions'
-import type { Block } from './schema'
+import type { Block, LoopRunner } from './schema'
 
 export type FieldKind =
   /** Text with `{{ }}` expressions. */
@@ -15,9 +15,12 @@ export interface CodeField {
   path: (string | number)[]
   kind: FieldKind
   source: string
-  /** Names the engine defines for this field only (`value` and `index` in a filter condition). */
+  /** Names the engine defines for this field only (`value` and `index` in a filter condition or loop runner). */
   locals?: string[]
 }
+
+/** What a filter condition and a loop runner see for the current item. */
+const ITEM_LOCALS = ['value', 'index']
 
 /** A free identifier found in a field; offsets are into `CodeField.source`. */
 export interface FieldRef {
@@ -51,7 +54,7 @@ export function codeFields(block: Block): CodeField[] {
           path: ['config', 'condition'],
           kind: 'expression',
           source: block.config.condition,
-          locals: ['value', 'index'],
+          locals: ITEM_LOCALS,
         },
       ]
     case 'response': {
@@ -64,6 +67,23 @@ export function codeFields(block: Block): CodeField[] {
       if (body !== undefined) fields.push({ path: ['config', 'body'], kind: 'template', source: body })
       return fields
     }
+    case 'loop':
+      return [
+        { path: ['config', 'input'], kind: 'template', source: block.config.input },
+        ...runnerFields(block.config.runner),
+      ]
+    case 'function':
+      return argFields(block.config.params, ['config', 'params'])
+    case 'workflow':
+      return block.config.input === undefined
+        ? []
+        : [{ path: ['config', 'input'], kind: 'template', source: block.config.input }]
+    case 'wait':
+      return block.config.kind === 'duration'
+        ? [{ path: ['config', 'amount'], kind: 'template', source: block.config.amount }]
+        : [{ path: ['config', 'until'], kind: 'template', source: block.config.until }]
+    case 'errorTrigger':
+      return []
   }
 }
 
@@ -109,13 +129,39 @@ export function referencedNames(block: Block): Set<string> {
   return names
 }
 
-function templateStrings(value: unknown, path: (string | number)[]): CodeField[] {
-  if (typeof value === 'string') return [{ path, kind: 'template', source: value }]
-  if (Array.isArray(value)) return value.flatMap((v, i) => templateStrings(v, [...path, i]))
+function templateStrings(value: unknown, path: (string | number)[], locals?: string[]): CodeField[] {
+  if (typeof value === 'string') return [{ path, kind: 'template', source: value, ...(locals && { locals }) }]
+  if (Array.isArray(value)) return value.flatMap((v, i) => templateStrings(v, [...path, i], locals))
   if (value && typeof value === 'object') {
     return Object.keys(value)
       .sort()
-      .flatMap((k) => templateStrings((value as Record<string, unknown>)[k], [...path, k]))
+      .flatMap((k) => templateStrings((value as Record<string, unknown>)[k], [...path, k], locals))
   }
   return []
+}
+
+/** A loop runner's code, query or arguments, where `value` and `index` are the current item. */
+function runnerFields(runner: LoopRunner): CodeField[] {
+  const at = ['config', 'runner']
+  switch (runner.kind) {
+    case 'code':
+      return [{ path: [...at, 'code'], kind: 'function-body', source: runner.code, locals: ITEM_LOCALS }]
+    case 'query':
+      return templateStrings(runner.query, [...at, 'query'], ITEM_LOCALS)
+    case 'function':
+      return argFields(runner.params, [...at, 'params'], ITEM_LOCALS)
+    case 'workflow':
+      return runner.input === undefined
+        ? []
+        : [{ path: [...at, 'input'], kind: 'template', source: runner.input, locals: ITEM_LOCALS }]
+  }
+}
+
+/** A function call's argument templates, by parameter name. */
+function argFields(
+  params: Record<string, string> | undefined,
+  path: (string | number)[],
+  locals?: string[],
+): CodeField[] {
+  return templateStrings(params ?? {}, path, locals)
 }

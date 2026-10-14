@@ -20,10 +20,16 @@ export const JS_GLOBALS: ReadonlySet<string> = new Set(
 )
 
 /** Baked into the @ow/sandbox snapshot. */
-export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'console'])
+export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'console', 'fetch'])
+
+/** Globals that return promises: usable in code (which can `await`), not in `{{ }}` or conditions. */
+export const CODE_ONLY_GLOBALS: ReadonlySet<string> = new Set(['fetch'])
 
 /** Added by the engine to every evaluation in a run. */
 export const RUN_GLOBALS: ReadonlySet<string> = new Set(['configVars', 'workflowContext', 'idempotencyKey'])
+
+/** What a function's blocks read their arguments from: `{{ params.customerId }}`. */
+export const PARAMS_NAME = 'params'
 
 /** True when expressions can read `name` without it being a block. */
 export function isGlobalName(name: string): boolean {
@@ -34,5 +40,6 @@ export function isGlobalName(name: string): boolean {
 export function reservedNameReason(name: string): string | null {
   if (RESERVED_WORDS.has(name)) return `"${name}" is a JavaScript keyword`
   if (isGlobalName(name)) return `"${name}" is already a global available to expressions`
+  if (name === PARAMS_NAME) return `"${name}" is reserved for function parameters`
   return null
 }

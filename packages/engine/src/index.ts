@@ -1,11 +1,12 @@
 export { type BlockContext, type BlockOutput, executeBlock, formatLogArgs } from './blocks'
+export { childResult, PgChildRuns, waitForChild } from './children'
 export {
   Dispatcher,
   type DispatcherLogger,
   type DispatcherOptions,
   type RunContextProvider,
 } from './dispatcher'
-export { BlockFailure, LeaseLostError, toEngineError } from './errors'
+export { BlockFailure, LeaseLostError, RunCancelledError, toEngineError } from './errors'
 export { RunExecutor, type RunExecutorOptions } from './executor'
 export { InlineRunner, type InlineRunnerOptions } from './inline'
 export { MemoryRunStore, type StoreEvent } from './memory-store'

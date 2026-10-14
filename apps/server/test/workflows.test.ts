@@ -1,4 +1,4 @@
-import { createDb, workflowRuns } from '@ow/db'
+import { auditEvents, createDb, workflowRuns } from '@ow/db'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import postgres from 'postgres'
@@ -244,6 +244,59 @@ describe('runs API', () => {
       await new Promise((r) => setTimeout(r, 50))
     }
     expect(logs.map((l) => l.message)).toEqual(['got [REDACTED]'])
+  })
+
+  it('runs loops and functions that query resources, listing iterations apart from blocks', async () => {
+    const created = data(await admin.mutate('workflows.create', { slug: 'loop-orders', name: 'loop-orders' }))
+    data(
+      await admin.mutate('workflows.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'each',
+              type: 'loop',
+              config: {
+                input: '{{ [1, 2] }}',
+                runner: {
+                  kind: 'query',
+                  resource: 'warehouse',
+                  query: { sql: 'select amount from orders where id = {{ value }}' },
+                },
+              },
+            },
+            { name: 'named', type: 'function', config: { function: 'customer', params: { id: '{{ 2 }}' } } },
+          ],
+          edges: [
+            { from: 'startTrigger', port: 'out', to: 'each' },
+            { from: 'startTrigger', port: 'out', to: 'named' },
+          ],
+          functions: [
+            {
+              name: 'customer',
+              params: [{ name: 'id' }],
+              blocks: [query('q', 'select customer from orders where id = {{ params.id }}')],
+              edges: [],
+            },
+          ],
+        },
+      }),
+    )
+    const started = await rest(adminCookie, 'POST', '/workflows/loop-orders/runs', {})
+    const run = await waitForRun(started.body.run.id)
+    expect(run.status).toBe('succeeded')
+    const { body } = await rest(adminCookie, 'GET', `/runs/${run.id}/blocks`)
+    expect(body.blocks.map((b: { key: string }) => b.key).sort()).toEqual(['each', 'named', 'startTrigger'])
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each`)).body.block.data).toEqual([
+      [{ amount: 100 }],
+      [{ amount: 250 }],
+    ])
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/named`)).body.block.data).toEqual([
+      { customer: 'globex' },
+    ])
   })
 
   it('records a failed run with the failing block', async () => {
@@ -545,5 +598,157 @@ describe('run permissions', () => {
     await waitForRun(body.run.id)
     data(await admin.mutate('workflows.delete', { id: wf.id }))
     expect((await rest(adminCookie, 'GET', `/runs/${body.run.id}`)).status).toBe(404)
+  })
+})
+
+describe('M5: cancel, child workflows and loop iterations', () => {
+  const grant = (objectType: string, objectId: string, level: string | null) =>
+    admin.mutate('permissions.set', {
+      objectType,
+      objectId,
+      groupId: memberGroupId,
+      environmentId: null,
+      level,
+    })
+
+  async function waitForBlock(runId: string, key: string, status: string) {
+    for (let i = 0; i < 200; i++) {
+      const { body } = await rest(adminCookie, 'GET', `/runs/${runId}/blocks`)
+      if (body.blocks?.some((b: { key: string; status: string }) => b.key === key && b.status === status))
+        return
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    throw new Error(`${key} never became ${status}`)
+  }
+
+  it('cancels a running draft run, stopping its SQL, and refuses finished runs and outsiders', async () => {
+    const wf = await workflowWith(
+      'sleeper',
+      [{ ...query('nap', 'select pg_sleep(30)'), settings: { timeoutMs: 60_000 } }],
+      [['startTrigger', 'nap']],
+    )
+    const started = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})
+    const runId = started.body.run.id
+    await waitForBlock(runId, 'nap', 'running')
+
+    // Someone who can't see the workflow can't see the run either.
+    expect((await rest(memberCookie, 'POST', `/runs/${runId}/cancel`)).status).toBe(404)
+
+    const cancelled = await rest(adminCookie, 'POST', `/runs/${runId}/cancel`)
+    expect(cancelled.status).toBe(202)
+    expect(cancelled.body.run).toMatchObject({ id: runId, status: 'running' })
+    const run = await waitForRun(runId)
+    expect(run).toMatchObject({ status: 'cancelled', error: { code: 'cancelled' } })
+    const blocks = (await rest(adminCookie, 'GET', `/runs/${runId}/blocks`)).body.blocks
+    expect(blocks.find((b: { key: string }) => b.key === 'nap').status).toBe('cancelled')
+
+    const again = await rest(adminCookie, 'POST', `/runs/${runId}/cancel`)
+    expect(again).toMatchObject({ status: 409, body: { error: { code: 'already_finished' } } })
+    const audit = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'workflow.run_cancelled'))
+    expect(audit.map((a) => (a.metadata as { runId: string }).runId)).toContain(runId)
+  })
+
+  it('needs use access to child workflows to run or release a parent, and lists a run’s children', async () => {
+    const child = await workflowWith(
+      'child-greet',
+      [{ name: 'reply', type: 'response', config: { body: '{"twice": {{ startTrigger.data.n * 2 }}}' } }],
+      [['startTrigger', 'reply']],
+    )
+    const call = (workflow: string) => ({
+      name: 'call',
+      type: 'workflow',
+      config: { workflow, input: '{"n": 21}' },
+    })
+    // Calling a workflow that isn't published, or doesn't exist, is refused up front.
+    const early = await workflowWith('calls-unpublished', [call('child-greet')], [['startTrigger', 'call']])
+    const unpublished = await rest(adminCookie, 'POST', `/workflows/${early.slug}/runs`, {})
+    expect(unpublished.status).toBe(400)
+    expect(unpublished.body.error.message).toContain('Workflow "child-greet" isn\'t published')
+    const nowhere = await workflowWith('calls-nowhere', [call('nope')], [['startTrigger', 'call']])
+    expect(
+      (await rest(adminCookie, 'POST', `/workflows/${nowhere.slug}/runs`, {})).body.error.message,
+    ).toContain('No workflow has the slug "nope"')
+
+    data(await admin.mutate('releases.publish', { workflowId: child.id, draftRevision: child.revision }))
+    const parent = await workflowWith('parent-calls', [call('child-greet')], [['startTrigger', 'call']])
+    const ran = await rest(adminCookie, 'POST', `/workflows/${parent.slug}/runs`, {})
+    const run = await waitForRun(ran.body.run.id)
+    expect(run.status).toBe('succeeded')
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/call`)).body.block.data).toEqual({
+      twice: 42,
+    })
+    const { body: kids } = await rest(adminCookie, 'GET', `/runs/${run.id}/children`)
+    expect(kids.runs).toHaveLength(1)
+    expect(kids.runs[0]).toMatchObject({
+      parentRunId: run.id,
+      triggerType: 'workflow',
+      version: 'live',
+      workflow: { slug: 'child-greet' },
+      status: 'succeeded',
+    })
+
+    // A member who may edit the parent but not use the child can neither run its draft nor release it.
+    data(await grant('workflow', parent.id, 'edit'))
+    const denied = await rest(memberCookie, 'POST', `/workflows/${parent.slug}/runs`, {})
+    expect(denied.status).toBe(403)
+    expect(denied.body.error.message).toBe(
+      'You need use access to workflow "child-greet" to run this draft, which calls it',
+    )
+    const refused = await member.mutate('releases.publish', {
+      workflowId: parent.id,
+      draftRevision: parent.revision,
+    })
+    expect(refused.status).toBe(403)
+    expect(refused.body.error?.message).toBe(
+      'You need use access to workflow "child-greet" to release this workflow, which calls it',
+    )
+
+    data(await grant('workflow', child.id, 'use'))
+    const allowed = await rest(memberCookie, 'POST', `/workflows/${parent.slug}/runs`, {})
+    expect(allowed.status).toBe(202)
+    expect((await waitForRun(allowed.body.run.id, memberCookie)).status).toBe('succeeded')
+    data(await member.mutate('releases.publish', { workflowId: parent.id, draftRevision: parent.revision }))
+  })
+
+  it("lists a loop's iterations in order, with paging and a status filter", async () => {
+    const wf = await workflowWith(
+      'many',
+      [
+        {
+          name: 'each',
+          type: 'loop',
+          config: {
+            input: '{{ _.range(12) }}',
+            onError: 'continue',
+            runner: { kind: 'code', code: 'if (index === 5) throw new Error("five"); return value * 2' },
+          },
+        },
+      ],
+      [['startTrigger', 'each']],
+    )
+    const ran = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})
+    const run = await waitForRun(ran.body.run.id)
+    expect(run.status).toBe('succeeded')
+
+    const page = (await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each/iterations?limit=5`)).body
+    expect(page.total).toBe(12)
+    expect(page.iterations.map((i: { index: number }) => i.index)).toEqual([0, 1, 2, 3, 4])
+    expect(page.iterations[0]).toMatchObject({ index: 0, status: 'succeeded', attempt: 1, sizeBytes: 1 })
+    const tail = (await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each/iterations?offset=10`)).body
+    expect(tail.iterations.map((i: { index: number }) => i.index)).toEqual([10, 11])
+    const errored = (await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each/iterations?status=errored`))
+      .body
+    expect(errored).toMatchObject({
+      total: 1,
+      iterations: [{ index: 5, status: 'errored', error: { message: expect.stringContaining('five') } }],
+    })
+    // One iteration's data, by its key.
+    expect((await rest(adminCookie, 'GET', `/runs/${run.id}/blocks/each%5B3%5D`)).body.block).toMatchObject({
+      key: 'each[3]',
+      data: 6,
+    })
   })
 })

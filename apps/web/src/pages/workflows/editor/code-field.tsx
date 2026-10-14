@@ -2,7 +2,7 @@ import Editor, { type OnMount } from '@monaco-editor/react'
 import { useEffect, useMemo, useRef } from 'react'
 import { monaco, setScope } from './monaco'
 import { scopeDeclarations } from './scope-types'
-import { useEditor } from './store'
+import { graphOf, useEditor } from './store'
 
 export interface FieldProblem {
   start?: number
@@ -38,7 +38,12 @@ export default function CodeField({
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const definition = useEditor((s) => s.definition)
   const samples = useEditor((s) => s.samples)
-  const scope = useMemo(() => scopeDeclarations(definition, samples), [definition, samples])
+  const fn = useEditor((s) => s.graph)
+  const scope = useMemo(() => {
+    const functions = definition.functions ?? []
+    const open = fn === null ? undefined : functions.find((f) => f.name === fn)
+    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open)
+  }, [definition, samples, fn])
   useEffect(() => setScope(scope.dts, scope.sample), [scope])
 
   const onMount: OnMount = (editor) => {

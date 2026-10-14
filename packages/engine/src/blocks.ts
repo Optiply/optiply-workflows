@@ -1,9 +1,12 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import type { Block, BlockOf } from '@ow/definition'
+import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
+import type { HostFunction } from '@ow/sandbox'
+import { childResult, waitForChild } from './children'
 import { BlockFailure } from './errors'
-import type { EngineServices, RunInput } from './types'
+import { runLoop } from './loop'
+import type { BlockResult, ChildRuns, EngineServices, RunInput, WaitState } from './types'
 
 export interface BlockContext {
   /** Globals plus the results of the blocks this one references. */
@@ -15,6 +18,43 @@ export interface BlockContext {
   signal: AbortSignal
   timeoutMs: number
   log: (level: LogLevel, message: string) => void
+  /** The run, and this attempt of the block (child runs are keyed by them). */
+  runId: string
+  attempt: number
+  /**
+   * Why the block is already waiting, from an earlier execution: a Wait's time (stored, so re-running the block
+   * doesn't move it), or the child run a Workflow block waits for.
+   */
+  waiting?: WaitState
+  /** Scrubbed from error messages. */
+  secrets: readonly string[]
+  /** The workflow's function names (code can call the ones it references). */
+  functions: ReadonlySet<string>
+  /**
+   * Calls a workflow function: named arguments, or positional ones in the order of its parameters. Resolves to
+   * the data of its return block; rejects with a BlockFailure when it fails.
+   */
+  callFunction(name: string, args: Record<string, unknown> | unknown[], signal: AbortSignal): Promise<unknown>
+  /** A loop's iterations: those committed by an earlier lease, and where to record new ones. */
+  iterations?: LoopIterations
+}
+
+/** One piece of work: a block attempt, or a loop iteration (whose scope adds `value` and `index`). */
+export interface Work {
+  scope: Record<string, unknown>
+  signal: AbortSignal
+  timeoutMs: number
+  log: (level: LogLevel, message: string) => void
+}
+
+/** A loop's view of its iteration checkpoints. */
+export interface LoopIterations {
+  /** Results committed earlier (succeeded or errored), by index. */
+  done: ReadonlyMap<number, BlockResult>
+  /** Records a finished iteration; buffered and written in batches. */
+  record(result: BlockResult): void
+  /** Writes everything recorded so far. */
+  flush(): Promise<void>
 }
 
 export interface BlockOutput {
@@ -22,6 +62,13 @@ export interface BlockOutput {
   metadata?: Record<string, unknown>
   /** Defaults to `out`. */
   port?: string
+  /** The block has to wait instead of finishing: a Wait not due yet, a child run still going. */
+  suspend?: Suspension
+}
+
+/** Why a block waits, and how often to look again while the run is still in the process. */
+export interface Suspension extends WaitState {
+  recheckMs?: number
 }
 
 type Executor<T extends Block['type']> = (block: BlockOf<T>, ctx: BlockContext) => Promise<BlockOutput>
@@ -39,28 +86,12 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   },
 
   async code(block, ctx) {
-    const data = await ctx.services.sandbox.runCode(block.config.code, ctx.scope, {
-      timeoutMs: ctx.timeoutMs,
-      onLog: (level, args) => ctx.log(level, formatLogArgs(args)),
-    })
-    return { data }
+    return { data: await runCode(block, block.config.code, ctx, ctx) }
   },
 
   async resourceQuery(block, ctx) {
-    const slug = block.config.resource
-    let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
-    try {
-      target = await ctx.services.resources.resolve(slug, ctx.environmentId)
-    } catch (err) {
-      if (err instanceof BlockFailure) throw err
-      throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
-    }
-    const result = await runQuery(ctx.services.pool, target.connector, target.resource, block.config.query, {
-      evaluate: templateEvaluator(ctx),
-      signal: ctx.signal,
-      timeoutMs: ctx.timeoutMs,
-    })
-    return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+    const { data, metadata } = await runResourceQuery(block.config.resource, block.config.query, ctx, ctx)
+    return { data, metadata }
   },
 
   async branch(block, ctx) {
@@ -109,6 +140,209 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     const body = block.config.body?.trim() ? await renderJson(block.config.body, evaluate) : null
     return { data: { status, headers, body } }
   },
+
+  loop: runLoop,
+
+  async function(block, ctx) {
+    return { data: await callWorkflowFunction(block.config.function, block.config.params, ctx, ctx) }
+  },
+
+  async workflow(block, ctx) {
+    const children = requireChildren(ctx)
+    const slug = block.config.workflow
+    const sync = (block.config.mode ?? 'sync') === 'sync'
+    let runId = ctx.waiting?.childRunId
+    const since = ctx.waiting?.since ?? new Date()
+    if (!runId) {
+      runId = await startChild(slug, block.config.input, `${block.name}:${ctx.attempt}`, ctx, ctx)
+      if (!sync) return { data: { runId }, metadata: { runId, workflow: slug } }
+    }
+    // Most children finish quickly: wait here a moment before pausing the run (never past the block's timeout,
+    // which also bounds this attempt).
+    const deadline = since.getTime() + ctx.timeoutMs
+    const inline = Math.min(CHILD_INLINE_WAIT_MS, deadline - Date.now() - CHILD_TIMEOUT_MARGIN_MS)
+    const state = await waitForChild(children, runId, Math.max(0, inline), ctx.signal)
+    if (state) return childResult(slug, state)
+    if (Date.now() >= deadline) {
+      await children.cancel(runId).catch(() => {})
+      throw new BlockFailure('timeout', `Workflow "${slug}" didn't finish within ${ctx.timeoutMs} ms`, {
+        runId,
+      })
+    }
+    // Woken when the child ends; otherwise at the timeout, or an hour from now to look again.
+    const until = new Date(Math.min(deadline, Date.now() + CHILD_RECHECK_MS))
+    return { data: null, suspend: { until, childRunId: runId, since, recheckMs: CHILD_INLINE_RECHECK_MS } }
+  },
+  async wait(block, ctx) {
+    const until = ctx.waiting?.until ?? (await waitUntil(block, ctx))
+    if (until.getTime() > Date.now()) return { data: null, suspend: { until } }
+    return { data: null, metadata: { until: until.toISOString() } }
+  },
+  // The orchestrator commits the error handler's data itself when the run fails.
+  async errorTrigger() {
+    throw new BlockFailure('internal', 'The error handler only starts when the run fails')
+  },
+}
+
+/** How long a sync Workflow block waits for its child in the process before pausing the run. */
+const CHILD_INLINE_WAIT_MS = 2000
+/** Leaves the attempt time to pause before the block's own timeout fires. */
+const CHILD_TIMEOUT_MARGIN_MS = 200
+/** A paused parent looks at its child again after this long even if nothing woke it. */
+const CHILD_RECHECK_MS = 60 * 60_000
+/** While the parent still has other blocks running here, it looks at the child this often. */
+const CHILD_INLINE_RECHECK_MS = 2000
+
+function requireChildren(ctx: BlockContext): ChildRuns {
+  if (!ctx.services.children) throw new BlockFailure('unsupported', "Child workflows can't run here")
+  return ctx.services.children
+}
+
+/**
+ * Starts a child run (a Workflow block, or a loop's workflow runner) with its input template rendered as JSON. The
+ * key makes it idempotent: the same block attempt (or iteration attempt) of the same run starts one child.
+ */
+export async function startChild(
+  workflow: string,
+  input: string | undefined,
+  key: string,
+  work: Work,
+  ctx: BlockContext,
+): Promise<string> {
+  const data = input?.trim() ? await renderJson(input, evaluatorFor(work, ctx)) : null
+  return requireChildren(ctx).start({
+    workflow,
+    input: data,
+    key: `child:${ctx.runId}:${key}`,
+    parentRunId: ctx.runId,
+    environmentId: ctx.environmentId,
+  })
+}
+
+/** Starts a child and, in sync mode, waits for it within `work`'s signal (a loop iteration's timeout). */
+export async function runChild(
+  workflow: string,
+  input: string | undefined,
+  mode: 'sync' | 'async' | undefined,
+  key: string,
+  work: Work,
+  ctx: BlockContext,
+): Promise<unknown> {
+  const runId = await startChild(workflow, input, key, work, ctx)
+  if (mode === 'async') return { runId }
+  const children = requireChildren(ctx)
+  try {
+    const state = await waitForChild(children, runId, Number.POSITIVE_INFINITY, work.signal)
+    return childResult(workflow, state!).data
+  } catch (err) {
+    // Timed out or stopped: don't leave the child running for nobody.
+    if (work.signal.aborted) await children.cancel(runId).catch(() => {})
+    throw err
+  }
+}
+
+const WAIT_UNIT_MS = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 } as const
+
+/** When a Wait resumes: now plus its duration, or its date and time. At most 60 days ahead. */
+async function waitUntil(block: BlockOf<'wait'>, ctx: BlockContext): Promise<Date> {
+  const evaluate = templateEvaluator(ctx)
+  const { config } = block
+  let until: Date
+  if (config.kind === 'duration') {
+    const raw = await renderTemplate(config.amount, evaluate)
+    const amount = typeof raw === 'string' && raw.trim() ? Number(raw) : raw
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+      throw new BlockFailure(
+        'invalid_wait',
+        `The duration must be a number of ${config.unit}, not ${describe(raw)}`,
+      )
+    }
+    until = new Date(Date.now() + amount * WAIT_UNIT_MS[config.unit])
+  } else {
+    const raw = await renderTemplate(config.until, evaluate)
+    until = typeof raw === 'string' || typeof raw === 'number' ? new Date(raw) : new Date(Number.NaN)
+    if (Number.isNaN(until.getTime())) {
+      throw new BlockFailure(
+        'invalid_wait',
+        `The time to resume must be a date and time, not ${describe(raw)}`,
+      )
+    }
+  }
+  if (until.getTime() - Date.now() > MAX_WAIT_MS) {
+    throw new BlockFailure('invalid_wait', 'A wait can last at most 60 days')
+  }
+  return until
+}
+
+/**
+ * Runs code (a code block, or a loop's code runner) in the sandbox with what it may call outside: `fetch`, and the
+ * workflow functions it references (`await name(...)`). Host calls are aborted with the work (timeout, run
+ * failure, cancel) and once the code finishes, so a request it didn't await doesn't outlive it.
+ */
+export async function runCode(block: Block, code: string, work: Work, ctx: BlockContext): Promise<unknown> {
+  const done = new AbortController()
+  const signal = AbortSignal.any([work.signal, done.signal])
+  const fetcher = ctx.services.fetcher
+  const functions: Record<string, HostFunction> = {}
+  for (const name of calledFunctions(block, ctx.functions)) {
+    functions[name] = (args) => ctx.callFunction(name, args, signal)
+  }
+  try {
+    return await ctx.services.sandbox.runCode(code, work.scope, {
+      timeoutMs: work.timeoutMs,
+      onLog: (level, args) => work.log(level, formatLogArgs(args)),
+      functions,
+      fetch: async (request) => {
+        if (!fetcher) throw new Error("fetch isn't available here")
+        try {
+          return await fetcher.fetch(request, signal)
+        } catch (err) {
+          // Like fetch's own network errors: a TypeError naming the problem.
+          if ((err as Error).name === 'AbortError') throw new TypeError('fetch was aborted')
+          throw new TypeError(`fetch failed: ${(err as Error).message}`)
+        }
+      },
+    })
+  } finally {
+    done.abort()
+  }
+}
+
+/** Runs a query (a query block, or a loop's query runner) against a resource in the run's environment. */
+export async function runResourceQuery(
+  slug: string,
+  query: Record<string, unknown>,
+  work: Work,
+  ctx: BlockContext,
+): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
+  let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
+  try {
+    target = await ctx.services.resources.resolve(slug, ctx.environmentId)
+  } catch (err) {
+    if (err instanceof BlockFailure) throw err
+    throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
+  }
+  const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
+    evaluate: evaluatorFor(work, ctx),
+    signal: work.signal,
+    timeoutMs: work.timeoutMs,
+  })
+  return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+}
+
+/** Calls a workflow function with argument templates (a Function block, or a loop's function runner). */
+export async function callWorkflowFunction(
+  name: string,
+  params: Record<string, string> | undefined,
+  work: Work,
+  ctx: BlockContext,
+): Promise<unknown> {
+  const evaluate = evaluatorFor(work, ctx)
+  const args: Record<string, unknown> = {}
+  for (const [param, template] of Object.entries(params ?? {})) {
+    args[param] = await renderTemplate(template, evaluate)
+  }
+  return ctx.callFunction(name, args, work.signal)
 }
 
 export function executeBlock(block: Block, ctx: BlockContext): Promise<BlockOutput> {
@@ -117,9 +351,14 @@ export function executeBlock(block: Block, ctx: BlockContext): Promise<BlockOutp
 
 /** Evaluates `{{ }}` in the sandbox; failures name the expression, like resource queries do. */
 function templateEvaluator(ctx: BlockContext): Evaluate {
+  return evaluatorFor(ctx, ctx)
+}
+
+/** Evaluates `{{ }}` against a piece of work's scope (a loop iteration's includes `value` and `index`). */
+export function evaluatorFor(work: Work, ctx: BlockContext): Evaluate {
   return async (code) => {
     try {
-      return await ctx.services.sandbox.evalExpression(code, ctx.scope, { timeoutMs: ctx.timeoutMs })
+      return await ctx.services.sandbox.evalExpression(code, work.scope, { timeoutMs: work.timeoutMs })
     } catch (err) {
       throw new BlockFailure('expression', `Error in {{ ${code.trim()} }}: ${(err as Error).message}`)
     }
@@ -131,7 +370,7 @@ export function formatLogArgs(args: unknown[]): string {
   return args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
 }
 
-function describe(value: unknown): string {
+export function describe(value: unknown): string {
   if (value === null) return 'null'
   if (Array.isArray(value)) return 'an array'
   if (typeof value === 'string') return `"${value.length > 40 ? `${value.slice(0, 40)}…` : value}"`

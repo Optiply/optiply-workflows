@@ -1,14 +1,24 @@
 import type { WorkflowDefinition } from './schema'
 
 /**
- * The same definition in a fixed form: blocks sorted by name and edges by (from, port, to), so neither the order
- * the editor wrote them in nor a Git merge changes the result. Branch conditions keep their order, which matters.
+ * The same definition in a fixed form: blocks sorted by name and edges by (from, port, to), functions by name with
+ * their blocks and edges sorted the same way, so neither the order the editor wrote them in nor a Git merge changes
+ * the result. Branch conditions and function parameters keep their order, which matters.
  */
 export function canonicalize(def: WorkflowDefinition): WorkflowDefinition {
+  const canonical: WorkflowDefinition = { ...def, ...sortGraph(def) }
+  if (def.functions) {
+    canonical.functions = [...def.functions]
+      .sort((a, b) => compare(a.name, b.name))
+      .map((fn) => ({ ...fn, ...sortGraph(fn) }))
+  }
+  return canonical
+}
+
+function sortGraph<T extends Pick<WorkflowDefinition, 'blocks' | 'edges'>>(graph: T) {
   return {
-    ...def,
-    blocks: [...def.blocks].sort((a, b) => compare(a.name, b.name)),
-    edges: [...def.edges].sort(
+    blocks: [...graph.blocks].sort((a, b) => compare(a.name, b.name)),
+    edges: [...graph.edges].sort(
       (a, b) => compare(a.from, b.from) || compare(a.port, b.port) || compare(a.to, b.to),
     ),
   }
@@ -31,6 +41,7 @@ export function canonicalJson(value: unknown, options: { pretty?: boolean } = {}
  */
 export async function definitionHash(def: WorkflowDefinition): Promise<string> {
   const { layout: _layout, ...logic } = canonicalize(def)
+  if (logic.functions) logic.functions = logic.functions.map(({ layout: _fnLayout, ...fn }) => fn)
   const bytes = new TextEncoder().encode(canonicalJson(logic))
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')

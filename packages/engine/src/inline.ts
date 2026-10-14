@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import type { workflowRuns } from '@ow/db'
+import type postgres from 'postgres'
+import { listenForCancels } from './dispatcher'
 import { RunExecutor, type RunExecutorOptions } from './executor'
 import { type StartedRun, startRun } from './queue'
 import type { RunResponse } from './types'
@@ -9,6 +11,8 @@ export interface InlineRunnerOptions extends RunExecutorOptions {
   /** Runs executing in this process at once; more are queued for the workers. Default 8; 0 queues everything. */
   concurrency?: number
   workerId?: string
+  /** The postgres.js client behind `db`, to hear about cancelled runs at once (lease renewals notice them too). */
+  listener?: postgres.Sql
 }
 
 /**
@@ -25,11 +29,18 @@ export class InlineRunner {
   /** Slots taken by starts still inserting their run. */
   private reserved = 0
   private stopping = false
+  private readonly unlistenCancel: Promise<(() => Promise<void>) | undefined>
 
   constructor(opts: InlineRunnerOptions) {
     this.executor = new RunExecutor(opts)
     this.concurrency = opts.concurrency ?? 8
     this.workerId = opts.workerId ?? `${hostname()}-${process.pid}-inline-${randomUUID().slice(0, 8)}`
+    this.unlistenCancel = opts.listener
+      ? listenForCancels(opts.listener, this.active).catch((err) => {
+          opts.log?.error({ err }, 'listening for cancelled runs failed')
+          return undefined
+        })
+      : Promise.resolve(undefined)
   }
 
   /** Runs executing in this process. */
@@ -74,6 +85,7 @@ export class InlineRunner {
   /** Stops starting runs here, interrupts the ones executing and hands them back to the queue. */
   async stop() {
     this.stopping = true
+    await (await this.unlistenCancel)?.().catch(() => {})
     for (const { controller } of this.active.values()) controller.abort(new Error('API shutting down'))
     await Promise.all([...this.active.values()].map((a) => a.done))
   }

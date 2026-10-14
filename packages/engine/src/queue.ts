@@ -1,6 +1,6 @@
 import { blockRunPayloads, blockRuns, type Db, type WorkflowRun, workflowRuns, workflows } from '@ow/db'
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import type { BlockResult, EngineError, FinalBlockStatus } from './types'
+import type { BlockResult, EngineError, FinalBlockStatus, WaitState } from './types'
 
 /**
  * NOTIFY channels. `RUNS_QUEUED` wakes workers (a run was queued or a slot freed up); `RUN_FINISHED` carries the run id (sync webhooks, tests);
@@ -9,6 +9,10 @@ import type { BlockResult, EngineError, FinalBlockStatus } from './types'
 export const RUNS_QUEUED_CHANNEL = 'ow_runs_queued'
 export const RUN_FINISHED_CHANNEL = 'ow_run_finished'
 export const RUN_EVENTS_CHANNEL = 'ow_run_events'
+/** Carries the id of a running run someone cancelled; the process holding it stops it. */
+export const RUN_CANCEL_CHANNEL = 'ow_run_cancel'
+
+const CANCELLED_ERROR = JSON.stringify({ code: 'cancelled', message: 'The run was cancelled' })
 
 /**
  * A change, as published on `RUN_EVENTS_CHANNEL` when it commits: a run or block status, or `response` once the
@@ -18,6 +22,8 @@ export type RunEvent =
   | { runId: string; type: 'run'; status: string }
   | { runId: string; type: 'block'; key: string; status: string; attempt: number; port: string | null }
   | { runId: string; type: 'response' }
+  /** `count` more iterations of loop `key` finished. */
+  | { runId: string; type: 'iterations'; key: string; count: number }
 
 /** Publishes an event when the surrounding transaction commits. */
 export function notifyRunEvent(db: Executor, event: RunEvent) {
@@ -236,21 +242,33 @@ export async function startRun(
   })
 }
 
-/** Extends a lease. False means another worker owns the run now: stop working on it. */
-export async function renewLease(db: Db, claim: Claim, leaseMs: number): Promise<boolean> {
-  const rows = await db.execute(sql`
+/**
+ * Extends a lease. `lost` means another worker owns the run now: stop working on it. `cancel` means someone
+ * cancelled it (the NOTIFY may have been missed): stop it as cancelled.
+ */
+export async function renewLease(db: Db, claim: Claim, leaseMs: number): Promise<'held' | 'lost' | 'cancel'> {
+  const rows = await db.execute<{ cancel: boolean }>(sql`
     update workflow_runs
     set lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000})
     where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
-    returning id`)
-  return rows.length > 0
+    returning cancel_requested_at is not null as cancel`)
+  if (!rows.length) return 'lost'
+  return rows[0]!.cancel ? 'cancel' : 'held'
 }
 
-/** Sets the run timeout the first time a run starts; later leases keep it. Fenced. */
+/**
+ * Sets the run timeout the first time a run starts. A run resuming from a pause moves its deadline on by the time
+ * it spent waiting, so waiting doesn't count toward the timeout. Fenced.
+ */
 export async function ensureDeadline(db: Db, claim: Claim, timeoutMs: number): Promise<Date | null> {
   const rows = await db.execute<{ deadline_at: string }>(sql`
     update workflow_runs
-    set deadline_at = coalesce(deadline_at, now() + make_interval(secs => ${timeoutMs / 1000}))
+    set deadline_at = case
+          when deadline_at is null then now() + make_interval(secs => ${timeoutMs / 1000})
+          when suspended_at is not null then deadline_at + (now() - suspended_at)
+          else deadline_at
+        end,
+        suspended_at = null
     where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
     returning deadline_at`)
   return rows[0] ? new Date(rows[0].deadline_at) : null
@@ -260,10 +278,13 @@ export async function ensureDeadline(db: Db, claim: Claim, timeoutMs: number): P
 export async function finishRun(
   db: Db,
   claim: Claim,
-  outcome: { status: 'succeeded' | 'failed'; error: (EngineError & { block?: string }) | null },
+  outcome: {
+    status: 'succeeded' | 'failed' | 'cancelled'
+    error: (EngineError & { block?: string }) | null
+  },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const rows = await tx.execute(sql`
+    const rows = await tx.execute<{ parent_run_id: string | null }>(sql`
       update workflow_runs
       set status = ${outcome.status},
           error = ${outcome.error ? JSON.stringify(outcome.error) : null}::jsonb,
@@ -272,14 +293,155 @@ export async function finishRun(
           lease_expires_at = null,
           updated_at = now()
       where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
-      returning id`)
+      returning parent_run_id`)
     if (!rows.length) return false
     await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
     await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status: outcome.status })
+    await wakeParents(tx, rows)
     // A slot freed up: runs held back by a concurrency gate can go now.
     await notify(tx, RUNS_QUEUED_CHANNEL)
     return true
   })
+}
+
+/**
+ * Pauses a run until `resumeAt` (its Wait blocks are due): `waiting`, claimable again then, lease released and the
+ * epoch moved on. Records when it paused, so the deadline moves on by the time spent waiting. A run cancelled in
+ * the meantime is finished as cancelled instead. False if the lease was lost first.
+ */
+export async function suspendRun(db: Db, claim: Claim, resumeAt: Date): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const rows = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
+      update workflow_runs
+      set status = case when cancel_requested_at is null then 'waiting' else 'cancelled' end,
+          available_at = ${resumeAt.toISOString()}::timestamptz,
+          suspended_at = case when cancel_requested_at is null then now() end,
+          finished_at = case when cancel_requested_at is null then null else now() end,
+          error = case when cancel_requested_at is null then error else ${CANCELLED_ERROR}::jsonb end,
+          lease_owner = null,
+          lease_expires_at = null,
+          epoch = epoch + 1,
+          updated_at = now()
+      where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
+      returning status, parent_run_id`)
+    if (!rows.length) return false
+    const status = rows[0]!.status
+    if (status === 'cancelled') {
+      await cancelWaitingBlocks(tx, [claim.runId])
+      await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
+      await wakeParents(tx, rows)
+    } else {
+      // A child this run waits for may have ended just before it paused, while it was still `running`, so that
+      // child's wake-up missed it. This statement sees every commit up to now; a later one waits on our row lock and
+      // then finds the run waiting.
+      await tx.execute(sql`
+        update workflow_runs r set available_at = now()
+        where r.id = ${claim.runId} and exists (
+          select 1 from block_runs b
+          join workflow_runs c on c.id = (b.metadata->>'childRunId')::uuid
+          where b.run_id = r.id and b.status = 'waiting'
+            and c.status in ('succeeded', 'failed', 'cancelled'))`)
+    }
+    await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status })
+    // A slot freed up: runs held back by a concurrency gate can go now.
+    await notify(tx, RUNS_QUEUED_CHANNEL)
+    return true
+  })
+}
+
+/**
+ * Cancels a run. A queued or waiting run is `cancelled` at once (its waiting blocks too). A running run gets
+ * `cancel_requested_at` and a NOTIFY on `RUN_CANCEL_CHANNEL`, and the process holding it stops it: in-flight blocks
+ * are aborted (SQL cancelled, fetches aborted) and it finishes as `cancelled`. Returns what happened, or
+ * `finished` when the run had already ended.
+ */
+export async function cancelRun(
+  db: Db,
+  runId: string,
+): Promise<'cancelled' | 'requested' | 'finished' | 'not_found'> {
+  const outcome = await db.transaction(async (tx) => {
+    const [run] = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
+      select status, parent_run_id from workflow_runs where id = ${runId} for update`)
+    if (!run) return 'not_found' as const
+    if (run.status === 'running') {
+      await tx.execute(sql`
+        update workflow_runs set cancel_requested_at = coalesce(cancel_requested_at, now()), updated_at = now()
+        where id = ${runId}`)
+      await notify(tx, RUN_CANCEL_CHANNEL, runId)
+      return 'requested' as const
+    }
+    if (run.status !== 'queued' && run.status !== 'waiting') return 'finished' as const
+    await tx.execute(sql`
+      update workflow_runs
+      set status = 'cancelled', finished_at = now(), error = ${CANCELLED_ERROR}::jsonb,
+          cancel_requested_at = coalesce(cancel_requested_at, now()), suspended_at = null,
+          lease_owner = null, lease_expires_at = null, epoch = epoch + 1, updated_at = now()
+      where id = ${runId}`)
+    await cancelWaitingBlocks(tx, [runId])
+    await notify(tx, RUN_FINISHED_CHANNEL, runId)
+    await notifyRunEvent(tx, { runId, type: 'run', status: 'cancelled' })
+    await wakeParents(tx, [run])
+    await notify(tx, RUNS_QUEUED_CHANNEL)
+    return 'cancelled' as const
+  })
+  if (outcome === 'cancelled' || outcome === 'requested') {
+    // Its child workflows go too.
+    const children = await db.execute<{ id: string }>(sql`
+      select id from workflow_runs
+      where parent_run_id = ${runId} and status in ('queued', 'running', 'waiting')`)
+    for (const child of children) await cancelRun(db, child.id)
+  }
+  return outcome
+}
+
+/**
+ * A child run ended (finished, failed, cancelled): its parent, if it's paused waiting for it, can go now instead
+ * of at its recheck time.
+ */
+async function wakeParents(tx: Executor, rows: readonly { parent_run_id?: string | null }[]) {
+  const parents = [...new Set(rows.flatMap((r) => (r.parent_run_id ? [r.parent_run_id] : [])))]
+  if (!parents.length) return
+  const woken = await tx
+    .update(workflowRuns)
+    .set({ availableAt: sql`now()`, updatedAt: sql`now()` })
+    .where(
+      and(
+        inArray(workflowRuns.id, parents),
+        eq(workflowRuns.status, 'waiting'),
+        sql`${workflowRuns.availableAt} > now()`,
+      ),
+    )
+    .returning({ id: workflowRuns.id })
+  if (woken.length) await notify(tx, RUNS_QUEUED_CHANNEL)
+}
+
+/**
+ * Blocks left waiting (or running, after a lost worker) in runs that just ended without them, with a block event
+ * each so open editors update.
+ */
+async function cancelWaitingBlocks(tx: Executor, runIds: string[]) {
+  const rows = await tx
+    .update(blockRuns)
+    .set({
+      status: 'cancelled',
+      error: { code: 'cancelled', message: 'The run was cancelled' },
+      finishedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(inArray(blockRuns.runId, runIds), inArray(blockRuns.status, ['waiting', 'running', 'interrupted'])),
+    )
+    .returning({ runId: blockRuns.runId, key: blockRuns.blockKey, attempt: blockRuns.attempt })
+  for (const row of rows) {
+    await notifyRunEvent(tx, {
+      runId: row.runId,
+      type: 'block',
+      key: row.key,
+      status: 'cancelled',
+      attempt: row.attempt,
+      port: null,
+    })
+  }
 }
 
 /**
@@ -310,13 +472,13 @@ export async function reapExpiredLeases(
   db: Db,
   maxRecoveries: number,
   batch = 100,
-): Promise<{ requeued: string[]; failed: string[] }> {
+): Promise<{ requeued: string[]; failed: string[]; cancelled: string[] }> {
   const error = JSON.stringify({
     code: 'worker_lost',
     message: `The worker running this run stopped responding ${maxRecoveries + 1} times`,
   })
   return db.transaction(async (tx) => {
-    const rows = await tx.execute<{ id: string; status: string }>(sql`
+    const rows = await tx.execute<{ id: string; status: string; parent_run_id: string | null }>(sql`
       with expired as (
         select id from workflow_runs
         where status = 'running' and lease_expires_at < now()
@@ -330,15 +492,19 @@ export async function reapExpiredLeases(
           lease_expires_at = null,
           available_at = now(),
           updated_at = now(),
-          status = case when r.recoveries >= ${maxRecoveries} then 'failed' else 'queued' end,
+          status = case when r.cancel_requested_at is not null then 'cancelled'
+                        when r.recoveries >= ${maxRecoveries} then 'failed' else 'queued' end,
           recoveries = case when r.recoveries >= ${maxRecoveries} then r.recoveries else r.recoveries + 1 end,
-          finished_at = case when r.recoveries >= ${maxRecoveries} then now() end,
-          error = case when r.recoveries >= ${maxRecoveries} then ${error}::jsonb else r.error end
+          finished_at = case when r.cancel_requested_at is not null or r.recoveries >= ${maxRecoveries} then now() end,
+          error = case when r.cancel_requested_at is not null then ${CANCELLED_ERROR}::jsonb
+                       when r.recoveries >= ${maxRecoveries} then ${error}::jsonb else r.error end
       from expired
       where r.id = expired.id
-      returning r.id, r.status`)
+      returning r.id, r.status, r.parent_run_id`)
     const requeued = rows.filter((r) => r.status === 'queued').map((r) => r.id)
     const failed = rows.filter((r) => r.status === 'failed').map((r) => r.id)
+    const cancelled = rows.filter((r) => r.status === 'cancelled').map((r) => r.id)
+    if (cancelled.length) await cancelWaitingBlocks(tx, cancelled)
     if (rows.length) {
       await tx
         .update(blockRuns)
@@ -355,10 +521,33 @@ export async function reapExpiredLeases(
     }
     // Requeued runs, and slots freed by failed ones.
     if (rows.length) await notify(tx, RUNS_QUEUED_CHANNEL)
-    for (const id of failed) await notify(tx, RUN_FINISHED_CHANNEL, id)
+    for (const id of [...failed, ...cancelled]) await notify(tx, RUN_FINISHED_CHANNEL, id)
+    await wakeParents(
+      tx,
+      rows.filter((r) => r.status !== 'queued'),
+    )
     for (const row of rows) await notifyRunEvent(tx, { runId: row.id, type: 'run', status: row.status })
-    return { requeued, failed }
+    return { requeued, failed, cancelled }
   })
+}
+
+/** Blocks an earlier lease left waiting, with why, for `executeRun`'s `waits`. */
+export async function loadWaits(db: Db, runId: string): Promise<Map<string, WaitState>> {
+  const rows = await db
+    .select({ key: blockRuns.blockKey, metadata: blockRuns.metadata })
+    .from(blockRuns)
+    .where(and(eq(blockRuns.runId, runId), eq(blockRuns.status, 'waiting')))
+  const waits = new Map<string, WaitState>()
+  for (const row of rows) {
+    const meta = row.metadata as { until?: string; childRunId?: string; since?: string } | null
+    if (!meta?.until) continue
+    waits.set(row.key, {
+      until: new Date(meta.until),
+      ...(meta.childRunId && { childRunId: meta.childRunId }),
+      ...(meta.since && { since: new Date(meta.since) }),
+    })
+  }
+  return waits
 }
 
 /** Results committed by earlier leases, for `executeRun`'s `checkpoints`. */

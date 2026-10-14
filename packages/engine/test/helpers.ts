@@ -3,7 +3,15 @@ import type { WorkflowDefinition } from '@ow/definition'
 import { renderTemplate } from '@ow/expressions'
 import { IvmRuntime } from '@ow/sandbox'
 import { z } from 'zod'
-import { type ExecuteRunOptions, executeRun, MemoryRunStore, sleep } from '../src'
+import {
+  BlockFailure,
+  type ChildRunState,
+  type ChildRuns,
+  type ExecuteRunOptions,
+  executeRun,
+  MemoryRunStore,
+  sleep,
+} from '../src'
 
 const fakeQuery = z.object({
   /** Call counter key. */
@@ -183,4 +191,76 @@ export async function run(
   const statuses = Object.fromEntries([...outcome.results].map(([key, r]) => [key, r.status]))
   const data = (key: string) => outcome.results.get(key)?.data
   return { outcome, store, statuses, data }
+}
+
+/** A Wait of `amount` units (a template), or until a time. */
+export const wait = (name: string, amount: string, unit = 'seconds', settings?: object) => ({
+  name,
+  type: 'wait',
+  config: { kind: 'duration', amount, unit },
+  ...(settings && { settings }),
+})
+
+export const waitUntil = (name: string, until: string) => ({
+  name,
+  type: 'wait',
+  config: { kind: 'until', until },
+})
+
+export const errorTrigger = (name = 'onFailure') => ({ name, type: 'errorTrigger' })
+
+/** How a fake child workflow behaves: its result (or failure) after `delayMs`. */
+export interface FakeChildBehaviour {
+  body?: unknown
+  fail?: string
+  delayMs?: number
+}
+
+/** Child runs that finish on a timer, recording what was started; keys are idempotent like the real thing. */
+export class FakeChildren implements ChildRuns {
+  started: { workflow: string; input: unknown; key: string; runId: string }[] = []
+  cancelled: string[] = []
+  private readonly runs = new Map<
+    string,
+    { finishAt: number; behaviour: FakeChildBehaviour; cancelled?: boolean }
+  >()
+  private readonly byKey = new Map<string, string>()
+
+  constructor(
+    readonly workflows: Record<string, FakeChildBehaviour | ((input: unknown) => FakeChildBehaviour)>,
+  ) {}
+
+  async start(request: { workflow: string; input: unknown; key: string }) {
+    const existing = this.byKey.get(request.key)
+    if (existing) return existing
+    const spec = this.workflows[request.workflow]
+    if (!spec) throw new BlockFailure('unknown_workflow', `No workflow has the slug "${request.workflow}"`)
+    const behaviour = typeof spec === 'function' ? spec(request.input) : spec
+    const runId = `child-${this.started.length + 1}`
+    this.started.push({ workflow: request.workflow, input: request.input, key: request.key, runId })
+    this.byKey.set(request.key, runId)
+    this.runs.set(runId, { finishAt: Date.now() + (behaviour.delayMs ?? 0), behaviour })
+    return runId
+  }
+
+  async get(runId: string): Promise<ChildRunState | null> {
+    const run = this.runs.get(runId)
+    if (!run) return null
+    const base = { runId, response: null, error: null }
+    if (run.cancelled) return { ...base, status: 'cancelled' }
+    if (Date.now() < run.finishAt) return { ...base, status: 'running' }
+    if (run.behaviour.fail)
+      return { ...base, status: 'failed', error: { code: 'runtime', message: run.behaviour.fail } }
+    return {
+      ...base,
+      status: 'succeeded',
+      response: { status: 200, headers: {}, body: run.behaviour.body ?? null },
+    }
+  }
+
+  async cancel(runId: string) {
+    this.cancelled.push(runId)
+    const run = this.runs.get(runId)
+    if (run) run.cancelled = true
+  }
 }

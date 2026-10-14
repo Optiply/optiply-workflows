@@ -9,7 +9,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "bundle:stdlib": "tsx scripts/bundle-stdlib.ts"
+    "bundle:stdlib": "tsx scripts/bundle-stdlib.ts",
+    "bench": "SANDBOX_BENCH=1 vitest run test/ivm-bench.test.ts --reporter=verbose"
   },
   "dependencies": {
     "isolated-vm": "7.0.1"

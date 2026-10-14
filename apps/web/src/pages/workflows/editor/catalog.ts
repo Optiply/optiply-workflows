@@ -1,5 +1,18 @@
 import type { Block, BlockType } from '@ow/definition'
-import { Code2, Database, Filter, GitBranch, type LucideIcon, Play, Reply } from 'lucide-react'
+import {
+  Code2,
+  Database,
+  Filter,
+  GitBranch,
+  Hourglass,
+  type LucideIcon,
+  Play,
+  Repeat,
+  Reply,
+  SquareFunction,
+  TriangleAlert,
+  Workflow,
+} from 'lucide-react'
 
 export interface BlockKind {
   label: string
@@ -27,6 +40,21 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   branch: { label: 'Branch', icon: GitBranch, tone: 'bg-sky-100 text-sky-700', prefix: 'branch' },
   filter: { label: 'Filter', icon: Filter, tone: 'bg-teal-100 text-teal-700', prefix: 'filter' },
   response: { label: 'Response', icon: Reply, tone: 'bg-rose-100 text-rose-700', prefix: 'response' },
+  loop: { label: 'Loop', icon: Repeat, tone: 'bg-violet-100 text-violet-700', prefix: 'loop' },
+  function: {
+    label: 'Function',
+    icon: SquareFunction,
+    tone: 'bg-indigo-100 text-indigo-700',
+    prefix: 'function',
+  },
+  workflow: { label: 'Workflow', icon: Workflow, tone: 'bg-cyan-100 text-cyan-700', prefix: 'workflow' },
+  wait: { label: 'Wait', icon: Hourglass, tone: 'bg-stone-100 text-stone-700', prefix: 'wait' },
+  errorTrigger: {
+    label: 'Error handler',
+    icon: TriangleAlert,
+    tone: 'bg-danger/10 text-danger',
+    prefix: 'errorHandler',
+  },
 }
 
 /** Block types the user can add (there's exactly one start trigger). */
@@ -36,7 +64,27 @@ export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'branch',
   'filter',
   'response',
+  'loop',
+  'function',
+  'workflow',
+  'wait',
+  'errorTrigger',
 ]
+
+/** What a function can't contain (see the validator's not_in_function). */
+const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'errorTrigger'])
+
+/** The block types that can be added to a graph: a function's, or the workflow's (one error handler at most). */
+export function addableIn(
+  inFunction: boolean,
+  blocks: readonly Block[],
+): Exclude<BlockType, 'startTrigger'>[] {
+  return ADDABLE.filter((type) =>
+    inFunction
+      ? !NOT_IN_FUNCTIONS.has(type)
+      : type !== 'errorTrigger' || !blocks.some((b) => b.type === 'errorTrigger'),
+  )
+}
 
 /** The first free `<prefix><n>` name. */
 export function nextName(type: BlockType, taken: Iterable<string>): string {
@@ -45,11 +93,15 @@ export function nextName(type: BlockType, taken: Iterable<string>): string {
   for (let n = 1; ; n++) if (!used.has(`${prefix}${n}`)) return `${prefix}${n}`
 }
 
-/** A new block with a working default config. Queries need a resource, so the caller picks one. */
+/**
+ * A new block with a working default config. Queries need a resource, so the caller picks one; Function blocks
+ * call the first function there is. Inside a function, child workflows start async (a function can't wait).
+ */
 export function newBlock(
   type: Exclude<BlockType, 'startTrigger'>,
   name: string,
   resource?: { slug: string; type: string },
+  context: { functions?: string[]; inFunction?: boolean } = {},
 ): Block {
   switch (type) {
     case 'resourceQuery':
@@ -72,6 +124,16 @@ export function newBlock(
       return { name, type, config: { input: '{{ [] }}', condition: 'true' } }
     case 'response':
       return { name, type, config: { status: '200', body: '{}' } }
+    case 'loop':
+      return { name, type, config: { input: '{{ [] }}', runner: { kind: 'code', code: 'return value' } } }
+    case 'function':
+      return { name, type, config: { function: context.functions?.[0] ?? '' } }
+    case 'workflow':
+      return { name, type, config: { workflow: '', ...(context.inFunction && { mode: 'async' as const }) } }
+    case 'wait':
+      return { name, type, config: { kind: 'duration', amount: '1', unit: 'minutes' } }
+    case 'errorTrigger':
+      return { name, type }
   }
 }
 
@@ -92,6 +154,20 @@ export function summary(block: Block): string {
       return firstLine(block.config.condition)
     case 'response':
       return `HTTP ${block.config.status ?? '200'}`
+    case 'loop':
+      return `Each of ${block.config.input.trim()}`
+    case 'function':
+      return block.config.function
+        ? `${block.config.function}(${Object.keys(block.config.params ?? {}).join(', ')})`
+        : 'No function chosen'
+    case 'workflow':
+      return block.config.workflow || 'No workflow chosen'
+    case 'wait':
+      return block.config.kind === 'duration'
+        ? `${block.config.amount} ${block.config.unit}`
+        : `Until ${block.config.until}`
+    case 'errorTrigger':
+      return 'Runs when the workflow fails'
   }
 }
 

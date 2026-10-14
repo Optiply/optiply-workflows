@@ -7,8 +7,9 @@ import { z } from 'zod'
  * referenced by slug, the canvas layout is kept apart from the logic, and nothing secret ever appears here.
  * Optional settings are stored sparsely; `resolveBlockSettings` fills in the defaults at run time.
  *
- * M2 covers the headless block types. Loop, Function, Workflow, Wait, User Task and the global error handler
- * arrive in M5. Triggers (webhook and schedules) only act on the live release (M4).
+ * M2 covered the headless block types; M5 adds Loop, Function, Workflow, Wait, the global error handler and
+ * `functions` (reusable subflows). User Tasks arrive in M6. Triggers (webhook and schedules) only act on the live
+ * release (M4).
  */
 
 export const SCHEMA_VERSION = 1
@@ -24,12 +25,23 @@ export const blockNameSchema = z
     'Use up to 64 letters, digits or underscores, starting with a letter or underscore',
   )
 
+/** A function's name and its parameters' names are JS identifiers too: code calls `await name()`. */
+export const identifierSchema = blockNameSchema
+
 /** Same rule as resource slugs in the resources API. */
 export const resourceSlugSchema = z
   .string()
   .regex(
     /^[a-z][a-z0-9_]{1,62}$/,
     'Use 2–63 lowercase letters, digits or underscores, starting with a letter',
+  )
+
+/** Same rule as workflow slugs in the workflows API (they appear in webhook URLs). */
+export const workflowSlugSchema = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9_-]{1,62}$/,
+    'Use 2–63 lowercase letters, digits, dashes or underscores, starting with a letter',
   )
 
 /** Branch conditions have stable ids so reordering them keeps their `cond:<id>` edges attached. */
@@ -61,11 +73,20 @@ export const blockSettingsSchema = z.strictObject({
   finally: z.enum(['stop', 'continue']).optional(),
 })
 
+/** A loop retries each iteration (`config.iteration`), never the whole loop. */
+export const loopSettingsSchema = blockSettingsSchema.omit({ retry: true })
+
+/** A wait has nothing to time out or retry; it can only continue on failure (a bad duration, say). */
+export const waitSettingsSchema = blockSettingsSchema.pick({ finally: true })
+
 const named = {
   name: blockNameSchema,
   description: z.string().max(2000).optional(),
 }
 const executable = { ...named, settings: blockSettingsSchema.optional() }
+
+/** Parameter values for a function call: templates by parameter name. */
+const functionArgsSchema = z.record(identifierSchema, z.string())
 
 const keyValueSchema = z.strictObject({ key: z.string(), value: z.string() })
 
@@ -140,6 +161,116 @@ export const responseBlockSchema = z.strictObject({
   }),
 })
 
+export const LOOP_MODES = ['parallel', 'sequential', 'batch'] as const
+export const DEFAULT_LOOP_CONCURRENCY = 10
+export const MAX_LOOP_CONCURRENCY = 50
+export const DEFAULT_LOOP_BATCH_SIZE = 10
+export const MAX_LOOP_ITERATIONS = 100_000
+
+/** `sync` waits for the child run to finish and returns its result; `async` returns `{ runId }` once it's queued. */
+export const WORKFLOW_CALL_MODES = ['sync', 'async'] as const
+
+/**
+ * What a loop runs for each item. Every field sees `value` (the item) and `index` besides the usual scope.
+ */
+export const loopRunnerSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('code'),
+    /** An async function body, like a code block's; its `return` is the iteration's data. */
+    code: z.string(),
+  }),
+  z.strictObject({
+    kind: z.literal('query'),
+    resource: resourceSlugSchema,
+    query: z.record(z.string(), z.json()),
+  }),
+  z.strictObject({
+    kind: z.literal('function'),
+    function: identifierSchema,
+    params: functionArgsSchema.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('workflow'),
+    workflow: workflowSlugSchema,
+    /** JSON template for the child run's `startTrigger.data`. */
+    input: z.string().optional(),
+    mode: z.enum(WORKFLOW_CALL_MODES).optional(),
+  }),
+])
+
+export const loopBlockSchema = z.strictObject({
+  ...named,
+  settings: loopSettingsSchema.optional(),
+  type: z.literal('loop'),
+  config: z.strictObject({
+    /** A template that evaluates to an array, e.g. `{{ query1.data }}`. */
+    input: nonBlank('The input'),
+    /**
+     * `parallel` runs up to `concurrency` iterations at once (default); `sequential` runs one at a time; `batch`
+     * runs `batchSize` at once and pauses `batchDelayMs` between batches.
+     */
+    mode: z.enum(LOOP_MODES).optional(),
+    concurrency: z.number().int().min(1).max(MAX_LOOP_CONCURRENCY).optional(),
+    batchSize: z.number().int().min(1).max(1000).optional(),
+    batchDelayMs: z.number().int().min(0).max(3_600_000).optional(),
+    runner: loopRunnerSchema,
+    /** Each iteration's limit and retries; defaults as for a block. */
+    iteration: z
+      .strictObject({ timeoutMs: blockSettingsSchema.shape.timeoutMs, retry: retrySettingsSchema.optional() })
+      .optional(),
+    /** A failed iteration fails the loop (`stop`, default) or leaves `null` in its slot (`continue`). */
+    onError: z.enum(['stop', 'continue']).optional(),
+  }),
+})
+
+export const functionBlockSchema = z.strictObject({
+  ...executable,
+  type: z.literal('function'),
+  config: z.strictObject({
+    function: identifierSchema,
+    params: functionArgsSchema.optional(),
+  }),
+})
+
+export const workflowBlockSchema = z.strictObject({
+  ...executable,
+  type: z.literal('workflow'),
+  config: z.strictObject({
+    /** The child workflow's slug; its live release runs, in this run's environment. */
+    workflow: workflowSlugSchema,
+    /** JSON template for the child run's `startTrigger.data`. */
+    input: z.string().optional(),
+    /** Default `sync`. */
+    mode: z.enum(WORKFLOW_CALL_MODES).optional(),
+  }),
+})
+
+export const WAIT_UNITS = ['seconds', 'minutes', 'hours', 'days'] as const
+export const MAX_WAIT_MS = 60 * 24 * 60 * 60_000
+
+/** A durable pause: the run gives up its worker and resumes when the time comes. At most 60 days. */
+export const waitBlockSchema = z.strictObject({
+  ...named,
+  settings: waitSettingsSchema.optional(),
+  type: z.literal('wait'),
+  config: z.discriminatedUnion('kind', [
+    /** `amount` is a template for a number of `unit`s. */
+    z.strictObject({ kind: z.literal('duration'), amount: z.string(), unit: z.enum(WAIT_UNITS) }),
+    /** A template for a date and time (ISO 8601, or anything `dayjs` parses). */
+    z.strictObject({ kind: z.literal('until'), until: z.string() }),
+  ]),
+})
+
+/**
+ * The global error handler: never connected to the start trigger. When the run fails, the blocks connected after it
+ * run, reading `{{ <name>.data }}` = `{ block, code, message }`. The run still ends `failed`; a Response block in
+ * the handler answers a sync webhook instead of the default 500.
+ */
+export const errorTriggerBlockSchema = z.strictObject({
+  ...named,
+  type: z.literal('errorTrigger'),
+})
+
 export const blockSchema = z.discriminatedUnion('type', [
   startTriggerBlockSchema,
   codeBlockSchema,
@@ -147,6 +278,11 @@ export const blockSchema = z.discriminatedUnion('type', [
   branchBlockSchema,
   filterBlockSchema,
   responseBlockSchema,
+  loopBlockSchema,
+  functionBlockSchema,
+  workflowBlockSchema,
+  waitBlockSchema,
+  errorTriggerBlockSchema,
 ])
 
 export const edgeSchema = z.strictObject({
@@ -209,12 +345,39 @@ export const layoutSchema = z.strictObject({
   blocks: z.record(blockNameSchema, z.strictObject({ x: z.number(), y: z.number() })).optional(),
 })
 
+/**
+ * A reusable subflow, called from a Function block, a Loop's function runner, or `await name({ ... })` in code.
+ * Its blocks read the arguments as `{{ params.<name> }}`; every block nothing connects into starts the function.
+ * Block names are local to the function. It returns the data of its `returns` block (by default the only block
+ * nothing follows). Function calls aren't checkpointed: they belong to the block that calls them.
+ */
+export const functionSchema = z.strictObject({
+  name: identifierSchema,
+  description: z.string().max(2000).optional(),
+  params: z
+    .array(
+      z.strictObject({
+        name: identifierSchema,
+        description: z.string().max(500).optional(),
+        /** Used when the function is tested on its own in the editor. */
+        testValue: z.json().optional(),
+      }),
+    )
+    .max(20)
+    .optional(),
+  blocks: z.array(blockSchema).max(200),
+  edges: z.array(edgeSchema).max(1000),
+  returns: blockNameSchema.optional(),
+  layout: layoutSchema.optional(),
+})
+
 export const workflowDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
   settings: workflowSettingsSchema.optional(),
   triggers: triggersSchema.optional(),
   blocks: z.array(blockSchema).max(500),
   edges: z.array(edgeSchema).max(2000),
+  functions: z.array(functionSchema).max(50).optional(),
   /** Canvas positions. Excluded from `definitionHash`, so moving blocks around isn't a change. */
   layout: layoutSchema.optional(),
 })
@@ -229,6 +392,10 @@ export type RetrySettings = z.output<typeof retrySettingsSchema>
 export type WebhookTrigger = z.output<typeof webhookTriggerSchema>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
+export type FunctionDefinition = z.output<typeof functionSchema>
+export type LoopRunner = z.output<typeof loopRunnerSchema>
+export type LoopMode = (typeof LOOP_MODES)[number]
+export type WaitUnit = (typeof WAIT_UNITS)[number]
 
 export interface ResolvedBlockSettings {
   timeoutMs: number
@@ -242,13 +409,35 @@ export const DEFAULT_BLOCK_SETTINGS: ResolvedBlockSettings = {
   finally: 'stop',
 }
 
-/** A block's settings with every default filled in. The start trigger runs nothing, so it gets the defaults. */
+/**
+ * Blocks that do a lot by default get more time: a loop or a wait is bounded by the run timeout, and a function or
+ * child workflow call by the default run timeout. Everything else gets 10 s.
+ */
+const DEFAULT_TIMEOUT_MS: Partial<Record<BlockType, number>> = {
+  loop: MAX_RUN_TIMEOUT_MS,
+  wait: MAX_RUN_TIMEOUT_MS,
+  function: DEFAULT_RUN_TIMEOUT_MS,
+  workflow: DEFAULT_RUN_TIMEOUT_MS,
+}
+
+/** A block's settings with every default filled in. Triggers run nothing, so they get the defaults. */
 export function resolveBlockSettings(block: Block): ResolvedBlockSettings {
-  const s = block.type === 'startTrigger' ? undefined : block.settings
+  const s: BlockSettings | undefined = 'settings' in block ? block.settings : undefined
   return {
-    timeoutMs: s?.timeoutMs ?? DEFAULT_BLOCK_SETTINGS.timeoutMs,
+    timeoutMs: s?.timeoutMs ?? DEFAULT_TIMEOUT_MS[block.type] ?? DEFAULT_BLOCK_SETTINGS.timeoutMs,
     retry: { ...DEFAULT_BLOCK_SETTINGS.retry, ...stripUndefined(s?.retry ?? {}) },
     finally: s?.finally ?? DEFAULT_BLOCK_SETTINGS.finally,
+  }
+}
+
+/** A loop iteration's limit and retries: `config.iteration`, with the block defaults. */
+export function resolveIterationSettings(
+  block: BlockOf<'loop'>,
+): Pick<ResolvedBlockSettings, 'timeoutMs' | 'retry'> {
+  const it = block.config.iteration
+  return {
+    timeoutMs: it?.timeoutMs ?? DEFAULT_BLOCK_SETTINGS.timeoutMs,
+    retry: { ...DEFAULT_BLOCK_SETTINGS.retry, ...stripUndefined(it?.retry ?? {}) },
   }
 }
 
@@ -256,8 +445,26 @@ export function resolveBlockSettings(block: Block): ResolvedBlockSettings {
 export function blockPorts(block: Block): string[] {
   const ports =
     block.type === 'branch' ? [...block.config.conditions.map((c) => `cond:${c.id}`), 'else'] : ['out']
-  if (block.type !== 'startTrigger' && block.settings?.finally === 'continue') ports.push('error')
+  if ('settings' in block && block.settings?.finally === 'continue') ports.push('error')
   return ports
+}
+
+/** The blocks that start a run: the start trigger, and the error handler when the run fails. */
+export function isTrigger(block: Block): block is BlockOf<'startTrigger' | 'errorTrigger'> {
+  return block.type === 'startTrigger' || block.type === 'errorTrigger'
+}
+
+/**
+ * Blocks that park the run as `waiting` (a Wait, or a sync child workflow). Functions can't contain them, since a
+ * function call isn't checkpointed.
+ */
+export function suspends(block: Block): boolean {
+  if (block.type === 'wait') return true
+  if (block.type === 'workflow') return (block.config.mode ?? 'sync') === 'sync'
+  if (block.type === 'loop' && block.config.runner.kind === 'workflow') {
+    return (block.config.runner.mode ?? 'sync') === 'sync'
+  }
+  return false
 }
 
 function stripUndefined<T extends object>(obj: T): Partial<T> {

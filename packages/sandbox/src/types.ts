@@ -5,6 +5,36 @@ export interface RunOptions {
   timeoutMs?: number
   /** Receives console.* calls from user code. Arguments are JSON-safe copies. */
   onLog?: (level: LogLevel, args: unknown[]) => void
+  /**
+   * Functions code can call by name, `await name(...args)` (workflow functions). Arguments arrive as JSON copies;
+   * the result is copied back as JSON. A thrown error rejects the call inside the sandbox with its message.
+   */
+  functions?: Record<string, HostFunction>
+  /** Backs the global `fetch`. Without it, `fetch` rejects with "fetch isn't available here". */
+  fetch?: (request: SandboxFetchRequest) => Promise<SandboxFetchResponse>
+}
+
+export type HostFunction = (args: unknown[]) => Promise<unknown>
+
+/** What code passed to `fetch(url, init)`, normalized. */
+export interface SandboxFetchRequest {
+  url: string
+  /** Upper case. */
+  method: string
+  headers: [string, string][]
+  body: string | null
+}
+
+/** What `fetch` resolves to, before the sandbox wraps it in a Response-like object. */
+export interface SandboxFetchResponse {
+  status: number
+  statusText: string
+  /** The final URL, after redirects. */
+  url: string
+  redirected: boolean
+  headers: [string, string][]
+  /** The body decoded as UTF-8, like `Response.text()`. */
+  body: string
 }
 
 /**

@@ -226,24 +226,27 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 
 ## 2.2a How §2.2 is tested
 
-Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts` (in-memory store), `dispatcher.test.ts`, `crash.test.ts`, `scheduler.test.ts` and `inline.test.ts` (Postgres). Server tests are in `apps/server/test/`. Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
+Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts`, `advanced-semantics.test.ts`, `functions-loops.test.ts` and `children.test.ts` (in-memory store), and `dispatcher.test.ts`, `crash.test.ts`, `scheduler.test.ts`, `inline.test.ts`, `waiting.test.ts`, `loops-pg.test.ts` and `children-pg.test.ts` (Postgres). Server tests are in `apps/server/test/`. Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
 
 | Rule | Status | Covered by |
 |---|---|---|
-| Block statuses | ✅ `running`, `succeeded`, `errored`, `failed`, `skipped`, `cancelled`, `interrupted`. `waiting` comes in M5. `pending` is never written: a block gets a row when it starts or is skipped. | semantics (all groups); dispatcher "recovers runs…" (`interrupted`) |
+| Block statuses | ✅ `running`, `succeeded`, `errored`, `failed`, `skipped`, `waiting` (M5), `cancelled`, `interrupted`. `pending` is never written: a block gets a row when it starts or is skipped. | semantics (all groups); dispatcher "recovers runs…" (`interrupted`); waiting "pauses at a wait…" (`waiting`) |
 | Edge ports | ✅ | semantics "branch", "errors"; validator "edges" |
 | Readiness: all edges resolved, at least one fired | ✅ | semantics "fans out in parallel, and a join waits for every parent" |
 | Dead-path elimination, join after if/else | ✅ | semantics "skips a block whose incoming edges are all dead…", "runs a join after if/else…", "skips blocks that nothing connects to" |
 | Branch: first truthy only; a throwing condition is a block error | ✅ | semantics "branch" |
-| `finally=stop`: run fails, in-flight siblings aborted | ✅. The global error handler is M5. | semantics "with finally=stop…" |
+| `finally=stop`: run fails, in-flight siblings aborted | ✅ | semantics "with finally=stop…" |
+| Global error handler: runs on failure (incl. run timeout) with `{ block, code, message }`, reads the main path, own 60 s limit; the run still fails | ✅ (M5) | advanced-semantics "the global error handler" (all); server webhooks "answers with the error handler's Response…"; validator "the error handler" |
 | `finally=continue`, and "always run C" via both ports | ✅ | semantics "with finally=continue…", "always runs a block connected to both out and error" |
 | References: ancestors and globals only | ✅ | validator "references"; semantics "refuses an invalid definition…"; server "refuses to start runs that would fail anyway" |
 | A skipped ancestor reads as `{data:null, error:null, metadata:{status:'skipped'}}` | ✅ | semantics "runs a join after if/else…" |
 | Response: the first one replies, execution continues, later ones `ignored` | ✅, including across a resume | semantics "response", "does not reply again when an earlier lease already did" |
-| Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500) | ✅ (M4 webhooks; the error handler's Response is M5) | server webhooks "answers with the Response block's status, headers and body", "answers 200 { runId, status } without a Response block, and 500 when the run fails first"; semantics "has no response when no Response block runs" |
-| Loop | M5 | |
-| Functions | M5 | |
-| Wait / sync child / User Task, `waiting` with `available_at` | M5. The run timeout (default 15 min, max 6 h) is ✅. | dispatcher "claims a queued run…" (15 min deadline); semantics "fails the run at its deadline…"; definition schema "bounds the run timeout…" |
+| Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500, or the error handler's Response) | ✅ (M4 webhooks, M5 error handler) | server webhooks "answers with the Response block's status, headers and body", "answers 200 { runId, status } without a Response block, and 500 when the run fails first"; semantics "has no response when no Response block runs" |
+| Loop: data in input order, per-iteration checkpoints `loop1[17]`, `onError` stop/continue, modes, per-item timeout and retries | ✅ (M5). `metadata.iterations` is a summary `{ total, succeeded, failed, resumed }` plus the first 100 failures; each item's status is its own row. | functions-loops "loops" (all); loops-pg (batched commits, errored rows); crash "resumes a 10,000-iteration loop after kill -9…"; server "lists a loop's iterations…" |
+| Functions: subgraph with `params`, returns its return block's data; Function block, loop runner, `await fn()` | ✅ (M5). Calls aren't checkpointed (they belong to the calling block). | functions-loops "functions" (all); validator "functions"; server "runs loops and functions that query resources…" |
+| Wait / sync child, `waiting` with `available_at`, waiting not counted toward the run timeout | ✅ (M5). User Task is M6. | advanced-semantics "wait"; waiting "waiting" (all, incl. surviving every worker stopping and the timeout test); children-pg "pauses the parent while its child waits…"; children "the Workflow block" |
+| Cancel: queued/waiting at once; running stopped (SQL cancelled, fetch aborted); children cascade | ✅ (M5) | advanced-semantics "cancel"; waiting "cancel" (all); children-pg "cancels the children…"; server "cancels a running draft run…" |
+| Run timeout (default 15 min, max 6 h) | ✅ | dispatcher "claims a queued run…" (15 min deadline); semantics "fails the run at its deadline…"; definition schema "bounds the run timeout…" |
 | Delivery: at least once, committed exactly once | ✅ | crash "resumes a run on another worker after kill -9…"; dispatcher "fences off a zombie worker…", "never overwrites a committed result…"; semantics "delivery and resume"; db "commits one result per block key" |
 | `idempotencyKey` in scope | ✅ (the caller's key, or the run id) | dispatcher "exposes the caller's idempotency key…" |
 | Webhook `Idempotency-Key` header | ✅ (M4) | server webhooks "gives a repeated Idempotency-Key the same run and reply"; engine inline "returns the earlier run for a repeated idempotency key"; db "accepts an idempotency key once per workflow" |
@@ -264,8 +267,8 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - `workflow_releases(version semver, definition frozen, definition_hash)`
   - `workflow_triggers`: the runtime projection of the live release's triggers, holding the webhook alias and `next_fire_at`. M4: rows are matched by kind and name so ids survive releases; `alias_shape` (unique) keeps two live webhooks off the same URLs; `environment_id` and `last_fired_at` for schedules.
 - **Runs:**
-  - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`. In M2, `output` became `response` (the first Response block's reply), and each run points at exactly one release or draft snapshot.
-  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired).
+  - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`. In M2, `output` became `response` (the first Response block's reply), and each run points at exactly one release or draft snapshot. M5 added `suspended_at` (when a run paused; its deadline moves on by the time spent waiting) and `cancel_requested_at`. Child runs use `parent_run_id` and an idempotency key `child:<parentRun>:<block>:<attempt>`.
+  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired). M5: loop iterations are rows keyed `loop1[17]`; a `waiting` row's metadata holds `until` (and a child run's `childRunId` and `since`).
   - `block_run_payloads` (data jsonb, 10MB cap)
   - `run_logs`
   - `user_tasks`

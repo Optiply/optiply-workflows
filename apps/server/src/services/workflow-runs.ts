@@ -15,7 +15,14 @@ import {
   workflowRuns,
   workflows,
 } from '@ow/db'
-import { buildGraph, type Diagnostic, validateDefinition, type WorkflowDefinition } from '@ow/definition'
+import {
+  buildGraph,
+  calledWorkflows,
+  type Diagnostic,
+  queriedResources,
+  validateDefinition,
+  type WorkflowDefinition,
+} from '@ow/definition'
 import {
   BlockFailure,
   enqueueRun,
@@ -46,7 +53,8 @@ export type RunVersion = 'draft' | 'live'
  * Queues a manual run of a workflow's draft or live release in one environment.
  *
  * - Draft runs (the editor's Run button) need Edit on the workflow and, like the query playground, Use on every
- *   resource the workflow queries in that environment: they run as the person pressing Run. They execute a frozen
+ *   resource the workflow queries in that environment and on every workflow it calls: they run as the person
+ *   pressing Run. They execute a frozen
  *   snapshot of the draft, shared by every run of the same draft revision.
  * - Live runs need Use on the workflow. The resources were vouched for when the release was published (M4).
  * - The definition must validate (with each query checked by its connector) and every resource it queries must be
@@ -164,11 +172,23 @@ async function prepareRun(
     source = { releaseId: release!.id }
   }
 
-  const { resources: rows, errors } = await checkDefinition(db, definition)
+  const { resources: rows, children, errors } = await checkDefinition(db, definition)
   if (errors.length) {
     throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
       diagnostics: errors satisfies Diagnostic[],
     })
+  }
+  // A draft run starts its child workflows as the person pressing Run (a release was vouched for when published).
+  if (version === 'draft') {
+    for (const child of children) {
+      if (!atLeast(access.workflowLevel(child), 'use')) {
+        throw new RunRequestError(
+          403,
+          'forbidden',
+          `You need use access to workflow "${child.slug}" to run this draft, which calls it`,
+        )
+      }
+    }
   }
 
   const configured = new Set(
@@ -210,24 +230,37 @@ async function prepareRun(
 
 /**
  * Validates a definition the way the server does before running or releasing it: the editor's checks plus each query
- * against its resource's connector. Returns the resources it queries and the error diagnostics.
+ * against its resource's connector, and each child workflow existing with a live release. Returns the resources it
+ * queries, the workflows it calls and the error diagnostics.
  */
 export async function checkDefinition(
   db: Db,
   definition: WorkflowDefinition,
-): Promise<{ resources: Resource[]; errors: Diagnostic[] }> {
-  const slugs = [
-    ...new Set(definition.blocks.flatMap((b) => (b.type === 'resourceQuery' ? [b.config.resource] : []))),
-  ]
+): Promise<{ resources: Resource[]; children: Workflow[]; errors: Diagnostic[] }> {
+  const slugs = queriedResources(definition)
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
+  const childSlugs = calledWorkflows(definition)
+  const children = childSlugs.length
+    ? await db.select().from(workflows).where(inArray(workflows.slug, childSlugs))
+    : []
+  const childBySlug = new Map(children.map((w) => [w.slug, w]))
   const validation = validateDefinition(definition, {
     resolveResource: (slug) => {
       const resource = bySlug.get(slug)
       return resource ? getConnector(resource.type) : undefined
     },
+    resolveWorkflow: (slug) => {
+      const child = childBySlug.get(slug)
+      if (!child) return undefined
+      return child.liveReleaseId ? 'published' : 'unpublished'
+    },
   })
-  return { resources: rows, errors: validation.diagnostics.filter((d) => d.severity === 'error') }
+  return {
+    resources: rows,
+    children,
+    errors: validation.diagnostics.filter((d) => d.severity === 'error'),
+  }
 }
 
 /** The snapshot of the current draft revision, created on first use. */

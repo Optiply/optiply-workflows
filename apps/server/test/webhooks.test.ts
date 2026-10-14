@@ -30,8 +30,13 @@ const query = (name: string, sql: string) => ({
 })
 const respond = (config: object) => ({ name: 'reply', type: 'response', config })
 
-/** Creates a workflow with a chain of blocks and publishes it with `triggers`. */
-async function published(slug: string, blocks: object[], triggers: object = { webhook: { enabled: true } }) {
+/** Creates a workflow with a chain of blocks (or the given edges) and publishes it with `triggers`. */
+async function published(
+  slug: string,
+  blocks: object[],
+  triggers: object = { webhook: { enabled: true } },
+  edges?: [string, string][],
+) {
   const names = ['startTrigger', ...blocks.map((b) => (b as { name: string }).name)]
   const created = data(await admin.mutate('workflows.create', { slug, name: slug }))
   const saved = data(
@@ -41,7 +46,9 @@ async function published(slug: string, blocks: object[], triggers: object = { we
       definition: {
         schemaVersion: 1,
         blocks: [start, ...blocks],
-        edges: names.slice(1).map((to, i) => ({ from: names[i]!, port: 'out', to })),
+        edges: edges
+          ? edges.map(([from, to]) => ({ from, port: 'out', to }))
+          : names.slice(1).map((to, i) => ({ from: names[i]!, port: 'out', to })),
         triggers,
       },
     }),
@@ -278,6 +285,48 @@ describe('sync webhooks', () => {
     expect(res.json).toEqual({ runId: res.headers['x-run-id'], status: 'running' })
     expect(res.headers.location).toBe(`/api/v1/runs/${res.headers['x-run-id']}`)
     expect((await finished(String(res.headers['x-run-id']))).response).toMatchObject({ body: 'late' })
+  })
+
+  it("answers with the error handler's Response when the run fails", async () => {
+    await published(
+      'handled',
+      [
+        code('a', 'throw new Error("no stock")'),
+        { name: 'onFailure', type: 'errorTrigger' },
+        respond({ status: '503', body: '{"retryLater": true, "because": {{ onFailure.data.message }}}' }),
+      ],
+      undefined,
+      [
+        ['startTrigger', 'a'],
+        ['onFailure', 'reply'],
+      ],
+    )
+    const res = await call('POST', '/api/v1/workflows/handled/webhook', { body: {} })
+    expect(res.status).toBe(503)
+    expect(res.json).toEqual({ retryLater: true, because: expect.stringContaining('no stock') })
+    expect(await finished(String(res.headers['x-run-id']))).toMatchObject({
+      status: 'failed',
+      error: { block: 'a' },
+    })
+  })
+
+  it('answers 202 at once when the run pauses at a wait', async () => {
+    await published('pauses', [
+      { name: 'pause', type: 'wait', config: { kind: 'duration', amount: '1', unit: 'minutes' } },
+      respond({ body: '"later"' }),
+    ])
+    const started = Date.now()
+    const res = await call('POST', '/api/v1/workflows/pauses/webhook', { body: {} })
+    expect(res.status).toBe(202)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    const runId = String(res.headers['x-run-id'])
+    expect(res.json).toEqual({ runId, status: 'running' })
+    expect(await runRow(runId)).toMatchObject({ status: 'waiting' })
+    // The caller's API key can follow and cancel the run it started.
+    const cancelled = await call('POST', `/api/v1/runs/${runId}/cancel`)
+    expect(cancelled.status).toBe(200)
+    expect(cancelled.json).toMatchObject({ run: { id: runId, status: 'cancelled' } })
+    expect((await call('POST', `/api/v1/runs/${runId}/cancel`)).status).toBe(409)
   })
 
   it('picks the most specific alias and 404s on unknown ones', async () => {

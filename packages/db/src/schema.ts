@@ -470,8 +470,12 @@ export const workflowRuns = pgTable(
     epoch: integer().notNull().default(0),
     /** Claims after a lost lease; the run fails after 3. */
     recoveries: integer().notNull().default(0),
-    /** Run timeout; time spent waiting extends it (M5). Set when the run first starts. */
+    /** Run timeout. Set when the run first starts; a resumed run moves it on by the time it spent waiting. */
     deadlineAt: timestamp({ withTimezone: true }),
+    /** When the run paused (`waiting`, M5); cleared when it resumes and its deadline moves on. */
+    suspendedAt: timestamp({ withTimezone: true }),
+    /** Someone cancelled the run while it was running; the process holding it stops it as `cancelled`. */
+    cancelRequestedAt: timestamp({ withTimezone: true }),
 
     /** From the webhook's `Idempotency-Key` header: a repeat returns the existing run. */
     idempotencyKey: text(),

@@ -1,11 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
-import { Download, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { ChevronLeft, ChevronRight, Download, Square, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { StatusBadge } from '@/components/status-badge'
 import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
-import { type BlockView, duration, FINAL_RUN_STATUSES, type RunView, runsApi } from '@/lib/runs-api'
+import {
+  type BlockView,
+  duration,
+  FINAL_RUN_STATUSES,
+  type IterationView,
+  type RunView,
+  runsApi,
+} from '@/lib/runs-api'
 import { cn } from '@/lib/utils'
-import { isFinal, useRun } from './run-state'
+import { cancelOpenRun, isFinal, useRun } from './run-state'
 import { useEditor } from './store'
 
 /** The open run: its blocks with data and errors, its logs and its output, plus a picker of recent runs. */
@@ -44,6 +52,12 @@ export function RunPanel() {
               {run.environment} · {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version} ·{' '}
               {duration(run.startedAt, run.finishedAt)}
             </span>
+            {run.parentRunId && (
+              <span className="whitespace-nowrap text-xs text-muted">
+                started by <RunLink runId={run.parentRunId} />
+              </span>
+            )}
+            {!isFinal(run.status) && <CancelButton />}
           </>
         )}
         <div className="flex-1" />
@@ -91,6 +105,7 @@ export function RunPanel() {
 
 function BlocksTab({ run }: { run: RunView }) {
   const live = useRun((s) => s.blocks)
+  const progress = useRun((s) => s.iterations)
   // Select the definition itself: a selector returning a new array each time would re-render forever.
   const definition = useEditor((s) => s.definition)
   const order = useMemo(() => definition.blocks.map((b) => b.name), [definition])
@@ -121,6 +136,9 @@ function BlocksTab({ run }: { run: RunView }) {
               >
                 <span className="min-w-0 flex-1 truncate font-mono">{key}</span>
                 {view?.metadata?.cachedFrom ? <span className="text-xs text-muted">cached</span> : null}
+                {progress[key] && status === 'running' ? (
+                  <span className="text-xs text-muted">{progress[key]} done</span>
+                ) : null}
                 <span className="text-xs text-muted">
                   {view ? duration(view.startedAt, view.finishedAt) : ''}
                 </span>
@@ -132,7 +150,13 @@ function BlocksTab({ run }: { run: RunView }) {
       </ul>
       <div className="min-w-0 flex-1 overflow-y-auto p-3">
         {current && (
-          <BlockResult runId={run.id} view={byKey.get(current)} name={current} runStatus={run.status} />
+          <BlockResult
+            runId={run.id}
+            view={byKey.get(current)}
+            name={current}
+            runStatus={run.status}
+            isLoop={definition.blocks.some((b) => b.name === current && b.type === 'loop')}
+          />
         )}
       </div>
     </div>
@@ -144,11 +168,13 @@ function BlockResult({
   name,
   view,
   runStatus,
+  isLoop,
 }: {
   runId: string
   name: string
   view: BlockView | undefined
   runStatus: string
+  isLoop: boolean
 }) {
   const result = useQuery({
     queryKey: ['run', runId, 'block', name, view?.status, runStatus],
@@ -174,8 +200,187 @@ function BlockResult({
           <span className="font-mono text-xs">{block.error.code}</span> {block.error.message}
         </p>
       )}
+      {block.status === 'waiting' && <WaitingNote metadata={block.metadata} />}
+      {childRunOf(block) && (
+        <p className="text-xs text-muted">
+          Child run: <RunLink runId={childRunOf(block)!} />
+        </p>
+      )}
       {block.status === 'succeeded' && <Json value={block.data} />}
+      {isLoop && <Iterations runId={runId} loop={name} runStatus={runStatus} />}
     </div>
+  )
+}
+
+/** The child run a Workflow block started, from its metadata (or its waiting state). */
+function childRunOf(block: BlockView & { data: unknown }): string | null {
+  const meta = block.metadata ?? {}
+  const id = meta.runId ?? meta.childRunId ?? (block.data as { runId?: unknown } | null)?.runId
+  return typeof id === 'string' ? id : null
+}
+
+function WaitingNote({ metadata }: { metadata: Record<string, unknown> | null }) {
+  const until = typeof metadata?.until === 'string' ? new Date(metadata.until) : null
+  return (
+    <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
+      {metadata?.childRunId ? 'Waiting for its child run to finish' : 'Waiting'}
+      {until && !metadata?.childRunId ? ` until ${until.toLocaleString()}` : ''}.
+    </p>
+  )
+}
+
+/** A link to a run in its workflow's editor (the parent of a child run, or a child). */
+function RunLink({ runId }: { runId: string }) {
+  const run = useQuery({ queryKey: ['run', runId], queryFn: () => runsApi.get(runId) })
+  if (!run.data) return <span className="font-mono">{runId.slice(0, 8)}</span>
+  return (
+    <Link
+      to="/workflows/$workflowId"
+      params={{ workflowId: run.data.workflow.id }}
+      search={{ run: runId }}
+      className="font-medium text-accent hover:underline"
+    >
+      {run.data.workflow.name} · {run.data.status}
+    </Link>
+  )
+}
+
+function CancelButton() {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        loading={busy}
+        title="Cancel this run: in-flight queries and requests are stopped"
+        onClick={async () => {
+          setBusy(true)
+          setError(null)
+          try {
+            await cancelOpenRun()
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err))
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        {!busy && <Square className="size-3.5" />} Cancel
+      </Button>
+      {error && <span className="text-xs text-danger">{error}</span>}
+    </>
+  )
+}
+
+const ITERATIONS_PAGE = 50
+
+/** A loop's committed iterations, a page at a time, optionally only the failed ones; click one for its data. */
+function Iterations({ runId, loop, runStatus }: { runId: string; loop: string; runStatus: string }) {
+  const [offset, setOffset] = useState(0)
+  const [status, setStatus] = useState<'' | 'errored' | 'failed'>('')
+  const [open, setOpen] = useState<number | null>(null)
+  const progress = useRun((s) => s.iterations[loop] ?? 0)
+  const page = useQuery({
+    queryKey: ['run', runId, 'iterations', loop, offset, status, runStatus, progress],
+    queryFn: () =>
+      runsApi.iterations(runId, loop, { offset, limit: ITERATIONS_PAGE, status: status || undefined }),
+  })
+  const total = page.data?.total ?? 0
+  return (
+    <div className="mt-2 flex flex-col gap-2" data-testid="iterations">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">Iterations</span>
+        <span className="text-xs text-muted">{total} committed</span>
+        <div className="flex-1" />
+        <Select
+          aria-label="Iteration status"
+          className="h-7 text-xs"
+          value={status}
+          onChange={(e) => {
+            setStatus(e.target.value as typeof status)
+            setOffset(0)
+          }}
+        >
+          <option value="">All</option>
+          <option value="errored">Errored (loop went on)</option>
+          <option value="failed">Failed</option>
+        </Select>
+        <Button
+          size="icon"
+          variant="ghost"
+          title="Previous page"
+          disabled={offset === 0}
+          onClick={() => setOffset(Math.max(0, offset - ITERATIONS_PAGE))}
+        >
+          <ChevronLeft className="size-4" />
+        </Button>
+        <span className="text-xs text-muted">
+          {total ? `${offset + 1}–${Math.min(offset + ITERATIONS_PAGE, total)}` : '0'}
+        </span>
+        <Button
+          size="icon"
+          variant="ghost"
+          title="Next page"
+          disabled={offset + ITERATIONS_PAGE >= total}
+          onClick={() => setOffset(offset + ITERATIONS_PAGE)}
+        >
+          <ChevronRight className="size-4" />
+        </Button>
+      </div>
+      {page.error && <ErrorNote error={page.error} />}
+      <ul className="divide-y divide-border rounded-md border border-border">
+        {page.data?.iterations.map((it) => (
+          <IterationRow
+            key={it.index}
+            runId={runId}
+            loop={loop}
+            iteration={it}
+            open={open === it.index}
+            onToggle={() => setOpen(open === it.index ? null : it.index)}
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function IterationRow({
+  runId,
+  loop,
+  iteration,
+  open,
+  onToggle,
+}: {
+  runId: string
+  loop: string
+  iteration: IterationView
+  open: boolean
+  onToggle: () => void
+}) {
+  const data = useQuery({
+    queryKey: ['run', runId, 'block', `${loop}[${iteration.index}]`],
+    queryFn: () => runsApi.block(runId, `${loop}[${iteration.index}]`),
+    enabled: open && iteration.status === 'succeeded',
+  })
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs hover:bg-canvas"
+      >
+        <span className="w-12 font-mono text-muted">[{iteration.index}]</span>
+        <StatusBadge status={iteration.status} />
+        {iteration.attempt > 1 && <span className="text-muted">attempt {iteration.attempt}</span>}
+        <span className="min-w-0 flex-1 truncate text-danger">{iteration.error?.message}</span>
+        <span className="text-muted">{duration(iteration.startedAt, iteration.finishedAt)}</span>
+      </button>
+      {open && iteration.status === 'succeeded' && (
+        <div className="px-2 pb-2">{data.data ? <Json value={data.data.data} /> : <Spinner />}</div>
+      )}
+    </li>
   )
 }
 

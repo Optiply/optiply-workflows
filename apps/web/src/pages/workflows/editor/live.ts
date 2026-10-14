@@ -14,7 +14,7 @@ export function useRunEvents() {
 
   useEffect(() => {
     if (!runId) return
-    const { snapshot, applyBlock, applyRun, setRun } = useRun.getState()
+    const { snapshot, applyBlock, applyRun, applyIterations, setRun } = useRun.getState()
     const source = new EventSource(`/api/v1/runs/${runId}/events`)
     const stillOpen = () => useRun.getState().runId === runId
     source.addEventListener('snapshot', (e) => {
@@ -23,6 +23,10 @@ export function useRunEvents() {
     })
     source.addEventListener('block', (e) => {
       if (stillOpen()) applyBlock(JSON.parse((e as MessageEvent).data))
+    })
+    source.addEventListener('iterations', (e) => {
+      const { key, count } = JSON.parse((e as MessageEvent).data)
+      if (stillOpen()) applyIterations(key, count)
     })
     source.addEventListener('run', (e) => {
       if (stillOpen()) applyRun(JSON.parse((e as MessageEvent).data).status)

@@ -1,6 +1,12 @@
 import ivm from 'isolated-vm'
 import { stdlibSource } from './stdlib'
-import { type CodeRuntime, type LogLevel, type RunOptions, SandboxError } from './types'
+import {
+  type CodeRuntime,
+  type LogLevel,
+  type RunOptions,
+  SandboxError,
+  type SandboxFetchRequest,
+} from './types'
 
 const DEFAULT_TIMEOUT_MS = 10_000
 /** Extra wall-clock time after `timeoutMs` before the watchdog disposes the whole isolate. */
@@ -98,6 +104,11 @@ export class IvmRuntime implements CodeRuntime {
           new ivm.Callback((level: LogLevel, json: string) => onLog(level, JSON.parse(json) as unknown[])),
         )
       }
+      if (opts.functions || opts.fetch) {
+        global.setSync('__owHost', new ivm.Reference(hostBridge(opts)))
+        const names = Object.keys(opts.functions ?? {})
+        if (names.length) context.evalSync(`__owBindFunctions(${JSON.stringify(names)})`)
+      }
 
       return await context.eval(code, {
         timeout: timeoutMs,
@@ -112,6 +123,35 @@ export class IvmRuntime implements CodeRuntime {
       clearTimeout(watchdog)
       if (context && !isolate.isDisposed) context.release()
       if (isolate.isDisposed && this.isolate === isolate) this.isolate = undefined
+    }
+  }
+}
+
+/**
+ * The host side of `__owHost`: runs a host function or `fetch` and answers JSON text, `{ ok, value }` or
+ * `{ ok: false, name, message }`. Never rejects, so the sandbox always gets an answer it can turn into an error.
+ */
+function hostBridge(opts: RunOptions) {
+  return async (kind: string, name: string, argsJson: string): Promise<string> => {
+    try {
+      const args = JSON.parse(argsJson) as unknown[]
+      let value: unknown
+      if (kind === 'fetch') {
+        if (!opts.fetch) throw new Error("fetch isn't available here")
+        value = await opts.fetch(args[0] as SandboxFetchRequest)
+      } else {
+        const fn = opts.functions && Object.hasOwn(opts.functions, name) ? opts.functions[name] : undefined
+        if (!fn) throw new Error(`${name} isn't available here`)
+        value = await fn(args)
+      }
+      return JSON.stringify({ ok: true, value: value ?? null })
+    } catch (err) {
+      const e = err as { name?: unknown; message?: unknown }
+      return JSON.stringify({
+        ok: false,
+        name: typeof e?.name === 'string' ? e.name : 'Error',
+        message: typeof e?.message === 'string' ? e.message : String(err),
+      })
     }
   }
 }

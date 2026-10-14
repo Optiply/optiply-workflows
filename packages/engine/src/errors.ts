@@ -21,6 +21,14 @@ export class LeaseLostError extends Error {
   override name = 'LeaseLostError'
 }
 
+/** Why a run's signal aborted when someone cancelled it: the run stops and finishes as `cancelled`. */
+export class RunCancelledError extends Error {
+  override name = 'RunCancelledError'
+  constructor(message = 'The run was cancelled') {
+    super(message)
+  }
+}
+
 /** Normalises anything a block can throw, scrubbing secret values out of the message and details. */
 export function toEngineError(err: unknown, secrets: readonly string[] = []): EngineError {
   let error: EngineError

@@ -1,6 +1,7 @@
 import { parseTemplate, renderJson, renderText, TemplateError } from '@ow/expressions'
 import { Agent, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
+import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
 
@@ -389,30 +390,6 @@ async function getToken(client: Client, signal: AbortSignal, force = false): Pro
   return token.access_token
 }
 
-async function readBody(res: Response, maxBytes: number): Promise<Buffer> {
-  const declared = Number(res.headers.get('content-length'))
-  if (declared > maxBytes) {
-    await res.body?.cancel()
-    throw tooLarge(maxBytes)
-  }
-  const chunks: Uint8Array[] = []
-  let size = 0
-  if (!res.body) return Buffer.alloc(0)
-  for await (const chunk of res.body) {
-    size += chunk.byteLength
-    if (size > maxBytes) {
-      await res.body.cancel().catch(() => {})
-      throw tooLarge(maxBytes)
-    }
-    chunks.push(chunk)
-  }
-  return Buffer.concat(chunks)
-}
-
-function tooLarge(maxBytes: number): ConnectorError {
-  return new ConnectorError('too_large', `The response is larger than ${maxBytes} bytes`)
-}
-
 /** JSON is parsed; text-like types are decoded; anything else is returned as base64. */
 function decodeBody(raw: Buffer, contentType: string | null): { value: unknown; base64?: boolean } {
   const type = (contentType ?? '').toLowerCase()
@@ -433,24 +410,4 @@ function decodeBody(raw: Buffer, contentType: string | null): { value: unknown; 
 function requireSecret(value: string | undefined, label: string): string {
   if (!value) throw new ConnectorError('invalid_config', `The ${label} isn't set for this resource`)
   return value
-}
-
-/** Maps fetch failures; a blocked lookup surfaces as the `cause` (possibly nested) of undici's TypeError. */
-function networkError(err: unknown, url: URL): unknown {
-  if ((err as Error).name === 'AbortError') return err
-  for (
-    let e = err as { cause?: unknown; code?: string; message?: string } | undefined;
-    e;
-    e = e.cause as typeof e
-  ) {
-    if (e.code === 'OW_BLOCKED_ADDRESS') return new ConnectorError('blocked', e.message ?? 'Blocked address')
-  }
-  const cause = (err as { cause?: { code?: string; message?: string } }).cause
-  return new ConnectorError(
-    'connection',
-    `Could not reach ${url.host}: ${cause?.message ?? (err as Error).message}`,
-    {
-      code: cause?.code,
-    },
-  )
 }

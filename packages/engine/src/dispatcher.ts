@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import type postgres from 'postgres'
+import { RunCancelledError } from './errors'
 import { type DispatcherLogger, noLog, RunExecutor, type RunExecutorOptions } from './executor'
-import { type Claim, claimRuns, RUNS_QUEUED_CHANNEL, reapExpiredLeases } from './queue'
+import { type Claim, claimRuns, RUN_CANCEL_CHANNEL, RUNS_QUEUED_CHANNEL, reapExpiredLeases } from './queue'
 
 export type { DispatcherLogger, RunContextProvider } from './executor'
 
@@ -41,6 +42,7 @@ export class Dispatcher {
   private loopDone: Promise<void> = Promise.resolve()
   private reapTimer: NodeJS.Timeout | undefined
   private unlisten: (() => Promise<void>) | undefined
+  private unlistenCancel: (() => Promise<void>) | undefined
 
   constructor(opts: DispatcherOptions) {
     this.opts = {
@@ -66,6 +68,7 @@ export class Dispatcher {
     if (this.opts.listener) {
       const { unlisten } = await this.opts.listener.listen(RUNS_QUEUED_CHANNEL, () => this.wake())
       this.unlisten = unlisten
+      this.unlistenCancel = await listenForCancels(this.opts.listener, this.active)
     }
     this.reapTimer = setInterval(() => void this.reap(), this.opts.reapIntervalMs)
     this.loopDone = this.loop()
@@ -86,6 +89,7 @@ export class Dispatcher {
     clearInterval(this.reapTimer)
     await this.drain()
     await this.unlisten?.().catch(() => {})
+    await this.unlistenCancel?.().catch(() => {})
     for (const { controller } of this.active.values()) controller.abort(new Error('worker shutting down'))
     await Promise.all([...this.active.values()].map((a) => a.done))
     this.log.info({ workerId: this.workerId }, 'dispatcher stopped')
@@ -94,9 +98,9 @@ export class Dispatcher {
   /** One recovery pass (also runs on a timer). */
   async reap() {
     try {
-      const { requeued, failed } = await reapExpiredLeases(this.opts.db, this.opts.maxRecoveries)
-      if (requeued.length || failed.length)
-        this.log.warn({ requeued, failed }, 'recovered runs with expired leases')
+      const { requeued, failed, cancelled } = await reapExpiredLeases(this.opts.db, this.opts.maxRecoveries)
+      if (requeued.length || failed.length || cancelled.length)
+        this.log.warn({ requeued, failed, cancelled }, 'recovered runs with expired leases')
     } catch (err) {
       this.log.error({ err }, 'lease recovery failed')
     }
@@ -148,4 +152,18 @@ export class Dispatcher {
     })
     this.active.set(claim.runId, { controller, done })
   }
+}
+
+/**
+ * Cancels the runs this process executes when someone cancels them (`cancelRun` NOTIFYs their id). Returns the
+ * unlisten function. Lease renewals catch a missed NOTIFY.
+ */
+export async function listenForCancels(
+  listener: postgres.Sql,
+  active: ReadonlyMap<string, { controller: AbortController }>,
+): Promise<() => Promise<void>> {
+  const { unlisten } = await listener.listen(RUN_CANCEL_CHANNEL, (runId) => {
+    active.get(runId)?.controller.abort(new RunCancelledError())
+  })
+  return unlisten
 }

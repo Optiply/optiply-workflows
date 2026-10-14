@@ -1,4 +1,4 @@
-import type { AnyConnector, PoolManager, ResolvedResource } from '@ow/connectors'
+import type { AnyConnector, CodeFetcher, PoolManager, ResolvedResource } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import type { CodeRuntime } from '@ow/sandbox'
@@ -58,8 +58,28 @@ export interface RunStore {
    * transaction.
    */
   blockFinished(result: BlockResult, extra?: { response?: RunResponse }): Promise<void>
+  /**
+   * A block started waiting (a Wait until `until`, or a sync Workflow block for its child run). Not final: the run resumes it later, and `blockFinished`
+   * then commits its result.
+   */
+  blockWaiting(key: string, attempt: number, state: WaitState): Promise<void>
+  /**
+   * Commits finished loop iterations (keys `<loop>[<index>]`) in one go. Like `blockFinished`, a committed
+   * iteration is never overwritten.
+   */
+  iterationsFinished(loop: string, results: readonly BlockResult[]): Promise<void>
   /** Buffered; failures to write logs never fail the run. */
   log(entry: { blockKey: string | null; level: LogLevel; message: string }): void
+}
+
+/**
+ * Why a block is waiting, as stored on its `waiting` row so a resumed run picks up where it left off: when it
+ * resumes at the latest, and for a sync Workflow block, the child run and when the block started waiting for it.
+ */
+export interface WaitState {
+  until: Date
+  childRunId?: string
+  since?: Date
 }
 
 /** Finds a resource's connector and decrypted settings for an environment. Throws when it can't. */
@@ -75,6 +95,36 @@ export interface EngineServices {
   sandbox: CodeRuntime
   pool: PoolManager
   resources: ResourceProvider
+  /** Backs `fetch` in code. Without it, `fetch` rejects with "fetch isn't available here". */
+  fetcher?: Pick<CodeFetcher, 'fetch'>
+  /** Starts and follows child runs (Workflow blocks, loop workflow runners). Without it they fail. */
+  children?: ChildRuns
+}
+
+/** A child run as its parent sees it. */
+export interface ChildRunState {
+  runId: string
+  status: 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
+  response: RunResponse | null
+  error: (EngineError & { block?: string }) | null
+}
+
+/** Child workflow runs, for Workflow blocks and loop workflow runners. */
+export interface ChildRuns {
+  /**
+   * Starts a run of `workflow`'s live release in the parent's environment, or returns the one this `key` started
+   * before (so a re-run block doesn't start a second child). Throws a BlockFailure when the workflow is unknown or
+   * not published.
+   */
+  start(request: {
+    workflow: string
+    input: unknown
+    key: string
+    parentRunId: string
+    environmentId: string
+  }): Promise<string>
+  get(runId: string): Promise<ChildRunState | null>
+  cancel(runId: string): Promise<void>
 }
 
 export interface ExecuteRunOptions {
@@ -88,6 +138,8 @@ export interface ExecuteRunOptions {
   store: RunStore
   /** Results committed by an earlier lease; those blocks don't run again. */
   checkpoints?: readonly BlockResult[]
+  /** Blocks an earlier lease left waiting, with when each resumes (and the child run a Workflow block waits for). */
+  waits?: ReadonlyMap<string, WaitState>
   /**
    * Run only these blocks (the editor's "Run block"), plus whichever of their ancestors have no checkpoint.
    * Everything else is left alone. Omit to run the whole workflow.
@@ -95,21 +147,33 @@ export interface ExecuteRunOptions {
   only?: readonly string[]
   /** A Response block already replied in an earlier lease. */
   responded?: boolean
-  /** Interrupts the run without finishing it (shutdown, lease lost); in-flight blocks re-run on resume. */
+  /**
+   * Interrupts the run without finishing it (shutdown, lease lost); in-flight blocks re-run on resume. Aborting
+   * with a `RunCancelledError` cancels the run instead: in-flight blocks are recorded as cancelled.
+   */
   signal?: AbortSignal
   /** The run fails when this passes. */
   deadline?: Date
   /** Blocks executing at once. Default 10. */
   maxConcurrency?: number
+  /** Waits due sooner than this finish in the process instead of pausing the run. Default 1 s. */
+  suspendAfterMs?: number
+  /** The error handler's time limit. Default 60 s. */
+  handlerTimeoutMs?: number
   /** Values scrubbed from logs and errors (secret config var values). */
   secrets?: readonly string[]
 }
 
 export interface RunOutcome {
-  /** `interrupted`: stopped without finishing; another lease resumes it from the checkpoints. */
-  status: 'succeeded' | 'failed' | 'interrupted'
+  /**
+   * `interrupted`: stopped without finishing; another lease resumes it from the checkpoints. `waiting`: only Wait
+   * blocks are left, so the run pauses until `resumeAt`. `cancelled`: someone cancelled it.
+   */
+  status: 'succeeded' | 'failed' | 'interrupted' | 'waiting' | 'cancelled'
   error: (EngineError & { block?: string }) | null
   /** The reply recorded during this execution, if any. */
   response: RunResponse | null
+  /** With `waiting`: when the earliest Wait is due. */
+  resumeAt?: Date
   results: ReadonlyMap<string, BlockResult>
 }

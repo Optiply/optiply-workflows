@@ -1,4 +1,4 @@
-import type { WorkflowDefinition } from '@ow/definition'
+import type { Block, FunctionDefinition } from '@ow/definition'
 
 /** What the last run produced for a block, if anything. */
 export interface SampleResult {
@@ -67,22 +67,40 @@ declare const configVars: Record<string, string>
 declare const workflowContext: { runId: string; workflowId: string; environment: string; triggerType: string }
 /** The caller's Idempotency-Key, or the run id. */
 declare const idempotencyKey: string
-/** In a filter condition: the current item. */
+/** In a filter condition or a loop: the current item. */
 declare const value: any
-/** In a filter condition: the current item's index. */
+/** In a filter condition or a loop: the current item's index. */
 declare const index: number
 interface OwBlockError { code: string; message: string; details?: unknown }
+interface OwResponse {
+  ok: boolean; status: number; statusText: string; url: string; redirected: boolean
+  headers: { get(name: string): string | null; has(name: string): boolean }
+  text(): Promise<string>; json(): Promise<any>
+}
+/** An HTTP request (code only). The body must be a string; private and internal addresses are refused. */
+declare function fetch(url: string, init?: { method?: string; headers?: Record<string, string> | [string, string][]; body?: string }): Promise<OwResponse>
 `
 
 /**
- * Declarations for every block's result, typed from the last run where there is one, so `query1.data[0].` completes
- * in code. Also returns plain sample values for `{{ }}` completions outside JavaScript.
+ * Declarations for every block's result in the open graph, typed from the last run where there is one, so
+ * `query1.data[0].` completes in code. Also declares the workflow's functions (`await name(...)`) and, inside a
+ * function, its `params`. Returns plain sample values for `{{ }}` completions outside JavaScript too.
  */
 export function scopeDeclarations(
-  def: WorkflowDefinition,
+  blocks: readonly Block[],
   samples: Record<string, SampleResult>,
+  functions: readonly FunctionDefinition[] = [],
+  inFunction?: FunctionDefinition,
 ): { dts: string; sample: Record<string, unknown> } {
   const lines = [GLOBALS]
+  for (const fn of functions) {
+    const args = (fn.params ?? []).map((p) => `${p.name}?: any`).join(', ')
+    lines.push(`/** Calls the ${fn.name} function. */\ndeclare function ${fn.name}(${args}): Promise<any>`)
+  }
+  if (inFunction) {
+    const params = (inFunction.params ?? []).map((p) => `${p.name}: any`).join('; ')
+    lines.push(`/** The arguments this function was called with. */\ndeclare const params: { ${params} }`)
+  }
   const sample: Record<string, unknown> = {
     _: {},
     dayjs: {},
@@ -90,8 +108,12 @@ export function scopeDeclarations(
     workflowContext: { runId: '', workflowId: '', environment: '', triggerType: '' },
     idempotencyKey: '',
   }
-  for (const block of def.blocks) {
-    const result = samples[block.name]
+  if (inFunction) {
+    sample.params = Object.fromEntries((inFunction.params ?? []).map((p) => [p.name, p.testValue ?? null]))
+  }
+  for (const block of blocks) {
+    // Function blocks have no run samples (function calls aren't recorded per block).
+    const result = inFunction ? undefined : samples[block.name]
     const data = result ? typeOf(result.data) : 'unknown'
     const extra =
       block.type === 'startTrigger'

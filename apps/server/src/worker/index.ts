@@ -1,4 +1,4 @@
-import { PoolManager } from '@ow/connectors'
+import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { Dispatcher, Scheduler } from '@ow/engine'
 import type { Logger } from 'pino'
@@ -15,10 +15,12 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 export async function startWorker(deps: { db: Db; sql: postgres.Sql; config: Config; log: Logger }) {
   const { db, sql, config, log } = deps
   const pool = new PoolManager()
+  const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   const dispatcher = new Dispatcher({
     db,
     listener: sql,
     pool,
+    fetcher,
     resources: dbResourceProvider(db, config.keyring),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WORKER_CONCURRENCY,
@@ -34,6 +36,7 @@ export async function startWorker(deps: { db: Db; sql: postgres.Sql; config: Con
       await scheduler.stop()
       await dispatcher.stop()
       await pool.closeAll()
+      await fetcher.close()
     },
   }
 }

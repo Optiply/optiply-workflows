@@ -10,7 +10,7 @@ import {
 import { and, eq, isNull, notInArray, sql } from 'drizzle-orm'
 import { LeaseLostError } from './errors'
 import { type Claim, notifyRunEvent } from './queue'
-import type { BlockResult, RunResponse, RunStore } from './types'
+import type { BlockResult, RunResponse, RunStore, WaitState } from './types'
 
 /** A committed result is never overwritten, not even by a later lease. */
 const FINAL: BlockStatus[] = ['succeeded', 'errored', 'failed', 'skipped', 'cancelled']
@@ -79,6 +79,40 @@ export class PgRunStore implements RunStore {
     })
   }
 
+  async blockWaiting(key: string, attempt: number, state: WaitState) {
+    await this.fenced(async (tx) => {
+      const values = {
+        status: 'waiting' as const,
+        attempt,
+        epoch: this.claim.epoch,
+        metadata: {
+          until: state.until.toISOString(),
+          ...(state.childRunId && { childRunId: state.childRunId }),
+          ...(state.since && { since: state.since.toISOString() }),
+        },
+      }
+      const written = await tx
+        .insert(blockRuns)
+        .values({ runId: this.claim.runId, blockKey: key, ...values, startedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [blockRuns.runId, blockRuns.blockKey],
+          set: { ...values, updatedAt: new Date() },
+          setWhere: notInArray(blockRuns.status, FINAL),
+        })
+        .returning({ id: blockRuns.id })
+      if (written.length) {
+        await notifyRunEvent(tx, {
+          runId: this.claim.runId,
+          type: 'block',
+          key,
+          status: 'waiting',
+          attempt,
+          port: null,
+        })
+      }
+    })
+  }
+
   async blockFinished(result: BlockResult, extra?: { response?: RunResponse }) {
     const responded = await this.fenced(async (tx) => {
       const values = {
@@ -130,6 +164,45 @@ export class PgRunStore implements RunStore {
       return true
     })
     if (responded && extra?.response) this.hooks.onResponse?.(extra.response)
+  }
+
+  async iterationsFinished(loop: string, results: readonly BlockResult[]) {
+    if (!results.length) return
+    await this.fenced(async (tx) => {
+      const rows = await tx
+        .insert(blockRuns)
+        .values(
+          results.map((r) => ({
+            runId: this.claim.runId,
+            blockKey: r.key,
+            status: r.status,
+            attempt: r.attempt,
+            epoch: this.claim.epoch,
+            port: r.port,
+            error: r.error as Record<string, unknown> | null,
+            metadata: r.metadata,
+            startedAt: r.startedAt,
+            finishedAt: r.finishedAt,
+          })),
+        )
+        // An iteration an earlier lease committed stays as it was.
+        .onConflictDoNothing({ target: [blockRuns.runId, blockRuns.blockKey] })
+        .returning({ id: blockRuns.id, key: blockRuns.blockKey })
+      const byKey = new Map(results.map((r) => [r.key, r]))
+      const payloads = rows.flatMap((row) => {
+        const r = byKey.get(row.key)!
+        return r.status === 'succeeded' ? [{ blockRunId: row.id, data: r.data, sizeBytes: r.sizeBytes }] : []
+      })
+      if (payloads.length) await tx.insert(blockRunPayloads).values(payloads)
+      if (rows.length) {
+        await notifyRunEvent(tx, {
+          runId: this.claim.runId,
+          type: 'iterations',
+          key: loop,
+          count: rows.length,
+        })
+      }
+    })
   }
 
   log(entry: LogEntry) {

@@ -2,6 +2,12 @@ import { postgresConnector } from './postgres'
 import { restConnector } from './rest'
 import type { AnyConnector } from './types'
 
+export {
+  CodeFetcher,
+  type CodeFetcherOptions,
+  type CodeFetchRequest,
+  type CodeFetchResponse,
+} from './code-fetch'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
