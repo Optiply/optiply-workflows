@@ -339,8 +339,9 @@ export const workflowReleases = pgTable(
 export const TRIGGER_KINDS = ['webhook', 'schedule'] as const
 
 /**
- * The runtime projection of the live release's triggers, rewritten when a release goes live (M4). Schedules
- * are ticked off `nextFireAt`.
+ * The runtime projection of the live release's triggers, rewritten when a release goes live: rows are matched by
+ * kind and name, so a trigger keeps its id (and its runs' `ON CONFLICT (trigger_id, scheduled_for)` guard) across
+ * releases. Schedules are ticked off `nextFireAt`.
  */
 export const workflowTriggers = pgTable(
   'workflow_triggers',
@@ -358,12 +359,22 @@ export const workflowTriggers = pgTable(
     enabled: boolean().notNull().default(true),
     /** The trigger's settings from the definition (cron or interval, timezone, overlap). */
     config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /** Schedules: the environment their runs start in. */
+    environmentId: uuid().references(() => environments.id, { onDelete: 'cascade' }),
+    /**
+     * An enabled webhook's alias with every param as `:` (`orders/:/refunds`). Unique, so two live webhooks can't
+     * answer the same URLs.
+     */
+    aliasShape: text(),
     nextFireAt: timestamp({ withTimezone: true }),
+    /** The fire time of the schedule's latest run; interval schedules keep to its grid. */
+    lastFiredAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
+    uniqueIndex('workflow_triggers_alias_uq').on(t.aliasShape).where(sql`${t.aliasShape} is not null`),
     index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
     check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule')`),
   ],

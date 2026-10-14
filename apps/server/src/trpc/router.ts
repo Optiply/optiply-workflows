@@ -6,6 +6,7 @@ import { configVarsRouter } from './routers/config-vars'
 import { foldersRouter } from './routers/folders'
 import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
+import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
 import { usersRouter } from './routers/users'
 import { workflowsRouter } from './routers/workflows'
@@ -38,6 +39,7 @@ export const appRouter = router({
   permissions: permissionsRouter,
   configVars: configVarsRouter,
   workflows: workflowsRouter,
+  releases: releasesRouter,
 })
 
 export type AppRouter = typeof appRouter
