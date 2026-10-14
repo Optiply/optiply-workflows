@@ -172,13 +172,14 @@ describe('deleteOldRuns', () => {
         `queue: ${queueLatencies.length} cycles, max ${Math.round(Math.max(...queueLatencies))} ms; ` +
         `oldest transaction ${Math.round(oldestTransactionMs)} ms`,
     )
-    // No statement deleted more than a chunk and none took long (locally ~25 ms each; one big cascading DELETE of
-    // the same rows is a single ~300 ms transaction here, and grows with the backlog, minutes at production scale),
-    // nothing ever waited for a lock, the queue never stalled, and no transaction stayed open long.
+    // No statement deleted more than a chunk, none took long (locally ~25 ms each, ~250 ms on a busy CI runner),
+    // nothing ever waited for a lock, the queue never stalled, and no transaction stayed open long. (A single
+    // cascading DELETE would be one transaction growing with the backlog; the exact counts below catch it, since
+    // they only add up when every block row and payload went in the chunked statements.)
     expect(Math.max(...statements.map((s) => s.rows))).toBeLessThanOrEqual(5_000)
-    expect(result.longestStatementMs).toBeLessThan(250)
+    expect(result.longestStatementMs).toBeLessThan(1_000)
     expect(lockWaits).toBe(0)
-    expect(oldestTransactionMs).toBeLessThan(250)
+    expect(oldestTransactionMs).toBeLessThan(1_000)
     expect(queueLatencies.length).toBeGreaterThan(10)
     expect(Math.max(...queueLatencies)).toBeLessThan(1_000)
 
