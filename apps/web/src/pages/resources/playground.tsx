@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -59,7 +60,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
 
   const execute = () => {
     if (!scope) return
-    const query = resource.type === 'postgres' ? { sql: draft.sql } : draft.rest
+    const query = isSqlType(resource.type) ? { sql: draft.sql } : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -83,10 +84,10 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="space-y-4 p-4 lg:col-span-2">
-          {resource.type === 'postgres' ? (
+          {isSqlType(resource.type) ? (
             <Field
               label="SQL"
-              hint="{{ expression }} becomes a bind parameter ($1, $2…); values are never pasted into the SQL."
+              hint={`{{ expression }} becomes a bind parameter (${resource.type === 'mysql' ? '?' : '$1, $2…'}); values are never pasted into the SQL.`}
             >
               <Textarea
                 rows={10}

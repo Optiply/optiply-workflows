@@ -14,6 +14,8 @@ describe('compileSql (postgres)', () => {
       { code: 'status', start: 81, end: 91 },
     ])
     expect(sql.slice(41, 67)).toBe('{{ startTrigger.data.id }}')
+    expect(compiled.offsets).toEqual([41, 57])
+    expect(compiled.text.slice(57, 59)).toBe('$2')
   })
 
   it('handles arrays, casts and repeated expressions', () => {
@@ -40,7 +42,7 @@ describe('compileSql (postgres)', () => {
     ['select "{{col}}" from t', 'identifier'],
   ])('never turns {{ }} in quotes or comments into parameters: %s', (sql, where) => {
     if (where === 'comment') {
-      expect(compileSql(sql)).toEqual({ text: sql, params: [] })
+      expect(compileSql(sql)).toEqual({ text: sql, params: [], offsets: [] })
     } else {
       expect(() => compileSql(sql)).toThrow(TemplateError)
     }
@@ -101,5 +103,56 @@ describe('compileSql (postgres)', () => {
       expect(compiled.text).toBe('select * from users where email = $1')
       expect(codes(sql)).toEqual([JSON.stringify(payload)])
     })
+  })
+})
+
+describe('compileSql (mysql)', () => {
+  const my = (sql: string) => compileSql(sql, 'mysql')
+
+  it('replaces each {{ }} with ? and records where each one is', () => {
+    const compiled = my('select * from orders where id in ({{ ids }}) and status = {{status}}')
+    expect(compiled.text).toBe('select * from orders where id in (?) and status = ?')
+    expect(compiled.params.map((p) => p.code.trim())).toEqual(['ids', 'status'])
+    expect(compiled.offsets.map((o) => compiled.text[o])).toEqual(['?', '?'])
+    expect(my('select x{{a}}y').text).toBe('select x ? y')
+  })
+
+  it('treats double quotes as strings and backticks as identifiers', () => {
+    expect(() => my('select "{{ x }}"')).toThrow(/inside a SQL string literal/)
+    expect(() => my('select `{{ col }}` from t')).toThrow(/inside a quoted identifier/)
+    expect(my('select "a""b", `we``ird`, {{x}}').text).toBe('select "a""b", `we``ird`, ?')
+    expect(() => my('select `oops')).toThrow(/Unterminated quoted identifier/)
+    expect(() => my('select "oops')).toThrow(/Unterminated string literal/)
+  })
+
+  it('applies backslash escapes in every string', () => {
+    expect(my('select \'a\\\'b\', "c\\"d", {{x}}').text).toBe('select \'a\\\'b\', "c\\"d", ?')
+    expect(() => my("select 'a\\', {{x}}")).toThrow(/Unterminated string literal/)
+  })
+
+  it('knows its comments: #, -- followed by a space, and non-nesting /* */', () => {
+    expect(my('select 1 # {{ x }}\n, {{ y }}').params.map((p) => p.code.trim())).toEqual(['y'])
+    expect(my('select 1 -- {{ x }}\n, {{ y }}').params.map((p) => p.code.trim())).toEqual(['y'])
+    // `--1` is minus minus one, not a comment.
+    expect(my('select 5--{{ x }}').text).toBe('select 5--?')
+    // Not nested: the comment ends at the first */.
+    expect(my('select /* a /* b */ {{ x }} */').params.map((p) => p.code.trim())).toEqual(['x'])
+  })
+
+  it('rejects a hand-written ? but allows one in strings and comments', () => {
+    expect(() => my('where id = ?')).toThrow(/Positional parameter \?/)
+    expect(my("where a = '?' and b = {{b}} # ?").text).toBe("where a = '?' and b = ? # ?")
+    expect(my('select $1, price$ from t').text).toBe('select $1, price$ from t')
+  })
+
+  describe('injection payloads inside expressions never reach the SQL text', () => {
+    it.each(["'; drop table users; -- ", '1 OR 1=1', "\\'; select sleep(10); # ", '?', '`'])(
+      '%s',
+      (payload) => {
+        const compiled = my(`select * from users where email = {{ ${JSON.stringify(payload)} }}`)
+        expect(compiled.text).toBe('select * from users where email = ?')
+        expect(compiled.params.map((p) => p.code.trim())).toEqual([JSON.stringify(payload)])
+      },
+    )
   })
 })

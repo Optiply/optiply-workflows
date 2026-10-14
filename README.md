@@ -17,7 +17,7 @@ TypeScript monorepo (pnpm + Turborepo):
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
-| `packages/connectors` | Postgres and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
+| `packages/connectors` | Postgres, MySQL and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
 | `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash, cron with time zones, webhook aliases, release versions |
 | `packages/engine` | Runs workflows: the orchestrator and block executors, the Postgres queue (claims with concurrency limits, leases with fencing epochs, recovery of runs whose worker died), the scheduler, and the in-process runner for sync webhooks |
 
@@ -57,6 +57,8 @@ Open **Workflows** in the app to create one. The editor has:
 **Runs** lists every run you can see.
 
 A draft run needs Edit on the workflow and Use on every resource it queries. With `ROLE=all` the same process runs the worker; `WORKER_CONCURRENCY` (default 4) sets how many runs it executes at once.
+
+In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`), so values are never pasted into the SQL; write a table or column name directly. In Postgres, match a list with `= any({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing), and objects are sent as JSON. MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings.
 
 Code blocks can call `await fetch(url, { method, headers, body })` (the body is a string; the response has `status`, `headers`, `text()` and `json()`). Requests to private, loopback and link-local addresses are refused unless `CODE_FETCH_ALLOW_PRIVATE_NETWORK=true` (for local test servers); responses are capped at 10 MB, and a request stops when its block times out or the run stops.
 
@@ -103,6 +105,11 @@ Triggers are set on the start trigger and take effect when you publish:
 pnpm lint        # Biome
 pnpm typecheck
 pnpm test        # Vitest; server tests boot a throwaway embedded Postgres per file
+```
+
+The MySQL tests (`packages/connectors/test/mysql.test.ts`, `apps/server/test/mysql.test.ts`) start a throwaway `mysql:8.4` container, so they need Docker; without it they're skipped, except in CI (`CI=true`), where they fail instead. To use an existing server, set `MYSQL_TEST_URL=mysql://root:<password>@host:3306/` (its root creates an `ow_test` database and an `ow` user).
+
+```bash
 pnpm --filter @ow/server bench:webhooks   # sync webhook latency (p50 < 50 ms), run alone because it's timing-sensitive
 pnpm --filter @ow/sandbox bench           # a fresh sandbox context in under 10 ms, likewise
 

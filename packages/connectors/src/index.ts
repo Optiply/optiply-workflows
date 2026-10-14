@@ -1,3 +1,4 @@
+import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
 import { restConnector } from './rest'
 import type { AnyConnector } from './types'
@@ -8,6 +9,7 @@ export {
   type CodeFetchRequest,
   type CodeFetchResponse,
 } from './code-fetch'
+export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
@@ -18,6 +20,7 @@ export * from './types'
 /** Every connector type that resources can use, by `resources.type`. */
 export const connectors: Readonly<Record<string, AnyConnector>> = {
   [postgresConnector.type]: postgresConnector,
+  [mysqlConnector.type]: mysqlConnector,
   [restConnector.type]: restConnector,
 }
 

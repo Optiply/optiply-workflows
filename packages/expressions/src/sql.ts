@@ -1,7 +1,7 @@
 import { findExpressionEnd, TemplateError } from './template'
 
-/** MySQL (`?`, array expansion) and BigQuery (`@pN`) arrive with their connectors in M6. */
-export type SqlDialect = 'postgres'
+/** BigQuery (`@pN`) arrives with its connector in M6 step 3. */
+export type SqlDialect = 'postgres' | 'mysql'
 
 export interface SqlParam {
   /** Expression source between the braces; evaluated in the sandbox to produce the bound value. */
@@ -12,24 +12,31 @@ export interface SqlParam {
 }
 
 export interface CompiledSql {
-  /** SQL with each `{{ }}` replaced by a placeholder (`$1`, `$2`, … for Postgres). */
+  /** SQL with each `{{ }}` replaced by a placeholder (`$1`, `$2`, … for Postgres, `?` for MySQL). */
   text: string
   /** One per placeholder, in order: `params[0]` binds `$1`. */
   params: SqlParam[]
+  /** Where each placeholder starts in `text`, so a connector can expand one (MySQL arrays become `?, ?, ?`). */
+  offsets: number[]
 }
 
 const IDENT = /[A-Za-z0-9_$\u0080-￿]/
 
 /**
  * Turns `{{ }}` in SQL into bind parameters, so values never become SQL text (no injection, and a value can't be
- * a table or column name). Quote- and comment-aware for Postgres: `'…'` (with `''`), `E'…'` (backslash escapes),
- * `"identifiers"`, `$tag$ dollar quotes $tag$`, `-- line` and nested `/* block *\/` comments.
+ * a table or column name). Quote- and comment-aware per dialect:
+ * - Postgres: `'…'` (with `''`), `E'…'` (backslash escapes), `"identifiers"`, `$tag$ dollar quotes $tag$`,
+ *   `-- line` and nested `/* block *\/` comments; placeholders `$1`, `$2`, ….
+ * - MySQL: `'…'` and `"…"` strings (backslash escapes, as in the default SQL mode), `` `identifiers` ``,
+ *   `# line`, `-- line` (the dashes followed by a space) and non-nesting `/* block *\/` comments; placeholders `?`.
  *
  * A `{{ }}` inside a string literal or quoted identifier is an error with a fix-it hint; inside a comment it's
- * left as text. Hand-written `$1` placeholders are rejected so numbering can't collide.
+ * left as text. Hand-written placeholders (`$1`, `?`) are rejected so numbering can't collide.
  */
-export function compileSql(src: string, _dialect: SqlDialect = 'postgres'): CompiledSql {
+export function compileSql(src: string, dialect: SqlDialect = 'postgres'): CompiledSql {
+  const mysql = dialect === 'mysql'
   const params: SqlParam[] = []
+  const offsets: number[] = []
   let out = ''
   let i = 0
 
@@ -45,15 +52,19 @@ export function compileSql(src: string, _dialect: SqlDialect = 'postgres'): Comp
       if (!code.trim()) throw new TemplateError('Empty {{ }} expression', i, end + 2)
       params.push({ code, start: i, end: end + 2 })
       // Keep the placeholder a separate token: `x{{a}}` must not become the identifier `x$1`.
-      const placeholder = `$${params.length}`
+      const placeholder = mysql ? '?' : `$${params.length}`
       const before = out.length && IDENT.test(out.at(-1)!) ? ' ' : ''
       const after = IDENT.test(src[end + 2] ?? '') ? ' ' : ''
+      offsets.push(out.length + before.length)
       out += before + placeholder + after
       i = end + 2
       continue
     }
 
-    if (ch === '-' && next === '-') {
+    if (
+      (ch === '-' && next === '-' && (!mysql || isMysqlDashCommentEnd(src[i + 2]))) ||
+      (mysql && ch === '#')
+    ) {
       const nl = src.indexOf('\n', i)
       const stop = nl === -1 ? src.length : nl
       out += src.slice(i, stop)
@@ -62,30 +73,39 @@ export function compileSql(src: string, _dialect: SqlDialect = 'postgres'): Comp
     }
 
     if (ch === '/' && next === '*') {
-      const stop = skipBlockComment(src, i)
+      const stop = skipBlockComment(src, i, !mysql)
       out += src.slice(i, stop)
       i = stop
       continue
     }
 
-    if (ch === "'") {
-      const backslashes = (prev === 'E' || prev === 'e') && !IDENT.test(src[i - 2] ?? '')
-      const stop = skipQuoted(src, i, "'", backslashes)
+    if (ch === "'" || (mysql && ch === '"')) {
+      const backslashes = mysql || ((prev === 'E' || prev === 'e') && !IDENT.test(src[i - 2] ?? ''))
+      const stop = skipQuoted(src, i, ch, backslashes)
       rejectExpressionsIn(src, i, stop, 'string')
       out += src.slice(i, stop)
       i = stop
       continue
     }
 
-    if (ch === '"') {
-      const stop = skipQuoted(src, i, '"', false)
+    if (ch === (mysql ? '`' : '"')) {
+      const stop = skipQuoted(src, i, ch, false, 'identifier')
       rejectExpressionsIn(src, i, stop, 'identifier')
       out += src.slice(i, stop)
       i = stop
       continue
     }
 
-    if (ch === '$' && !IDENT.test(prev)) {
+    if (mysql && ch === '?') {
+      throw new TemplateError(
+        "Positional parameter ? isn't supported",
+        i,
+        i + 1,
+        'Write the value as {{ expression }}; it becomes a bind parameter automatically.',
+      )
+    }
+
+    if (!mysql && ch === '$' && !IDENT.test(prev)) {
       if (/\d/.test(next ?? '')) {
         const m = /^\$\d+/.exec(src.slice(i))!
         throw new TemplateError(
@@ -112,11 +132,22 @@ export function compileSql(src: string, _dialect: SqlDialect = 'postgres'): Comp
     i++
   }
 
-  return { text: out, params }
+  return { text: out, params, offsets }
+}
+
+/** In MySQL `--` starts a comment only when followed by whitespace, a control character or the end of input. */
+function isMysqlDashCommentEnd(ch: string | undefined): boolean {
+  return ch === undefined || ch <= ' '
 }
 
 /** Index just past the closing quote. A doubled quote is an escaped quote; so is a backslash escape in E-strings. */
-function skipQuoted(src: string, start: number, quote: string, backslashes: boolean): number {
+function skipQuoted(
+  src: string,
+  start: number,
+  quote: string,
+  backslashes: boolean,
+  kind: 'string' | 'identifier' = 'string',
+): number {
   let i = start + 1
   while (i < src.length) {
     const ch = src[i]
@@ -126,18 +157,18 @@ function skipQuoted(src: string, start: number, quote: string, backslashes: bool
     else i++
   }
   throw new TemplateError(
-    quote === "'" ? 'Unterminated string literal' : 'Unterminated quoted identifier',
+    kind === 'string' ? 'Unterminated string literal' : 'Unterminated quoted identifier',
     start,
     src.length,
   )
 }
 
-/** Postgres block comments nest. Index just past the final `*\/` (or the end of input). */
-function skipBlockComment(src: string, start: number): number {
+/** Index just past the final `*\/` (or the end of input). Postgres block comments nest; MySQL's don't. */
+function skipBlockComment(src: string, start: number, nested: boolean): number {
   let depth = 0
   let i = start
   while (i < src.length) {
-    if (src[i] === '/' && src[i + 1] === '*') {
+    if (src[i] === '/' && src[i + 1] === '*' && (nested || depth === 0)) {
       depth++
       i += 2
     } else if (src[i] === '*' && src[i + 1] === '/') {

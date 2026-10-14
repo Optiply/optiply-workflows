@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import {
   ConnectorErrorNote,
@@ -24,6 +25,17 @@ const DEFAULTS: Record<string, Config> = {
     database: '',
     user: '',
     ssl: 'prefer',
+    poolSize: 5,
+    readOnly: false,
+    maxRows: 10_000,
+    statementTimeoutMs: 120_000,
+  },
+  mysql: {
+    host: '',
+    port: 3306,
+    database: '',
+    user: '',
+    ssl: 'require',
     poolSize: 5,
     readOnly: false,
     maxRows: 10_000,
@@ -119,7 +131,7 @@ export function SettingsPanel({
         </p>
       )}
       <Card className="space-y-5 p-5">
-        {resource.type === 'postgres' ? <PostgresFields {...props} /> : <RestFields {...props} />}
+        {isSqlType(resource.type) ? <SqlFields {...props} type={resource.type} /> : <RestFields {...props} />}
       </Card>
 
       {canEdit && (
@@ -198,7 +210,8 @@ function Checkbox({
   )
 }
 
-function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+/** Postgres and MySQL settings: the same fields, with each one's TLS modes. */
+function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: FieldsProps & { type: string }) {
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -235,8 +248,8 @@ function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         </Field>
         <Field label="SSL">
           <Select value={String(config.ssl)} disabled={disabled} onChange={(e) => set('ssl', e.target.value)}>
-            <option value="prefer">Prefer (try TLS, fall back)</option>
-            <option value="require">Require</option>
+            {type === 'postgres' && <option value="prefer">Prefer (try TLS, fall back)</option>}
+            <option value="require">Require (don't check the certificate)</option>
             <option value="verify-full">Verify certificate and hostname</option>
             <option value="disable">Disable</option>
           </Select>
@@ -269,7 +282,9 @@ function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         disabled={disabled}
         onChange={(v) => set('readOnly', v)}
         label="Read-only"
-        hint="Runs every query in a read-only transaction. A guard against mistakes; use a SELECT-only user for security."
+        hint={`${
+          type === 'mysql' ? 'Makes the session read-only' : 'Runs every query in a read-only transaction'
+        }. A guard against mistakes; use a SELECT-only user for security.`}
       />
     </>
   )

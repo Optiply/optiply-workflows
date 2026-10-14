@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
+import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -364,7 +365,7 @@ function QueryEditor({
               query:
                 next && current && next.type === current.type
                   ? query
-                  : next?.type === 'postgres'
+                  : isSqlType(next?.type)
                     ? { sql: 'select 1' }
                     : DEFAULT_REST,
             })
@@ -378,7 +379,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {current?.type === 'postgres' || (!current && typeof query.sql === 'string') ? (
+      {isSqlType(current?.type) || (!current && typeof query.sql === 'string') ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -810,7 +811,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
                   ? {
                       kind,
                       resource: resource?.slug ?? '',
-                      query: (resource?.type === 'postgres' || !resource
+                      query: (isSqlType(resource?.type) || !resource
                         ? { sql: 'select {{ value }}' }
                         : DEFAULT_REST) as never,
                     }
