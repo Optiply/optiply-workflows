@@ -1,6 +1,6 @@
 import type { AnyConnector, CodeFetcher, PoolManager, ResolvedResource } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import type { WorkflowDefinition } from '@ow/definition'
+import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import type { CodeRuntime } from '@ow/sandbox'
 
 /** Why a block or run failed, as stored and shown. Messages are scrubbed of known secrets. */
@@ -80,6 +80,8 @@ export interface WaitState {
   until: Date
   childRunId?: string
   since?: Date
+  /** The User Task a block waits for. */
+  taskId?: string
 }
 
 /** Finds a resource's connector and decrypted settings for an environment. Throws when it can't. */
@@ -99,6 +101,41 @@ export interface EngineServices {
   fetcher?: Pick<CodeFetcher, 'fetch'>
   /** Starts and follows child runs (Workflow blocks, loop workflow runners). Without it they fail. */
   children?: ChildRuns
+  /** Opens User Tasks and reads their answers. Without it User Task blocks fail. */
+  tasks?: UserTasks
+}
+
+/** A User Task as its block sees it. */
+export interface TaskState {
+  id: string
+  status: 'open' | 'completed' | 'expired' | 'cancelled'
+  dueAt: Date | null
+  outcome: string | null
+  values: Record<string, unknown> | null
+  completedBy: { id: string; email: string; name: string } | null
+  completedAt: Date | null
+}
+
+export interface UserTasks {
+  /**
+   * Opens the task for this run's block, or returns the one it opened before. Assignees are emails and group
+   * names; throws a BlockFailure when one doesn't exist, or when there's nobody to do the task.
+   */
+  open(request: {
+    runId: string
+    blockKey: string
+    workflowId: string
+    environmentId: string
+    title: string
+    description: string | null
+    fields: OpenTaskField[]
+    outcomes: TaskOutcome[]
+    assignees: { users: string[]; groups: string[] }
+    dueAt: Date | null
+  }): Promise<TaskState>
+  get(taskId: string): Promise<TaskState | null>
+  /** Marks an open task expired (its due time passed); returns it as it is now. */
+  expire(taskId: string): Promise<TaskState | null>
 }
 
 /** A child run as its parent sees it. */

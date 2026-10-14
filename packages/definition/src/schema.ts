@@ -8,7 +8,7 @@ import { z } from 'zod'
  * Optional settings are stored sparsely; `resolveBlockSettings` fills in the defaults at run time.
  *
  * M2 covered the headless block types; M5 adds Loop, Function, Workflow, Wait, the global error handler and
- * `functions` (reusable subflows). User Tasks arrive in M6. Triggers (webhook and schedules) only act on the live
+ * `functions` (reusable subflows); M6 adds User Tasks. Triggers (webhook and schedules) only act on the live
  * release (M4).
  */
 
@@ -261,6 +261,54 @@ export const waitBlockSchema = z.strictObject({
   ]),
 })
 
+export const TASK_FIELD_TYPES = ['text', 'longText', 'number', 'checkbox', 'select'] as const
+export const TASK_DUE_UNITS = ['minutes', 'hours', 'days'] as const
+/** A task without outcomes of its own has this one. */
+export const DEFAULT_TASK_OUTCOMES = [{ id: 'submit', label: 'Submit' }] as const
+
+/** One thing the person fills in. Its value is `values.<name>` in the block's data. */
+export const taskFieldSchema = z.strictObject({
+  name: identifierSchema,
+  label: z.string().max(200),
+  type: z.enum(TASK_FIELD_TYPES),
+  required: z.boolean().optional(),
+  /** The choices of a `select`. */
+  options: z.array(z.string().max(200)).max(100).optional(),
+  /** A template for the starting value, evaluated when the task opens. */
+  default: z.string().optional(),
+  help: z.string().max(500).optional(),
+})
+
+/** A button that completes the task, e.g. Approve and Reject. Its id is `outcome` in the block's data. */
+export const taskOutcomeSchema = z.strictObject({
+  id: identifierSchema,
+  label: z.string().max(100),
+})
+
+/**
+ * Human in the loop: the run waits (without holding a worker) until one of the assignees completes the task in the
+ * inbox, then carries on with `{ outcome, values, completedBy, completedAt }`. Titles, descriptions, assignees,
+ * field defaults and the due time are templates. Past its due time the task expires and the block fails.
+ */
+export const userTaskBlockSchema = z.strictObject({
+  ...named,
+  settings: waitSettingsSchema.optional(),
+  type: z.literal('userTask'),
+  config: z.strictObject({
+    title: z.string().max(500),
+    description: z.string().max(10_000).optional(),
+    /** Users by email and groups by name; any of them can complete it (admins always can). */
+    assignees: z.strictObject({
+      users: z.array(z.string()).max(100).optional(),
+      groups: z.array(z.string()).max(100).optional(),
+    }),
+    fields: z.array(taskFieldSchema).max(50).optional(),
+    outcomes: z.array(taskOutcomeSchema).max(10).optional(),
+    /** `amount` is a template for a number of `unit`s from when the task opens. */
+    due: z.strictObject({ amount: z.string(), unit: z.enum(TASK_DUE_UNITS) }).optional(),
+  }),
+})
+
 /**
  * The global error handler: never connected to the start trigger. When the run fails, the blocks connected after it
  * run, reading `{{ <name>.data }}` = `{ block, code, message }`. The run still ends `failed`; a Response block in
@@ -282,6 +330,7 @@ export const blockSchema = z.discriminatedUnion('type', [
   functionBlockSchema,
   workflowBlockSchema,
   waitBlockSchema,
+  userTaskBlockSchema,
   errorTriggerBlockSchema,
 ])
 
@@ -416,6 +465,7 @@ export const DEFAULT_BLOCK_SETTINGS: ResolvedBlockSettings = {
 const DEFAULT_TIMEOUT_MS: Partial<Record<BlockType, number>> = {
   loop: MAX_RUN_TIMEOUT_MS,
   wait: MAX_RUN_TIMEOUT_MS,
+  userTask: MAX_RUN_TIMEOUT_MS,
   function: DEFAULT_RUN_TIMEOUT_MS,
   workflow: DEFAULT_RUN_TIMEOUT_MS,
 }
@@ -455,11 +505,11 @@ export function isTrigger(block: Block): block is BlockOf<'startTrigger' | 'erro
 }
 
 /**
- * Blocks that park the run as `waiting` (a Wait, or a sync child workflow). Functions can't contain them, since a
+ * Blocks that park the run as `waiting` (a Wait, a User Task, or a sync child workflow). Functions can't contain them, since a
  * function call isn't checkpointed.
  */
 export function suspends(block: Block): boolean {
-  if (block.type === 'wait') return true
+  if (block.type === 'wait' || block.type === 'userTask') return true
   if (block.type === 'workflow') return (block.config.mode ?? 'sync') === 'sync'
   if (block.type === 'loop' && block.config.runner.kind === 'workflow') {
     return (block.config.runner.mode ?? 'sync') === 'sync'
@@ -470,3 +520,6 @@ export function suspends(block: Block): boolean {
 function stripUndefined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>
 }
+
+export type TaskField = z.output<typeof taskFieldSchema>
+export type TaskOutcome = z.output<typeof taskOutcomeSchema>

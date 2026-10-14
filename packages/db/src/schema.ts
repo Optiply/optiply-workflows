@@ -1,4 +1,4 @@
-import type { WorkflowDefinition } from '@ow/definition'
+import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
   type AnyPgColumn,
@@ -588,6 +588,53 @@ export const blockRunPayloads = pgTable(
     sizeBytes: integer().notNull(),
   },
   (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 10485760`)],
+)
+
+export const TASK_STATUSES = ['open', 'completed', 'expired', 'cancelled'] as const
+
+/**
+ * A User Task block's task: what the assignees see in their inbox, and what they answered. One per run and block,
+ * so a block that runs again finds its task. Titles, fields and assignees are stored as they were when it opened.
+ */
+export const userTasks = pgTable(
+  'user_tasks',
+  {
+    id: id(),
+    runId: uuid()
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    blockKey: text().notNull(),
+    workflowId: uuid()
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    environmentId: uuid()
+      .notNull()
+      .references(() => environments.id, { onDelete: 'cascade' }),
+    status: text({ enum: TASK_STATUSES }).notNull().default('open'),
+    title: text().notNull(),
+    description: text(),
+    /** The block's fields with their defaults evaluated. */
+    fields: jsonb().$type<OpenTaskField[]>().notNull().default([]),
+    outcomes: jsonb().$type<TaskOutcome[]>().notNull(),
+    assigneeUserIds: uuid().array().notNull().default(sql`'{}'::uuid[]`),
+    assigneeGroupIds: uuid().array().notNull().default(sql`'{}'::uuid[]`),
+    dueAt: timestamp({ withTimezone: true }),
+    outcome: text(),
+    values: jsonb().$type<Record<string, unknown>>(),
+    completedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    completedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('user_tasks_block_uq').on(t.runId, t.blockKey),
+    index('user_tasks_open_idx').on(t.createdAt).where(sql`${t.status} = 'open'`),
+    check('user_tasks_status_ck', sql`${t.status} in ('open', 'completed', 'expired', 'cancelled')`),
+    check(
+      'user_tasks_completed_ck',
+      sql`(${t.status} = 'completed') = (${t.outcome} is not null and ${t.completedAt} is not null)`,
+    ),
+  ],
 )
 
 export const LOG_LEVELS = ['log', 'info', 'warn', 'error'] as const

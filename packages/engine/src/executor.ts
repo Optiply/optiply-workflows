@@ -24,6 +24,7 @@ import {
   renewLease,
   suspendRun,
 } from './queue'
+import { PgUserTasks } from './tasks'
 import type { ResourceProvider, RunInput, RunResponse } from './types'
 
 /** Run-specific values the engine can't know: config vars (secret ones decrypted) and what to scrub. */
@@ -66,9 +67,11 @@ export class RunExecutor {
   private readonly log: DispatcherLogger
 
   private readonly children: PgChildRuns
+  private readonly tasks: PgUserTasks
 
   constructor(private readonly opts: RunExecutorOptions) {
     this.children = new PgChildRuns(opts.db)
+    this.tasks = new PgUserTasks(opts.db)
     this.leaseMs = opts.leaseMs ?? 30_000
     this.db = opts.db
     this.log = opts.log ?? noLog
@@ -156,6 +159,7 @@ export class RunExecutor {
           resources: this.opts.resources,
           fetcher: this.opts.fetcher,
           children: this.children,
+          tasks: this.tasks,
         },
         store,
         checkpoints,

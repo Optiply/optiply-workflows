@@ -64,6 +64,13 @@
       "when": 1791999264293,
       "tag": "0008_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792000734050,
+      "tag": "0009_user_tasks",
+      "breakpoints": true
     }
   ]
 }

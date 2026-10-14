@@ -11,6 +11,7 @@ import {
   Reply,
   SquareFunction,
   TriangleAlert,
+  UserCheck,
   Workflow,
 } from 'lucide-react'
 import { isSqlType } from '@/lib/resource-types'
@@ -50,6 +51,7 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   },
   workflow: { label: 'Workflow', icon: Workflow, tone: 'bg-cyan-100 text-cyan-700', prefix: 'workflow' },
   wait: { label: 'Wait', icon: Hourglass, tone: 'bg-stone-100 text-stone-700', prefix: 'wait' },
+  userTask: { label: 'User task', icon: UserCheck, tone: 'bg-fuchsia-100 text-fuchsia-700', prefix: 'task' },
   errorTrigger: {
     label: 'Error handler',
     icon: TriangleAlert,
@@ -132,6 +134,19 @@ export function newBlock(
       return { name, type, config: { workflow: '', ...(context.inFunction && { mode: 'async' as const }) } }
     case 'wait':
       return { name, type, config: { kind: 'duration', amount: '1', unit: 'minutes' } }
+    case 'userTask':
+      return {
+        name,
+        type,
+        config: {
+          title: 'Please review',
+          assignees: { groups: [] },
+          outcomes: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'reject', label: 'Reject' },
+          ],
+        },
+      }
     case 'errorTrigger':
       return { name, type }
   }
@@ -166,6 +181,10 @@ export function summary(block: Block): string {
       return block.config.kind === 'duration'
         ? `${block.config.amount} ${block.config.unit}`
         : `Until ${block.config.until}`
+    case 'userTask': {
+      const people = [...(block.config.assignees.users ?? []), ...(block.config.assignees.groups ?? [])]
+      return `${firstLine(block.config.title)} · ${people.length ? people.join(', ') : 'nobody assigned'}`
+    }
     case 'errorTrigger':
       return 'Runs when the workflow fails'
   }

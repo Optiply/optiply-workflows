@@ -24,4 +24,5 @@ export {
 } from './retention'
 export { retryDelayMs, sleep } from './retry'
 export { type ScheduleFire, Scheduler, type SchedulerLogger, tickSchedules } from './scheduler'
+export { type CompleteTaskResult, completeTask, PgUserTasks } from './tasks'
 export * from './types'
