@@ -15,6 +15,8 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @ow/web build && pnpm --filter @ow/server build
 # Production node_modules for the server's external npm dependencies (incl. native addons).
 RUN pnpm --filter @ow/server deploy --prod --legacy /out
+# isolated-vm is compiled from patched source (patches/): keep the addon, drop the ~80 MB of build intermediates.
+RUN find /out/node_modules/.pnpm -path '*/isolated-vm/build/*' -type f ! -name 'isolated_vm.node' -delete
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
