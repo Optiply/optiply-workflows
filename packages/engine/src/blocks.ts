@@ -109,6 +109,19 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     const body = block.config.body?.trim() ? await renderJson(block.config.body, evaluate) : null
     return { data: { status, headers, body } }
   },
+
+  // M5: these are defined (step 1) but run from later steps. The error handler never runs as a regular block.
+  loop: notYet('Loop'),
+  function: notYet('Function'),
+  workflow: notYet('Workflow'),
+  wait: notYet('Wait'),
+  errorTrigger: notYet('Error handler'),
+}
+
+function notYet<T extends Block['type']>(label: string): Executor<T> {
+  return async () => {
+    throw new BlockFailure('unsupported', `${label} blocks can't run yet`)
+  }
 }
 
 export function executeBlock(block: Block, ctx: BlockContext): Promise<BlockOutput> {

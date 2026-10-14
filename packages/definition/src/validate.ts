@@ -3,15 +3,21 @@ import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
-import { isGlobalName, reservedNameReason } from './names'
+import { isGlobalName, PARAMS_NAME, reservedNameReason } from './names'
 import {
   type Block,
+  type BlockOf,
   blockPorts,
+  type FunctionDefinition,
+  isTrigger,
+  MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
+  suspends,
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from './schema'
 import { parseWebhookAlias } from './triggers'
+import { type BlockGraphSource, blockGraphs, calledFunctions, functionReturnBlock } from './walk'
 
 export type DiagnosticCode =
   | 'schema'
@@ -36,6 +42,16 @@ export type DiagnosticCode =
   | 'invalid_cron'
   | 'invalid_timezone'
   | 'duplicate_schedule'
+  | 'error_trigger'
+  | 'handler_overlap'
+  | 'not_in_function'
+  | 'unknown_function'
+  | 'unknown_param'
+  | 'duplicate_param'
+  | 'function_return'
+  | 'function_call'
+  | 'recursive_function'
+  | 'invalid_wait'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -45,6 +61,8 @@ export interface Diagnostic {
   path: (string | number)[]
   /** The block the problem belongs to, for the editor to highlight. */
   block?: string
+  /** Set when the problem is inside a function (`block` is then that function's block). */
+  function?: string
   /** Offsets into the string at `path`, for code and template problems. */
   start?: number
   end?: number
@@ -84,22 +102,109 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   }
   const def = parsed.data
   const diagnostics: Diagnostic[] = []
-  const report = (d: Omit<Diagnostic, 'severity'> & { severity?: Diagnostic['severity'] }) =>
-    diagnostics.push({ severity: 'error', ...d })
+  const report: Report = (d) => diagnostics.push({ severity: 'error', ...d })
+
+  const functions = new Map<string, FunctionDefinition>()
+  checkFunctions(def, functions, report)
+  let start: string | undefined
+  for (const source of blockGraphs(def)) {
+    const found = checkGraph(source, functions, report)
+    if (!source.function) start = found
+  }
+  checkRecursion(def, functions, report)
+  checkTriggers(def, start, report)
+
+  // Queries against their connectors.
+  if (options.resolveResource) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        const at = { block: block.name, ...(fn && { function: fn.name }) }
+        if (block.type === 'resourceQuery') {
+          checkQuery(block.config, [...path, 'blocks', i, 'config'], at, options.resolveResource!, report)
+        }
+        if (block.type === 'loop' && block.config.runner.kind === 'query') {
+          const base = [...path, 'blocks', i, 'config', 'runner']
+          checkQuery(block.config.runner, base, at, options.resolveResource!, report)
+        }
+      })
+    }
+  }
+
+  return {
+    ok: !diagnostics.some((d) => d.severity === 'error'),
+    definition: def,
+    diagnostics,
+  }
+}
+
+type Report = (d: Omit<Diagnostic, 'severity'> & { severity?: Diagnostic['severity'] }) => void
+
+/** Function names, parameters and return blocks. Fills `functions` with the first function of each name. */
+function checkFunctions(def: WorkflowDefinition, functions: Map<string, FunctionDefinition>, report: Report) {
+  def.functions?.forEach((fn, i) => {
+    const at = (...path: (string | number)[]) => ({ path: ['functions', i, ...path], function: fn.name })
+    const reason = reservedNameReason(fn.name)
+    if (reason) report({ code: 'invalid_name', message: reason, ...at('name') })
+    if (functions.has(fn.name)) {
+      report({
+        code: 'duplicate_name',
+        message: `Another function is already named "${fn.name}"`,
+        ...at('name'),
+      })
+    } else {
+      functions.set(fn.name, fn)
+    }
+    const params = new Set<string>()
+    fn.params?.forEach((param, j) => {
+      if (params.has(param.name)) {
+        report({
+          code: 'duplicate_param',
+          message: `Another parameter is already named "${param.name}"`,
+          ...at('params', j, 'name'),
+        })
+      }
+      params.add(param.name)
+    })
+    if (!functionReturnBlock(fn)) {
+      report({
+        code: 'function_return',
+        message:
+          fn.returns !== undefined
+            ? `No block in "${fn.name}" is named "${fn.returns}"`
+            : fn.blocks.length === 0
+              ? `"${fn.name}" has no blocks yet`
+              : `Choose the block whose result "${fn.name}" returns`,
+        ...at(...(fn.returns !== undefined ? ['returns'] : [])),
+      })
+    }
+  })
+}
+
+/**
+ * Checks one graph (the main one or a function's): names, edges, shape, what each block may contain and what its
+ * code may read. Returns the start trigger's name, if there's exactly one.
+ */
+function checkGraph(
+  source: BlockGraphSource,
+  functions: ReadonlyMap<string, FunctionDefinition>,
+  report: Report,
+): string | undefined {
+  const fn = source.function
+  const { blocks, edges } = source
+  const inFunction = fn && { function: fn.name }
+  const blockPath = (i: number, ...rest: (string | number)[]) => [...source.path, 'blocks', i, ...rest]
 
   // Names.
   const indexOf = new Map<string, number>()
-  def.blocks.forEach((block, i) => {
+  blocks.forEach((block, i) => {
+    const at = { path: blockPath(i, 'name'), block: block.name, ...inFunction }
     const reason = reservedNameReason(block.name)
-    if (reason)
-      report({ code: 'invalid_name', message: reason, path: ['blocks', i, 'name'], block: block.name })
+    if (reason) report({ code: 'invalid_name', message: reason, ...at })
+    else if (functions.has(block.name)) {
+      report({ code: 'duplicate_name', message: `A function is already named "${block.name}"`, ...at })
+    }
     if (indexOf.has(block.name)) {
-      report({
-        code: 'duplicate_name',
-        message: `Another block is already named "${block.name}"`,
-        path: ['blocks', i, 'name'],
-        block: block.name,
-      })
+      report({ code: 'duplicate_name', message: `Another block is already named "${block.name}"`, ...at })
     } else {
       indexOf.set(block.name, i)
     }
@@ -110,8 +215,9 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
           report({
             code: 'duplicate_condition',
             message: `Condition id "${c.id}" is used twice`,
-            path: ['blocks', i, 'config', 'conditions', j, 'id'],
+            path: blockPath(i, 'config', 'conditions', j, 'id'),
             block: block.name,
+            ...inFunction,
           })
         }
         seen.add(c.id)
@@ -119,23 +225,49 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
     }
   })
 
-  const starts = def.blocks.flatMap((b, i) => (b.type === 'startTrigger' ? [i] : []))
-  if (starts.length !== 1) {
-    report({
-      code: 'start_trigger',
-      message:
-        starts.length === 0
-          ? 'The workflow needs a start trigger'
-          : 'A workflow can only have one start trigger',
-      path: starts.length === 0 ? ['blocks'] : ['blocks', starts[1]!],
-      ...(starts.length > 1 && { block: def.blocks[starts[1]!]!.name }),
+  // Triggers, and what a function may contain.
+  const starts = blocks.flatMap((b, i) => (b.type === 'startTrigger' ? [i] : []))
+  const handlers = blocks.flatMap((b, i) => (b.type === 'errorTrigger' ? [i] : []))
+  if (fn) {
+    blocks.forEach((block, i) => {
+      const why = notInFunction(block)
+      if (why) {
+        report({
+          code: 'not_in_function',
+          message: why,
+          path: blockPath(i),
+          block: block.name,
+          ...inFunction,
+        })
+      }
     })
+  } else {
+    if (starts.length !== 1) {
+      report({
+        code: 'start_trigger',
+        message:
+          starts.length === 0
+            ? 'The workflow needs a start trigger'
+            : 'A workflow can only have one start trigger',
+        path: starts.length === 0 ? ['blocks'] : ['blocks', starts[1]!],
+        ...(starts.length > 1 && { block: blocks[starts[1]!]!.name }),
+      })
+    }
+    if (handlers.length > 1) {
+      report({
+        code: 'error_trigger',
+        message: 'A workflow can only have one error handler',
+        path: ['blocks', handlers[1]!],
+        block: blocks[handlers[1]!]!.name,
+      })
+    }
   }
 
   // Edges.
-  const byName = new Map(def.blocks.map((b) => [b.name, b]))
+  const byName = new Map(blocks.map((b) => [b.name, b]))
   const edgeKeys = new Set<string>()
-  def.edges.forEach((edge, i) => {
+  edges.forEach((edge, i) => {
+    const path = (...rest: (string | number)[]) => [...source.path, 'edges', i, ...rest]
     const from = byName.get(edge.from)
     const to = byName.get(edge.to)
     for (const [side, block] of [
@@ -146,7 +278,8 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
         report({
           code: 'unknown_block',
           message: `No block is named "${edge[side]}"`,
-          path: ['edges', i, side],
+          path: path(side),
+          ...inFunction,
         })
       }
     }
@@ -154,113 +287,277 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
       report({
         code: 'invalid_port',
         message: `"${from.name}" has no "${edge.port}" output`,
-        path: ['edges', i, 'port'],
+        path: path('port'),
         block: from.name,
+        ...inFunction,
         ...(edge.port === 'error' && {
           hint: 'Set the block to continue on failure (finally: continue) to get an error output',
         }),
       })
     }
-    if (to?.type === 'startTrigger') {
+    if (to && isTrigger(to)) {
       report({
         code: 'edge_into_start',
-        message: 'Nothing can connect into the start trigger',
-        path: ['edges', i, 'to'],
+        message:
+          to.type === 'startTrigger'
+            ? 'Nothing can connect into the start trigger'
+            : 'Nothing can connect into the error handler',
+        path: path('to'),
         block: to.name,
+        ...inFunction,
       })
     }
     const key = `${edge.from}\0${edge.port}\0${edge.to}`
     if (edgeKeys.has(key)) {
-      report({ code: 'duplicate_edge', message: 'This connection already exists', path: ['edges', i] })
+      report({
+        code: 'duplicate_edge',
+        message: 'This connection already exists',
+        path: path(),
+        ...inFunction,
+      })
     }
     edgeKeys.add(key)
   })
 
   // Graph shape.
-  const graph = buildGraph(def)
+  const graph = buildGraph({ blocks: [...blocks], edges: [...edges] })
   if (graph.cycle) {
     const loop = [...graph.cycle, graph.cycle[0]].join(' → ')
     report({
       code: 'cycle',
       message: `Blocks can't form a loop: ${loop}`,
-      path: ['blocks', indexOf.get(graph.cycle[0]!)!],
+      path: blockPath(indexOf.get(graph.cycle[0]!)!),
       block: graph.cycle[0]!,
+      ...inFunction,
       hint: 'Use a Loop block to repeat work',
     })
   }
-  if (graph.start) {
-    const reachable = graph.descendants(graph.start)
-    def.blocks.forEach((block, i) => {
-      if (block.name === graph.start || reachable.has(block.name) || indexOf.get(block.name) !== i) return
-      report({
-        severity: 'warning',
-        code: 'unreachable',
-        message: `"${block.name}" isn't connected to the start trigger, so it never runs`,
-        path: ['blocks', i],
-        block: block.name,
-      })
+  // The main path (from the start trigger) and the error handler's path. A function has no triggers.
+  const mainPath = new Set<string>()
+  const handlerPath = new Set<string>()
+  if (!fn && graph.start) {
+    mainPath.add(graph.start)
+    for (const name of graph.descendants(graph.start)) mainPath.add(name)
+  }
+  // Every handler counts here, so a second one is reported once (above) rather than also as unreachable.
+  for (const i of fn ? [] : handlers) {
+    const handler = blocks[i]!.name
+    handlerPath.add(handler)
+    for (const name of graph.descendants(handler)) handlerPath.add(name)
+  }
+  if (!fn && graph.start) {
+    blocks.forEach((block, i) => {
+      if (indexOf.get(block.name) !== i) return
+      // An edge into a trigger is reported above.
+      if (mainPath.has(block.name) && handlerPath.has(block.name) && !isTrigger(block)) {
+        report({
+          code: 'handler_overlap',
+          message: `"${block.name}" can't run both after the start trigger and in the error handler`,
+          path: blockPath(i),
+          block: block.name,
+        })
+      } else if (!mainPath.has(block.name) && !handlerPath.has(block.name)) {
+        report({
+          severity: 'warning',
+          code: 'unreachable',
+          message: `"${block.name}" isn't connected to the start trigger, so it never runs`,
+          path: blockPath(i),
+          block: block.name,
+        })
+      }
     })
   }
 
-  // Code and references.
-  def.blocks.forEach((block, i) => {
+  // What each block's settings name, and its code reads.
+  blocks.forEach((block, i) => {
+    const at = { block: block.name, ...inFunction }
+    checkCalls(block, functions, (rest) => blockPath(i, ...rest), at, report)
+    if (block.type === 'wait') checkWait(block, blockPath(i, 'config'), at, report)
+
     const ancestors = graph.ancestors(block.name)
+    // The error handler may read anything on the main path: it runs after the run failed, and whatever didn't run
+    // reads as skipped.
+    const readable = (name: string) =>
+      ancestors.has(name) || (handlerPath.has(block.name) && mainPath.has(name))
     for (const field of codeFields(block)) {
-      const path = ['blocks', i, ...field.path]
+      const path = blockPath(i, ...field.path)
       const { refs, errors } = fieldRefs(field)
       for (const err of errors) {
         report({
           code: 'syntax',
           message: err.message,
           path,
-          block: block.name,
+          ...at,
           start: err.start,
           end: err.end,
           ...(err.hint && { hint: err.hint }),
         })
       }
       for (const ref of refs) {
-        const at = { path, block: block.name, start: ref.start, end: ref.end }
+        const where = { path, ...at, start: ref.start, end: ref.end }
         if (byName.has(ref.name)) {
           if (ref.name === block.name) {
-            report({ code: 'self_reference', message: `"${block.name}" can't read its own result`, ...at })
-          } else if (!ancestors.has(ref.name)) {
+            report({ code: 'self_reference', message: `"${block.name}" can't read its own result`, ...where })
+          } else if (!readable(ref.name)) {
             report({
               code: 'not_ancestor',
               message: `"${ref.name}" doesn't run before "${block.name}"`,
               hint: `Connect "${ref.name}" upstream of "${block.name}" to use its result`,
-              ...at,
+              ...where,
             })
           }
-        } else if (!isGlobalName(ref.name)) {
-          report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...at })
+        } else if (functions.has(ref.name)) {
+          if (field.kind !== 'function-body') {
+            report({
+              code: 'function_call',
+              message: `Functions can only be called from code, as await ${ref.name}({ ... })`,
+              hint: 'Use a Function block, or call it from a code block',
+              ...where,
+            })
+          }
+        } else if (!(isGlobalName(ref.name) || (fn && ref.name === PARAMS_NAME))) {
+          report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }
       }
     }
   })
 
-  checkTriggers(def, graph.start, report)
+  return fn ? undefined : graph.start
+}
 
-  // Queries against their connectors.
-  if (options.resolveResource) {
-    def.blocks.forEach((block, i) => {
-      if (block.type === 'resourceQuery') checkQuery(block, i, options.resolveResource!, report)
-    })
+/** Why a block can't be part of a function, or null if it can. */
+function notInFunction(block: Block): string | null {
+  switch (block.type) {
+    case 'startTrigger':
+      return "A function doesn't have a start trigger; it starts with the blocks nothing connects into"
+    case 'errorTrigger':
+      return "A function can't have an error handler"
+    case 'response':
+      return "A function can't reply to a webhook; it returns the data of a block"
   }
+  if (suspends(block)) {
+    return block.type === 'wait'
+      ? "A function can't wait: function calls aren't checkpointed"
+      : "A function can't wait for a child workflow; use the async mode"
+  }
+  return null
+}
 
-  return {
-    ok: !diagnostics.some((d) => d.severity === 'error'),
-    definition: def,
-    diagnostics,
+/** The function a Function block or a loop's function runner calls, and the parameters it passes. */
+function checkCalls(
+  block: Block,
+  functions: ReadonlyMap<string, FunctionDefinition>,
+  path: (rest: (string | number)[]) => (string | number)[],
+  at: { block: string; function?: string },
+  report: Report,
+) {
+  const call =
+    block.type === 'function'
+      ? { name: block.config.function, params: block.config.params, base: ['config'] }
+      : block.type === 'loop' && block.config.runner.kind === 'function'
+        ? {
+            name: block.config.runner.function,
+            params: block.config.runner.params,
+            base: ['config', 'runner'],
+          }
+        : undefined
+  if (!call) return
+  const fn = functions.get(call.name)
+  if (!fn) {
+    report({
+      code: 'unknown_function',
+      message: `No function is named "${call.name}"`,
+      path: path([...call.base, 'function']),
+      ...at,
+    })
+    return
+  }
+  const declared = new Set(fn.params?.map((p) => p.name))
+  for (const name of Object.keys(call.params ?? {})) {
+    if (!declared.has(name)) {
+      report({
+        code: 'unknown_param',
+        message: `"${fn.name}" has no parameter named "${name}"`,
+        path: path([...call.base, 'params', name]),
+        ...at,
+      })
+    }
   }
 }
 
-/** Trigger problems are pinned to the start trigger, whose inspector edits them. */
-function checkTriggers(
-  def: WorkflowDefinition,
-  start: string | undefined,
-  report: (d: Omit<Diagnostic, 'severity'>) => void,
+const WAIT_UNIT_MS = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 } as const
+
+/** A wait needs a duration or a time. Constant values are checked now; templates when the block runs. */
+function checkWait(
+  block: BlockOf<'wait'>,
+  base: (string | number)[],
+  at: { block: string; function?: string },
+  report: Report,
 ) {
+  const { config } = block
+  const field = config.kind === 'duration' ? 'amount' : 'until'
+  const text = (config.kind === 'duration' ? config.amount : config.until).trim()
+  const problem = (message: string) =>
+    report({ code: 'invalid_wait', message, path: [...base, field], ...at })
+  if (!text) return problem(config.kind === 'duration' ? 'Enter how long to wait' : 'Enter when to resume')
+  if (text.includes('{{')) return
+  if (config.kind === 'duration') {
+    const amount = Number(text)
+    if (!Number.isFinite(amount) || amount < 0) return problem(`"${text}" isn't a number of ${config.unit}`)
+    if (amount * WAIT_UNIT_MS[config.unit] > MAX_WAIT_MS) return problem('A wait can last at most 60 days')
+  } else if (Number.isNaN(Date.parse(text))) {
+    problem(`"${text}" isn't a date and time`)
+  }
+}
+
+/** Functions that call themselves, directly or through others, would never finish. */
+function checkRecursion(
+  def: WorkflowDefinition,
+  functions: ReadonlyMap<string, FunctionDefinition>,
+  report: Report,
+) {
+  const names = new Set(functions.keys())
+  const calls = new Map<string, string[]>()
+  for (const [name, fn] of functions) {
+    const called = new Set<string>()
+    for (const block of fn.blocks) for (const c of calledFunctions(block, names)) called.add(c)
+    calls.set(name, [...called])
+  }
+  const state = new Map<string, 'open' | 'done'>()
+  const path: string[] = []
+  const reported = new Set<string>()
+  const visit = (name: string) => {
+    state.set(name, 'open')
+    path.push(name)
+    for (const next of calls.get(name) ?? []) {
+      const s = state.get(next)
+      if (s === 'open') {
+        const cycle = path.slice(path.indexOf(next))
+        if (!cycle.some((n) => reported.has(n))) {
+          for (const n of cycle) reported.add(n)
+          const index = def.functions!.findIndex((f) => f.name === next)
+          report({
+            code: 'recursive_function',
+            message:
+              cycle.length === 1
+                ? `"${next}" calls itself`
+                : `Functions can't call each other in a circle: ${[...cycle, next].join(' → ')}`,
+            path: ['functions', index],
+            function: next,
+          })
+        }
+      } else if (s === undefined) {
+        visit(next)
+      }
+    }
+    path.pop()
+    state.set(name, 'done')
+  }
+  for (const name of functions.keys()) if (!state.has(name)) visit(name)
+}
+
+/** Trigger problems are pinned to the start trigger, whose inspector edits them. */
+function checkTriggers(def: WorkflowDefinition, start: string | undefined, report: Report) {
   const at = (path: (string | number)[]) => ({ path: ['triggers', ...path], ...(start && { block: start }) })
   const alias = def.triggers?.webhook?.alias
   if (alias !== undefined) {
@@ -328,30 +625,30 @@ function checkTriggers(
 }
 
 function checkQuery(
-  block: Extract<Block, { type: 'resourceQuery' }>,
-  index: number,
+  config: { resource: string; query: Record<string, unknown> },
+  base: (string | number)[],
+  at: { block: string; function?: string },
   resolve: NonNullable<ValidateOptions['resolveResource']>,
-  report: (d: Omit<Diagnostic, 'severity'>) => void,
+  report: Report,
 ) {
-  const base = ['blocks', index, 'config']
-  const connector = resolve(block.config.resource)
+  const connector = resolve(config.resource)
   if (!connector) {
     report({
       code: 'unknown_resource',
-      message: `No resource has the slug "${block.config.resource}"`,
+      message: `No resource has the slug "${config.resource}"`,
       path: [...base, 'resource'],
-      block: block.name,
+      ...at,
     })
     return
   }
-  const query = connector.querySchema.safeParse(block.config.query)
+  const query = connector.querySchema.safeParse(config.query)
   if (!query.success) {
     for (const issue of query.error.issues) {
       report({
         code: 'invalid_query',
         message: issue.message,
         path: [...base, 'query', ...issue.path.map(pathKey)],
-        block: block.name,
+        ...at,
       })
     }
     return
@@ -361,7 +658,7 @@ function checkQuery(
       code: 'invalid_query',
       message: err.message,
       path: [...base, 'query'],
-      block: block.name,
+      ...at,
       start: err.start,
       end: err.end,
       ...(err.hint && { hint: err.hint }),

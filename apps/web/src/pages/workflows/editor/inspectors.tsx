@@ -1,8 +1,10 @@
 import {
   type Block,
   type BlockOf,
+  type BlockSettings,
   DEFAULT_BLOCK_SETTINGS,
   type Diagnostic,
+  isTrigger,
   renameBlock,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
@@ -85,7 +87,7 @@ export function Inspector({ name }: { name: string }) {
 
       <TypeForm block={block} ctx={ctx} />
 
-      {block.type !== 'startTrigger' && <SettingsForm block={block} />}
+      {!isTrigger(block) && <SettingsForm block={block} />}
 
       <Field label="Description">
         <Textarea
@@ -623,11 +625,12 @@ function ResponseForm({ block, ctx }: { block: BlockOf<'response'>; ctx: FormCon
   )
 }
 
-type ExecutableBlock = Exclude<Block, BlockOf<'startTrigger'>>
+type ExecutableBlock = Exclude<Block, BlockOf<'startTrigger' | 'errorTrigger'>>
 
 /** Timeout, retries and what happens on failure. Unset values show their defaults as placeholders. */
 function SettingsForm({ block }: { block: ExecutableBlock }) {
-  const settings = block.settings ?? {}
+  // Loops and waits have fewer settings; their forms arrive in M5 step 7.
+  const settings: BlockSettings = block.settings ?? {}
   const retry = settings.retry ?? {}
   const defaults = DEFAULT_BLOCK_SETTINGS
   const set = (patch: Record<string, unknown>) =>

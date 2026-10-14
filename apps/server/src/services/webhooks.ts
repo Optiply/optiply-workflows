@@ -12,7 +12,13 @@ import {
   workflows,
   workflowTriggers,
 } from '@ow/db'
-import { type AliasSegment, matchWebhookAlias, parseWebhookAlias, type WebhookTrigger } from '@ow/definition'
+import {
+  type AliasSegment,
+  matchWebhookAlias,
+  parseWebhookAlias,
+  queriedResources,
+  type WebhookTrigger,
+} from '@ow/definition'
 import type { RunEvent } from '@ow/engine'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { FastifyReply } from 'fastify'
@@ -105,11 +111,7 @@ export async function requireConfiguredResources(
   release: WorkflowRelease,
   environment: { id: string; name: string },
 ) {
-  const slugs = [
-    ...new Set(
-      release.definition.blocks.flatMap((b) => (b.type === 'resourceQuery' ? [b.config.resource] : [])),
-    ),
-  ]
+  const slugs = queriedResources(release.definition)
   if (!slugs.length) return
   const rows = await db
     .select({ slug: resources.slug, configured: resourceConfigs.id })

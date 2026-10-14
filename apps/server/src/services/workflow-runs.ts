@@ -15,7 +15,13 @@ import {
   workflowRuns,
   workflows,
 } from '@ow/db'
-import { buildGraph, type Diagnostic, validateDefinition, type WorkflowDefinition } from '@ow/definition'
+import {
+  buildGraph,
+  type Diagnostic,
+  queriedResources,
+  validateDefinition,
+  type WorkflowDefinition,
+} from '@ow/definition'
 import {
   BlockFailure,
   enqueueRun,
@@ -216,9 +222,7 @@ export async function checkDefinition(
   db: Db,
   definition: WorkflowDefinition,
 ): Promise<{ resources: Resource[]; errors: Diagnostic[] }> {
-  const slugs = [
-    ...new Set(definition.blocks.flatMap((b) => (b.type === 'resourceQuery' ? [b.config.resource] : []))),
-  ]
+  const slugs = queriedResources(definition)
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const validation = validateDefinition(definition, {
