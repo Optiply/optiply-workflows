@@ -85,6 +85,14 @@ curl -b jar localhost:3000/api/v1/runs/<runId>/blocks/<loop>/iterations?status=e
 curl -b jar -X POST localhost:3000/api/v1/runs/<runId>/cancel
 ```
 
+### User Tasks and the Inbox
+
+A **User task** block asks people for a decision or some data. It has a title and a description (both can use `{{ }}`), assignees (users by email and groups by name; an entry can be a `{{ }}` that gives one or a list), form fields (text, long text, number, checkbox, choice; each optionally required, with a `{{ }}` starting value), buttons (outcomes, e.g. Approve and Reject; one Submit button when there are none), and an optional due time.
+
+When the block runs, the task appears in its assignees' **Inbox** (in the sidebar, with a count), and the run waits without holding a worker. Anyone assigned (directly or through a group) can complete it, and admins can complete any task. People with access to the workflow can see it but not complete it. The answer is checked against the fields in the browser and again on the server. Then the run carries on with `{{ task1.data }}` = `{ outcome, values, completedBy: { id, email, name }, completedAt }`; use a Branch on `task1.data.outcome` to go different ways. A field's starting value only fills the form in: a field submitted empty is `null`.
+
+Past its due time the task expires and the block fails (`task_expired`; with "continue on failure", the run takes the error path). Cancelling the run, or the run failing elsewhere, closes the task. Assignees written out in full are checked before a run starts or a release is published; `{{ }}` ones when the task opens. User tasks can't be used in functions or the error handler.
+
 ### Releases, webhooks and schedules
 
 Editor runs use the draft. **Publish** (top right) releases the draft as a new semver version and makes it live; the **Releases** tab lists every release and can make an earlier one live again (rollback). Webhooks, schedules and `"version": "live"` runs execute the live release. Publishing or rolling back needs Edit on the workflow and Use on every resource it queries in every environment.

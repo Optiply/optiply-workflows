@@ -9,6 +9,7 @@ import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
 import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
+import { tasksRouter } from './routers/tasks'
 import { usersRouter } from './routers/users'
 import { workflowsRouter } from './routers/workflows'
 
@@ -38,6 +39,7 @@ export const appRouter = router({
   resources: resourcesRouter,
   folders: foldersRouter,
   permissions: permissionsRouter,
+  tasks: tasksRouter,
   configVars: configVarsRouter,
   workflows: workflowsRouter,
   releases: releasesRouter,

@@ -1,8 +1,9 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
-import { Database, History, LogOut, Plug, Settings, Workflow } from 'lucide-react'
+import { Database, History, Inbox, LogOut, Plug, Settings, Workflow } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Avatar } from '@/components/ui'
+import { useTRPC } from '@/lib/trpc'
 
 const route = getRouteApi('/app')
 
@@ -17,6 +18,8 @@ export function AppShell() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const fullBleed = useMatches({ select: (matches) => matches.some((m) => m.staticData.fullBleed) })
+  const trpc = useTRPC()
+  const openTasks = useQuery({ ...trpc.tasks.openCount.queryOptions(), refetchInterval: 30_000 })
 
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' })
@@ -38,6 +41,7 @@ export function AppShell() {
           {NAV.map((item) => (
             <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
           ))}
+          <NavLink to="/inbox" icon={<Inbox className="size-4" />} label="Inbox" count={openTasks.data} />
           <div className="px-2 pt-4 pb-1 text-xs font-medium text-muted">Coming later</div>
           <span className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted/60">
             <Database className="size-4" /> Database
@@ -77,7 +81,7 @@ export function AppShell() {
   )
 }
 
-function NavLink({ to, icon, label }: { to: string; icon: ReactNode; label: string }) {
+function NavLink({ to, icon, label, count }: { to: string; icon: ReactNode; label: string; count?: number }) {
   return (
     <Link
       to={to}
@@ -86,6 +90,14 @@ function NavLink({ to, icon, label }: { to: string; icon: ReactNode; label: stri
     >
       {icon}
       {label}
+      {!!count && (
+        <span
+          className="ml-auto rounded-full bg-accent px-1.5 text-xs font-medium text-white"
+          data-testid="inbox-count"
+        >
+          {count}
+        </span>
+      )}
     </Link>
   )
 }

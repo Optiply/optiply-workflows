@@ -53,6 +53,7 @@ export type DiagnosticCode =
   | 'recursive_function'
   | 'invalid_wait'
   | 'invalid_task'
+  | 'unknown_assignee'
   | 'task_in_handler'
   | 'unknown_workflow'
   | 'unpublished_workflow'
@@ -90,6 +91,11 @@ export interface ValidateOptions {
    * execute). When given, every Workflow block and loop workflow runner is checked.
    */
   resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
+  /**
+   * Whether a User Task assignee written out in full (no `{{ }}`) exists: a user by email, a group by name. When
+   * given, each one is checked; templated ones are checked when the task opens.
+   */
+  resolveAssignee?: (kind: 'user' | 'group', name: string) => boolean
 }
 
 export interface ValidationResult {
@@ -122,6 +128,29 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   }
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report)
+
+  // User Task assignees written out in full exist.
+  if (options.resolveAssignee) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        if (block.type !== 'userTask') return
+        for (const kind of ['users', 'groups'] as const) {
+          block.config.assignees[kind]?.forEach((entry, j) => {
+            const name = entry.trim()
+            if (!name || name.includes('{{')) return
+            if (options.resolveAssignee!(kind === 'users' ? 'user' : 'group', name)) return
+            report({
+              code: 'unknown_assignee',
+              message: kind === 'users' ? `No user has the email ${name}` : `No group is named "${name}"`,
+              path: [...path, 'blocks', i, 'config', 'assignees', kind, j],
+              block: block.name,
+              ...(fn && { function: fn.name }),
+            })
+          })
+        }
+      })
+    }
+  }
 
   // Child workflows exist and are published.
   if (options.resolveWorkflow) {

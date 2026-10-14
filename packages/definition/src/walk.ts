@@ -50,6 +50,22 @@ export function calledWorkflows(def: WorkflowDefinition): string[] {
   return [...slugs]
 }
 
+/** User Task assignees written out in full (no `{{ }}`): emails (lowercased) and group names. */
+export function literalAssignees(def: WorkflowDefinition): { users: string[]; groups: string[] } {
+  const users = new Set<string>()
+  const groups = new Set<string>()
+  for (const block of allBlocks(def)) {
+    if (block.type !== 'userTask') continue
+    for (const u of block.config.assignees.users ?? []) {
+      if (u.trim() && !u.includes('{{')) users.add(u.trim().toLowerCase())
+    }
+    for (const g of block.config.assignees.groups ?? []) {
+      if (g.trim() && !g.includes('{{')) groups.add(g.trim())
+    }
+  }
+  return { users: [...users], groups: [...groups] }
+}
+
 /**
  * The functions a block calls: a Function block's or a function runner's, plus `await name()` in its code. Names
  * that aren't in `functions` are ignored (they're blocks, globals or mistakes).

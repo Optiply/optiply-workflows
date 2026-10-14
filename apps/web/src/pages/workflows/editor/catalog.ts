@@ -71,11 +71,12 @@ export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'function',
   'workflow',
   'wait',
+  'userTask',
   'errorTrigger',
 ]
 
 /** What a function can't contain (see the validator's not_in_function). */
-const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'errorTrigger'])
+const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'userTask', 'errorTrigger'])
 
 /** The block types that can be added to a graph: a function's, or the workflow's (one error handler at most). */
 export function addableIn(
