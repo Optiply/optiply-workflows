@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { BlockResult, EngineError, FinalBlockStatus } from './types'
 
 /**
- * NOTIFY channels. `RUNS_QUEUED` wakes workers; `RUN_FINISHED` carries the run id (sync webhooks, tests);
+ * NOTIFY channels. `RUNS_QUEUED` wakes workers (a run was queued or a slot freed up); `RUN_FINISHED` carries the run id (sync webhooks, tests);
  * `RUN_EVENTS` carries a JSON `RunEvent` for every run and block status change (live status in the editor).
  */
 export const RUNS_QUEUED_CHANNEL = 'ow_runs_queued'
@@ -79,35 +79,83 @@ export async function enqueueRun(
 
 /**
  * Claims up to `limit` runs that are due, oldest first. `SKIP LOCKED` lets workers claim concurrently without
- * blocking each other or claiming the same run; each claim bumps the epoch and starts a lease on the
- * database's clock.
+ * blocking each other or claiming the same run; each claim bumps the epoch and starts a lease on the database's
+ * clock.
+ *
+ * Two gates hold runs back without blocking the runs behind them:
+ * - a workflow's `max_concurrent_runs` (every run of the workflow counts, editor runs included);
+ * - a schedule with overlap `queue` runs one run at a time, in order.
+ * Gated candidates are re-checked under transaction-scoped advisory locks (one per workflow or trigger, taken in
+ * sorted order so workers can't deadlock), so two workers can't both take the last slot. A run held back stays
+ * queued; a finishing run wakes the workers (`finishRun`) so it's picked up promptly.
  */
 export async function claimRuns(db: Db, workerId: string, limit: number, leaseMs: number): Promise<Claim[]> {
   if (limit <= 0) return []
-  const rows = await db.execute<{ id: string; epoch: number }>(sql`
-    with next as (
-      select id from workflow_runs
-      where status in ('queued', 'waiting') and available_at <= now()
-      order by available_at, id
-      limit ${limit}
-      for update skip locked
-    )
-    , claimed as (
-      update workflow_runs r
-      set status = 'running',
-          lease_owner = ${workerId},
-          lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}),
-          epoch = r.epoch + 1,
-          started_at = coalesce(r.started_at, now()),
-          updated_at = now()
-      from next
-      where r.id = next.id
-      returning r.id, r.epoch
-    )
-    select id, epoch,
-      pg_notify(${RUN_EVENTS_CHANNEL}, json_build_object('runId', id, 'type', 'run', 'status', 'running')::text)
-    from claimed`)
-  return rows.map((r) => ({ runId: r.id, epoch: r.epoch }))
+  return db.transaction(async (tx) => {
+    // The gate conditions here are a cheap pre-filter (so a full workflow doesn't crowd out other runs); they're
+    // authoritative only once re-checked under the locks below.
+    const candidates = await tx.execute<Candidate>(sql`
+      select r.id, r.workflow_id, r.trigger_id, w.max_concurrent_runs,
+             coalesce(t.config->>'overlap' = 'queue', false) as serial
+      from workflow_runs r
+      join workflows w on w.id = r.workflow_id
+      left join workflow_triggers t on t.id = r.trigger_id
+      where r.status in ('queued', 'waiting') and r.available_at <= now()
+        and (w.max_concurrent_runs is null or w.max_concurrent_runs > (
+          select count(*) from workflow_runs x where x.workflow_id = r.workflow_id and x.status = 'running'))
+        and (t.config->>'overlap' is distinct from 'queue' or not exists (
+          select 1 from workflow_runs x where x.trigger_id = r.trigger_id and x.status = 'running'))
+      order by r.available_at, r.id
+      limit ${Math.min(limit * 3, 100)}
+      for update of r skip locked`)
+
+    const gateKeys = [
+      ...new Set(
+        candidates.flatMap((c) => [
+          ...(c.max_concurrent_runs !== null ? [`workflow:${c.workflow_id}`] : []),
+          ...(c.serial ? [`trigger:${c.trigger_id}`] : []),
+        ]),
+      ),
+    ].sort()
+    for (const key of gateKeys) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ow-run-gate:${key}`}, 0))`)
+    }
+
+    const claims: Claim[] = []
+    for (const c of candidates) {
+      if (claims.length >= limit) break
+      if (c.max_concurrent_runs !== null || c.serial) {
+        const [gate] = await tx.execute<{ busy: boolean }>(sql`
+          select (${c.max_concurrent_runs}::int is not null and (
+                    select count(*) from workflow_runs
+                    where workflow_id = ${c.workflow_id} and status = 'running') >= ${c.max_concurrent_runs}::int)
+              or (${c.serial} and exists (
+                    select 1 from workflow_runs where trigger_id = ${c.trigger_id} and status = 'running')) as busy`)
+        if (gate!.busy) continue
+      }
+      const [claimed] = await tx.execute<{ id: string; epoch: number }>(sql`
+        update workflow_runs
+        set status = 'running',
+            lease_owner = ${workerId},
+            lease_expires_at = now() + make_interval(secs => ${leaseMs / 1000}),
+            epoch = epoch + 1,
+            started_at = coalesce(started_at, now()),
+            updated_at = now()
+        where id = ${c.id}
+        returning id, epoch`)
+      await notifyRunEvent(tx, { runId: claimed!.id, type: 'run', status: 'running' })
+      claims.push({ runId: claimed!.id, epoch: claimed!.epoch })
+    }
+    return claims
+  })
+}
+
+interface Candidate extends Record<string, unknown> {
+  id: string
+  workflow_id: string
+  trigger_id: string | null
+  max_concurrent_runs: number | null
+  serial: boolean
 }
 
 /** Extends a lease. False means another worker owns the run now: stop working on it. */
@@ -150,6 +198,8 @@ export async function finishRun(
     if (!rows.length) return false
     await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
     await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status: outcome.status })
+    // A slot freed up: runs held back by a concurrency gate can go now.
+    await notify(tx, RUNS_QUEUED_CHANNEL)
     return true
   })
 }
@@ -225,7 +275,8 @@ export async function reapExpiredLeases(
           ),
         )
     }
-    if (requeued.length) await notify(tx, RUNS_QUEUED_CHANNEL)
+    // Requeued runs, and slots freed by failed ones.
+    if (rows.length) await notify(tx, RUNS_QUEUED_CHANNEL)
     for (const id of failed) await notify(tx, RUN_FINISHED_CHANNEL, id)
     for (const row of rows) await notifyRunEvent(tx, { runId: row.id, type: 'run', status: row.status })
     return { requeued, failed }

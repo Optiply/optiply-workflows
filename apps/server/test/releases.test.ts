@@ -16,6 +16,7 @@ let prodId: string
 let stagingId: string
 let resourceId: string
 let stopWorker: () => Promise<void>
+let worker: Awaited<ReturnType<typeof startWorker>>
 
 const data = (res: { status: number; body: { result?: { data: unknown }; error?: { message: string } } }) => {
   if (!res.body.result) throw new Error(`tRPC call failed (${res.status}): ${res.body.error?.message}`)
@@ -103,7 +104,7 @@ beforeAll(async () => {
   await admin.mutate('groups.addMember', { groupId: memberGroupId, userId: memberUser.id })
 
   const workerDb = createDb(env.databaseUrl, { max: 5 })
-  const worker = await startWorker({
+  worker = await startWorker({
     db: workerDb.db,
     sql: workerDb.sql,
     config: env.config,
@@ -429,5 +430,51 @@ describe('trigger projection', () => {
       definition([code('a', 'return 2')], { triggers: { webhook: { enabled: true, alias: 'orders/:x' } } }),
     )
     data(await publish(b))
+  })
+})
+
+describe('schedules on the worker', () => {
+  it('runs the live release when a published schedule comes due', async () => {
+    const wf = await workflowWith(
+      'ticking',
+      definition([code('which', 'return startTrigger.data.schedule')], {
+        triggers: {
+          schedules: [{ name: 'hourly', enabled: true, cron: '0 * * * *', environment: 'staging' }],
+        },
+      }),
+    )
+    const release = data(await publish(wf))
+    const [trigger] = await triggersOf(wf.id)
+    await env.db
+      .update(workflowTriggers)
+      .set({ nextFireAt: new Date(Date.now() - 1000) })
+      .where(eq(workflowTriggers.id, trigger!.id))
+
+    await worker.scheduler.tick()
+    const res = await env.app.inject({
+      method: 'GET',
+      url: '/api/v1/workflows/ticking/runs',
+      headers: { cookie: adminCookie },
+    })
+    const [run] = res.json().runs
+    expect(run).toMatchObject({ triggerType: 'schedule', environment: 'staging', version: 'live' })
+    for (const deadline = Date.now() + 20_000; Date.now() < deadline; ) {
+      const current = (
+        await env.app.inject({
+          method: 'GET',
+          url: `/api/v1/runs/${run.id}`,
+          headers: { cookie: adminCookie },
+        })
+      ).json().run
+      if (current.status === 'succeeded') {
+        expect(current.input).toEqual({ data: { scheduledFor: expect.any(String), schedule: 'hourly' } })
+        const [row] = await triggersOf(wf.id)
+        expect(row!.nextFireAt!.getTime()).toBeGreaterThan(Date.now())
+        expect(row!.releaseId).toBe(release.id)
+        return
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    throw new Error('the scheduled run did not succeed')
   })
 })

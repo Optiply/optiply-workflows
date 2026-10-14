@@ -458,6 +458,11 @@ export const workflowRuns = pgTable(
     index('workflow_runs_claim_idx').on(t.availableAt).where(sql`${t.status} in ('queued', 'waiting')`),
     index('workflow_runs_lease_idx').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
     index('workflow_runs_workflow_idx').on(t.workflowId, t.createdAt.desc()),
+    // Concurrency gates and schedule overlap checks count a workflow's or trigger's active runs.
+    index('workflow_runs_running_idx').on(t.workflowId).where(sql`${t.status} = 'running'`),
+    index('workflow_runs_trigger_active_idx')
+      .on(t.triggerId)
+      .where(sql`${t.triggerId} is not null and ${t.status} in ('queued', 'running', 'waiting')`),
     // Foreign keys that deletes have to check or clear (retention deletes runs in bulk).
     index('workflow_runs_parent_idx').on(t.parentRunId).where(sql`${t.parentRunId} is not null`),
     index('workflow_runs_trigger_idx').on(t.triggerId).where(sql`${t.triggerId} is not null`),

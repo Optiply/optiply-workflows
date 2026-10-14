@@ -1,0 +1,2 @@
+CREATE INDEX "workflow_runs_running_idx" ON "workflow_runs" USING btree ("workflow_id") WHERE "workflow_runs"."status" = 'running';--> statement-breakpoint
+CREATE INDEX "workflow_runs_trigger_active_idx" ON "workflow_runs" USING btree ("trigger_id") WHERE "workflow_runs"."trigger_id" is not null and "workflow_runs"."status" in ('queued', 'running', 'waiting');
