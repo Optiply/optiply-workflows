@@ -1,4 +1,5 @@
 export { type BlockContext, type BlockOutput, executeBlock, formatLogArgs } from './blocks'
+export { childResult, PgChildRuns, waitForChild } from './children'
 export {
   Dispatcher,
   type DispatcherLogger,

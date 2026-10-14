@@ -46,7 +46,7 @@ describe('wait', () => {
     expect(resumeAt - before).toBeGreaterThanOrEqual(5 * 60_000)
     expect(resumeAt - before).toBeLessThan(5 * 60_000 + 2000)
     expect(first.statuses).toEqual({ startTrigger: 'succeeded' })
-    expect(first.store.waits.get('pause')!.getTime()).toBe(resumeAt)
+    expect(first.store.waits.get('pause')!.until.getTime()).toBe(resumeAt)
 
     // Too early: still waiting, for the same time (the template isn't evaluated again, so new input changes nothing).
     const early = await run(services, definition, {
@@ -57,7 +57,7 @@ describe('wait', () => {
     expect(early.outcome).toMatchObject({ status: 'waiting', resumeAt: new Date(resumeAt) })
 
     // Due: the wait finishes and the run carries on.
-    const due = new Map([['pause', new Date(Date.now() - 1)]])
+    const due = new Map([['pause', { until: new Date(Date.now() - 1) }]])
     const resumed = await run(services, definition, { checkpoints: first.store.checkpoints(), waits: due })
     expect(resumed.outcome.status).toBe('succeeded')
     expect(resumed.data('after')).toBe('resumed')

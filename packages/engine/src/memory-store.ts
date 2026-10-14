@@ -1,5 +1,5 @@
 import type { LogLevel } from '@ow/db'
-import type { BlockResult, RunResponse, RunStore } from './types'
+import type { BlockResult, RunResponse, RunStore, WaitState } from './types'
 
 export type StoreEvent =
   | { type: 'started'; key: string; attempt: number }
@@ -25,11 +25,11 @@ export class MemoryRunStore implements RunStore {
   }
 
   /** Waits left waiting, as a resumed run would load them. */
-  readonly waits = new Map<string, Date>()
+  readonly waits = new Map<string, WaitState>()
 
-  async blockWaiting(key: string, _attempt: number, until: Date) {
-    this.write({ type: 'waiting', key, until })
-    this.waits.set(key, until)
+  async blockWaiting(key: string, _attempt: number, state: WaitState) {
+    this.write({ type: 'waiting', key, until: state.until })
+    this.waits.set(key, state)
   }
 
   async blockFinished(result: BlockResult, extra?: { response?: RunResponse }) {

@@ -1,6 +1,6 @@
 import { blockRunPayloads, blockRuns, type Db, type WorkflowRun, workflowRuns, workflows } from '@ow/db'
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import type { BlockResult, EngineError, FinalBlockStatus } from './types'
+import type { BlockResult, EngineError, FinalBlockStatus, WaitState } from './types'
 
 /**
  * NOTIFY channels. `RUNS_QUEUED` wakes workers (a run was queued or a slot freed up); `RUN_FINISHED` carries the run id (sync webhooks, tests);
@@ -284,7 +284,7 @@ export async function finishRun(
   },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const rows = await tx.execute(sql`
+    const rows = await tx.execute<{ parent_run_id: string | null }>(sql`
       update workflow_runs
       set status = ${outcome.status},
           error = ${outcome.error ? JSON.stringify(outcome.error) : null}::jsonb,
@@ -293,10 +293,11 @@ export async function finishRun(
           lease_expires_at = null,
           updated_at = now()
       where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
-      returning id`)
+      returning parent_run_id`)
     if (!rows.length) return false
     await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
     await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status: outcome.status })
+    await wakeParents(tx, rows)
     // A slot freed up: runs held back by a concurrency gate can go now.
     await notify(tx, RUNS_QUEUED_CHANNEL)
     return true
@@ -310,7 +311,7 @@ export async function finishRun(
  */
 export async function suspendRun(db: Db, claim: Claim, resumeAt: Date): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const rows = await tx.execute<{ status: string }>(sql`
+    const rows = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
       update workflow_runs
       set status = case when cancel_requested_at is null then 'waiting' else 'cancelled' end,
           available_at = ${resumeAt.toISOString()}::timestamptz,
@@ -322,12 +323,24 @@ export async function suspendRun(db: Db, claim: Claim, resumeAt: Date): Promise<
           epoch = epoch + 1,
           updated_at = now()
       where id = ${claim.runId} and epoch = ${claim.epoch} and status = 'running'
-      returning status`)
+      returning status, parent_run_id`)
     if (!rows.length) return false
     const status = rows[0]!.status
     if (status === 'cancelled') {
       await cancelWaitingBlocks(tx, [claim.runId])
       await notify(tx, RUN_FINISHED_CHANNEL, claim.runId)
+      await wakeParents(tx, rows)
+    } else {
+      // A child this run waits for may have ended just before it paused, while it was still `running`, so that
+      // child's wake-up missed it. This statement sees every commit up to now; a later one waits on our row lock and
+      // then finds the run waiting.
+      await tx.execute(sql`
+        update workflow_runs r set available_at = now()
+        where r.id = ${claim.runId} and exists (
+          select 1 from block_runs b
+          join workflow_runs c on c.id = (b.metadata->>'childRunId')::uuid
+          where b.run_id = r.id and b.status = 'waiting'
+            and c.status in ('succeeded', 'failed', 'cancelled'))`)
     }
     await notifyRunEvent(tx, { runId: claim.runId, type: 'run', status })
     // A slot freed up: runs held back by a concurrency gate can go now.
@@ -346,18 +359,18 @@ export async function cancelRun(
   db: Db,
   runId: string,
 ): Promise<'cancelled' | 'requested' | 'finished' | 'not_found'> {
-  return db.transaction(async (tx) => {
-    const [run] = await tx.execute<{ status: string }>(sql`
-      select status from workflow_runs where id = ${runId} for update`)
-    if (!run) return 'not_found'
+  const outcome = await db.transaction(async (tx) => {
+    const [run] = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
+      select status, parent_run_id from workflow_runs where id = ${runId} for update`)
+    if (!run) return 'not_found' as const
     if (run.status === 'running') {
       await tx.execute(sql`
         update workflow_runs set cancel_requested_at = coalesce(cancel_requested_at, now()), updated_at = now()
         where id = ${runId}`)
       await notify(tx, RUN_CANCEL_CHANNEL, runId)
-      return 'requested'
+      return 'requested' as const
     }
-    if (run.status !== 'queued' && run.status !== 'waiting') return 'finished'
+    if (run.status !== 'queued' && run.status !== 'waiting') return 'finished' as const
     await tx.execute(sql`
       update workflow_runs
       set status = 'cancelled', finished_at = now(), error = ${CANCELLED_ERROR}::jsonb,
@@ -367,9 +380,39 @@ export async function cancelRun(
     await cancelWaitingBlocks(tx, [runId])
     await notify(tx, RUN_FINISHED_CHANNEL, runId)
     await notifyRunEvent(tx, { runId, type: 'run', status: 'cancelled' })
+    await wakeParents(tx, [run])
     await notify(tx, RUNS_QUEUED_CHANNEL)
-    return 'cancelled'
+    return 'cancelled' as const
   })
+  if (outcome === 'cancelled' || outcome === 'requested') {
+    // Its child workflows go too.
+    const children = await db.execute<{ id: string }>(sql`
+      select id from workflow_runs
+      where parent_run_id = ${runId} and status in ('queued', 'running', 'waiting')`)
+    for (const child of children) await cancelRun(db, child.id)
+  }
+  return outcome
+}
+
+/**
+ * A child run ended (finished, failed, cancelled): its parent, if it's paused waiting for it, can go now instead
+ * of at its recheck time.
+ */
+async function wakeParents(tx: Executor, rows: readonly { parent_run_id?: string | null }[]) {
+  const parents = [...new Set(rows.flatMap((r) => (r.parent_run_id ? [r.parent_run_id] : [])))]
+  if (!parents.length) return
+  const woken = await tx
+    .update(workflowRuns)
+    .set({ availableAt: sql`now()`, updatedAt: sql`now()` })
+    .where(
+      and(
+        inArray(workflowRuns.id, parents),
+        eq(workflowRuns.status, 'waiting'),
+        sql`${workflowRuns.availableAt} > now()`,
+      ),
+    )
+    .returning({ id: workflowRuns.id })
+  if (woken.length) await notify(tx, RUNS_QUEUED_CHANNEL)
 }
 
 /** Blocks left waiting (or running, after a lost worker) in runs that just ended without them. */
@@ -421,7 +464,7 @@ export async function reapExpiredLeases(
     message: `The worker running this run stopped responding ${maxRecoveries + 1} times`,
   })
   return db.transaction(async (tx) => {
-    const rows = await tx.execute<{ id: string; status: string }>(sql`
+    const rows = await tx.execute<{ id: string; status: string; parent_run_id: string | null }>(sql`
       with expired as (
         select id from workflow_runs
         where status = 'running' and lease_expires_at < now()
@@ -443,7 +486,7 @@ export async function reapExpiredLeases(
                        when r.recoveries >= ${maxRecoveries} then ${error}::jsonb else r.error end
       from expired
       where r.id = expired.id
-      returning r.id, r.status`)
+      returning r.id, r.status, r.parent_run_id`)
     const requeued = rows.filter((r) => r.status === 'queued').map((r) => r.id)
     const failed = rows.filter((r) => r.status === 'failed').map((r) => r.id)
     const cancelled = rows.filter((r) => r.status === 'cancelled').map((r) => r.id)
@@ -465,21 +508,30 @@ export async function reapExpiredLeases(
     // Requeued runs, and slots freed by failed ones.
     if (rows.length) await notify(tx, RUNS_QUEUED_CHANNEL)
     for (const id of [...failed, ...cancelled]) await notify(tx, RUN_FINISHED_CHANNEL, id)
+    await wakeParents(
+      tx,
+      rows.filter((r) => r.status !== 'queued'),
+    )
     for (const row of rows) await notifyRunEvent(tx, { runId: row.id, type: 'run', status: row.status })
     return { requeued, failed, cancelled }
   })
 }
 
-/** Wait blocks an earlier lease left waiting, with when each resumes, for `executeRun`'s `waits`. */
-export async function loadWaits(db: Db, runId: string): Promise<Map<string, Date>> {
+/** Blocks an earlier lease left waiting, with why, for `executeRun`'s `waits`. */
+export async function loadWaits(db: Db, runId: string): Promise<Map<string, WaitState>> {
   const rows = await db
     .select({ key: blockRuns.blockKey, metadata: blockRuns.metadata })
     .from(blockRuns)
     .where(and(eq(blockRuns.runId, runId), eq(blockRuns.status, 'waiting')))
-  const waits = new Map<string, Date>()
+  const waits = new Map<string, WaitState>()
   for (const row of rows) {
-    const until = (row.metadata as { until?: string } | null)?.until
-    if (until) waits.set(row.key, new Date(until))
+    const meta = row.metadata as { until?: string; childRunId?: string; since?: string } | null
+    if (!meta?.until) continue
+    waits.set(row.key, {
+      until: new Date(meta.until),
+      ...(meta.childRunId && { childRunId: meta.childRunId }),
+      ...(meta.since && { since: new Date(meta.since) }),
+    })
   }
   return waits
 }

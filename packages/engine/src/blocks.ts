@@ -3,9 +3,10 @@ import type { LogLevel } from '@ow/db'
 import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
 import type { HostFunction } from '@ow/sandbox'
+import { childResult, waitForChild } from './children'
 import { BlockFailure } from './errors'
 import { runLoop } from './loop'
-import type { BlockResult, EngineServices, RunInput } from './types'
+import type { BlockResult, ChildRuns, EngineServices, RunInput, WaitState } from './types'
 
 export interface BlockContext {
   /** Globals plus the results of the blocks this one references. */
@@ -17,8 +18,14 @@ export interface BlockContext {
   signal: AbortSignal
   timeoutMs: number
   log: (level: LogLevel, message: string) => void
-  /** A Wait that already started waiting: when it resumes (stored, so re-running the block doesn't move it). */
-  waitingUntil?: Date
+  /** The run, and this attempt of the block (child runs are keyed by them). */
+  runId: string
+  attempt: number
+  /**
+   * Why the block is already waiting, from an earlier execution: a Wait's time (stored, so re-running the block
+   * doesn't move it), or the child run a Workflow block waits for.
+   */
+  waiting?: WaitState
   /** Scrubbed from error messages. */
   secrets: readonly string[]
   /** The workflow's function names (code can call the ones it references). */
@@ -55,8 +62,13 @@ export interface BlockOutput {
   metadata?: Record<string, unknown>
   /** Defaults to `out`. */
   port?: string
-  /** A Wait that isn't due yet: the block waits until then instead of finishing. */
-  suspendUntil?: Date
+  /** The block has to wait instead of finishing: a Wait not due yet, a child run still going. */
+  suspend?: Suspension
+}
+
+/** Why a block waits, and how often to look again while the run is still in the process. */
+export interface Suspension extends WaitState {
+  recheckMs?: number
 }
 
 type Executor<T extends Block['type']> = (block: BlockOf<T>, ctx: BlockContext) => Promise<BlockOutput>
@@ -135,17 +147,98 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     return { data: await callWorkflowFunction(block.config.function, block.config.params, ctx, ctx) }
   },
 
-  // M5 step 5.
-  workflow: notYet('Workflow'),
+  async workflow(block, ctx) {
+    const children = requireChildren(ctx)
+    const slug = block.config.workflow
+    const sync = (block.config.mode ?? 'sync') === 'sync'
+    let runId = ctx.waiting?.childRunId
+    const since = ctx.waiting?.since ?? new Date()
+    if (!runId) {
+      runId = await startChild(slug, block.config.input, `${block.name}:${ctx.attempt}`, ctx, ctx)
+      if (!sync) return { data: { runId }, metadata: { runId, workflow: slug } }
+    }
+    // Most children finish quickly: wait here a moment before pausing the run (never past the block's timeout,
+    // which also bounds this attempt).
+    const deadline = since.getTime() + ctx.timeoutMs
+    const inline = Math.min(CHILD_INLINE_WAIT_MS, deadline - Date.now() - CHILD_TIMEOUT_MARGIN_MS)
+    const state = await waitForChild(children, runId, Math.max(0, inline), ctx.signal)
+    if (state) return childResult(slug, state)
+    if (Date.now() >= deadline) {
+      await children.cancel(runId).catch(() => {})
+      throw new BlockFailure('timeout', `Workflow "${slug}" didn't finish within ${ctx.timeoutMs} ms`, {
+        runId,
+      })
+    }
+    // Woken when the child ends; otherwise at the timeout, or an hour from now to look again.
+    const until = new Date(Math.min(deadline, Date.now() + CHILD_RECHECK_MS))
+    return { data: null, suspend: { until, childRunId: runId, since, recheckMs: CHILD_INLINE_RECHECK_MS } }
+  },
   async wait(block, ctx) {
-    const until = ctx.waitingUntil ?? (await waitUntil(block, ctx))
-    if (until.getTime() > Date.now()) return { data: null, suspendUntil: until }
+    const until = ctx.waiting?.until ?? (await waitUntil(block, ctx))
+    if (until.getTime() > Date.now()) return { data: null, suspend: { until } }
     return { data: null, metadata: { until: until.toISOString() } }
   },
   // The orchestrator commits the error handler's data itself when the run fails.
   async errorTrigger() {
     throw new BlockFailure('internal', 'The error handler only starts when the run fails')
   },
+}
+
+/** How long a sync Workflow block waits for its child in the process before pausing the run. */
+const CHILD_INLINE_WAIT_MS = 2000
+/** Leaves the attempt time to pause before the block's own timeout fires. */
+const CHILD_TIMEOUT_MARGIN_MS = 200
+/** A paused parent looks at its child again after this long even if nothing woke it. */
+const CHILD_RECHECK_MS = 60 * 60_000
+/** While the parent still has other blocks running here, it looks at the child this often. */
+const CHILD_INLINE_RECHECK_MS = 2000
+
+function requireChildren(ctx: BlockContext): ChildRuns {
+  if (!ctx.services.children) throw new BlockFailure('unsupported', "Child workflows can't run here")
+  return ctx.services.children
+}
+
+/**
+ * Starts a child run (a Workflow block, or a loop's workflow runner) with its input template rendered as JSON. The
+ * key makes it idempotent: the same block attempt (or iteration attempt) of the same run starts one child.
+ */
+export async function startChild(
+  workflow: string,
+  input: string | undefined,
+  key: string,
+  work: Work,
+  ctx: BlockContext,
+): Promise<string> {
+  const data = input?.trim() ? await renderJson(input, evaluatorFor(work, ctx)) : null
+  return requireChildren(ctx).start({
+    workflow,
+    input: data,
+    key: `child:${ctx.runId}:${key}`,
+    parentRunId: ctx.runId,
+    environmentId: ctx.environmentId,
+  })
+}
+
+/** Starts a child and, in sync mode, waits for it within `work`'s signal (a loop iteration's timeout). */
+export async function runChild(
+  workflow: string,
+  input: string | undefined,
+  mode: 'sync' | 'async' | undefined,
+  key: string,
+  work: Work,
+  ctx: BlockContext,
+): Promise<unknown> {
+  const runId = await startChild(workflow, input, key, work, ctx)
+  if (mode === 'async') return { runId }
+  const children = requireChildren(ctx)
+  try {
+    const state = await waitForChild(children, runId, Number.POSITIVE_INFINITY, work.signal)
+    return childResult(workflow, state!).data
+  } catch (err) {
+    // Timed out or stopped: don't leave the child running for nobody.
+    if (work.signal.aborted) await children.cancel(runId).catch(() => {})
+    throw err
+  }
 }
 
 const WAIT_UNIT_MS = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 } as const
@@ -179,12 +272,6 @@ async function waitUntil(block: BlockOf<'wait'>, ctx: BlockContext): Promise<Dat
     throw new BlockFailure('invalid_wait', 'A wait can last at most 60 days')
   }
   return until
-}
-
-function notYet<T extends Block['type']>(label: string): Executor<T> {
-  return async () => {
-    throw new BlockFailure('unsupported', `${label} blocks can't run yet`)
-  }
 }
 
 /**

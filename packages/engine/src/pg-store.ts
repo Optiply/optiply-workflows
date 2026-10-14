@@ -10,7 +10,7 @@ import {
 import { and, eq, isNull, notInArray, sql } from 'drizzle-orm'
 import { LeaseLostError } from './errors'
 import { type Claim, notifyRunEvent } from './queue'
-import type { BlockResult, RunResponse, RunStore } from './types'
+import type { BlockResult, RunResponse, RunStore, WaitState } from './types'
 
 /** A committed result is never overwritten, not even by a later lease. */
 const FINAL: BlockStatus[] = ['succeeded', 'errored', 'failed', 'skipped', 'cancelled']
@@ -79,13 +79,17 @@ export class PgRunStore implements RunStore {
     })
   }
 
-  async blockWaiting(key: string, attempt: number, until: Date) {
+  async blockWaiting(key: string, attempt: number, state: WaitState) {
     await this.fenced(async (tx) => {
       const values = {
         status: 'waiting' as const,
         attempt,
         epoch: this.claim.epoch,
-        metadata: { until: until.toISOString() },
+        metadata: {
+          until: state.until.toISOString(),
+          ...(state.childRunId && { childRunId: state.childRunId }),
+          ...(state.since && { since: state.since.toISOString() }),
+        },
       }
       const written = await tx
         .insert(blockRuns)

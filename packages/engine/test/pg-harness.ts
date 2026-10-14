@@ -121,3 +121,17 @@ export async function hitsOf(db: Db, runId: string): Promise<Record<string, numb
   )
   return Object.fromEntries(rows.map((r) => [r.block, r.n]))
 }
+
+/** Creates a workflow with `slug` and makes `definition` its live release (what child runs execute). */
+export async function publishWorkflow(db: Db, slug: string, definition: WorkflowDefinition) {
+  const [workflow] = await db
+    .insert(workflows)
+    .values({ slug, name: slug, draftDefinition: definition })
+    .returning()
+  const [release] = await db
+    .insert(workflowReleases)
+    .values({ workflowId: workflow!.id, version: '1.0.0', definition, definitionHash: 'e'.repeat(64) })
+    .returning()
+  await db.update(workflows).set({ liveReleaseId: release!.id }).where(eq(workflows.id, workflow!.id))
+  return workflow!
+}

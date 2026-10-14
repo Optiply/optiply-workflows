@@ -10,6 +10,7 @@ import {
 import { DEFAULT_RUN_TIMEOUT_MS, type WorkflowDefinition } from '@ow/definition'
 import { type CodeRuntime, IvmRuntime } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
+import { PgChildRuns } from './children'
 import { LeaseLostError, RunCancelledError } from './errors'
 import { executeRun } from './orchestrator'
 import { PgRunStore } from './pg-store'
@@ -64,7 +65,10 @@ export class RunExecutor {
   readonly db: Db
   private readonly log: DispatcherLogger
 
+  private readonly children: PgChildRuns
+
   constructor(private readonly opts: RunExecutorOptions) {
+    this.children = new PgChildRuns(opts.db)
     this.leaseMs = opts.leaseMs ?? 30_000
     this.db = opts.db
     this.log = opts.log ?? noLog
@@ -151,6 +155,7 @@ export class RunExecutor {
           pool: this.opts.pool,
           resources: this.opts.resources,
           fetcher: this.opts.fetcher,
+          children: this.children,
         },
         store,
         checkpoints,

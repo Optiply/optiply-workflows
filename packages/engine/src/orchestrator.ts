@@ -10,11 +10,25 @@ import {
   validateDefinition,
   type WorkflowGraph,
 } from '@ow/definition'
-import { type BlockContext, type BlockOutput, executeBlock, type LoopIterations } from './blocks'
+import {
+  type BlockContext,
+  type BlockOutput,
+  executeBlock,
+  type LoopIterations,
+  type Suspension,
+} from './blocks'
 import { BlockFailure, RunCancelledError, toEngineError } from './errors'
 import { toJsonData } from './results'
 import { retryDelayMs, sleep } from './retry'
-import type { BlockResult, EngineError, ExecuteRunOptions, RunOutcome, RunResponse, RunStore } from './types'
+import type {
+  BlockResult,
+  EngineError,
+  ExecuteRunOptions,
+  RunOutcome,
+  RunResponse,
+  RunStore,
+  WaitState,
+} from './types'
 
 const DEFAULT_CONCURRENCY = 10
 /** Checkpointed statuses a resumed run treats as done. */
@@ -126,9 +140,9 @@ class RunExecution {
   private readonly queued = new Set<string>()
   private readonly startedAt = new Map<string, Date>()
   private readonly references = new Map<string, Set<string>>()
-  /** When each Wait that has started waiting resumes. */
-  private readonly waitUntil = new Map<string, Date>()
-  /** Waits that are waiting now, with the attempt that started them, and their wake-up timers. */
+  /** Why each block that has started waiting is waiting (a Wait's time, a Workflow block's child run). */
+  private readonly waitState = new Map<string, WaitState>()
+  /** Blocks waiting now, with the attempt that started them, and their wake-up timers. */
   private readonly parked = new Map<string, { until: Date; attempt: number; timer: NodeJS.Timeout }>()
   private readonly maxConcurrency: number
   private readonly secrets: readonly string[]
@@ -159,7 +173,7 @@ class RunExecution {
     this.secrets = opts.secrets ?? []
     this.suspendAfterMs = opts.suspendAfterMs ?? DEFAULT_SUSPEND_AFTER_MS
     this.responded = opts.responded ?? false
-    for (const [name, until] of opts.waits ?? []) this.waitUntil.set(name, until)
+    for (const [name, state] of opts.waits ?? []) this.waitState.set(name, state)
   }
 
   run(): Promise<RunOutcome> {
@@ -257,7 +271,7 @@ class RunExecution {
   private async execute(block: Block) {
     this.executing.add(block.name)
     const signal = this.phaseAbort.signal
-    let outcome: BlockResult | { suspendUntil: Date; attempt: number }
+    let outcome: BlockResult | { suspend: Suspension; attempt: number }
     try {
       outcome = await this.attempts(block, signal)
     } catch (err) {
@@ -267,11 +281,11 @@ class RunExecution {
       this.executing.delete(block.name)
     }
     if (this.done || signal.aborted) return this.leftPhase(block.name)
-    if ('suspendUntil' in outcome) return this.park(block.name, outcome.suspendUntil, outcome.attempt)
+    if ('suspend' in outcome) return this.park(block.name, outcome.suspend, outcome.attempt)
 
     const result = outcome
     if (result.status === 'failed') return this.stop(result.error!, result)
-    this.waitUntil.delete(block.name)
+    this.waitState.delete(block.name)
 
     let extra: { response?: RunResponse } | undefined
     if (block.type === 'response' && result.status === 'succeeded') {
@@ -296,23 +310,30 @@ class RunExecution {
     if (!this.done) this.pump()
   }
 
-  /** A Wait that isn't due: record it as waiting, and wake it in the process when it's due (if still here). */
-  private async park(name: string, until: Date, attempt: number) {
+  /**
+   * A block that has to wait (a Wait not due, a Workflow block whose child is still going): record it as waiting,
+   * and wake it in the process when it's due or at its next recheck, if the run is still here then.
+   */
+  private async park(name: string, suspend: Suspension, attempt: number) {
+    const { recheckMs, ...state } = suspend
+    const { until } = state
     this.committing.add(name)
     try {
-      await this.opts.store.blockWaiting(name, attempt, until)
+      await this.opts.store.blockWaiting(name, attempt, state)
     } finally {
       this.committing.delete(name)
     }
     if (this.done) return
-    this.waitUntil.set(name, until)
+    this.waitState.set(name, state)
+    const wakeAt =
+      recheckMs === undefined ? until.getTime() : Math.min(until.getTime(), Date.now() + recheckMs)
     const timer = setTimeout(
       () => {
         if (this.done || this.parked.get(name)?.timer !== timer) return
         this.parked.delete(name)
         this.pump()
       },
-      Math.min(Math.max(0, until.getTime() - Date.now()), MAX_TIMER_MS),
+      Math.min(Math.max(0, wakeAt - Date.now()), MAX_TIMER_MS),
     )
     this.parked.set(name, { until, attempt, timer })
     this.pump()
@@ -352,19 +373,19 @@ class RunExecution {
   private async attempts(
     block: Block,
     signal: AbortSignal,
-  ): Promise<BlockResult | { suspendUntil: Date; attempt: number }> {
+  ): Promise<BlockResult | { suspend: Suspension; attempt: number }> {
     const settings = resolveBlockSettings(block)
     const startedAt = new Date()
     this.startedAt.set(block.name, startedAt)
-    const resuming = this.waitUntil.has(block.name)
+    const resuming = this.waitState.has(block.name)
     const iterations = block.type === 'loop' ? this.iterationsOf(block.name) : undefined
     for (let attempt = 1; ; attempt++) {
       // A Wait resuming is already shown as waiting; it just finishes now.
       if (!resuming)
         await this.opts.store.blockStarted(block.name, attempt, attempt === 1 ? startedAt : new Date())
       try {
-        const output = await this.attempt(block, settings.timeoutMs, signal, iterations)
-        if (output.suspendUntil) return { suspendUntil: output.suspendUntil, attempt }
+        const output = await this.attempt(block, settings.timeoutMs, signal, attempt, iterations)
+        if (output.suspend) return { suspend: output.suspend, attempt }
         const { data, sizeBytes } = toJsonData(output.data)
         return {
           key: block.name,
@@ -408,6 +429,7 @@ class RunExecution {
     block: Block,
     timeoutMs: number,
     phaseSignal: AbortSignal,
+    attemptNumber: number,
     iterations?: LoopIterations,
   ): Promise<BlockOutput> {
     const timeout = new AbortController()
@@ -419,7 +441,9 @@ class RunExecution {
       signal: AbortSignal.any([phaseSignal, timeout.signal]),
       timeoutMs,
       log: (level, message) => this.log(block.name, level, message),
-      waitingUntil: this.waitUntil.get(block.name),
+      runId: this.opts.runId,
+      attempt: attemptNumber,
+      waiting: this.waitState.get(block.name),
       secrets: this.secrets,
       functions: this.functionNames,
       callFunction: (name, args, signal) =>

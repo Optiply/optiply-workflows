@@ -13,6 +13,7 @@ import {
   describe,
   evaluatorFor,
   type LoopIterations,
+  runChild,
   runCode,
   runResourceQuery,
   type Work,
@@ -151,7 +152,12 @@ async function iteration(
   for (let attempt = 1; ; attempt++) {
     try {
       const output = await withTimeout(settings.timeoutMs, signal, (timeoutSignal) =>
-        runner(block, ctx, { scope, signal: timeoutSignal, timeoutMs: settings.timeoutMs, log }),
+        runner(
+          block,
+          ctx,
+          { scope, signal: timeoutSignal, timeoutMs: settings.timeoutMs, log },
+          `${key}:${attempt}`,
+        ),
       )
       const { data, sizeBytes } = toJsonData(output)
       return {
@@ -190,7 +196,8 @@ async function iteration(
   }
 }
 
-async function runner(block: LoopBlock, ctx: BlockContext, work: Work): Promise<unknown> {
+/** Runs one iteration's runner; `key` (`loop[i]:attempt`) keys a child run so a re-run doesn't start another. */
+async function runner(block: LoopBlock, ctx: BlockContext, work: Work, key: string): Promise<unknown> {
   const { runner } = block.config
   switch (runner.kind) {
     case 'code':
@@ -200,8 +207,7 @@ async function runner(block: LoopBlock, ctx: BlockContext, work: Work): Promise<
     case 'function':
       return callWorkflowFunction(runner.function, runner.params, work, ctx)
     case 'workflow':
-      // M5 step 5.
-      throw new BlockFailure('unsupported', "Loops can't run child workflows yet")
+      return runChild(runner.workflow, runner.input, runner.mode, key, work, ctx)
   }
 }
 
