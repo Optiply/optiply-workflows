@@ -99,7 +99,7 @@ export function ResourcesPage() {
       {data.resources.length === 0 && groups.length === 0 ? (
         <EmptyState icon={<Plug className="size-6" />} title="No resources yet">
           {data.canCreate
-            ? 'Add a database (Postgres or MySQL) or a REST API to query it from workflows.'
+            ? 'Add a database (Postgres, MySQL or BigQuery) or a REST API to query it from workflows.'
             : 'Nothing has been shared with you yet. Ask an admin for access to a resource.'}
         </EmptyState>
       ) : (

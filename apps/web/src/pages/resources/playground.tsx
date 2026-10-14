@@ -2,7 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
-import { isSqlType } from '@/lib/resource-types'
+import { isSqlType, PLACEHOLDERS } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -87,7 +87,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
           {isSqlType(resource.type) ? (
             <Field
               label="SQL"
-              hint={`{{ expression }} becomes a bind parameter (${resource.type === 'mysql' ? '?' : '$1, $2…'}); values are never pasted into the SQL.`}
+              hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
             >
               <Textarea
                 rows={10}

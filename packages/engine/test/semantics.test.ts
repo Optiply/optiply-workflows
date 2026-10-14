@@ -49,6 +49,30 @@ describe('readiness and data flow', () => {
     })
   })
 
+  it('labels resource queries with the run, so connectors can attribute their work', async () => {
+    await run(services, wf([fakeQ('q', {})], [['startTrigger', 'q']]), {
+      globals: {
+        configVars: {},
+        workflowContext: {
+          runId: 'run-1',
+          workflowId: 'wf-9',
+          environment: 'staging',
+          triggerType: 'schedule',
+        },
+        idempotencyKey: 'run-1',
+      },
+    })
+    expect(fake.labels).toEqual([
+      {
+        ow_source: 'workflow',
+        ow_run: 'run-1',
+        ow_workflow: 'wf-9',
+        ow_environment: 'staging',
+        ow_trigger: 'schedule',
+      },
+    ])
+  })
+
   it('fans out in parallel, and a join waits for every parent', async () => {
     const { data, store } = await run(
       services,

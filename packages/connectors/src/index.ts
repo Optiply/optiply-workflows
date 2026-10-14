@@ -1,8 +1,10 @@
+import { bigqueryConnector } from './bigquery'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
 import { restConnector } from './rest'
 import type { AnyConnector } from './types'
 
+export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
   CodeFetcher,
   type CodeFetcherOptions,
@@ -21,6 +23,7 @@ export * from './types'
 export const connectors: Readonly<Record<string, AnyConnector>> = {
   [postgresConnector.type]: postgresConnector,
   [mysqlConnector.type]: mysqlConnector,
+  [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
 }
 

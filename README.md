@@ -17,7 +17,7 @@ TypeScript monorepo (pnpm + Turborepo):
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
-| `packages/connectors` | Postgres, MySQL and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
+| `packages/connectors` | Postgres, MySQL, BigQuery and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
 | `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash, cron with time zones, webhook aliases, release versions |
 | `packages/engine` | Runs workflows: the orchestrator and block executors, the Postgres queue (claims with concurrency limits, leases with fencing epochs, recovery of runs whose worker died), the scheduler, and the in-process runner for sync webhooks |
 
@@ -58,7 +58,9 @@ Open **Workflows** in the app to create one. The editor has:
 
 A draft run needs Edit on the workflow and Use on every resource it queries. With `ROLE=all` the same process runs the worker; `WORKER_CONCURRENCY` (default 4) sets how many runs it executes at once.
 
-In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`), so values are never pasted into the SQL; write a table or column name directly. In Postgres, match a list with `= any({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing), and objects are sent as JSON. MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings.
+In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`, BigQuery `@p1`), so values are never pasted into the SQL; write a table or column name directly. In Postgres, match a list with `= any({{ ids }})`; in BigQuery, with `IN UNNEST({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing). Objects are sent as JSON text (in BigQuery, read them with `PARSE_JSON(...)`). MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings; BigQuery does the same for `NUMERIC`, `INT64` and `TIMESTAMP`, and returns `DATE`/`DATETIME` as BigQuery writes them.
+
+A BigQuery resource signs in with a service account's JSON key (it needs the BigQuery Job User role and read access to the datasets). Every query runs as a job with the resource's maximum bytes billed (default 10 GiB; a query that would bill more fails before it runs, at no cost) and labels for cost reports: the resource's own plus `ow_source`, `ow_workflow`, `ow_run`, `ow_environment` and `ow_trigger` (or `ow_user` from the playground). Cancelling a run, or a timeout, cancels the job.
 
 Code blocks can call `await fetch(url, { method, headers, body })` (the body is a string; the response has `status`, `headers`, `text()` and `json()`). Requests to private, loopback and link-local addresses are refused unless `CODE_FETCH_ALLOW_PRIVATE_NETWORK=true` (for local test servers); responses are capped at 10 MB, and a request stops when its block times out or the run stops.
 

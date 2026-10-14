@@ -20,6 +20,8 @@ export interface QueryContext {
   signal: AbortSignal
   /** Time budget for this execution. */
   timeoutMs: number
+  /** Who is running the query (workflow, run, user), for connectors that can tag their work: BigQuery job labels. */
+  labels?: Record<string, string>
 }
 
 export interface QueryResult {

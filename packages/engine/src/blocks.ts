@@ -322,10 +322,20 @@ export async function runResourceQuery(
     if (err instanceof BlockFailure) throw err
     throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
   }
+  const workflow = ctx.scope.workflowContext as
+    | { workflowId?: string; environment?: string; triggerType?: string }
+    | undefined
   const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
     evaluate: evaluatorFor(work, ctx),
     signal: work.signal,
     timeoutMs: work.timeoutMs,
+    labels: {
+      ow_source: 'workflow',
+      ow_run: ctx.runId,
+      ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
+      ...(workflow?.environment && { ow_environment: workflow.environment }),
+      ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
+    },
   })
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
 }
