@@ -13,9 +13,11 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page).toHaveURL(/\/workflows$/)
 
+    // Retries and repeats share the database, so each attempt needs its own slug.
+    const suffix = Date.now().toString(36)
     await page.getByRole('button', { name: 'New workflow' }).click()
-    await page.getByPlaceholder('Sync orders').fill('Pro customers')
-    await expect(page.getByPlaceholder('sync-orders')).toHaveValue('pro-customers')
+    await page.getByPlaceholder('Sync orders').fill(`Pro customers ${suffix}`)
+    await expect(page.getByPlaceholder('sync-orders')).toHaveValue(`pro-customers-${suffix}`)
     await page.getByRole('button', { name: 'Create workflow' }).click()
     await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
     await expect(block(page, 'startTrigger')).toBeVisible()
@@ -103,18 +105,22 @@ async function addBlock(page: Page, kind: string) {
   await page.getByTitle(`Add a ${kind} block`).click()
 }
 
-/** Replaces a Monaco field's text by typing; Monaco auto-closes brackets and quotes, then types over them. */
+/**
+ * Replaces a Monaco field's text. The text is inserted in one go, like a paste: typed key by key, Monaco's
+ * auto-closing of brackets and quotes races the keystrokes on a slow machine (`{"id": 1}` became `{"id"}: 1}` in CI).
+ * The whole replacement is retried until the field shows the text.
+ */
 async function typeInto(page: Page, editor: Locator, text: string) {
   const monaco = editor.locator('.monaco-editor')
   await expect(async () => {
     await monaco.locator('.view-lines').click()
     await expect(monaco).toHaveClass(/focused/, { timeout: 1000 })
+    await page.keyboard.press('ControlOrMeta+A')
+    await page.keyboard.press('Backspace')
+    await page.keyboard.insertText(text)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => editorText(editor), { timeout: 2000 }).toBe(text)
   }).toPass()
-  await page.keyboard.press('ControlOrMeta+A')
-  await page.keyboard.press('Backspace')
-  await page.keyboard.type(text)
-  await page.keyboard.press('Escape')
-  await expect.poll(() => editorText(editor)).toBe(text)
 }
 
 /**
