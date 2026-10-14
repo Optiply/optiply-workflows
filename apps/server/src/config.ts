@@ -65,7 +65,10 @@ const ConfigSchema = z
 
 export type Config = z.output<typeof ConfigSchema>
 
-/** Loads `.env` from the repo root (dev convenience) and validates the environment. */
+/**
+ * Loads `.env` from the repo root (dev convenience) and validates the environment. An empty variable counts as
+ * unset: Compose passes `${VAR:-}` through as an empty string, and `VAR=` in `.env` means "no value".
+ */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   for (const candidate of [resolve(process.cwd(), '.env'), resolve(process.cwd(), '../../.env')]) {
     if (env === process.env && existsSync(candidate)) {
@@ -73,7 +76,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       break
     }
   }
-  const parsed = ConfigSchema.safeParse(env)
+  const parsed = ConfigSchema.safeParse(Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')))
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n')
     throw new Error(`Invalid configuration:\n${issues}`)
