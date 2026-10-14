@@ -2,6 +2,7 @@ import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import type { Block, BlockOf } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
+import type { RunOptions } from '@ow/sandbox'
 import { BlockFailure } from './errors'
 import type { EngineServices, RunInput } from './types'
 
@@ -39,10 +40,13 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   },
 
   async code(block, ctx) {
-    const data = await ctx.services.sandbox.runCode(block.config.code, ctx.scope, {
-      timeoutMs: ctx.timeoutMs,
-      onLog: (level, args) => ctx.log(level, formatLogArgs(args)),
-    })
+    const data = await withHostCalls(ctx, (host) =>
+      ctx.services.sandbox.runCode(block.config.code, ctx.scope, {
+        timeoutMs: ctx.timeoutMs,
+        onLog: (level, args) => ctx.log(level, formatLogArgs(args)),
+        ...host,
+      }),
+    )
     return { data }
   },
 
@@ -121,6 +125,35 @@ const executors: { [T in Block['type']]: Executor<T> } = {
 function notYet<T extends Block['type']>(label: string): Executor<T> {
   return async () => {
     throw new BlockFailure('unsupported', `${label} blocks can't run yet`)
+  }
+}
+
+/**
+ * What code may call outside the sandbox: `fetch`, aborted with the block (timeout, run failure, cancel) and also
+ * once the code finishes, so a request it didn't await doesn't outlive it.
+ */
+async function withHostCalls<T>(
+  ctx: BlockContext,
+  run: (host: Pick<RunOptions, 'fetch'>) => Promise<T>,
+): Promise<T> {
+  const done = new AbortController()
+  const signal = AbortSignal.any([ctx.signal, done.signal])
+  const fetcher = ctx.services.fetcher
+  try {
+    return await run({
+      fetch: async (request) => {
+        if (!fetcher) throw new Error("fetch isn't available here")
+        try {
+          return await fetcher.fetch(request, signal)
+        } catch (err) {
+          // Like fetch's own network errors: a TypeError naming the problem.
+          if ((err as Error).name === 'AbortError') throw new TypeError('fetch was aborted')
+          throw new TypeError(`fetch failed: ${(err as Error).message}`)
+        }
+      },
+    })
+  } finally {
+    done.abort()
   }
 }
 

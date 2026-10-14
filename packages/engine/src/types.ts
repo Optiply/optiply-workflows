@@ -1,4 +1,4 @@
-import type { AnyConnector, PoolManager, ResolvedResource } from '@ow/connectors'
+import type { AnyConnector, CodeFetcher, PoolManager, ResolvedResource } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import type { CodeRuntime } from '@ow/sandbox'
@@ -75,6 +75,8 @@ export interface EngineServices {
   sandbox: CodeRuntime
   pool: PoolManager
   resources: ResourceProvider
+  /** Backs `fetch` in code. Without it, `fetch` rejects with "fetch isn't available here". */
+  fetcher?: Pick<CodeFetcher, 'fetch'>
 }
 
 export interface ExecuteRunOptions {

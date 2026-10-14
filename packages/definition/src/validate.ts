@@ -3,7 +3,7 @@ import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
-import { isGlobalName, PARAMS_NAME, reservedNameReason } from './names'
+import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, reservedNameReason } from './names'
 import {
   type Block,
   type BlockOf,
@@ -415,6 +415,13 @@ function checkGraph(
               ...where,
             })
           }
+        } else if (CODE_ONLY_GLOBALS.has(ref.name) && field.kind !== 'function-body') {
+          report({
+            code: 'function_call',
+            message: `${ref.name} can only be used in code, as await ${ref.name}(...)`,
+            hint: 'Call it from a code block',
+            ...where,
+          })
         } else if (!(isGlobalName(ref.name) || (fn && ref.name === PARAMS_NAME))) {
           report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }

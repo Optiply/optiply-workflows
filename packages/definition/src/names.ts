@@ -20,7 +20,10 @@ export const JS_GLOBALS: ReadonlySet<string> = new Set(
 )
 
 /** Baked into the @ow/sandbox snapshot. */
-export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'console'])
+export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'console', 'fetch'])
+
+/** Globals that return promises: usable in code (which can `await`), not in `{{ }}` or conditions. */
+export const CODE_ONLY_GLOBALS: ReadonlySet<string> = new Set(['fetch'])
 
 /** Added by the engine to every evaluation in a run. */
 export const RUN_GLOBALS: ReadonlySet<string> = new Set(['configVars', 'workflowContext', 'idempotencyKey'])

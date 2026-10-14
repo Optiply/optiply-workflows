@@ -1,4 +1,4 @@
-import type { PoolManager } from '@ow/connectors'
+import type { CodeFetcher, PoolManager } from '@ow/connectors'
 import {
   type Db,
   environments,
@@ -34,6 +34,8 @@ export interface RunExecutorOptions {
   pool: PoolManager
   resources: ResourceProvider
   context?: RunContextProvider
+  /** Backs `fetch` in code; shared by every run of the process. Without it, code can't fetch. */
+  fetcher?: Pick<CodeFetcher, 'fetch'>
   /** One sandbox per run lease. Default: a fresh `IvmRuntime`. */
   createSandbox?: () => CodeRuntime
   /** Default 30s; renewed every third of it. */
@@ -124,7 +126,12 @@ export class RunExecutor {
           },
           idempotencyKey: run.idempotencyKey ?? run.id,
         },
-        services: { sandbox, pool: this.opts.pool, resources: this.opts.resources },
+        services: {
+          sandbox,
+          pool: this.opts.pool,
+          resources: this.opts.resources,
+          fetcher: this.opts.fetcher,
+        },
         store,
         checkpoints,
         only: run.targetBlocks ?? undefined,

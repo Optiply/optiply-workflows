@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import fastifyCookie from '@fastify/cookie'
 import fastifyStatic from '@fastify/static'
-import { PoolManager } from '@ow/connectors'
+import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { InlineRunner } from '@ow/engine'
 import { IvmRuntime } from '@ow/sandbox'
@@ -35,9 +35,11 @@ export async function buildApp(deps: {
 
   const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
+  const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   const runner = new InlineRunner({
     db,
     pool: services.pool,
+    fetcher,
     resources: dbResourceProvider(db, config.keyring),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
@@ -46,6 +48,7 @@ export async function buildApp(deps: {
   app.addHook('onClose', async () => {
     await runner.stop()
     await services.pool.closeAll()
+    await fetcher.close()
     services.sandbox.dispose()
   })
 

@@ -72,7 +72,7 @@ describe('M5 block schemas', () => {
             {
               name: 'getCustomer',
               params: [{ name: 'id', testValue: 1 }],
-              blocks: [code('fetch', 'return params.id')],
+              blocks: [code('lookup', 'return params.id')],
               edges: [],
             },
           ],
@@ -394,6 +394,34 @@ describe('validating M5 blocks', () => {
       expect(d).toEqual([expect.objectContaining({ code: 'function_call', block: 'b' })])
     })
 
+    it('allows fetch in code only', () => {
+      const ok = wf(
+        [
+          start,
+          code('a', 'const res = await fetch("https://api.test")\nreturn res.json()'),
+          loop('l', { kind: 'code', code: 'return fetch(value)' }),
+        ],
+        [
+          ['startTrigger', 'a'],
+          ['startTrigger', 'l'],
+        ],
+      )
+      expect(codes(ok)).toEqual([])
+      const d = diagnostics(
+        wf(
+          [start, { name: 'r', type: 'response', config: { body: '{{ fetch("https://api.test") }}' } }],
+          [['startTrigger', 'r']],
+        ),
+      )
+      expect(d).toEqual([
+        expect.objectContaining({
+          code: 'function_call',
+          message: 'fetch can only be used in code, as await fetch(...)',
+        }),
+      ])
+      expect(codes(wf([start, code('fetch')], [['startTrigger', 'fetch']]))).toEqual(['invalid_name'])
+    })
+
     it('refuses functions that call themselves, directly or in a circle', () => {
       const self = diagnostics(using(fn([code('x', 'return await helper({})')])))
       expect(self).toEqual([
@@ -604,12 +632,12 @@ describe('renaming with functions', () => {
     expect(fn.blocks.map((b) => b.name)).toEqual(['load', 'result'])
     expect(fn.returns).toBe('result')
 
-    const load = renameBlock(def(), 'load', 'fetch', { function: 'enrich' })
+    const load = renameBlock(def(), 'load', 'fetched', { function: 'enrich' })
     if (!load.ok) throw new Error(load.error)
     const inner = load.definition.functions![0]!
-    expect(inner.edges).toEqual([{ from: 'fetch', port: 'out', to: 'shape' }])
-    expect(inner.blocks[1]).toMatchObject({ config: { code: 'return fetch.data' } })
-    expect(inner.layout).toEqual({ blocks: { fetch: { x: 1, y: 2 } } })
+    expect(inner.edges).toEqual([{ from: 'fetched', port: 'out', to: 'shape' }])
+    expect(inner.blocks[1]).toMatchObject({ config: { code: 'return fetched.data' } })
+    expect(inner.layout).toEqual({ blocks: { fetched: { x: 1, y: 2 } } })
     // The workflow's own `load` block is untouched.
     expect(load.definition.blocks[1]!.name).toBe('load')
     expect(load.changed).toEqual([{ block: 'shape', path: ['config', 'code'] }])
