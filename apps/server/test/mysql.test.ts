@@ -81,7 +81,9 @@ afterAll(async () => {
 describe.skipIf(!available)('MySQL resources', () => {
   it('is offered as a type, saves settings with a write-only password and tests the connection', async () => {
     expect(data(await admin.query('resources.types'))).toContainEqual({ type: 'mysql', label: 'MySQL' })
-    resourceId = data(await admin.mutate('resources.create', { type: 'mysql', name: 'Shop', slug: 'shop' })).id
+    resourceId = data(
+      await admin.mutate('resources.create', { type: 'mysql', name: 'Shop', slug: 'shop' }),
+    ).id
     const saved = data(
       await admin.mutate('resources.saveConfig', {
         resourceId,
@@ -132,7 +134,9 @@ describe.skipIf(!available)('MySQL resources', () => {
               type: 'resourceQuery',
               config: {
                 resource: 'shop',
-                query: { sql: 'SELECT customer FROM orders WHERE amount > {{ startTrigger.data.min }} ORDER BY id' },
+                query: {
+                  sql: 'SELECT customer FROM orders WHERE amount > {{ startTrigger.data.min }} ORDER BY id',
+                },
               },
             },
             {

@@ -8,8 +8,8 @@ import {
   runQuery,
   testResource,
 } from '../src'
-import { resource, scopeEvaluator } from './helpers'
 import { mysqlAvailable, startTestMysql, type TestMysql } from '../src/testing'
+import { resource, scopeEvaluator } from './helpers'
 
 // A real MySQL 8.4: a throwaway Docker container (or MYSQL_TEST_URL). Skipped locally without Docker; CI runs it.
 const available = mysqlAvailable()
