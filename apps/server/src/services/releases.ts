@@ -8,12 +8,16 @@ import {
   workflowTriggers,
 } from '@ow/db'
 import {
+  bumpVersion,
   canonicalize,
+  compareVersions,
   DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   definitionHash,
   nextScheduleFire,
+  parseSemver,
   parseWebhookAlias,
   type ScheduleTrigger,
+  type VersionBump,
   type WorkflowDefinition,
 } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
@@ -23,30 +27,6 @@ import { type Access, atLeast } from './permissions'
 import { checkDefinition } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
-
-export type VersionBump = 'major' | 'minor' | 'patch'
-
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
-
-function parseSemver(version: string): [number, number, number] | null {
-  const m = SEMVER.exec(version)
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
-}
-
-export function compareVersions(a: string, b: string): number {
-  const pa = parseSemver(a)!
-  const pb = parseSemver(b)!
-  return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2]
-}
-
-/** The version after `latest` (1.0.0 for the first release). */
-export function bumpVersion(latest: string | null, bump: VersionBump): string {
-  if (!latest) return '1.0.0'
-  const [major, minor, patch] = parseSemver(latest)!
-  if (bump === 'major') return `${major + 1}.0.0`
-  if (bump === 'minor') return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
-}
 
 /**
  * Publishes the draft as a new release and makes it live. `draftRevision` is the revision the publisher is looking

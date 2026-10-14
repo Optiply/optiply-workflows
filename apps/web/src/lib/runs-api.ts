@@ -32,6 +32,8 @@ export interface RunView {
   error: RunError | null
   recoveries: number
   createdBy: string | null
+  /** The API key a webhook call presented. */
+  apiKeyId: string | null
   createdAt: string
   startedAt: string | null
   finishedAt: string | null

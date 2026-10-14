@@ -1,9 +1,8 @@
 import { createDb, workflowTriggers } from '@ow/db'
-import { nextScheduleFire } from '@ow/definition'
+import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { bumpVersion, compareVersions } from '../src/services/releases'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 

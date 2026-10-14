@@ -198,7 +198,12 @@ export const workflowsRouter = router({
           message: `Someone else saved this workflow since revision ${input.revision}; reload to get their changes`,
         })
       }
-      return { revision: saved.revision, diagnostics: validateDefinition(parsed.data).diagnostics }
+      return {
+        revision: saved.revision,
+        /** Compared with the live release's hash to show unpublished changes. */
+        draftHash: await definitionHash(parsed.data),
+        diagnostics: validateDefinition(parsed.data).diagnostics,
+      }
     }),
 
   /** Deletes the workflow with its releases and run history. */

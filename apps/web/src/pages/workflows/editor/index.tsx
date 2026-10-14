@@ -4,8 +4,8 @@ import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
 import { useEffect } from 'react'
-import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
-import { useTRPC } from '@/lib/trpc'
+import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { ADDABLE, BLOCK_KINDS, newBlock, nextName } from './catalog'
@@ -13,12 +13,16 @@ import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
 import { useRunEvents } from './live'
+import { ReleaseControls, ReleasesTab } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
 import { saveDraftNow } from './save'
-import { type SaveStatus, useEditor } from './store'
+import { type SaveStatus, type SideTab, useEditor } from './store'
+import { WorkflowSettingsTab } from './workflow-settings'
 
 const route = getRouteApi('/app/workflows/$workflowId')
+
+type Workflow = RouterOutputs['workflows']['get']
 
 /** How long the draft must be idle before it's saved. */
 const AUTOSAVE_MS = 800
@@ -30,9 +34,19 @@ export function WorkflowEditorPage() {
   const load = useEditor((s) => s.load)
   const loadedId = useEditor((s) => s.workflowId)
 
+  // Load once per workflow: later refetches (after publishing, on window focus) must not reset the editor.
   useEffect(() => {
-    if (workflow.data) load(workflow.data.id, workflow.data.draftDefinition, workflow.data.draftRevision)
+    const data = workflow.data
+    if (data && useEditor.getState().workflowId !== data.id) {
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash)
+    }
   }, [workflow.data, load])
+  // Coming back to the editor later loads the workflow afresh.
+  useEffect(() => () => useEditor.setState({ workflowId: null }), [])
+  const reload = async () => {
+    const { data } = await workflow.refetch()
+    if (data) load(data.id, data.draftDefinition, data.draftRevision, data.draftHash)
+  }
 
   if (workflow.error) {
     return (
@@ -44,27 +58,19 @@ export function WorkflowEditorPage() {
   if (!workflow.data || loadedId !== workflow.data.id) return <Spinner />
 
   const canEdit = workflow.data.level !== 'use'
-  return (
-    <EditorLayout
-      name={workflow.data.name}
-      slug={workflow.data.slug}
-      canEdit={canEdit}
-      onReload={() => workflow.refetch()}
-    />
-  )
+  return <EditorLayout workflow={workflow.data} canEdit={canEdit} onReload={reload} />
 }
 
 function EditorLayout({
-  name,
-  slug,
+  workflow,
   canEdit,
   onReload,
 }: {
-  name: string
-  slug: string
+  workflow: Workflow
   canEdit: boolean
   onReload: () => void
 }) {
+  const { slug } = workflow
   const trpc = useTRPC()
   const { data: environments } = useQuery(trpc.environments.list.queryOptions())
   const { run: runFromUrl } = route.useSearch()
@@ -87,7 +93,7 @@ function EditorLayout({
   return (
     <ReactFlowProvider>
       <div className="flex h-full flex-col">
-        <Header name={name} slug={slug} canEdit={canEdit} environments={environments ?? []} />
+        <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
         <ConflictBanner onReload={onReload} />
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
@@ -97,7 +103,7 @@ function EditorLayout({
             </div>
             {panelOpen && <RunPanel />}
           </div>
-          <SidePanel />
+          <SidePanel workflow={workflow} canEdit={canEdit} />
         </div>
       </div>
       {canEdit && <Autosave />}
@@ -106,16 +112,15 @@ function EditorLayout({
 }
 
 function Header({
-  name,
-  slug,
+  workflow,
   canEdit,
   environments,
 }: {
-  name: string
-  slug: string
+  workflow: Workflow
   canEdit: boolean
   environments: { slug: string; name: string }[]
 }) {
+  const { name, slug } = workflow
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
       <Link
@@ -132,6 +137,8 @@ function Header({
       <SaveIndicator />
       <div className="flex-1" />
       {!canEdit && <Badge>Read only</Badge>}
+      <ReleaseControls workflow={workflow} canEdit={canEdit} />
+      <div className="h-6 w-px bg-border" />
       <RunControls canEdit={canEdit} environments={environments} />
     </header>
   )
@@ -336,11 +343,18 @@ function Autosave() {
   return null
 }
 
-/** The selected block's details (full settings arrive with the inspectors), or the workflow's problems. */
-function SidePanel() {
+const SIDE_TABS: { value: SideTab; label: string }[] = [
+  { value: 'problems', label: 'Problems' },
+  { value: 'releases', label: 'Releases' },
+  { value: 'settings', label: 'Settings' },
+]
+
+/** The selected block's inspector or, with nothing selected, the workflow's problems, releases and settings. */
+function SidePanel({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean }) {
   const selected = useEditor((s) => s.selected)
   const definition = useEditor((s) => s.definition)
   const diagnostics = useEditor((s) => s.diagnostics)
+  const tab = useEditor((s) => s.sideTab)
   const block = definition.blocks.find((b) => b.name === selected)
 
   return (
@@ -350,7 +364,16 @@ function SidePanel() {
       className="nokey flex w-[26rem] shrink-0 flex-col overflow-y-auto border-l border-border bg-surface"
       data-testid="side-panel"
     >
-      {block ? <Inspector key={block.name} name={block.name} /> : <Problems diagnostics={diagnostics} />}
+      {block ? (
+        <Inspector key={block.name} name={block.name} />
+      ) : (
+        <div className="flex min-h-0 flex-col p-4">
+          <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
+          {tab === 'problems' && <Problems diagnostics={diagnostics} />}
+          {tab === 'releases' && <ReleasesTab workflow={workflow} canEdit={canEdit} />}
+          {tab === 'settings' && <WorkflowSettingsTab workflow={workflow} canEdit={canEdit} />}
+        </div>
+      )}
     </aside>
   )
 }
@@ -358,8 +381,7 @@ function SidePanel() {
 function Problems({ diagnostics }: { diagnostics: Diagnostic[] }) {
   const errors = diagnostics.filter((d) => d.severity === 'error').length
   return (
-    <div className="flex min-h-0 flex-col p-4">
-      <h2 className="mb-1 font-semibold">Problems</h2>
+    <div className="flex min-h-0 flex-col">
       <p className="mb-3 text-xs text-muted">
         {errors
           ? `${errors} error${errors === 1 ? '' : 's'} to fix before this workflow can run.`

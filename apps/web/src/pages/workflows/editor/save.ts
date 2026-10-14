@@ -16,7 +16,7 @@ export async function saveDraftNow(): Promise<void> {
       revision: state.revision,
       definition: snapshot,
     })
-    useEditor.getState().saved(result.revision, json)
+    useEditor.getState().saved(result.revision, json, result.draftHash)
   } catch (err) {
     if (err instanceof TRPCClientError && err.data?.code === 'CONFLICT') useEditor.getState().conflict()
     else useEditor.getState().failed(errorMessage(err))
