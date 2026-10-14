@@ -43,6 +43,13 @@
       "when": 1791965516491,
       "tag": "0005_run_gates",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791966063569,
+      "tag": "0006_api_keys",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { blockRunPayloads, blockRuns, type Db, type WorkflowRun, workflowRuns } from '@ow/db'
+import { blockRunPayloads, blockRuns, type Db, type WorkflowRun, workflowRuns, workflows } from '@ow/db'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { BlockResult, EngineError, FinalBlockStatus } from './types'
 
@@ -10,10 +10,14 @@ export const RUNS_QUEUED_CHANNEL = 'ow_runs_queued'
 export const RUN_FINISHED_CHANNEL = 'ow_run_finished'
 export const RUN_EVENTS_CHANNEL = 'ow_run_events'
 
-/** A status change, as published on `RUN_EVENTS_CHANNEL`. Sent when the change commits. */
+/**
+ * A change, as published on `RUN_EVENTS_CHANNEL` when it commits: a run or block status, or `response` once the
+ * run's reply is recorded (what a sync webhook waits for).
+ */
 export type RunEvent =
   | { runId: string; type: 'run'; status: string }
   | { runId: string; type: 'block'; key: string; status: string; attempt: number; port: string | null }
+  | { runId: string; type: 'response' }
 
 /** Publishes an event when the surrounding transaction commits. */
 export function notifyRunEvent(db: Executor, event: RunEvent) {
@@ -117,9 +121,7 @@ export async function claimRuns(db: Db, workerId: string, limit: number, leaseMs
         ]),
       ),
     ].sort()
-    for (const key of gateKeys) {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ow-run-gate:${key}`}, 0))`)
-    }
+    for (const key of gateKeys) await lockGate(tx, key)
 
     const claims: Claim[] = []
     for (const c of candidates) {
@@ -156,6 +158,82 @@ interface Candidate extends Record<string, unknown> {
   trigger_id: string | null
   max_concurrent_runs: number | null
   serial: boolean
+}
+
+/** Takes a concurrency gate's lock (`workflow:<id>` or `trigger:<id>`) until the transaction ends. */
+function lockGate(tx: Executor, key: string) {
+  return tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ow-run-gate:${key}`}, 0))`)
+}
+
+export interface StartedRun {
+  run: WorkflowRun
+  /** Set when the run was claimed for the caller, who must now execute it. */
+  claim: Claim | null
+  /** The `idempotencyKey` was used before: `run` is that earlier run, and nothing was inserted. */
+  replayed: boolean
+}
+
+/**
+ * Inserts a run. With `claimAs`, the run is claimed for the caller in the same transaction (a sync webhook executes
+ * it in the API process), unless its workflow is at `max_concurrent_runs`: then it's queued for the workers like any
+ * other run. A run with an `idempotencyKey` the workflow already saw isn't inserted; the earlier run comes back
+ * with `replayed`.
+ */
+export async function startRun(
+  db: Db,
+  values: typeof workflowRuns.$inferInsert,
+  opts: { claimAs?: { workerId: string; leaseMs: number } } = {},
+): Promise<StartedRun> {
+  return db.transaction(async (tx) => {
+    let claim = opts.claimAs
+    if (claim) {
+      const [workflow] = await tx
+        .select({ limit: workflows.maxConcurrentRuns })
+        .from(workflows)
+        .where(eq(workflows.id, values.workflowId))
+      if (workflow?.limit != null) {
+        await lockGate(tx, `workflow:${values.workflowId}`)
+        const [running] = await tx.execute<{ n: number }>(sql`
+          select count(*)::int as n from workflow_runs
+          where workflow_id = ${values.workflowId} and status = 'running'`)
+        if (running!.n >= workflow.limit) claim = undefined
+      }
+    }
+    const [run] = await tx
+      .insert(workflowRuns)
+      .values({
+        ...values,
+        ...(claim
+          ? {
+              status: 'running',
+              leaseOwner: claim.workerId,
+              leaseExpiresAt: sql`now() + make_interval(secs => ${claim.leaseMs / 1000})`,
+              epoch: 1,
+              startedAt: sql`now()`,
+            }
+          : { status: 'queued' }),
+      })
+      .onConflictDoNothing({
+        target: [workflowRuns.workflowId, workflowRuns.idempotencyKey],
+        where: sql`${workflowRuns.idempotencyKey} is not null`,
+      })
+      .returning()
+    if (!run) {
+      const [earlier] = await tx
+        .select()
+        .from(workflowRuns)
+        .where(
+          and(
+            eq(workflowRuns.workflowId, values.workflowId),
+            eq(workflowRuns.idempotencyKey, values.idempotencyKey!),
+          ),
+        )
+      return { run: earlier!, claim: null, replayed: true }
+    }
+    if (claim) await notifyRunEvent(tx, { runId: run.id, type: 'run', status: 'running' })
+    else await notify(tx, RUNS_QUEUED_CHANNEL)
+    return { run, claim: claim ? { runId: run.id, epoch: run.epoch } : null, replayed: false }
+  })
 }
 
 /** Extends a lease. False means another worker owns the run now: stop working on it. */

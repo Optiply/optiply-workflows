@@ -156,7 +156,11 @@ describe('dispatcher', () => {
       const mine = events
         .filter((e) => e.runId === run.id)
         .map((e) =>
-          e.type === 'run' ? `run ${e.status}` : `${e.key} ${e.status}${e.port ? ` ${e.port}` : ''}`,
+          e.type === 'run'
+            ? `run ${e.status}`
+            : e.type === 'block'
+              ? `${e.key} ${e.status}${e.port ? ` ${e.port}` : ''}`
+              : e.type,
         )
       expect(mine[0]).toBe('run running')
       expect(mine.at(-1)).toBe('run succeeded')

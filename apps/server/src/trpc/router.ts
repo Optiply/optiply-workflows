@@ -1,6 +1,7 @@
 import { environments } from '@ow/db'
 import { asc, desc } from 'drizzle-orm'
 import { authedProcedure, publicProcedure, router } from './init'
+import { apiKeysRouter } from './routers/api-keys'
 import { auditRouter } from './routers/audit'
 import { configVarsRouter } from './routers/config-vars'
 import { foldersRouter } from './routers/folders'
@@ -40,6 +41,7 @@ export const appRouter = router({
   configVars: configVarsRouter,
   workflows: workflowsRouter,
   releases: releasesRouter,
+  apiKeys: apiKeysRouter,
 })
 
 export type AppRouter = typeof appRouter

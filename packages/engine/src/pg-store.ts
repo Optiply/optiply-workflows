@@ -35,6 +35,7 @@ export class PgRunStore implements RunStore {
   constructor(
     private readonly db: Db,
     private readonly claim: Claim,
+    private readonly hooks: { onResponse?: (response: RunResponse) => void } = {},
   ) {}
 
   async blockStarted(key: string, attempt: number, startedAt: Date) {
@@ -79,7 +80,7 @@ export class PgRunStore implements RunStore {
   }
 
   async blockFinished(result: BlockResult, extra?: { response?: RunResponse }) {
-    await this.fenced(async (tx) => {
+    const responded = await this.fenced(async (tx) => {
       const values = {
         status: result.status,
         attempt: result.attempt,
@@ -99,7 +100,7 @@ export class PgRunStore implements RunStore {
           setWhere: notInArray(blockRuns.status, FINAL),
         })
         .returning({ id: blockRuns.id })
-      if (!row) return // Already committed.
+      if (!row) return false // Already committed.
       await notifyRunEvent(tx, {
         runId: this.claim.runId,
         type: 'block',
@@ -117,13 +118,18 @@ export class PgRunStore implements RunStore {
             set: { data: result.data, sizeBytes: result.sizeBytes },
           })
       }
-      if (extra?.response) {
-        await tx
-          .update(workflowRuns)
-          .set({ response: extra.response as unknown as Record<string, unknown> })
-          .where(and(eq(workflowRuns.id, this.claim.runId), isNull(workflowRuns.response)))
-      }
+      if (!extra?.response) return false
+      const recorded = await tx
+        .update(workflowRuns)
+        .set({ response: extra.response as unknown as Record<string, unknown> })
+        .where(and(eq(workflowRuns.id, this.claim.runId), isNull(workflowRuns.response)))
+        .returning({ id: workflowRuns.id })
+      if (!recorded.length) return false
+      // A sync webhook waiting on another process replies as soon as this commits.
+      await notifyRunEvent(tx, { runId: this.claim.runId, type: 'response' })
+      return true
     })
+    if (responded && extra?.response) this.hooks.onResponse?.(extra.response)
   }
 
   log(entry: LogEntry) {

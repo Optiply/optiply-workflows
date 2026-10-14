@@ -43,6 +43,8 @@ const ConfigSchema = z
     ENCRYPTION_KEY_CURRENT: z.string().optional(),
     /** Workflow runs one worker process executes at once. */
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
+    /** Sync webhook runs one API process executes itself at once; more go to the workers. 0 sends all of them. */
+    WEBHOOK_INLINE_CONCURRENCY: z.coerce.number().int().min(0).max(100).default(8),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

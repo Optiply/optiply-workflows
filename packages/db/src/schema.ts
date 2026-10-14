@@ -253,6 +253,38 @@ export const configVarValues = pgTable(
   ],
 )
 
+// ── API keys ────────────────────────────────────────────────────────────────
+
+/**
+ * Keys for calling webhooks (and reading the runs they start) from other systems. Only the sha256 of a key is
+ * stored; the key itself is shown once, when it's created. A key can be limited to some workflows and some
+ * environments (null = all).
+ */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: id(),
+    name: text().notNull(),
+    /** `ow_` plus the key's first 8 characters, to tell keys apart. */
+    prefix: text().notNull(),
+    /** sha256 hex of the key. */
+    hash: text().notNull(),
+    workflowIds: uuid().array(),
+    environmentIds: uuid().array(),
+    expiresAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    /** Updated at most once a minute. */
+    lastUsedAt: timestamp({ withTimezone: true }),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('api_keys_hash_uq').on(t.hash),
+    check('api_keys_hash_ck', sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Workflows ───────────────────────────────────────────────────────────────
 
 export const workflows = pgTable(
@@ -449,6 +481,8 @@ export const workflowRuns = pgTable(
     /** The editor's "Run block": only these blocks (and ancestors without a seeded result) run. Null = all. */
     targetBlocks: text().array(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    /** The API key a webhook call presented. */
+    apiKeyId: uuid().references(() => apiKeys.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     startedAt: timestamp({ withTimezone: true }),
     finishedAt: timestamp({ withTimezone: true }),
@@ -613,6 +647,7 @@ export type WorkflowDraftSnapshot = typeof workflowDraftSnapshots.$inferSelect
 export type WorkflowRelease = typeof workflowReleases.$inferSelect
 export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
+export type ApiKey = typeof apiKeys.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect

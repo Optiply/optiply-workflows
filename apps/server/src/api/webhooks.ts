@@ -1,0 +1,159 @@
+import type { Db } from '@ow/db'
+import { WEBHOOK_METHODS } from '@ow/definition'
+import type { InlineRunner } from '@ow/engine'
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
+import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
+import type { RunEventHub } from '../services/run-events'
+import {
+  requireConfiguredResources,
+  runHeaders,
+  Signal,
+  sendRunReply,
+  type WebhookTarget,
+  waitForReply,
+  webhookByAlias,
+  webhookBySlug,
+  webhookEnvironment,
+} from '../services/webhooks'
+import { RunRequestError } from '../services/workflow-runs'
+
+const MAX_IDEMPOTENCY_KEY = 255
+
+/**
+ * Webhooks: other systems start a workflow's live release over HTTP.
+ *
+ * - `/api/v1/workflows/<slug>/webhook`, and `/api/v1/hooks/<alias>` when the webhook has an alias (`:params` land in
+ *   `startTrigger.pathParams`). The methods the webhook allows (POST by default); others get 405.
+ * - An API key in `X-Api-Key` or `Authorization: Bearer`; that header never reaches the run. Keys can be limited to
+ *   workflows and environments.
+ * - `?environment=<slug>` picks the environment (default: the default one); other query parameters arrive as
+ *   `startTrigger.urlParams`, the body as `startTrigger.data` (JSON, a form as an object, anything else as text) and
+ *   the headers as `startTrigger.headers`.
+ * - `Idempotency-Key`: a repeat gets the same run (and its reply) instead of a new one, marked
+ *   `Idempotent-Replayed: true`.
+ * - Sync by default: the run executes in this process when a slot is free (else on a worker) and the call waits up to
+ *   the webhook's `syncTimeoutMs` for the reply (see `sendRunReply`); after that, or with `Prefer: respond-async`,
+ *   the answer is `202 { runId, status }` with the run's URL in `Location`. `X-Run-Id` is on every answer.
+ */
+export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; runner: InlineRunner }> = async (
+  app,
+  { db, events, runner },
+) => {
+  // Bodies: JSON (an empty one is null), forms as objects, anything else as text.
+  app.removeContentTypeParser(['application/json', 'text/plain'])
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+    const text = String(body)
+    if (!text.trim()) return done(null, null)
+    try {
+      done(null, JSON.parse(text))
+    } catch {
+      done(new RunRequestError(400, 'invalid_request', 'The body is not valid JSON'), undefined)
+    }
+  })
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) =>
+    done(null, Object.fromEntries(new URLSearchParams(String(body)))),
+  )
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, String(body)))
+
+  app.setErrorHandler((err, _req, reply) => {
+    if (err instanceof RunRequestError) {
+      return reply.code(err.status).send({ error: { code: err.code, message: err.message } })
+    }
+    const status = (err as { statusCode?: number }).statusCode
+    if (status && status >= 400 && status < 500) {
+      return reply.code(status).send({ error: { code: 'invalid_request', message: (err as Error).message } })
+    }
+    app.log.error({ err }, 'webhook error')
+    return reply.code(500).send({ error: { code: 'internal', message: 'Something went wrong' } })
+  })
+
+  async function handle(req: FastifyRequest, reply: FastifyReply, find: () => Promise<WebhookTarget>) {
+    const presented = presentedApiKey(req.headers)
+    if (!presented) {
+      throw new RunRequestError(401, 'unauthorized', 'Send an API key in the X-Api-Key header')
+    }
+    const key = await authenticateApiKey(db, presented.key)
+    if (!key) throw new RunRequestError(401, 'unauthorized', 'This API key is unknown, revoked or expired')
+
+    const { workflow, trigger, release, webhook, pathParams } = await find()
+    if (!webhook.methods.includes(req.method as (typeof WEBHOOK_METHODS)[number])) {
+      reply.header('allow', webhook.methods.join(', '))
+      throw new RunRequestError(
+        405,
+        'method_not_allowed',
+        `This webhook accepts ${webhook.methods.join(', ')}`,
+      )
+    }
+    const { environment: envSlug, ...urlParams } = (req.query ?? {}) as Record<string, string | string[]>
+    const environment = await webhookEnvironment(db, typeof envSlug === 'string' ? envSlug : undefined)
+    if (!apiKeyAllows(key, workflow.id, environment.id)) {
+      throw new RunRequestError(
+        403,
+        'forbidden',
+        `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
+      )
+    }
+    await requireConfiguredResources(db, release, environment)
+
+    const idempotencyKey = req.headers['idempotency-key']
+    if (typeof idempotencyKey === 'string' && idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
+      throw new RunRequestError(
+        400,
+        'invalid_request',
+        `Idempotency-Key is longer than ${MAX_IDEMPOTENCY_KEY}`,
+      )
+    }
+    const respondAsync =
+      /\brespond-async\b/i.test(String(req.headers.prefer ?? '')) || webhook.syncTimeoutMs === 0
+    const signal = new Signal()
+    const started = await runner.start(
+      {
+        workflowId: workflow.id,
+        releaseId: release.id,
+        environmentId: environment.id,
+        triggerType: 'webhook',
+        triggerId: trigger.id,
+        apiKeyId: key.id,
+        idempotencyKey: typeof idempotencyKey === 'string' && idempotencyKey ? idempotencyKey : null,
+        input: {
+          data: req.body ?? null,
+          headers: runHeaders(req.headers, presented.source),
+          pathParams,
+          urlParams,
+        },
+      },
+      { onResponse: signal.fire, onDone: signal.fire },
+    )
+    const { run, replayed } = started
+    if (replayed) reply.header('idempotent-replayed', 'true')
+
+    const answered = respondAsync
+      ? null
+      : await waitForReply(db, events, run.id, webhook.syncTimeoutMs, signal)
+    if (answered) return sendRunReply(reply, answered)
+    reply.header('x-run-id', run.id).header('location', `/api/v1/runs/${run.id}`)
+    return reply.code(202).send({ runId: run.id, status: run.status })
+  }
+
+  app.route({
+    method: [...WEBHOOK_METHODS],
+    url: '/workflows/:slug/webhook',
+    handler: (req, reply) =>
+      handle(req, reply, () => webhookBySlug(db, (req.params as { slug: string }).slug)),
+  })
+
+  app.route({
+    method: [...WEBHOOK_METHODS],
+    url: '/hooks/*',
+    handler: (req, reply) =>
+      handle(req, reply, () => {
+        let path: string[]
+        try {
+          path = (req.params as { '*': string })['*'].split('/').map(decodeURIComponent)
+        } catch {
+          throw new RunRequestError(400, 'invalid_request', 'The URL has a malformed escape')
+        }
+        return webhookByAlias(db, path)
+      }),
+  })
+}
