@@ -8,7 +8,7 @@ import { z } from 'zod'
  * Optional settings are stored sparsely; `resolveBlockSettings` fills in the defaults at run time.
  *
  * M2 covers the headless block types. Loop, Function, Workflow, Wait, User Task and the global error handler
- * arrive in M5; webhook aliases and schedule parsing are completed in M4.
+ * arrive in M5. Triggers (webhook and schedules) only act on the live release (M4).
  */
 
 export const SCHEMA_VERSION = 1
@@ -160,27 +160,49 @@ export const workflowSettingsSchema = z.strictObject({
   timeoutMs: z.number().int().min(1000).max(MAX_RUN_TIMEOUT_MS).optional(),
 })
 
-/** First cut; M4 adds webhook aliases with `:params`, cron parsing and per-trigger options. */
+export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
+export const DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS = 30_000
+export const MAX_WEBHOOK_SYNC_TIMEOUT_MS = 5 * 60_000
+export const MIN_SCHEDULE_INTERVAL_MS = 60_000
+
+/**
+ * The live release's webhook: `/api/v1/workflows/<slug>/webhook`, plus `/api/v1/hooks/<alias>` when an alias is
+ * set. Values people type (the alias) are checked by the validator rather than the schema, so a draft with a
+ * half-typed one still saves.
+ */
+export const webhookTriggerSchema = z.strictObject({
+  enabled: z.boolean(),
+  /** Path segments separated by `/`; a segment `:name` captures `startTrigger.pathParams.name`. */
+  alias: z.string().max(200).optional(),
+  /** Defaults to `['POST']`. */
+  methods: z.array(z.enum(WEBHOOK_METHODS)).min(1).max(WEBHOOK_METHODS.length).optional(),
+  /** How long a call waits for the Response block before answering `202 { runId }`. Default 30 s. */
+  syncTimeoutMs: z.number().int().min(0).max(MAX_WEBHOOK_SYNC_TIMEOUT_MS).optional(),
+})
+
+/**
+ * A schedule of the live release: a cron expression on a time zone's wall clock, or a fixed interval (exactly one,
+ * checked by the validator). Runs start in `environment` (default: the default environment).
+ */
+export const scheduleTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  cron: z.string().max(200).optional(),
+  intervalMs: z.number().int().positive().optional(),
+  /** IANA zone for cron schedules; defaults to Europe/Amsterdam. */
+  timezone: z.string().max(64).optional(),
+  /**
+   * When the previous run of this schedule is still going: `skip` this fire (default), `queue` it to start when the
+   * previous one ends, or `allow` both to run at once.
+   */
+  overlap: z.enum(['skip', 'queue', 'allow']).optional(),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+})
+
 export const triggersSchema = z.strictObject({
-  webhook: z.strictObject({ enabled: z.boolean() }).optional(),
-  schedules: z
-    .array(
-      z
-        .strictObject({
-          name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
-          enabled: z.boolean(),
-          cron: z.string().optional(),
-          intervalMs: z.number().int().min(60_000).optional(),
-          /** IANA zone; defaults to Europe/Amsterdam. */
-          timezone: z.string().optional(),
-          overlap: z.enum(['skip', 'queue', 'allow']).optional(),
-        })
-        .refine((s) => (s.cron === undefined) !== (s.intervalMs === undefined), {
-          message: 'Set either cron or intervalMs',
-        }),
-    )
-    .max(20)
-    .optional(),
+  webhook: webhookTriggerSchema.optional(),
+  schedules: z.array(scheduleTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -204,6 +226,9 @@ export type BlockOf<T extends BlockType> = Extract<Block, { type: T }>
 export type Edge = z.output<typeof edgeSchema>
 export type BlockSettings = z.output<typeof blockSettingsSchema>
 export type RetrySettings = z.output<typeof retrySettingsSchema>
+export type WebhookTrigger = z.output<typeof webhookTriggerSchema>
+export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
+export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 
 export interface ResolvedBlockSettings {
   timeoutMs: number
