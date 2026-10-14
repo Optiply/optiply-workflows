@@ -1,5 +1,17 @@
-import { permissions, type Workflow, workflows } from '@ow/db'
-import { validateDefinition, type WorkflowDefinition, workflowDefinitionSchema } from '@ow/definition'
+import {
+  environments,
+  permissions,
+  type Workflow,
+  workflowReleases,
+  workflows,
+  workflowTriggers,
+} from '@ow/db'
+import {
+  definitionHash,
+  validateDefinition,
+  type WorkflowDefinition,
+  workflowDefinitionSchema,
+} from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -27,7 +39,7 @@ const NEW_DEFINITION: WorkflowDefinition = {
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /** The workflow and the caller's access; workflows the caller can't see are NOT_FOUND. */
-async function visibleWorkflow(
+export async function visibleWorkflow(
   ctx: AuthedContext,
   id: string,
 ): Promise<{ access: Access; workflow: Workflow }> {
@@ -46,6 +58,7 @@ const summary = (w: Workflow, access: Access) => ({
   description: w.description,
   folderId: w.folderId,
   liveReleaseId: w.liveReleaseId,
+  maxConcurrentRuns: w.maxConcurrentRuns,
   updatedAt: w.updatedAt,
   level: access.workflowLevel(w)!,
 })
@@ -57,15 +70,53 @@ export const workflowsRouter = router({
     return rows.filter((w) => access.workflowLevel(w) !== null).map((w) => summary(w, access))
   }),
 
-  /** The workflow with its draft, and the draft's diagnostics (drafts may be saved while still invalid). */
+  /**
+   * The workflow with its draft, the draft's diagnostics (drafts may be saved while still invalid), and the live
+   * release. `draftHash` equals the live release's `definitionHash` when the draft has no unpublished changes.
+   */
   get: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
+    const [live] = workflow.liveReleaseId
+      ? await ctx.db
+          .select({
+            id: workflowReleases.id,
+            version: workflowReleases.version,
+            definitionHash: workflowReleases.definitionHash,
+            createdAt: workflowReleases.createdAt,
+          })
+          .from(workflowReleases)
+          .where(eq(workflowReleases.id, workflow.liveReleaseId))
+      : []
     return {
       ...summary(workflow, access),
       draftDefinition: workflow.draftDefinition,
       draftRevision: workflow.draftRevision,
+      draftHash: await definitionHash(workflow.draftDefinition),
       diagnostics: validateDefinition(workflow.draftDefinition).diagnostics,
+      liveRelease: live ?? null,
     }
+  }),
+
+  /** The live release's triggers as projected for the scheduler and webhooks, with their next fire times. */
+  triggers: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
+    const { workflow } = await visibleWorkflow(ctx, input.id)
+    const rows = await ctx.db
+      .select({ trigger: workflowTriggers, environment: environments.slug })
+      .from(workflowTriggers)
+      .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
+      .where(eq(workflowTriggers.workflowId, workflow.id))
+      .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
+    return rows.map(({ trigger, environment }) => ({
+      id: trigger.id,
+      kind: trigger.kind,
+      name: trigger.name,
+      enabled: trigger.enabled,
+      config: trigger.config,
+      environment,
+      releaseId: trigger.releaseId,
+      nextFireAt: trigger.nextFireAt,
+      lastFiredAt: trigger.lastFiredAt,
+    }))
   }),
 
   create: authedProcedure
@@ -101,8 +152,17 @@ export const workflowsRouter = router({
       return summary(workflow!, access)
     }),
 
+  /** `maxConcurrentRuns` caps the workflow's runs executing at once (null = no limit); it isn't versioned. */
   update: authedProcedure
-    .input(z.object({ id: Id, name: Name.optional(), description: Description, folderId: Id.nullish() }))
+    .input(
+      z.object({
+        id: Id,
+        name: Name.optional(),
+        description: Description,
+        folderId: Id.nullish(),
+        maxConcurrentRuns: z.number().int().min(1).max(1000).nullish(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
@@ -138,7 +198,12 @@ export const workflowsRouter = router({
           message: `Someone else saved this workflow since revision ${input.revision}; reload to get their changes`,
         })
       }
-      return { revision: saved.revision, diagnostics: validateDefinition(parsed.data).diagnostics }
+      return {
+        revision: saved.revision,
+        /** Compared with the live release's hash to show unpublished changes. */
+        draftHash: await definitionHash(parsed.data),
+        diagnostics: validateDefinition(parsed.data).diagnostics,
+      }
     }),
 
   /** Deletes the workflow with its releases and run history. */

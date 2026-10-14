@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { Loader2 } from 'lucide-react'
-import type { ComponentProps, ReactNode } from 'react'
+import { Check, Copy, Loader2, X } from 'lucide-react'
+import { type ComponentProps, type ReactNode, useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
@@ -258,5 +258,98 @@ export function Tabs<T extends string>({
         </button>
       ))}
     </div>
+  )
+}
+
+/** A modal dialog: a centred card over a dimmed page. Escape or a click outside closes it. */
+export function Dialog({
+  title,
+  onClose,
+  children,
+  footer,
+  className,
+}: {
+  title: ReactNode
+  onClose: () => void
+  children: ReactNode
+  footer?: ReactNode
+  className?: string
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[12vh]">
+      <button
+        type="button"
+        aria-label="Close"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={typeof title === 'string' ? title : undefined}
+        className={cn(
+          'relative w-full max-w-lg rounded-xl border border-border bg-surface shadow-lg',
+          className,
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h2 className="font-semibold">{title}</h2>
+          <Button size="icon" variant="ghost" title="Close" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+        <div className="max-h-[65vh] overflow-y-auto px-5 py-4">{children}</div>
+        {footer && <div className="flex justify-end gap-2 border-t border-border px-5 py-3">{footer}</div>}
+      </div>
+    </div>
+  )
+}
+
+/** Copies `text` to the clipboard, confirming with a tick for a moment. */
+export function CopyButton({
+  text,
+  label = 'Copy',
+  className,
+}: {
+  text: string
+  label?: string
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [copied])
+  return (
+    <Button
+      size="icon"
+      variant="ghost"
+      title={copied ? 'Copied' : label}
+      aria-label={label}
+      className={className}
+      onClick={() => navigator.clipboard?.writeText(text).then(() => setCopied(true))}
+    >
+      {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
+    </Button>
+  )
+}
+
+/** A checkbox with its label. */
+export function Checkbox({
+  label,
+  className,
+  ...props
+}: Omit<ComponentProps<'input'>, 'type'> & { label: ReactNode }) {
+  return (
+    <label className={cn('inline-flex cursor-pointer items-center gap-2 text-sm', className)}>
+      <input type="checkbox" className="size-4 accent-accent" {...props} />
+      {label}
+    </label>
   )
 }

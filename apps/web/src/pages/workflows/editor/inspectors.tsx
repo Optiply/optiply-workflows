@@ -16,6 +16,7 @@ import { BLOCK_KINDS } from './catalog'
 import type { CodeFieldProps, FieldProblem } from './code-field'
 import { runBlock, useRun } from './run-state'
 import { updateBlock, useEditor } from './store'
+import { TriggersForm } from './triggers'
 
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('./code-field'))
@@ -217,37 +218,40 @@ function StartTriggerForm({ block, ctx }: { block: BlockOf<'startTrigger'>; ctx:
   const [text, setText] = useState(() => (stored === undefined ? '' : JSON.stringify(stored, null, 2)))
   const [invalid, setInvalid] = useState(false)
   return (
-    <EditorField
-      label="Test input"
-      hint={
-        invalid ? (
-          <span className="text-danger">Not valid JSON yet; the last valid input is kept.</span>
-        ) : (
-          'JSON the Run button sends as startTrigger.data.'
-        )
-      }
-    >
-      <Code
-        path={ctx.modelPath('testInput.json')}
-        language="json"
-        height={140}
-        value={text}
-        onChange={(next) => {
-          setText(next)
-          if (!next.trim()) {
-            setInvalid(false)
-            return updateBlock<BlockOf<'startTrigger'>>(block.name, (b) => ({ ...b, config: {} }))
-          }
-          try {
-            const testInput = JSON.parse(next)
-            setInvalid(false)
-            updateBlock<BlockOf<'startTrigger'>>(block.name, (b) => ({ ...b, config: { testInput } }))
-          } catch {
-            setInvalid(true)
-          }
-        }}
-      />
-    </EditorField>
+    <div className="flex flex-col gap-5">
+      <EditorField
+        label="Test input"
+        hint={
+          invalid ? (
+            <span className="text-danger">Not valid JSON yet; the last valid input is kept.</span>
+          ) : (
+            'JSON the Run button sends as startTrigger.data.'
+          )
+        }
+      >
+        <Code
+          path={ctx.modelPath('testInput.json')}
+          language="json"
+          height={140}
+          value={text}
+          onChange={(next) => {
+            setText(next)
+            if (!next.trim()) {
+              setInvalid(false)
+              return updateBlock<BlockOf<'startTrigger'>>(block.name, (b) => ({ ...b, config: {} }))
+            }
+            try {
+              const testInput = JSON.parse(next)
+              setInvalid(false)
+              updateBlock<BlockOf<'startTrigger'>>(block.name, (b) => ({ ...b, config: { testInput } }))
+            } catch {
+              setInvalid(true)
+            }
+          }}
+        />
+      </EditorField>
+      <TriggersForm testInput={stored} />
+    </div>
   )
 }
 

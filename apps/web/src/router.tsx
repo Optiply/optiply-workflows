@@ -16,6 +16,7 @@ import { LoginPage } from './pages/login'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
+import { ApiKeysPage } from './pages/settings/api-keys'
 import { AuditPage } from './pages/settings/audit'
 import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
@@ -122,6 +123,11 @@ const configVarsRoute = createRoute({
   path: '/config-vars',
   component: ConfigVarsPage,
 })
+const apiKeysRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/api-keys',
+  component: ApiKeysPage,
+})
 const auditRoute = createRoute({ getParentRoute: () => settingsRoute, path: '/audit', component: AuditPage })
 
 const routeTree = rootRoute.addChildren([
@@ -140,6 +146,7 @@ const routeTree = rootRoute.addChildren([
       groupDetailRoute,
       environmentsRoute,
       configVarsRoute,
+      apiKeysRoute,
       auditRoute,
     ]),
   ]),

@@ -1,4 +1,5 @@
 import {
+  type ApiKey,
   blockRunPayloads,
   blockRuns,
   type Db,
@@ -15,20 +16,34 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
+import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import { type Access, loadAccess } from '../services/permissions'
 import type { RunEventHub } from '../services/run-events'
 import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
 
 /**
  * The runs API: start a manual run and read runs, block results and logs. Signed-in users authenticate with their
- * session cookie; API keys arrive with webhooks in M4. Errors are `{ error: { code, message, details? } }`.
+ * session cookie. An API key may read one run (`GET /runs/:id`) of a workflow and environment it's allowed, which is
+ * how async webhook callers follow the run they started. Errors are `{ error: { code, message, details? } }`.
  */
 export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = async (app, { db, events }) => {
   app.decorateRequest('user', null)
+  app.decorateRequest('apiKey', null)
   app.addHook('preHandler', async (req, reply) => {
     const user = await lookupSession(db, req.cookies[SESSION_COOKIE])
-    if (!user) return sendError(reply, new RunRequestError(401, 'unauthorized', 'Not signed in'))
-    req.user = user
+    if (user) {
+      req.user = user
+      return
+    }
+    const presented = presentedApiKey(req.headers)
+    if (presented && req.method === 'GET' && req.routeOptions.url === '/api/v1/runs/:id') {
+      const key = await authenticateApiKey(db, presented.key)
+      if (key) {
+        req.apiKey = key
+        return
+      }
+    }
+    return sendError(reply, new RunRequestError(401, 'unauthorized', 'Not signed in'))
   })
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof RunRequestError) return sendError(reply, err)
@@ -209,6 +224,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       if (!closed) raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
     }
     const emit = (event: RunEvent) => {
+      if (event.type === 'response') return
       if (event.type === 'block') {
         const { key, status, attempt, port } = event
         return send('block', { key, status, attempt, port })
@@ -306,10 +322,12 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
       .innerJoin(environments, eq(environments.id, workflowRuns.environmentId))
       .where(eq(workflowRuns.id, id))
-    const access = await loadAccess(db, req.user!)
-    if (!row || access.workflowLevel(row.workflow) === null) {
-      throw new RunRequestError(404, 'not_found', 'Run not found')
-    }
+    const visible =
+      row &&
+      (req.apiKey
+        ? apiKeyAllows(req.apiKey, row.run.workflowId, row.run.environmentId)
+        : (await loadAccess(db, req.user!)).workflowLevel(row.workflow) !== null)
+    if (!row || !visible) throw new RunRequestError(404, 'not_found', 'Run not found')
     return row
   }
 
@@ -324,6 +342,8 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
 declare module 'fastify' {
   interface FastifyRequest {
     user: SessionUser | null
+    /** Set instead of `user` when an API key reads a run. */
+    apiKey: ApiKey | null
   }
 }
 
@@ -358,6 +378,7 @@ function runView(run: WorkflowRun, workflow: Workflow, environment: string) {
     error: run.error,
     recoveries: run.recoveries,
     createdBy: run.createdBy,
+    apiKeyId: run.apiKeyId,
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,

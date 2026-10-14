@@ -1,9 +1,17 @@
 import type { TemplateError } from '@ow/expressions'
 import type { z } from 'zod'
+import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
 import { isGlobalName, reservedNameReason } from './names'
-import { type Block, blockPorts, type WorkflowDefinition, workflowDefinitionSchema } from './schema'
+import {
+  type Block,
+  blockPorts,
+  MIN_SCHEDULE_INTERVAL_MS,
+  type WorkflowDefinition,
+  workflowDefinitionSchema,
+} from './schema'
+import { parseWebhookAlias } from './triggers'
 
 export type DiagnosticCode =
   | 'schema'
@@ -23,6 +31,11 @@ export type DiagnosticCode =
   | 'unknown_identifier'
   | 'unknown_resource'
   | 'invalid_query'
+  | 'invalid_alias'
+  | 'invalid_schedule'
+  | 'invalid_cron'
+  | 'invalid_timezone'
+  | 'duplicate_schedule'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -226,6 +239,8 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
     }
   })
 
+  checkTriggers(def, graph.start, report)
+
   // Queries against their connectors.
   if (options.resolveResource) {
     def.blocks.forEach((block, i) => {
@@ -238,6 +253,78 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
     definition: def,
     diagnostics,
   }
+}
+
+/** Trigger problems are pinned to the start trigger, whose inspector edits them. */
+function checkTriggers(
+  def: WorkflowDefinition,
+  start: string | undefined,
+  report: (d: Omit<Diagnostic, 'severity'>) => void,
+) {
+  const at = (path: (string | number)[]) => ({ path: ['triggers', ...path], ...(start && { block: start }) })
+  const alias = def.triggers?.webhook?.alias
+  if (alias !== undefined) {
+    const parsed = parseWebhookAlias(alias)
+    if (!parsed.ok) {
+      report({
+        code: 'invalid_alias',
+        message: parsed.error,
+        ...at(['webhook', 'alias']),
+        ...(parsed.hint && { hint: parsed.hint }),
+      })
+    }
+  }
+
+  const names = new Set<string>()
+  def.triggers?.schedules?.forEach((schedule, i) => {
+    if (names.has(schedule.name)) {
+      report({
+        code: 'duplicate_schedule',
+        message: `Another schedule is already named "${schedule.name}"`,
+        ...at(['schedules', i, 'name']),
+      })
+    }
+    names.add(schedule.name)
+
+    if ((schedule.cron === undefined) === (schedule.intervalMs === undefined)) {
+      report({
+        code: 'invalid_schedule',
+        message: `Schedule "${schedule.name}" needs either a cron expression or an interval`,
+        ...at(['schedules', i]),
+      })
+      return
+    }
+    if (schedule.intervalMs !== undefined) {
+      if (schedule.intervalMs < MIN_SCHEDULE_INTERVAL_MS) {
+        report({
+          code: 'invalid_schedule',
+          message: 'The interval must be at least 1 minute',
+          ...at(['schedules', i, 'intervalMs']),
+        })
+      }
+      return
+    }
+
+    const timezoneOk = schedule.timezone === undefined || isValidTimeZone(schedule.timezone)
+    if (!timezoneOk) {
+      report({
+        code: 'invalid_timezone',
+        message: `Unknown time zone "${schedule.timezone}"`,
+        hint: 'Use an IANA name such as Europe/Amsterdam or UTC',
+        ...at(['schedules', i, 'timezone']),
+      })
+    }
+    const cron = parseCron(schedule.cron!)
+    if (!cron.ok) {
+      report({ code: 'invalid_cron', message: cron.error, ...at(['schedules', i, 'cron']) })
+    } else if (timezoneOk && !nextCronFire(cron.cron, new Date(), schedule.timezone)) {
+      report({
+        code: 'invalid_cron',
+        message: `"${schedule.cron}" never fires`,
+        ...at(['schedules', i, 'cron']),
+      })
+    }
+  })
 }
 
 function checkQuery(

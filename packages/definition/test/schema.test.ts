@@ -67,14 +67,20 @@ describe('workflowDefinitionSchema', () => {
     expect(workflowDefinitionSchema.safeParse(withTimeout(999)).success).toBe(false)
   })
 
-  it('needs exactly one of cron or intervalMs on a schedule', () => {
+  it('leaves typed trigger values (cron, interval, alias) to the validator, so drafts with them still save', () => {
     const schedule = (s: object) =>
       wf([start], [], { triggers: { schedules: [{ name: 's', enabled: true, ...s }] } })
-    expect(workflowDefinitionSchema.safeParse(schedule({})).success).toBe(false)
-    expect(
-      workflowDefinitionSchema.safeParse(schedule({ cron: '* * * * *', intervalMs: 60_000 })).success,
-    ).toBe(false)
-    expect(workflowDefinitionSchema.safeParse(schedule({ intervalMs: 60_000 })).success).toBe(true)
+    expect(workflowDefinitionSchema.safeParse(schedule({})).success).toBe(true)
+    expect(workflowDefinitionSchema.safeParse(schedule({ cron: 'not yet', intervalMs: 1 })).success).toBe(
+      true,
+    )
+    expect(workflowDefinitionSchema.safeParse(schedule({ intervalMs: 0 })).success).toBe(false)
+    expect(workflowDefinitionSchema.safeParse(schedule({ overlap: 'sometimes' })).success).toBe(false)
+    const webhook = (w: object) => wf([start], [], { triggers: { webhook: { enabled: true, ...w } } })
+    expect(workflowDefinitionSchema.safeParse(webhook({ alias: '//' })).success).toBe(true)
+    expect(workflowDefinitionSchema.safeParse(webhook({ methods: [] })).success).toBe(false)
+    expect(workflowDefinitionSchema.safeParse(webhook({ methods: ['HEAD'] })).success).toBe(false)
+    expect(workflowDefinitionSchema.safeParse(webhook({ syncTimeoutMs: 300_001 })).success).toBe(false)
   })
 })
 

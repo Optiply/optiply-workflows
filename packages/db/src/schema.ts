@@ -253,6 +253,38 @@ export const configVarValues = pgTable(
   ],
 )
 
+// ── API keys ────────────────────────────────────────────────────────────────
+
+/**
+ * Keys for calling webhooks (and reading the runs they start) from other systems. Only the sha256 of a key is
+ * stored; the key itself is shown once, when it's created. A key can be limited to some workflows and some
+ * environments (null = all).
+ */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: id(),
+    name: text().notNull(),
+    /** `ow_` plus the key's first 8 characters, to tell keys apart. */
+    prefix: text().notNull(),
+    /** sha256 hex of the key. */
+    hash: text().notNull(),
+    workflowIds: uuid().array(),
+    environmentIds: uuid().array(),
+    expiresAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    /** Updated at most once a minute. */
+    lastUsedAt: timestamp({ withTimezone: true }),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('api_keys_hash_uq').on(t.hash),
+    check('api_keys_hash_ck', sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Workflows ───────────────────────────────────────────────────────────────
 
 export const workflows = pgTable(
@@ -339,8 +371,9 @@ export const workflowReleases = pgTable(
 export const TRIGGER_KINDS = ['webhook', 'schedule'] as const
 
 /**
- * The runtime projection of the live release's triggers, rewritten when a release goes live (M4). Schedules
- * are ticked off `nextFireAt`.
+ * The runtime projection of the live release's triggers, rewritten when a release goes live: rows are matched by
+ * kind and name, so a trigger keeps its id (and its runs' `ON CONFLICT (trigger_id, scheduled_for)` guard) across
+ * releases. Schedules are ticked off `nextFireAt`.
  */
 export const workflowTriggers = pgTable(
   'workflow_triggers',
@@ -358,12 +391,22 @@ export const workflowTriggers = pgTable(
     enabled: boolean().notNull().default(true),
     /** The trigger's settings from the definition (cron or interval, timezone, overlap). */
     config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /** Schedules: the environment their runs start in. */
+    environmentId: uuid().references(() => environments.id, { onDelete: 'cascade' }),
+    /**
+     * An enabled webhook's alias with every param as `:` (`orders/:/refunds`). Unique, so two live webhooks can't
+     * answer the same URLs.
+     */
+    aliasShape: text(),
     nextFireAt: timestamp({ withTimezone: true }),
+    /** The fire time of the schedule's latest run; interval schedules keep to its grid. */
+    lastFiredAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
+    uniqueIndex('workflow_triggers_alias_uq').on(t.aliasShape).where(sql`${t.aliasShape} is not null`),
     index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
     check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule')`),
   ],
@@ -438,6 +481,8 @@ export const workflowRuns = pgTable(
     /** The editor's "Run block": only these blocks (and ancestors without a seeded result) run. Null = all. */
     targetBlocks: text().array(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    /** The API key a webhook call presented. */
+    apiKeyId: uuid().references(() => apiKeys.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     startedAt: timestamp({ withTimezone: true }),
     finishedAt: timestamp({ withTimezone: true }),
@@ -447,6 +492,11 @@ export const workflowRuns = pgTable(
     index('workflow_runs_claim_idx').on(t.availableAt).where(sql`${t.status} in ('queued', 'waiting')`),
     index('workflow_runs_lease_idx').on(t.leaseExpiresAt).where(sql`${t.status} = 'running'`),
     index('workflow_runs_workflow_idx').on(t.workflowId, t.createdAt.desc()),
+    // Concurrency gates and schedule overlap checks count a workflow's or trigger's active runs.
+    index('workflow_runs_running_idx').on(t.workflowId).where(sql`${t.status} = 'running'`),
+    index('workflow_runs_trigger_active_idx')
+      .on(t.triggerId)
+      .where(sql`${t.triggerId} is not null and ${t.status} in ('queued', 'running', 'waiting')`),
     // Foreign keys that deletes have to check or clear (retention deletes runs in bulk).
     index('workflow_runs_parent_idx').on(t.parentRunId).where(sql`${t.parentRunId} is not null`),
     index('workflow_runs_trigger_idx').on(t.triggerId).where(sql`${t.triggerId} is not null`),
@@ -597,6 +647,7 @@ export type WorkflowDraftSnapshot = typeof workflowDraftSnapshots.$inferSelect
 export type WorkflowRelease = typeof workflowReleases.$inferSelect
 export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
+export type ApiKey = typeof apiKeys.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect

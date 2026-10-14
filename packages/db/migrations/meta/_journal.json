@@ -29,6 +29,27 @@
       "when": 1791918947369,
       "tag": "0003_run_targets",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791964871484,
+      "tag": "0004_trigger_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791965516491,
+      "tag": "0005_run_gates",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791966063569,
+      "tag": "0006_api_keys",
+      "breakpoints": true
     }
   ]
 }

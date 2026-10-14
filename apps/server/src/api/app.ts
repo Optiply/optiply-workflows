@@ -4,6 +4,7 @@ import fastifyCookie from '@fastify/cookie'
 import fastifyStatic from '@fastify/static'
 import { PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
+import { InlineRunner } from '@ow/engine'
 import { IvmRuntime } from '@ow/sandbox'
 import { type FastifyTRPCPluginOptions, fastifyTRPCPlugin } from '@trpc/server/adapters/fastify'
 import Fastify, { type FastifyBaseLogger } from 'fastify'
@@ -12,9 +13,11 @@ import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
 import { RunEventHub } from '../services/run-events'
+import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { runsApi } from './runs'
+import { webhooksApi } from './webhooks'
 
 /** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
 export async function buildApp(deps: {
@@ -31,7 +34,17 @@ export async function buildApp(deps: {
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
 
   const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
+  // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
+  const runner = new InlineRunner({
+    db,
+    pool: services.pool,
+    resources: dbResourceProvider(db, config.keyring),
+    context: dbRunContext(db, config.keyring),
+    concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
+    log: app.log.child({ component: 'inline-runner' }),
+  })
   app.addHook('onClose', async () => {
+    await runner.stop()
     await services.pool.closeAll()
     services.sandbox.dispose()
   })
@@ -47,6 +60,7 @@ export async function buildApp(deps: {
     await events?.close()
   })
   await app.register(runsApi, { prefix: '/api/v1', db, events })
+  await app.register(webhooksApi, { prefix: '/api/v1', db, events, runner })
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/api/trpc',

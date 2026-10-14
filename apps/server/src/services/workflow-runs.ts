@@ -5,6 +5,7 @@ import {
   configVarValues,
   type Db,
   environments,
+  type Resource,
   resourceConfigs,
   resources,
   type Workflow,
@@ -30,7 +31,7 @@ import { decryptForRow } from './secrets'
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 503,
     readonly code: string,
     message: string,
     readonly details?: Record<string, unknown>,
@@ -163,20 +164,8 @@ async function prepareRun(
     source = { releaseId: release!.id }
   }
 
-  const slugs = [
-    ...new Set(definition.blocks.flatMap((b) => (b.type === 'resourceQuery' ? [b.config.resource] : []))),
-  ]
-  const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
-  const bySlug = new Map(rows.map((r) => [r.slug, r]))
-
-  const validation = validateDefinition(definition, {
-    resolveResource: (slug) => {
-      const resource = bySlug.get(slug)
-      return resource ? getConnector(resource.type) : undefined
-    },
-  })
-  if (!validation.ok) {
-    const errors = validation.diagnostics.filter((d) => d.severity === 'error')
+  const { resources: rows, errors } = await checkDefinition(db, definition)
+  if (errors.length) {
     throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
       diagnostics: errors satisfies Diagnostic[],
     })
@@ -217,6 +206,28 @@ async function prepareRun(
     }
   }
   return { definition, source }
+}
+
+/**
+ * Validates a definition the way the server does before running or releasing it: the editor's checks plus each query
+ * against its resource's connector. Returns the resources it queries and the error diagnostics.
+ */
+export async function checkDefinition(
+  db: Db,
+  definition: WorkflowDefinition,
+): Promise<{ resources: Resource[]; errors: Diagnostic[] }> {
+  const slugs = [
+    ...new Set(definition.blocks.flatMap((b) => (b.type === 'resourceQuery' ? [b.config.resource] : []))),
+  ]
+  const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
+  const bySlug = new Map(rows.map((r) => [r.slug, r]))
+  const validation = validateDefinition(definition, {
+    resolveResource: (slug) => {
+      const resource = bySlug.get(slug)
+      return resource ? getConnector(resource.type) : undefined
+    },
+  })
+  return { resources: rows, errors: validation.diagnostics.filter((d) => d.severity === 'error') }
 }
 
 /** The snapshot of the current draft revision, created on first use. */
