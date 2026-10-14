@@ -174,7 +174,8 @@ export class Signal {
 }
 
 /**
- * Waits until the run has a reply or is final, for at most `timeoutMs`; returns the run, or null on timeout. Woken by
+ * Waits until the run has a reply or is final, for at most `timeoutMs`; returns the run, or null on timeout or when
+ * the run pauses (`waiting`: the caller answers 202 and reads the run later). Woken by
  * `signal` (the inline runner's hooks) and by run events from other processes; polls when there's no event hub.
  */
 export async function waitForReply(
@@ -186,7 +187,12 @@ export async function waitForReply(
 ): Promise<WorkflowRun | null> {
   const unsubscribe = events
     ? await events.subscribe(runId, (event: RunEvent) => {
-        if (event.type === 'response' || (event.type === 'run' && FINAL.has(event.status))) signal.fire()
+        if (
+          event.type === 'response' ||
+          (event.type === 'run' && (FINAL.has(event.status) || event.status === 'waiting'))
+        ) {
+          signal.fire()
+        }
       })
     : () => {}
   try {
@@ -194,6 +200,8 @@ export async function waitForReply(
     for (;;) {
       const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId))
       if (!run || run.response || FINAL.has(run.status)) return run ?? null
+      // Paused at a Wait (or a child workflow): the caller gets 202 and reads the run later.
+      if (run.status === 'waiting') return null
       const left = deadline - Date.now()
       if (left <= 0) return null
       await signal.wait(events ? left : Math.min(left, 200))

@@ -79,6 +79,36 @@ export class PgRunStore implements RunStore {
     })
   }
 
+  async blockWaiting(key: string, attempt: number, until: Date) {
+    await this.fenced(async (tx) => {
+      const values = {
+        status: 'waiting' as const,
+        attempt,
+        epoch: this.claim.epoch,
+        metadata: { until: until.toISOString() },
+      }
+      const written = await tx
+        .insert(blockRuns)
+        .values({ runId: this.claim.runId, blockKey: key, ...values, startedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [blockRuns.runId, blockRuns.blockKey],
+          set: { ...values, updatedAt: new Date() },
+          setWhere: notInArray(blockRuns.status, FINAL),
+        })
+        .returning({ id: blockRuns.id })
+      if (written.length) {
+        await notifyRunEvent(tx, {
+          runId: this.claim.runId,
+          type: 'block',
+          key,
+          status: 'waiting',
+          attempt,
+          port: null,
+        })
+      }
+    })
+  }
+
   async blockFinished(result: BlockResult, extra?: { response?: RunResponse }) {
     const responded = await this.fenced(async (tx) => {
       const values = {

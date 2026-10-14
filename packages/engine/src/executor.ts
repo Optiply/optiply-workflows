@@ -10,10 +10,19 @@ import {
 import { DEFAULT_RUN_TIMEOUT_MS, type WorkflowDefinition } from '@ow/definition'
 import { type CodeRuntime, IvmRuntime } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
-import { LeaseLostError } from './errors'
+import { LeaseLostError, RunCancelledError } from './errors'
 import { executeRun } from './orchestrator'
 import { PgRunStore } from './pg-store'
-import { type Claim, ensureDeadline, finishRun, loadCheckpoints, releaseRun, renewLease } from './queue'
+import {
+  type Claim,
+  ensureDeadline,
+  finishRun,
+  loadCheckpoints,
+  loadWaits,
+  releaseRun,
+  renewLease,
+  suspendRun,
+} from './queue'
 import type { ResourceProvider, RunInput, RunResponse } from './types'
 
 /** Run-specific values the engine can't know: config vars (secret ones decrypted) and what to scrub. */
@@ -62,8 +71,8 @@ export class RunExecutor {
   }
 
   /**
-   * Executes a claimed run until it finishes or is interrupted. `controller` aborts it (shutdown); losing the lease
-   * aborts it too. `handBack()` says whether an interrupted run goes straight back to the queue (graceful shutdown)
+   * Executes a claimed run until it finishes, pauses or is interrupted. `controller` aborts it (shutdown, or a
+   * `RunCancelledError` to cancel it); losing the lease aborts it too. `handBack()` says whether an interrupted run goes straight back to the queue (graceful shutdown)
    * or is left for the reaper (lease lost, database trouble), which counts a recovery. Never throws.
    */
   async execute(
@@ -76,9 +85,11 @@ export class RunExecutor {
         ? undefined
         : setInterval(async () => {
             try {
-              if (!(await renewLease(this.opts.db, claim, this.leaseMs))) {
+              const lease = await renewLease(this.opts.db, claim, this.leaseMs)
+              if (lease === 'lost')
                 controller.abort(new LeaseLostError(`Lost the lease on run ${claim.runId}`))
-              }
+              // Someone cancelled the run and this process missed the NOTIFY.
+              if (lease === 'cancel') controller.abort(new RunCancelledError())
             } catch (err) {
               this.log.warn({ err, runId: claim.runId }, 'lease renewal failed')
             }
@@ -100,12 +111,21 @@ export class RunExecutor {
     const { db } = this.opts
     const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, claim.runId))
     if (!run) return
+    if (run.cancelRequestedAt) {
+      // Cancelled while its previous worker held it.
+      await finishRun(db, claim, {
+        status: 'cancelled',
+        error: { code: 'cancelled', message: 'The run was cancelled' },
+      })
+      return
+    }
     const definition = await loadDefinition(db, run)
     const [env] = await db.select().from(environments).where(eq(environments.id, run.environmentId))
     const context = (await this.opts.context?.load(run)) ?? { configVars: {}, secrets: [] }
     const deadline = await ensureDeadline(db, claim, definition.settings?.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS)
     if (!deadline) return // Lost the lease already.
     const checkpoints = await loadCheckpoints(db, run.id)
+    const waits = await loadWaits(db, run.id)
 
     const store = new PgRunStore(db, claim, { onResponse: opts.onResponse })
     const sandbox = this.opts.createSandbox?.() ?? new IvmRuntime()
@@ -134,6 +154,7 @@ export class RunExecutor {
         },
         store,
         checkpoints,
+        waits,
         only: run.targetBlocks ?? undefined,
         responded: run.response !== null,
         signal,
@@ -150,6 +171,12 @@ export class RunExecutor {
       // still hold it, the lease expires and the reaper counts a recovery, so a run that keeps breaking fails.
       if (opts.handBack()) await releaseRun(db, claim).catch(() => {})
       this.log.warn({ runId: run.id, error: outcome.error }, 'run interrupted')
+      return
+    }
+    if (outcome.status === 'waiting') {
+      if (!(await suspendRun(db, claim, outcome.resumeAt!))) {
+        this.log.warn({ runId: run.id }, 'lost the lease before pausing the run')
+      }
       return
     }
     const finished = await finishRun(db, claim, { status: outcome.status, error: outcome.error })

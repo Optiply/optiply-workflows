@@ -385,7 +385,7 @@ describe('fencing', () => {
 
     for (let i = 1; i <= 3; i++) {
       await loseWorker()
-      expect(await reapExpiredLeases(db, 3)).toEqual({ requeued: [run.id], failed: [] })
+      expect(await reapExpiredLeases(db, 3)).toEqual({ requeued: [run.id], failed: [], cancelled: [] })
       expect(await getRun(db, run.id)).toMatchObject({
         status: 'queued',
         recoveries: i,
@@ -396,7 +396,7 @@ describe('fencing', () => {
     expect((await blocksOf(db, run.id)).a!.status).toBe('interrupted')
 
     await loseWorker()
-    expect(await reapExpiredLeases(db, 3)).toEqual({ requeued: [], failed: [run.id] })
+    expect(await reapExpiredLeases(db, 3)).toEqual({ requeued: [], failed: [run.id], cancelled: [] })
     const failed = await getRun(db, run.id)
     expect(failed).toMatchObject({ status: 'failed', recoveries: 3, error: { code: 'worker_lost' } })
     expect(failed.finishedAt).not.toBeNull()

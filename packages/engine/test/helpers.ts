@@ -184,3 +184,19 @@ export async function run(
   const data = (key: string) => outcome.results.get(key)?.data
   return { outcome, store, statuses, data }
 }
+
+/** A Wait of `amount` units (a template), or until a time. */
+export const wait = (name: string, amount: string, unit = 'seconds', settings?: object) => ({
+  name,
+  type: 'wait',
+  config: { kind: 'duration', amount, unit },
+  ...(settings && { settings }),
+})
+
+export const waitUntil = (name: string, until: string) => ({
+  name,
+  type: 'wait',
+  config: { kind: 'until', until },
+})
+
+export const errorTrigger = (name = 'onFailure') => ({ name, type: 'errorTrigger' })

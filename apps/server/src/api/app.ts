@@ -43,6 +43,7 @@ export async function buildApp(deps: {
     resources: dbResourceProvider(db, config.keyring),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
+    listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),
   })
   app.addHook('onClose', async () => {

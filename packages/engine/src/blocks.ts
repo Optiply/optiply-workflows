@@ -1,6 +1,6 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import type { Block, BlockOf } from '@ow/definition'
+import { type Block, type BlockOf, MAX_WAIT_MS } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
 import type { RunOptions } from '@ow/sandbox'
 import { BlockFailure } from './errors'
@@ -16,6 +16,8 @@ export interface BlockContext {
   signal: AbortSignal
   timeoutMs: number
   log: (level: LogLevel, message: string) => void
+  /** A Wait that already started waiting: when it resumes (stored, so re-running the block doesn't move it). */
+  waitingUntil?: Date
 }
 
 export interface BlockOutput {
@@ -23,6 +25,8 @@ export interface BlockOutput {
   metadata?: Record<string, unknown>
   /** Defaults to `out`. */
   port?: string
+  /** A Wait that isn't due yet: the block waits until then instead of finishing. */
+  suspendUntil?: Date
 }
 
 type Executor<T extends Block['type']> = (block: BlockOf<T>, ctx: BlockContext) => Promise<BlockOutput>
@@ -118,8 +122,48 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   loop: notYet('Loop'),
   function: notYet('Function'),
   workflow: notYet('Workflow'),
-  wait: notYet('Wait'),
-  errorTrigger: notYet('Error handler'),
+  async wait(block, ctx) {
+    const until = ctx.waitingUntil ?? (await waitUntil(block, ctx))
+    if (until.getTime() > Date.now()) return { data: null, suspendUntil: until }
+    return { data: null, metadata: { until: until.toISOString() } }
+  },
+  // The orchestrator commits the error handler's data itself when the run fails.
+  async errorTrigger() {
+    throw new BlockFailure('internal', 'The error handler only starts when the run fails')
+  },
+}
+
+const WAIT_UNIT_MS = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 } as const
+
+/** When a Wait resumes: now plus its duration, or its date and time. At most 60 days ahead. */
+async function waitUntil(block: BlockOf<'wait'>, ctx: BlockContext): Promise<Date> {
+  const evaluate = templateEvaluator(ctx)
+  const { config } = block
+  let until: Date
+  if (config.kind === 'duration') {
+    const raw = await renderTemplate(config.amount, evaluate)
+    const amount = typeof raw === 'string' && raw.trim() ? Number(raw) : raw
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+      throw new BlockFailure(
+        'invalid_wait',
+        `The duration must be a number of ${config.unit}, not ${describe(raw)}`,
+      )
+    }
+    until = new Date(Date.now() + amount * WAIT_UNIT_MS[config.unit])
+  } else {
+    const raw = await renderTemplate(config.until, evaluate)
+    until = typeof raw === 'string' || typeof raw === 'number' ? new Date(raw) : new Date(Number.NaN)
+    if (Number.isNaN(until.getTime())) {
+      throw new BlockFailure(
+        'invalid_wait',
+        `The time to resume must be a date and time, not ${describe(raw)}`,
+      )
+    }
+  }
+  if (until.getTime() - Date.now() > MAX_WAIT_MS) {
+    throw new BlockFailure('invalid_wait', 'A wait can last at most 60 days')
+  }
+  return until
 }
 
 function notYet<T extends Block['type']>(label: string): Executor<T> {

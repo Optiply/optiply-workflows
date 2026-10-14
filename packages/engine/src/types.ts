@@ -58,6 +58,11 @@ export interface RunStore {
    * transaction.
    */
   blockFinished(result: BlockResult, extra?: { response?: RunResponse }): Promise<void>
+  /**
+   * A block started waiting until `until` (a Wait). Not final: the run resumes it later, and `blockFinished`
+   * then commits its result.
+   */
+  blockWaiting(key: string, attempt: number, until: Date): Promise<void>
   /** Buffered; failures to write logs never fail the run. */
   log(entry: { blockKey: string | null; level: LogLevel; message: string }): void
 }
@@ -90,6 +95,8 @@ export interface ExecuteRunOptions {
   store: RunStore
   /** Results committed by an earlier lease; those blocks don't run again. */
   checkpoints?: readonly BlockResult[]
+  /** Wait blocks an earlier lease left waiting, with the time each resumes. */
+  waits?: ReadonlyMap<string, Date>
   /**
    * Run only these blocks (the editor's "Run block"), plus whichever of their ancestors have no checkpoint.
    * Everything else is left alone. Omit to run the whole workflow.
@@ -97,21 +104,33 @@ export interface ExecuteRunOptions {
   only?: readonly string[]
   /** A Response block already replied in an earlier lease. */
   responded?: boolean
-  /** Interrupts the run without finishing it (shutdown, lease lost); in-flight blocks re-run on resume. */
+  /**
+   * Interrupts the run without finishing it (shutdown, lease lost); in-flight blocks re-run on resume. Aborting
+   * with a `RunCancelledError` cancels the run instead: in-flight blocks are recorded as cancelled.
+   */
   signal?: AbortSignal
   /** The run fails when this passes. */
   deadline?: Date
   /** Blocks executing at once. Default 10. */
   maxConcurrency?: number
+  /** Waits due sooner than this finish in the process instead of pausing the run. Default 1 s. */
+  suspendAfterMs?: number
+  /** The error handler's time limit. Default 60 s. */
+  handlerTimeoutMs?: number
   /** Values scrubbed from logs and errors (secret config var values). */
   secrets?: readonly string[]
 }
 
 export interface RunOutcome {
-  /** `interrupted`: stopped without finishing; another lease resumes it from the checkpoints. */
-  status: 'succeeded' | 'failed' | 'interrupted'
+  /**
+   * `interrupted`: stopped without finishing; another lease resumes it from the checkpoints. `waiting`: only Wait
+   * blocks are left, so the run pauses until `resumeAt`. `cancelled`: someone cancelled it.
+   */
+  status: 'succeeded' | 'failed' | 'interrupted' | 'waiting' | 'cancelled'
   error: (EngineError & { block?: string }) | null
   /** The reply recorded during this execution, if any. */
   response: RunResponse | null
+  /** With `waiting`: when the earliest Wait is due. */
+  resumeAt?: Date
   results: ReadonlyMap<string, BlockResult>
 }

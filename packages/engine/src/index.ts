@@ -5,7 +5,7 @@ export {
   type DispatcherOptions,
   type RunContextProvider,
 } from './dispatcher'
-export { BlockFailure, LeaseLostError, toEngineError } from './errors'
+export { BlockFailure, LeaseLostError, RunCancelledError, toEngineError } from './errors'
 export { RunExecutor, type RunExecutorOptions } from './executor'
 export { InlineRunner, type InlineRunnerOptions } from './inline'
 export { MemoryRunStore, type StoreEvent } from './memory-store'
