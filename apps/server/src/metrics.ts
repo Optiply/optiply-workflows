@@ -10,7 +10,7 @@ import client from 'prom-client'
  * Prometheus metrics for one process (`/metrics`): Node's own (`ow_process_*`, `ow_nodejs_*`), what this process did
  * (HTTP requests, runs and blocks it finished, schedule fires), and gauges read from the database at scrape time
  * (runs by status, queue lag, open tasks, retention). The database gauges are the same in every process: aggregate
- * them with `max`, not `sum`.
+ * them with `max`, not `sum`. If the database can't be read, they keep their last values.
  */
 export class Metrics {
   readonly registry = new client.Registry()
@@ -72,7 +72,7 @@ export class Metrics {
     })
 
     // Read from the database when scraped: one query shared by the gauges of one scrape (prom-client collects them
-    // all at once), fresh for the next. A failure leaves them unset rather than failing the scrape.
+    // all at once), fresh for the next. A failed read keeps their last values rather than failing the scrape.
     let snapshot: Promise<Snapshot | null> | undefined
     const read = () => {
       snapshot ??= readSnapshot(db)

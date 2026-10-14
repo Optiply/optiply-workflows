@@ -108,6 +108,8 @@ Drill result on 2026-10-14: the dump (0.75 MB, 24 tables) restored with `--exit-
 
 Write down each drill (date, backup used, how long the restore took, anything that failed) so the recovery time is known rather than guessed.
 
+> **Careful with side processes in the Postgres container.** In the official image Postgres itself is the container's first process, so anything started with `docker exec -d` (a monitoring `psql \watch`, say) becomes its child once the exec's shell exits. If such a process is then killed by a signal (`pkill`), Postgres treats it as a crashed backend: it drops every connection and runs crash recovery. That happened during the session 6 check (about a second; the data recovered from the WAL, and runs carried on). Run monitors from another container (`docker compose run --rm postgres psql -h postgres …`) or let them exit on their own.
+
 ## Related
 
 - **Key rotation:** README, "Local development" (`ENCRYPTION_KEYS`, `rekey`). Run `verify-secrets` before removing an old key: it lists how many values each key version still holds.

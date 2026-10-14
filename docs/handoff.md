@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-14 (end of session 5, which built M5).
+Last updated: 2026-10-14 (end of session 6, which built M6).
 
 | | |
 |---|---|
-| **Branch** | `feat/m5-advanced-blocks`, 8 commits on top of `main`, pushed |
-| **PR** | [#6 M5: Advanced blocks](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/6), **ready for review, not merged**; CI green on every step commit (jobs: check incl. the webhook and sandbox benchmarks, e2e, docker) |
-| **`main`** | `05f360a`, the merge of [PR #5](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/5) (M4). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `feat/m6-hardening`, 10 commits on top of `main` (8 steps plus 2 small fixes), pushed |
+| **PR** | [#7 M6: Hardening](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/7), draft, every step ticked; CI green on every step commit (jobs: check incl. the webhook and sandbox benchmarks, e2e, docker) |
+| **`main`** | `6b0e9d4`, the merge of [PR #6](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/6) (M5). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -24,13 +24,14 @@ Last updated: 2026-10-14 (end of session 5, which built M5).
 | **M2 Headless engine** | ✅ On `main` (§5) |
 | **M3 Editor** | ✅ On `main` (§6) |
 | **M4 Releases & triggers** | ✅ On `main` (§7) |
-| **M5 Advanced blocks** | ✅ **Done on `feat/m5-advanced-blocks`, PR #6 ready for review.** All three done-whens proven, in tests and on Docker Compose (§8). One open issue: an intermittent isolated-vm crash (§12). |
-| **M6 Hardening** | ⏭️ **Next**, after PR #6 is merged (§13) |
-| M7–M9 | Not started |
+| **M5 Advanced blocks** | ✅ On `main` (§8) |
+| **M6 Hardening** | ✅ **Done on `feat/m6-hardening`, PR #7.** Both done-whens proven, in tests and on Docker Compose (§9). The M5 isolated-vm crash is fixed (§9, step 1). |
+| **M7 Database** | ⏭️ **Next**, after PR #7 is merged (§14) |
+| M8–M9 | Not started |
 
 **Start the next session with:**
-1. Review and merge PR #6 with a merge commit, like the others.
-2. Then start M6 on a new branch (§13, §14).
+1. Mark PR #7 ready for review, review it and merge it with a merge commit, like the others.
+2. Then start M7 on a new branch (§14, §15).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -156,6 +157,29 @@ Last updated: 2026-10-14 (end of session 5, which built M5).
 - **Server/API:** `POST /runs/:id/cancel` (200/202/409), `GET /runs/:id/children`, `GET /runs/:id/blocks/:key/iterations`; run views have `parentRunId`; iteration rows never appear in a run's block list.
 - **UI:** a function opens on the canvas (the store's `graph`); the toolbar is icon buttons keeping their `Add a … block` titles; Monaco model paths include the function (`<workflow>/<fn or _>/<block>/<field>`).
 
+### Taken in M6 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M6** (PR #7's "Defaults"):
+  - **User Task forms are fields in the block** (text, long text, number, checkbox, choice) with outcome buttons; an app-based form can come with M8.
+  - **Assignees are users (by email) and groups (by name)**, templatable; any of them can complete the task, admins always can.
+  - **BigQuery was tested against a fake API only**; a real-project check waits for a service account.
+  - **The isolated-vm crash was step 1**, timeboxed.
+- **isolated-vm:** the upstream fix (laverdet/isolated-vm#574, unreleased in 7.0.1) is applied with `pnpm patch` (`patches/isolated-vm@7.0.1.patch`), which also makes the package compile from source on install. **Drop the patch once a release (7.0.2+) has the fix.**
+- **`.pnpmfile.cjs` strips drizzle-orm's optional peers** except `postgres` and `pg`. Without it, any package bringing one of them (mysql2, `@opentelemetry/api` via prom-client) forks drizzle-orm into a second instance and the server's types break against `@ow/db`'s.
+- **Connectors:**
+  - MySQL: mysql2 server-side prepared statements, arrays expanded into lists (`IN ({{ ids }})`; empty → `NULL`), objects as JSON, `KILL QUERY` from a side connection on cancel and timeouts, `transaction_read_only` sessions, LOAD DATA LOCAL refused, TLS `require` by default (mysql2 has no `prefer`), `DATE`/`DATETIME` as stored strings, `TIMESTAMP` as UTC instants, `BIGINT` as numbers unless past 2^53. `{{ }}` values are evaluated before MySQL sees the SQL (Postgres describes first).
+  - BigQuery: the REST API with undici (**not** `@google-cloud/bigquery`: ~30 packages for four calls); service-account JWT; the key's own `token_uri` is ignored; our own job id (`ow_<uuid>`) so cancel always finds the job; `maximumBytesBilled` 10 GiB by default; labels = the resource's + `ow_source`, `ow_workflow`, `ow_run`, `ow_environment`, `ow_trigger` (or `ow_user` from the playground); null parameters are NULL STRINGs; objects JSON text.
+  - `QueryContext.labels` / `RunOptions.labels` carry who runs a query; only BigQuery uses them so far.
+- **Retention:** `RUN_RETENTION_DAYS` (default 30, `0` off); daily per 24 h from the first check, not at a fixed time of day; ≤ 5,000 rows per statement, each its own transaction; runs with an unfinished child are kept; one worker a day wins `maintenance_jobs` (an atomic upsert, no lock held while it works).
+- **User Tasks:**
+  - One `out` port: branch on `task.data.outcome` (outcome ports like Branch conditions would be more editor work).
+  - Field defaults only fill the form in; an omitted field is `null`.
+  - No due time → no expiry, but the run rechecks its task hourly as a safety net.
+  - Assignees are resolved (and fixed) when the task opens; literal ones are also checked before runs and publishing (`unknown_assignee`).
+  - Visibility: assignees and admins see and complete; people with Use on the workflow see but can't complete; anyone else gets 404.
+  - Completing locks the run row first, so a pause and an answer can't miss each other (`suspendRun` also looks for completed tasks). Runs ending any other way close their open tasks.
+- **Metrics:** `/metrics` on the API port; workers serve it (and `/health`) on `METRICS_PORT` (9464); open unless `METRICS_TOKEN` is set. Database gauges are the same in every process: dashboards use `max`.
+- **Audit export:** admins, ≤ 100,000 rows, streamed; formula-like cells get a leading `'`; exports are audited.
+
 ## 3. What M0 built (on `main`)
 
 - **Monorepo:**
@@ -273,9 +297,9 @@ Bundles: main 568 kB, editor chunk 431 kB, Monaco about 4 MB (≈1 MB gzipped) l
 
 Bundles: main 576 kB, editor chunk 458 kB.
 
-## 8. What M5 built (on `feat/m5-advanced-blocks`)
+## 8. What M5 built (on `main`)
 
-**Done-whens**, proven in tests and on the Compose stack (§9):
+**Done-whens**, proven in tests and on the Compose stack (§10):
 - **A 10k-iteration loop survives a crash:** `packages/engine/test/crash.test.ts` (a forked worker SIGKILLed a third of the way; all 10,000 results right and in order, fewer than 500 re-run). On Compose: the worker holding the lease was `docker kill`ed with 3,534 of 10,000 iterations committed; the other worker finished it (1 recovery, epoch 3), 10,000 distinct items over **10,010 executions** (only the 10 in flight re-ran), `resumed: 3534`.
 - **A Wait survives a full stack restart:** `packages/engine/test/waiting.test.ts` "survives every worker stopping…". On Compose: a run with a 90 s Wait and a 60 s run timeout paused; `docker compose down` (Postgres included) for 48 s, then `up -d`; it finished 1 s after its resume time with every block run once, and its deadline moved on by the 91 s it waited.
 - **Cancel aborts in-flight SQL and fetch:** `waiting.test.ts` "cancel" (pg_sleep gone from `pg_stat_activity`, the fetch's connection closed). On Compose: a run with `pg_sleep(120)` and a `fetch` to a slow server on the host in flight; the cancel answered 202, the run was `cancelled` 534 ms later, and at 700 ms Postgres showed no `pg_sleep` and the server had seen the request closed unanswered.
@@ -301,7 +325,7 @@ Cancel, children and iterations endpoints; child workflows checked (validator `r
 ### Step 7, `dfe5853`: UI
 The open graph in the store (`graph`, `graphOf`, `updateGraph`); `functions.tsx` (Functions tab, function settings, banner); forms for every new block and per-type settings; graph-aware completions (functions, `params`, `fetch`); the run panel's Cancel, waiting notes, iterations list and parent/child links. Found in the browser walkthrough: a cancelled run's wait stayed `waiting` in the editor (now `cancelWaitingBlocks` sends block events).
 
-### Step 8 (this commit): e2e, Compose check, docs
+### Step 8, `77faf90`: e2e, Compose check, docs
 - `apps/web/e2e/advanced.spec.ts`: a loop calling a missing function (Problems shows it, Run disabled); create the function in the Functions tab with a parameter and Monaco code; run; check the loop's sum and its iterations; see the run pause at a Wait; cancel it from the run panel.
 - `docker-compose.yml` passes `CODE_FETCH_ALLOW_PRIVATE_NETWORK` (default false).
 - README (loops, functions, child workflows, waits, the error handler, cancel; the new API routes; the sandbox bench), `architecture.md` §2.2a (every M5 rule with its tests) and §2.3, this file.
@@ -311,12 +335,56 @@ The open graph in the store (`graph`, `graphOf`, `updateGraph`); `functions.tsx`
 
 Bundles: main 576 kB, editor chunk 493 kB.
 
-## 9. How things were verified (and how to repeat it)
+## 9. What M6 built (on `feat/m6-hardening`)
+
+**Done-whens**, proven in tests and on the Compose stack (§10):
+- **Retention runs without long locks:** `packages/engine/test/retention.test.ts` deletes 40 old runs with 100,000 block rows and payloads and 2,000 logs while a second pool keeps queueing, claiming and finishing runs and a third samples `pg_locks` and `pg_stat_activity` every 10 ms: 0 lock waits, every statement ≤ 5,000 rows, longest ~25–30 ms locally (~250–340 ms on a busy CI runner; the bound is 1 s), the queue never stalled. On Compose: the same 100,000 rows deleted by the daily job in 3.5 s (longest statement 134 ms) while 4,347 runs went through the API (p50 33 ms, p99 61 ms); 1,558 samples, **0 lock waits**, oldest open transaction 103 ms.
+- **A User Task resumes its run:** `packages/engine/test/tasks-pg.test.ts` "a run waits for its task, and completing it resumes the run, even with no worker running at the time" (workers stopped, the task answered, a new worker resumes the run in < 5 s), plus `apps/web/e2e/tasks.spec.ts` through the UI. On Compose: a run waiting on its task survived `docker compose down` (Postgres included, ~20 s) and `up`; completing the task afterwards resumed it, and it succeeded **127 ms later** with the answer.
+
+### Step 1, `8d271ab`: the isolated-vm crash
+The intermittent SIGILL from M5 is isolated-vm 7.0.1's timer thread draining expired timers recursively (one stack frame per timer; every eval with a `timeout` leaves one behind until it would have fired). Reproduced every time (5,000 timers expiring together crash; 2,000 don't). Fixed upstream in laverdet/isolated-vm#574 (merged 2026-09-26, unreleased); applied with `pnpm patch`, which also makes isolated-vm compile from source (≈ 16 s here, ≈ 64 s in CI; Xcode CLT locally, `python3 make g++` in the Docker build stage). The Dockerfile drops the ~80 MB of build intermediates. Regression test `packages/sandbox/test/ivm-timers.test.ts` (a child SIGSTOPped until 20k timers expire; SIGILL unpatched). The 10k-loop crash test then passed 8/8 (was 6/8).
+
+### Step 2, `f8dde88` (+ `804f968`, formatting): MySQL
+`compileSql(…, 'mysql')` (`?`, MySQL quoting and comments, `offsets` to expand arrays), `packages/connectors/src/mysql.ts`, `@ow/connectors/testing` (a throwaway `mysql:8.4` container or `MYSQL_TEST_URL`; skipped without Docker except in CI), 24 connector tests + 4 server tests, `lib/resource-types.ts` in the web app (`isSqlType`, badges), the shared SQL settings form. Found: Node network errors carry a negative `errno`; the process list shows prepared statements with values substituted (MySQL rebuilds the text for display; `performance_schema.prepared_statements_instances` shows the `?`).
+
+### Step 3, `8f9cd7c`: BigQuery
+`compileSql(…, 'bigquery')` (`@pN`, GoogleSQL strings incl. triple-quoted/raw/bytes, `@@system` allowed), `packages/connectors/src/bigquery.ts` (REST + undici, JWT sign-in, jobs.insert + getQueryResults + jobs.cancel, typed parameters and values), a fake API (`test/bigquery-fake.ts`, 17 tests, mutation-checked), engine and playground job labels, the BigQuery settings form. Checked against Google's discovery document and the real token endpoint (a throwaway key: "Invalid grant: account not found").
+
+### Step 4, `643a50a` (+ `2339aa3`, CI headroom): retention
+`packages/engine/src/retention.ts` (`deleteOldRuns`, `claimMaintenanceJob`, `RetentionJob`), migration `0008_retention.sql` (`maintenance_jobs`, `workflow_runs_finished_idx`), `RUN_RETENTION_DAYS`. A naive single cascading DELETE was tried as a mutation: one ~300 ms transaction for these rows (it grows with the backlog), caught by the exact-count assertions.
+
+### Step 5, `fc87046`: User Tasks in the definition and engine
+The `userTask` block and its validator rules, `checkTaskSubmission`, migration `0009_user_tasks.sql`, `PgUserTasks` / `completeTask` (`packages/engine/src/tasks.ts`), `WaitState.taskId`, open tasks closed when runs end, `suspendRun` checking completed tasks. 7 Postgres tests (dispatchers polling once a minute, so a prompt resume can only come from the wake-up), mutation-checked on both wake paths.
+
+### Step 6, `cbda185`: the Inbox and the task API
+tRPC `tasks` (list, openCount, get, complete), literal assignees checked before runs and publishing (`resolveAssignee`), the Inbox (`/inbox`, sidebar badge, To do/Done, everyone's tasks for admins), the task page (form, browser-side checks, answer view), the User Task form in the editor, run-panel links. 4 server tests and a browser walkthrough.
+
+### Step 7, `666cdcb`: operations
+`apps/server/src/metrics.ts` (prom-client 15.1.3; `RunObserver` and `Scheduler.onFire` hooks in the engine), audit filters, facets and the streamed CSV export (`api/audit.ts`, `services/audit-log.ts`), `verifySecrets` + `dist/cli/verify-secrets.js`, `docs/runbooks/backup.md` with a restore drill run on Compose (§10).
+
+### Step 8 (this commit): e2e, Compose check, docs
+- `apps/web/e2e/tasks.spec.ts`: edit a User Task in the editor (autosave), run it, follow the run panel to the task, see it in the Inbox, a required field refused, answer it, and the run's next block uses the answer.
+- The Compose check of both done-whens (§10), the runbook's warning about killing side processes in the Postgres container, `architecture.md` §2.2a/§2.3/§2.5/§2.8, this file.
+
+### Totals at the end of M6
+`biome ci` is clean. Typecheck passes **9/9**. **615 tests pass** (engine 137, definition 124, connectors 104 incl. 24 MySQL and 17 BigQuery, server 95, expressions 91, crypto 25, db 20, sandbox 19), plus the two benchmarks (run on their own) and **4 Playwright e2e** (all passed with `--repeat-each=2`).
+
+Bundles: main 488 kB, editor chunk 320 kB.
+
+## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
 - **Webhook latency:** `pnpm --filter @ow/server bench:webhooks` (prints p50/p90/p99).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
-- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). All three specs passed with `--repeat-each=2`.
+- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). All four specs passed with `--repeat-each=2` (pass it to `pnpm exec playwright test` in `apps/web`: through `pnpm … e2e -- …` the flag doesn't reach Playwright).
+- **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 6** (the M6 done-whens; Node scripts `ow.mjs`, `task-setup.mjs`, `task-complete.mjs`, `load.mjs`, `cleanup.mjs` and `old-runs.sql` in the session scratchpad, not committed):
+  - The stack was rebuilt with the step 7 code (`PUBLIC_URL=http://localhost:3000 docker compose up -d --build`); migrations 0008 and 0009 applied to session 5's data. The admin password was reset with `create-admin` (`ADMIN_PASSWORD`).
+  - **User Task:** `task-setup.mjs` makes a workflow whose User Task is assigned to the admin and starts a run (→ `waiting`, task `open`); `docker compose down`, 20 s, `up -d`; `task-complete.mjs` sees the task still open and the run still waiting, completes it, and the run succeeds 127 ms later with the answer in its reply.
+  - **Retention:** `old-runs.sql` inserts 40 runs finished 40 days ago with 100,000 block rows, payloads and 2,000 logs; `load.mjs 150` starts and waits for trivial runs for 150 s; a `psql … \watch 0.1` inside the Postgres container samples waiting locks and the oldest open transaction; `maintenance_jobs.last_started_at` reset to null makes the job due. Results in §9.
+  - **Incident:** stopping that monitor with `pkill` inside the Postgres container made Postgres crash-restart (~1 s; the side process had become a child of Postgres, PID 1, and died by signal). Data recovered from the WAL; the load had already ended. Warning added to the runbook.
+  - The **restore drill** (`docs/runbooks/backup.md`): dump, restore into `ow_restore_drill`, identical counts, `verify-secrets` (right key: all decrypt; wrong key: exit 1), migrate no-op, an API on the copy signs in and lists workflows; the drill database was dropped.
+  - Afterwards the check's workflows (`approve-refund`, `ping`) were deleted with their runs, at the user's request.
 - **Docker Compose, session 5** (the M5 done-whens; Node scripts `ow.mjs`, `setup.mjs`, `check-loop.mjs`, `check-wait.mjs`, `check-cancel.mjs` in the session scratchpad, not committed):
   - A fresh stack (the session 4 volume was gone), started with `PUBLIC_URL=http://localhost:3000 CODE_FETCH_ALLOW_PRIVATE_NETWORK=true docker compose up -d --build`; admin via `create-admin` with `ADMIN_PASSWORD`; a `shop` database (with a `hits` table) and a `shop` Postgres resource (`statementTimeoutMs` 600000).
   - The three checks in §8, run as draft runs through the API (login with `POST /api/auth/local`, tRPC for setup, `/api/v1` for runs). The lease owner (`<container id>-<pid>-…`) names the container to kill.
@@ -328,29 +396,38 @@ Bundles: main 576 kB, editor chunk 493 kB.
   - **`kill -9` of a worker mid-run:** a live run of `a (3 s) → b (25 s) → c` on a worker; while `b` ran, `docker kill -s KILL` on the container holding the lease. The other worker resumed it once the 30 s lease expired; the run succeeded with 1 recovery and epoch 3; `a` ran once (not re-run), `b` re-ran (its first insert rolled back with the killed connection). Note: `docker kill` counts as a manual stop, so `restart: unless-stopped` doesn't restart the container; `docker compose up -d worker` does.
   - **1-minute cron, 2-minute run:** the `slow-cron` workflow (`insert` a hit, then `select pg_sleep(120)`, block timeout 150 s) with schedule `* * * * *`, overlap `skip`, watched for 15 minutes through the database: runs fired at 09:01, 09:04, 09:07, 09:10 and 09:13 (each 120 s; the fire at the minute a run ends is checked just before it finishes, so one starts every 3 minutes), 10 fires were logged as skipped, and a self-join on the runs' start and finish times found **0 overlapping pairs**. The first three runs failed with "statement timeout": a Postgres resource's `statementTimeoutMs` defaults to 120 s and caps the block timeout (M1); after raising it to 180 s, the next two succeeded. Then v1.0.1 turned the schedule off (its trigger kept its id, `next_fire_at` null).
 - **Bundled server without Docker:** `node --no-node-snapshot dist/main.js` with `MIGRATIONS_DIR=../../packages/db/migrations` (and `WEB_DIST_DIR=../web/dist` to serve the UI). Restart it after rebuilding the web app: `@fastify/static` lists files once at startup, and stale asset names return the SPA's HTML (a MIME-type error in the browser).
-- **Browser walkthroughs** (sessions 3–5, not committed): session 3 used puppeteer-core scripts; sessions 4 and 5 used a temporary Playwright spec reusing `e2e/global-setup.ts` with screenshots read back (session 5: 15 screenshots of every M5 form, functions, a paused run, iterations, the child link and cancel). Gotchas:
+- **Browser walkthroughs** (sessions 3–6, not committed): session 3 used puppeteer-core scripts; sessions 4–6 used a temporary Playwright spec (`e2e/zz-walkthrough.spec.ts`, deleted afterwards) reusing `e2e/global-setup.ts` with screenshots read back (session 6: the MySQL and BigQuery forms, the Inbox, the task form, the User Task form and the audit page). Gotchas:
   - Typing into Monaco races its auto-closing on slow machines: use `keyboard.insertText` (see `e2e/helpers.ts`).
   - Monaco wraps long lines on screen: rendered text contains extra line breaks.
   - Click empty canvas away from the floating toolbar (top left), controls (bottom left) and minimap (bottom right).
   - "Not published" also matches a button named "Publish": use `exact: true`.
+  - A field label containing "host" (e.g. the SSL option "…hostname") matches `getByLabel('Host')`: prefer `getByRole('textbox', { name })`. Fields inside a `Field` `<label>` take its hint into their accessible name; buttons inside one take the whole label (the label editors' "Add").
 
-## 10. Local environment quirks (this Mac)
+## 11. Local environment quirks (this Mac)
 
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`, recreated in session 5): holds the session 5 check: a `shop` database (`hits` table), the `shop` resource, draft workflows `loop-10k`, `wait-restart` and `cancel-me` (no schedules or webhooks), and admin `admin@optiply.nl` with a random password kept in the session scratchpad (reset it with `docker compose exec api node dist/cli/create-admin.js --email admin@optiply.nl --name Admin`). Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
+- **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
+- **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
+- **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 5** the Compose stack was left running (nothing scheduled; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
+- **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
-## 11. Still unverified
+## 12. Still unverified
 
 1. **Google SSO** against real Google. This needs an OAuth client with redirect URI `<PUBLIC_URL>/api/auth/oidc/callback`, plus `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` from the user.
+2. **BigQuery against a real project**: needs a service account (BigQuery Job User + Data Viewer) and a dataset. Only the token endpoint was checked live.
+3. **MySQL `verify-full` TLS** against a server with a certificate from a real or private CA (tested: `require` works, a self-signed certificate is rejected).
+4. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
 
-## 12. Known gaps and TODOs carried forward
+## 13. Known gaps and TODOs carried forward
 
-- **⚠️ Intermittent isolated-vm crash (M5, open):** on this Mac the 10k-iteration crash test passed 6 of 8 standalone runs (about 20 s each). Once, the test process died with **SIGILL**: macOS's crash report (`~/Library/Logs/DiagnosticReports/node-2026-10-14-125546.ips`) shows a stack overflow on an isolated-vm 7.0.1 thread-pool thread, with only isolated-vm frames (13 of them). Once, the first run (alongside another test file) hung for 15 minutes. Not reproduced with 30k sequential or 20-way concurrent evaluations, or 300 rounds of disposing an isolate under load; it has passed in every CI run on Linux so far. In production such a crash kills the worker, and its runs resume elsewhere. Ideas: evaluate all of an iteration's `{{ }}` in one context (a query runner makes one context per template), report upstream with a reproduction, or try a debug build of isolated-vm.
+- **isolated-vm patch:** remove `patches/isolated-vm@7.0.1.patch` (and its `patchedDependencies` entry) once a release has laverdet/isolated-vm#574; prebuilds then load again.
+- **Unexplained:** one session-5 run of the crash test hung for 15 minutes; the timer crash kills rather than hangs, so it may be unrelated. Not seen again.
 - **Engine:**
   - **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.
   - **Retry backoff sleeps in the worker**, holding a slot. Long backoffs could requeue the run with `availableAt` instead.
@@ -360,44 +437,50 @@ Bundles: main 576 kB, editor chunk 493 kB.
   - **No per-run cap on in-flight `fetch` requests** (the architecture's 50); the shared agent allows 32 connections per origin.
   - **A loop's sync workflow runner holds the worker** while its children run (it waits within the iteration timeout, default 10 s: raise it for slow children); a Workflow block pauses instead.
   - **Renaming a function parameter doesn't rewrite `params.x`** in its blocks (renaming functions and blocks does).
-  - The `suspendRun` race fix (a child ending just before its parent pauses) has no test; the window is too narrow to hit reliably.
+  - The `suspendRun` race fix for child runs (a child ending just before its parent pauses) has no test, and `PgChildRuns` doesn't lock the parent's row the way `completeTask` does, so a tiny window remains for children (tasks are covered).
   - A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails. That's expected; noted for ops docs.
 - **Webhooks:** API key only (no public or HMAC-signed webhooks, no `?api_key=` query parameter); no rate limiting; no OpenAPI document for the public REST routes yet. API keys can read single runs, not list them.
 - **Scheduler:** fires up to 5 s late (tick interval); a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
 - **Pool invalidation across processes:** there's still no `NOTIFY resource_changed`. Pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load.
 - **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
-- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has no unit tests; it's covered by the three Playwright tests and the (uncommitted) walkthroughs.
+- **Connectors (M6):** MySQL evaluates `{{ }}` before the server sees the SQL (Postgres describes first); BigQuery sends null as a NULL STRING (comparing with a number column needs a `CAST`) and objects as JSON text; no multipart REST bodies yet (planned for M6, not built); no `disablePreparedStatements`.
+- **User Tasks:** one `out` port (no per-outcome ports); the sidebar badge refreshes every 30 s; group assignees in the editor are plain inputs (problems shown under them, no `{{ }}` markers); no reminders or reassignment; tasks can't be completed over the REST API with an API key.
+- **Retention:** runs every 24 h from the first check, not at a fixed hour; migration 0008's `CREATE INDEX` isn't concurrent (fine while `workflow_runs` is small; a large production table needs `CREATE INDEX CONCURRENTLY` by hand).
+- **Metrics:** the database gauges keep their last values if a read fails; no histogram of queue wait per run, no per-connector query metrics.
+- **Audit export** stops at 100,000 rows (narrow the filters for more).
+- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has no unit tests; it's covered by the four Playwright tests and the (uncommitted) walkthroughs.
 - **Web:**
   - No toast system; `confirm()` is still used for destructive actions (the new `Dialog` could replace it).
-  - The main bundle is 576 kB; the editor and Monaco are split out, the other pages aren't.
+  - The main bundle is 488 kB; the editor and Monaco are split out, the other pages aren't.
+  - A resource's page jumps from Settings to Query after its first save. The label editors' "Add" button takes the whole field label as its accessible name.
   - The editor has no undo/redo across blocks, no copy/paste of blocks, and no "create function from selection". No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
   - The run panel's logs tab shows the first 500 lines. The resources playground still uses textareas.
 - **Editor completions** cover the latest finished run only; there's no environment choice for them.
-- **Not built yet:** MySQL, BigQuery and multipart REST bodies (M6); `oauth_tokens` (M9); retention (M6); User Tasks (M6).
+- **Not built yet:** multipart REST bodies; `oauth_tokens` (M9).
 
-## 13. Next step: M6 Hardening
+## 14. Next step: M7 Database
 
-From `architecture.md` §2.7: MySQL and BigQuery connectors, OAuth2 client-credentials (REST already has it; see whether M6 means more), retention (a daily batched delete of runs older than 30 days), an audit UI, Prometheus `/metrics`, a backup runbook, and User Tasks with an inbox. **Done when:** retention runs without long locks; a User Task resumes its run.
+From `architecture.md` §2.7: a Retool-Database clone: a managed Postgres schema per environment, a spreadsheet editor (TanStack Table or Glide Data Grid), a schema editor, CSV import and export, exposed to workflows as a built-in resource. **Done when:** create a table, import a CSV, and query it from a workflow.
 
 Already in place:
-- A User Task can reuse M5's waiting machinery: a block that parks with a `WaitState` (it could hold a task id the way a Workflow block holds `childRunId`), and something that wakes the run (`wakeParents` shows how: set `available_at` to now and NOTIFY).
-- `block_runs` and `block_run_payloads` cascade from `workflow_runs`; loops can add up to 100k rows per run, so retention should delete in batches by run.
-- The audit log already records workflow, release, run and cancel events (`recordAudit`).
+- The Postgres connector (bind parameters, `maxRows`, read-only sessions, cancel) and the resource model: a built-in resource can reuse them with a schema per environment.
+- Streaming CSV writing with formula guarding (`services/audit-log.ts`), reusable for table export.
+- The permission model (resources per environment; Use/Edit/Own) for who may read or change tables.
 
-Watch out for:
-- The isolated-vm crash (§12) before relying on long loops in production.
-- Retention must not hold long locks on `workflow_runs`, which is the queue.
+Decide with the user first:
+- Where the managed schemas live (the platform database, or a separate database/role per environment), and how much DDL the schema editor allows.
+- Which grid library (licences: TanStack Table is MIT; Glide Data Grid is MIT).
 
-## 14. How to start the next session
+## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git fetch && git status                          # PR #6 merged? Then: git switch main && git pull
-gh pr view 6                                     # ready for review → merge (merge commit), if not done yet
+git fetch && git status                          # PR #7 merged? Then: git switch main && git pull
+gh pr view 7                                     # draft → mark ready, review, merge (merge commit), if not done yet
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-corepack pnpm install
+corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m6-hardening                  # then open a draft PR after the first commit
+git switch -c feat/m7-database                   # then open a draft PR after the first commit
 ```
