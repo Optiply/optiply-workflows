@@ -119,6 +119,29 @@ describe('guessing', () => {
     expect(fromDecimalComma('-2,5')).toBe('-2.5')
   })
 
+  it('keeps codes with leading zeros, and numbers past bigint, as text', () => {
+    const guess = guessCsv(
+      'ean,postcode,big,zero,day\n0012345678905,0123,123456789012345678901,0,01-02-2026\n8712345678906,1234,5,1,02-02-2026\n',
+      {
+        complete: true,
+      },
+    )
+    expect(guess.types).toEqual(['text', 'text', 'text', 'integer', 'date'])
+  })
+
+  it('reads the first record as data when told there is no header', () => {
+    const guess = guessCsv('qty,price\n3,1.5\n', { complete: true, header: false })
+    expect(guess).toMatchObject({
+      header: ['column_1', 'column_2'],
+      names: ['column_1', 'column_2'],
+      types: ['text', 'text'],
+      rows: [
+        ['qty', 'price'],
+        ['3', '1.5'],
+      ],
+    })
+  })
+
   it('drops a record cut off at the end of a sample', () => {
     const guess = guessCsv('a,b\n1,2\n3,"unfinish')
     expect(guess.rows).toEqual([['1', '2']])

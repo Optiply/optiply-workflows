@@ -277,6 +277,28 @@ describe('reading rows', () => {
     ])
   })
 
+  it('compares JSON columns to the JSON typed into the filter', async () => {
+    const page = data(
+      await admin.query('database.rows', {
+        ...on('products'),
+        query: { filters: [{ column: 'tags', op: 'eq', value: '["t7"]' }] },
+      }),
+    )
+    expect(names(page)).toEqual(['Item 07'])
+    const not = data(
+      await admin.query('database.rows', {
+        ...on('products'),
+        query: { filters: [{ column: 'tags', op: 'neq', value: '["t7"]' }], limit: 100 },
+      }),
+    )
+    expect(names(not)).toHaveLength(31)
+    const bad = await admin.query('database.rows', {
+      ...on('products'),
+      query: { filters: [{ column: 'tags', op: 'eq', value: '[not json' }] },
+    })
+    expect(error(bad)).toMatchObject({ data: { code: 'BAD_REQUEST' } })
+  })
+
   it('treats filter values as values, never as SQL', async () => {
     const page = data(
       await admin.query('database.rows', {

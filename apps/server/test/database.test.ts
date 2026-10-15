@@ -182,6 +182,21 @@ describe('provisioning', () => {
   })
 })
 
+describe('environment names', () => {
+  it('give every environment its own schema and role, even slugs that read the same', async () => {
+    await env.db.insert(environments).values([
+      { slug: 'eu-west', name: 'EU west (dash)' },
+      { slug: 'eu_west', name: 'EU west (underscore)' },
+    ])
+    await provisionDatabases(env.db, env.config.keyring, env.databaseUrl)
+    const managed = await env.db.select().from(managedDatabases)
+    const eu = managed.filter((m) => m.schemaName.startsWith('owdb_eu_west'))
+    expect(eu).toHaveLength(2)
+    expect(new Set(eu.map((m) => m.schemaName)).size).toBe(2)
+    expect(new Set(eu.map((m) => m.roleName)).size).toBe(2)
+  })
+})
+
 describe('the platform user', () => {
   it('works without superuser, given CREATEROLE', async () => {
     const pg = await startTestDatabase()

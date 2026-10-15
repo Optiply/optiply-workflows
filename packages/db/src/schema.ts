@@ -199,16 +199,24 @@ export const resources = pgTable(
  * The managed database's home in one environment: a schema in the platform database, owned by a login role that
  * can reach nothing else. Workflows reach it through the built-in database resource, which logs in as the role.
  */
-export const managedDatabases = pgTable('managed_databases', {
-  environmentId: uuid()
-    .primaryKey()
-    .references(() => environments.id, { onDelete: 'cascade' }),
-  schemaName: text().notNull(),
-  /** Roles are shared by every database on the server, so the name carries a tag of this database's name. */
-  roleName: text().notNull(),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-})
+export const managedDatabases = pgTable(
+  'managed_databases',
+  {
+    environmentId: uuid()
+      .primaryKey()
+      .references(() => environments.id, { onDelete: 'cascade' }),
+    schemaName: text().notNull(),
+    /** Roles are shared by every database on the server, so the name carries a tag of this database's name. */
+    roleName: text().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // Two environments must never share a schema or a role.
+    uniqueIndex('managed_databases_schema_uq').on(t.schemaName),
+    uniqueIndex('managed_databases_role_uq').on(t.roleName),
+  ],
+)
 
 /** A resource's settings in one environment. No row = the resource isn't configured there. */
 export const resourceConfigs = pgTable(

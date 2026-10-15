@@ -223,11 +223,17 @@ export const databaseRouter = router({
         complete: z.boolean().default(false),
         /** Read with this delimiter instead of the guessed one. */
         delimiter: z.enum(DELIMITERS).optional(),
+        /** Whether the first row holds column names (types are guessed from the data rows only). */
+        header: z.boolean().default(true),
       }),
     )
     .mutation(({ input }) => {
       try {
-        return guessCsv(input.sample, { complete: input.complete, delimiter: input.delimiter })
+        return guessCsv(input.sample, {
+          complete: input.complete,
+          delimiter: input.delimiter,
+          header: input.header,
+        })
       } catch (err) {
         if (err instanceof CsvError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
         throw err

@@ -69,9 +69,19 @@ export async function provisionDatabases(
         .select()
         .from(managedDatabases)
         .where(eq(managedDatabases.environmentId, env.id))
-      const part = identifierPart(env.slug)
-      const schemaName = existing?.schemaName ?? `owdb_${part}`
-      const roleName = existing?.roleName ?? `owdb_${tag}_${part}`
+      let schemaName = existing?.schemaName
+      let roleName = existing?.roleName
+      if (!schemaName || !roleName) {
+        // Slugs that differ only in characters an identifier can't hold (eu-west, eu_west) would share a
+        // schema: a name already taken gets a piece of the environment's id.
+        let part = identifierPart(env.slug)
+        const taken = await tx.select().from(managedDatabases)
+        if (taken.some((m) => m.schemaName === `owdb_${part}` || m.roleName === `owdb_${tag}_${part}`)) {
+          part = `${part.slice(0, 33)}_${env.id.replaceAll('-', '').slice(-6)}`
+        }
+        schemaName = `owdb_${part}`
+        roleName = `owdb_${tag}_${part}`
+      }
       if (!existing) {
         await tx.insert(managedDatabases).values({ environmentId: env.id, schemaName, roleName })
       }
@@ -129,6 +139,15 @@ export async function provisionDatabases(
       if (publicCreate?.yes) {
         await tx.execute(sql`revoke create on schema public from public`)
         await tx.execute(sql`revoke create on schema public from ${role}`)
+        // Without owning `public`, Postgres only warns and keeps the grant: check it took.
+        const [still] = await tx.execute<{ yes: boolean }>(
+          sql`select has_schema_privilege(${roleName}, 'public', 'CREATE') as yes`,
+        )
+        if (still?.yes) {
+          throw new DatabaseSetupError(
+            `${roleName} can still create objects in the schema public. As public's owner or a superuser, run REVOKE CREATE ON SCHEMA public FROM PUBLIC, then restart.`,
+          )
+        }
       }
 
       const config = {

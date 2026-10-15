@@ -73,27 +73,32 @@ export function ImportDialog({
   const [failure, setFailure] = useState<{ message: string; problems: Problem[] } | null>(null)
   const targetTable = tables.find((t) => t.name === target)
 
-  /** Columns as the file has them, mapped onto `table` by name for appending. */
-  const initColumns = (g: Guess, withHeader: boolean, table = targetTable) => {
-    const names = withHeader ? g.names : g.header.map((_, i) => `column_${i + 1}`)
+  /** Columns as the file has them: in append mode, mapped onto `table`'s columns by name. */
+  const initColumns = (g: Guess, into = mode, table = targetTable) => {
     setColumns(
-      names.map((name, i) => ({
+      g.names.map((name, i) => ({
         include: true,
         name:
-          mode === 'append' ? (table?.columns.some((c) => c.name === name && !c.identity) ? name : '') : name,
+          into === 'append' ? (table?.columns.some((c) => c.name === name && !c.identity) ? name : '') : name,
         type: g.types[i] ?? 'text',
       })),
     )
   }
 
-  const read = async (f: File, delimiter?: Delimiter) => {
+  /** Reads the start of the file and guesses: again when the delimiter or the header setting changes. */
+  const read = async (f: File, opts: { delimiter?: Delimiter; header?: boolean } = {}) => {
     setFailure(null)
     const sample = await f.slice(0, SAMPLE_BYTES).text()
-    const g = await preview.mutateAsync({ sample, complete: f.size <= SAMPLE_BYTES, delimiter })
+    const g = await preview.mutateAsync({
+      sample,
+      complete: f.size <= SAMPLE_BYTES,
+      delimiter: opts.delimiter,
+      header: opts.header ?? header,
+    })
     setGuess(g)
     setDateOrder(g.dateOrder)
     setDecimalComma(g.decimalComma)
-    initColumns(g, header)
+    initColumns(g)
   }
 
   const chosen = columns.map((c, source) => ({ ...c, source })).filter((c) => c.include && c.name !== '')
@@ -159,7 +164,7 @@ export function ImportDialog({
     }
   }
 
-  const sampleRows = guess ? (header ? guess.rows : [guess.header, ...guess.rows]).slice(0, 5) : []
+  const sampleRows = guess ? guess.rows.slice(0, 5) : []
 
   return (
     <Dialog
@@ -215,20 +220,7 @@ export function ImportDialog({
               onChange={(e) => {
                 const next = e.target.value as 'create' | 'append'
                 setMode(next)
-                if (guess) {
-                  const names = header ? guess.names : guess.header.map((_, i) => `column_${i + 1}`)
-                  setColumns(
-                    columns.map((c, i) => ({
-                      ...c,
-                      name:
-                        next === 'create'
-                          ? names[i]!
-                          : targetTable?.columns.some((t) => t.name === names[i] && !t.identity)
-                            ? names[i]!
-                            : '',
-                    })),
-                  )
-                }
+                if (guess) initColumns(guess, next)
               }}
             >
               <option value="create">A new table</option>
@@ -255,7 +247,7 @@ export function ImportDialog({
                   if (guess)
                     initColumns(
                       guess,
-                      header,
+                      mode,
                       tables.find((t) => t.name === e.target.value),
                     )
                 }}
@@ -286,7 +278,10 @@ export function ImportDialog({
                   aria-label="Delimiter"
                   className="h-8"
                   value={guess.delimiter}
-                  onChange={(e) => file && void read(file, e.target.value as Delimiter)}
+                  onChange={(e) =>
+                    file &&
+                    void read(file, { delimiter: e.target.value as Delimiter }).catch(() => setGuess(null))
+                  }
                 >
                   {Object.entries(DELIMITER_LABELS).map(([d, label]) => (
                     <option key={d} value={d}>
@@ -300,7 +295,12 @@ export function ImportDialog({
                 checked={header}
                 onChange={(e) => {
                   setHeader(e.target.checked)
-                  initColumns(guess, e.target.checked)
+                  // The types change too: the first row is data now (or no longer).
+                  if (file) {
+                    void read(file, { delimiter: guess.delimiter, header: e.target.checked }).catch(() =>
+                      setGuess(null),
+                    )
+                  }
                 }}
               />
               <span className="flex items-center gap-2">
@@ -335,11 +335,7 @@ export function ImportDialog({
                       >
                         <div className="space-y-1.5">
                           <Checkbox
-                            label={
-                              <span className="text-xs text-muted">
-                                {header ? guess.header[i] : `Column ${i + 1}`}
-                              </span>
-                            }
+                            label={<span className="text-xs text-muted">{guess.header[i]}</span>}
                             checked={c.include}
                             onChange={(e) =>
                               setColumns(

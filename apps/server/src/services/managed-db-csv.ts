@@ -175,6 +175,17 @@ export async function importCsv(
     if (first) {
       first = false
       expected = record.fields.length
+      // A column the file doesn't have would import as all NULL: a stale or wrong spec.
+      const beyond = targets.find((t) => t.source >= record.fields.length)
+      if (beyond) {
+        throw new ImportError([
+          {
+            line: record.line,
+            column: beyond.column.name,
+            message: `takes the file's column ${beyond.source + 1}, but the file has ${record.fields.length}`,
+          },
+        ])
+      }
       if (spec.header) continue
     }
     if (record.fields.length !== expected) {

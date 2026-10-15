@@ -321,6 +321,43 @@ describe('columns', () => {
   }, 20_000)
 })
 
+describe('a shared connection', () => {
+  it("isn't thrown off by settings a playground query left behind", async () => {
+    const [db] = await env.db.select().from(resources).where(eq(resources.systemKind, 'database'))
+    // Plain SETs outlast their transaction: on every pooled connection (5), leave a wrong schema, a
+    // day-first date style and read-only transactions behind.
+    await Promise.all(
+      Array.from({ length: 10 }, () =>
+        admin.mutate('resources.run', {
+          resourceId: db!.id,
+          environmentId: production,
+          query: {
+            sql: "select set_config('search_path', 'public', false), set_config('DateStyle', 'SQL, DMY', false), set_config('default_transaction_read_only', 'on', false)",
+          },
+        }),
+      ),
+    )
+    for (let i = 0; i < 5; i++) {
+      const name = `after_set_${i}`
+      const created = await admin.mutate('database.createTable', {
+        environmentId: production,
+        name,
+        columns: [{ name: 'day', type: 'date' }],
+      })
+      expect(error(created)).toBeUndefined()
+      const row = await admin.mutate('database.insertRow', {
+        environmentId: production,
+        table: name,
+        values: { day: '2026-01-31' },
+      })
+      expect(row.body.result?.data).toMatchObject({ day: '2026-01-31' })
+    }
+    const counted = await superSql<{ n: number }[]>`
+      select count(*)::int as n from pg_tables where schemaname = 'owdb_production' and tablename like 'after_set_%'`
+    expect(counted[0]!.n).toBe(5)
+  })
+})
+
 describe('parseDefault', () => {
   it('reads defaults as Postgres prints them', () => {
     expect(parseDefault(null)).toEqual({ kind: 'none' })

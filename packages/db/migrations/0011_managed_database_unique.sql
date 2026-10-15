@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "managed_databases_schema_uq" ON "managed_databases" USING btree ("schema_name");--> statement-breakpoint
+CREATE UNIQUE INDEX "managed_databases_role_uq" ON "managed_databases" USING btree ("role_name");

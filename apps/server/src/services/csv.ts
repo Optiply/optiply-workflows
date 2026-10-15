@@ -209,6 +209,9 @@ const SLASH_DATE = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/
 const DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const INT32_MAX = 2_147_483_647n
+const INT64_MAX = 9_223_372_036_854_775_807n
+/** 0123, -007, 007.5: a number with digits after a leading zero (0, 0.5 and 0,5 are fine; dates aren't numbers). */
+const LEADING_ZERO = /^[+-]?0\d+([.,]\d+)?$/
 
 export interface CsvGuess {
   delimiter: Delimiter
@@ -230,15 +233,22 @@ export interface CsvGuess {
  */
 export function guessCsv(
   sample: string,
-  opts: { complete?: boolean; previewRows?: number; delimiter?: Delimiter } = {},
+  opts: {
+    complete?: boolean
+    previewRows?: number
+    delimiter?: Delimiter
+    /** false: the first record is data, and the columns are column_1, column_2, … */
+    header?: boolean
+  } = {},
 ): CsvGuess {
   const delimiter = opts.delimiter ?? detectDelimiter(sample)
   const parser = new CsvParser(delimiter)
   const records = parser.push(sample)
   if (opts.complete) records.push(...parser.end())
   if (!records.length) throw new CsvError('The file has no rows')
-  const header = records[0]!.fields
-  const body = records.slice(1).map((r) => r.fields)
+  const withHeader = opts.header !== false
+  const header = withHeader ? records[0]!.fields : records[0]!.fields.map((_, i) => `column_${i + 1}`)
+  const body = records.slice(withHeader ? 1 : 0).map((r) => r.fields)
   const columns = header.map((_, i) => body.map((r) => (r[i] ?? '').trim()).filter((v) => v !== ''))
   const all = columns.flat()
 
@@ -260,7 +270,11 @@ export function guessCsv(
 
   const types = columns.map((values): GuessedType => {
     if (!values.length) return 'text'
+    // Codes, not numbers: a leading zero (EANs, postcodes like 0123) would be lost, and identifiers past
+    // bigint's range wouldn't fit. Text keeps them as written.
+    if (values.some((v) => LEADING_ZERO.test(v))) return 'text'
     if (values.every((v) => INT.test(v))) {
+      if (values.some((v) => BigInt(v) > INT64_MAX || BigInt(v) < -INT64_MAX - 1n)) return 'text'
       return values.every((v) => BigInt(v) <= INT32_MAX && BigInt(v) >= -INT32_MAX - 1n)
         ? 'integer'
         : 'bigint'

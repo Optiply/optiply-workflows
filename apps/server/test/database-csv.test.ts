@@ -241,6 +241,17 @@ describe('importing', () => {
     expect(latin1.json().error.message).toMatch(/isn't UTF-8.*CSV UTF-8/)
   })
 
+  it('refuses a column the file does not have, instead of importing it as empty', async () => {
+    const res = await importCsv(
+      { mode: 'append', table: 'people', columns: [{ source: 4, name: 'name' }] },
+      'a,b\nx,y\n',
+    )
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error.problems).toEqual([
+      { line: 1, column: 'name', message: "takes the file's column 5, but the file has 2" },
+    ])
+  })
+
   it('checks the spec, the content type, sign-in and access', async () => {
     const badSpec = await importCsv(
       { mode: 'create', table: 'Bad Name', columns: [{ source: 0, name: 'a' }] },

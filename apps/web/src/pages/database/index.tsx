@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
-import { useTRPC } from '@/lib/trpc'
+import { trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import type { TableInfo } from './cells'
 import { activeFilters, FilterBar, type Selection } from './filters'
@@ -27,6 +27,8 @@ import { NewTableDialog, SchemaDialog } from './schema-dialogs'
 const route = getRouteApi('/app/database')
 
 const EMPTY_SELECTION: Selection = { filters: [], match: 'all', sort: [] }
+/** The most row keys one delete request takes (the server's DELETE_LIMIT). */
+const DELETE_BATCH = 1000
 
 /**
  * The managed database: an environment's tables on the left, the chosen one as a spreadsheet on the right. Each
@@ -247,14 +249,22 @@ function TableView({
       queryClient.invalidateQueries({ queryKey: rowsKey(environmentId, table.name) }),
       queryClient.invalidateQueries({ queryKey: trpc.database.tables.queryKey({ environmentId }) }),
     ])
-  const remove = useMutation(
-    trpc.database.deleteRows.mutationOptions({
-      onSuccess: () => {
-        setSelected(new Set())
-        return refresh()
-      },
-    }),
-  )
+  // In batches the server takes (1,000 keys a request), so a select-all of a long table works too.
+  const remove = useMutation({
+    mutationFn: async (keys: string[]) => {
+      for (let i = 0; i < keys.length; i += DELETE_BATCH) {
+        await trpcClient.database.deleteRows.mutate({
+          environmentId,
+          table: table.name,
+          keys: keys.slice(i, i + DELETE_BATCH),
+        })
+      }
+    },
+    onSettled: () => {
+      setSelected(new Set())
+      return refresh()
+    },
+  })
   const onFilters = useCallback(
     (filters: Selection['filters'], match: Selection['match']) =>
       setSelection((s) => ({ ...s, filters, match })),
@@ -326,7 +336,7 @@ function TableView({
               const n = selected.size
               if (!confirm(`Delete ${n} row${n === 1 ? '' : 's'} from ${table.name}? This can't be undone.`))
                 return
-              remove.mutate({ environmentId, table: table.name, keys: [...selected] })
+              remove.mutate([...selected])
             }}
           >
             <Trash2 className="size-4" /> Delete {selected.size}

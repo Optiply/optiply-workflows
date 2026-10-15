@@ -173,7 +173,10 @@ export function selectionSql(
         return `starts_with(${text}, lower($${param(f.value)}))`
       default: {
         const op = { eq: '=', neq: 'is distinct from', lt: '<', lte: '<=', gt: '>', gte: '>=' }[f.op]
-        return `${c} ${op} ${cast(column, param(toParam(column, f.value)))}`
+        // A filter value is text as typed: for a JSON column that's already JSON (`{"a": 1}`, `5`), not a value
+        // to encode again.
+        const value = column.type === 'json' ? f.value : toParam(column, f.value)
+        return `${c} ${op} ${cast(column, param(value))}`
       }
     }
   })

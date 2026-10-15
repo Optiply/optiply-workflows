@@ -151,11 +151,14 @@ export async function withManagedDb<T>(
   if (!config) throw new ManagedDbError('not_ready', 'The database is not set up in this environment yet')
   return deps.pool.withClient(postgresConnector, toResolved(deps.keyring, config), async (client) => {
     const { sql } = client as { sql: postgres.Sql }
-    return sql.begin(async (tx) => {
-      // UTC, so datetimes read back as UTC and ones written without an offset are taken as UTC.
+    // The pool is shared with the playground and workflow queries, and a plain SET there outlasts its
+    // transaction: everything this code relies on is set again, for this transaction only. Read write, the
+    // schema to work in, ISO dates, UTC (datetimes read back as UTC; ones written without an offset are UTC).
+    return sql.begin('read write', async (tx) => {
       await tx`
         select set_config('lock_timeout', '5s', true), set_config('statement_timeout', '120s', true),
-               set_config('TimeZone', 'UTC', true)`
+               set_config('TimeZone', 'UTC', true), set_config('DateStyle', 'ISO, MDY', true),
+               set_config('search_path', quote_ident(${target.schemaName}), true)`
       return fn(tx)
     }) as Promise<T>
   })
@@ -163,11 +166,17 @@ export async function withManagedDb<T>(
 
 // ── Reading ─────────────────────────────────────────────────────────────────
 
-export async function listTables(tx: postgres.TransactionSql, schemaName: string): Promise<TableInfo[]> {
+/** The schema's tables, or just `only` (getTable reads one table's catalog rows, not the whole schema's). */
+export async function listTables(
+  tx: postgres.TransactionSql,
+  schemaName: string,
+  only?: string,
+): Promise<TableInfo[]> {
   const tables = await tx<{ oid: number; name: string; reltuples: number }[]>`
     select c.oid::int as oid, c.relname as name, c.reltuples::float8 as reltuples
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = ${schemaName} and c.relkind in ('r', 'p')
+      and (${only ?? null}::text is null or c.relname = ${only ?? null}::text)
     order by c.relname`
   if (!tables.length) return []
   const oids = tables.map((t) => t.oid)
@@ -225,7 +234,7 @@ export async function getTable(
   schemaName: string,
   table: string,
 ): Promise<TableInfo> {
-  const found = (await listTables(tx, schemaName)).find((t) => t.name === table)
+  const [found] = await listTables(tx, schemaName, table)
   if (!found) throw new ManagedDbError('not_found', `There's no table named ${table}`)
   return found
 }

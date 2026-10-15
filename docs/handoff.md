@@ -419,8 +419,11 @@ No engine change. `resources.list` returns `systemKind`; a Built-in badge, a rea
 ### Step 8 (this commit): e2e, Compose check, docs
 `apps/web/e2e/m7-done-when.spec.ts`, the Compose check (§10), `docs/runbooks/backup.md` (the managed database in a restore), `architecture.md` §2.3/§2.5/§2.8/§2.10, this file.
 
+### Review fixes (before merging)
+The `code-review` skill (high) on PR #8 found 10 issues; each was checked against the code. Fixed: the Database page's transactions now pin `search_path`, `DateStyle`, read write and UTC (a plain `SET` in a playground query outlasts its transaction on the shared pool: the regression test fails without the fix with "cannot execute CREATE TABLE in a read-only transaction"); JSON "is"/"is not" filters compared against double-encoded text; deleting more than 1,000 selected rows failed (now batched); codes with leading zeros (EANs, postcodes) and numbers past bigint were guessed as numbers (now text); slugs like `eu-west`/`eu_west` would share a schema (now suffixed, and migration `0011` makes schema and role names unique); before PG 15 a no-op revoke on `public` went unnoticed (now checked); an import column past the file's width imported as NULL (now refused); `getTable` read the whole schema's catalog (now one table); unchecking "first row holds the column names" kept the old types (the preview now guesses again with `header: false`). Not changed, noted in §13: an export holds a pooled connection for the whole download.
+
 ### Totals at the end of M7
-`biome ci` is clean. Typecheck passes **9/9**. **691 tests pass** (server 167, engine 139, definition 124, connectors 106, expressions 91, crypto 25, db 20, sandbox 19), plus the two benchmarks and **9 Playwright e2e**. The existing editor spec failed once locally at a step that drags between blocks (then 3/3 alone and in later full runs; CI retries once).
+`biome ci` is clean. Typecheck passes **9/9**. **697 tests pass** (server 173, engine 139, definition 124, connectors 106, expressions 91, crypto 25, db 20, sandbox 19), plus the two benchmarks and **9 Playwright e2e**. The existing editor spec failed once locally at a step that drags between blocks (then 3/3 alone and in later full runs; CI retries once).
 
 Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; rolldown re-split the shared chunks, the total didn't change), the database chunk 113 kB, the editor chunk 319 kB.
 
@@ -521,6 +524,8 @@ Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; 
 - **Managed database (M7):**
   - No foreign keys or indexes in the schema editor; no promotion of a schema from staging to production; no read-only tier (Use is everything).
   - The managed tables share the platform's Postgres: a heavy query competes with the platform (statement timeout 120 s, `maxRows` 10k, connection limit 50 per role).
+  - A CSV export holds one of `optiply_db`'s 5 pooled connections (per process) for the whole download, at the client's pace: a few slow downloads at once make playground and Database page requests wait. (Each cursor fetch has its own statement timeout, so long downloads aren't cut off.) A separate pool, or a cap on concurrent exports, would fix it.
+  - Plain `SET`s in queries outlast their transaction on pooled connections (true of every Postgres resource). The Database page pins what it relies on per transaction (search_path, DateStyle, read write, UTC; from the PR #8 review), but workflow and playground queries see whatever an earlier query left behind.
   - The grid edits one cell at a time; no multi-cell paste, no undo. Deleting rows uses `confirm()`.
   - Import problems stop at the first failing batch (≤ 20 problems reported from it), not the whole file.
   - The CSV preview reads the first 256 kB; a column whose only odd value comes later can be guessed wrong (the import then reports the line).
