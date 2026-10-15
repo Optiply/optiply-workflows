@@ -6,9 +6,9 @@ Last updated: 2026-10-15 (end of session 8, which built M8).
 
 | | |
 |---|---|
-| **Branch** | `feat/m8-apps`, 11 commits on top of `main` (8 steps plus 3 flaky-test fixes), pushed |
-| **PR** | [#9 M8: App builder](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/9), draft, every step ticked; CI green on every step commit (jobs: check incl. the benchmarks and the web unit tests, e2e, docker) |
-| **`main`** | `6d57cc8`, the merge of [PR #8](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/8) (M7, with review fixes `18a6477`). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `main`. M8 was built on `feat/m8-apps` (8 steps, 3 flaky-test fixes, 1 review-fix commit) |
+| **PR** | [#9 M8: App builder](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/9), **merged** at the end of session 8 after a review (10 fixes, `cefd37a`); CI green throughout |
+| **`main`** | `35150aa`, the merge of PR #9. Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -27,12 +27,10 @@ Last updated: 2026-10-15 (end of session 8, which built M8).
 | **M5 Advanced blocks** | ✅ On `main` (§8) |
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
-| **M8 App builder** | ✅ **Done on `feat/m8-apps`, PR #9.** The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose (§9b). |
-| M9 | ⏭️ **Next**, after PR #9 is merged: plan it with the user (§14) |
+| **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
+| M9 | ⏭️ **Next**: plan it with the user (§14) |
 
-**Start the next session with:**
-1. Mark PR #9 ready for review, review it (sessions 7 reviewed PRs #7 and #8 with the `code-review` skill at high effort, verified each finding, then fixed them in one commit) and merge it with a merge commit.
-2. Then plan M9 with the user (§14) on a new branch (§15).
+**Start the next session with:** planning M9 with the user (§14), then a new branch and draft PR (§15). Review each milestone's PR before merging (sessions 7 and 8 used the `code-review` skill at high effort, verified each finding, then fixed them in one commit).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -211,6 +209,7 @@ Last updated: 2026-10-15 (end of session 8, which built M8).
 - **Editor:** the running draft follows edits (`update` message) 300 ms after they stop, carrying over typed values, query results and variables; automatic queries re-run only when they or their values changed. Queries save the draft first (`beforeQuery: ensureSaved`): the server runs what's saved. Positions are committed on drag/resize stop (opening an app never dirties it). No dragging between containers ("Inside" moves a component). JSON and number fields keep the text as typed (`useParsedText`): parsing never reformats it under the cursor.
 - **Table:** edits are keyed by the primary key (rows without one can't be edited); the key column is never "changed"; all of `data` is read (no server-side paging yet).
 - **Chart:** the dataviz skill's reference categorical palette, in its validated order (validated on our white surface; three slots under 3:1, hence the Table view), never cycled: past 8 series (7 pie slices) they're named or folded into "Other". Light mode only.
+- **From the PR #9 review:** moving a workflow or app between folders needs Own, into a folder of its own type only, and folder grants count only for their own type; app queries run with `untrustedValues` (REST path values encoded per segment); the editor fetches the draft fresh per visit and loads it once; the viewer keeps the release it opened (a newer one shows through the Reload banner); confirmations queue.
 - **`"sideEffects": false`** on `@ow/definition`, `@ow/app-definition`, `@ow/expressions` and `@ow/app-runtime`: unused zod schemas no longer ship (the sandbox script 649 → 187 kB, the main bundle 590 → 414 kB).
 
 ## 3. What M0 built (on `main`)
@@ -445,7 +444,7 @@ The `code-review` skill (high) on PR #8 found 10 issues; each was checked agains
 
 Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; rolldown re-split the shared chunks, the total didn't change), the database chunk 113 kB, the editor chunk 319 kB.
 
-## 9b. What M8 built (on `feat/m8-apps`)
+## 9b. What M8 built (on `main`)
 
 **Done-when** (build a CRUD app on a Postgres table with an editable Table and a save query), proven:
 - `apps/web/e2e/m8-done-when.spec.ts`, all in the browser after making the table through the Database API: a new app from the Apps page; a `products` query; a Table bound to it, columns from "From data", `stock` made editable; a manual `save_stock` query (`update … from jsonb_to_recordset({{ table1.changesetArray }}::jsonb) …`) re-reading `products` on success; the Table's `save` wired to it; no problems; published v1.0.0; in the published app a cell edited and saved; the row read back from the database.
@@ -475,13 +474,23 @@ Chart.js in its own chunk, `chart-model.ts` (tested), the dataviz rules, a table
 ### Step 8 (this commit): done-when, Compose check, docs
 `e2e/m8-done-when.spec.ts`; the Compose run (§10); README (Managed database, Building apps), `architecture.md` §2.3/§2.8/§2.11, this file. The done-when caught JSON fields reformatting under the cursor (fixed with `useParsedText`) and a test helper clicking the middle of tall Monaco fields (now near the top-left).
 
+### Review fixes (before merging), `cefd37a`
+The `code-review` skill (high) on PR #9 found 10 issues; each was checked against the code and all 10 held:
+- **Folder moves needed only Edit** and accepted any folder, so a resource folder's grants could reach an app. `checkFolderMove` now needs Own and a folder of the object's type, create checks the type, and `Access` counts folder grants only for objects of the folder's own type. **Workflows had the same gap since M2**; fixed there too.
+- **REST paths in apps:** a viewer could send `../users/42` as a path value. Connectors take `untrustedValues` (always set for app queries); the REST connector then encodes each path value as one segment.
+- **Editor:** `apps.get` is fetched fresh per visit (`gcTime 0`) and loaded once per visit (coming back used to restore the first visit's draft and revision; saving App settings replaced unsaved edits). One `ScopeSync` per editor builds completions (every field used to rebuild them on each value change).
+- **Runtime UI:** confirmations queue (`useConfirmations`; a second one used to strand the first); the viewer loads its release once per visit (a refetch on focus used to restart the app).
+- **Table:** edits remember their row's and column's keys (data changing mid-edit could move them onto another row); `selectionKey` matches rows without a primary key by content.
+- `toJson`/`errorView` shared (`services/query-results.ts`).
+Tests: 3 server tests (folders, workflows, a REST path against a real HTTP server), a return-to-editor check in `e2e/app-releases.spec.ts`, `selectionKey`; mutation-checked.
+
 ### Flaky tests fixed on the way (none caused by M8)
 - `798b523`: the MySQL "prepares the statement with ?" test counted released statements once; now polls up to 2 s.
 - `1fda33e`: the engine "replies with the first Response block" test gave the late branch 100 ms; now 1.5 s.
 - `ac07346`: the engine retention test's time limits (1 s) were exceeded under a full local `pnpm test`; now 2 s, the row-count guards unchanged.
 
 ### Totals at the end of M8
-`biome ci` is clean. Typecheck passes **11/11**. **772 tests pass** (server 182, engine 139, definition 124, connectors 106, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **15 Playwright e2e**.
+`biome ci` is clean. Typecheck passes **11/11**. **775 tests pass** (server 185, engine 139, definition 124, connectors 106, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **15 Playwright e2e**.
 
 Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the apps chunk (viewer, runtime, sandbox script) 317 kB, the app editor 133 kB, Chart.js 191 kB (with the first chart), the workflow editor 336 kB, the database page 87 kB.
 
@@ -540,7 +549,7 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 8** the Compose stack was left running on the M8 image, with the user signed in and working in it (their `test` app). The dev database and dev servers weren't started this session.
+- **At the end of session 8** the Compose stack was left running on the M8 image **from before the PR #9 review fixes** (rebuild it to get them: `PUBLIC_URL=http://localhost:3000 docker compose up -d --build`, after checking with the user), with the user signed in and working in it (their `test` app). The dev database and dev servers weren't started this session.
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
 ## 12. Still unverified
@@ -609,7 +618,7 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 
 ## 14. Next step: M9
 
-First merge PR #9 (review it like PRs #7 and #8). From `architecture.md` §2.7, M9+ is a list to choose from rather than one milestone; decide with the user which comes first:
+From `architecture.md` §2.7, M9+ is a list to choose from rather than one milestone; decide with the user which comes first:
 - **Python executor** (nsjail) for code blocks.
 - **SQS/Kafka triggers** for workflows.
 - **OAuth authorization-code and custom auth flows** for REST resources (`oauth_tokens`).
@@ -623,8 +632,7 @@ Also open from M8, if the user prefers to finish apps first: the sandbox off the
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git fetch && git status                          # PR #9 merged? Then: git switch main && git pull
-gh pr view 9                                     # draft → mark ready, review, merge (merge commit), if not done yet
+git switch main && git pull                      # M8 (PR #9) is merged
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
