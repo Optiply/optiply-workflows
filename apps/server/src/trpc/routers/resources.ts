@@ -1,7 +1,7 @@
 import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
 import { type Db, environments, permissions, type Resource, resourceConfigs, resources } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { type Access, loadAccess, requireLevel } from '../../services/permissions'
@@ -87,6 +87,16 @@ function toJson(value: unknown): unknown {
   return text === undefined ? null : JSON.parse(text)
 }
 
+/** Built-in resources are provisioned by the platform: their settings, name and existence aren't anyone's to change. */
+function assertNotBuiltIn(resource: Resource) {
+  if (resource.systemKind) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'This is a built-in resource: the platform manages its settings',
+    })
+  }
+}
+
 function levelsByEnv(access: Access, resource: Resource, envIds: string[]) {
   return Object.fromEntries(envIds.map((e) => [e, access.level(resource, e)]))
 }
@@ -101,7 +111,8 @@ export const resourcesRouter = router({
     const access = await loadAccess(ctx.db, ctx.user)
     const envIds = await environmentIds(ctx.db)
     const [all, configs] = await Promise.all([
-      ctx.db.select().from(resources).orderBy(asc(resources.name)),
+      // People's own resources first (the editor offers the first one for new queries), then built-in ones.
+      ctx.db.select().from(resources).orderBy(sql`${resources.systemKind} is not null`, asc(resources.name)),
       ctx.db
         .select({ resourceId: resourceConfigs.resourceId, environmentId: resourceConfigs.environmentId })
         .from(resourceConfigs),
@@ -118,6 +129,7 @@ export const resourcesRouter = router({
           type: r.type,
           description: r.description,
           folderId: r.folderId,
+          systemKind: r.systemKind,
           environments: envIds.map((e) => ({
             environmentId: e,
             level: levels[e] ?? null,
@@ -203,6 +215,7 @@ export const resourcesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, resource, envIds } = await visibleResource(ctx, input.id)
       requireLevel(access.levelEverywhere(resource, envIds), 'edit', 'this resource in every environment')
+      assertNotBuiltIn(resource)
       await ctx.db
         .update(resources)
         .set({ name: input.name, description: input.description ?? null, folderId: input.folderId ?? null })
@@ -218,6 +231,7 @@ export const resourcesRouter = router({
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, resource, envIds } = await visibleResource(ctx, input.id)
     requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
+    assertNotBuiltIn(resource)
     const configIds = await ctx.db.transaction(async (tx) => {
       const rows = await tx
         .select({ id: resourceConfigs.id })
@@ -247,6 +261,7 @@ export const resourcesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      assertNotBuiltIn(resource)
       const connector = connectorFor(resource.type)
       const envSlug = await environmentSlug(ctx.db, input.environmentId)
 
@@ -293,6 +308,7 @@ export const resourcesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      assertNotBuiltIn(resource)
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       if (!existing) return
       await ctx.db.delete(resourceConfigs).where(eq(resourceConfigs.id, existing.id))
@@ -317,6 +333,8 @@ export const resourcesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      // Other settings with the stored password could send it anywhere: built-in resources test as they are.
+      if (input.config !== undefined || input.secrets !== undefined) assertNotBuiltIn(resource)
       const connector = connectorFor(resource.type)
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       const result = await testResource(connector, {

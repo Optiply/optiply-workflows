@@ -10,6 +10,7 @@ const route = getRouteApi('/app')
 const NAV: { to: string; label: string; icon: ReactNode }[] = [
   { to: '/workflows', label: 'Workflows', icon: <Workflow className="size-4" /> },
   { to: '/resources', label: 'Resources', icon: <Plug className="size-4" /> },
+  { to: '/database', label: 'Database', icon: <Database className="size-4" /> },
   { to: '/runs', label: 'Runs', icon: <History className="size-4" /> },
 ]
 
@@ -42,10 +43,6 @@ export function AppShell() {
             <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
           ))}
           <NavLink to="/inbox" icon={<Inbox className="size-4" />} label="Inbox" count={openTasks.data} />
-          <div className="px-2 pt-4 pb-1 text-xs font-medium text-muted">Coming later</div>
-          <span className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted/60">
-            <Database className="size-4" /> Database
-          </span>
         </nav>
 
         <div className="border-t border-border p-2">

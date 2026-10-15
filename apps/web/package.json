@@ -16,6 +16,8 @@
     "@ow/definition": "workspace:*",
     "@tanstack/react-query": "5.104.2",
     "@tanstack/react-router": "1.170.42",
+    "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.13",
     "@trpc/client": "11.19.0",
     "@trpc/server": "11.19.0",
     "@trpc/tanstack-react-query": "11.19.0",

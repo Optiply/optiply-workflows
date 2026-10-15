@@ -357,7 +357,14 @@ function QueryEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      <Field label="Resource">
+      <Field
+        label="Resource"
+        hint={
+          current?.systemKind === 'database'
+            ? "The tables on the Database page, in the run's environment."
+            : undefined
+        }
+      >
         <Select
           value={resource}
           onChange={(e) => {
@@ -377,7 +384,7 @@ function QueryEditor({
           {!current && <option value={resource}>{resource} (not found)</option>}
           {resources.map((r) => (
             <option key={r.slug} value={r.slug}>
-              {r.name} ({r.slug})
+              {r.name} ({r.slug}){r.systemKind ? ' · built-in' : ''}
             </option>
           ))}
         </Select>

@@ -275,6 +275,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - `run_logs`
   - `user_tasks` (M6): one per run and block; status `open | completed | expired | cancelled`; title, description, fields (defaults evaluated) and outcomes as they were when it opened; assignee user and group ids (resolved from emails and group names); `due_at`; the answer (`outcome`, `values`, `completed_by`, `completed_at`).
 - **Audit:** `audit_events`, append-only; the app's DB role gets INSERT/SELECT only. M6: filters and a streamed CSV export for admins.
+- **Managed database** (M7): `managed_databases(environment_id, schema_name, role_name)` records each environment's schema and role; `resources.system_kind` (`database`) marks the built-in `optiply_db` resource, whose per-environment `resource_configs` row logs in as that role. The tables themselves live in the `owdb_<environment>` schemas of the same database (§2.10).
 - **Retention** (M6): once a day one worker (claimed through `maintenance_jobs`) deletes runs that finished more than `RUN_RETENTION_DAYS` (30) ago, and draft snapshots no run uses, at most 5,000 rows per statement, each its own transaction (payloads, then blocks and logs, then the run rows). Runs with an unfinished child are kept. `workflow_runs_finished_idx` finds them.
 
 ## 2.4 Workflow definition (`packages/definition`, zod v4)
@@ -314,6 +315,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
     - Non-2xx responses error.
   - **MySQL** (mysql2, built in M6): server-side prepared statements, arrays expanded, `KILL QUERY` on cancel and timeouts, a read-only session option, `maxRows`, no local file reads.
   - **BigQuery** (built in M6 on the REST API with undici, not `@google-cloud/bigquery`): a service-account key (RS256 JWT), typed named parameters, `maximumBytesBilled` guardrail (10 GiB default), job labels for cost attribution (the resource's plus workflow, run and environment), the job cancelled on cancel and timeouts.
+- **The built-in database resource** (M7): `optiply_db` is a Postgres resource the platform keeps configured per environment (§2.10); nobody can edit, re-point, rename or delete it, and testing it with other settings is refused (it would send the stored password elsewhere). Built-in resources list after people's own, so new query blocks keep defaulting to theirs.
 - **Who runs as whom:** editor test runs use the editing user's Use permission. Released runs (schedule, webhook) were permission-checked when the release was published.
 
 ## 2.6 Monorepo layout (pnpm + Turborepo)
@@ -466,11 +468,27 @@ packages/
 4. `curl -X POST -H 'X-Api-Key: …' /api/workflows/<slug>/run -d '{"customerId":1}'` returns the Response body synchronously. Repeat with `?environment=staging` and check that it hits the staging database.
 5. Add a 1-minute cron: runs appear in history with per-block data and logs, and none overlap.
 6. Run `kill -9` on a worker mid-run. The run resumes on the other worker and completed blocks are not re-run.
-7. M6: a run waiting on a User Task survives `docker compose down`/`up` and resumes when the task is completed; retention deletes 100k old block rows while runs keep flowing, with no lock waits (handoff §9 has the numbers).
-8. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
+7. M7: on the Database page, create a table and import a CSV into it; a workflow with a query on `optiply_db` returns its rows, in each environment its own (handoff §9a has the Compose run).
+8. M6: a run waiting on a User Task survives `docker compose down`/`up` and resumes when the task is completed; retention deletes 100k old block rows while runs keep flowing, with no lock waits (handoff §9 has the numbers).
+9. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
 
 ## 2.9 Open items (defaults chosen; change later if needed)
 - Importing existing Retool workflows: block names, `{{ }}` semantics and settings were kept compatible, so an importer is cheap. It is not in scope yet.
 - Under `skip`, a run that is waiting blocks the next scheduled fire. The default is yes, and each trigger can override it.
 - Block results are capped at 10MB in Postgres. Object storage can come later.
 - Licences: we write our own code. Ideas only from AGPL projects; code only from Apache-2.0 or MIT ones.
+
+## 2.10 The managed database (M7)
+
+A Retool-Database-style store for tables people make and fill in the platform itself.
+
+- **Where the tables live:** the platform's own Postgres, one schema per environment (`owdb_production`, `owdb_staging`). Each schema is owned by a **login role** of its own (`owdb_<md5(database)[:6]>_<environment>`; roles are shared by every database on a server, hence the tag) that has no rights on anything else: not the platform's tables, not the other environment's schema, and no role it could switch to.
+- **Why a login role and not `SET ROLE`:** a query could switch back mid-statement (`set_config('role', …)`, then dynamic SQL such as `query_to_xml`), because the session user may always return to itself. So the role logs in with its own generated password, stored encrypted in the built-in resource's config like any secret and sent to Postgres as a SCRAM verifier (never as plain text).
+- **Provisioning** (`apps/server/src/services/database.ts`) runs at every start (migrate and API), in one transaction under an advisory lock, and repairs drift: role attributes and password, roles granted to it by hand (revoked), schema and object owners (what a restore onto another server leaves), `CREATE` on `public` before Postgres 15. It needs superuser or `CREATEROLE`; without either it reports what to grant and the platform runs on.
+- **Access:** Use on `optiply_db` in an environment is the whole of it (rows, schema and SQL), like Use on any resource, whose queries run with the resource's rights. A read-only tier would need a second, SELECT-only role and resource.
+- **The schema editor** (`services/managed-db.ts`): tables always get `id bigint generated by default as identity primary key`; nine column types (text, integer, bigint, decimal, boolean, date, datetime, json, uuid; anything else made in SQL shows as "other"); defaults are a value or `now()` / `current_date` / `gen_random_uuid()`; type changes cast the values, all or nothing. Every statement runs as the environment's role, waits at most 5 s for a lock, and is audited.
+- **Rows** (`services/managed-db-rows.ts`): pages with sort and 11 filter operators, counts capped at 10,000; values in JSON-exact shapes (bigint/decimal as strings, datetimes ISO in UTC, JSON as JSON); writes by single-column primary key, each value checked against its type first so errors name their field; values sent as text and cast in SQL (postgres.js would otherwise convert booleans, dates and JSON by its own rules).
+- **CSV** (`services/csv.ts`, `services/managed-db-csv.ts`, `api/database.ts`): our own streaming RFC 4180 parser; a preview that guesses delimiter, names, types, date order and decimal commas; imports streamed as one line of JSON spec plus the file, all rows or none, problems reported by line and column; exports streamed with the grid's selection, formula-guarded in text cells only.
+- **The web app:** `/database` (its own chunk): environments and tables, a TanStack Table 8 + Virtual grid (pages of 100 as you scroll, server-side sort and filter, in-place editing), the schema editor and the import wizard.
+- **Not yet:** foreign keys and indexes in the editor, promoting a schema from staging to production (Retool's reviewed diff), a read-only tier, a separate database server for the managed tables.
+
