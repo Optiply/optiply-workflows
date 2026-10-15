@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import type { RendererProps } from '../renderer'
 import { ButtonRenderer, TextRenderer } from './basic'
+import { ChartRenderer } from './chart'
 import { ContainerRenderer, FormRenderer, ModalRenderer } from './containers'
 import {
   CheckboxRenderer,
@@ -11,7 +12,7 @@ import {
 } from './inputs'
 import { TableRenderer } from './table'
 
-/** Renderers by component type; types without one (the chart, until step 6) show their state. */
+/** Renderers by component type; a type without one shows its state. */
 export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = {
   text: TextRenderer,
   button: ButtonRenderer,
@@ -24,4 +25,5 @@ export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = 
   container: ContainerRenderer,
   form: FormRenderer,
   modal: ModalRenderer,
+  chart: ChartRenderer,
 }

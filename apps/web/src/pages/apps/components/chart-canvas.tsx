@@ -1,0 +1,253 @@
+/**
+ * The Chart's canvas, with Chart.js (MIT). Its own chunk: Chart.js loads with the first chart an app shows.
+ * Marks follow the dataviz rules: bars at most 24 px thick with a 4 px rounded data end, 2 px lines with no
+ * resting dots (8 px ringed dots on hover), area washes at 10 %, a 2 px gap in the surface color between touching
+ * marks, hairline gridlines, one y axis with compact ticks, a legend from two series up, and a tooltip listing
+ * every series at the hovered x (a crosshair on lines and areas).
+ */
+import {
+  ArcElement,
+  BarController,
+  BarElement,
+  CategoryScale,
+  Chart,
+  type ChartConfiguration,
+  Filler,
+  Legend,
+  LinearScale,
+  LineController,
+  LineElement,
+  PieController,
+  type Plugin,
+  PointElement,
+  Tooltip,
+} from 'chart.js'
+import { useEffect, useRef } from 'react'
+import { CHART_INK, type ChartModel, compactNumber, sliceColors, withAlpha } from './chart-model'
+
+Chart.register(
+  BarController,
+  LineController,
+  PieController,
+  BarElement,
+  LineElement,
+  PointElement,
+  ArcElement,
+  CategoryScale,
+  LinearScale,
+  Filler,
+  Legend,
+  Tooltip,
+)
+Chart.defaults.font.family = 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+Chart.defaults.font.size = 12
+Chart.defaults.color = CHART_INK.secondary
+
+/** A vertical hairline at the hovered x, so lines are read by position rather than by hitting a 2 px stroke. */
+const crosshair: Plugin = {
+  id: 'owCrosshair',
+  afterDatasetsDraw(chart) {
+    const active = chart.tooltip?.getActiveElements() ?? []
+    if (!active.length) return
+    const x = active[0]!.element.x
+    const { top, bottom } = chart.chartArea
+    const ctx = chart.ctx
+    ctx.save()
+    ctx.strokeStyle = CHART_INK.axis
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(Math.round(x) + 0.5, top)
+    ctx.lineTo(Math.round(x) + 0.5, bottom)
+    ctx.stroke()
+    ctx.restore()
+  },
+}
+
+function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean }): ChartConfiguration {
+  const { kind } = model
+  const lines = kind === 'line' || kind === 'area'
+  // Legend keys mirror the mark: a short line for lines and areas, a square for bars and slices.
+  const legend = {
+    display: opts.showLegend && (kind === 'pie' || model.series.length >= 2),
+    position: 'bottom' as const,
+    labels: {
+      usePointStyle: true,
+      pointStyle: lines ? ('line' as const) : ('rect' as const),
+      ...(lines && { pointStyleWidth: 16 }),
+      boxWidth: 10,
+      boxHeight: 10,
+      color: CHART_INK.secondary,
+      // A line's default key takes the hover dots' white ring as its stroke: color it with the series instead.
+      // (Only for lines: bars and pies keep their own keys; a pie's are its slices.)
+      ...(lines && {
+        generateLabels: (chart: Chart) =>
+          Chart.defaults.plugins.legend.labels
+            .generateLabels(chart)
+            .map((item) =>
+              item.datasetIndex === undefined
+                ? item
+                : { ...item, strokeStyle: model.series[item.datasetIndex]?.color, lineWidth: 2 },
+            ),
+      }),
+    },
+  }
+  const tooltip = {
+    backgroundColor: CHART_INK.surface,
+    titleColor: CHART_INK.secondary,
+    bodyColor: CHART_INK.text,
+    borderColor: CHART_INK.grid,
+    borderWidth: 1,
+    padding: 8,
+    usePointStyle: true,
+    boxWidth: 8,
+    boxHeight: 8,
+    callbacks: {
+      // Tooltip rows are keyed with a short stroke of the series color, not a filled box.
+      labelPointStyle: () => ({ pointStyle: 'line' as const, rotation: 0 }),
+      labelColor: (item: { datasetIndex: number; dataIndex: number }) => {
+        const color =
+          kind === 'pie'
+            ? sliceColors(model.labels.length, model.folded)[item.dataIndex]!
+            : (model.series[item.datasetIndex]?.color ?? CHART_INK.muted)
+        return { borderColor: color, backgroundColor: color, borderWidth: 2 }
+      },
+      // Values lead, labels follow.
+      label: (item: { parsed: unknown; dataset: { label?: string }; label: string }) => {
+        const v = kind === 'pie' ? (item.parsed as number) : (item.parsed as { y: number }).y
+        const value = v === null || v === undefined ? '—' : v.toLocaleString()
+        return ` ${value}  ${kind === 'pie' ? item.label : (item.dataset.label ?? '')}`
+      },
+    },
+  }
+
+  if (kind === 'pie') {
+    const s = model.series[0]
+    return {
+      type: 'pie',
+      data: {
+        labels: model.labels,
+        datasets: [
+          {
+            label: s?.label ?? '',
+            data: s?.values ?? [],
+            backgroundColor: sliceColors(model.labels.length, model.folded),
+            borderColor: CHART_INK.surface,
+            borderWidth: 2,
+            hoverOffset: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend, tooltip },
+      },
+    }
+  }
+
+  const area = kind === 'area'
+  const datasets = model.series.map((s, i) =>
+    kind === 'bar'
+      ? {
+          type: 'bar' as const,
+          label: s.label,
+          data: s.values,
+          backgroundColor: s.color,
+          hoverBackgroundColor: withAlpha(s.color, 0.8),
+          // The surface-colored edge is the 2 px gap between touching bars and stacked segments.
+          borderColor: CHART_INK.surface,
+          borderWidth: 2,
+          borderRadius: 4,
+          borderSkipped: 'start' as const,
+          maxBarThickness: 24,
+        }
+      : {
+          type: 'line' as const,
+          label: s.label,
+          data: s.values,
+          borderColor: s.color,
+          backgroundColor: area ? withAlpha(s.color, 0.1) : s.color,
+          borderWidth: 2,
+          borderCapStyle: 'round' as const,
+          borderJoinStyle: 'round' as const,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          pointBackgroundColor: s.color,
+          pointBorderColor: CHART_INK.surface,
+          pointHoverBorderWidth: 2,
+          pointHitRadius: 12,
+          fill: area ? (opts.stacked && i > 0 ? '-1' : 'origin') : false,
+        },
+  )
+  return {
+    type: kind === 'bar' ? 'bar' : 'line',
+    data: { labels: model.labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: kind === 'bar' },
+      plugins: { legend, tooltip },
+      scales: {
+        x: {
+          stacked: opts.stacked,
+          grid: { display: false },
+          border: { color: CHART_INK.axis },
+          ticks: { color: CHART_INK.muted, maxRotation: 0, autoSkip: true },
+        },
+        y: {
+          stacked: opts.stacked,
+          beginAtZero: true,
+          grid: { color: CHART_INK.grid, lineWidth: 1 },
+          border: { display: false },
+          ticks: { color: CHART_INK.muted, callback: (v) => compactNumber(Number(v)), maxTicksLimit: 6 },
+        },
+      },
+    },
+    plugins: kind === 'bar' ? [] : [crosshair],
+  }
+}
+
+export default function ChartCanvas({
+  model,
+  stacked,
+  showLegend,
+  label,
+}: {
+  model: ChartModel
+  stacked: boolean
+  showLegend: boolean
+  label: string
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const chartRef = useRef<Chart | null>(null)
+
+  useEffect(() => {
+    const next = config(model, { stacked, showLegend })
+    const current = chartRef.current
+    // Same chart type: update in place (no flicker as data arrives); another type: start over.
+    if (current && (current.config as { type?: string }).type === next.type) {
+      current.data = next.data
+      current.options = next.options ?? {}
+      current.update('none')
+      return
+    }
+    current?.destroy()
+    chartRef.current = new Chart(canvasRef.current!, next)
+  }, [model, stacked, showLegend])
+
+  useEffect(
+    () => () => {
+      chartRef.current?.destroy()
+      chartRef.current = null
+    },
+    [],
+  )
+
+  return (
+    <div className="relative h-full w-full">
+      <canvas ref={canvasRef} role="img" aria-label={label} />
+    </div>
+  )
+}
