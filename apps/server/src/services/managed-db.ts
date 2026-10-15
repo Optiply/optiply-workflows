@@ -4,6 +4,7 @@ import { type Db, environments, managedDatabases, resourceConfigs, resources } f
 import { and, eq } from 'drizzle-orm'
 import type postgres from 'postgres'
 import { z } from 'zod'
+import { atLeast, loadAccess } from './permissions'
 import { toResolved } from './resources'
 
 /**
@@ -86,7 +87,7 @@ export interface TableInfo {
 export class ManagedDbError extends Error {
   override name = 'ManagedDbError'
   constructor(
-    readonly code: 'not_ready' | 'invalid' | 'not_found',
+    readonly code: 'not_ready' | 'invalid' | 'not_found' | 'forbidden',
     message: string,
   ) {
     super(message)
@@ -109,6 +110,24 @@ export async function managedTarget(db: Db, environmentId: string): Promise<Mana
     .where(eq(managedDatabases.environmentId, environmentId))
   if (!row) throw new ManagedDbError('not_ready', 'The database is not set up in this environment yet')
   return { resourceId: row.resourceId, environmentId, schemaName: row.schemaName }
+}
+
+/**
+ * The environment's database, for someone with Use on the built-in resource there (admins always). Use is the
+ * whole of it: rows, schema and SQL, like Use on any resource, whose queries run with the resource's rights.
+ */
+export async function authorizeManagedDb(
+  db: Db,
+  user: { id: string; isAdmin: boolean },
+  environmentId: string,
+): Promise<ManagedDbTarget> {
+  const target = await managedTarget(db, environmentId)
+  const [resource] = await db.select().from(resources).where(eq(resources.id, target.resourceId))
+  const access = await loadAccess(db, user)
+  if (!atLeast(access.level(resource!, environmentId), 'use')) {
+    throw new ManagedDbError('forbidden', 'You need use access to the database in this environment')
+  }
+  return target
 }
 
 /**

@@ -1,9 +1,9 @@
-import type { ServerResponse } from 'node:http'
 import type { Db } from '@ow/db'
 import type { FastifyPluginAsync } from 'fastify'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE } from '../auth/sessions'
 import { auditFilterSchema, auditPage, CSV_COLUMNS, csvRow } from '../services/audit-log'
+import { drainOrClose } from './streaming'
 
 /** Most rows one export holds; narrow the filters for more. */
 export const MAX_EXPORT_ROWS = 100_000
@@ -68,17 +68,5 @@ export const auditApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
     } finally {
       res.off('close', onClose)
     }
-  })
-}
-
-function drainOrClose(res: ServerResponse): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => {
-      res.off('drain', done)
-      res.off('close', done)
-      resolve()
-    }
-    res.once('drain', done)
-    res.once('close', done)
   })
 }

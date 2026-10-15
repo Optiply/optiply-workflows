@@ -3,9 +3,11 @@ import { TRPCError } from '@trpc/server'
 import { asc, desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { z } from 'zod'
+import { CsvError, guessCsv } from '../../services/csv'
 import {
   addColumn,
   alterColumn,
+  authorizeManagedDb,
   ColumnChange,
   ColumnSpec,
   createTable,
@@ -16,7 +18,6 @@ import {
   listTables,
   ManagedDbError,
   type ManagedDbTarget,
-  managedTarget,
   NewName,
   renameColumn,
   renameTable,
@@ -32,9 +33,11 @@ import {
   readRows,
   updateRow,
 } from '../../services/managed-db-rows'
-import { atLeast, loadAccess, requireLevel } from '../../services/permissions'
+import { atLeast, loadAccess } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
+/** The start of a file the preview reads (it's a sample; the import reads everything). */
+const PREVIEW_MAX_CHARS = 256 * 1024
 const Id = z.uuid()
 const InEnv = z.object({ environmentId: Id })
 const OnTable = InEnv.extend({ table: ExistingName })
@@ -42,16 +45,8 @@ const OnColumn = OnTable.extend({ column: ExistingName })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
-/**
- * The environment's database, for someone with Use on the built-in resource there (admins always). Use is the
- * whole of it: rows, schema and SQL, like Use on any resource, whose queries run with the resource's rights.
- */
-async function open(ctx: AuthedContext, environmentId: string): Promise<ManagedDbTarget> {
-  const target = await translate(() => managedTarget(ctx.db, environmentId))
-  const [resource] = await ctx.db.select().from(resources).where(eq(resources.id, target.resourceId))
-  const access = await loadAccess(ctx.db, ctx.user)
-  requireLevel(access.level(resource!, environmentId), 'use', 'the database in this environment')
-  return target
+function open(ctx: AuthedContext, environmentId: string): Promise<ManagedDbTarget> {
+  return translate(() => authorizeManagedDb(ctx.db, ctx.user, environmentId))
 }
 
 /** Runs as the environment's role; what Postgres refuses comes back as a message about the change. */
@@ -61,18 +56,19 @@ function inDb<T>(ctx: AuthedContext, target: ManagedDbTarget, fn: Parameters<typ
   )
 }
 
+const TRPC_CODES = {
+  not_ready: 'PRECONDITION_FAILED',
+  not_found: 'NOT_FOUND',
+  forbidden: 'FORBIDDEN',
+  invalid: 'BAD_REQUEST',
+} as const
+
 async function translate<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (err) {
     if (err instanceof ManagedDbError) {
-      const code =
-        err.code === 'not_ready'
-          ? 'PRECONDITION_FAILED'
-          : err.code === 'not_found'
-            ? 'NOT_FOUND'
-            : 'BAD_REQUEST'
-      throw new TRPCError({ code, message: err.message })
+      throw new TRPCError({ code: TRPC_CODES[err.code], message: err.message })
     }
     if (err instanceof postgres.PostgresError) {
       // 55P03 lock_not_available: someone else is using the table (a long query, an open transaction).
@@ -212,6 +208,22 @@ export const databaseRouter = router({
       })
       await audit(ctx, target, 'column_changed', input.table, { column: input.column, change: input.change })
       return table
+    }),
+
+  /**
+   * Guesses how to import a CSV from its start (the browser sends the first part of the file): delimiter, column
+   * names and types, date order, decimal commas, and preview rows. Only parses; the import itself streams to
+   * `POST /api/v1/database/import`.
+   */
+  previewCsv: authedProcedure
+    .input(z.object({ sample: z.string().max(PREVIEW_MAX_CHARS), complete: z.boolean().default(false) }))
+    .query(({ input }) => {
+      try {
+        return guessCsv(input.sample, { complete: input.complete })
+      } catch (err) {
+        if (err instanceof CsvError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+        throw err
+      }
     }),
 
   /** A page of rows, sorted and filtered, with the table's shape and how many rows match. */

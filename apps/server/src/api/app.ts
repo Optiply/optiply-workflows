@@ -19,6 +19,7 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
+import { databaseApi } from './database'
 import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
 
@@ -91,6 +92,7 @@ export async function buildApp(deps: {
   })
   await app.register(runsApi, { prefix: '/api/v1', db, events })
   await app.register(auditApi, { prefix: '/api/v1', db })
+  await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
   await app.register(webhooksApi, { prefix: '/api/v1', db, events, runner })
 
   await app.register(fastifyTRPCPlugin, {

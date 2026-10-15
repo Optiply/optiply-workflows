@@ -74,7 +74,7 @@ export class RowError extends ManagedDbError {
 }
 
 /** How a column is read: in a form JSON keeps exactly. */
-function readExpression(column: ColumnInfo, alias = 't'): string {
+export function readExpression(column: ColumnInfo, alias = 't'): string {
   const c = `${alias}.${quoteIdent(column.name)}`
   switch (column.type) {
     case 'integer':
@@ -92,7 +92,7 @@ function readExpression(column: ColumnInfo, alias = 't'): string {
   }
 }
 
-function selectList(table: TableInfo, alias = 't'): string {
+export function selectList(table: TableInfo, alias = 't'): string {
   return table.columns.map((c) => `${readExpression(c, alias)} as ${quoteIdent(c.name)}`).join(', ')
 }
 
@@ -106,7 +106,7 @@ function decodeRow(table: TableInfo, row: postgres.Row): Record<string, unknown>
   return out
 }
 
-function columnOf(table: TableInfo, name: string): ColumnInfo {
+export function columnOf(table: TableInfo, name: string): ColumnInfo {
   const column = table.columns.find((c) => c.name === name)
   if (!column) throw new ManagedDbError('invalid', `${table.name} has no column named ${name}`)
   return column
@@ -138,17 +138,18 @@ function toParam(column: ColumnInfo, value: unknown): string | null {
  * learns is a boolean, date or jsonb with its own rules ('true' becomes false, bad dates throw in JS, JSON is
  * stringified twice).
  */
-function cast(column: ColumnInfo, n: number): string {
+export function cast(column: ColumnInfo, n: number): string {
   return `$${n}::text::${column.sqlType}`
 }
 
-export async function readRows(
-  tx: postgres.TransactionSql,
+/** What a page or an export selects: the filters as a WHERE with its parameters, and the order. */
+export type RowSelection = Pick<RowQuery, 'sort' | 'filters' | 'match'>
+
+export function selectionSql(
   schemaName: string,
-  tableName: string,
-  query: RowQuery,
-): Promise<RowPage & { table: TableInfo }> {
-  const table = await getTable(tx, schemaName, tableName)
+  table: TableInfo,
+  query: RowSelection,
+): { from: string; where: string; orderBy: string; params: unknown[] } {
   const params: unknown[] = []
   const param = (value: unknown) => {
     params.push(value)
@@ -185,8 +186,22 @@ export async function readRows(
   for (const k of table.primaryKey) {
     if (!query.sort.some((s) => s.column === k)) order.push(`t.${quoteIdent(k)} asc`)
   }
-  const from = `${quoteIdent(schemaName)}.${quoteIdent(table.name)} t`
-  const orderBy = order.length ? `order by ${order.join(', ')}` : ''
+  return {
+    from: `${quoteIdent(schemaName)}.${quoteIdent(table.name)} t`,
+    where,
+    orderBy: order.length ? `order by ${order.join(', ')}` : '',
+    params,
+  }
+}
+
+export async function readRows(
+  tx: postgres.TransactionSql,
+  schemaName: string,
+  tableName: string,
+  query: RowQuery,
+): Promise<RowPage & { table: TableInfo }> {
+  const table = await getTable(tx, schemaName, tableName)
+  const { from, where, orderBy, params } = selectionSql(schemaName, table, query)
 
   try {
     const rows = await tx.unsafe(
@@ -237,7 +252,7 @@ async function checkValues(tx: postgres.TransactionSql, table: TableInfo, values
 }
 
 /** Not-null, unique and check violations, about the field they concern when Postgres says which. */
-function writeError(err: unknown): unknown {
+export function writeError(err: unknown): unknown {
   if (!(err instanceof postgres.PostgresError)) return err
   if (err.code === '23502') return new RowError('is required', err.column_name)
   if (err.code === '23505') {
