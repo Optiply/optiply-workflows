@@ -13,7 +13,10 @@
   "dependencies": {
     "@dagrejs/dagre": "3.1.1",
     "@monaco-editor/react": "4.7.0",
+    "@ow/app-definition": "workspace:*",
+    "@ow/app-runtime": "workspace:*",
     "@ow/definition": "workspace:*",
+    "@ow/sandbox": "workspace:*",
     "@tanstack/react-query": "5.104.2",
     "@tanstack/react-router": "1.170.42",
     "@tanstack/react-table": "8.21.3",
@@ -41,6 +44,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "esbuild": "0.28.2",
     "tailwindcss": "4.3.3",
     "vite": "8.3.4"
   }

@@ -1,0 +1,175 @@
+import type { AppDefinition } from '@ow/app-definition'
+import { useQuery } from '@tanstack/react-query'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { useCallback, useRef, useState } from 'react'
+import { Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
+import { useTRPC } from '@/lib/trpc'
+import { AppCanvas } from './canvas'
+import { Notifications, useNotifications } from './notifications'
+import { AppHostProvider, useAppHost, useAppHostState } from './runtime/react'
+
+const route = getRouteApi('/app/apps/$slug')
+const appRoute = getRouteApi('/app')
+
+/** Someone using an app: its live release in the environment they pick (`?env=`, the default one otherwise). */
+export function AppViewPage() {
+  const { slug } = route.useParams()
+  const search = route.useSearch()
+  const trpc = useTRPC()
+  const app = useQuery(trpc.apps.open.queryOptions({ slug }))
+  const environments = useQuery(trpc.environments.list.queryOptions())
+
+  if (app.error)
+    return (
+      <Centered>
+        <ErrorNote error={app.error} />
+      </Centered>
+    )
+  if (environments.error)
+    return (
+      <Centered>
+        <ErrorNote error={environments.error} />
+      </Centered>
+    )
+  if (!app.data || !environments.data)
+    return (
+      <Centered>
+        <Spinner />
+      </Centered>
+    )
+
+  const environment =
+    environments.data.find((e) => e.slug === search.env) ??
+    environments.data.find((e) => e.isDefault) ??
+    environments.data[0]!
+  return (
+    <RunningApp
+      key={`${app.data.release.id}:${environment.id}`}
+      app={{ id: app.data.id, slug: app.data.slug, name: app.data.name }}
+      release={{
+        id: app.data.release.id,
+        version: app.data.release.version,
+        definition: app.data.release.definition,
+      }}
+      environment={environment}
+      environments={environments.data}
+    />
+  )
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return <div className="flex h-full items-center justify-center p-8">{children}</div>
+}
+
+interface RunningAppProps {
+  app: { id: string; slug: string; name: string }
+  release: { id: string; version: string; definition: AppDefinition }
+  environment: { id: string; slug: string; name: string }
+  environments: { id: string; slug: string; name: string }[]
+}
+
+function RunningApp({ app, release, environment, environments }: RunningAppProps) {
+  const { me } = appRoute.useRouteContext()
+  const navigate = useNavigate()
+  const { notices, notify, dismiss } = useNotifications()
+  const [asking, setAsking] = useState<{ message: string; answer: (ok: boolean) => void } | null>(null)
+  const confirm = useCallback(
+    (message: string) => new Promise<boolean>((resolve) => setAsking({ message, answer: resolve })),
+    [],
+  )
+  const answer = (ok: boolean) => {
+    asking?.answer(ok)
+    setAsking(null)
+  }
+  const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {
+    definition: release.definition,
+    appId: app.id,
+    releaseId: release.id,
+    environmentId: environment.id,
+    globals: {
+      current_user: { id: me.id, email: me.email, name: me.name },
+      appContext: { appSlug: app.slug, environment: environment.slug, version: release.version },
+    },
+    notify,
+    confirm,
+  })
+  const answerRef = useRef(answer)
+  answerRef.current = answer
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-2.5">
+        <h1 className="font-semibold">{app.name}</h1>
+        <span className="text-xs text-muted">v{release.version}</span>
+        <div className="ml-auto flex items-center gap-2 text-sm">
+          <label htmlFor="app-env" className="text-muted">
+            Environment
+          </label>
+          <Select
+            id="app-env"
+            value={environment.slug}
+            onChange={(e) =>
+              navigate({ to: '/apps/$slug', params: { slug: app.slug }, search: { env: e.target.value } })
+            }
+          >
+            {environments.map((e) => (
+              <option key={e.id} value={e.slug}>
+                {e.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </header>
+      <div ref={ref} className="hidden" />
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        {host && (
+          <AppHostProvider host={host}>
+            <AppBody definition={release.definition} />
+          </AppHostProvider>
+        )}
+      </div>
+      <Notifications notices={notices} dismiss={dismiss} />
+      {asking && (
+        <Dialog
+          title="Are you sure?"
+          onClose={() => answerRef.current(false)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => answer(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={() => answer(true)}>
+                Continue
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm">{asking.message}</p>
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+function AppBody({ definition }: { definition: AppDefinition }) {
+  const status = useAppHostState((s) => s.status)
+  const problem = useAppHostState((s) => s.problem)
+  if (status === 'failed') return <ErrorNote error={new Error(problem ?? 'The app could not start')} />
+  if (status === 'loading') return <Spinner />
+  return (
+    <>
+      {problem && (
+        <div
+          role="alert"
+          className="mb-3 flex items-center gap-3 rounded-md border border-border bg-accent-soft px-3 py-2 text-sm"
+        >
+          {problem}
+          <Button size="sm" variant="secondary" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        </div>
+      )}
+      <AppCanvas definition={definition} />
+    </>
+  )
+}

@@ -94,6 +94,14 @@ const databaseRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional(), table: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/database'), 'DatabasePage'),
 })
+/** Someone using an app: its live release, in its own chunk (the sandbox's script travels with it). */
+const appViewRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/apps/$slug',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -159,6 +167,7 @@ const routeTree = rootRoute.addChildren([
     resourcesRoute,
     resourceDetailRoute,
     databaseRoute,
+    appViewRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

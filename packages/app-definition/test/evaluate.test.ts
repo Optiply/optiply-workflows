@@ -158,9 +158,26 @@ describe('AppModel', () => {
     expect(m.get('c.value')).toBe('fine')
   })
 
+  it('overrides props set at run time, keeping them when their inputs change', () => {
+    const m = model({
+      components: [
+        comp('a', 'text', { hidden: '{{ v.value }}' }),
+        comp('b', 'text', { value: '{{ a.hidden }}' }),
+      ],
+      variables: [{ name: 'v', initialValue: '{{ false }}' }],
+      transformers: [{ name: 't', code: 'return 1' }],
+    })
+    expect(m.set({ 'a.hidden': true })).toEqual(new Set(['a.hidden', 'b.value']))
+    expect(m.get('b.value')).toBe('true')
+    m.set({ 'v.value': false })
+    expect(m.get('a.hidden')).toBe(true)
+    expect(m.evaluateExpression('a.hidden && t.value')).toBe(1)
+    expect(() => m.set({ 't.value': 2 })).toThrow("t.value can't be set")
+  })
+
   it('refuses to set computed values', () => {
-    const m = model({ components: [comp('a', 'text')] })
-    expect(() => m.set({ 'a.value': 'x' })).toThrow("a.value can't be set")
+    const m = model({ components: [comp('a', 'text')], transformers: [{ name: 't', code: 'return 1' }] })
+    expect(() => m.set({ 't.value': 'x' })).toThrow("t.value can't be set")
     expect(() => m.set({ 'a.nope': 'x' })).toThrow('No value named a.nope')
   })
 

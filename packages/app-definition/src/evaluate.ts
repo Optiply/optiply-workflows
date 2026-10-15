@@ -70,6 +70,8 @@ export class AppModel {
   private readonly templates = new Map<string, TemplatePart[] | TemplateError>()
   private readonly refNames = new Map<string, string[] | TemplateError>()
   private readonly onCycle: Map<string, string[]>
+  /** Props set at run time (`setHidden`), which take the place of their templates from then on. */
+  private readonly overrides = new Map<string, unknown>()
 
   constructor(
     readonly definition: AppDefinition,
@@ -115,8 +117,9 @@ export class AppModel {
   }
 
   /**
-   * Sets run-time values (`source` and `state` nodes only) and re-evaluates what depends on them. Returns every node
-   * whose value changed, the ones set included; an automatic query's `$deps` among them means it should run again.
+   * Sets run-time values and re-evaluates what depends on them. Returns every node whose value changed, the ones set
+   * included; an automatic query's `$deps` among them means it should run again. `source` and `state` nodes take
+   * the value; a prop is overridden (`setHidden`): it keeps the value instead of its template from then on.
    */
   set(updates: Record<string, unknown> | Iterable<[string, unknown]>): Set<string> {
     const changed = new Set<string>()
@@ -124,12 +127,22 @@ export class AppModel {
     for (const [key, value] of entries) {
       const node = this.graph.nodes.get(key)
       if (!node) throw new Error(`No value named ${key}`)
-      if (node.kind !== 'source' && node.kind !== 'state') throw new Error(`${key} can't be set`)
+      if (node.kind !== 'source' && node.kind !== 'state' && node.kind !== 'prop') {
+        throw new Error(`${key} can't be set`)
+      }
+      if (node.kind === 'prop') this.overrides.set(key, value)
       if (this.write(key, value)) changed.add(key)
     }
     for (const key of this.graph.affected(changed)) {
       const node = this.graph.nodes.get(key)!
-      if (node.kind === 'source' || node.kind === 'initial' || this.onCycle.has(key)) continue
+      if (
+        node.kind === 'source' ||
+        node.kind === 'initial' ||
+        this.onCycle.has(key) ||
+        this.overrides.has(key)
+      ) {
+        continue
+      }
       if (!node.deps.some((d) => changed.has(d))) continue
       if (this.compute(node, false)) changed.add(key)
     }
@@ -147,6 +160,11 @@ export class AppModel {
       return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.evaluateValue(v, locals)]))
     }
     return value
+  }
+
+  /** Evaluates the code of one `{{ }}` (without the braces). */
+  evaluateExpression(code: string, locals: Record<string, unknown> = {}): unknown {
+    return this.runSync('expression', code, locals)
   }
 
   /** Evaluates one template: a lone `{{ x }}` gives x's value as-is, anything else a string. */
@@ -275,6 +293,7 @@ export class AppModel {
   private computeProp(node: GraphNode, entity: Entity): boolean {
     const spec = this.propSpec(node, entity)
     if (!spec || entity.kind !== 'component') return this.write(node.key, undefined)
+    if (this.overrides.has(node.key)) return this.write(node.key, this.overrides.get(node.key))
     const props = entity.component.props
     if (!props || !Object.hasOwn(props, node.property))
       return this.write(node.key, structuredClone(spec.default))
