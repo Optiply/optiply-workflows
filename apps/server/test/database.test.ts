@@ -241,6 +241,15 @@ describe('the built-in resource', () => {
     admin = trpc(env.app, await login(env.app, 'admin@optiply.nl'))
   })
 
+  it("comes after people's own resources, which new query blocks default to", async () => {
+    await admin.mutate('resources.create', { type: 'postgres', name: 'Shop DB', slug: 'shop_db' })
+    const list = await admin.query('resources.list')
+    expect(list.body.result?.data.resources.map((r: { slug: string }) => r.slug)).toEqual([
+      'shop_db',
+      'optiply_db',
+    ])
+  })
+
   it("can't be renamed, reconfigured, deleted, or tested with other settings, even by admins", async () => {
     const environmentId = envIds.production!
     const attempts = [

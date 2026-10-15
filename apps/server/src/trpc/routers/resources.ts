@@ -1,7 +1,7 @@
 import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
 import { type Db, environments, permissions, type Resource, resourceConfigs, resources } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { type Access, loadAccess, requireLevel } from '../../services/permissions'
@@ -111,7 +111,8 @@ export const resourcesRouter = router({
     const access = await loadAccess(ctx.db, ctx.user)
     const envIds = await environmentIds(ctx.db)
     const [all, configs] = await Promise.all([
-      ctx.db.select().from(resources).orderBy(asc(resources.name)),
+      // People's own resources first (the editor offers the first one for new queries), then built-in ones.
+      ctx.db.select().from(resources).orderBy(sql`${resources.systemKind} is not null`, asc(resources.name)),
       ctx.db
         .select({ resourceId: resourceConfigs.resourceId, environmentId: resourceConfigs.environmentId })
         .from(resourceConfigs),
