@@ -129,6 +129,7 @@ export const resourcesRouter = router({
           type: r.type,
           description: r.description,
           folderId: r.folderId,
+          systemKind: r.systemKind,
           environments: envIds.map((e) => ({
             environmentId: e,
             level: levels[e] ?? null,

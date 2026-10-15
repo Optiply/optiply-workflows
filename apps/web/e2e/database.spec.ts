@@ -312,3 +312,43 @@ test('make and change a table, and import CSV files into it', async ({ page }) =
     ).toHaveCount(0)
   })
 })
+
+/** The built-in resource on the Resources pages: marked, not editable, and queried from the playground. */
+test('the built-in resource queries the managed tables', async ({ page }) => {
+  const table = `notes_${Date.now().toString(36)}`
+  await signIn(page)
+  const status = await trpcQuery<{ environments: { id: string; slug: string }[] }>(
+    page,
+    'database.environments',
+  )
+  const environmentId = status.environments.find((e) => e.slug === 'production')!.id
+  await trpcMutate(page, 'database.createTable', {
+    environmentId,
+    name: table,
+    columns: [{ name: 'body', type: 'text' }],
+  })
+  await trpcMutate(page, 'database.insertRow', {
+    environmentId,
+    table,
+    values: { body: 'hello from the grid' },
+  })
+
+  await page.getByRole('link', { name: 'Resources' }).click()
+  const row = page.getByRole('link', { name: /Optiply Database/ })
+  await expect(row).toContainText('Built-in')
+  await row.click()
+  await expect(page.getByRole('button', { name: 'Delete resource' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByText('managed by the platform')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: /^Host/ })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Query' }).click()
+  await page.getByRole('textbox', { name: /^SQL/ }).fill(`select body from ${table}`)
+  await page.getByRole('button', { name: 'Run' }).click()
+  await expect(page.getByText('hello from the grid')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('link', { name: 'Open the tables on the Database page' }).click()
+  await expect(page).toHaveURL(/\/database\?env=production/)
+})

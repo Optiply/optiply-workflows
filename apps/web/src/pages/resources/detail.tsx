@@ -44,7 +44,7 @@ export function ResourceDetailPage() {
           <p className="font-mono text-xs text-muted">{resource.slug}</p>
           {resource.description && <p className="mt-1 text-sm text-muted">{resource.description}</p>}
         </div>
-        {owns && <DeleteResource resource={resource} />}
+        {owns && !resource.systemKind && <DeleteResource resource={resource} />}
       </div>
 
       {current && (
@@ -85,7 +85,13 @@ export function ResourceDetailPage() {
       {current && tab === 'query' && (
         <Playground key={current.environmentId} resource={resource} environmentId={current.environmentId} />
       )}
-      {current && tab === 'settings' && (
+      {current && tab === 'settings' && resource.systemKind && (
+        <BuiltInSettings
+          environmentSlug={environments?.find((e) => e.id === current.environmentId)?.slug}
+          user={typeof current.config?.user === 'string' ? current.config.user : undefined}
+        />
+      )}
+      {current && tab === 'settings' && !resource.systemKind && (
         <div className="space-y-6">
           {atLeast(resource.level as Level | null, 'edit') && <GeneralCard resource={resource} />}
           <SettingsPanel
@@ -101,6 +107,41 @@ export function ResourceDetailPage() {
         <AccessEditor target={{ objectType: 'resource', objectId: resource.id }} />
       )}
     </div>
+  )
+}
+
+/** The built-in database resource: the platform sets it up per environment, so there's nothing to edit here. */
+function BuiltInSettings({ environmentSlug, user }: { environmentSlug?: string; user?: string }) {
+  return (
+    <Card className="space-y-3 p-5 text-sm">
+      <h2 className="font-semibold">
+        Built-in{' '}
+        <Badge tone="accent" className="ml-1">
+          managed by the platform
+        </Badge>
+      </h2>
+      <p className="text-muted">
+        This resource reaches the tables of the managed database. Each environment has its own tables, and
+        queries run as that environment's own database user
+        {user ? (
+          <>
+            {' '}
+            (<code className="text-xs">{user}</code>)
+          </>
+        ) : null}
+        , which can't reach anything else. Its settings and password are kept up to date by the platform.
+      </p>
+      <p className="text-muted">
+        Who may use it is set on the Access tab: Use covers the tables, their rows and SQL.
+      </p>
+      <Link
+        to="/database"
+        search={{ env: environmentSlug }}
+        className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+      >
+        Open the tables on the Database page
+      </Link>
+    </Card>
   )
 }
 

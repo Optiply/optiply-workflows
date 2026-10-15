@@ -172,7 +172,14 @@ function ResourceRow({
     >
       <TypeIcon type={resource.type} />
       <div className="min-w-0 flex-1">
-        <div className="font-medium">{resource.name}</div>
+        <div className="font-medium">
+          {resource.name}
+          {resource.systemKind && (
+            <Badge tone="accent" className="ml-2">
+              Built-in
+            </Badge>
+          )}
+        </div>
         <div className="truncate font-mono text-xs text-muted">{resource.slug}</div>
       </div>
       <div className="flex gap-1.5">

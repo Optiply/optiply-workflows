@@ -121,10 +121,17 @@ export function DatabasePage() {
             </Link>
           ))}
         </nav>
-        {status.data.resourceSlug && (
+        {status.data.resourceSlug && status.data.resourceId && (
           <p className="border-t border-border p-3 text-xs text-muted">
             In workflows, query these tables with the{' '}
-            <code className="rounded bg-canvas px-1">{status.data.resourceSlug}</code> resource.
+            <Link
+              to="/resources/$resourceId"
+              params={{ resourceId: status.data.resourceId }}
+              className="rounded bg-canvas px-1 font-mono text-accent hover:underline"
+            >
+              {status.data.resourceSlug}
+            </Link>{' '}
+            resource, where admins also choose who may use them.
           </p>
         )}
       </aside>
