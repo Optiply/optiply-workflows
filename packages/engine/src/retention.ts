@@ -133,6 +133,7 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
   }
 
   // Draft snapshots are made per draft revision for editor runs; once no run refers to an old one, it's dead weight.
+  // The current revision's snapshot is kept however old: the next Run click reuses it.
   if (!result.stopped) {
     result.snapshots = await drain(
       'workflow_draft_snapshots',
@@ -141,6 +142,8 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
           select s.id from workflow_draft_snapshots s
           where s.created_at < ${cutoff}::timestamptz
             and not exists (select 1 from workflow_runs r where r.draft_snapshot_id = s.id)
+            and not exists (
+              select 1 from workflows w where w.id = s.workflow_id and w.draft_revision = s.revision)
           limit ${chunk})
         returning 1`,
     )

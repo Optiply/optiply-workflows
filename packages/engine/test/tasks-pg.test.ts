@@ -9,7 +9,14 @@ import { startTestDatabase } from '@ow/db/testing'
 import { and, sql as dsql, eq } from 'drizzle-orm'
 import type postgres from 'postgres'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { cancelRun, completeTask, Dispatcher, type DispatcherOptions, type ResourceProvider } from '../src'
+import {
+  cancelRun,
+  completeTask,
+  Dispatcher,
+  type DispatcherOptions,
+  PgUserTasks,
+  type ResourceProvider,
+} from '../src'
 import { connect, getRun, postgresResources, queueRun, sql, waitFor, waitForFinish, wf } from './pg-harness'
 
 let db: Db
@@ -308,6 +315,51 @@ describe('User Tasks', () => {
       },
     })
     expect(await taskOf(run.id)).toBeUndefined()
+  })
+
+  /** Opens a task for a queued run (no worker), as the block would. Cancel the run afterwards. */
+  const openTask = async (
+    tasks: PgUserTasks,
+    assignees: { users: string[]; groups: string[] },
+    dueAt: Date | null,
+  ) => {
+    const run = await queueRun(db, refundFlow(), input)
+    const request = {
+      runId: run.id,
+      blockKey: 'approval',
+      workflowId: run.workflowId,
+      environmentId: run.environmentId,
+      title: 'Refund?',
+      description: null,
+      fields: [{ name: 'reason', label: 'Reason', type: 'text' as const, required: false }],
+      outcomes: [{ id: 'approve', label: 'Approve' }],
+      assignees,
+      dueAt,
+    }
+    return { run, request, task: await tasks.open(request) }
+  }
+
+  it('a block that runs again gets its task back, even if an assignee is gone since', async () => {
+    const tasks = new PgUserTasks(db)
+    await db.insert(users).values({ email: 'carol@optiply.nl', name: 'Carol' })
+    const { run, request, task } = await openTask(tasks, { users: ['carol@optiply.nl'], groups: [] }, null)
+    await db.delete(users).where(eq(users.email, 'carol@optiply.nl'))
+    expect((await tasks.open(request)).id).toBe(task.id)
+    await cancelRun(db, run.id)
+  })
+
+  it('refuses an answer past the due time, even before the run has expired the task', async () => {
+    const tasks = new PgUserTasks(db)
+    const { run, task } = await openTask(
+      tasks,
+      { users: ['ana@optiply.nl'], groups: [] },
+      new Date(Date.now() - 1000),
+    )
+    expect(task.status).toBe('open')
+    const late = await completeTask(db, { taskId: task.id, userId: ana.id, outcome: 'approve', values: {} })
+    expect(late).toEqual({ ok: false, reason: 'expired' })
+    expect((await tasks.get(task.id))!.status).toBe('expired')
+    await cancelRun(db, run.id)
   })
 })
 

@@ -13,6 +13,10 @@ export class PgUserTasks implements UserTasks {
   constructor(private readonly db: Db) {}
 
   async open(request: Parameters<UserTasks['open']>[0]): Promise<TaskState> {
+    // Already opened by an earlier attempt at this block: that task stands, whatever its assignees resolve to now.
+    const existing = await this.find(request.runId, request.blockKey)
+    if (existing) return (await this.get(existing))!
+
     const emails = unique(request.assignees.users.map((e) => e.trim().toLowerCase()))
     const groupNames = unique(request.assignees.groups.map((g) => g.trim()))
     const foundUsers = emails.length
@@ -61,15 +65,16 @@ export class PgUserTasks implements UserTasks {
       })
       .onConflictDoNothing({ target: [userTasks.runId, userTasks.blockKey] })
       .returning({ id: userTasks.id })
-    const id =
-      inserted[0]?.id ??
-      (
-        await this.db
-          .select({ id: userTasks.id })
-          .from(userTasks)
-          .where(and(eq(userTasks.runId, request.runId), eq(userTasks.blockKey, request.blockKey)))
-      )[0]!.id
+    const id = inserted[0]?.id ?? (await this.find(request.runId, request.blockKey))!
     return (await this.get(id))!
+  }
+
+  private async find(runId: string, blockKey: string): Promise<string | undefined> {
+    const [row] = await this.db
+      .select({ id: userTasks.id })
+      .from(userTasks)
+      .where(and(eq(userTasks.runId, runId), eq(userTasks.blockKey, blockKey)))
+    return row?.id
   }
 
   async get(taskId: string): Promise<TaskState | null> {
@@ -108,7 +113,7 @@ export type CompleteTaskResult =
   | { ok: true; runId: string }
   | {
       ok: false
-      reason: 'not_found' | 'not_open' | 'invalid'
+      reason: 'not_found' | 'not_open' | 'expired' | 'invalid'
       errors?: { field?: string; message: string }[]
     }
 
@@ -128,6 +133,7 @@ export async function completeTask(
       .select({
         runId: userTasks.runId,
         status: userTasks.status,
+        dueAt: userTasks.dueAt,
         fields: userTasks.fields,
         outcomes: userTasks.outcomes,
       })
@@ -135,6 +141,14 @@ export async function completeTask(
       .where(eq(userTasks.id, request.taskId))
     if (!task) return { ok: false, reason: 'not_found' }
     await tx.execute(sql`select 1 from workflow_runs where id = ${task.runId} for update`)
+    // Past its due time the task has expired, even if its run hasn't got round to failing the block yet.
+    if (task.status === 'open' && task.dueAt && task.dueAt.getTime() <= Date.now()) {
+      await tx
+        .update(userTasks)
+        .set({ status: 'expired', updatedAt: new Date() })
+        .where(and(eq(userTasks.id, request.taskId), eq(userTasks.status, 'open')))
+      return { ok: false, reason: 'expired' }
+    }
 
     const submission = checkTaskSubmission(task.fields, task.outcomes, request.outcome, request.values)
     if (!submission.ok) return { ok: false, reason: 'invalid', errors: submission.errors }

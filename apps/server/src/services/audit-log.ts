@@ -1,5 +1,5 @@
 import { auditEvents, type Db, environments, users } from '@ow/db'
-import { and, desc, eq, gte, lt, lte, type SQL } from 'drizzle-orm'
+import { and, desc, eq, gte, lt, type SQL } from 'drizzle-orm'
 import { z } from 'zod'
 
 /** What the audit log can be filtered by, in the list and the CSV export. */
@@ -22,7 +22,7 @@ export function auditWhere(filter: AuditFilter, beforeId?: number): SQL | undefi
   if (filter.objectId) conditions.push(eq(auditEvents.objectId, filter.objectId))
   if (filter.actorUserId) conditions.push(eq(auditEvents.actorUserId, filter.actorUserId))
   if (filter.since) conditions.push(gte(auditEvents.at, filter.since))
-  if (filter.until) conditions.push(lte(auditEvents.at, new Date(filter.until.getTime() - 1)))
+  if (filter.until) conditions.push(lt(auditEvents.at, filter.until))
   return conditions.length ? and(...conditions) : undefined
 }
 

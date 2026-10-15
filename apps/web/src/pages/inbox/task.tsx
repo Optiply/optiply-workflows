@@ -73,7 +73,7 @@ function TaskView({ task }: { task: Task }) {
         </Fact>
         <Fact label="Assigned to">{assigneeText(task)}</Fact>
         <Fact label="Due">
-          <DueText dueAt={task.dueAt} />
+          <DueText dueAt={task.dueAt} status={task.status} />
         </Fact>
         <Fact label="Created">{new Date(task.createdAt).toLocaleString()}</Fact>
         {task.completedBy && (
@@ -241,8 +241,9 @@ function Answer({ task, fields }: { task: Task; fields: OpenTaskField[] }) {
       </Card>
     )
   }
+  const pastDue = task.dueAt !== null && new Date(task.dueAt).getTime() <= Date.now()
   const why =
-    task.status === 'expired'
+    task.status === 'expired' || (task.status === 'open' && pastDue)
       ? 'Nobody completed this task before it was due.'
       : task.status === 'cancelled'
         ? 'This task was cancelled: its run ended without it.'

@@ -92,7 +92,10 @@ export const tasksRouter = router({
             (result.errors ?? []).map((e) => ({ path: e.field ? [e.field] : [], message: e.message })),
           )
         }
-        throw new TRPCError({ code: 'CONFLICT', message: 'This task is no longer open' })
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: result.reason === 'expired' ? 'This task has expired' : 'This task is no longer open',
+        })
       }
       await ctx.audit({
         action: 'task.complete',

@@ -83,7 +83,8 @@ export async function assigneeNames(db: Db, rows: readonly TaskRow[]) {
 
 /**
  * What the caller may do with a task: assignees (directly or through a group) and admins may see and complete it;
- * people with access to its workflow may see it. Completing also needs the task open and its run still going.
+ * people with access to its workflow may see it. Completing also needs the task open, not past its due time, and
+ * its run still going.
  */
 export function taskAccess(
   row: TaskRow,
@@ -96,7 +97,11 @@ export function taskAccess(
     row.task.assigneeUserIds.includes(user.id) ||
     row.task.assigneeGroupIds.some((g) => groupIds.includes(g))
   const see = assigned || atLeast(access.workflowLevel(row.workflow), 'use')
-  return { see, complete: assigned && row.task.status === 'open' && !FINAL_RUN.has(row.runStatus) }
+  const pastDue = row.task.dueAt !== null && row.task.dueAt.getTime() <= Date.now()
+  return {
+    see,
+    complete: assigned && row.task.status === 'open' && !pastDue && !FINAL_RUN.has(row.runStatus),
+  }
 }
 
 /** A task as the API returns it. Fields, outcomes and the description only in detail views. */

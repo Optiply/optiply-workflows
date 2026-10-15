@@ -1,5 +1,5 @@
 import { auditEvents } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { recordAudit } from '../src/audit'
 import { csvField } from '../src/services/audit-log'
@@ -65,6 +65,18 @@ describe('the audit log', () => {
     ])
     const january = data(await admin.query('audit.list', { since: '2026-01-01', until: '2026-02-01' }))
     expect(january.items.map((e: { objectId: string }) => e.objectId)).toEqual(['wf-1'])
+  })
+
+  it('keeps events in the last microseconds before `until`', async () => {
+    await env.db.execute(sql`
+      insert into audit_events (action, object_type, object_id, at)
+      values ('edge.event', 'edge', 'edge-1', '2026-06-30T23:59:59.999500Z')`)
+    const june = data(
+      await admin.query('audit.list', { action: 'edge.event', since: '2026-06-01', until: '2026-07-01' }),
+    )
+    expect(june.items.map((e: { objectId: string }) => e.objectId)).toEqual(['edge-1'])
+    const july = data(await admin.query('audit.list', { action: 'edge.event', since: '2026-07-01' }))
+    expect(july.items).toEqual([])
   })
 
   it('lists the actions, object types and people to filter by', async () => {

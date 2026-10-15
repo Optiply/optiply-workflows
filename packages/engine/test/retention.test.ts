@@ -109,7 +109,8 @@ describe('deleteOldRuns', () => {
     const [oldChild] = await finishedRuns(1, { finishedDaysAgo: 44, parent: oldParent })
     const [parentOfRecent] = await finishedRuns(1, { finishedDaysAgo: 50 })
     const [recentChild] = await finishedRuns(1, { finishedDaysAgo: 2, parent: parentOfRecent })
-    // Draft snapshots: an old one nothing uses (deleted), an old one a recent run uses, and a new one (kept).
+    // Draft snapshots: an old one nothing uses (deleted), an old one a recent run uses, a new one, and an old one of
+    // the current draft revision, which a Run click can pick up at any moment (kept).
     const snapshot = async (revision: number, daysAgo: number) =>
       (
         await db.execute<{ id: string }>(dsql`
@@ -120,6 +121,8 @@ describe('deleteOldRuns', () => {
     const deadSnapshot = await snapshot(1, 90)
     const usedSnapshot = await snapshot(2, 90)
     const newSnapshot = await snapshot(3, 1)
+    const currentSnapshot = await snapshot(4, 90)
+    await db.update(workflows).set({ draftRevision: 4 }).where(eq(workflows.id, workflowId))
     await finishedRuns(1, { finishedDaysAgo: 3, snapshot: usedSnapshot })
     expect(await count('block_runs')).toBe(100_010)
 
@@ -203,7 +206,12 @@ describe('deleteOldRuns', () => {
     for (const id of [oldParent!, oldChild!, parentOfRecent!]) expect(await exists(id)).toBe(false)
     expect(await count('workflow_runs', `id = '${recentChild}' and parent_run_id is null`)).toBe(1)
     expect(await count('workflow_draft_snapshots', `id = '${deadSnapshot}'`)).toBe(0)
-    expect(await count('workflow_draft_snapshots', `id in ('${usedSnapshot}', '${newSnapshot}')`)).toBe(2)
+    expect(
+      await count(
+        'workflow_draft_snapshots',
+        `id in ('${usedSnapshot}', '${newSnapshot}', '${currentSnapshot}')`,
+      ),
+    ).toBe(3)
   }, 120_000)
 
   it('stops between statements when asked, leaving the rest for next time', async () => {

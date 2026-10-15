@@ -87,7 +87,7 @@ export function InboxPage() {
                 <Td className="text-muted">{assigneeText(task)}</Td>
                 <Td className="whitespace-nowrap">
                   {status === 'open' ? (
-                    <DueText dueAt={task.dueAt} />
+                    <DueText dueAt={task.dueAt} status={task.status} />
                   ) : (
                     <>
                       <StatusBadge status={task.status} />
@@ -113,17 +113,26 @@ export function assigneeText(task: Pick<TaskSummary, 'assignees'>): string {
   return [...task.assignees.users.map((u) => u.name), ...task.assignees.groups].join(', ') || '—'
 }
 
-/** "in 3 hours", or overdue in red. */
-export function DueText({ dueAt }: { dueAt: string | Date | null }) {
+/** "in 3 hours"; once past, an open task has expired (in red): it can no longer be completed. */
+export function DueText({ dueAt, status }: { dueAt: string | Date | null; status: string }) {
   if (!dueAt) return <span className="text-muted">No due date</span>
   const ms = new Date(dueAt).getTime() - Date.now()
   const text = relative(ms)
+  const past = ms < 0
   return (
     <span
-      className={ms < 0 ? 'text-danger' : ms < 3_600_000 ? 'text-amber-700' : undefined}
+      className={
+        past
+          ? status === 'open'
+            ? 'text-danger'
+            : 'text-muted'
+          : ms < 3_600_000
+            ? 'text-amber-700'
+            : undefined
+      }
       title={new Date(dueAt).toLocaleString()}
     >
-      {ms < 0 ? `${text} overdue` : `in ${text}`}
+      {past ? (status === 'open' ? `expired ${text} ago` : `${text} ago`) : `in ${text}`}
     </span>
   )
 }

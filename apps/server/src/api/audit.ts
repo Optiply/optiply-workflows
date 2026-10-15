@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http'
 import type { Db } from '@ow/db'
 import type { FastifyPluginAsync } from 'fastify'
 import { recordAudit } from '../audit'
@@ -39,18 +40,45 @@ export const auditApi: FastifyPluginAsync<{ db: Db }> = async (app, { db }) => {
       'content-disposition': `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`,
       'cache-control': 'no-store',
     })
-    reply.raw.write(`${CSV_COLUMNS.join(',')}\r\n`)
-    let written = 0
-    let before: number | undefined
-    while (written < MAX_EXPORT_ROWS) {
-      const rows = await auditPage(db, filter, Math.min(PAGE, MAX_EXPORT_ROWS - written), before)
-      if (!rows.length) break
-      const chunk = rows.map((r) => `${csvRow(r)}\r\n`).join('')
-      if (!reply.raw.write(chunk)) await new Promise((r) => reply.raw.once('drain', r))
-      written += rows.length
-      before = rows.at(-1)!.id
-      if (rows.length < PAGE) break
+    const res = reply.raw
+    // A download the browser gave up on stops the export: no more pages, and no wait for a drain that won't come.
+    let closed = false
+    const onClose = () => {
+      closed = true
     }
-    reply.raw.end()
+    res.once('close', onClose)
+    try {
+      res.write(`${CSV_COLUMNS.join(',')}\r\n`)
+      let written = 0
+      let before: number | undefined
+      while (written < MAX_EXPORT_ROWS && !closed) {
+        const rows = await auditPage(db, filter, Math.min(PAGE, MAX_EXPORT_ROWS - written), before)
+        if (!rows.length || closed) break
+        const chunk = rows.map((r) => `${csvRow(r)}\r\n`).join('')
+        if (!res.write(chunk) && !closed) await drainOrClose(res)
+        written += rows.length
+        before = rows.at(-1)!.id
+        if (rows.length < PAGE) break
+      }
+      res.end()
+    } catch (err) {
+      // The status line is already sent: cut the connection so the download fails instead of looking complete.
+      req.log.error({ err }, 'audit export failed')
+      res.destroy()
+    } finally {
+      res.off('close', onClose)
+    }
+  })
+}
+
+function drainOrClose(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off('drain', done)
+      res.off('close', done)
+      resolve()
+    }
+    res.once('drain', done)
+    res.once('close', done)
   })
 }

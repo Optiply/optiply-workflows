@@ -280,7 +280,7 @@ describe.skipIf(!available)('MySQL connector', () => {
       await expect.poll(() => running('%SLEEP(5)%'), { timeout: 2000 }).toEqual([])
     })
 
-    it('cancels on abort: the query is killed on the server, and the connection is reused', async () => {
+    it('cancels on abort: the query is killed on the server, and its connection is replaced', async () => {
       const res = myResource({ poolSize: 1 })
       const controller = new AbortController()
       setTimeout(() => controller.abort(), 300)
@@ -298,6 +298,29 @@ describe.skipIf(!available)('MySQL connector', () => {
       expect(Date.now() - started).toBeLessThan(2000)
       await expect.poll(() => running('%SLEEP(30)%'), { timeout: 2000 }).toEqual([])
       expect((await run(res, 'SELECT 2 AS two')).data).toEqual([{ two: 2 }])
+    })
+
+    it("never hands a killed query's connection to the next query, which a late KILL could hit", async () => {
+      const res = myResource({ poolSize: 1, statementTimeoutMs: 300 })
+      const before = (await run(res, 'SELECT CONNECTION_ID() AS id')).data as { id: number }[]
+      expect((await failure(run(res, 'SELECT SLEEP(5) AS late_kill'))).code).toBe('timeout')
+      const after = (await run(res, 'SELECT CONNECTION_ID() AS id')).data as { id: number }[]
+      expect(after[0]!.id).not.toBe(before[0]!.id)
+    })
+
+    it("stops waiting when the KILL can't be sent, by dropping the connection", async () => {
+      // One connection allowed: the query holds it, so the side connection for KILL QUERY is refused.
+      await root.query(
+        "CREATE USER IF NOT EXISTS 'one_conn'@'%' IDENTIFIED BY 'one-pass' WITH MAX_USER_CONNECTIONS 1",
+      )
+      await root.query(`GRANT SELECT ON \`${server.database}\`.* TO 'one_conn'@'%'`)
+      const res = resource(
+        { ...base, user: 'one_conn', poolSize: 1, statementTimeoutMs: 300 },
+        { password: 'one-pass' },
+      )
+      const started = Date.now()
+      expect((await failure(run(res, 'SELECT SLEEP(10) AS unkillable'))).code).toBe('timeout')
+      expect(Date.now() - started).toBeLessThan(3000)
     })
   })
 

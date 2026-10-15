@@ -78,11 +78,6 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
       idleTimeout: 60_000,
       enableKeepAlive: true,
     })
-    pool.on('connection', (conn) => {
-      // Queued on the connection before anything the pool hands out, so every query sees them.
-      conn.query("SET SESSION time_zone = '+00:00'")
-      if (config.readOnly) conn.query('SET SESSION transaction_read_only = ON')
-    })
     return { pool, config, connectionOptions }
   },
 
@@ -133,6 +128,8 @@ function sslOption(config: Config): mysql.SslOptions | undefined {
 /**
  * Binds the evaluated `{{ }}` values. An array expands its `?` into one placeholder per item, so
  * `id IN ({{ ids }})` works (an empty array becomes `NULL`, which matches nothing); objects are sent as JSON text.
+ * Careful with `NOT IN ({{ ids }})`: an empty array makes it `NOT IN (NULL)`, which matches nothing too, not
+ * everything. Guard it: `(id NOT IN ({{ ids }}) OR {{ ids.length }} = 0)`.
  */
 export function expandParams(plan: CompiledSql, values: unknown[]): { text: string; params: unknown[] } {
   let text = plan.text
@@ -167,8 +164,9 @@ function toParam(value: unknown): unknown {
 
 /**
  * Runs one prepared statement on a pooled connection and streams its rows. Cancelling (the signal) and the
- * statement timeout kill the query from a side connection (`KILL QUERY`), which leaves the pooled connection
- * usable; a result past `maxRows` drops the connection instead of reading the rest.
+ * statement timeout kill the query from a side connection (`KILL QUERY`), and the connection is then dropped, not
+ * returned: a kill still on its way must not hit the next query on it. If the kill can't be sent, dropping the
+ * connection ends the wait. A result past `maxRows` drops the connection instead of reading the rest.
  */
 async function runStatement(
   client: Client,
@@ -179,12 +177,19 @@ async function runStatement(
   const conn = await getConnection(client.pool, opts.signal).catch((err: unknown) => {
     throw toError(err, undefined)
   })
+  await prepareSession(conn, client.config.readOnly)
   let stop: 'aborted' | 'timeout' | undefined
   let tooLarge = false
+  // Ends the wait for the query's result; a destroyed connection doesn't fail the query it was running.
+  let abandon: (() => void) | undefined
   const kill = (reason: 'aborted' | 'timeout') => {
     if (stop) return
     stop = reason
-    void killQuery(client, conn.threadId)
+    void killQuery(client, conn.threadId).then((killed) => {
+      if (killed) return
+      conn.destroy()
+      abandon?.()
+    })
   }
   const onAbort = () => kill('aborted')
   opts.signal.addEventListener('abort', onAbort, { once: true })
@@ -197,6 +202,7 @@ async function runStatement(
     let header: mysql.ResultSetHeader | undefined
 
     await new Promise<void>((resolve, reject) => {
+      abandon = resolve
       // A server-side prepared statement: values are sent separately and never touch the SQL text.
       const q = conn.execute({ sql: text, values: params as mysql.ExecuteValues } as mysql.QueryOptions)
       q.on('fields', (f: mysql.FieldPacket[] | undefined) => {
@@ -251,7 +257,8 @@ async function runStatement(
   } finally {
     clearTimeout(timer)
     opts.signal.removeEventListener('abort', onAbort)
-    if (!tooLarge) {
+    if (stop) conn.destroy()
+    else if (!tooLarge) {
       // Prepared statements are cached per connection; user SQL is arbitrary, so don't keep it.
       try {
         conn.unprepare(text)
@@ -261,6 +268,34 @@ async function runStatement(
       conn.release()
     }
   }
+}
+
+/** Connections whose session is set up; the pool hands out the same connection objects again. */
+const preparedSessions = new WeakSet<mysql.PoolConnection>()
+
+/**
+ * Sets up a connection's session before its first query. A connection whose setup fails is dropped and the query
+ * fails: a read-only resource on a server without `transaction_read_only` (MariaDB before 11.1) must not run
+ * read-write.
+ */
+async function prepareSession(conn: mysql.PoolConnection, readOnly: boolean): Promise<void> {
+  if (preparedSessions.has(conn)) return
+  const statements = ["SET SESSION time_zone = '+00:00'"]
+  if (readOnly) statements.push('SET SESSION transaction_read_only = ON')
+  for (const statement of statements) {
+    try {
+      await new Promise<void>((resolve, reject) =>
+        conn.query(statement, (err) => (err ? reject(err) : resolve())),
+      )
+    } catch (err) {
+      conn.destroy()
+      throw new ConnectorError(
+        'query',
+        `Could not set up the session (${statement}): ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+  preparedSessions.add(conn)
 }
 
 /** Waits for a pooled connection, giving up when the signal aborts (a late connection goes straight back). */
@@ -285,13 +320,13 @@ function getConnection(pool: mysql.Pool, signal: AbortSignal): Promise<mysql.Poo
   })
 }
 
-/** `KILL QUERY` from a fresh connection: the query's own connection is busy waiting for it. Best effort. */
-async function killQuery(client: Client, threadId: number): Promise<void> {
-  await new Promise<void>((resolve) => {
+/** `KILL QUERY` from a fresh connection: the query's own connection is busy waiting for it. True once it's sent. */
+function killQuery(client: Client, threadId: number): Promise<boolean> {
+  return new Promise((resolve) => {
     const side = mysql.createConnection(client.connectionOptions)
-    side.on('error', () => resolve())
-    side.query('KILL QUERY ?', [threadId], () => {
-      side.end(() => resolve())
+    side.on('error', () => resolve(false))
+    side.query('KILL QUERY ?', [threadId], (err) => {
+      side.end(() => resolve(!err))
     })
   })
 }
