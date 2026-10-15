@@ -64,7 +64,7 @@ async function tableExists(name: string): Promise<boolean> {
 
 describe('previewing', () => {
   it('guesses the delimiter, names, types, date order and decimal commas from the start of a file', async () => {
-    const res = await admin.query('database.previewCsv', {
+    const res = await admin.mutate('database.previewCsv', {
       sample:
         'Naam;Prijs;Besteld op;Actief\nKoffie;1.234,50;31-01-2026;ja\nThee;2,5;01-02-2026;nee\nHalf;"cut',
     })
@@ -79,6 +79,19 @@ describe('previewing', () => {
         ['Koffie', '1.234,50', '31-01-2026', 'ja'],
         ['Thee', '2,5', '01-02-2026', 'nee'],
       ],
+    })
+  })
+
+  it('reads with the delimiter it is told to use', async () => {
+    const res = await admin.mutate('database.previewCsv', {
+      sample: 'a;b,c\n1;2,3\n',
+      delimiter: ',',
+      complete: true,
+    })
+    expect(res.body.result?.data).toMatchObject({
+      delimiter: ',',
+      header: ['a;b', 'c'],
+      rows: [['1;2', '3']],
     })
   })
 })

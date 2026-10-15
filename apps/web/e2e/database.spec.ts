@@ -188,3 +188,127 @@ test('loads more rows as the grid scrolls', async ({ page }) => {
   await page.getByTestId('grid').evaluate((el) => el.scrollTo(0, el.scrollHeight))
   await expect(page.locator('[data-column="n"]').filter({ hasText: /^350$/ })).toBeVisible()
 })
+
+/** The schema editor and the import wizard: make a table, change its shape, and fill it from CSV files. */
+test('make and change a table, and import CSV files into it', async ({ page }) => {
+  const name = `crm_${Date.now().toString(36)}`
+  const csvFile = (fileName: string, text: string) => ({
+    name: fileName,
+    mimeType: 'text/csv',
+    buffer: Buffer.from(text),
+  })
+  await signIn(page)
+  await page.goto('/database?env=production')
+
+  await test.step('a new table with its columns', async () => {
+    await page.getByRole('button', { name: 'New table' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New table' })
+    // The field's hint is part of its accessible name.
+    await dialog.getByRole('textbox', { name: /^Name/ }).fill(name)
+    await dialog.getByLabel('Column name').fill('email')
+    await dialog.getByRole('checkbox', { name: 'Required' }).check()
+    await dialog.getByRole('checkbox', { name: 'Unique' }).check()
+    await dialog.getByRole('button', { name: 'Add column' }).click()
+    await dialog.getByLabel('Column name').nth(1).fill('score')
+    await dialog.getByLabel('Column type').nth(1).selectOption('integer')
+    await dialog.getByLabel('Default').nth(1).selectOption('value')
+    await dialog.getByLabel('Default value').fill('0')
+    await dialog.getByRole('button', { name: 'Create table' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByRole('heading', { name })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: /email/ })).toBeVisible()
+  })
+
+  const schema = () => page.getByRole('dialog', { name: /^Table / })
+  await test.step('columns are added, changed and deleted; the table is renamed', async () => {
+    await page.getByRole('button', { name: 'Table', exact: true }).click()
+    await schema().getByRole('button', { name: 'Add column' }).click()
+    const add = page.getByRole('dialog', { name: `Add a column to ${name}` })
+    await add.getByRole('textbox', { name: /^Name/ }).fill('joined')
+    await add.getByRole('combobox', { name: /^Type/ }).selectOption('date')
+    await add.getByRole('button', { name: 'Add column' }).click()
+    await expect(page.getByTestId('schema-column-joined')).toContainText('Date')
+
+    await schema().getByRole('button', { name: 'Edit score' }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit score' })
+    await edit.getByRole('combobox', { name: /^Type/ }).selectOption('decimal')
+    await edit.getByRole('button', { name: 'Save' }).click()
+    await expect(page.getByTestId('schema-column-score')).toContainText('Decimal')
+    await expect(page.getByTestId('schema-column-score')).toContainText('default 0')
+
+    page.once('dialog', (d) => void d.accept())
+    await schema().getByRole('button', { name: 'Delete joined' }).click()
+    await expect(page.getByTestId('schema-column-joined')).toHaveCount(0)
+
+    await schema().getByRole('textbox', { name: /^Name/ }).fill(`${name}_v2`)
+    await schema().getByRole('button', { name: 'Rename' }).click()
+    await expect(page.getByRole('heading', { name: `${name}_v2` })).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`table=${name}_v2`))
+  })
+
+  await test.step('a CSV is added to the open table, its columns mapped by name', async () => {
+    await page.getByRole('button', { name: 'Import', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Import CSV' })
+    await expect(dialog.getByLabel('Import into')).toHaveValue('append')
+    await dialog
+      .getByLabel('CSV file')
+      .setInputFiles(csvFile('people.csv', 'email,score,ignored\na@x.nl,3.5,x\nb@x.nl,2,y\n'))
+    await expect(dialog.getByLabel('Target of column 1')).toHaveValue('email')
+    await expect(dialog.getByLabel('Target of column 2')).toHaveValue('score')
+    await expect(dialog.getByLabel('Target of column 3')).toHaveValue('')
+    await dialog.getByRole('button', { name: 'Import' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('row-count')).toHaveText('2 rows')
+  })
+
+  await test.step('a bad file imports nothing and says which line to fix', async () => {
+    await page.getByRole('button', { name: 'Import', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Import CSV' })
+    await dialog
+      .getByLabel('CSV file')
+      .setInputFiles(csvFile('more.csv', 'email,score\nc@x.nl,1\nd@x.nl,lots\n'))
+    await expect(dialog.getByLabel('Target of column 2')).toHaveValue('score')
+    await dialog.getByRole('button', { name: 'Import' }).click()
+    await expect(dialog.getByRole('alert')).toContainText('Nothing was imported.')
+    await expect(dialog.getByRole('alert')).toContainText(
+      'Line 3, score: invalid input syntax for type numeric',
+    )
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByTestId('row-count')).toHaveText('2 rows')
+  })
+
+  await test.step('a Dutch file becomes a new table, its types, delimiter and decimal commas guessed', async () => {
+    await page.getByRole('button', { name: 'Import CSV' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Import CSV' })
+    const file = `prijzen_${Date.now().toString(36)}`
+    await dialog
+      .getByLabel('CSV file')
+      .setInputFiles(
+        csvFile(`${file}.csv`, 'Naam;Prijs;Datum\nKoffie;1,50;31-01-2026\nThee;2,25;01-02-2026\n'),
+      )
+    await expect(dialog.getByLabel('Table name')).toHaveValue(file)
+    await expect(dialog.getByLabel('Delimiter')).toHaveValue(';')
+    await expect(dialog.getByRole('checkbox', { name: 'Decimal comma (1.234,50)' })).toBeChecked()
+    await expect(dialog.getByLabel('Type of column 2')).toHaveValue('decimal')
+    await expect(dialog.getByLabel('Type of column 3')).toHaveValue('date')
+    await expect(dialog.getByTestId('import-preview')).toContainText('Koffie')
+    await dialog.getByRole('button', { name: 'Import' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: file })).toBeVisible()
+    await expect(cell(page, 0, 'prijs')).toHaveText('1.50')
+    await expect(cell(page, 1, 'datum')).toHaveText('2026-02-01')
+  })
+
+  await test.step('a table is deleted', async () => {
+    await page
+      .getByRole('navigation', { name: 'Tables' })
+      .getByRole('link', { name: `${name}_v2` })
+      .click()
+    await page.getByRole('button', { name: 'Table', exact: true }).click()
+    page.once('dialog', (d) => void d.accept())
+    await schema().getByRole('button', { name: 'Delete table' }).click()
+    await expect(
+      page.getByRole('navigation', { name: 'Tables' }).getByRole('link', { name: `${name}_v2` }),
+    ).toHaveCount(0)
+  })
+})

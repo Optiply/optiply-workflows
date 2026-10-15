@@ -228,8 +228,11 @@ export interface CsvGuess {
  * delimiter, column names and types. A column whose every non-empty value fits a type gets it; mixed or unknown
  * means text. Empty columns are text.
  */
-export function guessCsv(sample: string, opts: { complete?: boolean; previewRows?: number } = {}): CsvGuess {
-  const delimiter = detectDelimiter(sample)
+export function guessCsv(
+  sample: string,
+  opts: { complete?: boolean; previewRows?: number; delimiter?: Delimiter } = {},
+): CsvGuess {
+  const delimiter = opts.delimiter ?? detectDelimiter(sample)
   const parser = new CsvParser(delimiter)
   const records = parser.push(sample)
   if (opts.complete) records.push(...parser.end())

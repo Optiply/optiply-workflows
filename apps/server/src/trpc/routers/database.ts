@@ -3,7 +3,7 @@ import { TRPCError } from '@trpc/server'
 import { asc, desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { z } from 'zod'
-import { CsvError, guessCsv } from '../../services/csv'
+import { CsvError, DELIMITERS, guessCsv } from '../../services/csv'
 import {
   addColumn,
   alterColumn,
@@ -215,11 +215,19 @@ export const databaseRouter = router({
    * names and types, date order, decimal commas, and preview rows. Only parses; the import itself streams to
    * `POST /api/v1/database/import`.
    */
+  // A mutation only so the sample travels in a POST body: as a query it would be in the URL.
   previewCsv: authedProcedure
-    .input(z.object({ sample: z.string().max(PREVIEW_MAX_CHARS), complete: z.boolean().default(false) }))
-    .query(({ input }) => {
+    .input(
+      z.object({
+        sample: z.string().max(PREVIEW_MAX_CHARS),
+        complete: z.boolean().default(false),
+        /** Read with this delimiter instead of the guessed one. */
+        delimiter: z.enum(DELIMITERS).optional(),
+      }),
+    )
+    .mutation(({ input }) => {
       try {
-        return guessCsv(input.sample, { complete: input.complete })
+        return guessCsv(input.sample, { complete: input.complete, delimiter: input.delimiter })
       } catch (err) {
         if (err instanceof CsvError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
         throw err

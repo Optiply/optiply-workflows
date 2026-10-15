@@ -1,7 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import type { VisibilityState } from '@tanstack/react-table'
-import { Columns3, Database, Download, Filter, Plus, RefreshCw, Table2, Trash2 } from 'lucide-react'
+import {
+  Columns3,
+  Database,
+  Download,
+  FileUp,
+  Filter,
+  Plus,
+  RefreshCw,
+  Settings2,
+  Table2,
+  Trash2,
+} from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -9,7 +20,9 @@ import { cn } from '@/lib/utils'
 import type { TableInfo } from './cells'
 import { activeFilters, FilterBar, type Selection } from './filters'
 import { Grid, rowsKey } from './grid'
+import { ImportDialog } from './import-dialog'
 import { AddRowDialog } from './row-dialog'
+import { NewTableDialog, SchemaDialog } from './schema-dialogs'
 
 const route = getRouteApi('/app/database')
 
@@ -22,8 +35,10 @@ const EMPTY_SELECTION: Selection = { filters: [], match: 'all', sort: [] }
 export function DatabasePage() {
   const trpc = useTRPC()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const search = route.useSearch()
   const status = useQuery(trpc.database.environments.queryOptions())
+  const [dialog, setDialog] = useState<'new' | 'import' | null>(null)
 
   const environments = status.data?.environments ?? []
   const environment =
@@ -42,6 +57,14 @@ export function DatabasePage() {
 
   const go = (env: string, next?: string) =>
     navigate({ to: '/database', search: { env, table: next }, replace: true })
+  /** After a table was made, renamed or dropped: the list again, and that table open. */
+  const showTable = async (name?: string) => {
+    if (!environment) return
+    await queryClient.invalidateQueries({
+      queryKey: trpc.database.tables.queryKey({ environmentId: environment.id }),
+    })
+    await go(environment.slug, name)
+  }
 
   return (
     <div className="flex h-full">
@@ -63,6 +86,16 @@ export function DatabasePage() {
               </option>
             ))}
           </Select>
+          {usable && (
+            <div className="flex flex-col gap-1.5">
+              <Button size="sm" onClick={() => setDialog('new')}>
+                <Plus className="size-4" /> New table
+              </Button>
+              <Button size="sm" onClick={() => setDialog('import')}>
+                <FileUp className="size-4" /> Import CSV
+              </Button>
+            </div>
+          )}
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2" aria-label="Tables">
           {tables.isLoading && <Spinner />}
@@ -111,7 +144,14 @@ export function DatabasePage() {
             <ErrorNote error={tables.error} />
           </div>
         ) : table ? (
-          <TableView key={`${environment.id}:${table.name}`} environmentId={environment.id} table={table} />
+          <TableView
+            key={`${environment.id}:${table.name}`}
+            environmentId={environment.id}
+            table={table}
+            tables={tables.data ?? []}
+            onRenamed={(name) => void showTable(name)}
+            onDropped={() => void showTable()}
+          />
         ) : tables.data ? (
           <Notice title="No tables yet">
             Tables you create here, or with a query on the{' '}
@@ -120,6 +160,21 @@ export function DatabasePage() {
           </Notice>
         ) : null}
       </section>
+      {dialog === 'new' && environment && (
+        <NewTableDialog
+          environmentId={environment.id}
+          onClose={() => setDialog(null)}
+          onCreated={(name) => void showTable(name)}
+        />
+      )}
+      {dialog === 'import' && environment && (
+        <ImportDialog
+          environmentId={environment.id}
+          tables={tables.data ?? []}
+          onClose={() => setDialog(null)}
+          onImported={(name) => void showTable(name)}
+        />
+      )}
     </div>
   )
 }
@@ -153,13 +208,26 @@ function useHiddenColumns(storageKey: string) {
   return [visibility, update] as const
 }
 
-function TableView({ environmentId, table }: { environmentId: string; table: TableInfo }) {
+function TableView({
+  environmentId,
+  table,
+  tables,
+  onRenamed,
+  onDropped,
+}: {
+  environmentId: string
+  table: TableInfo
+  tables: TableInfo[]
+  onRenamed: (name: string) => void
+  onDropped: () => void
+}) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION)
   const [showFilters, setShowFilters] = useState(false)
   const [showColumns, setShowColumns] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [dialog, setDialog] = useState<'schema' | 'import' | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [visibility, setVisibility] = useHiddenColumns(`ow.database.hidden.${environmentId}.${table.name}`)
 
@@ -257,6 +325,12 @@ function TableView({ environmentId, table }: { environmentId: string; table: Tab
             <Trash2 className="size-4" /> Delete {selected.size}
           </Button>
         )}
+        <Button size="sm" onClick={() => setDialog('schema')}>
+          <Settings2 className="size-4" /> Table
+        </Button>
+        <Button size="sm" onClick={() => setDialog('import')}>
+          <FileUp className="size-4" /> Import
+        </Button>
         <Button size="icon" variant="ghost" title="Refresh" onClick={() => void refresh()}>
           <RefreshCw className="size-4" />
         </Button>
@@ -294,6 +368,25 @@ function TableView({ environmentId, table }: { environmentId: string; table: Tab
         selected={selected}
         onSelectedChange={setSelected}
       />
+      {dialog === 'schema' && (
+        <SchemaDialog
+          environmentId={environmentId}
+          table={table}
+          onClose={() => setDialog(null)}
+          onChanged={() => void refresh()}
+          onRenamed={onRenamed}
+          onDropped={onDropped}
+        />
+      )}
+      {dialog === 'import' && (
+        <ImportDialog
+          environmentId={environmentId}
+          tables={tables}
+          initialTable={table}
+          onClose={() => setDialog(null)}
+          onImported={() => void refresh()}
+        />
+      )}
       {adding && (
         <AddRowDialog
           environmentId={environmentId}
