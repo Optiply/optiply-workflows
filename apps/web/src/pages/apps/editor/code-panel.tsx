@@ -18,7 +18,7 @@ import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/react'
-import { AppCodeField, EditorField, NameField, problemsAt, ValuePreview } from './fields'
+import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValuePreview } from './fields'
 import { HandlersEditor } from './handlers'
 import { type PanelTab, useAppEditor } from './store'
 
@@ -554,26 +554,15 @@ function VariableEditor({ name }: { name: string }) {
         </Button>
       </div>
       <EditorField label="Initial value" hint="Evaluated when the app opens: text, JSON or a {{ }} template">
-        <AppCodeField
-          path={['variables', index, 'initialValue']}
-          language="plaintext"
-          singleLine
-          height={30}
-          value={initial === undefined ? '' : typeof initial === 'string' ? initial : JSON.stringify(initial)}
+        <InitialValueField
+          index={index}
+          value={initial}
           problems={problemsAt(diagnostics, ['variables', index, 'initialValue'])}
-          onChange={(text) =>
+          onChange={(next) =>
             update((def) =>
               updateVariable(def, name, (v) => {
                 const { initialValue: _, ...rest } = v
-                if (!text.trim()) return rest
-                if (!text.includes('{{')) {
-                  try {
-                    return { ...rest, initialValue: JSON.parse(text) as JsonValue }
-                  } catch {
-                    // Plain text.
-                  }
-                }
-                return { ...rest, initialValue: text }
+                return next === undefined ? rest : { ...rest, initialValue: next }
               }),
             )
           }
@@ -583,6 +572,47 @@ function VariableEditor({ name }: { name: string }) {
         <ValuePreview value={value} className="max-h-48" />
       </EditorField>
     </div>
+  )
+}
+
+/** A variable's initial value: JSON when it parses (and has no {{ }}), text otherwise; kept as typed. */
+function InitialValueField({
+  index,
+  value,
+  problems,
+  onChange,
+}: {
+  index: number
+  value: JsonValue | undefined
+  problems: ReturnType<typeof problemsAt>
+  onChange: (value: JsonValue | undefined) => void
+}) {
+  const [text, setText] = useParsedText(
+    value,
+    (v) => (v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v)),
+    (t): JsonValue | undefined => {
+      if (!t.trim()) return undefined
+      if (!t.includes('{{')) {
+        try {
+          return JSON.parse(t) as JsonValue
+        } catch {
+          // Plain text.
+        }
+      }
+      return t
+    },
+    onChange,
+  )
+  return (
+    <AppCodeField
+      path={['variables', index, 'initialValue']}
+      language="plaintext"
+      singleLine
+      height={30}
+      value={text}
+      problems={problems}
+      onChange={setText}
+    />
   )
 }
 

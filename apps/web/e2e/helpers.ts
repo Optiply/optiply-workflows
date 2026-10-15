@@ -39,7 +39,8 @@ export async function addBlock(page: Page, kind: string) {
 export async function typeInto(page: Page, editor: Locator, text: string) {
   const monaco = editor.locator('.monaco-editor')
   await expect(async () => {
-    await monaco.locator('.view-lines').click()
+    // Near the top-left corner: with more lines than fit, the lines' middle is below the field, over the next one.
+    await monaco.locator('.view-lines').click({ position: { x: 4, y: 4 } })
     await expect(monaco).toHaveClass(/focused/, { timeout: 1000 })
     await page.keyboard.press('ControlOrMeta+A')
     await page.keyboard.press('Backspace')

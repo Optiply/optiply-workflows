@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-15 (end of session 7, which merged M6 and built M7).
+Last updated: 2026-10-15 (end of session 8, which built M8).
 
 | | |
 |---|---|
-| **Branch** | `feat/m7-database`, 9 commits on top of `main` (8 steps plus 1 fix), pushed |
-| **PR** | [#8 M7: Database](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/8), draft, every step ticked; CI green on every step commit (jobs: check incl. the benchmarks, e2e, docker) |
-| **`main`** | `b9cbaaf`, the merge of [PR #7](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/7) (M6, with review fixes `41cad4a`). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `feat/m8-apps`, 11 commits on top of `main` (8 steps plus 3 flaky-test fixes), pushed |
+| **PR** | [#9 M8: App builder](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/9), draft, every step ticked; CI green on every step commit (jobs: check incl. the benchmarks and the web unit tests, e2e, docker) |
+| **`main`** | `6d57cc8`, the merge of [PR #8](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/8) (M7, with review fixes `18a6477`). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -26,13 +26,13 @@ Last updated: 2026-10-15 (end of session 7, which merged M6 and built M7).
 | **M4 Releases & triggers** | ✅ On `main` (§7) |
 | **M5 Advanced blocks** | ✅ On `main` (§8) |
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
-| **M7 Database** | ✅ **Done on `feat/m7-database`, PR #8.** The done-when (create a table, import a CSV, query it from a workflow) proven in tests, in Playwright and on Docker Compose (§9a). |
-| **M8 App builder** | ⏭️ **Next**, after PR #8 is merged (§14) |
-| M9 | Not started |
+| **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
+| **M8 App builder** | ✅ **Done on `feat/m8-apps`, PR #9.** The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose (§9b). |
+| M9 | ⏭️ **Next**, after PR #9 is merged: plan it with the user (§14) |
 
 **Start the next session with:**
-1. Mark PR #8 ready for review, review it (session 7 reviewed PR #7 with the `code-review` skill at high effort, verified each finding, then fixed them in one commit) and merge it with a merge commit.
-2. Then plan M8 with the user (§14) on a new branch (§15).
+1. Mark PR #9 ready for review, review it (sessions 7 reviewed PRs #7 and #8 with the `code-review` skill at high effort, verified each finding, then fixed them in one commit) and merge it with a merge commit.
+2. Then plan M9 with the user (§14) on a new branch (§15).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -194,6 +194,24 @@ Last updated: 2026-10-15 (end of session 7, which merged M6 and built M7).
 - **Rows:** values travel JSON-exact (bigint/decimal strings, datetimes ISO in UTC: transactions set `TimeZone` UTC, dates `YYYY-MM-DD`, JSON as JSON) and are **sent as text and cast in SQL** (`$n::text::<type>`): postgres.js otherwise converts booleans ('true' became false), dates (throws in JS) and JSON (stringified twice) once it knows the type. Writes by a single-column primary key only. Row writes are audited without values.
 - **Schema changes** wait at most 5 s for locks (`lock_timeout`), 120 s per statement.
 - **CSV:** our own RFC 4180 parser (lenient like spreadsheets about stray quotes). Imports: one line of JSON spec then the file in the body (`application/x-ow-csv-import`), all rows or none, ≤ 50 MB / 500k rows, problems by line and column (≤ 20). Empty values are NULL. Date order DMY unless the file shows MDY. Exports guard formulas in text cells only (numbers stay numbers). `previewCsv` is a mutation (a 256 kB sample can't go in a URL).
+
+### Taken in M8 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M8** (PR #9's "Decisions"):
+  - **App expressions run in the browser** (Retool's way); queries still run on the server.
+  - **Use on an app is enough to run its queries.** Queries are stored in the app; the browser sends a query's name and its `{{ }}` values, never SQL. The publisher vouches for the resources (Use everywhere).
+  - **Apps get releases like workflows** (draft, autosave, semver publish, rollback; viewers see the live release).
+  - **Components: the CRUD core plus a chart** (Table, Form, Text/Number/Date inputs, Select, Checkbox, Button, Text, Container, Modal, Chart).
+- **Libraries:** react-grid-layout 2.2.4 (MIT; 2.3.0 was days old), Chart.js 4.5.1 (MIT, one MIT dependency; not Recharts, which brings Redux and d3), vitest for the web app's pure modules.
+- **The sandbox:** a hidden iframe with `sandbox="allow-scripts"` (opaque origin) and its own CSP `default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'` (no requests at all), talking to the page over a MessageChannel handed over once (`ow:connect`). It runs on the page's thread, not a Worker (worker scripts in an opaque-origin frame can't be loaded the same way in dev and production): **an infinite loop in app code freezes the tab** (it can't escape the sandbox). The sandbox's script is bundled by esbuild in a Vite plugin (`apps/web/vite/app-runtime.ts`, `virtual:app-runtime`) and written into the frame with the stdlib (`@ow/sandbox/stdlib`).
+- **`current_user` in queries is filled in by the server:** a `{{ }}` reading only `current_user` (and JS/stdlib globals) is evaluated in the server sandbox; the browser's value is ignored. One mixing `current_user` with app values is refused (`mixed_current_user` in the validator, and by the server). `expressionSide` / `browserExpressions` in `@ow/app-definition` are the shared rule.
+- **App query access:** draft runs need Edit on the app and Use on the resource in that environment; live runs need Use on the app, and **a release that is no longer live is refused** (CONFLICT, a Reload banner). Only **manual (write) queries are audited** (`app.query_run`, without values); automatic reads re-run as people type.
+- **Definition:** every string is a template; components, queries, transformers and variables share one namespace; the layout is kept apart but **counts in the hash** (a move is a change people see). Dependencies are per property (`freeIdentifierRefs(…, { properties: true })`). Input state restarts only when its default's value changes; variables evaluate once; transformers are synchronous (`sync-function-body`); calling a method from a reactive value is an error (`code_only`); modals can't sit inside other components.
+- **Runtime:** automatic queries re-run 100 ms after their inputs settle; a newer run's result wins; manual and JS query failures notify once, automatic ones only keep `query.error`. Form submit checks required inputs (the form is `noValidate`) and resets only when every handler succeeded; a table's `saveChanges` likewise clears the changeset only on success. `setHidden` overrides the prop's template until reload.
+- **Typing never jumps back:** `set` messages carry a sequence number the sandbox acknowledges (`ack`); until then the page ignores values for those keys still coming from the sandbox (message order over the port makes this exact).
+- **Editor:** the running draft follows edits (`update` message) 300 ms after they stop, carrying over typed values, query results and variables; automatic queries re-run only when they or their values changed. Queries save the draft first (`beforeQuery: ensureSaved`): the server runs what's saved. Positions are committed on drag/resize stop (opening an app never dirties it). No dragging between containers ("Inside" moves a component). JSON and number fields keep the text as typed (`useParsedText`): parsing never reformats it under the cursor.
+- **Table:** edits are keyed by the primary key (rows without one can't be edited); the key column is never "changed"; all of `data` is read (no server-side paging yet).
+- **Chart:** the dataviz skill's reference categorical palette, in its validated order (validated on our white surface; three slots under 3:1, hence the Table view), never cycled: past 8 series (7 pie slices) they're named or folded into "Other". Light mode only.
+- **`"sideEffects": false`** on `@ow/definition`, `@ow/app-definition`, `@ow/expressions` and `@ow/app-runtime`: unused zod schemas no longer ship (the sandbox script 649 → 187 kB, the main bundle 590 → 414 kB).
 
 ## 3. What M0 built (on `main`)
 
@@ -388,7 +406,7 @@ tRPC `tasks` (list, openCount, get, complete), literal assignees checked before 
 
 Bundles: main 488 kB, editor chunk 320 kB.
 
-## 9a. What M7 built (on `feat/m7-database`)
+## 9a. What M7 built (on `main`)
 
 **Done-when** (create a table, import a CSV, query it from a workflow), proven:
 - `apps/web/e2e/m7-done-when.spec.ts`, all in the browser: a table made with the schema editor, a `;` CSV appended with the import wizard, a workflow whose query block picks `optiply_db` returns the matching rows.
@@ -427,13 +445,58 @@ The `code-review` skill (high) on PR #8 found 10 issues; each was checked agains
 
 Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; rolldown re-split the shared chunks, the total didn't change), the database chunk 113 kB, the editor chunk 319 kB.
 
+## 9b. What M8 built (on `feat/m8-apps`)
+
+**Done-when** (build a CRUD app on a Postgres table with an editable Table and a save query), proven:
+- `apps/web/e2e/m8-done-when.spec.ts`, all in the browser after making the table through the Database API: a new app from the Apps page; a `products` query; a Table bound to it, columns from "From data", `stock` made editable; a manual `save_stock` query (`update … from jsonb_to_recordset({{ table1.changesetArray }}::jsonb) …`) re-reading `products` on success; the Table's `save` wired to it; no problems; published v1.0.0; in the published app a cell edited and saved; the row read back from the database.
+- On Docker Compose (§10): the same app published by the separate `m7-check` admin, a cell edited and saved in Chrome, the row read back, the write audited without values.
+
+### Step 1, `136f21e`: the app definition
+`packages/app-definition`: schema, component registry, reactive graph (per-property dependencies, Tarjan cycles, topological order), `AppModel` evaluator, validator, canonical hash, `renameAppEntity`. `@ow/expressions` got opt-in member properties and `sync-function-body`. 33 tests; the "pruning" mutation first survived and the test was strengthened.
+
+### Step 2, `5922a78`: the server
+Migration `0012_apps.sql` (`apps`, `app_releases`, `app` object type), `Access.appLevel`/`canCreateApps`, `services/apps.ts` (checkApp, publish, setLive, runAppQuery), the `apps.*` router, app grants in `permissions.*`, `expressionSide`/`browserExpressions` and `mixed_current_user`. 9 server tests, 7 mutation checks.
+
+### Step 3, `8978b4b`: the runtime
+`packages/app-runtime` (protocol, `AppRuntime`), the sandbox iframe and its entry, the Vite plugin, `AppHost`, `/apps/$slug` with a fallback renderer, `"sideEffects": false`. `e2e/app-sandbox.spec.ts` (fetch, the parent document and cookies out of reach).
+
+### Step 4, `ba6dfc1`: the editor
+`/apps/$slug/edit`: react-grid-layout canvas, palette and tree, inspector, handlers editor, code panel, autosave; hot updates with carry-over; pure edits in `@ow/app-definition` (one found a move bug); the shared Monaco field (`components/code/`). `e2e/app-editor.spec.ts`.
+
+### Step 5, `b784ba2`: components
+Table (`table-model.ts`), inputs, Text, Button, form `noValidate`, `saveChanges`, acknowledged sets, vitest in the web app. `e2e/app-components.spec.ts` (a published CRUD app; found the browser's validation pre-empting the runtime's, the asterisk in accessible names, the key column tinted).
+
+### Step 6, `62b0e31`: the Chart
+Chart.js in its own chunk, `chart-model.ts` (tested), the dataviz rules, a table view. `e2e/app-charts.spec.ts` (found invisible line keys and a pie legend regression).
+
+### Step 7, `90cada1`: apps in the product
+`/apps` and the sidebar entry, the editor's release controls (Publish, Releases with rollback, Access, App settings, Open app), the viewer's Edit link and unpublished page, `AccessEditor` for apps. `e2e/app-releases.spec.ts`.
+
+### Step 8 (this commit): done-when, Compose check, docs
+`e2e/m8-done-when.spec.ts`; the Compose run (§10); README (Managed database, Building apps), `architecture.md` §2.3/§2.8/§2.11, this file. The done-when caught JSON fields reformatting under the cursor (fixed with `useParsedText`) and a test helper clicking the middle of tall Monaco fields (now near the top-left).
+
+### Flaky tests fixed on the way (none caused by M8)
+- `798b523`: the MySQL "prepares the statement with ?" test counted released statements once; now polls up to 2 s.
+- `1fda33e`: the engine "replies with the first Response block" test gave the late branch 100 ms; now 1.5 s.
+- `ac07346`: the engine retention test's time limits (1 s) were exceeded under a full local `pnpm test`; now 2 s, the row-count guards unchanged.
+
+### Totals at the end of M8
+`biome ci` is clean. Typecheck passes **11/11**. **772 tests pass** (server 182, engine 139, definition 124, connectors 106, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **15 Playwright e2e**.
+
+Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the apps chunk (viewer, runtime, sandbox script) 317 kB, the app editor 133 kB, Chart.js 191 kB (with the first chart), the workflow editor 336 kB, the database page 87 kB.
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
 - **Webhook latency:** `pnpm --filter @ow/server bench:webhooks` (prints p50/p90/p99).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
-- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Nine specs at the end of M7 (four before it; those passed with `--repeat-each=2`) (pass it to `pnpm exec playwright test` in `apps/web`: through `pnpm … e2e -- …` the flag doesn't reach Playwright).
+- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 8** (the M8 done-when; `m8-check.mjs` in the session scratchpad, not committed):
+  - Checked first that the user wasn't mid-task (audit: they had signed in 11 minutes before; asked, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build` while running, then `up -d`: localhost:3000 back after **6 s**; migrate applied `0012` (the `apps` table exists); the managed database unchanged.
+  - The `m7-check@optiply.nl` admin got a new random password (`compose/m7-check-password` in this session's scratchpad); `admin@optiply.nl` untouched.
+  - `m8-check.mjs` (Chrome through Playwright's library, as `m7-check`): a managed table, the done-when's app published through the API (server diagnostics empty), the viewer showing the rows **223 ms** after opening, the sandbox `allow-scripts`, a stock cell edited and saved in the browser, the row read back (`Gadget 99`), no page errors; the audit shows `app.query_run` for `save_stock` only (not the automatic read), without values. Afterwards the app was deleted, the table dropped and the session signed out.
+  - The user created an app `test` on the stack minutes after the rebuild (left alone).
 - **Docker Compose, session 7** (the M7 done-when; `m7-check.sh` in the session scratchpad, not committed):
   - Checked first that the user wasn't mid-task (audit: they had signed in a minute before; told them, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build`, then `up -d`: localhost:3000 back after **8 s**; the migrate service applied `0010` and logged `managed database ready` with `owdb_production`/`owdb_6054d5_production` and `owdb_staging`/`owdb_6054d5_staging`.
   - A separate admin `m7-check@optiply.nl` (random password, `compose/m7-check-password` in the scratchpad) so `admin@optiply.nl` was left alone. As it, with curl and tRPC: a table created; a Dutch `;` CSV with decimal commas appended (3 rows, `1.234,50` → `1234.50`); a draft workflow on `optiply_db` returned the 2 matching rows; a workflow selecting `public.users` failed "permission denied for table users"; the export matched.
@@ -470,13 +533,14 @@ Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; 
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` from session 7's check (random password in that session's scratchpad). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the M8 image (session 8: step 7 plus step 8's editor fix, built from the working tree; migration `0012` applied). It holds **the user's own app `test`** (created right after the rebuild). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset in session 8, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
+- **At the end of session 8** the Compose stack was left running on the M8 image, with the user signed in and working in it (their `test` app). The dev database and dev servers weren't started this session.
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
 ## 12. Still unverified
@@ -488,6 +552,8 @@ Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; 
 5. **A restore onto a different Postgres server** (the roles missing): reasoned from the dump and covered by the provisioning test that drops the role; not run end to end.
 6. **The 50 MB / 500k-row import caps**: enforced in code, not exercised (the largest import tested was 50,000 rows).
 7. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
+8. **Apps in Firefox and Safari**: the sandbox (opaque-origin iframe, its CSP, the MessageChannel handshake), react-grid-layout and the Table were exercised in Chrome only (locally and Chromium in CI).
+9. **Large app data**: the Table virtualizes rows, but every query result crosses the sandbox and the store whole; nothing measured beyond a few hundred rows.
 
 ## 13. Known gaps and TODOs carried forward
 
@@ -513,9 +579,9 @@ Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; 
 - **Retention:** runs every 24 h from the first check, not at a fixed hour; migration 0008's `CREATE INDEX` isn't concurrent (fine while `workflow_runs` is small; a large production table needs `CREATE INDEX CONCURRENTLY` by hand).
 - **Metrics:** the database gauges keep their last values if a read fails; no histogram of queue wait per run, no per-connector query metrics.
 - **Audit export** stops at 100,000 rows (narrow the filters for more).
-- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has no unit tests; it's covered by the four Playwright tests and the (uncommitted) walkthroughs.
+- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has unit tests for its pure modules since M8 (the table and chart models); the rest is covered by the Playwright tests and the (uncommitted) walkthroughs.
 - **Web:**
-  - No toast system; `confirm()` is still used for destructive actions (the new `Dialog` could replace it).
+  - Apps have notifications (`pages/apps/notifications.tsx`); the rest of the web app still has no toast system, and `confirm()` is still used for destructive actions (the `Dialog` could replace it).
   - The main bundle is 488 kB; the editor and Monaco are split out, the other pages aren't.
   - A resource's page jumps from Settings to Query after its first save. The label editors' "Add" button takes the whole field label as its accessible name.
   - The editor has no undo/redo across blocks, no copy/paste of blocks, and no "create function from selection". No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
@@ -531,33 +597,38 @@ Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; 
   - The CSV preview reads the first 256 kB; a column whose only odd value comes later can be guessed wrong (the import then reports the line).
   - MySQL's `NOT IN ({{ [] }})` matches nothing (documented in `mysql.ts`; from the PR #7 review).
   - With `TEST_DATABASE_URL` (a shared server), test databases leave their `owdb_*` roles behind.
+- **Apps (M8):**
+  - **The sandbox shares the page's thread:** an infinite loop in app code freezes the tab. A Worker inside the iframe (loaded the same way in dev and production) or a watchdog that replaces the iframe would fix it.
+  - No multipage apps, modules, mobile layout, custom components, Query Library, themes, multiplayer editing, or folders for apps (grants per app or for all apps).
+  - Table: all of `data` is read (no server-side paging, filtering or search box), no per-row column templates (`currentRow`), no adding rows inside the table (use a Form), no column resizing.
+  - Editor: no dragging between containers ("Inside" moves a component), no undo/redo, no copy/paste of components, REST queries edited as JSON (SQL resources have the full editor), no release diff.
+  - Charts: light mode only, no time-scale axes (dates are categories), no texture fills.
+  - Automatic queries aren't audited (by design); manual ones are, without values.
+  - Rollback asks with `confirm()`, like the workflow editor.
 - **Not built yet:** multipart REST bodies; `oauth_tokens` (M9).
 
-## 14. Next step: M8 App builder
+## 14. Next step: M9
 
-From `architecture.md` §2.7 (and Part 1 §1.5 for how Retool does it): a 12-column grid (react-grid-layout), a component registry (`id`, props, methods, events), a reactive `{{ }}` graph in a Web Worker (acorn deps + topological evaluation, reusing `packages/expressions`), queries proxied through the same connectors, event handlers, Table/Form/inputs first. **Done when:** build a CRUD app on a Postgres table with an editable Table and a save query.
+First merge PR #9 (review it like PRs #7 and #8). From `architecture.md` §2.7, M9+ is a list to choose from rather than one milestone; decide with the user which comes first:
+- **Python executor** (nsjail) for code blocks.
+- **SQS/Kafka triggers** for workflows.
+- **OAuth authorization-code and custom auth flows** for REST resources (`oauth_tokens`).
+- **Git sync** (canonical JSON already exists for workflows and apps).
+- **Multiplayer editing** (Yjs) for the workflow and app editors.
+- **AI actions.**
 
-Already in place:
-- The connectors, `runQuery` and the playground's `{{ }}` evaluation (server side) for app queries; `optiply_db` as a ready-made table to build the CRUD app on.
-- The managed grid (`apps/web/src/pages/database/grid.tsx`: TanStack Table + Virtual, editing, sort, filter) as a starting point for the Table component.
-- `packages/expressions` (lexer, `{{ }}` parsing, dependency extraction with acorn/eslint-scope) for the reactive graph.
-- Permissions (folders, Use/Edit/Own) to extend to apps.
-
-Decide with the user first:
-- Licence check for react-grid-layout (MIT) or writing our own grid layout.
-- Where app expressions run: a Web Worker in the browser (Retool's way) vs the isolated-vm sandbox on the server for queries only.
-- The first component set and whether apps get releases like workflows in M8 or later.
+Also open from M8, if the user prefers to finish apps first: the sandbox off the page's thread, server-side table paging, multipage apps, folders for workflows and apps.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git fetch && git status                          # PR #8 merged? Then: git switch main && git pull
-gh pr view 8                                     # draft → mark ready, review, merge (merge commit), if not done yet
+git fetch && git status                          # PR #9 merged? Then: git switch main && git pull
+gh pr view 9                                     # draft → mark ready, review, merge (merge commit), if not done yet
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m8-apps                       # then open a draft PR after the first commit
+git switch -c feat/m9-<topic>                    # then open a draft PR after the first commit
 ```

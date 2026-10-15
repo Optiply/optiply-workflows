@@ -30,6 +30,33 @@ export function AppCodeField(props: Omit<CodeFieldProps, 'path'> & { path: (stri
   )
 }
 
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
+/**
+ * Text bound to a stored value it's parsed into (JSON props, numbers, variables). The text stays as typed while
+ * it means the stored value, so parsing never reformats it under the cursor; it's replaced only when the value
+ * changes some other way ("From data", undo, another field).
+ */
+export function useParsedText<T>(
+  value: T,
+  toText: (value: T) => string,
+  fromText: (text: string) => T,
+  onChange: (value: T) => void,
+): [string, (text: string) => void] {
+  const [text, setText] = useState(() => toText(value))
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new value from outside resets the text
+  useEffect(() => {
+    setText((current) => (sameJson(fromText(current), value) ? current : toText(value)))
+  }, [value])
+  return [
+    text,
+    (next: string) => {
+      setText(next)
+      onChange(fromText(next))
+    },
+  ]
+}
+
 /** Validator problems at or under a path of the definition, as editor markers. */
 export function problemsAt(diagnostics: AppDiagnostic[], path: (string | number)[]): FieldProblem[] {
   return diagnostics

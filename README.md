@@ -1,6 +1,6 @@
 # Optiply Workflows
 
-Optiply's internal tools platform, modeled on Retool. It covers **Resources** (connections to databases and APIs), **Workflows** (automated backend processes with triggers and schedules), and later **Database** (simple managed tables) and **Apps** (internal UIs).
+Optiply's internal tools platform, modeled on Retool. It covers **Resources** (connections to databases and APIs), **Workflows** (automated backend processes with triggers and schedules), **Database** (managed tables in the platform's own Postgres) and **Apps** (internal UIs built from components and queries).
 
 - Architecture and roadmap: [docs/architecture.md](docs/architecture.md)
 - Progress log and where to pick up: [docs/handoff.md](docs/handoff.md)
@@ -12,13 +12,15 @@ TypeScript monorepo (pnpm + Turborepo):
 | Path | What |
 |---|---|
 | `apps/server` | Fastify v5 + tRPC v11 API, with Google OIDC and local break-glass login, plus the REST runs API. The workflow worker runs queued runs. One entrypoint; `ROLE=api\|worker\|migrate\|all` picks what it runs. |
-| `apps/web` | Vite + React 19, TanStack Router and Query, Tailwind v4. The workflow editor: @xyflow/react canvas, dagre layout, Monaco, zustand. Playwright e2e in `e2e/`. |
+| `apps/web` | Vite + React 19, TanStack Router and Query, Tailwind v4. The workflow editor (@xyflow/react canvas, dagre layout, Monaco, zustand), the Database page (TanStack Table + Virtual) and the app builder (react-grid-layout, Chart.js, a sandboxed iframe for app code). Unit tests next to pure modules; Playwright e2e in `e2e/`. |
 | `packages/db` | Drizzle ORM schema and migrations (Postgres). Embedded Postgres for dev and tests. |
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
 | `packages/connectors` | Postgres, MySQL, BigQuery and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
 | `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash, cron with time zones, webhook aliases, release versions |
+| `packages/app-definition` | The app definition format (zod): components, queries, transformers, variables and layout; the component registry; the reactive dependency graph and its evaluator; the validator; edits, renaming and the canonical hash |
+| `packages/app-runtime` | Runs an app inside its sandbox: queries (automatic and manual), component and query methods, event handlers, `utils`, and the messages between the sandbox and the page |
 | `packages/engine` | Runs workflows: the orchestrator and block executors, the Postgres queue (claims with concurrency limits, leases with fencing epochs, recovery of runs whose worker died), the scheduler, and the in-process runner for sync webhooks |
 
 ## Local development
@@ -111,6 +113,34 @@ Triggers are set on the start trigger and take effect when you publish:
 
 **Settings → Runs at once** in the editor caps how many runs of a workflow execute at the same time.
 
+## Managed database
+
+**Database** holds tables in the platform's own Postgres: one schema per environment, owned by a login role that can reach nothing else. Create and change tables (an `id` key is added), edit rows in the grid, import and export CSV. Workflows and apps query them through the built-in **optiply_db** resource; Use on it in an environment is access to its tables, rows and SQL.
+
+## Building apps
+
+Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft live as you build it:
+
+- **Components** (palette on the left, drag onto the page or click to add): Table, Form, Text/Number/Date inputs, Select, Checkbox, Button, Text, Container, Modal and Chart, on a 12-column grid. Containers, forms and modals hold components of their own (move one in with **Inside**).
+- **Properties** (right): every value can be a constant or `{{ }}` reading other components, queries, transformers and variables (`{{ table1.selectedRow.id }}`); it re-evaluates whenever what it reads changes.
+- **Queries** (bottom): resource queries run automatically when what they read changes (reads) or only when triggered (writes); JS queries run in the browser and can `await query1.trigger()`, call component methods (`modal1.open()`, `table1.clearChangeset()`) and `utils` (`notify`, `openUrl`, `copyToClipboard`, `downloadFile`). Transformers derive values; variables hold state.
+- **Event handlers** on components and queries: control a query or component, set a variable, run a script, notify, open a URL, with an "only run when" condition and debounce.
+- **Editable tables**: mark columns `editable`; edits collect in `table.changesetArray` (the primary key plus the changed fields per row) until **Save changes** fires the table's `save` event. A save query for Postgres:
+
+  ```sql
+  update products t set stock = x.stock
+  from jsonb_to_recordset({{ table1.changesetArray }}::jsonb) as x(id bigint, stock integer)
+  where t.id = x.id
+  ```
+
+**Publish** releases the draft as a semver version; people with Use on the app open the live release at `/apps/<slug>` and pick the environment. **Releases** rolls back, **Access** (owners) grants groups Use, Edit or Own.
+
+How it's kept safe:
+
+- App code runs in a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network.
+- Queries stay on the server. The browser sends a query's name and the values of its `{{ }}`s, which are bound as parameters. A `{{ }}` reading only `current_user` is filled in by the server, so `where owner = {{ current_user.email }}` can be trusted; mixing `current_user` with app values in one `{{ }}` is refused.
+- People with Use on an app run its queries without access to their resources: whoever publishes needs Use on every resource the app queries, in every environment. Writes (manual queries) are audited without their values.
+
 ## Checks
 
 ```bash
@@ -125,7 +155,7 @@ The MySQL tests (`packages/connectors/test/mysql.test.ts`, `apps/server/test/mys
 pnpm --filter @ow/server bench:webhooks   # sync webhook latency (p50 < 50 ms), run alone because it's timing-sensitive
 pnpm --filter @ow/sandbox bench           # a fresh sandbox context in under 10 ms, likewise
 
-# End-to-end (Playwright): builds, then drives the editor against the bundled server
+# End-to-end (Playwright): builds, then drives the editors and apps against the bundled server
 pnpm --filter @ow/web build && pnpm --filter @ow/server build
 pnpm --filter @ow/web e2e   # uses the installed Chrome locally; CI installs Chromium
 ```

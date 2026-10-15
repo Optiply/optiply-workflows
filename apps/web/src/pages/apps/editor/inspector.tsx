@@ -13,7 +13,7 @@ import { Trash2 } from 'lucide-react'
 import { Button, Checkbox, Select } from '@/components/ui'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
-import { AppCodeField, EditorField, NameField, ProblemList, problemsAt } from './fields'
+import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
 import { useAppEditor } from './store'
 
@@ -171,14 +171,13 @@ function PropField({
     )
   } else {
     control = (
-      <AppCodeField
+      <ParsedField
         path={path}
-        language="plaintext"
-        singleLine={!multiLine}
-        height={multiLine ? 96 : 30}
-        value={asText(value)}
+        multiLine={multiLine}
+        value={value}
+        spec={spec}
         problems={problemsAt(diagnostics, path)}
-        onChange={(text) => set(fromText(text, spec))}
+        onChange={set}
       />
     )
   }
@@ -234,5 +233,35 @@ function ColumnsFromData({ name }: { name: string }) {
     >
       From data
     </button>
+  )
+}
+
+/** A prop typed as text: templates stay strings, constants are stored as their type, and the text stays as typed. */
+function ParsedField({
+  path,
+  multiLine,
+  value,
+  spec,
+  problems,
+  onChange,
+}: {
+  path: (string | number)[]
+  multiLine: boolean
+  value: JsonValue | undefined
+  spec: PropSpec
+  problems: ReturnType<typeof problemsAt>
+  onChange: (value: JsonValue | undefined) => void
+}) {
+  const [text, setText] = useParsedText(value, asText, (t) => fromText(t, spec), onChange)
+  return (
+    <AppCodeField
+      path={path}
+      language="plaintext"
+      singleLine={!multiLine}
+      height={multiLine ? 96 : 30}
+      value={text}
+      problems={problems}
+      onChange={setText}
+    />
   )
 }
