@@ -6,7 +6,7 @@ How to back up Optiply Workflows, restore it, and prove the restore works. Every
 
 | What | Where | Why it matters |
 |---|---|---|
-| **The Postgres database** | `optiply_workflows` | Everything: workflows, drafts and releases, resources (credentials encrypted), config vars, users and groups, permissions, API keys (hashed), run history, User Tasks, the audit log. |
+| **The Postgres database** | `optiply_workflows` | Everything: workflows, drafts and releases, resources (credentials encrypted), config vars, users and groups, permissions, API keys (hashed), run history, User Tasks, the audit log, and the managed database's tables (the `owdb_<environment>` schemas, M7). |
 | **`ENCRYPTION_KEYS`** | the deployment's secrets (`.env` here) | Decrypts resource credentials and secret config vars. **A database backup without its keys has no usable secrets**, and the keys can't be recovered from the database. |
 | `SESSION_SECRET` | same | Signs session cookies. Losing it only signs everyone out. |
 | `OIDC_CLIENT_SECRET` | same | Google sign-in. Can be re-issued in Google Cloud Console. |
@@ -66,6 +66,14 @@ docker compose exec -T postgres pg_restore --list < backups/ow-2026-10-14.dump |
    ```
 
 5. **Point the app at it** (`DATABASE_URL`, or rename the databases: `alter database optiply_workflows rename to optiply_workflows_broken; alter database ow_restored rename to optiply_workflows;` with nothing connected) and start everything: `docker compose up -d`.
+
+### The managed database (M7)
+
+Its tables live in the same database, one schema per environment (`owdb_production`, `owdb_staging`), so the dump has them. **The roles that own them are not in it**: a database dump never includes roles or their passwords. Nothing extra is needed for that:
+
+- The restore above uses `--no-owner`, so the dump's `ALTER SCHEMA … OWNER TO owdb_…` lines are skipped and the managed tables arrive owned by whoever restored them. The dump grants nothing to the `owdb_*` roles, so a restore onto a server where they don't exist doesn't stop on them.
+- Step 4 (`ROLE=migrate`) and every API start provision the managed database. A missing role is created again with the password stored (encrypted) in the built-in `optiply_db` resource, so **the right `ENCRYPTION_KEYS` matter here too**. The schemas and everything in them are handed back to their roles. Check the migrate output for `managed database ready` with each environment.
+- The platform's database user needs `CREATEROLE` (or superuser) for that. Without it, the platform starts and the Database page says what to grant: `ALTER ROLE <user> CREATEROLE`.
 
 ### What happens to work in flight
 

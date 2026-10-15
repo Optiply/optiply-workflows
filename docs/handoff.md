@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-14 (end of session 6, which built M6).
+Last updated: 2026-10-15 (end of session 7, which merged M6 and built M7).
 
 | | |
 |---|---|
-| **Branch** | `feat/m6-hardening`, 10 commits on top of `main` (8 steps plus 2 small fixes), pushed |
-| **PR** | [#7 M6: Hardening](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/7), draft, every step ticked; CI green on every step commit (jobs: check incl. the webhook and sandbox benchmarks, e2e, docker) |
-| **`main`** | `6b0e9d4`, the merge of [PR #6](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/6) (M5). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `feat/m7-database`, 9 commits on top of `main` (8 steps plus 1 fix), pushed |
+| **PR** | [#8 M7: Database](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/8), draft, every step ticked; CI green on every step commit (jobs: check incl. the benchmarks, e2e, docker) |
+| **`main`** | `b9cbaaf`, the merge of [PR #7](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/7) (M6, with review fixes `41cad4a`). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -25,13 +25,14 @@ Last updated: 2026-10-14 (end of session 6, which built M6).
 | **M3 Editor** | ✅ On `main` (§6) |
 | **M4 Releases & triggers** | ✅ On `main` (§7) |
 | **M5 Advanced blocks** | ✅ On `main` (§8) |
-| **M6 Hardening** | ✅ **Done on `feat/m6-hardening`, PR #7.** Both done-whens proven, in tests and on Docker Compose (§9). The M5 isolated-vm crash is fixed (§9, step 1). |
-| **M7 Database** | ⏭️ **Next**, after PR #7 is merged (§14) |
-| M8–M9 | Not started |
+| **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
+| **M7 Database** | ✅ **Done on `feat/m7-database`, PR #8.** The done-when (create a table, import a CSV, query it from a workflow) proven in tests, in Playwright and on Docker Compose (§9a). |
+| **M8 App builder** | ⏭️ **Next**, after PR #8 is merged (§14) |
+| M9 | Not started |
 
 **Start the next session with:**
-1. Mark PR #7 ready for review, review it and merge it with a merge commit, like the others.
-2. Then start M7 on a new branch (§14, §15).
+1. Mark PR #8 ready for review, review it (session 7 reviewed PR #7 with the `code-review` skill at high effort, verified each finding, then fixed them in one commit) and merge it with a merge commit.
+2. Then plan M8 with the user (§14) on a new branch (§15).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -179,6 +180,20 @@ Last updated: 2026-10-14 (end of session 6, which built M6).
   - Completing locks the run row first, so a pause and an answer can't miss each other (`suspendRun` also looks for completed tasks). Runs ending any other way close their open tasks.
 - **Metrics:** `/metrics` on the API port; workers serve it (and `/health`) on `METRICS_PORT` (9464); open unless `METRICS_TOKEN` is set. Database gauges are the same in every process: dashboards use `max`.
 - **Audit export:** admins, ≤ 100,000 rows, streamed; formula-like cells get a leading `'`; exports are audited.
+
+### Taken in M7 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M7:**
+  - **Tables live in the platform's Postgres**, one schema per environment (`owdb_<env>`), each owned by its own locked-down role.
+  - **The schema editor has the core DDL set:** create/rename/drop tables (auto `id bigint` identity key), add/rename/drop columns, type change with a cast, nullable/unique/default. No foreign keys or indexes yet; raw SQL is always there through a query.
+  - **The grid is TanStack Table** (Glide Data Grid only supports React ≤ 18). v8.21.3, not v9 (new API, days old); TanStack Virtual 3.14.13.
+  - **Access (step 2): Use on `optiply_db` in an environment is all of it** (rows, schema and SQL), because Use on any resource already allows any SQL with its rights. A read-only tier (a SELECT-only role and a second resource) was offered and deferred.
+- **The role logs in with its own password; never `SET ROLE`.** A query can switch back mid-statement (`set_config('role', …)` + dynamic SQL like `query_to_xml`), since the session user may always return to itself. The password is in `optiply_db`'s `resource_configs.secrets` (so `rekey` covers it) and goes to Postgres as a SCRAM verifier computed in Node.
+- **Provisioning runs at every start** (migrate role and API), under advisory lock `727002`, and repairs: role attributes and password, roles granted to it (revoked), schema/object owners (a restore), `CREATE` on `public` before PG 15. Needs superuser or `CREATEROLE`; without, a warning and the platform runs on. A non-superuser can't even write `NOSUPERUSER`/`NOCREATEDB`/… in `ALTER ROLE`, so those are checked instead; it gets `GRANT <role> TO current_user` to own things on the role's behalf.
+- **Role names carry a tag of the database name** (`owdb_<md5[:6]>_<env>`), because roles are cluster-wide; stored in `managed_databases`, so a renamed database keeps its roles.
+- **The built-in resource** (`resources.system_kind = 'database'`, slug `optiply_db`, type `postgres`): can't be renamed, reconfigured, deleted or tested with other settings (that would send the stored password elsewhere), admins included. Listed after people's own resources, so new query blocks keep defaulting to theirs (CI caught it).
+- **Rows:** values travel JSON-exact (bigint/decimal strings, datetimes ISO in UTC: transactions set `TimeZone` UTC, dates `YYYY-MM-DD`, JSON as JSON) and are **sent as text and cast in SQL** (`$n::text::<type>`): postgres.js otherwise converts booleans ('true' became false), dates (throws in JS) and JSON (stringified twice) once it knows the type. Writes by a single-column primary key only. Row writes are audited without values.
+- **Schema changes** wait at most 5 s for locks (`lock_timeout`), 120 s per statement.
+- **CSV:** our own RFC 4180 parser (lenient like spreadsheets about stray quotes). Imports: one line of JSON spec then the file in the body (`application/x-ow-csv-import`), all rows or none, ≤ 50 MB / 500k rows, problems by line and column (≤ 20). Empty values are NULL. Date order DMY unless the file shows MDY. Exports guard formulas in text cells only (numbers stay numbers). `previewCsv` is a mutation (a 256 kB sample can't go in a URL).
 
 ## 3. What M0 built (on `main`)
 
@@ -335,7 +350,9 @@ The open graph in the store (`graph`, `graphOf`, `updateGraph`); `functions.tsx`
 
 Bundles: main 576 kB, editor chunk 493 kB.
 
-## 9. What M6 built (on `feat/m6-hardening`)
+## 9. What M6 built (on `main`)
+
+Merged in session 7 as `b9cbaaf`. Before merging, a review of PR #7 found seven issues, fixed in `41cad4a`: a late MySQL `KILL QUERY` could hit another query on a reused connection (killed connections are now dropped, and a kill that can't be sent ends the wait); MySQL session setup is awaited and fails the query clearly (a MariaDB 10.11 check showed the old code was safe only by accident); retention could delete the current draft's snapshot; a rerun User Task block failed if an assignee had gone since; answers past a task's due time were accepted; the audit CSV export didn't end on a failed page (the "hang on abort" didn't reproduce on Node 24); `until` dropped the last microseconds.
 
 **Done-whens**, proven in tests and on the Compose stack (§10):
 - **Retention runs without long locks:** `packages/engine/test/retention.test.ts` deletes 40 old runs with 100,000 block rows and payloads and 2,000 logs while a second pool keeps queueing, claiming and finishing runs and a third samples `pg_locks` and `pg_stat_activity` every 10 ms: 0 lock waits, every statement ≤ 5,000 rows, longest ~25–30 ms locally (~250–340 ms on a busy CI runner; the bound is 1 s), the queue never stalled. On Compose: the same 100,000 rows deleted by the daily job in 3.5 s (longest statement 134 ms) while 4,347 runs went through the API (p50 33 ms, p99 61 ms); 1,558 samples, **0 lock waits**, oldest open transaction 103 ms.
@@ -371,13 +388,55 @@ tRPC `tasks` (list, openCount, get, complete), literal assignees checked before 
 
 Bundles: main 488 kB, editor chunk 320 kB.
 
+## 9a. What M7 built (on `feat/m7-database`)
+
+**Done-when** (create a table, import a CSV, query it from a workflow), proven:
+- `apps/web/e2e/m7-done-when.spec.ts`, all in the browser: a table made with the schema editor, a `;` CSV appended with the import wizard, a workflow whose query block picks `optiply_db` returns the matching rows.
+- `apps/server/test/database-workflows.test.ts` with a real worker: the same workflow returns production's rows in production and staging's in staging; `public.users` is refused from a workflow; Use is checked per environment.
+- On Docker Compose (§10): the same, on Postgres 18 with SCRAM auth.
+
+### Step 1, `b4d26e8` (+ `7601334`): provisioning
+Migration `0010` (`managed_databases`, `resources.system_kind`), `apps/server/src/services/database.ts` (`provisionDatabases`, `connectionTarget`, `scramVerifier`), the built-in resource guards in the resources router, startup calls in `buildApp` and the migrate role. 10 tests (`database.test.ts`), including the role escapes, a simulated restore, a hand-granted `pg_read_all_data` taken away, and a non-superuser with `CREATEROLE` on a fresh database. The follow-up lists built-in resources last (the editor e2e had picked `optiply_db` as the new block's default).
+
+### Step 2, `9e8343b`: schema API
+`services/managed-db.ts` (types, defaults and `parseDefault`, `withManagedDb`, DDL builders, `alterColumn` all-or-nothing), the `database` router. 13 tests (`database-schema.test.ts`), including a busy table failing with CONFLICT in ~5 s.
+
+### Step 3, `720dc16`: rows API
+`services/managed-db-rows.ts` (`readRows`, `selectionSql`, `insertRow`, `updateRow`, `deleteRows`, per-field checks in savepoints). 13 tests (`database-rows.test.ts`). The postgres.js parameter conversion problem was found here.
+
+### Step 4, `c1c1fda`: CSV
+`services/csv.ts` (parser, `detectDelimiter`, `columnNames`, `guessCsv`), `services/managed-db-csv.ts` (`ImportSpec`, `importCsv`, `exportCsv`), `api/database.ts` (the two streamed routes), `api/streaming.ts` (`drainOrClose`, shared with the audit export). 16 parser tests (incl. the same records for every chunk size, which caught a line count bug) and 13 route tests (incl. 50,000 rows and an export re-imported into an equal table).
+
+### Step 5, `4e3df1f`: the Database page
+`apps/web/src/pages/database/` (`index.tsx`, `grid.tsx`, `cells.tsx`, `filters.tsx`, `row-dialog.tsx`), the `/database` route (lazy) and nav entry. An ARIA grid on divs (two Biome a11y rules off for `grid.tsx`, with the reason). 2 Playwright tests (editing, sort, filter + export, hidden columns, add/delete; 350 rows loading as you scroll).
+
+### Step 6, `e0aaad5`: schema editor and import wizard
+`schema-dialogs.tsx` (New table, Column, Table settings), `import-dialog.tsx` (preview, options, column mapping, problems). `previewCsv` became a mutation with a delimiter override. A Playwright test drives both, including a Dutch file.
+
+### Step 7, `0fabc20`: workflows
+No engine change. `resources.list` returns `systemKind`; a Built-in badge, a read-only Settings card linking to the Database page, the editor's picker marking it, the Database page linking to the resource. `database-workflows.test.ts` (4) and a Playwright test (badge, playground query, link).
+
+### Step 8 (this commit): e2e, Compose check, docs
+`apps/web/e2e/m7-done-when.spec.ts`, the Compose check (§10), `docs/runbooks/backup.md` (the managed database in a restore), `architecture.md` §2.3/§2.5/§2.8/§2.10, this file.
+
+### Totals at the end of M7
+`biome ci` is clean. Typecheck passes **9/9**. **691 tests pass** (server 167, engine 139, definition 124, connectors 106, expressions 91, crypto 25, db 20, sandbox 19), plus the two benchmarks and **9 Playwright e2e**. The existing editor spec failed once locally at a step that drags between blocks (then 3/3 alone and in later full runs; CI retries once).
+
+Bundles: first-load JS ~780 kB (main 590 kB + `ui` 181 kB + `jsx-runtime` 9 kB; rolldown re-split the shared chunks, the total didn't change), the database chunk 113 kB, the editor chunk 319 kB.
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
 - **Webhook latency:** `pnpm --filter @ow/server bench:webhooks` (prints p50/p90/p99).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
-- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). All four specs passed with `--repeat-each=2` (pass it to `pnpm exec playwright test` in `apps/web`: through `pnpm … e2e -- …` the flag doesn't reach Playwright).
+- **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Nine specs at the end of M7 (four before it; those passed with `--repeat-each=2`) (pass it to `pnpm exec playwright test` in `apps/web`: through `pnpm … e2e -- …` the flag doesn't reach Playwright).
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 7** (the M7 done-when; `m7-check.sh` in the session scratchpad, not committed):
+  - Checked first that the user wasn't mid-task (audit: they had signed in a minute before; told them, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build`, then `up -d`: localhost:3000 back after **8 s**; the migrate service applied `0010` and logged `managed database ready` with `owdb_production`/`owdb_6054d5_production` and `owdb_staging`/`owdb_6054d5_staging`.
+  - A separate admin `m7-check@optiply.nl` (random password, `compose/m7-check-password` in the scratchpad) so `admin@optiply.nl` was left alone. As it, with curl and tRPC: a table created; a Dutch `;` CSV with decimal commas appended (3 rows, `1.234,50` → `1234.50`); a draft workflow on `optiply_db` returned the 2 matching rows; a workflow selecting `public.users` failed "permission denied for table users"; the export matched.
+  - In Postgres: both roles `LOGIN`, no superuser/createdb/createrole/bypassrls, `NOINHERIT`, limit 50, password stored as `SCRAM-SHA-256$…`, `search_path` set, each schema owned by its role, no memberships. A wrong password from the api container (over the Docker network, `scram-sha-256`) is refused. (Inside the Postgres container, socket and 127.0.0.1 are `trust` in the official image: not a test of anything.)
+  - A schema-only `pg_dump` has only `ALTER SCHEMA … OWNER TO owdb_…` for the managed schemas (skipped by `--no-owner`): a restore onto a server without the roles doesn't stop on them.
+  - Afterwards the check's workflow and table were deleted and its session signed out; the `m7-check` user remains (can't be deleted).
 - **Docker Compose, session 6** (the M6 done-whens; Node scripts `ow.mjs`, `task-setup.mjs`, `task-complete.mjs`, `load.mjs`, `cleanup.mjs` and `old-runs.sql` in the session scratchpad, not committed):
   - The stack was rebuilt with the step 7 code (`PUBLIC_URL=http://localhost:3000 docker compose up -d --build`); migrations 0008 and 0009 applied to session 5's data. The admin password was reset with `create-admin` (`ADMIN_PASSWORD`).
   - **User Task:** `task-setup.mjs` makes a workflow whose User Task is assigned to the admin and starts a run (→ `waiting`, task `open`); `docker compose down`, 20 s, `up -d`; `task-complete.mjs` sees the task still open and the run still waiting, completes it, and the run succeeds 127 ms later with the answer in its reply.
@@ -408,21 +467,24 @@ Bundles: main 488 kB, editor chunk 320 kB.
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` from session 7's check (random password in that session's scratchpad). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
+- **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
 ## 12. Still unverified
 
 1. **Google SSO** against real Google. This needs an OAuth client with redirect URI `<PUBLIC_URL>/api/auth/oidc/callback`, plus `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` from the user.
 2. **BigQuery against a real project**: needs a service account (BigQuery Job User + Data Viewer) and a dataset. Only the token endpoint was checked live.
 3. **MySQL `verify-full` TLS** against a server with a certificate from a real or private CA (tested: `require` works, a self-signed certificate is rejected).
-4. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
+4. **Provisioning on managed Postgres** (Cloud SQL, RDS) with a non-superuser `CREATEROLE` user: tested on embedded Postgres 18 only. Cloud SQL's `cloudsqlsuperuser` and RDS's `rds_superuser` aren't real superusers.
+5. **A restore onto a different Postgres server** (the roles missing): reasoned from the dump and covered by the provisioning test that drops the role; not run end to end.
+6. **The 50 MB / 500k-row import caps**: enforced in code, not exercised (the largest import tested was 50,000 rows).
+7. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
 
 ## 13. Known gaps and TODOs carried forward
 
@@ -456,31 +518,41 @@ Bundles: main 488 kB, editor chunk 320 kB.
   - The editor has no undo/redo across blocks, no copy/paste of blocks, and no "create function from selection". No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
   - The run panel's logs tab shows the first 500 lines. The resources playground still uses textareas.
 - **Editor completions** cover the latest finished run only; there's no environment choice for them.
+- **Managed database (M7):**
+  - No foreign keys or indexes in the schema editor; no promotion of a schema from staging to production; no read-only tier (Use is everything).
+  - The managed tables share the platform's Postgres: a heavy query competes with the platform (statement timeout 120 s, `maxRows` 10k, connection limit 50 per role).
+  - The grid edits one cell at a time; no multi-cell paste, no undo. Deleting rows uses `confirm()`.
+  - Import problems stop at the first failing batch (≤ 20 problems reported from it), not the whole file.
+  - The CSV preview reads the first 256 kB; a column whose only odd value comes later can be guessed wrong (the import then reports the line).
+  - MySQL's `NOT IN ({{ [] }})` matches nothing (documented in `mysql.ts`; from the PR #7 review).
+  - With `TEST_DATABASE_URL` (a shared server), test databases leave their `owdb_*` roles behind.
 - **Not built yet:** multipart REST bodies; `oauth_tokens` (M9).
 
-## 14. Next step: M7 Database
+## 14. Next step: M8 App builder
 
-From `architecture.md` §2.7: a Retool-Database clone: a managed Postgres schema per environment, a spreadsheet editor (TanStack Table or Glide Data Grid), a schema editor, CSV import and export, exposed to workflows as a built-in resource. **Done when:** create a table, import a CSV, and query it from a workflow.
+From `architecture.md` §2.7 (and Part 1 §1.5 for how Retool does it): a 12-column grid (react-grid-layout), a component registry (`id`, props, methods, events), a reactive `{{ }}` graph in a Web Worker (acorn deps + topological evaluation, reusing `packages/expressions`), queries proxied through the same connectors, event handlers, Table/Form/inputs first. **Done when:** build a CRUD app on a Postgres table with an editable Table and a save query.
 
 Already in place:
-- The Postgres connector (bind parameters, `maxRows`, read-only sessions, cancel) and the resource model: a built-in resource can reuse them with a schema per environment.
-- Streaming CSV writing with formula guarding (`services/audit-log.ts`), reusable for table export.
-- The permission model (resources per environment; Use/Edit/Own) for who may read or change tables.
+- The connectors, `runQuery` and the playground's `{{ }}` evaluation (server side) for app queries; `optiply_db` as a ready-made table to build the CRUD app on.
+- The managed grid (`apps/web/src/pages/database/grid.tsx`: TanStack Table + Virtual, editing, sort, filter) as a starting point for the Table component.
+- `packages/expressions` (lexer, `{{ }}` parsing, dependency extraction with acorn/eslint-scope) for the reactive graph.
+- Permissions (folders, Use/Edit/Own) to extend to apps.
 
 Decide with the user first:
-- Where the managed schemas live (the platform database, or a separate database/role per environment), and how much DDL the schema editor allows.
-- Which grid library (licences: TanStack Table is MIT; Glide Data Grid is MIT).
+- Licence check for react-grid-layout (MIT) or writing our own grid layout.
+- Where app expressions run: a Web Worker in the browser (Retool's way) vs the isolated-vm sandbox on the server for queries only.
+- The first component set and whether apps get releases like workflows in M8 or later.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git fetch && git status                          # PR #7 merged? Then: git switch main && git pull
-gh pr view 7                                     # draft → mark ready, review, merge (merge commit), if not done yet
+git fetch && git status                          # PR #8 merged? Then: git switch main && git pull
+gh pr view 8                                     # draft → mark ready, review, merge (merge commit), if not done yet
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m7-database                   # then open a draft PR after the first commit
+git switch -c feat/m8-apps                       # then open a draft PR after the first commit
 ```
