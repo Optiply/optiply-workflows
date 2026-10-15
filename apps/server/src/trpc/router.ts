@@ -4,6 +4,7 @@ import { authedProcedure, publicProcedure, router } from './init'
 import { apiKeysRouter } from './routers/api-keys'
 import { auditRouter } from './routers/audit'
 import { configVarsRouter } from './routers/config-vars'
+import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
 import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
@@ -37,6 +38,7 @@ export const appRouter = router({
   groups: groupsRouter,
   audit: auditRouter,
   resources: resourcesRouter,
+  database: databaseRouter,
   folders: foldersRouter,
   permissions: permissionsRouter,
   tasks: tasksRouter,
