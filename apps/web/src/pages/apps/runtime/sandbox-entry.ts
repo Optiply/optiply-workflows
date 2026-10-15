@@ -138,6 +138,7 @@ function handle(message: HostMessage) {
     }
     case 'set':
       runtime?.set(message.updates)
+      if (message.seq !== undefined) send({ type: 'ack', seq: message.seq })
       return
     case 'fire':
       void runtime?.fire(message.owner, message.event)

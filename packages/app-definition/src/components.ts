@@ -204,6 +204,8 @@ const specs: ComponentSpec[] = [
       selectRow: { params: ['index'] },
       clearSelection: { params: [] },
       clearChangeset: { params: [] },
+      /** Fires `save`, then clears the changeset when every handler succeeded (the table's Save button). */
+      saveChanges: { params: [] },
     },
     events: ['rowSelect', 'changeCell', 'save'],
     defaultSize: { w: 12, h: 20 },

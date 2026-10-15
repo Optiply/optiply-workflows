@@ -41,8 +41,11 @@ export type HostMessage =
   | { type: 'start'; definition: AppDefinition; globals: RuntimeGlobals }
   /** The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). */
   | { type: 'update'; definition: AppDefinition }
-  /** Values the user changed: typing, picking, selecting, editing a cell. */
-  | { type: 'set'; updates: Record<string, unknown> }
+  /**
+   * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once
+   * it has them, so the page can ignore older values for those keys still on their way (no cursor jumps).
+   */
+  | { type: 'set'; updates: Record<string, unknown>; seq?: number }
   /** A component event the user caused (`click`, `change`, `submit`). */
   | { type: 'fire'; owner: string; event: string }
   /** A method the page calls (a modal's close button, a table row click). */
@@ -58,6 +61,8 @@ export type SandboxMessage =
   /** The app is evaluated and its first patch was sent. */
   | { type: 'started' }
   | { type: 'patch'; patch: StatePatch }
+  /** The `set` with this `seq` (and every earlier one) is applied; its patch came before this. */
+  | { type: 'ack'; seq: number }
   | { type: 'runQuery'; id: number; query: string; values: Record<string, unknown> }
   | { type: 'confirm'; id: number; message: string }
   | { type: 'effect'; effect: Effect }

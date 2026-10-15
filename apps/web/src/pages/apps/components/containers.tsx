@@ -27,7 +27,9 @@ export function FormRenderer({ component, definition }: RendererProps) {
   const submitText = useAppValue<string>(`${name}.submitText`)
   const disabled = useAppValue<boolean>(`${name}.disabled`)
   return (
+    // The runtime checks required inputs (and says which); the browser's own checks would stop it hearing about it.
     <form
+      noValidate
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-3"
       aria-label={title || name}
       onSubmit={(e) => {

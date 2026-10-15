@@ -79,6 +79,9 @@ export class AppHost {
   private port: MessagePort | null = null
   private destroyed = false
   private logId = 0
+  /** The last `set` sent, and per key the `set` whose value the page shows until the sandbox has it. */
+  private setSeq = 0
+  private pending = new Map<string, number>()
   /** The definition the sandbox should run; an update before it started goes out with `start`. */
   private definition: AppDefinition
   /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
@@ -118,9 +121,15 @@ export class AppHost {
     this.port = null
   }
 
+  /**
+   * What the user changed. The page shows it at once; values for those keys still coming from the sandbox (from
+   * before it had this) are ignored until it acknowledges, so typing fast never jumps back a character.
+   */
   set(updates: Record<string, unknown>): void {
+    const seq = ++this.setSeq
+    for (const key of Object.keys(updates)) this.pending.set(key, seq)
     this.store.setState((s) => ({ values: { ...s.values, ...updates } }))
-    this.post({ type: 'set', updates })
+    this.post({ type: 'set', updates, seq })
   }
 
   fire(owner: string, event: string): void {
@@ -170,10 +179,16 @@ export class AppHost {
         this.store.setState({ status: 'failed', problem: message.message })
         return
       case 'patch': {
-        const { values, errors } = message.patch
+        const { errors } = message.patch
+        const values = this.pending.size
+          ? Object.fromEntries(Object.entries(message.patch.values).filter(([key]) => !this.pending.has(key)))
+          : message.patch.values
         this.store.setState((s) => ({ values: { ...s.values, ...values }, ...(errors && { errors }) }))
         return
       }
+      case 'ack':
+        for (const [key, seq] of this.pending) if (seq <= message.seq) this.pending.delete(key)
+        return
       case 'runQuery':
         this.post({
           type: 'queryResult',

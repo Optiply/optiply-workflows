@@ -361,6 +361,40 @@ describe('AppRuntime', () => {
     await expect(t.runtime.call('x', 'explode')).rejects.toThrow('x has no method explode')
   })
 
+  it('saves table changes, clearing them only when every save handler succeeded', async () => {
+    let fail = true
+    const t = setup(
+      {
+        components: [
+          comp(
+            't',
+            'table',
+            { data: customers },
+            {
+              events: [on('save', { type: 'controlQuery', query: 'save', method: 'trigger' })],
+            },
+          ),
+        ],
+        queries: [sql('save', 'update c from {{ t.changesetArray }}', 'manual')],
+      },
+      {
+        respond: () => {
+          if (fail) throw new Error('nope')
+          return []
+        },
+      },
+    )
+    await t.runtime.start()
+    const changes = [{ id: 2, name: 'Grace Hopper' }]
+    t.runtime.set({ 't.changesetArray': changes })
+    expect(await t.runtime.call('t', 'saveChanges')).toBe(false)
+    expect(t.state['t.changesetArray']).toEqual(changes)
+    fail = false
+    expect(await t.runtime.call('t', 'saveChanges')).toBe(true)
+    expect(t.calls.at(-1)!.values).toEqual({ ' t.changesetArray ': changes })
+    expect(t.state['t.changesetArray']).toEqual([])
+  })
+
   it('debounces handlers that ask for it', async () => {
     const t = setup({
       components: [

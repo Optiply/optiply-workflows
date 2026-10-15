@@ -405,6 +405,11 @@ export class AppRuntime {
               [key('selectedIndex')]: null,
             })
           methods.clearChangeset = () => this.apply({ [key('changesetArray')]: [] })
+          methods.saveChanges = async () => {
+            const ok = await this.fire(name, 'save')
+            if (ok) this.apply({ [key('changesetArray')]: [] })
+            return ok
+          }
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

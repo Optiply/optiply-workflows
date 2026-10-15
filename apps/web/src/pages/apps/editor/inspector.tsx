@@ -11,7 +11,8 @@ import {
 } from '@ow/app-definition'
 import { Trash2 } from 'lucide-react'
 import { Button, Checkbox, Select } from '@/components/ui'
-import { useAppError } from '../runtime/react'
+import { tableColumns } from '../components/table-model'
+import { useAppError, useAppValue } from '../runtime/react'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt } from './fields'
 import { HandlersEditor } from './handlers'
 import { useAppEditor } from './store'
@@ -182,10 +183,15 @@ function PropField({
     )
   }
   const fixedKind = spec.type === 'boolean' || typeof spec.type === 'object'
+  const aside = fixedKind ? (
+    fx
+  ) : component.type === 'table' && prop === 'columns' ? (
+    <ColumnsFromData name={component.name} />
+  ) : undefined
   return (
     <EditorField
       label={spec.type === 'boolean' && !isTemplate(value) ? '' : spec.label}
-      aside={fixedKind ? fx : undefined}
+      aside={aside}
       hint={
         value === undefined && !fixedKind && spec.default !== '' && spec.default !== null
           ? `Default: ${JSON.stringify(spec.default)}`
@@ -196,5 +202,37 @@ function PropField({
       {runtimeError && <span className="text-xs text-danger">{runtimeError}</span>}
       {fixedKind && <ProblemList path={path} />}
     </EditorField>
+  )
+}
+
+/** Fills a table's columns in from its current data, to then make some editable or rename them. */
+function ColumnsFromData({ name }: { name: string }) {
+  const update = useAppEditor((s) => s.update)
+  const data = useAppValue<unknown>(`${name}.data`)
+  const rows = Array.isArray(data) ? (data as Record<string, unknown>[]) : []
+  return (
+    <button
+      type="button"
+      disabled={!rows.length}
+      title={rows.length ? 'List the columns of the current data' : 'The table has no data yet'}
+      className="rounded px-1 text-[11px] text-accent hover:underline disabled:text-muted disabled:no-underline"
+      onClick={() =>
+        update((def) =>
+          setProp(
+            def,
+            name,
+            'columns',
+            tableColumns([], rows).map((c) => ({
+              key: c.key,
+              label: c.label,
+              type: c.type,
+              editable: false,
+            })),
+          ),
+        )
+      }
+    >
+      From data
+    </button>
   )
 }
