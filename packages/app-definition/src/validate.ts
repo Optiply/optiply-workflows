@@ -1,8 +1,10 @@
 import type { QueryValidator } from '@ow/definition'
+import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
 import { componentSpec, constantFits, QUERY_EVENTS } from './components'
 import { buildAppGraph, type Entity, entityMethods, entityProperties } from './graph'
 import { appNameReason, isAppGlobalName } from './names'
+import { expressionSide } from './query-values'
 import { type AppDefinition, appDefinitionSchema, type EventHandler } from './schema'
 
 export type AppDiagnosticCode =
@@ -28,6 +30,7 @@ export type AppDiagnosticCode =
   | 'cycle'
   | 'unknown_resource'
   | 'invalid_query'
+  | 'mixed_current_user'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -200,6 +203,23 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
           ...where,
         })
       }
+    }
+  }
+
+  // Resource query values come from the browser, except those reading only current_user.
+  for (const field of graph.fields) {
+    if (field.path[0] !== 'queries' || field.path[2] !== 'query' || field.errors.length) continue
+    for (const part of parseTemplate(field.source)) {
+      if (part.type !== 'expression' || expressionSide(part.code) !== 'mixed') continue
+      report({
+        code: 'mixed_current_user',
+        message: 'current_user is checked on the server only in a {{ }} of its own',
+        hint: 'Split it out, e.g. owner = {{ current_user.email }} and status = {{ select1.value }}',
+        path: field.path,
+        entity: field.owner,
+        start: part.start,
+        end: part.end,
+      })
     }
   }
 

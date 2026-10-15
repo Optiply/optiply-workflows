@@ -36,6 +36,9 @@ importers:
       '@fastify/static':
         specifier: 10.1.6
         version: 10.1.6
+      '@ow/app-definition':
+        specifier: workspace:*
+        version: link:../../packages/app-definition
       '@ow/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors
@@ -262,6 +265,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@ow/app-definition':
+        specifier: workspace:*
+        version: link:../app-definition
       '@ow/definition':
         specifier: workspace:*
         version: link:../definition

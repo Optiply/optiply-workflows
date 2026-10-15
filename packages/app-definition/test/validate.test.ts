@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { type AppDiagnostic, validateApp } from '../src'
+import { type AppDiagnostic, browserExpressions, expressionSide, validateApp } from '../src'
 import { app, comp, sqlQuery } from './helpers'
 
 const codes = (input: unknown, options = {}) =>
@@ -281,5 +281,35 @@ describe('validateApp', () => {
       ['invalid_query', 'queries.2.query.sql', 'error'],
       ['invalid_query', 'queries.3.query', 'error'],
     ])
+  })
+})
+
+describe('query values', () => {
+  it('evaluates current_user on the server and refuses mixing it with app values', () => {
+    const def = app({
+      components: [comp('s', 'select')],
+      queries: [
+        sqlQuery(
+          'q',
+          'select * from t where owner = {{ current_user.email.toLowerCase() }} and s = {{ s.value }} and x = {{ current_user.id + s.value }}',
+        ),
+      ],
+    })
+    const diagnostics = validateApp(def).diagnostics
+    expect(diagnostics.map((d) => d.code)).toEqual(['mixed_current_user'])
+    const sql = (def.queries[0] as unknown as { query: { sql: string } }).query.sql
+    expect(sql.slice(diagnostics[0]!.start, diagnostics[0]!.end)).toBe('{{ current_user.id + s.value }}')
+  })
+
+  it('lists the expressions the browser sends', () => {
+    expect(
+      browserExpressions({
+        sql: 'select {{ a.value }}, {{ a.value }}, {{ current_user.email }}, {{ current_user.id + a.value }}',
+        headers: [{ key: 'x', value: '{{ b.value }}' }],
+        broken: '{{ (',
+      }),
+    ).toEqual([' b.value ', ' a.value '])
+    expect(expressionSide(' _.upperFirst(current_user.name) ')).toBe('server')
+    expect(expressionSide('Math.max(1, x)')).toBe('browser')
   })
 })

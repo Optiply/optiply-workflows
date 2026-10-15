@@ -21,6 +21,7 @@
   "dependencies": {
     "@fastify/cookie": "11.1.3",
     "@fastify/static": "10.1.6",
+    "@ow/app-definition": "workspace:*",
     "@ow/connectors": "workspace:*",
     "@ow/crypto": "workspace:*",
     "@ow/db": "workspace:*",

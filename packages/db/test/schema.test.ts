@@ -110,7 +110,7 @@ describe('permissions', () => {
       code: '23514',
       constraint_name: 'permissions_level_ck',
     })
-    expect(await bad({ objectType: 'app' })).toMatchObject({
+    expect(await bad({ objectType: 'dashboard' })).toMatchObject({
       code: '23514',
       constraint_name: 'permissions_object_type_ck',
     })

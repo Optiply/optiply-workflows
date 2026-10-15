@@ -22,10 +22,10 @@ interface Grant {
 }
 
 /**
- * What one user may do with resources and workflows. A user's level on a resource in an environment is the highest
+ * What one user may do with resources, workflows and apps. A user's level on a resource in an environment is the highest
  * of the grants their groups hold on that resource, on all resources (`objectId` null), or on any folder containing
- * it, scoped to that environment or to all (`environmentId` null). Workflows work the same way without environments:
- * only grants for all environments count. Admins implicitly own everything.
+ * it, scoped to that environment or to all (`environmentId` null). Workflows and apps work the same way without
+ * environments: only grants for all environments count. Admins implicitly own everything.
  */
 export class Access {
   constructor(
@@ -80,26 +80,51 @@ export class Access {
 
   /** The user's level on a workflow, or null for no access. Use = run and view runs, Edit = change the draft. */
   workflowLevel(workflow: { id: string; folderId: string | null }): PermissionLevel | null {
+    return this.objectLevel('workflow', workflow)
+  }
+
+  /** Creating workflows needs Edit on all workflows. */
+  get canCreateWorkflows(): boolean {
+    return this.canCreate('workflow')
+  }
+
+  /**
+   * The user's level on an app, or null for no access. Use = open the live release and run its queries, Edit =
+   * change the draft and publish, Own = delete and manage access.
+   */
+  appLevel(app: { id: string; folderId: string | null }): PermissionLevel | null {
+    return this.objectLevel('app', app)
+  }
+
+  /** Creating apps needs Edit on all apps. */
+  get canCreateApps(): boolean {
+    return this.canCreate('app')
+  }
+
+  /** Workflows and apps: grants on the object, on all objects of the type, or on a folder containing it. */
+  private objectLevel(
+    type: 'workflow' | 'app',
+    object: { id: string; folderId: string | null },
+  ): PermissionLevel | null {
     if (this.isAdmin) return 'own'
-    const folderIds = this.ancestors(workflow.folderId)
+    const folderIds = this.ancestors(object.folderId)
     let best: PermissionLevel | null = null
     for (const g of this.grants) {
       if (g.environmentId !== null) continue
       const matches =
-        (g.objectType === 'workflow' && (g.objectId === null || g.objectId === workflow.id)) ||
+        (g.objectType === type && (g.objectId === null || g.objectId === object.id)) ||
         (g.objectType === 'folder' && g.objectId !== null && folderIds.has(g.objectId))
       if (matches) best = higher(best, g.level)
     }
     return best
   }
 
-  /** Creating workflows needs Edit on all workflows. */
-  get canCreateWorkflows(): boolean {
+  private canCreate(type: 'workflow' | 'app'): boolean {
     return (
       this.isAdmin ||
       this.grants.some(
         (g) =>
-          g.objectType === 'workflow' &&
+          g.objectType === type &&
           g.objectId === null &&
           g.environmentId === null &&
           atLeast(g.level, 'edit'),
