@@ -13,6 +13,7 @@ import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
+import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
@@ -38,6 +39,15 @@ export async function buildApp(deps: {
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
   const metrics = deps.metrics ?? new Metrics(db)
   metrics.instrument(app)
+
+  // The managed database (schemas, roles, the built-in resource): kept in shape at every start. A failure here
+  // (e.g. no CREATEROLE) leaves the rest of the platform working; the Database page says what's wrong.
+  try {
+    await provisionDatabases(db, config.keyring, config.DATABASE_URL)
+  } catch (err) {
+    if (err instanceof DatabaseSetupError) logger.warn(err.message)
+    else logger.error({ err }, 'managed database provisioning failed')
+  }
 
   const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.

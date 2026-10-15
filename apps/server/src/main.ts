@@ -6,6 +6,7 @@ import pino from 'pino'
 import { buildApp } from './api/app'
 import { loadConfig } from './config'
 import { Metrics, serveMetrics } from './metrics'
+import { DatabaseSetupError, provisionDatabases } from './services/database'
 import { startWorker } from './worker'
 
 const config = loadConfig()
@@ -19,6 +20,7 @@ async function main() {
     log.info('running migrations')
     await runMigrations(config.DATABASE_URL, process.env.MIGRATIONS_DIR)
     log.info('migrations complete')
+    await provisionManagedDatabase()
     return
   }
 
@@ -59,6 +61,20 @@ async function main() {
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+}
+
+/** Sets up the managed database's schemas and roles; a missing privilege is reported, not fatal. */
+async function provisionManagedDatabase() {
+  const { db, close } = createDb(config.DATABASE_URL, { max: 1 })
+  try {
+    const report = await provisionDatabases(db, config.keyring, config.DATABASE_URL)
+    log.info({ environments: report.environments }, 'managed database ready')
+  } catch (err) {
+    if (!(err instanceof DatabaseSetupError)) throw err
+    log.warn(err.message)
+  } finally {
+    await close()
+  }
 }
 
 main().catch((err) => {

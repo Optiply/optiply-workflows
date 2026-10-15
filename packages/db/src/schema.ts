@@ -182,12 +182,33 @@ export const resources = pgTable(
     type: text().notNull(),
     description: text(),
     folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** Built-in resources the platform provisions and keeps up to date; their settings can't be edited. */
+    systemKind: text({ enum: ['database'] }),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('resources_slug_uq').on(t.slug), index('resources_folder_idx').on(t.folderId)],
+  (t) => [
+    uniqueIndex('resources_slug_uq').on(t.slug),
+    index('resources_folder_idx').on(t.folderId),
+    uniqueIndex('resources_system_kind_uq').on(t.systemKind).where(sql`${t.systemKind} is not null`),
+  ],
 )
+
+/**
+ * The managed database's home in one environment: a schema in the platform database, owned by a login role that
+ * can reach nothing else. Workflows reach it through the built-in database resource, which logs in as the role.
+ */
+export const managedDatabases = pgTable('managed_databases', {
+  environmentId: uuid()
+    .primaryKey()
+    .references(() => environments.id, { onDelete: 'cascade' }),
+  schemaName: text().notNull(),
+  /** Roles are shared by every database on the server, so the name carries a tag of this database's name. */
+  roleName: text().notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
 
 /** A resource's settings in one environment. No row = the resource isn't configured there. */
 export const resourceConfigs = pgTable(
@@ -693,6 +714,7 @@ export type PermissionLevel = (typeof PERMISSION_LEVELS)[number]
 export type PermissionObjectType = (typeof PERMISSION_OBJECT_TYPES)[number]
 export type Resource = typeof resources.$inferSelect
 export type ResourceConfig = typeof resourceConfigs.$inferSelect
+export type ManagedDatabase = typeof managedDatabases.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect
 export type Workflow = typeof workflows.$inferSelect
