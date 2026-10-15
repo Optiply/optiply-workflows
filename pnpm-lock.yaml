@@ -210,6 +210,22 @@ importers:
         specifier: 8.3.4
         version: 8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)
 
+  packages/app-definition:
+    dependencies:
+      '@ow/definition':
+        specifier: workspace:*
+        version: link:../definition
+      '@ow/expressions':
+        specifier: workspace:*
+        version: link:../expressions
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      vitest:
+        specifier: 5.0.4
+        version: 5.0.4(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/connectors:
     dependencies:
       '@ow/crypto':

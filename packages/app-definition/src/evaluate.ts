@@ -1,0 +1,323 @@
+import { fieldRefs } from '@ow/definition'
+import {
+  parseTemplate,
+  singleExpression,
+  stringifyValue,
+  TemplateError,
+  type TemplatePart,
+} from '@ow/expressions'
+import { coerceProp, type PropSpec } from './components'
+import { type AppGraph, buildAppGraph, type Entity, type GraphNode } from './graph'
+import type { AppDefinition } from './schema'
+
+/**
+ * Evaluates an app's reactive graph. Pure TypeScript with the code runner injected, so it runs the same in the
+ * browser runtime and in tests.
+ *
+ * `init()` evaluates every node in order; `set()` takes run-time values (what the user typed, query results) and
+ * re-evaluates only the nodes depending on them, stopping where a value comes out the same.
+ */
+
+export type RunKind = 'expression' | 'sync-function-body' | 'function-body'
+
+/**
+ * Runs code with `scope` as its variables: an expression's value, a synchronous body's return value, or (for
+ * `function-body`) the promise an async body returns.
+ */
+export type CodeRunner = (kind: RunKind, code: string, scope: Record<string, unknown>) => unknown
+
+/** A runner compiling code with `new Function`, cached per code and scope names. */
+export function functionRunner(): CodeRunner {
+  const cache = new Map<string, (...args: unknown[]) => unknown>()
+  return (kind, code, scope) => {
+    const names = Object.keys(scope)
+    const id = `${kind}\u0000${names.join(',')}\u0000${code}`
+    let fn = cache.get(id)
+    if (!fn) {
+      const body =
+        kind === 'expression'
+          ? `"use strict";\nreturn (\n${code}\n);`
+          : kind === 'sync-function-body'
+            ? `"use strict";\n${code}\n`
+            : `"use strict";\nreturn (async () => {\n${code}\n})();`
+      fn = new Function(...names, body) as (...args: unknown[]) => unknown
+      cache.set(id, fn)
+    }
+    return fn(...names.map((n) => scope[n]))
+  }
+}
+
+export interface AppModelOptions {
+  runner?: CodeRunner
+  /** Values for the runtime globals and the stdlib (`current_user`, `utils`, `_`, …), passed to code reading them. */
+  globals?: Record<string, unknown>
+  /** Methods to add to an entity as code sees it (`query1.trigger`, `modal1.open`), supplied by the runtime. */
+  methods?: (entity: Entity) => Record<string, unknown> | undefined
+}
+
+/** What the model holds for a node. */
+export interface NodeState {
+  value: unknown
+  error?: string
+}
+
+export class AppModel {
+  readonly graph: AppGraph
+  private readonly runner: CodeRunner
+  private readonly values = new Map<string, unknown>()
+  private readonly errors = new Map<string, string>()
+  private readonly views = new Map<string, Record<string, unknown>>()
+  private readonly templates = new Map<string, TemplatePart[] | TemplateError>()
+  private readonly refNames = new Map<string, string[] | TemplateError>()
+  private readonly onCycle: Map<string, string[]>
+
+  constructor(
+    readonly definition: AppDefinition,
+    private readonly options: AppModelOptions = {},
+  ) {
+    this.graph = buildAppGraph(definition)
+    this.runner = options.runner ?? functionRunner()
+    this.onCycle = new Map(this.graph.cycles.flatMap((group) => group.map((key) => [key, group])))
+  }
+
+  /** Evaluates every node in order. */
+  init(): void {
+    for (const key of this.graph.order) this.compute(this.graph.nodes.get(key)!, true)
+  }
+
+  get(key: string): unknown {
+    return this.values.get(key)
+  }
+
+  error(key: string): string | undefined {
+    return this.errors.get(key)
+  }
+
+  /** Every node with an error. */
+  allErrors(): Map<string, string> {
+    return new Map(this.errors)
+  }
+
+  /** An entity as code sees it: its readable values plus the runtime's methods. Rebuilt when a value changes. */
+  view(name: string): Record<string, unknown> | undefined {
+    const cached = this.views.get(name)
+    if (cached) return cached
+    const entity = this.graph.entities.get(name)
+    if (!entity) return undefined
+    const view: Record<string, unknown> = {}
+    for (const key of this.graph.entityNodes(name)) {
+      const node = this.graph.nodes.get(key)!
+      if (!node.property.startsWith('$')) view[node.property] = this.values.get(key)
+    }
+    Object.assign(view, this.options.methods?.(entity))
+    this.views.set(name, view)
+    return view
+  }
+
+  /**
+   * Sets run-time values (`source` and `state` nodes only) and re-evaluates what depends on them. Returns every node
+   * whose value changed, the ones set included; an automatic query's `$deps` among them means it should run again.
+   */
+  set(updates: Record<string, unknown> | Iterable<[string, unknown]>): Set<string> {
+    const changed = new Set<string>()
+    const entries = Symbol.iterator in updates ? [...updates] : Object.entries(updates)
+    for (const [key, value] of entries) {
+      const node = this.graph.nodes.get(key)
+      if (!node) throw new Error(`No value named ${key}`)
+      if (node.kind !== 'source' && node.kind !== 'state') throw new Error(`${key} can't be set`)
+      if (this.write(key, value)) changed.add(key)
+    }
+    for (const key of this.graph.affected(changed)) {
+      const node = this.graph.nodes.get(key)!
+      if (node.kind === 'source' || node.kind === 'initial' || this.onCycle.has(key)) continue
+      if (!node.deps.some((d) => changed.has(d))) continue
+      if (this.compute(node, false)) changed.add(key)
+    }
+    return changed
+  }
+
+  /**
+   * Evaluates a value on demand (an event handler's argument, a query's fields): strings are templates, arrays and
+   * objects are evaluated inside. Throws on the first failing expression.
+   */
+  evaluateValue(value: unknown, locals: Record<string, unknown> = {}): unknown {
+    if (typeof value === 'string') return this.evaluateTemplate(value, locals)
+    if (Array.isArray(value)) return value.map((v) => this.evaluateValue(v, locals))
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.evaluateValue(v, locals)]))
+    }
+    return value
+  }
+
+  /** Evaluates one template: a lone `{{ x }}` gives x's value as-is, anything else a string. */
+  evaluateTemplate(source: string, locals: Record<string, unknown> = {}): unknown {
+    if (!source.includes('{{')) return source
+    let parts = this.templates.get(source)
+    if (!parts) {
+      try {
+        parts = parseTemplate(source)
+      } catch (err) {
+        if (!(err instanceof TemplateError)) throw err
+        parts = err
+      }
+      this.templates.set(source, parts)
+    }
+    if (parts instanceof TemplateError) throw parts
+    const single = singleExpression(parts)
+    if (single !== null) return this.runSync('expression', single, locals)
+    let out = ''
+    for (const part of parts) {
+      out += part.type === 'text' ? part.value : stringifyValue(this.runSync('expression', part.code, locals))
+    }
+    return out
+  }
+
+  /** Runs a synchronous function body (a transform) with the app in scope. */
+  runFunctionBody(code: string, locals: Record<string, unknown> = {}): unknown {
+    return this.runSync('sync-function-body', code, locals)
+  }
+
+  /** Starts an async function body (a JS query or script) with the app in scope; returns its promise. */
+  runScript(code: string, locals: Record<string, unknown> = {}): Promise<unknown> {
+    try {
+      return Promise.resolve(this.runner('function-body', code, this.scopeFor('function-body', code, locals)))
+    } catch (err) {
+      return Promise.reject(err)
+    }
+  }
+
+  /** The variables code sees: the app names and globals it reads, plus `locals`. */
+  scopeFor(kind: RunKind, code: string, locals: Record<string, unknown> = {}): Record<string, unknown> {
+    const scope: Record<string, unknown> = {}
+    for (const name of this.namesIn(kind, code)) {
+      if (Object.hasOwn(locals, name)) scope[name] = locals[name]
+      else if (this.graph.entities.has(name)) scope[name] = this.view(name)
+      else if (this.options.globals && Object.hasOwn(this.options.globals, name)) {
+        scope[name] = this.options.globals[name]
+      }
+    }
+    for (const [name, value] of Object.entries(locals)) scope[name] = value
+    return scope
+  }
+
+  private runSync(kind: 'expression' | 'sync-function-body', code: string, locals: Record<string, unknown>) {
+    const result = this.runner(kind, code, this.scopeFor(kind, code, locals))
+    if (result instanceof Promise) {
+      result.catch(() => {})
+      throw new Error('Returned a promise; this code runs synchronously, so it can’t await')
+    }
+    return result
+  }
+
+  private namesIn(kind: RunKind, code: string): string[] {
+    const id = `${kind}\u0000${code}`
+    let names = this.refNames.get(id)
+    if (!names) {
+      const { refs, errors } = fieldRefs({ kind, source: code })
+      names = errors[0] ?? [...new Set(refs.map((r) => r.name))]
+      this.refNames.set(id, names)
+    }
+    if (names instanceof TemplateError) throw names
+    return names
+  }
+
+  /** Stores a value; returns whether it changed. */
+  private write(key: string, value: unknown, error?: string): boolean {
+    const hadError = this.errors.get(key)
+    if (error === undefined) this.errors.delete(key)
+    else this.errors.set(key, error)
+    const same = this.values.has(key) && sameValue(this.values.get(key), value)
+    if (same && hadError === error) return false
+    this.values.set(key, value)
+    this.views.delete(this.graph.nodes.get(key)!.entity)
+    return !same
+  }
+
+  /** Evaluates one node; returns whether its value changed. */
+  private compute(node: GraphNode, initial: boolean): boolean {
+    const entity = this.graph.entities.get(node.entity)!
+    const cycle = this.onCycle.get(node.key)
+    if (cycle) {
+      const path = [...cycle, cycle[0]].join(' → ')
+      return this.write(node.key, this.fallback(node, entity), `Circular dependency: ${path}`)
+    }
+    try {
+      switch (node.kind) {
+        case 'prop':
+          return this.computeProp(node, entity)
+        case 'state':
+          return this.write(node.key, this.values.get(node.from!))
+        case 'formData': {
+          const data: Record<string, unknown> = {}
+          for (const input of node.inputs!) {
+            const key = this.values.get(`${input}.formDataKey`)
+            data[typeof key === 'string' && key ? key : input] = this.values.get(`${input}.value`)
+          }
+          return this.write(node.key, data)
+        }
+        case 'transformer':
+          if (entity.kind !== 'transformer') return false
+          return this.write(node.key, this.runFunctionBody(entity.transformer.code))
+        case 'initial':
+          if (entity.kind !== 'variable') return false
+          return this.write(node.key, this.evaluateValue(entity.variable.initialValue ?? null))
+        case 'source':
+          return initial ? this.write(node.key, this.sourceDefault(node, entity)) : false
+        case 'trigger':
+          // Its value only counts runs of the query's inputs; any re-evaluation is a change.
+          return this.write(node.key, ((this.values.get(node.key) as number | undefined) ?? -1) + 1)
+      }
+    } catch (err) {
+      return this.write(node.key, this.fallback(node, entity), (err as Error)?.message ?? String(err))
+    }
+  }
+
+  private computeProp(node: GraphNode, entity: Entity): boolean {
+    const spec = this.propSpec(node, entity)
+    if (!spec || entity.kind !== 'component') return this.write(node.key, undefined)
+    const props = entity.component.props
+    if (!props || !Object.hasOwn(props, node.property))
+      return this.write(node.key, structuredClone(spec.default))
+    const result = coerceProp(spec, this.evaluateValue(props[node.property]))
+    return 'error' in result
+      ? this.write(node.key, structuredClone(spec.default), result.error)
+      : this.write(node.key, result.value)
+  }
+
+  private propSpec(node: GraphNode, entity: Entity): PropSpec | undefined {
+    return entity.kind === 'component' ? entity.spec?.props[node.property] : undefined
+  }
+
+  /** A node's value before anything sets it. */
+  private sourceDefault(node: GraphNode, entity: Entity): unknown {
+    switch (entity.kind) {
+      case 'component':
+        return structuredClone(entity.spec?.state[node.property]?.default ?? null)
+      case 'query':
+        return node.property === 'isFetching' ? false : null
+      case 'variable':
+        return this.values.get(`${entity.name}.$initial`) ?? null
+      case 'transformer':
+        return null
+    }
+  }
+
+  /** What a node holds when it can't be evaluated. */
+  private fallback(node: GraphNode, entity: Entity): unknown {
+    const spec = this.propSpec(node, entity)
+    if (spec) return structuredClone(spec.default)
+    if (node.kind === 'source' || node.kind === 'state') return this.sourceDefault(node, entity)
+    return null
+  }
+}
+
+/** Same value, or equal plain data (so a recomputed object that came out the same stops the update there). */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return false
+  }
+}

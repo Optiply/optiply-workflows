@@ -8,6 +8,8 @@ export type FieldKind =
   | 'expression'
   /** A code block's body. */
   | 'function-body'
+  /** A function body run synchronously (app transformers). */
+  | 'sync-function-body'
 
 /** One piece of user code inside a block. */
 export interface CodeField {
@@ -29,6 +31,8 @@ export interface FieldRef {
   end: number
   /** A shorthand property (`{ name }`): renaming must keep the key. */
   shorthand?: true
+  /** With `{ properties: true }`: the property read straight off it (`b` in `a.b`). */
+  property?: string
 }
 
 /** Every field of a block that holds code or templates, in a stable order. */
@@ -111,12 +115,15 @@ export function codeFields(block: Block): CodeField[] {
  * Free identifiers in a field, minus its locals, plus any syntax errors (offsets into `field.source`). A template
  * with an unterminated `{{` stops at that error; other templates report each bad expression separately.
  */
-export function fieldRefs(field: CodeField): { refs: FieldRef[]; errors: TemplateError[] } {
+export function fieldRefs(
+  field: Pick<CodeField, 'kind' | 'source' | 'locals'>,
+  options: { properties?: boolean } = {},
+): { refs: FieldRef[]; errors: TemplateError[] } {
   const refs: FieldRef[] = []
   const errors: TemplateError[] = []
   const collect = (code: string, kind: CodeKind, offset: number) => {
     try {
-      for (const ref of freeIdentifierRefs(code, kind)) {
+      for (const ref of freeIdentifierRefs(code, kind, options)) {
         refs.push({ ...ref, start: ref.start + offset, end: ref.end + offset })
       }
     } catch (err) {
