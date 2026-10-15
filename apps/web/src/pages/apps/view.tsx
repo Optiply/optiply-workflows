@@ -1,6 +1,6 @@
 import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { useCallback, useRef, useState } from 'react'
 import { Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -22,7 +22,13 @@ export function AppViewPage() {
   if (app.error)
     return (
       <Centered>
-        <ErrorNote error={app.error} />
+        <div className="flex flex-col items-center gap-3">
+          <ErrorNote error={app.error} />
+          {/* Not published yet: whoever can edit it gets there from here (the editor refuses everyone else). */}
+          <Link to="/apps/$slug/edit" params={{ slug }} className="text-sm text-accent hover:underline">
+            Open the editor
+          </Link>
+        </div>
       </Centered>
     )
   if (environments.error)
@@ -45,7 +51,7 @@ export function AppViewPage() {
   return (
     <RunningApp
       key={`${app.data.release.id}:${environment.id}`}
-      app={{ id: app.data.id, slug: app.data.slug, name: app.data.name }}
+      app={{ id: app.data.id, slug: app.data.slug, name: app.data.name, canEdit: app.data.level !== 'use' }}
       release={{
         id: app.data.release.id,
         version: app.data.release.version,
@@ -62,7 +68,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 interface RunningAppProps {
-  app: { id: string; slug: string; name: string }
+  app: { id: string; slug: string; name: string; canEdit: boolean }
   release: { id: string; version: string; definition: AppDefinition }
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
@@ -101,6 +107,15 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
       <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-2.5">
         <h1 className="font-semibold">{app.name}</h1>
         <span className="text-xs text-muted">v{release.version}</span>
+        {app.canEdit && (
+          <Link
+            to="/apps/$slug/edit"
+            params={{ slug: app.slug }}
+            className="text-xs text-accent hover:underline"
+          >
+            Edit
+          </Link>
+        )}
         <div className="ml-auto flex items-center gap-2 text-sm">
           <label htmlFor="app-env" className="text-muted">
             Environment

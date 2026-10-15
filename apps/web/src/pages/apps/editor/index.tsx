@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Badge, Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
@@ -11,6 +11,7 @@ import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { CodePanel } from './code-panel'
 import { ComponentInspector } from './inspector'
+import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
 import { type SaveStatus, useAppEditor } from './store'
 
@@ -66,7 +67,13 @@ export function AppEditorPage() {
   return (
     <Editor
       key={`${app.data.id}:${environment.id}`}
-      app={{ id: app.data.id, slug: app.data.slug, name: app.data.name, live: app.data.liveRelease }}
+      app={{
+        id: app.data.id,
+        slug: app.data.slug,
+        name: app.data.name,
+        description: app.data.description,
+        level: app.data.level,
+      }}
       environment={environment}
       environments={environments.data}
     />
@@ -78,7 +85,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 interface EditorProps {
-  app: { id: string; slug: string; name: string; live: { version: string; definitionHash: string } | null }
+  app: EditorApp
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
 }
@@ -181,15 +188,7 @@ function Editor({ app, environment, environments }: EditorProps) {
             {preview ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
             {preview ? 'Edit' : 'Preview'}
           </Button>
-          {app.live && (
-            <Link
-              to="/apps/$slug"
-              params={{ slug: app.slug }}
-              className="text-xs text-accent hover:underline"
-            >
-              Open v{app.live.version}
-            </Link>
-          )}
+          <ReleaseControls app={app} />
         </div>
       </header>
       {status === 'conflict' && (

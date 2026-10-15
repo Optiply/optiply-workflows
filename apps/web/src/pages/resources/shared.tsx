@@ -236,12 +236,20 @@ function Cell({ value }: { value: unknown }) {
   return <>{String(value)}</>
 }
 
-type Target = { objectType: 'resource' | 'folder'; objectId: string | null }
+type Target = { objectType: 'resource' | 'folder' | 'app'; objectId: string | null }
 
 /**
- * Group grants on one target (a resource, a folder, or all resources), per environment or for all of them.
+ * Group grants on one target (a resource, a folder, an app, or all of a type), per environment or for all of them.
+ * Apps have no per-environment grants: their access applies everywhere.
  */
-export function AccessEditor({ target }: { target: Target }) {
+export function AccessEditor({
+  target,
+  help = 'Use runs queries · Edit also changes settings · Own also deletes and manages access. The highest grant wins.',
+}: {
+  target: Target
+  help?: string
+}) {
+  const perEnvironment = target.objectType !== 'app'
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: grants, isLoading, error } = useQuery(trpc.permissions.list.queryOptions(target))
@@ -255,6 +263,7 @@ export function AccessEditor({ target }: { target: Target }) {
         Promise.all([
           queryClient.invalidateQueries({ queryKey: trpc.permissions.list.queryKey(target) }),
           queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() }),
         ]),
     }),
   )
@@ -272,7 +281,7 @@ export function AccessEditor({ target }: { target: Target }) {
         {grants?.map((g) => (
           <div key={g.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
             <span className="flex-1 font-medium">{g.groupName}</span>
-            <span className="w-40 text-muted">{envName(g.environmentId)}</span>
+            {perEnvironment && <span className="w-40 text-muted">{envName(g.environmentId)}</span>}
             <Select
               value={g.level}
               onChange={(e) =>
@@ -304,7 +313,11 @@ export function AccessEditor({ target }: { target: Target }) {
         ))}
       </Card>
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={draft.groupId} onChange={(e) => setDraft({ ...draft, groupId: e.target.value })}>
+        <Select
+          aria-label="Group"
+          value={draft.groupId}
+          onChange={(e) => setDraft({ ...draft, groupId: e.target.value })}
+        >
           <option value="">Choose a group…</option>
           {groups?.map((g) => (
             <option key={g.id} value={g.id}>
@@ -312,18 +325,25 @@ export function AccessEditor({ target }: { target: Target }) {
             </option>
           ))}
         </Select>
+        {perEnvironment && (
+          <Select
+            aria-label="Environment"
+            value={draft.environmentId}
+            onChange={(e) => setDraft({ ...draft, environmentId: e.target.value })}
+          >
+            <option value="">All environments</option>
+            {environments?.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))}
+          </Select>
+        )}
         <Select
-          value={draft.environmentId}
-          onChange={(e) => setDraft({ ...draft, environmentId: e.target.value })}
+          aria-label="Level"
+          value={draft.level}
+          onChange={(e) => setDraft({ ...draft, level: e.target.value as Level })}
         >
-          <option value="">All environments</option>
-          {environments?.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name}
-            </option>
-          ))}
-        </Select>
-        <Select value={draft.level} onChange={(e) => setDraft({ ...draft, level: e.target.value as Level })}>
           {(['use', 'edit', 'own'] as const).map((l) => (
             <option key={l} value={l}>
               {LEVEL_LABELS[l]}
@@ -349,10 +369,7 @@ export function AccessEditor({ target }: { target: Target }) {
           Grant
         </Button>
       </div>
-      <p className="text-xs text-muted">
-        Use runs queries · Edit also changes settings · Own also deletes and manages access. The highest grant
-        wins.
-      </p>
+      <p className="text-xs text-muted">{help}</p>
     </div>
   )
 }
