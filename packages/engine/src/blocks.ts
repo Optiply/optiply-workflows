@@ -1,12 +1,20 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS } from '@ow/definition'
+import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS, taskOutcomes } from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
 import type { HostFunction } from '@ow/sandbox'
 import { childResult, waitForChild } from './children'
 import { BlockFailure } from './errors'
 import { runLoop } from './loop'
-import type { BlockResult, ChildRuns, EngineServices, RunInput, WaitState } from './types'
+import type {
+  BlockResult,
+  ChildRuns,
+  EngineServices,
+  RunInput,
+  TaskState,
+  UserTasks,
+  WaitState,
+} from './types'
 
 export interface BlockContext {
   /** Globals plus the results of the blocks this one references. */
@@ -178,10 +186,118 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     if (until.getTime() > Date.now()) return { data: null, suspend: { until } }
     return { data: null, metadata: { until: until.toISOString() } }
   },
+  async userTask(block, ctx) {
+    const tasks = ctx.services.tasks
+    if (!tasks) throw new BlockFailure('unsupported', "User Tasks can't run here")
+    const known = ctx.waiting?.taskId ? await tasks.get(ctx.waiting.taskId) : null
+    return taskOutput(known ?? (await openTask(block, tasks, ctx)), tasks)
+  },
   // The orchestrator commits the error handler's data itself when the run fails.
   async errorTrigger() {
     throw new BlockFailure('internal', 'The error handler only starts when the run fails')
   },
+}
+
+/** A paused run with an open task looks at it again after this long even if nothing woke it. */
+const TASK_RECHECK_MS = 60 * 60_000
+/** While the run still has other blocks running here, it looks at the task this often. */
+const TASK_INLINE_RECHECK_MS = 2000
+
+/** Renders the block's templates and opens its task (or finds the one this run's block opened before). */
+async function openTask(block: BlockOf<'userTask'>, tasks: UserTasks, ctx: BlockContext): Promise<TaskState> {
+  const { config } = block
+  const evaluate = templateEvaluator(ctx)
+  const title = (await renderText(config.title, evaluate)).trim()
+  if (!title) throw new BlockFailure('invalid_task', 'The task title came out empty')
+  const description = config.description?.trim() ? await renderText(config.description, evaluate) : null
+  const fields = []
+  for (const { default: template, ...field } of config.fields ?? []) {
+    fields.push(template?.trim() ? { ...field, default: await renderTemplate(template, evaluate) } : field)
+  }
+  let dueAt: Date | null = null
+  if (config.due) {
+    const raw = await renderTemplate(config.due.amount, evaluate)
+    const amount = typeof raw === 'string' ? Number(raw.trim()) : raw
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+      throw new BlockFailure(
+        'invalid_task',
+        `The due time must be a number of ${config.due.unit}, not ${describe(raw)}`,
+      )
+    }
+    const ms = amount * WAIT_UNIT_MS[config.due.unit]
+    if (ms > MAX_WAIT_MS) throw new BlockFailure('invalid_task', 'A task can be due at most 60 days out')
+    dueAt = new Date(Date.now() + ms)
+  }
+  const workflowId = (ctx.scope.workflowContext as { workflowId?: string } | undefined)?.workflowId
+  if (!workflowId) throw new BlockFailure('unsupported', 'User Tasks need the run to belong to a workflow')
+  return tasks.open({
+    runId: ctx.runId,
+    blockKey: block.name,
+    workflowId,
+    environmentId: ctx.environmentId,
+    title,
+    description,
+    fields,
+    outcomes: taskOutcomes(config.outcomes),
+    assignees: {
+      users: await assigneeList(config.assignees.users, 'users', evaluate),
+      groups: await assigneeList(config.assignees.groups, 'groups', evaluate),
+    },
+    dueAt,
+  })
+}
+
+/** Each entry is a template for one name or a list of them (`{{ team.data.map(u => u.email) }}`). */
+async function assigneeList(
+  entries: string[] | undefined,
+  what: string,
+  evaluate: Evaluate,
+): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of entries ?? []) {
+    if (!entry.trim()) continue
+    const value = await renderTemplate(entry, evaluate)
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item === null || item === undefined || item === '') continue
+      if (typeof item !== 'string') {
+        throw new BlockFailure('invalid_task', `Assignee ${what} must be text, not ${describe(item)}`)
+      }
+      out.push(item.trim())
+    }
+  }
+  return out
+}
+
+/** The block's result from its task: the answer, a failure, or a pause until it's answered or due. */
+async function taskOutput(task: TaskState, tasks: UserTasks): Promise<BlockOutput> {
+  const metadata = { taskId: task.id }
+  if (task.status === 'completed') {
+    return {
+      data: {
+        outcome: task.outcome,
+        values: task.values ?? {},
+        completedBy: task.completedBy,
+        completedAt: task.completedAt?.toISOString() ?? null,
+      },
+      metadata,
+    }
+  }
+  if (task.status === 'cancelled')
+    throw new BlockFailure('task_cancelled', 'The task was cancelled', metadata)
+  if (task.status === 'expired' || (task.dueAt && task.dueAt.getTime() <= Date.now())) {
+    const now = task.status === 'open' ? await tasks.expire(task.id) : task
+    // Completed at the last moment, before it could expire.
+    if (now?.status === 'completed') return taskOutput(now, tasks)
+    throw new BlockFailure(
+      'task_expired',
+      `Nobody completed the task by ${task.dueAt?.toISOString()}`,
+      metadata,
+    )
+  }
+  const until = new Date(
+    Math.min(task.dueAt?.getTime() ?? Number.POSITIVE_INFINITY, Date.now() + TASK_RECHECK_MS),
+  )
+  return { data: null, metadata, suspend: { until, taskId: task.id, recheckMs: TASK_INLINE_RECHECK_MS } }
 }
 
 /** How long a sync Workflow block waits for its child in the process before pausing the run. */
@@ -322,10 +438,20 @@ export async function runResourceQuery(
     if (err instanceof BlockFailure) throw err
     throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
   }
+  const workflow = ctx.scope.workflowContext as
+    | { workflowId?: string; environment?: string; triggerType?: string }
+    | undefined
   const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
     evaluate: evaluatorFor(work, ctx),
     signal: work.signal,
     timeoutMs: work.timeoutMs,
+    labels: {
+      ow_source: 'workflow',
+      ow_run: ctx.runId,
+      ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
+      ...(workflow?.environment && { ow_environment: workflow.environment }),
+      ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
+    },
   })
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
 }

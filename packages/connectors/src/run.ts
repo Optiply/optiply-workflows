@@ -9,6 +9,8 @@ export interface RunOptions {
   signal?: AbortSignal
   /** Default 120s, Retool's default query timeout. */
   timeoutMs?: number
+  /** See `QueryContext.labels`. */
+  labels?: Record<string, string>
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -32,7 +34,12 @@ export async function runQuery(
   try {
     const query = parseQuery(connector, rawQuery)
     const result = await pool.withClient(connector, resource, (client) =>
-      connector.execute(client, query, { evaluate: wrapEvaluate(opts.evaluate), signal, timeoutMs }),
+      connector.execute(client, query, {
+        evaluate: wrapEvaluate(opts.evaluate),
+        signal,
+        timeoutMs,
+        ...(opts.labels && { labels: opts.labels }),
+      }),
     )
     return {
       data: connector.scrubResultData ? scrubSecretsDeep(result.data, secrets) : result.data,

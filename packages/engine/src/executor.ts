@@ -24,7 +24,8 @@ import {
   renewLease,
   suspendRun,
 } from './queue'
-import type { ResourceProvider, RunInput, RunResponse } from './types'
+import { PgUserTasks } from './tasks'
+import type { BlockResult, ResourceProvider, RunInput, RunResponse } from './types'
 
 /** Run-specific values the engine can't know: config vars (secret ones decrypted) and what to scrub. */
 export interface RunContextProvider {
@@ -53,6 +54,20 @@ export interface RunExecutorOptions {
   log?: DispatcherLogger
   /** Test hook: stop renewing leases, as a hung worker would. */
   renewLeases?: boolean
+  /** Told about runs and blocks as they finish here, e.g. for metrics. */
+  observer?: RunObserver
+}
+
+/** What the executor reports as runs and blocks finish in this process. Must not throw. */
+export interface RunObserver {
+  /** A run ended here (final status) or paused (`waiting`). Duration: since the run first started. */
+  runSettled?(e: {
+    status: 'succeeded' | 'failed' | 'cancelled' | 'waiting'
+    triggerType: string
+    durationMs: number
+  }): void
+  /** A block's result this lease committed (not results reused from earlier leases or runs). */
+  blockFinished?(e: { type: string; status: string; durationMs: number }): void
 }
 
 /**
@@ -66,9 +81,11 @@ export class RunExecutor {
   private readonly log: DispatcherLogger
 
   private readonly children: PgChildRuns
+  private readonly tasks: PgUserTasks
 
   constructor(private readonly opts: RunExecutorOptions) {
     this.children = new PgChildRuns(opts.db)
+    this.tasks = new PgUserTasks(opts.db)
     this.leaseMs = opts.leaseMs ?? 30_000
     this.db = opts.db
     this.log = opts.log ?? noLog
@@ -156,6 +173,7 @@ export class RunExecutor {
           resources: this.opts.resources,
           fetcher: this.opts.fetcher,
           children: this.children,
+          tasks: this.tasks,
         },
         store,
         checkpoints,
@@ -170,6 +188,8 @@ export class RunExecutor {
       sandbox.dispose()
       await store.flush()
     }
+
+    this.observe(run, definition, checkpoints, outcome)
 
     if (outcome.status === 'interrupted') {
       // On shutdown, hand the run straight back. Otherwise (lease lost, database trouble) leave it: if we
@@ -186,6 +206,37 @@ export class RunExecutor {
     }
     const finished = await finishRun(db, claim, { status: outcome.status, error: outcome.error })
     if (!finished) this.log.warn({ runId: run.id }, 'lost the lease before finishing the run')
+  }
+
+  private observe(
+    run: WorkflowRun,
+    definition: WorkflowDefinition,
+    checkpoints: readonly BlockResult[],
+    outcome: Awaited<ReturnType<typeof executeRun>>,
+  ) {
+    const observer = this.opts.observer
+    if (!observer) return
+    try {
+      const earlier = new Set(checkpoints.map((c) => c.key))
+      const types = new Map(definition.blocks.map((b) => [b.name, b.type]))
+      for (const result of outcome.results.values()) {
+        if (earlier.has(result.key) || result.metadata?.cachedFrom) continue
+        observer.blockFinished?.({
+          type: types.get(result.key) ?? 'unknown',
+          status: result.status,
+          durationMs: result.startedAt ? result.finishedAt.getTime() - result.startedAt.getTime() : 0,
+        })
+      }
+      if (outcome.status !== 'interrupted') {
+        observer.runSettled?.({
+          status: outcome.status,
+          triggerType: run.triggerType,
+          durationMs: Date.now() - (run.startedAt ?? run.createdAt).getTime(),
+        })
+      }
+    } catch (err) {
+      this.log.warn({ err }, 'run observer failed')
+    }
   }
 }
 

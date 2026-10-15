@@ -10,6 +10,9 @@ const TONE: Record<string, 'neutral' | 'accent' | 'success' | 'danger'> = {
   cancelled: 'neutral',
   skipped: 'neutral',
   interrupted: 'neutral',
+  open: 'accent',
+  completed: 'success',
+  expired: 'danger',
 }
 
 /** A run or block status as a coloured badge. */

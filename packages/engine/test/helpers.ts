@@ -32,6 +32,8 @@ export class FakeLog {
   maxActive = 0
   aborted: string[] = []
   timeline: string[] = []
+  /** The labels each call was given (see QueryContext.labels). */
+  labels: (Record<string, string> | undefined)[] = []
   count(id: string) {
     return this.calls.get(id) ?? 0
   }
@@ -52,6 +54,7 @@ export function fakeConnector(log: FakeLog): Connector<object, object, z.output<
     async execute(_client, query, ctx) {
       const n = log.count(query.id) + 1
       log.calls.set(query.id, n)
+      log.labels.push(ctx.labels)
       log.active++
       log.maxActive = Math.max(log.maxActive, log.active)
       log.timeline.push(`start ${query.id}`)

@@ -5,9 +5,11 @@ import {
   configVarValues,
   type Db,
   environments,
+  groups,
   type Resource,
   resourceConfigs,
   resources,
+  users,
   type Workflow,
   type WorkflowRun,
   workflowDraftSnapshots,
@@ -19,6 +21,7 @@ import {
   buildGraph,
   calledWorkflows,
   type Diagnostic,
+  literalAssignees,
   queriedResources,
   validateDefinition,
   type WorkflowDefinition,
@@ -30,7 +33,7 @@ import {
   type ResourceProvider,
   type RunContextProvider,
 } from '@ow/engine'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { type Access, atLeast } from './permissions'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
@@ -245,7 +248,27 @@ export async function checkDefinition(
     ? await db.select().from(workflows).where(inArray(workflows.slug, childSlugs))
     : []
   const childBySlug = new Map(children.map((w) => [w.slug, w]))
+  const assignees = literalAssignees(definition)
+  const knownEmails = new Set(
+    assignees.users.length
+      ? (
+          await db
+            .select({ email: users.email })
+            .from(users)
+            .where(inArray(sql`lower(${users.email})`, assignees.users))
+        ).map((u) => u.email.toLowerCase())
+      : [],
+  )
+  const knownGroups = new Set(
+    assignees.groups.length
+      ? (
+          await db.select({ name: groups.name }).from(groups).where(inArray(groups.name, assignees.groups))
+        ).map((g) => g.name)
+      : [],
+  )
   const validation = validateDefinition(definition, {
+    resolveAssignee: (kind, name) =>
+      kind === 'user' ? knownEmails.has(name.toLowerCase()) : knownGroups.has(name),
     resolveResource: (slug) => {
       const resource = bySlug.get(slug)
       return resource ? getConnector(resource.type) : undefined

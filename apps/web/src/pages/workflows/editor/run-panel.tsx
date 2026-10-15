@@ -206,6 +206,13 @@ function BlockResult({
           Child run: <RunLink runId={childRunOf(block)!} />
         </p>
       )}
+      {block.status !== 'waiting' && typeof block.metadata?.taskId === 'string' && (
+        <p className="text-xs text-muted">
+          <Link to="/inbox/$taskId" params={{ taskId: block.metadata.taskId }} className="hover:text-accent">
+            Its task
+          </Link>
+        </p>
+      )}
       {block.status === 'succeeded' && <Json value={block.data} />}
       {isLoop && <Iterations runId={runId} loop={name} runStatus={runStatus} />}
     </div>
@@ -221,6 +228,16 @@ function childRunOf(block: BlockView & { data: unknown }): string | null {
 
 function WaitingNote({ metadata }: { metadata: Record<string, unknown> | null }) {
   const until = typeof metadata?.until === 'string' ? new Date(metadata.until) : null
+  if (typeof metadata?.taskId === 'string') {
+    return (
+      <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
+        Waiting for someone to complete its task.{' '}
+        <Link to="/inbox/$taskId" params={{ taskId: metadata.taskId }} className="font-medium underline">
+          Open the task
+        </Link>
+      </p>
+    )
+  }
   return (
     <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
       {metadata?.childRunId ? 'Waiting for its child run to finish' : 'Waiting'}

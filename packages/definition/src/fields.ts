@@ -82,6 +82,26 @@ export function codeFields(block: Block): CodeField[] {
       return block.config.kind === 'duration'
         ? [{ path: ['config', 'amount'], kind: 'template', source: block.config.amount }]
         : [{ path: ['config', 'until'], kind: 'template', source: block.config.until }]
+    case 'userTask': {
+      const { title, description, assignees, fields, due } = block.config
+      const out: CodeField[] = [{ path: ['config', 'title'], kind: 'template', source: title }]
+      if (description !== undefined) {
+        out.push({ path: ['config', 'description'], kind: 'template', source: description })
+      }
+      assignees.users?.forEach((u, i) => {
+        out.push({ path: ['config', 'assignees', 'users', i], kind: 'template', source: u })
+      })
+      assignees.groups?.forEach((g, i) => {
+        out.push({ path: ['config', 'assignees', 'groups', i], kind: 'template', source: g })
+      })
+      fields?.forEach((f, i) => {
+        if (f.default !== undefined) {
+          out.push({ path: ['config', 'fields', i, 'default'], kind: 'template', source: f.default })
+        }
+      })
+      if (due) out.push({ path: ['config', 'due', 'amount'], kind: 'template', source: due.amount })
+      return out
+    }
     case 'errorTrigger':
       return []
   }

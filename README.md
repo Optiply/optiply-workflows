@@ -17,13 +17,15 @@ TypeScript monorepo (pnpm + Turborepo):
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
 | `packages/expressions` | `{{ }}` template parsing and rendering, free-identifier analysis, and the SQL lexer that turns `{{ }}` into bind parameters |
-| `packages/connectors` | Postgres and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
+| `packages/connectors` | Postgres, MySQL, BigQuery and REST connectors, client pooling, timeouts and cancellation, SSRF guard |
 | `packages/definition` | The workflow definition format (zod), its validator, graph helpers, canonical JSON and the definition hash, cron with time zones, webhook aliases, release versions |
 | `packages/engine` | Runs workflows: the orchestrator and block executors, the Postgres queue (claims with concurrency limits, leases with fencing epochs, recovery of runs whose worker died), the scheduler, and the in-process runner for sync webhooks |
 
 ## Local development
 
 Requires Node ≥ 24. Docker is **not** needed for development: Postgres comes from the `embedded-postgres` npm package.
+
+`pnpm install` compiles isolated-vm from source, because it carries a patch (`patches/isolated-vm@7.0.1.patch`, the unreleased upstream fix for a timer-thread stack overflow), so a C++ toolchain is needed: the Xcode command-line tools on macOS, `python3 make g++` on Debian/Ubuntu. Drop the patch once isolated-vm releases the fix.
 
 ```bash
 corepack enable                  # provides pnpm (or prefix commands with `corepack pnpm`)
@@ -56,6 +58,12 @@ Open **Workflows** in the app to create one. The editor has:
 
 A draft run needs Edit on the workflow and Use on every resource it queries. With `ROLE=all` the same process runs the worker; `WORKER_CONCURRENCY` (default 4) sets how many runs it executes at once.
 
+Run history is kept for `RUN_RETENTION_DAYS` (default 30; `0` keeps everything): once a day one worker deletes runs that finished longer ago, with their blocks, data and logs, plus draft snapshots no run uses any more. It deletes in small batches (at most 5,000 rows per statement, each its own short transaction), so the queue never waits on it. A run with an unfinished child workflow is kept until the child finishes. The last result is in the `maintenance_jobs` table.
+
+In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`, BigQuery `@p1`), so values are never pasted into the SQL; write a table or column name directly. In Postgres, match a list with `= any({{ ids }})`; in BigQuery, with `IN UNNEST({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing). Objects are sent as JSON text (in BigQuery, read them with `PARSE_JSON(...)`). MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings; BigQuery does the same for `NUMERIC`, `INT64` and `TIMESTAMP`, and returns `DATE`/`DATETIME` as BigQuery writes them.
+
+A BigQuery resource signs in with a service account's JSON key (it needs the BigQuery Job User role and read access to the datasets). Every query runs as a job with the resource's maximum bytes billed (default 10 GiB; a query that would bill more fails before it runs, at no cost) and labels for cost reports: the resource's own plus `ow_source`, `ow_workflow`, `ow_run`, `ow_environment` and `ow_trigger` (or `ow_user` from the playground). Cancelling a run, or a timeout, cancels the job.
+
 Code blocks can call `await fetch(url, { method, headers, body })` (the body is a string; the response has `status`, `headers`, `text()` and `json()`). Requests to private, loopback and link-local addresses are refused unless `CODE_FETCH_ALLOW_PRIVATE_NETWORK=true` (for local test servers); responses are capped at 10 MB, and a request stops when its block times out or the run stops.
 
 ### Loops, functions, child workflows and waits
@@ -76,6 +84,14 @@ curl -b jar localhost:3000/api/v1/runs/<runId>          # also /blocks, /blocks/
 curl -b jar localhost:3000/api/v1/runs/<runId>/blocks/<loop>/iterations?status=errored   # a loop's items; /children lists child runs
 curl -b jar -X POST localhost:3000/api/v1/runs/<runId>/cancel
 ```
+
+### User Tasks and the Inbox
+
+A **User task** block asks people for a decision or some data. It has a title and a description (both can use `{{ }}`), assignees (users by email and groups by name; an entry can be a `{{ }}` that gives one or a list), form fields (text, long text, number, checkbox, choice; each optionally required, with a `{{ }}` starting value), buttons (outcomes, e.g. Approve and Reject; one Submit button when there are none), and an optional due time.
+
+When the block runs, the task appears in its assignees' **Inbox** (in the sidebar, with a count), and the run waits without holding a worker. Anyone assigned (directly or through a group) can complete it, and admins can complete any task. People with access to the workflow can see it but not complete it. The answer is checked against the fields in the browser and again on the server. Then the run carries on with `{{ task1.data }}` = `{ outcome, values, completedBy: { id, email, name }, completedAt }`; use a Branch on `task1.data.outcome` to go different ways. A field's starting value only fills the form in: a field submitted empty is `null`.
+
+Past its due time the task expires and the block fails (`task_expired`; with "continue on failure", the run takes the error path). Cancelling the run, or the run failing elsewhere, closes the task. Assignees written out in full are checked before a run starts or a release is published; `{{ }}` ones when the task opens. User tasks can't be used in functions or the error handler.
 
 ### Releases, webhooks and schedules
 
@@ -101,6 +117,11 @@ Triggers are set on the start trigger and take effect when you publish:
 pnpm lint        # Biome
 pnpm typecheck
 pnpm test        # Vitest; server tests boot a throwaway embedded Postgres per file
+```
+
+The MySQL tests (`packages/connectors/test/mysql.test.ts`, `apps/server/test/mysql.test.ts`) start a throwaway `mysql:8.4` container, so they need Docker; without it they're skipped, except in CI (`CI=true`), where they fail instead. To use an existing server, set `MYSQL_TEST_URL=mysql://root:<password>@host:3306/` (its root creates an `ow_test` database and an `ow` user).
+
+```bash
 pnpm --filter @ow/server bench:webhooks   # sync webhook latency (p50 < 50 ms), run alone because it's timing-sensitive
 pnpm --filter @ow/sandbox bench           # a fresh sandbox context in under 10 ms, likewise
 
@@ -118,3 +139,18 @@ docker compose up --build        # postgres:18, one-shot migrate, api (serves th
 Compose reads `.env`; set `PUBLIC_URL=http://localhost:3000` there (or in the shell) when the app is served by the `api` container rather than Vite. Create the first admin with `docker compose exec api node dist/cli/create-admin.js --email you@optiply.nl --name You`.
 
 The image (`Dockerfile`) runs on `node:24-bookworm-slim`, with `TZ=UTC` and `--no-node-snapshot` (both required by the sandbox).
+
+### Monitoring
+
+Every process serves Prometheus metrics at `/metrics`: the API on its own port, workers on `METRICS_PORT` (default 9464, with `/health` next to it; `0` turns it off). Set `METRICS_TOKEN` to require `Authorization: Bearer <token>`.
+
+- **Per process:** `ow_http_requests_total` and `ow_http_request_duration_seconds` (by route pattern, e.g. `/api/v1/runs/:id`), `ow_runs_settled_total` and `ow_run_duration_seconds` (runs that finished or paused here, by status and trigger), `ow_blocks_finished_total` and `ow_block_duration_seconds` (by block type), `ow_schedule_fires_total` (started or skipped), and Node's own (`ow_process_*`, `ow_nodejs_*`). Sum these across processes.
+- **Whole database, read when scraped:** `ow_runs{status}` (queued, running, waiting), `ow_queue_lag_seconds` (how long the oldest due run has waited for a worker), `ow_user_tasks_open`, `ow_retention_last_finished_timestamp_seconds` and `ow_retention_last_deleted_runs`. Every process reports the same values: use `max`, not `sum`.
+
+Worth alerting on: queue lag over a minute, `failed` runs rising, retention not finishing for two days, and a worker's metrics endpoint going missing.
+
+### Audit log and backups
+
+**Settings → Audit log** filters by action, person, object and dates, and **Export CSV** downloads what's filtered (admins only, up to 100,000 rows, newest first; `GET /api/v1/audit/export.csv` with the same filters as query parameters). Exports are themselves audited, and cells a spreadsheet would treat as formulas are quoted so opening the file can't run anything.
+
+Backups, restores and the quarterly restore drill: [docs/runbooks/backup.md](docs/runbooks/backup.md). After restoring (or before removing an old encryption key), `node --no-node-snapshot dist/cli/verify-secrets.js` in the image (`pnpm --filter @ow/server verify-secrets` locally) checks that every stored secret decrypts with the configured keys.

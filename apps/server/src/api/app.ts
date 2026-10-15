@@ -12,10 +12,12 @@ import pino from 'pino'
 import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
+import { Metrics, metricsAllowed } from '../metrics'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
+import { auditApi } from './audit'
 import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
 
@@ -26,12 +28,16 @@ export async function buildApp(deps: {
   logger?: FastifyBaseLogger | false
   /** The postgres.js client behind `db`, for LISTEN (live run events). Without it, run events aren't served. */
   listener?: postgres.Sql
+  /** The process's metrics, shared with the worker when both run here. Default: the app's own. */
+  metrics?: Metrics
 }) {
   const { db, config } = deps
   const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
   const app = Fastify({ loggerInstance: logger, trustProxy: config.TRUST_PROXY, bodyLimit: 10 * 1024 * 1024 })
 
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
+  const metrics = deps.metrics ?? new Metrics(db)
+  metrics.instrument(app)
 
   const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
@@ -45,6 +51,7 @@ export async function buildApp(deps: {
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),
+    observer: metrics.observer,
   })
   app.addHook('onClose', async () => {
     await runner.stop()
@@ -58,12 +65,22 @@ export async function buildApp(deps: {
     return { ok: true }
   })
 
+  // Prometheus. Protected by METRICS_TOKEN when it's set.
+  app.get('/metrics', async (request, reply) => {
+    if (!metricsAllowed(config.METRICS_TOKEN, request.headers.authorization)) {
+      return reply.code(401).header('www-authenticate', 'Bearer').send()
+    }
+    const { contentType, body } = await metrics.text()
+    return reply.type(contentType).send(body)
+  })
+
   await app.register(authRoutes, { db, config })
   const events = deps.listener ? new RunEventHub(deps.listener) : undefined
   app.addHook('onClose', async () => {
     await events?.close()
   })
   await app.register(runsApi, { prefix: '/api/v1', db, events })
+  await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(webhooksApi, { prefix: '/api/v1', db, events, runner })
 
   await app.register(fastifyTRPCPlugin, {

@@ -11,8 +11,10 @@ import {
   Reply,
   SquareFunction,
   TriangleAlert,
+  UserCheck,
   Workflow,
 } from 'lucide-react'
+import { isSqlType } from '@/lib/resource-types'
 
 export interface BlockKind {
   label: string
@@ -49,6 +51,7 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   },
   workflow: { label: 'Workflow', icon: Workflow, tone: 'bg-cyan-100 text-cyan-700', prefix: 'workflow' },
   wait: { label: 'Wait', icon: Hourglass, tone: 'bg-stone-100 text-stone-700', prefix: 'wait' },
+  userTask: { label: 'User task', icon: UserCheck, tone: 'bg-fuchsia-100 text-fuchsia-700', prefix: 'task' },
   errorTrigger: {
     label: 'Error handler',
     icon: TriangleAlert,
@@ -68,11 +71,12 @@ export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'function',
   'workflow',
   'wait',
+  'userTask',
   'errorTrigger',
 ]
 
 /** What a function can't contain (see the validator's not_in_function). */
-const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'errorTrigger'])
+const NOT_IN_FUNCTIONS = new Set<BlockType>(['response', 'wait', 'userTask', 'errorTrigger'])
 
 /** The block types that can be added to a graph: a function's, or the workflow's (one error handler at most). */
 export function addableIn(
@@ -110,10 +114,9 @@ export function newBlock(
         type,
         config: {
           resource: resource!.slug,
-          query:
-            resource!.type === 'postgres'
-              ? { sql: 'select 1' }
-              : { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
+          query: isSqlType(resource!.type)
+            ? { sql: 'select 1' }
+            : { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
         },
       }
     case 'code':
@@ -132,6 +135,19 @@ export function newBlock(
       return { name, type, config: { workflow: '', ...(context.inFunction && { mode: 'async' as const }) } }
     case 'wait':
       return { name, type, config: { kind: 'duration', amount: '1', unit: 'minutes' } }
+    case 'userTask':
+      return {
+        name,
+        type,
+        config: {
+          title: 'Please review',
+          assignees: { groups: [] },
+          outcomes: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'reject', label: 'Reject' },
+          ],
+        },
+      }
     case 'errorTrigger':
       return { name, type }
   }
@@ -166,6 +182,10 @@ export function summary(block: Block): string {
       return block.config.kind === 'duration'
         ? `${block.config.amount} ${block.config.unit}`
         : `Until ${block.config.until}`
+    case 'userTask': {
+      const people = [...(block.config.assignees.users ?? []), ...(block.config.assignees.groups ?? [])]
+      return `${firstLine(block.config.title)} · ${people.length ? people.join(', ') : 'nobody assigned'}`
+    }
     case 'errorTrigger':
       return 'Runs when the workflow fails'
   }

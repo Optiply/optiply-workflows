@@ -5,6 +5,7 @@ import { createDb, runMigrations } from '@ow/db'
 import pino from 'pino'
 import { buildApp } from './api/app'
 import { loadConfig } from './config'
+import { Metrics, serveMetrics } from './metrics'
 import { startWorker } from './worker'
 
 const config = loadConfig()
@@ -25,15 +26,26 @@ async function main() {
 
   const { db, sql, close } = createDb(config.DATABASE_URL)
   const stops: (() => Promise<void>)[] = []
+  const metrics = new Metrics(db)
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {
-    const app = await buildApp({ db, config, logger: log, listener: sql })
+    const app = await buildApp({ db, config, logger: log, listener: sql, metrics })
     await app.listen({ port: config.PORT, host: config.HOST })
     stops.push(() => app.close())
   }
   if (config.ROLE === 'worker' || config.ROLE === 'all') {
-    const worker = await startWorker({ db, sql, config, log })
+    const worker = await startWorker({ db, sql, config, log, metrics })
     stops.push(worker.stop)
+  }
+  // A worker on its own has no HTTP server: it serves /metrics on METRICS_PORT.
+  if (config.ROLE === 'worker' && config.METRICS_PORT > 0) {
+    const server = await serveMetrics(metrics, {
+      port: config.METRICS_PORT,
+      host: config.HOST,
+      token: config.METRICS_TOKEN,
+    })
+    log.info({ port: config.METRICS_PORT }, 'metrics served')
+    stops.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
   }
 
   let shuttingDown = false

@@ -12,6 +12,8 @@ import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-re
 import { z } from 'zod'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
+import { InboxPage } from './pages/inbox/list'
+import { TaskPage } from './pages/inbox/task'
 import { LoginPage } from './pages/login'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
@@ -89,6 +91,16 @@ const runsRoute = createRoute({
   path: '/runs',
   component: RunsPage,
 })
+const inboxRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/inbox',
+  component: InboxPage,
+})
+const taskRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/inbox/$taskId',
+  component: TaskPage,
+})
 
 const settingsRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -139,6 +151,8 @@ const routeTree = rootRoute.addChildren([
     resourcesRoute,
     resourceDetailRoute,
     runsRoute,
+    inboxRoute,
+    taskRoute,
     settingsRoute.addChildren([
       settingsIndexRoute,
       usersRoute,

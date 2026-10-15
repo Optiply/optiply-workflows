@@ -52,6 +52,9 @@ export type DiagnosticCode =
   | 'function_call'
   | 'recursive_function'
   | 'invalid_wait'
+  | 'invalid_task'
+  | 'unknown_assignee'
+  | 'task_in_handler'
   | 'unknown_workflow'
   | 'unpublished_workflow'
 
@@ -88,6 +91,11 @@ export interface ValidateOptions {
    * execute). When given, every Workflow block and loop workflow runner is checked.
    */
   resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
+  /**
+   * Whether a User Task assignee written out in full (no `{{ }}`) exists: a user by email, a group by name. When
+   * given, each one is checked; templated ones are checked when the task opens.
+   */
+  resolveAssignee?: (kind: 'user' | 'group', name: string) => boolean
 }
 
 export interface ValidationResult {
@@ -120,6 +128,29 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   }
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report)
+
+  // User Task assignees written out in full exist.
+  if (options.resolveAssignee) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        if (block.type !== 'userTask') return
+        for (const kind of ['users', 'groups'] as const) {
+          block.config.assignees[kind]?.forEach((entry, j) => {
+            const name = entry.trim()
+            if (!name || name.includes('{{')) return
+            if (options.resolveAssignee!(kind === 'users' ? 'user' : 'group', name)) return
+            report({
+              code: 'unknown_assignee',
+              message: kind === 'users' ? `No user has the email ${name}` : `No group is named "${name}"`,
+              path: [...path, 'blocks', i, 'config', 'assignees', kind, j],
+              block: block.name,
+              ...(fn && { function: fn.name }),
+            })
+          })
+        }
+      })
+    }
+  }
 
   // Child workflows exist and are published.
   if (options.resolveWorkflow) {
@@ -407,6 +438,17 @@ function checkGraph(
     const at = { block: block.name, ...inFunction }
     checkCalls(block, functions, (rest) => blockPath(i, ...rest), at, report)
     if (block.type === 'wait') checkWait(block, blockPath(i, 'config'), at, report)
+    if (block.type === 'userTask') {
+      checkUserTask(block, blockPath(i, 'config'), at, report)
+      if (handlerPath.has(block.name)) {
+        report({
+          code: 'task_in_handler',
+          message: "The error handler can't wait for a person: it has 60 seconds to finish",
+          path: blockPath(i),
+          ...at,
+        })
+      }
+    }
 
     const ancestors = graph.ancestors(block.name)
     // The error handler may read anything on the main path: it runs after the run failed, and whatever didn't run
@@ -477,9 +519,10 @@ function notInFunction(block: Block): string | null {
       return "A function can't reply to a webhook; it returns the data of a block"
   }
   if (suspends(block)) {
-    return block.type === 'wait'
-      ? "A function can't wait: function calls aren't checkpointed"
-      : "A function can't wait for a child workflow; use the async mode"
+    if (block.type === 'wait') return "A function can't wait: function calls aren't checkpointed"
+    if (block.type === 'userTask')
+      return "A function can't wait for a person: function calls aren't checkpointed"
+    return "A function can't wait for a child workflow; use the async mode"
   }
   return null
 }
@@ -548,6 +591,53 @@ function checkWait(
     if (amount * WAIT_UNIT_MS[config.unit] > MAX_WAIT_MS) return problem('A wait can last at most 60 days')
   } else if (Number.isNaN(Date.parse(text))) {
     problem(`"${text}" isn't a date and time`)
+  }
+}
+
+/** A task needs a title, someone to do it, well-formed fields and outcomes, and a sensible due time. */
+function checkUserTask(
+  block: BlockOf<'userTask'>,
+  base: (string | number)[],
+  at: { block: string; function?: string },
+  report: Report,
+) {
+  const { title, assignees, fields = [], outcomes = [], due } = block.config
+  const problem = (message: string, ...path: (string | number)[]) =>
+    report({ code: 'invalid_task', message, path: [...base, ...path], ...at })
+  if (!title.trim()) problem('Give the task a title', 'title')
+  const people = [...(assignees.users ?? []), ...(assignees.groups ?? [])]
+  if (!people.some((p) => p.trim())) problem('Assign the task to at least one user or group', 'assignees')
+  assignees.users?.forEach((u, i) => {
+    const text = u.trim()
+    if (text && !text.includes('{{') && !/^[^\s@]+@[^\s@]+$/.test(text)) {
+      problem(`"${text}" isn't an email address`, 'assignees', 'users', i)
+    }
+  })
+  const names = new Set<string>()
+  fields.forEach((f, i) => {
+    if (names.has(f.name)) problem(`Two fields are named "${f.name}"`, 'fields', i, 'name')
+    names.add(f.name)
+    if (!f.label.trim()) problem('Give the field a label', 'fields', i, 'label')
+    if (f.type === 'select' && !f.options?.some((o) => o.trim())) {
+      problem('A choice needs at least one option', 'fields', i, 'options')
+    }
+  })
+  const ids = new Set<string>()
+  outcomes.forEach((o, i) => {
+    if (ids.has(o.id)) problem(`Two outcomes have the id "${o.id}"`, 'outcomes', i, 'id')
+    ids.add(o.id)
+    if (!o.label.trim()) problem('Give the button a label', 'outcomes', i, 'label')
+  })
+  if (due) {
+    const text = due.amount.trim()
+    if (!text) problem('Enter when the task is due', 'due', 'amount')
+    else if (!text.includes('{{')) {
+      const amount = Number(text)
+      if (!Number.isFinite(amount) || amount <= 0)
+        problem(`"${text}" isn't a number of ${due.unit}`, 'due', 'amount')
+      else if (amount * WAIT_UNIT_MS[due.unit] > MAX_WAIT_MS)
+        problem('A task can be due at most 60 days out', 'due', 'amount')
+    }
   }
 }
 

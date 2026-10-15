@@ -14,7 +14,7 @@ const packageName = (spec) =>
 
 await build({
   // The CLIs ship too, so they can run inside the image: `node --no-node-snapshot dist/cli/rekey.js`.
-  entryPoints: ['src/main.ts', 'src/cli/rekey.ts', 'src/cli/create-admin.ts'],
+  entryPoints: ['src/main.ts', 'src/cli/rekey.ts', 'src/cli/create-admin.ts', 'src/cli/verify-secrets.ts'],
   outdir: 'dist',
   bundle: true,
   platform: 'node',

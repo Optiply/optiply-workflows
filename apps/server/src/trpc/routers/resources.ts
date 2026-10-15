@@ -377,6 +377,7 @@ export const resourcesRouter = router({
           {
             evaluate: (code) =>
               ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
+            labels: { ow_source: 'playground', ow_user: ctx.user.id },
           },
         )
         outcome = {

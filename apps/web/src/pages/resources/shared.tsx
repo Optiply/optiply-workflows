@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
 import { Badge, Button, Card, ErrorNote, Input, Select, Spinner } from '@/components/ui'
+import { TYPE_BADGES } from '@/lib/resource-types'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 
@@ -364,11 +365,11 @@ export function TypeIcon({ type, className }: { type: string; className?: string
     <span
       className={cn(
         'inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold',
-        type === 'postgres' ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700',
+        (TYPE_BADGES[type] ?? TYPE_BADGES.rest)!.className,
         className,
       )}
     >
-      {type === 'postgres' ? 'PG' : 'API'}
+      {(TYPE_BADGES[type] ?? TYPE_BADGES.rest)!.label}
     </span>
   )
 }

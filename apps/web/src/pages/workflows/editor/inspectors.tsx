@@ -10,6 +10,7 @@ import {
   MAX_LOOP_CONCURRENCY,
   renameBlock,
   resolveBlockSettings,
+  TASK_DUE_UNITS,
   WAIT_UNITS,
   type WaitUnit,
 } from '@ow/definition'
@@ -17,6 +18,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
+import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -236,6 +238,8 @@ function TypeForm({ block, ctx }: { block: Block; ctx: FormContext }) {
       return <WorkflowForm block={block} ctx={ctx} />
     case 'wait':
       return <WaitForm block={block} ctx={ctx} />
+    case 'userTask':
+      return <UserTaskForm block={block} ctx={ctx} />
     case 'errorTrigger':
       return <ErrorTriggerForm block={block} />
   }
@@ -364,7 +368,7 @@ function QueryEditor({
               query:
                 next && current && next.type === current.type
                   ? query
-                  : next?.type === 'postgres'
+                  : isSqlType(next?.type)
                     ? { sql: 'select 1' }
                     : DEFAULT_REST,
             })
@@ -378,7 +382,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {current?.type === 'postgres' || (!current && typeof query.sql === 'string') ? (
+      {isSqlType(current?.type) || (!current && typeof query.sql === 'string') ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -810,7 +814,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
                   ? {
                       kind,
                       resource: resource?.slug ?? '',
-                      query: (resource?.type === 'postgres' || !resource
+                      query: (isSqlType(resource?.type) || !resource
                         ? { sql: 'select {{ value }}' }
                         : DEFAULT_REST) as never,
                     }
@@ -1134,6 +1138,317 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
   )
 }
 
+type TaskConfig = BlockOf<'userTask'>['config']
+type TaskFieldDef = NonNullable<TaskConfig['fields']>[number]
+
+/** Problems under a plain input (Monaco fields show theirs as markers). */
+function Problems({ list }: { list: FieldProblem[] }) {
+  if (!list.length) return null
+  return (
+    <div className="flex flex-col gap-0.5">
+      {list.map((p, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: messages have no identity
+        <span key={i} className={cn('text-xs', p.severity === 'error' ? 'text-danger' : 'text-amber-700')}>
+          {p.message}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormContext }) {
+  const trpc = useTRPC()
+  const groups = useQuery(trpc.groups.list.queryOptions())
+  const config = block.config
+  const set = (patch: Partial<TaskConfig>) =>
+    updateBlock<BlockOf<'userTask'>>(block.name, (b) => ({ ...b, config: { ...b.config, ...patch } }))
+  const users = config.assignees.users ?? []
+  const groupNames = config.assignees.groups ?? []
+  const fields = config.fields ?? []
+  const outcomes = config.outcomes ?? []
+  const setAssignees = (patch: Partial<TaskConfig['assignees']>) =>
+    set({ assignees: { ...config.assignees, ...patch } })
+  const setField = (i: number, patch: Partial<TaskFieldDef>) =>
+    set({ fields: fields.map((f, j) => (j === i ? { ...f, ...patch } : f)) })
+  const listId = `groups-${block.name}`
+
+  return (
+    <div className="flex flex-col gap-4">
+      <EditorField label="Title" hint="What the person is asked, as it appears in their inbox.">
+        <TemplateLine
+          path={ctx.modelPath('title.txt')}
+          value={config.title}
+          problems={ctx.problemsAt('config', 'title')}
+          onChange={(title) => set({ title })}
+        />
+      </EditorField>
+      <EditorField label="Description" hint="Optional. Plain text with {{ }}.">
+        <Code
+          path={ctx.modelPath('description.txt')}
+          language="plaintext"
+          height={80}
+          value={config.description ?? ''}
+          problems={ctx.problemsAt('config', 'description')}
+          onChange={(description) => set({ description: description || undefined })}
+        />
+      </EditorField>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium">Assigned to</span>
+        <span className="text-xs text-muted">
+          Anyone listed (or in a listed group) can complete it; admins always can. Emails can be {'{{ }}'}.
+        </span>
+        {users.map((u, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: entries have no identity besides their position
+          <div key={i} className="flex items-start gap-1.5">
+            <div className="flex-1">
+              <TemplateLine
+                path={ctx.modelPath(`assignee-${i}.txt`)}
+                value={u}
+                problems={ctx.problemsAt('config', 'assignees', 'users', i)}
+                onChange={(v) => setAssignees({ users: users.map((x, j) => (j === i ? v : x)) })}
+              />
+            </div>
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Remove"
+              onClick={() => setAssignees({ users: users.filter((_, j) => j !== i) })}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+        ))}
+        {groupNames.map((g, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: entries have no identity besides their position
+          <div key={`g${i}`} className="flex flex-col gap-0.5">
+            <div className="flex gap-1.5">
+              <Input
+                aria-label="Group"
+                className="h-8"
+                list={listId}
+                placeholder="Group name"
+                value={g}
+                onChange={(e) =>
+                  setAssignees({ groups: groupNames.map((x, j) => (j === i ? e.target.value : x)) })
+                }
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Remove"
+                onClick={() => setAssignees({ groups: groupNames.filter((_, j) => j !== i) })}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <Problems list={ctx.problemsAt('config', 'assignees', 'groups', i)} />
+          </div>
+        ))}
+        <datalist id={listId}>
+          {groups.data?.map((group) => (
+            <option key={group.id} value={group.name} />
+          ))}
+        </datalist>
+        <Problems
+          list={ctx.problemsAt('config', 'assignees').filter((p) => !/email|group is named/.test(p.message))}
+        />
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="ghost" onClick={() => setAssignees({ users: [...users, ''] })}>
+            <Plus className="size-4" /> User
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setAssignees({ groups: [...groupNames, ''] })}>
+            <Plus className="size-4" /> Group
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Form fields</span>
+        {fields.map((f, i) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: fields are edited in place, by position
+            key={i}
+            className="flex flex-col gap-1.5 rounded-md border border-border p-2"
+            data-testid={`task-field-${i}`}
+          >
+            <div className="flex gap-1.5">
+              <Input
+                aria-label="Field label"
+                className="h-8"
+                placeholder="Label"
+                value={f.label}
+                onChange={(e) => setField(i, { label: e.target.value })}
+              />
+              <Input
+                aria-label="Field name"
+                className="h-8 w-32 font-mono"
+                placeholder="name"
+                value={f.name}
+                onChange={(e) => setField(i, { name: e.target.value })}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Remove field"
+                onClick={() => set({ fields: fields.filter((_, j) => j !== i) })}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Select
+                aria-label="Field type"
+                className="h-8"
+                value={f.type}
+                onChange={(e) => setField(i, { type: e.target.value as TaskFieldDef['type'] })}
+              >
+                <option value="text">Text</option>
+                <option value="longText">Long text</option>
+                <option value="number">Number</option>
+                <option value="checkbox">Checkbox</option>
+                <option value="select">Choice</option>
+              </Select>
+              <label className="inline-flex items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-accent"
+                  checked={!!f.required}
+                  onChange={(e) => setField(i, { required: e.target.checked || undefined })}
+                />
+                Required
+              </label>
+            </div>
+            {f.type === 'select' && (
+              <Input
+                aria-label="Options"
+                className="h-8"
+                placeholder="Options, comma separated"
+                value={(f.options ?? []).join(', ')}
+                onChange={(e) => setField(i, { options: e.target.value.split(',').map((o) => o.trim()) })}
+              />
+            )}
+            <Input
+              aria-label="Starting value"
+              className="h-8 font-mono"
+              placeholder="Starting value or {{ }}"
+              value={f.default ?? ''}
+              onChange={(e) => setField(i, { default: e.target.value || undefined })}
+            />
+            <Problems list={ctx.problemsAt('config', 'fields', i)} />
+          </div>
+        ))}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="self-start"
+          onClick={() => {
+            let n = fields.length + 1
+            while (fields.some((f) => f.name === `field${n}`)) n++
+            set({ fields: [...fields, { name: `field${n}`, label: `Field ${n}`, type: 'text' }] })
+          }}
+        >
+          <Plus className="size-4" /> Field
+        </Button>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium">Buttons</span>
+        <span className="text-xs text-muted">
+          Each completes the task; the block's data has the one pressed as{' '}
+          <code className="font-mono">outcome</code>. Without any, there's one Submit button.
+        </span>
+        {outcomes.map((o, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: outcomes are edited in place, by position
+          <div key={i} className="flex flex-col gap-0.5">
+            <div className="flex gap-1.5">
+              <Input
+                aria-label="Button label"
+                className="h-8"
+                placeholder="Label"
+                value={o.label}
+                onChange={(e) =>
+                  set({ outcomes: outcomes.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })
+                }
+              />
+              <Input
+                aria-label="Outcome id"
+                className="h-8 w-32 font-mono"
+                placeholder="id"
+                value={o.id}
+                onChange={(e) =>
+                  set({ outcomes: outcomes.map((x, j) => (j === i ? { ...x, id: e.target.value } : x)) })
+                }
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Remove"
+                onClick={() => set({ outcomes: outcomes.filter((_, j) => j !== i) })}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <Problems list={ctx.problemsAt('config', 'outcomes', i)} />
+          </div>
+        ))}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="self-start"
+          onClick={() => {
+            let n = outcomes.length + 1
+            while (outcomes.some((o) => o.id === `option${n}`)) n++
+            set({ outcomes: [...outcomes, { id: `option${n}`, label: `Option ${n}` }] })
+          }}
+        >
+          <Plus className="size-4" /> Button
+        </Button>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label className="inline-flex items-center gap-2 text-sm font-medium">
+          <input
+            type="checkbox"
+            className="size-4 accent-accent"
+            checked={!!config.due}
+            onChange={(e) => set({ due: e.target.checked ? { amount: '1', unit: 'days' } : undefined })}
+          />
+          Due after
+        </label>
+        {config.due && (
+          <div className="grid grid-cols-[1fr_8rem] gap-2">
+            <TemplateLine
+              path={ctx.modelPath('due.txt')}
+              value={config.due.amount}
+              problems={ctx.problemsAt('config', 'due', 'amount')}
+              onChange={(amount) => set({ due: { ...config.due!, amount } })}
+            />
+            <Select
+              aria-label="Due unit"
+              value={config.due.unit}
+              onChange={(e) =>
+                set({ due: { ...config.due!, unit: e.target.value as (typeof TASK_DUE_UNITS)[number] } })
+              }
+            >
+              {TASK_DUE_UNITS.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+        <span className="text-xs text-muted">
+          Past it, the task expires and this block fails. The run gives up its worker while it waits, and the
+          time doesn't count toward its timeout. Its data is{' '}
+          <code className="font-mono">{'{ outcome, values, completedBy, completedAt }'}</code>.
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function ErrorTriggerForm({ block }: { block: BlockOf<'errorTrigger'> }) {
   return (
     <div className="flex flex-col gap-2 text-sm">
@@ -1161,8 +1476,8 @@ function SettingsForm({ block }: { block: ExecutableBlock }) {
   const settings: BlockSettings = block.settings ?? {}
   const retry = settings.retry ?? {}
   const defaults = resolveBlockSettings({ ...block, settings: undefined } as Block)
-  const hasTimeout = block.type !== 'wait'
-  const hasRetries = block.type !== 'wait' && block.type !== 'loop'
+  const hasTimeout = block.type !== 'wait' && block.type !== 'userTask'
+  const hasRetries = block.type !== 'wait' && block.type !== 'userTask' && block.type !== 'loop'
   const set = (patch: Record<string, unknown>) =>
     updateBlock<ExecutableBlock>(block.name, (b) => {
       const next = { ...b.settings, ...patch } as Record<string, unknown>

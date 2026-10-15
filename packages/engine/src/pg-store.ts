@@ -89,6 +89,7 @@ export class PgRunStore implements RunStore {
           until: state.until.toISOString(),
           ...(state.childRunId && { childRunId: state.childRunId }),
           ...(state.since && { since: state.since.toISOString() }),
+          ...(state.taskId && { taskId: state.taskId }),
         },
       }
       const written = await tx

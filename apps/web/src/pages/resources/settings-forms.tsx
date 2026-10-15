@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import {
   ConnectorErrorNote,
@@ -28,6 +29,23 @@ const DEFAULTS: Record<string, Config> = {
     readOnly: false,
     maxRows: 10_000,
     statementTimeoutMs: 120_000,
+  },
+  mysql: {
+    host: '',
+    port: 3306,
+    database: '',
+    user: '',
+    ssl: 'require',
+    poolSize: 5,
+    readOnly: false,
+    maxRows: 10_000,
+    statementTimeoutMs: 120_000,
+  },
+  bigquery: {
+    maximumBytesBilled: 10 * 1024 ** 3,
+    maxRows: 10_000,
+    statementTimeoutMs: 120_000,
+    labels: {},
   },
   rest: {
     baseUrl: '',
@@ -119,7 +137,13 @@ export function SettingsPanel({
         </p>
       )}
       <Card className="space-y-5 p-5">
-        {resource.type === 'postgres' ? <PostgresFields {...props} /> : <RestFields {...props} />}
+        {resource.type === 'bigquery' ? (
+          <BigQueryFields {...props} />
+        ) : isSqlType(resource.type) ? (
+          <SqlFields {...props} type={resource.type} />
+        ) : (
+          <RestFields {...props} />
+        )}
       </Card>
 
       {canEdit && (
@@ -198,7 +222,8 @@ function Checkbox({
   )
 }
 
-function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+/** Postgres and MySQL settings: the same fields, with each one's TLS modes. */
+function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: FieldsProps & { type: string }) {
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -235,8 +260,8 @@ function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         </Field>
         <Field label="SSL">
           <Select value={String(config.ssl)} disabled={disabled} onChange={(e) => set('ssl', e.target.value)}>
-            <option value="prefer">Prefer (try TLS, fall back)</option>
-            <option value="require">Require</option>
+            {type === 'postgres' && <option value="prefer">Prefer (try TLS, fall back)</option>}
+            <option value="require">Require (don't check the certificate)</option>
             <option value="verify-full">Verify certificate and hostname</option>
             <option value="disable">Disable</option>
           </Select>
@@ -269,8 +294,101 @@ function PostgresFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         disabled={disabled}
         onChange={(v) => set('readOnly', v)}
         label="Read-only"
-        hint="Runs every query in a read-only transaction. A guard against mistakes; use a SELECT-only user for security."
+        hint={`${
+          type === 'mysql' ? 'Makes the session read-only' : 'Runs every query in a read-only transaction'
+        }. A guard against mistakes; use a SELECT-only user for security.`}
       />
+    </>
+  )
+}
+
+const GIB = 1024 ** 3
+
+function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const text = (key: string) => ({
+    value: String(config[key] ?? ''),
+    disabled,
+    onChange: (e: { target: { value: string } }) => set(key, e.target.value || undefined),
+  })
+  const number = (key: string) => ({
+    type: 'number',
+    value: config[key] === undefined ? '' : String(config[key]),
+    disabled,
+    onChange: (e: { target: { value: string } }) => set(key, num(e.target.value)),
+  })
+  // Rows of their own, so a new (still empty) label doesn't vanish while it's typed; saved as an object.
+  const [labels, setLabels] = useState<KeyValue[]>(() =>
+    Object.entries((config.labels as Record<string, string>) ?? {}).map(([key, value]) => ({ key, value })),
+  )
+  const bytes = config.maximumBytesBilled as number | undefined
+  return (
+    <>
+      <Field
+        label="Service account key"
+        hint="Paste the service account's JSON key file. It needs the BigQuery Job User role, plus Data Viewer (or Editor) on the datasets it queries."
+      >
+        <SecretField
+          isSet={isSet(secrets, 'serviceAccountKey')}
+          edit={edits.serviceAccountKey as SecretEdit}
+          onChange={(e) => setEdit('serviceAccountKey', e)}
+          disabled={disabled}
+          placeholder='{ "type": "service_account", … }'
+        />
+      </Field>
+      <Grid>
+        <Field label="Project" hint="Where queries run and are billed. Defaults to the key's project.">
+          <Input {...text('projectId')} placeholder="optiply-analytics" />
+        </Field>
+        <Field
+          label="Location"
+          hint="Where jobs run, e.g. EU or europe-west4. Left empty, BigQuery picks it."
+        >
+          <Input {...text('location')} placeholder="EU" />
+        </Field>
+        <Field
+          label="Default dataset"
+          hint="For table names written without a dataset: dataset or project.dataset."
+        >
+          <Input {...text('defaultDataset')} placeholder="shop" />
+        </Field>
+        <Field
+          label="Maximum bytes billed (GiB)"
+          hint="A query that would bill more fails before it runs, at no cost."
+        >
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            value={bytes === undefined ? '' : String(Math.round((bytes / GIB) * 1000) / 1000)}
+            disabled={disabled}
+            onChange={(e) => {
+              const gib = num(e.target.value)
+              set('maximumBytesBilled', gib === undefined ? undefined : Math.max(1, Math.round(gib * GIB)))
+            }}
+          />
+        </Field>
+        <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
+          <Input {...number('maxRows')} />
+        </Field>
+        <Field label="Statement timeout (ms)" hint="The job is cancelled when it runs longer.">
+          <Input {...number('statementTimeoutMs')} />
+        </Field>
+      </Grid>
+      <Field
+        label="Job labels"
+        hint="Added to every job for cost reports, with the workflow, run and environment. Lowercase letters, digits, _ and -."
+      >
+        <KeyValueEditor
+          rows={labels}
+          onChange={(rows) => {
+            setLabels(rows)
+            set('labels', Object.fromEntries(rows.filter((r) => r.key).map((r) => [r.key, r.value])))
+          }}
+          disabled={disabled}
+          keyPlaceholder="team"
+          valuePlaceholder="operations"
+        />
+      </Field>
     </>
   )
 }

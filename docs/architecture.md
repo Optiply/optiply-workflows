@@ -226,7 +226,7 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 
 ## 2.2a How §2.2 is tested
 
-Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts`, `advanced-semantics.test.ts`, `functions-loops.test.ts` and `children.test.ts` (in-memory store), and `dispatcher.test.ts`, `crash.test.ts`, `scheduler.test.ts`, `inline.test.ts`, `waiting.test.ts`, `loops-pg.test.ts` and `children-pg.test.ts` (Postgres). Server tests are in `apps/server/test/`. Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
+Built in M2 unless the status says otherwise. Engine tests are in `packages/engine/test/`: `semantics.test.ts`, `advanced-semantics.test.ts`, `functions-loops.test.ts` and `children.test.ts` (in-memory store), and `dispatcher.test.ts`, `crash.test.ts`, `scheduler.test.ts`, `inline.test.ts`, `waiting.test.ts`, `loops-pg.test.ts`, `children-pg.test.ts`, `tasks-pg.test.ts` and `retention.test.ts` (Postgres). Server tests are in `apps/server/test/`. Validator tests are in `packages/definition/test/validate.test.ts`; schema tests in `packages/db/test/workflows.test.ts`.
 
 | Rule | Status | Covered by |
 |---|---|---|
@@ -244,13 +244,15 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
 | Response HTTP mapping (no Response → 200 `{runId, status}`; failure → 500, or the error handler's Response) | ✅ (M4 webhooks, M5 error handler) | server webhooks "answers with the Response block's status, headers and body", "answers 200 { runId, status } without a Response block, and 500 when the run fails first"; semantics "has no response when no Response block runs" |
 | Loop: data in input order, per-iteration checkpoints `loop1[17]`, `onError` stop/continue, modes, per-item timeout and retries | ✅ (M5). `metadata.iterations` is a summary `{ total, succeeded, failed, resumed }` plus the first 100 failures; each item's status is its own row. | functions-loops "loops" (all); loops-pg (batched commits, errored rows); crash "resumes a 10,000-iteration loop after kill -9…"; server "lists a loop's iterations…" |
 | Functions: subgraph with `params`, returns its return block's data; Function block, loop runner, `await fn()` | ✅ (M5). Calls aren't checkpointed (they belong to the calling block). | functions-loops "functions" (all); validator "functions"; server "runs loops and functions that query resources…" |
-| Wait / sync child, `waiting` with `available_at`, waiting not counted toward the run timeout | ✅ (M5). User Task is M6. | advanced-semantics "wait"; waiting "waiting" (all, incl. surviving every worker stopping and the timeout test); children-pg "pauses the parent while its child waits…"; children "the Workflow block" |
+| Wait / sync child, `waiting` with `available_at`, waiting not counted toward the run timeout | ✅ (M5) | advanced-semantics "wait"; waiting "waiting" (all, incl. surviving every worker stopping and the timeout test); children-pg "pauses the parent while its child waits…"; children "the Workflow block" |
+| User Task: the run waits (no worker held) until an assignee answers; completing it wakes the run, also when no worker ran at the time; expiry fails the block; a run ending any other way closes its tasks | ✅ (M6). The answer is checked against the fields (`checkTaskSubmission`, browser and server); completion locks the run row first, so a pause and an answer can't miss each other. | tasks-pg (all, incl. "a run waits for its task, and completing it resumes the run, even with no worker running at the time"); definition tasks; server tasks; e2e tasks.spec |
 | Cancel: queued/waiting at once; running stopped (SQL cancelled, fetch aborted); children cascade | ✅ (M5) | advanced-semantics "cancel"; waiting "cancel" (all); children-pg "cancels the children…"; server "cancels a running draft run…" |
 | Run timeout (default 15 min, max 6 h) | ✅ | dispatcher "claims a queued run…" (15 min deadline); semantics "fails the run at its deadline…"; definition schema "bounds the run timeout…" |
 | Delivery: at least once, committed exactly once | ✅ | crash "resumes a run on another worker after kill -9…"; dispatcher "fences off a zombie worker…", "never overwrites a committed result…"; semantics "delivery and resume"; db "commits one result per block key" |
 | `idempotencyKey` in scope | ✅ (the caller's key, or the run id) | dispatcher "exposes the caller's idempotency key…" |
 | Webhook `Idempotency-Key` header | ✅ (M4) | server webhooks "gives a repeated Idempotency-Key the same run and reply"; engine inline "returns the earlier run for a repeated idempotency key"; db "accepts an idempotency key once per workflow" |
 | Fails after 3 recoveries | ✅ | dispatcher "recovers runs whose lease expired and fails one that keeps losing its worker" |
+| Retention (§2.3): runs finished more than 30 days ago are deleted in short transactions, never blocking the queue | ✅ (M6) | retention "deletes 100k old block rows in short statements while the queue keeps claiming runs" (no lock waits, every statement ≤ 5,000 rows), "the daily job" |
 | Schedules: tick with SKIP LOCKED, each fire once, catch-up with one run, overlap `skip`/`queue`/`allow`, Europe/Amsterdam default | ✅ (M4) | engine scheduler (all groups, incl. the minute-by-minute "1-minute cron whose runs take 2 minutes" and "across the Amsterdam DST changes"); definition cron "daylight saving time in Europe/Amsterdam"; db "records each schedule fire once…"; server releases "runs the live release when a published schedule comes due" |
 
 ## 2.3 Data model (Drizzle, `packages/db`)
@@ -268,12 +270,12 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - `workflow_triggers`: the runtime projection of the live release's triggers, holding the webhook alias and `next_fire_at`. M4: rows are matched by kind and name so ids survive releases; `alias_shape` (unique) keeps two live webhooks off the same URLs; `environment_id` and `last_fired_at` for schedules.
 - **Runs:**
   - `workflow_runs`: status, input/output/error, lease fields, `available_at`, `idempotency_key`, `scheduled_for`, `parent_run_id`. In M2, `output` became `response` (the first Response block's reply), and each run points at exactly one release or draft snapshot. M5 added `suspended_at` (when a run paused; its deadline moves on by the time spent waiting) and `cancel_requested_at`. Child runs use `parent_run_id` and an idempotency key `child:<parentRun>:<block>:<attempt>`.
-  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired). M5: loop iterations are rows keyed `loop1[17]`; a `waiting` row's metadata holds `until` (and a child run's `childRunId` and `since`).
+  - `block_runs(run_id, block_key, status, attempt, timings, error, metadata)`. M2 added `epoch` (the lease that wrote it) and `port` (the output that fired). M5: loop iterations are rows keyed `loop1[17]`; a `waiting` row's metadata holds `until` (and a child run's `childRunId` and `since`; M6: a User Task's `taskId`).
   - `block_run_payloads` (data jsonb, 10MB cap)
   - `run_logs`
-  - `user_tasks`
-- **Audit:** `audit_events`, append-only; the app's DB role gets INSERT/SELECT only.
-- **Retention:** a daily batched delete of runs older than 30 days.
+  - `user_tasks` (M6): one per run and block; status `open | completed | expired | cancelled`; title, description, fields (defaults evaluated) and outcomes as they were when it opened; assignee user and group ids (resolved from emails and group names); `due_at`; the answer (`outcome`, `values`, `completed_by`, `completed_at`).
+- **Audit:** `audit_events`, append-only; the app's DB role gets INSERT/SELECT only. M6: filters and a streamed CSV export for admins.
+- **Retention** (M6): once a day one worker (claimed through `maintenance_jobs`) deletes runs that finished more than `RUN_RETENTION_DAYS` (30) ago, and draft snapshots no run uses, at most 5,000 rows per statement, each its own transaction (payloads, then blocks and logs, then the run rows). Runs with an unfinished child are kept. `workflow_runs_finished_idx` finds them.
 
 ## 2.4 Workflow definition (`packages/definition`, zod v4)
 - **Shape:** `{schemaVersion, settings, triggers{webhook, schedules[], manual}, blocks[], edges[], functions[], layout}`.
@@ -302,7 +304,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - MySQL uses `?` and expands arrays.
   - BigQuery uses `@pN` named parameters.
   - A `{{ }}` inside a string literal is a validation error that suggests a fix.
-  - Per-resource `disablePreparedStatements` is for Own/admin only.
+  - Per-resource `disablePreparedStatements` is for Own/admin only (not built: every connector binds parameters).
 - **MVP connectors:**
   - **Postgres** (postgres.js): `SET LOCAL statement_timeout`, cancel on abort, `maxRows`, optional read-only mode.
   - **REST** (undici):
@@ -310,8 +312,8 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
     - Auth: none, API key, bearer, basic, or OAuth2 client-credentials (tokens cached, refreshed once on a 401).
     - Bodies: json, form, raw or multipart.
     - Non-2xx responses error.
-  - **MySQL** (mysql2).
-  - **BigQuery**: `maximumBytesBilled` guardrail, job labels for cost attribution, job cancel on abort.
+  - **MySQL** (mysql2, built in M6): server-side prepared statements, arrays expanded, `KILL QUERY` on cancel and timeouts, a read-only session option, `maxRows`, no local file reads.
+  - **BigQuery** (built in M6 on the REST API with undici, not `@google-cloud/bigquery`): a service-account key (RS256 JWT), typed named parameters, `maximumBytesBilled` guardrail (10 GiB default), job labels for cost attribution (the resource's plus workflow, run and environment), the job cancelled on cancel and timeouts.
 - **Who runs as whom:** editor test runs use the editing user's Use permission. Released runs (schedule, webhook) were permission-checked when the release was published.
 
 ## 2.6 Monorepo layout (pnpm + Turborepo)
@@ -464,7 +466,8 @@ packages/
 4. `curl -X POST -H 'X-Api-Key: …' /api/workflows/<slug>/run -d '{"customerId":1}'` returns the Response body synchronously. Repeat with `?environment=staging` and check that it hits the staging database.
 5. Add a 1-minute cron: runs appear in history with per-block data and logs, and none overlap.
 6. Run `kill -9` on a worker mid-run. The run resumes on the other worker and completed blocks are not re-run.
-7. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
+7. M6: a run waiting on a User Task survives `docker compose down`/`up` and resumes when the task is completed; retention deletes 100k old block rows while runs keep flowing, with no lock waits (handoff §9 has the numbers).
+8. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
 
 ## 2.9 Open items (defaults chosen; change later if needed)
 - Importing existing Retool workflows: block names, `{{ }}` semantics and settings were kept compatible, so an importer is cheap. It is not in scope yet.
