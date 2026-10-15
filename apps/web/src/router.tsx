@@ -12,6 +12,7 @@ import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-re
 import { z } from 'zod'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
+import { AppsPage } from './pages/apps/list'
 import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
 import { LoginPage } from './pages/login'
@@ -94,6 +95,27 @@ const databaseRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional(), table: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/database'), 'DatabasePage'),
 })
+const appsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/apps',
+  component: AppsPage,
+})
+/** Someone using an app: its live release, in its own chunk (the sandbox's script travels with it). */
+const appViewRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/apps/$slug',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
+})
+/** Building an app: the editor, in its own chunk (the grid layout and Monaco load with it). */
+const appEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/apps/$slug/edit',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -159,6 +181,9 @@ const routeTree = rootRoute.addChildren([
     resourcesRoute,
     resourceDetailRoute,
     databaseRoute,
+    appsRoute,
+    appViewRoute,
+    appEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

@@ -8,12 +8,16 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "test": "vitest run"
   },
   "dependencies": {
     "@dagrejs/dagre": "3.1.1",
     "@monaco-editor/react": "4.7.0",
+    "@ow/app-definition": "workspace:*",
+    "@ow/app-runtime": "workspace:*",
     "@ow/definition": "workspace:*",
+    "@ow/sandbox": "workspace:*",
     "@tanstack/react-query": "5.104.2",
     "@tanstack/react-router": "1.170.42",
     "@tanstack/react-table": "8.21.3",
@@ -22,12 +26,14 @@
     "@trpc/server": "11.19.0",
     "@trpc/tanstack-react-query": "11.19.0",
     "@xyflow/react": "12.12.0",
+    "chart.js": "4.5.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.55.0",
     "monaco-editor": "0.57.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-grid-layout": "2.2.4",
     "superjson": "2.2.6",
     "tailwind-merge": "3.7.0",
     "zod": "4.6.7",
@@ -41,7 +47,9 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "esbuild": "0.28.2",
     "tailwindcss": "4.3.3",
-    "vite": "8.3.4"
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
   }
 }

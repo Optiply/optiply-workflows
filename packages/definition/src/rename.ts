@@ -186,8 +186,8 @@ function rewriteRefs(
  * The field's new source, plus `skipped` when part of it can't be analysed but mentions `from` (the analysable
  * parts are still renamed), or `captured` when a local would shadow `to`.
  */
-function renameInField(
-  field: CodeField,
+export function renameInField(
+  field: Pick<CodeField, 'kind' | 'source' | 'locals'>,
   from: string,
   to: string,
 ): { source: string; skipped: boolean } | 'captured' {

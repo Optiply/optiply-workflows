@@ -11,6 +11,11 @@ export interface IdentifierRef {
   end: number
   /** The reference is a shorthand property (`{ name }`), so renaming it must keep the key: `{ name: other }`. */
   shorthand?: true
+  /**
+   * With `{ properties: true }`: the property read straight off the reference, `b` in `a.b`, `a?.b` and `a['b']`.
+   * Missing when the reference is used whole (`f(a)`) or with a computed key (`a[k]`).
+   */
+  property?: string
 }
 
 export type CodeKind =
@@ -18,11 +23,14 @@ export type CodeKind =
   | 'expression'
   /** A code block body, run as an async function: may `await` and must `return`. */
   | 'function-body'
+  /** A function body run synchronously (app transformers): `await` is a syntax error. */
+  | 'sync-function-body'
 
 // Mirrors how @ow/sandbox runs code, so analysis and execution see the same program.
 const WRAP: Record<CodeKind, [string, string]> = {
   expression: ['(\n', '\n)'],
   'function-body': ['(async () => {\n', '\n})'],
+  'sync-function-body': ['(() => {\n', '\n})'],
 }
 
 // eslint-scope reads `node.range` when resolving references inside function scopes.
@@ -34,7 +42,11 @@ const ACORN: Options = { ecmaVersion: 'latest', sourceType: 'script', ranges: tr
  * aren't references. Throws `TemplateError` on syntax errors or when the code isn't exactly one expression /
  * function body (e.g. `a)(b`, which would only "work" because of the wrapping).
  */
-export function freeIdentifierRefs(code: string, kind: CodeKind = 'expression'): IdentifierRef[] {
+export function freeIdentifierRefs(
+  code: string,
+  kind: CodeKind = 'expression',
+  options: { properties?: boolean } = {},
+): IdentifierRef[] {
   const [prefix, suffix] = WRAP[kind]
   const src = prefix + code + suffix
   const offset = prefix.length
@@ -67,11 +79,14 @@ export function freeIdentifierRefs(code: string, kind: CodeKind = 'expression'):
   const scopes = analyze(program, { ecmaVersion: 2025, sourceType: 'script' })
 
   const shorthands = shorthandValueStarts(expr)
+  const properties = options.properties ? memberProperties(expr) : undefined
   return scopes
     .globalScope!.through.map((ref): IdentifierRef => {
       const id = ref.identifier as ESTree.Identifier & { start: number; end: number }
       const found: IdentifierRef = { name: id.name, start: id.start - offset, end: id.end - offset }
       if (shorthands.has(id.start)) found.shorthand = true
+      const property = properties?.get(id.start)
+      if (property !== undefined) found.property = property
       return found
     })
     .sort((a, b) => a.start - b.start)
@@ -90,6 +105,26 @@ function shorthandValueStarts(root: Node): Set<number> {
   }
   visit(root)
   return starts
+}
+
+/** The property each identifier that is a member expression's object reads, by the identifier's start offset. */
+function memberProperties(root: Node): Map<number, string> {
+  const props = new Map<number, string>()
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) return value.forEach(visit)
+    if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return
+    const node = value as Node & { object?: Node & { name?: string }; property?: Node; computed?: boolean }
+    if (node.type === 'MemberExpression' && node.object?.type === 'Identifier') {
+      const prop = node.property as (Node & { name?: string; value?: unknown }) | undefined
+      if (!node.computed && prop?.type === 'Identifier') props.set(node.object.start, prop.name!)
+      else if (node.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
+        props.set(node.object.start, prop.value)
+      }
+    }
+    for (const [key, child] of Object.entries(node)) if (key !== 'loc') visit(child)
+  }
+  visit(root)
+  return props
 }
 
 /** Unique free identifier names, in order of first use. */

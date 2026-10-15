@@ -33,6 +33,33 @@ describe('freeIdentifiers (expressions)', () => {
     ])
   })
 
+  it('reports the property read off each reference when asked', () => {
+    const refs = freeIdentifierRefs("a.b + a?.c + a['d'] + a[k] + f(a) + a.b.c", 'expression', {
+      properties: true,
+    })
+    expect(refs.map((r) => [r.name, r.property])).toEqual([
+      ['a', 'b'],
+      ['a', 'c'],
+      ['a', 'd'],
+      ['a', undefined],
+      ['k', undefined],
+      ['f', undefined],
+      ['a', undefined],
+      ['a', 'b'],
+    ])
+    // Not asked: no properties, so existing callers see the same objects as before.
+    expect(freeIdentifierRefs('a.b')).toEqual([{ name: 'a', start: 0, end: 1 }])
+  })
+
+  it('parses synchronous function bodies, where await is an error', () => {
+    expect(freeIdentifiers('const t = rows.length; return t * k', 'sync-function-body')).toEqual([
+      'rows',
+      'k',
+    ])
+    expect(() => freeIdentifiers('return await q()', 'sync-function-body')).toThrow(TemplateError)
+    expect(() => freeIdentifiers('}) || (() => {', 'sync-function-body')).toThrow(TemplateError)
+  })
+
   it('reports each reference with offsets into the code', () => {
     const code = ' a + a.b '
     expect(freeIdentifierRefs(code)).toEqual([

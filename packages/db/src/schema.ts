@@ -1,3 +1,4 @@
+import type { AppDefinition } from '@ow/app-definition'
 import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -117,7 +118,7 @@ export const environments = pgTable(
 
 // ── Organisation ────────────────────────────────────────────────────────────
 
-export const FOLDER_OBJECT_TYPES = ['resource', 'workflow'] as const
+export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app'] as const
 
 export const folders = pgTable(
   'folders',
@@ -133,11 +134,11 @@ export const folders = pgTable(
   },
   (t) => [
     unique('folders_name_uq').on(t.objectType, t.parentId, t.name).nullsNotDistinct(),
-    check('folders_object_type_ck', sql`${t.objectType} in ('resource', 'workflow')`),
+    check('folders_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app')`),
   ],
 )
 
-export const PERMISSION_OBJECT_TYPES = ['resource', 'workflow', 'folder'] as const
+export const PERMISSION_OBJECT_TYPES = ['resource', 'workflow', 'app', 'folder'] as const
 /** Ordered lowest to highest: each level includes the ones before it. */
 export const PERMISSION_LEVELS = ['use', 'edit', 'own'] as const
 
@@ -164,7 +165,7 @@ export const permissions = pgTable(
       .on(t.groupId, t.objectType, t.objectId, t.environmentId)
       .nullsNotDistinct(),
     index('permissions_object_idx').on(t.objectType, t.objectId),
-    check('permissions_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'folder')`),
+    check('permissions_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app', 'folder')`),
     check('permissions_level_ck', sql`${t.level} in ('use', 'edit', 'own')`),
   ],
 )
@@ -688,6 +689,60 @@ export const runLogs = pgTable(
   ],
 )
 
+// ── Apps ────────────────────────────────────────────────────────────────────
+
+export const apps = pgTable(
+  'apps',
+  {
+    id: id(),
+    /** Stable identifier in the app's URL (renaming keeps it). */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** What the editor autosaves; it must match `@ow/app-definition`'s schema but may otherwise be invalid. */
+    draftDefinition: jsonb().$type<AppDefinition>().notNull(),
+    /** Bumped on every draft save; a save names the revision it started from (optimistic concurrency). */
+    draftRevision: integer().notNull().default(1),
+    /** The release people using the app see. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => appReleases.id, { onDelete: 'set null' }),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('apps_slug_uq').on(t.slug), index('apps_folder_idx').on(t.folderId)],
+)
+
+/** Published, immutable versions of an app. People with Use see the live one. */
+export const appReleases = pgTable(
+  'app_releases',
+  {
+    id: id(),
+    appId: uuid()
+      .notNull()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    /** SemVer `major.minor.patch`. */
+    version: text().notNull(),
+    /** Canonical form (`canonicalizeApp`). */
+    definition: jsonb().$type<AppDefinition>().notNull(),
+    /** `appDefinitionHash`: SHA-256 of the canonical definition, layout included. */
+    definitionHash: text().notNull(),
+    notes: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('app_releases_version_uq').on(t.appId, t.version),
+    index('app_releases_app_idx').on(t.appId, t.createdAt.desc()),
+    check(
+      'app_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('app_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Audit ───────────────────────────────────────────────────────────────────
 
 export const auditEvents = pgTable(
@@ -739,6 +794,8 @@ export type BlockRunPayload = typeof blockRunPayloads.$inferSelect
 export type RunLog = typeof runLogs.$inferSelect
 export type LogLevel = (typeof LOG_LEVELS)[number]
 export type AuditEvent = typeof auditEvents.$inferSelect
+export type App = typeof apps.$inferSelect
+export type AppRelease = typeof appReleases.$inferSelect
 
 /**
  * Periodic housekeeping (retention). A worker claims a job by moving `lastStartedAt` on, so each one runs once per

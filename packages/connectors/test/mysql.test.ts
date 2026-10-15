@@ -224,11 +224,19 @@ describe.skipIf(!available)('MySQL connector', () => {
       expect((await query).data).toEqual([{ s: 0, v: payload }])
       // (The process list would show the value substituted in: MySQL rebuilds the text for display.)
       expect(prepared).toBe('SELECT SLEEP(0.6) AS s, ? AS v')
-      // And it's released afterwards rather than cached on the connection.
-      const [after] = await root.query(
-        "SELECT COUNT(*) AS n FROM performance_schema.prepared_statements_instances WHERE SQL_TEXT LIKE '%SLEEP(0.6)%'",
-      )
-      expect(Number((after as { n: number }[])[0]!.n)).toBe(0)
+      // And it's released afterwards rather than cached on the connection. The driver sends the close without
+      // waiting for it, so the server may still list the statement for a moment after the result arrives.
+      await expect
+        .poll(
+          async () => {
+            const [after] = await root.query(
+              "SELECT COUNT(*) AS n FROM performance_schema.prepared_statements_instances WHERE SQL_TEXT LIKE '%SLEEP(0.6)%'",
+            )
+            return Number((after as { n: number }[])[0]!.n)
+          },
+          { timeout: 2000, interval: 50 },
+        )
+        .toBe(0)
     })
 
     it('rejects multi-statement strings', async () => {

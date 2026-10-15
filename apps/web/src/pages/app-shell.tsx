@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
-import { Database, History, Inbox, LogOut, Plug, Settings, Workflow } from 'lucide-react'
+import { Database, History, Inbox, LayoutGrid, LogOut, Plug, Settings, Workflow } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Avatar } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -9,6 +9,7 @@ const route = getRouteApi('/app')
 
 const NAV: { to: string; label: string; icon: ReactNode }[] = [
   { to: '/workflows', label: 'Workflows', icon: <Workflow className="size-4" /> },
+  { to: '/apps', label: 'Apps', icon: <LayoutGrid className="size-4" /> },
   { to: '/resources', label: 'Resources', icon: <Plug className="size-4" /> },
   { to: '/database', label: 'Database', icon: <Database className="size-4" /> },
   { to: '/runs', label: 'Runs', icon: <History className="size-4" /> },

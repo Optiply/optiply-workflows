@@ -1,4 +1,5 @@
 import {
+  apps,
   type Db,
   environments,
   folders,
@@ -16,13 +17,16 @@ import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 
-/** Grants on one resource or workflow, on one folder, or (`objectId` null) on all resources or workflows. */
-const Target = z.object({ objectType: z.enum(['resource', 'workflow', 'folder']), objectId: Id.nullable() })
+/** Grants on one resource, workflow or app, on one folder, or (`objectId` null) on all objects of a type. */
+const Target = z.object({
+  objectType: z.enum(['resource', 'workflow', 'app', 'folder']),
+  objectId: Id.nullable(),
+})
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /**
- * Owners of a resource (in every environment) or of a workflow manage its grants; folder grants and grants on all
+ * Owners of a resource (in every environment), a workflow or an app manage its grants; folder grants and grants on all
  * resources or workflows are admin-only, since they reach many objects at once.
  */
 async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target>): Promise<void> {
@@ -37,6 +41,14 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow not found' })
     }
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
+    return
+  }
+  if (target.objectType === 'app') {
+    const [app] = await ctx.db.select().from(apps).where(eq(apps.id, target.objectId)).limit(1)
+    const access = await loadAccess(ctx.db, ctx.user)
+    if (!app || access.appLevel(app) === null)
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'App not found' })
+    requireLevel(access.appLevel(app), 'own', 'this app')
     return
   }
   const [resource] = await ctx.db.select().from(resources).where(eq(resources.id, target.objectId)).limit(1)
@@ -93,8 +105,9 @@ export const permissionsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
-      if (input.objectType === 'workflow' && input.environmentId !== null) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Workflow access applies to every environment' })
+      if ((input.objectType === 'workflow' || input.objectType === 'app') && input.environmentId !== null) {
+        const what = input.objectType === 'app' ? 'App' : 'Workflow'
+        throw new TRPCError({ code: 'BAD_REQUEST', message: `${what} access applies to every environment` })
       }
       const [group] = await ctx.db
         .select({ name: groups.name })

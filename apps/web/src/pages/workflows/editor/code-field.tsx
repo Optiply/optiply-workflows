@@ -1,41 +1,12 @@
-import Editor, { type OnMount } from '@monaco-editor/react'
-import { useEffect, useMemo, useRef } from 'react'
-import { monaco, setScope } from './monaco'
+import { useMemo } from 'react'
+import CodeField, { type CodeFieldProps } from '@/components/code/code-field'
 import { scopeDeclarations } from './scope-types'
 import { graphOf, useEditor } from './store'
 
-export interface FieldProblem {
-  start?: number
-  end?: number
-  message: string
-  severity: 'error' | 'warning'
-}
+export type { CodeFieldProps, FieldProblem } from '@/components/code/code-field'
 
-export interface CodeFieldProps {
-  /** Unique per block and field, so each keeps its own model and undo history. */
-  path: string
-  language: 'javascript' | 'sql' | 'json' | 'plaintext'
-  value: string
-  onChange: (value: string) => void
-  /** Pixel height; one-line fields use about 34. */
-  height: number
-  singleLine?: boolean
-  problems?: FieldProblem[]
-  readOnly?: boolean
-}
-
-/** A Monaco editor for one field. Problems from the validator show as squiggles at their offsets. */
-export default function CodeField({
-  path,
-  language,
-  value,
-  onChange,
-  height,
-  singleLine,
-  problems = [],
-  readOnly,
-}: CodeFieldProps) {
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+/** A Monaco field whose completions know the open graph's blocks, their last results and the functions. */
+export default function WorkflowCodeField(props: CodeFieldProps) {
   const definition = useEditor((s) => s.definition)
   const samples = useEditor((s) => s.samples)
   const fn = useEditor((s) => s.graph)
@@ -44,67 +15,5 @@ export default function CodeField({
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
     return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open)
   }, [definition, samples, fn])
-  useEffect(() => setScope(scope.dts, scope.sample), [scope])
-
-  const onMount: OnMount = (editor) => {
-    editorRef.current = editor
-    if (singleLine) {
-      // Enter would add a second line to a one-line expression. With the suggestion list open, Enter still accepts
-      // the suggestion (this command only applies while it's closed).
-      editor.addCommand(monaco.KeyCode.Enter, () => {}, '!suggestWidgetVisible')
-    }
-  }
-
-  useEffect(() => {
-    const model = editorRef.current?.getModel()
-    if (!model) return
-    monaco.editor.setModelMarkers(
-      model,
-      'ow',
-      problems.map((p) => {
-        const from = model.getPositionAt(p.start ?? 0)
-        const to = model.getPositionAt(p.end ?? model.getValueLength())
-        return {
-          startLineNumber: from.lineNumber,
-          startColumn: from.column,
-          endLineNumber: to.lineNumber,
-          endColumn: Math.max(to.column, from.column + 1),
-          message: p.message,
-          severity: p.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
-        }
-      }),
-    )
-  })
-
-  return (
-    <div className="overflow-hidden rounded-md border border-border" data-testid={`code-${path}`}>
-      <Editor
-        path={path}
-        language={language}
-        value={value}
-        onChange={(next) => onChange(next ?? '')}
-        onMount={onMount}
-        height={height}
-        options={{
-          readOnly,
-          minimap: { enabled: false },
-          fontSize: 12.5,
-          fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
-          lineNumbers: singleLine ? 'off' : 'on',
-          glyphMargin: false,
-          folding: !singleLine,
-          lineDecorationsWidth: singleLine ? 6 : 8,
-          lineNumbersMinChars: 3,
-          scrollBeyondLastLine: false,
-          wordWrap: singleLine ? 'off' : 'on',
-          renderLineHighlight: singleLine ? 'none' : 'line',
-          overviewRulerLanes: 0,
-          scrollbar: singleLine ? { vertical: 'hidden', horizontal: 'hidden' } : { verticalScrollbarSize: 8 },
-          tabSize: 2,
-          automaticLayout: true,
-          fixedOverflowWidgets: true,
-        }}
-      />
-    </div>
-  )
+  return <CodeField {...props} scope={scope} />
 }

@@ -11,6 +11,8 @@ export interface RunOptions {
   timeoutMs?: number
   /** See `QueryContext.labels`. */
   labels?: Record<string, string>
+  /** See `QueryContext.untrustedValues`. */
+  untrustedValues?: boolean
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -39,6 +41,7 @@ export async function runQuery(
         signal,
         timeoutMs,
         ...(opts.labels && { labels: opts.labels }),
+        ...(opts.untrustedValues && { untrustedValues: true }),
       }),
     )
     return {

@@ -369,7 +369,8 @@ describe('response', () => {
             ['X-Run', '{{ idempotencyKey }}'],
           ]),
           code('afterFast', 'return 1'),
-          fakeQ('slow', { delayMs: 100 }),
+          // Well behind `fast`, which evaluates three templates in the sandbox first (over 100 ms on a busy CI runner).
+          fakeQ('slow', { delayMs: 1500 }),
           response('late', '{"winner": "late"}'),
         ],
         [

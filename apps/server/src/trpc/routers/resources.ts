@@ -5,6 +5,7 @@ import { and, asc, eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { type Access, loadAccess, requireLevel } from '../../services/permissions'
+import { errorView, toJson } from '../../services/query-results'
 import {
   applySecretPatch,
   decryptConfigSecrets,
@@ -75,16 +76,6 @@ function connectorFor(type: string) {
   const connector = getConnector(type)
   if (!connector) throw new TRPCError({ code: 'BAD_REQUEST', message: `Unknown resource type "${type}"` })
   return connector
-}
-
-function errorView(err: ConnectorError) {
-  return { code: err.code, message: err.message, details: err.details ?? null }
-}
-
-/** Query results are JSON: Dates become ISO strings, bigints strings. */
-function toJson(value: unknown): unknown {
-  const text = JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))
-  return text === undefined ? null : JSON.parse(text)
 }
 
 /** Built-in resources are provisioned by the platform: their settings, name and existence aren't anyone's to change. */

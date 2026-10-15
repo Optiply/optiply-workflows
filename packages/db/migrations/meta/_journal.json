@@ -85,6 +85,13 @@
       "when": 1792063161030,
       "tag": "0011_managed_database_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792068150785,
+      "tag": "0012_apps",
+      "breakpoints": true
     }
   ]
 }
