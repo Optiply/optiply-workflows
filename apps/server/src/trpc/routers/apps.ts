@@ -76,24 +76,26 @@ export const appsRouter = router({
    * For the editor: the draft with its diagnostics (connector checks included) and the live release's version and
    * hash. `draftHash` equals the live release's hash when the draft has no unpublished changes.
    */
-  get: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
-    const { access, app } = await visibleApp(ctx, input)
-    requireLevel(access.appLevel(app), 'edit', 'this app')
-    const live = await liveRelease(ctx, app)
-    return {
-      ...summary(app, access),
-      draftDefinition: app.draftDefinition,
-      draftRevision: app.draftRevision,
-      draftHash: await appDefinitionHash(app.draftDefinition),
-      diagnostics: (await checkApp(ctx.db, app.draftDefinition)).diagnostics,
-      liveRelease: live && {
-        id: live.id,
-        version: live.version,
-        definitionHash: live.definitionHash,
-        createdAt: live.createdAt,
-      },
-    }
-  }),
+  get: authedProcedure
+    .input(z.union([z.object({ id: Id }), z.object({ slug: Slug })]))
+    .query(async ({ ctx, input }) => {
+      const { access, app } = await visibleApp(ctx, input)
+      requireLevel(access.appLevel(app), 'edit', 'this app')
+      const live = await liveRelease(ctx, app)
+      return {
+        ...summary(app, access),
+        draftDefinition: app.draftDefinition,
+        draftRevision: app.draftRevision,
+        draftHash: await appDefinitionHash(app.draftDefinition),
+        diagnostics: (await checkApp(ctx.db, app.draftDefinition)).diagnostics,
+        liveRelease: live && {
+          id: live.id,
+          version: live.version,
+          definitionHash: live.definitionHash,
+          createdAt: live.createdAt,
+        },
+      }
+    }),
 
   /** For people using the app: its live release. NOT_FOUND until the first release. */
   open: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {

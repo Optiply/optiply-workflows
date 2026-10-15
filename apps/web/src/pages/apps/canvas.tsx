@@ -5,8 +5,11 @@ import {
   GRID_COLUMNS,
   type Position,
 } from '@ow/app-definition'
-import { type ComponentType, Fragment } from 'react'
+import { Fragment, useContext } from 'react'
 import { cn } from '@/lib/utils'
+import { RENDERERS } from './components'
+import { ChildGridContext, EditingContext } from './grid-context'
+import type { RendererProps } from './renderer'
 import { useAppHostState, useAppValue } from './runtime/react'
 
 /**
@@ -17,14 +20,6 @@ import { useAppHostState, useAppValue } from './runtime/react'
 
 /** Height of one grid row. */
 export const ROW_HEIGHT = 16
-
-export interface RendererProps {
-  component: AppComponent
-  definition: AppDefinition
-}
-
-/** Renderers by component type; types without one show their state (step 5 fills this in). */
-export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = {}
 
 /** Each child of `parent` with its position, in reading order. */
 export function placedChildren(
@@ -77,13 +72,14 @@ export function AppGrid({ definition, parent }: { definition: AppDefinition; par
   )
 }
 
-/** One component: its renderer, or nothing while it's hidden. */
+/** One component: its renderer, or nothing while it's hidden (faded in the editor). */
 export function ComponentView({ component, definition }: RendererProps) {
   const hidden = useAppValue<boolean>(`${component.name}.hidden`)
-  if (hidden) return null
+  const editing = useContext(EditingContext)
+  if (hidden && !editing) return null
   const Renderer = RENDERERS[component.type] ?? FallbackRenderer
   return (
-    <div className="h-full" data-component={component.name}>
+    <div className={cn('h-full', hidden && 'opacity-40')} data-component={component.name}>
       <Renderer component={component} definition={definition} />
     </div>
   )
@@ -93,14 +89,14 @@ export function ComponentView({ component, definition }: RendererProps) {
 export function AppCanvas({ definition }: { definition: AppDefinition }) {
   const modals = definition.components.filter((c) => componentSpec(c.type)?.overlay)
   return (
-    <>
+    <ChildGridContext.Provider value={AppGrid}>
       <AppGrid definition={definition} />
       {modals.map((m) => (
         <Fragment key={m.name}>
           <ComponentView component={m} definition={definition} />
         </Fragment>
       ))}
-    </>
+    </ChildGridContext.Provider>
   )
 }
 

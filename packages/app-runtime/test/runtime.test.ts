@@ -398,6 +398,71 @@ describe('AppRuntime', () => {
     ])
   })
 
+  it('takes over after an edit, keeping what the user did and re-running only what changed', async () => {
+    const calls: string[] = []
+    const effects: Effect[] = []
+    const state: Record<string, unknown> = {}
+    const bridge = {
+      async runQuery(query: string, values: Record<string, unknown>): Promise<QueryOutcome> {
+        calls.push(`${query}:${JSON.stringify(values)}`)
+        return { ok: true, data: [values] }
+      },
+      confirm: async () => true,
+      effect: (e: Effect) => effects.push(e),
+      publish: (p: StatePatch) => Object.assign(state, p.values),
+      log: () => {},
+    }
+    const base = {
+      components: [
+        comp('search', 'textInput', { defaultValue: 'a' }),
+        comp('title', 'text', { value: 'One' }),
+      ],
+      queries: [sql('list', 'select {{ search.value }}')],
+      variables: [{ name: 'picked', initialValue: '{{ 1 }}' }],
+    }
+    const start = (def: Def, previous?: AppRuntime) => {
+      const r = new AppRuntime(app(def), bridge, { autoRunDelayMs: 0 })
+      return { r, done: r.start(previous ? { previous } : {}) }
+    }
+
+    let { r, done } = start(base)
+    await done
+    r.set({ 'search.value': 'typed', 'picked.value': 7 })
+    await wait()
+    expect(calls).toEqual(['list:{" search.value ":"a"}', 'list:{" search.value ":"typed"}'])
+
+    // An unrelated change: nothing runs again, and what the user did stays.
+    const edited = { ...base, components: [base.components[0]!, comp('title', 'text', { value: 'Two' })] }
+    ;({ r, done } = start(edited, r))
+    await done
+    expect(calls).toHaveLength(2)
+    expect(state).toMatchObject({
+      'title.value': 'Two',
+      'search.value': 'typed',
+      'picked.value': 7,
+      'list.data': [{ ' search.value ': 'typed' }],
+    })
+
+    // The query changed: it runs again with what was typed.
+    const newSql = { ...edited, queries: [sql('list', 'select {{ search.value }}, 1')] }
+    ;({ r, done } = start(newSql, r))
+    await done
+    expect(calls.at(-1)).toBe('list:{" search.value ":"typed"}')
+    expect(calls).toHaveLength(3)
+
+    // The input's default changed: it starts from it, so the query's value changed too; the variable's initial
+    // value changed: it starts again.
+    const newDefaults = {
+      ...newSql,
+      components: [comp('search', 'textInput', { defaultValue: 'b' }), edited.components[1]!],
+      variables: [{ name: 'picked', initialValue: '{{ 2 }}' }],
+    }
+    ;({ r, done } = start(newDefaults, r))
+    await done
+    expect(calls.at(-1)).toBe('list:{" search.value ":"b"}')
+    expect(state).toMatchObject({ 'search.value': 'b', 'picked.value': 2 })
+  })
+
   it('sets nested values immutably', () => {
     const before = { a: { b: [1, 2] } }
     expect(setIn(before, 'a.b.1', 9)).toEqual({ a: { b: [1, 9] } })

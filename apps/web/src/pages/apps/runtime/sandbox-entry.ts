@@ -19,6 +19,7 @@ import {
 
 let port: MessagePort | null = null
 let runtime: AppRuntime | null = null
+let globals: Record<string, unknown> = {}
 let nextId = 1
 const pending = new Map<number, (value: never) => void>()
 
@@ -114,14 +115,24 @@ function handle(message: HostMessage) {
       if (runtime) return
       try {
         const g = globalThis as unknown as { _: unknown; dayjs: unknown }
-        runtime = new AppRuntime(message.definition, bridge, {
-          globals: { ...message.globals, _: g._, dayjs: g.dayjs, console: appConsole },
-        })
+        globals = { ...message.globals, _: g._, dayjs: g.dayjs, console: appConsole }
+        runtime = new AppRuntime(message.definition, bridge, { globals })
         const loading = runtime.start()
         send({ type: 'started' })
         void loading
       } catch (err) {
         send({ type: 'fatal', message: err instanceof Error ? err.message : String(err) })
+      }
+      return
+    }
+    case 'update': {
+      if (!runtime) return
+      try {
+        const next = new AppRuntime(message.definition, bridge, { globals })
+        void next.start({ previous: runtime })
+        runtime = next
+      } catch (err) {
+        log('error', `The edited app could not start: ${err instanceof Error ? err.message : String(err)}`)
       }
       return
     }

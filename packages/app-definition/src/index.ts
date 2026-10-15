@@ -1,5 +1,6 @@
 export * from './canonical'
 export * from './components'
+export * from './edits'
 export * from './evaluate'
 export * from './fields'
 export * from './graph'

@@ -7,6 +7,7 @@ import {
   type Entity,
   type EventHandler,
   formInputs,
+  sameValue,
 } from '@ow/app-definition'
 import type { Effect, LogLevel, QueryOutcome, StatePatch } from './protocol'
 
@@ -45,6 +46,8 @@ export class AppRuntime {
   readonly model: AppModel
   private readonly queries: Map<string, AppQuery>
   private readonly runs = new Map<string, number>()
+  /** What each resource query last sent, so an edit (`start({ previous })`) can tell whether it must run again. */
+  private readonly sent = new Map<string, string>()
   private readonly autoTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly debounced = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly methodCache = new Map<string, Record<string, unknown>>()
@@ -67,18 +70,83 @@ export class AppRuntime {
     })
   }
 
-  /** Evaluates the app, sends the first patch and runs what runs on load. Resolves when those queries finish. */
-  async start(): Promise<void> {
+  /**
+   * Evaluates the app, sends the first patch and runs what runs on load. Resolves when those queries finish.
+   *
+   * With `previous` (the same app before an edit), what the user did carries over: what they typed and selected
+   * (unless the input's default changed), variables (unless their initial value changed) and query results. Only
+   * the on-load queries that changed, or whose values changed, run again; `previous` stops.
+   */
+  async start(options: { previous?: AppRuntime } = {}): Promise<void> {
+    const { previous } = options
     this.model.init()
+    if (previous) {
+      previous.stop()
+      this.model.set(this.carriedOver(previous))
+    }
     const values: Record<string, unknown> = {}
     for (const key of this.model.graph.order) {
       if (!this.model.graph.nodes.get(key)!.property.startsWith('$')) values[key] = this.model.get(key)
     }
     this.publish(values)
     const onLoad = this.definition.queries.filter(
-      (q) => (q.kind === 'resource' && q.run === 'auto') || q.runOnLoad,
+      (q) =>
+        ((q.kind === 'resource' && q.run === 'auto') || q.runOnLoad) &&
+        (!previous || this.mustRerun(q, previous)),
     )
     await Promise.allSettled(onLoad.map((q) => this.runQuiet(q.name)))
+  }
+
+  /** The run-time values of `previous` that still mean the same thing in this definition. */
+  private carriedOver(previous: AppRuntime): Record<string, unknown> {
+    const carried: Record<string, unknown> = {}
+    const before = previous.model
+    for (const [key, node] of this.model.graph.nodes) {
+      if (node.kind !== 'source' && node.kind !== 'state') continue
+      const old = before.graph.nodes.get(key)
+      if (!old || old.kind !== node.kind) continue
+      // An input whose default changed starts from the new default.
+      if (node.from && !sameValue(before.get(old.from!), this.model.get(node.from))) continue
+      const entity = this.model.graph.entities.get(node.entity)!
+      if (entity.kind === 'variable') {
+        const initial = `${node.entity}.$initial`
+        if (!sameValue(before.get(initial), this.model.get(initial))) continue
+      }
+      // A run in flight belonged to the old app; whether to run again is decided by mustRerun.
+      if (entity.kind === 'query' && node.property === 'isFetching') continue
+      carried[key] = before.get(key)
+    }
+    return carried
+  }
+
+  /** Whether an on-load query must run again after an edit; when not, what it last sent carries over. */
+  private mustRerun(query: AppQuery, previous: AppRuntime): boolean {
+    const before = previous.queries.get(query.name)
+    if (!before || JSON.stringify(before) !== JSON.stringify(query)) return true
+    if (previous.model.get(`${query.name}.isFetching`) === true) return true
+    if (query.kind !== 'resource') return false
+    const last = previous.sent.get(query.name)
+    if (last === undefined) return true
+    try {
+      if (JSON.stringify(this.valuesFor(query, {})) !== last) return true
+    } catch {
+      return true
+    }
+    this.sent.set(query.name, last)
+    return false
+  }
+
+  /** The values of a resource query's `{{ }}`s, as the browser evaluates them. */
+  private valuesFor(query: AppQuery & { kind: 'resource' }, locals: Record<string, unknown>) {
+    const values: Record<string, unknown> = {}
+    for (const code of browserExpressions(query.query)) {
+      try {
+        values[code] = this.model.evaluateExpression(code, locals)
+      } catch (err) {
+        throw new QueryFailure(`Error in {{${code}}}: ${message(err)}`)
+      }
+    }
+    return values
   }
 
   /** Stops timers; later results are ignored. */
@@ -148,14 +216,8 @@ export class AppRuntime {
     try {
       let data: unknown
       if (query.kind === 'resource') {
-        const values: Record<string, unknown> = {}
-        for (const code of browserExpressions(query.query)) {
-          try {
-            values[code] = this.model.evaluateExpression(code, locals)
-          } catch (err) {
-            throw new QueryFailure(`Error in {{${code}}}: ${message(err)}`)
-          }
-        }
+        const values = this.valuesFor(query, locals)
+        this.sent.set(name, JSON.stringify(values))
         const outcome = await this.bridge.runQuery(name, values)
         if (!outcome.ok) throw new QueryFailure(outcome.error.message)
         data = outcome.data

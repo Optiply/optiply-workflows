@@ -39,6 +39,8 @@ export interface RuntimeGlobals {
 
 export type HostMessage =
   | { type: 'start'; definition: AppDefinition; globals: RuntimeGlobals }
+  /** The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). */
+  | { type: 'update'; definition: AppDefinition }
   /** Values the user changed: typing, picking, selecting, editing a cell. */
   | { type: 'set'; updates: Record<string, unknown> }
   /** A component event the user caused (`click`, `change`, `submit`). */

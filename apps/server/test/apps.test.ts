@@ -128,6 +128,7 @@ describe('apps: drafts and access', () => {
     })
 
     const got = data(await admin.query('apps.get', { id: app.id }))
+    expect(data(await admin.query('apps.get', { slug: 'crm' })).id).toBe(app.id)
     expect(got).toMatchObject({ slug: 'crm', draftRevision: 2, level: 'own', liveRelease: null })
     expect(got.draftHash).toMatch(/^[0-9a-f]{64}$/)
     // Connector checks run on the server: the SQL is fine, so no diagnostics.

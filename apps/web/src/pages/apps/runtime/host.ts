@@ -32,7 +32,7 @@ export interface AppHostState {
   /** Why the app couldn't start, or that a newer version is live. */
   problem: string | null
   /** The app's console, newest last (at most 500 lines). */
-  logs: { level: LogLevel; message: string; at: number }[]
+  logs: { id: number; level: LogLevel; message: string; at: number }[]
 }
 
 export interface AppHostOptions {
@@ -46,6 +46,8 @@ export interface AppHostOptions {
   notify(message: string, tone: 'info' | 'success' | 'error'): void
   /** Asks the user to confirm before a query runs. */
   confirm(message: string): Promise<boolean>
+  /** Called before each resource query runs (the editor saves the draft: the server runs what's saved). */
+  beforeQuery?: () => Promise<void>
 }
 
 /** The sandbox's own policy: inline scripts and `new Function` only; no requests of any kind. */
@@ -76,8 +78,14 @@ export class AppHost {
   private iframe: HTMLIFrameElement | null = null
   private port: MessagePort | null = null
   private destroyed = false
+  private logId = 0
+  /** The definition the sandbox should run; an update before it started goes out with `start`. */
+  private definition: AppDefinition
+  /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
+  private startedWith: AppDefinition | null = null
 
   constructor(private readonly options: AppHostOptions) {
+    this.definition = options.definition
     this.store = createStore<AppHostState>(() => ({
       status: 'loading',
       values: {},
@@ -127,6 +135,13 @@ export class AppHost {
     this.post({ type: 'trigger', query })
   }
 
+  /** The editor changed the app: the sandbox switches to it, keeping what the user did. */
+  update(definition: AppDefinition): void {
+    if (definition === this.definition) return
+    this.definition = definition
+    if (this.store.getState().status !== 'loading') this.post({ type: 'update', definition })
+  }
+
   private connect(iframe: HTMLIFrameElement) {
     if (this.destroyed || !iframe.contentWindow) return
     const channel = new MessageChannel()
@@ -144,10 +159,12 @@ export class AppHost {
     if (this.destroyed) return
     switch (message.type) {
       case 'ready':
-        this.post({ type: 'start', definition: this.options.definition, globals: this.options.globals })
+        this.startedWith = this.definition
+        this.post({ type: 'start', definition: this.definition, globals: this.options.globals })
         return
       case 'started':
         this.store.setState({ status: 'ready' })
+        if (this.definition !== this.startedWith) this.post({ type: 'update', definition: this.definition })
         return
       case 'fatal':
         this.store.setState({ status: 'failed', problem: message.message })
@@ -176,9 +193,10 @@ export class AppHost {
         return
       case 'log':
         this.store.setState((s) => ({
-          logs: [...s.logs, { level: message.level, message: String(message.message), at: Date.now() }].slice(
-            -500,
-          ),
+          logs: [
+            ...s.logs,
+            { id: ++this.logId, level: message.level, message: String(message.message), at: Date.now() },
+          ].slice(-500),
         }))
         return
     }
@@ -186,6 +204,7 @@ export class AppHost {
 
   private async runQuery(query: string, values: Record<string, unknown>): Promise<QueryOutcome> {
     try {
+      await this.options.beforeQuery?.()
       const outcome = await trpcClient.apps.runQuery.mutate({
         appId: this.options.appId,
         releaseId: this.options.releaseId,

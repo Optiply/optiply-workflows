@@ -49,6 +49,7 @@ export function useAppHost(key: string, options: AppHostOptions) {
       ...current,
       notify: (...args) => optionsRef.current.notify(...args),
       confirm: (message) => optionsRef.current.confirm(message),
+      beforeQuery: () => optionsRef.current.beforeQuery?.() ?? Promise.resolve(),
     })
     next.mount(ref.current!)
     setHost(next)

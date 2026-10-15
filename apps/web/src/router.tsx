@@ -102,6 +102,14 @@ const appViewRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
 })
+/** Building an app: the editor, in its own chunk (the grid layout and Monaco load with it). */
+const appEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/apps/$slug/edit',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -168,6 +176,7 @@ const routeTree = rootRoute.addChildren([
     resourceDetailRoute,
     databaseRoute,
     appViewRoute,
+    appEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,
