@@ -86,6 +86,14 @@ const resourceDetailRoute = createRoute({
   path: '/resources/$resourceId',
   component: ResourceDetailPage,
 })
+/** The managed database: its own chunk (the grid and its libraries load when it's opened). */
+const databaseRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/database',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional(), table: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/database'), 'DatabasePage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -150,6 +158,7 @@ const routeTree = rootRoute.addChildren([
     workflowEditorRoute,
     resourcesRoute,
     resourceDetailRoute,
+    databaseRoute,
     runsRoute,
     inboxRoute,
     taskRoute,
