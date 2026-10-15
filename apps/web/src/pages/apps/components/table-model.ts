@@ -76,6 +76,15 @@ export function rowKey(row: Row | null | undefined, primaryKey: string, index: n
   return pk === null || pk === undefined ? `#${index}` : JSON.stringify(pk)
 }
 
+/**
+ * Identifies a row for selection: its primary key, or (without one) its content, so the same row matches whether it
+ * comes from the data or from `selectedRows` (positions differ between the two).
+ */
+export function selectionKey(row: Row | null | undefined, primaryKey: string): string {
+  const pk = row?.[primaryKey]
+  return pk === null || pk === undefined ? `row:${JSON.stringify(row ?? null)}` : JSON.stringify(pk)
+}
+
 function compare(a: unknown, b: unknown): number {
   if (a === b) return 0
   if (a === null || a === undefined) return 1

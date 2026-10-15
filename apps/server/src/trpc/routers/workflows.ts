@@ -15,7 +15,13 @@ import {
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { type Access, loadAccess, requireLevel } from '../../services/permissions'
+import {
+  type Access,
+  checkFolderMove,
+  checkFolderType,
+  loadAccess,
+  requireLevel,
+} from '../../services/permissions'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -129,6 +135,7 @@ export const workflowsRouter = router({
           message: 'You need edit access to all workflows to create one',
         })
       }
+      await checkFolderType(ctx.db, 'workflow', input.folderId)
       const [workflow] = await uniqueOr('A workflow with that slug already exists', () =>
         ctx.db
           .insert(workflows)
@@ -166,6 +173,12 @@ export const workflowsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      await checkFolderMove(ctx.db, {
+        type: 'workflow',
+        level: access.workflowLevel(workflow),
+        from: workflow.folderId,
+        to: input.folderId,
+      })
       const { id, ...changes } = input
       const [updated] = await ctx.db
         .update(workflows)

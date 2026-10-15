@@ -189,7 +189,15 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
 }
 
 async function buildUrl(client: Client, query: Query, ctx: QueryContext): Promise<URL> {
-  const path = (await renderText(query.path, ctx.evaluate)).trim()
+  // Untrusted values can't climb out of their segment (`../admin`) or start a query string: each is encoded.
+  const evaluate: QueryContext['evaluate'] = ctx.untrustedValues
+    ? async (code) => {
+        const value = await ctx.evaluate(code)
+        if (value === null || value === undefined) return value
+        return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
+      }
+    : ctx.evaluate
+  const path = (await renderText(query.path, evaluate)).trim()
   let url: URL
   if (/^https?:\/\//i.test(path)) {
     url = new URL(path)

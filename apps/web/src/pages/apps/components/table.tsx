@@ -15,6 +15,7 @@ import {
   parseCell,
   type Row,
   rowKey,
+  selectionKey,
   sortedRows,
   type TableColumn,
   tableColumns,
@@ -47,7 +48,13 @@ export function TableRenderer({ component }: RendererProps) {
   const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null)
   const ordered = useMemo(() => sortedRows(rows, sort), [rows, sort])
   const [active, setActive] = useState<{ r: number; c: number } | null>(null)
-  const [editing, setEditing] = useState<{ r: number; c: number; text: string; error?: string } | null>(null)
+  /**
+   * The cell being edited, by its row's key and its column's key (not positions: the data can change while someone
+   * types, an automatic query re-running, and the edit must still land on the row it started on).
+   */
+  const [editing, setEditing] = useState<{ row: string; col: string; text: string; error?: string } | null>(
+    null,
+  )
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
@@ -58,12 +65,10 @@ export function TableRenderer({ component }: RendererProps) {
   })
 
   const selectedKeys = useMemo(() => {
-    const keys = new Set<string>()
-    selectedRows.forEach((r, i) => {
-      keys.add(rowKey(r, primaryKey, -1 - i))
-    })
-    if (selectedIndex !== null && selectedIndex !== undefined)
-      keys.add(rowKey(rows[selectedIndex], primaryKey, selectedIndex))
+    const keys = new Set(selectedRows.map((r) => selectionKey(r, primaryKey)))
+    if (selectedIndex !== null && selectedIndex !== undefined && rows[selectedIndex]) {
+      keys.add(selectionKey(rows[selectedIndex], primaryKey))
+    }
     return keys
   }, [selectedRows, selectedIndex, rows, primaryKey])
 
@@ -87,10 +92,10 @@ export function TableRenderer({ component }: RendererProps) {
       host.call(name, 'selectRow', [index])
       return
     }
-    const key = rowKey(row, primaryKey, index)
-    const already = selectedRows.some((r, i) => rowKey(r, primaryKey, -1 - i) === key)
+    const key = selectionKey(row, primaryKey)
+    const already = selectedRows.some((r) => selectionKey(r, primaryKey) === key)
     const next = already
-      ? selectedRows.filter((r, i) => rowKey(r, primaryKey, -1 - i) !== key)
+      ? selectedRows.filter((r) => selectionKey(r, primaryKey) !== key)
       : [...selectedRows, row]
     host.set({
       [`${name}.selectedRows`]: next,
@@ -102,14 +107,22 @@ export function TableRenderer({ component }: RendererProps) {
 
   const commit = (move?: { dr: number; dc: number }) => {
     if (!editing) return
-    const { row } = ordered[editing.r]!
-    const col = columns[editing.c]!
+    const r = ordered.findIndex((o) => rowKey(o.row, primaryKey, o.index) === editing.row)
+    const c = columns.findIndex((col) => col.key === editing.col)
+    // The row (or column) went away while being edited: there's nothing left to change.
+    if (r === -1 || c === -1) {
+      setEditing(null)
+      gridRef.current?.focus()
+      return
+    }
+    const { row } = ordered[r]!
+    const col = columns[c]!
     const parsed = parseCell(editing.text, col.type)
     if ('error' in parsed) return setEditing({ ...editing, error: parsed.error })
     host.set({ [`${name}.changesetArray`]: applyEdit(changeset, primaryKey, row, col.key, parsed.value) })
     host.fire(name, 'changeCell')
     setEditing(null)
-    if (move) moveTo(editing.r + move.dr, editing.c + move.dc)
+    if (move) moveTo(r + move.dr, c + move.dc)
     gridRef.current?.focus()
   }
 
@@ -134,7 +147,11 @@ export function TableRenderer({ component }: RendererProps) {
       host.fire(name, 'changeCell')
       return
     }
-    setEditing({ r, c, text: editText(cellValue(row, col), col.type) })
+    setEditing({
+      row: rowKey(row, primaryKey, ordered[r]!.index),
+      col: col.key,
+      text: editText(cellValue(row, col), col.type),
+    })
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -220,7 +237,8 @@ export function TableRenderer({ component }: RendererProps) {
             >
               {virtualizer.getVirtualItems().map((v) => {
                 const { row, index } = ordered[v.index]!
-                const selected = selectedKeys.has(rowKey(row, primaryKey, index))
+                const selected = selectedKeys.has(selectionKey(row, primaryKey))
+                const key = rowKey(row, primaryKey, index)
                 return (
                   <div
                     key={v.key}
@@ -237,7 +255,7 @@ export function TableRenderer({ component }: RendererProps) {
                     onClick={(e) => selectRow(v.index, e.metaKey || e.ctrlKey)}
                   >
                     {columns.map((col, c) => {
-                      const isEditing = editing?.r === v.index && editing.c === c
+                      const isEditing = editing?.row === key && editing.col === col.key
                       const value = cellValue(row, col)
                       return (
                         <div

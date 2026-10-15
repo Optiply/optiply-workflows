@@ -1,4 +1,6 @@
-import { auditEvents, permissions } from '@ow/db'
+import { createServer, type IncomingMessage } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { apps as appsTable, auditEvents, folders, permissions, workflows } from '@ow/db'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
@@ -365,5 +367,160 @@ describe('apps: releases', () => {
     const left = await env.db.select().from(permissions).where(eq(permissions.objectId, app.id))
     expect(left).toEqual([])
     expect(failure(await admin.query('apps.get', { id: app.id }))).toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('apps: folders', () => {
+  it('needs Own to move an app between folders, and only into app folders', async () => {
+    const app = await appWith('foldered', crudApp())
+    const [resourceFolder] = await env.db
+      .insert(folders)
+      .values({ objectType: 'resource', name: 'Prod DBs' })
+      .returning()
+    const [appFolder] = await env.db
+      .insert(folders)
+      .values({ objectType: 'app', name: 'Ops apps' })
+      .returning()
+    // The member's group owns the resource folder (and what's in it).
+    await admin.mutate('permissions.set', {
+      objectType: 'folder',
+      objectId: resourceFolder!.id,
+      groupId: memberGroupId,
+      environmentId: null,
+      level: 'own',
+    })
+    await grantApp(app.id, 'edit')
+    // Edit isn't enough to move it: a folder's grants would reach it.
+    expect(
+      failure(await member.mutate('apps.update', { id: app.id, folderId: resourceFolder!.id })),
+    ).toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'You need own access to this app to move it between folders',
+    })
+    // Renaming without moving still works with Edit.
+    data(await member.mutate('apps.update', { id: app.id, name: 'Renamed' }))
+    // Not into a resource folder, even for an owner.
+    expect(
+      failure(await admin.mutate('apps.update', { id: app.id, folderId: resourceFolder!.id })),
+    ).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'No app folder has that id',
+    })
+    expect(
+      failure(
+        await admin.mutate('apps.create', {
+          slug: 'into-resources',
+          name: 'x',
+          folderId: resourceFolder!.id,
+        }),
+      ),
+    ).toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    data(await admin.mutate('apps.update', { id: app.id, folderId: appFolder!.id }))
+
+    // Even if one got there some other way, a resource folder's grants don't reach an app.
+    await grantApp(app.id, null)
+    await env.db.update(appsTable).set({ folderId: resourceFolder!.id }).where(eq(appsTable.id, app.id))
+    expect(failure(await member.query('apps.get', { id: app.id }))).toMatchObject({ code: 'NOT_FOUND' })
+    await env.db.update(appsTable).set({ folderId: appFolder!.id }).where(eq(appsTable.id, app.id))
+    await admin.mutate('permissions.set', {
+      objectType: 'folder',
+      objectId: appFolder!.id,
+      groupId: memberGroupId,
+      environmentId: null,
+      level: 'use',
+    })
+    expect(data(await member.query('apps.list')).find((a: { id: string }) => a.id === app.id)).toMatchObject({
+      level: 'use',
+    })
+  })
+
+  it('needs Own to move a workflow between folders too', async () => {
+    const wf = data(await admin.mutate('workflows.create', { slug: 'moved-flow', name: 'Moved' }))
+    const [resourceFolder] = await env.db
+      .insert(folders)
+      .values({ objectType: 'resource', name: 'More DBs' })
+      .returning()
+    await admin.mutate('permissions.set', {
+      objectType: 'workflow',
+      objectId: wf.id,
+      groupId: memberGroupId,
+      environmentId: null,
+      level: 'edit',
+    })
+    expect(
+      failure(await member.mutate('workflows.update', { id: wf.id, folderId: resourceFolder!.id })),
+    ).toMatchObject({
+      code: 'FORBIDDEN',
+    })
+    expect(
+      failure(await admin.mutate('workflows.update', { id: wf.id, folderId: resourceFolder!.id })),
+    ).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'No workflow folder has that id',
+    })
+    const [row] = await env.db.select().from(workflows).where(eq(workflows.id, wf.id))
+    expect(row!.folderId).toBeNull()
+  })
+})
+
+describe('apps: REST queries', () => {
+  it('keeps a value from the browser inside its path segment', async () => {
+    const seen: string[] = []
+    const server = createServer((req: IncomingMessage, res) => {
+      seen.push(req.url ?? '')
+      res.setHeader('content-type', 'application/json')
+      res.end('{"ok":true}')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as AddressInfo).port
+    try {
+      const resource = data(
+        await admin.mutate('resources.create', { type: 'rest', name: 'Orders API', slug: 'orders_api' }),
+      )
+      for (const environmentId of [prodId, stagingId]) {
+        data(
+          await admin.mutate('resources.saveConfig', {
+            resourceId: resource.id,
+            environmentId,
+            config: { baseUrl: `http://127.0.0.1:${port}/api`, allowPrivateNetwork: true },
+          }),
+        )
+      }
+      const app = await appWith('orders-rest', {
+        schemaVersion: 1,
+        components: [{ name: 'orderId', type: 'textInput' }],
+        queries: [
+          {
+            name: 'getOrder',
+            kind: 'resource',
+            resource: 'orders_api',
+            run: 'manual',
+            query: {
+              method: 'GET',
+              path: '/orders/{{ orderId.value }}',
+              params: [{ key: 'q', value: '{{ orderId.value }}' }],
+            },
+          },
+        ],
+      })
+      const release = data(
+        await admin.mutate('apps.publish', { appId: app.id, draftRevision: app.revision() }),
+      )
+      const evil = '../users/42'
+      expect(
+        data(await run(admin, app.id, 'getOrder', { ' orderId.value ': evil }, { releaseId: release.id })),
+      ).toMatchObject({
+        ok: true,
+      })
+      // One encoded segment in the path; the query string encodes it as usual.
+      expect(seen.at(-1)).toBe('/api/orders/..%2Fusers%2F42?q=..%2Fusers%2F42')
+      // A plain id goes through unchanged.
+      data(await run(admin, app.id, 'getOrder', { ' orderId.value ': 1042 }, { releaseId: release.id }))
+      expect(seen.at(-1)).toBe('/api/orders/1042?q=1042')
+    } finally {
+      server.close()
+    }
   })
 })

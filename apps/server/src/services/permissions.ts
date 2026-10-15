@@ -32,6 +32,8 @@ export class Access {
     readonly isAdmin: boolean,
     private readonly grants: Grant[],
     private readonly folderParents: Map<string, string | null>,
+    /** Each folder's object type: a folder grant only reaches objects of its folder's type. */
+    private readonly folderTypes: Map<string, string> = new Map(),
   ) {}
 
   /** The user's level on a resource in one environment, or null for no access. */
@@ -43,7 +45,7 @@ export class Access {
       if (g.environmentId !== null && g.environmentId !== environmentId) continue
       const matches =
         (g.objectType === 'resource' && (g.objectId === null || g.objectId === resource.id)) ||
-        (g.objectType === 'folder' && g.objectId !== null && folderIds.has(g.objectId))
+        this.folderGrant(g, folderIds, 'resource')
       if (matches) best = higher(best, g.level)
     }
     return best
@@ -113,7 +115,7 @@ export class Access {
       if (g.environmentId !== null) continue
       const matches =
         (g.objectType === type && (g.objectId === null || g.objectId === object.id)) ||
-        (g.objectType === 'folder' && g.objectId !== null && folderIds.has(g.objectId))
+        this.folderGrant(g, folderIds, type)
       if (matches) best = higher(best, g.level)
     }
     return best
@@ -130,6 +132,13 @@ export class Access {
           atLeast(g.level, 'edit'),
       )
     )
+  }
+
+  /** A grant on one of the object's folders, a folder of the object's own type. */
+  private folderGrant(g: Grant, folderIds: Set<string>, type: string): boolean {
+    if (g.objectType !== 'folder' || g.objectId === null || !folderIds.has(g.objectId)) return false
+    const folderType = this.folderTypes.get(g.objectId)
+    return folderType === undefined || folderType === type
   }
 
   private ancestors(folderId: string | null): Set<string> {
@@ -158,9 +167,16 @@ export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean })
         .where(inArray(permissions.groupId, groupIds))
     : []
   const folderRows = grants.some((g) => g.objectType === 'folder')
-    ? await db.select({ id: folders.id, parentId: folders.parentId }).from(folders)
+    ? await db
+        .select({ id: folders.id, parentId: folders.parentId, objectType: folders.objectType })
+        .from(folders)
     : []
-  return new Access(false, grants, new Map(folderRows.map((f) => [f.id, f.parentId])))
+  return new Access(
+    false,
+    grants,
+    new Map(folderRows.map((f) => [f.id, f.parentId])),
+    new Map(folderRows.map((f) => [f.id, f.objectType])),
+  )
 }
 
 export function requireLevel(level: PermissionLevel | null, required: PermissionLevel, what: string): void {
@@ -170,3 +186,33 @@ export function requireLevel(level: PermissionLevel | null, required: Permission
 }
 
 export { PERMISSION_LEVELS }
+
+/** A folder that can hold a workflow or app: one of its own type (a resource folder's grants mean something else). */
+export async function checkFolderType(db: Db, type: 'workflow' | 'app', folderId: string | null | undefined) {
+  if (folderId === null || folderId === undefined) return
+  const [folder] = await db
+    .select({ objectType: folders.objectType })
+    .from(folders)
+    .where(eq(folders.id, folderId))
+  if (!folder || folder.objectType !== type) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: `No ${type} folder has that id` })
+  }
+}
+
+/**
+ * Moving a workflow or app into or out of a folder changes who can reach it (folder grants apply to what's inside),
+ * so it needs Own, like managing its access directly.
+ */
+export async function checkFolderMove(
+  db: Db,
+  opts: {
+    type: 'workflow' | 'app'
+    level: PermissionLevel | null
+    from: string | null
+    to: string | null | undefined
+  },
+) {
+  if (opts.to === undefined || opts.to === opts.from) return
+  requireLevel(opts.level, 'own', `this ${opts.type} to move it between folders`)
+  await checkFolderType(db, opts.type, opts.to)
+}

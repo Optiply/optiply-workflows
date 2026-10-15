@@ -24,6 +24,7 @@ import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { type Access, atLeast } from './permissions'
+import { errorView, toJson } from './query-results'
 import { toResolved } from './resources'
 
 /** Each server-side `{{ }}` (one reading `current_user`) gets this long in the sandbox. */
@@ -173,8 +174,11 @@ export type AppQueryOutcome =
 
 /**
  * Runs one of an app's resource queries, as stored in the draft (`releaseId` null) or the live release, in one
- * environment. The browser sends the values of the query's `{{ }}`s keyed by their code; the server binds them
- * as parameters, so a value can never become SQL. Expressions reading `current_user` are evaluated here instead.
+ * environment. The browser sends the values of the query's `{{ }}`s keyed by their code. Those values are whatever
+ * the viewer sends: SQL connectors bind them as parameters (a value never becomes SQL); a REST request's path gets
+ * each one as a single encoded segment (`untrustedValues`); elsewhere (query string, headers, body) they're the
+ * request's own data, as the publisher wrote it.
+ * Expressions reading `current_user` are evaluated here instead.
  *
  * Who may: for the draft, Edit on the app and Use on the resource in that environment (like a workflow's draft
  * run); for the live release, Use on the app (its publisher vouched for the resources). A release that is no
@@ -280,6 +284,8 @@ export async function runAppQuery(
       ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
       ...(opts.signal && { signal: opts.signal }),
       labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
+      // The values came from the browser: a REST path gets each as one encoded segment.
+      untrustedValues: true,
     })
     outcome = {
       ok: true,
@@ -291,15 +297,9 @@ export async function runAppQuery(
     if (!(err instanceof ConnectorError)) throw err
     outcome = {
       ok: false,
-      error: { code: err.code, message: err.message, details: err.details ?? null },
+      error: errorView(err),
       durationMs: Math.round(performance.now() - started),
     }
   }
   return { outcome, manual: query.run === 'manual', version }
-}
-
-/** Query results are JSON: Dates become ISO strings, bigints strings. */
-function toJson(value: unknown): unknown {
-  const text = JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))
-  return text === undefined ? null : JSON.parse(text)
 }

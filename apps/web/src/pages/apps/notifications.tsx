@@ -1,5 +1,6 @@
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useRef, useState } from 'react'
+import { Button, Dialog } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
 export type Tone = 'info' | 'success' | 'error'
@@ -61,4 +62,52 @@ export function Notifications({ notices, dismiss }: { notices: Notice[]; dismiss
       ))}
     </div>
   )
+}
+
+interface Question {
+  id: number
+  message: string
+  answer: (ok: boolean) => void
+}
+
+/**
+ * Confirmations a running app asks for (queries with "ask to confirm"). Questions queue: two handlers asking at
+ * once each get their own answer, one after the other.
+ */
+export function useConfirmations(): { confirm: (message: string) => Promise<boolean>; dialog: ReactNode } {
+  const [queue, setQueue] = useState<Question[]>([])
+  const nextId = useRef(1)
+  const confirm = useCallback(
+    (message: string) =>
+      new Promise<boolean>((resolve) => {
+        setQueue((q) => [...q, { id: nextId.current++, message, answer: resolve }])
+      }),
+    [],
+  )
+  const current = queue[0]
+  const answer = (ok: boolean) => {
+    if (!current) return
+    current.answer(ok)
+    setQueue((q) => q.filter((item) => item.id !== current.id))
+  }
+  const dialog = current ? (
+    <Dialog
+      key={current.id}
+      title="Are you sure?"
+      onClose={() => answer(false)}
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => answer(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => answer(true)}>
+            Continue
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm">{current.message}</p>
+    </Dialog>
+  ) : null
+  return { confirm, dialog }
 }

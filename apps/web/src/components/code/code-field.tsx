@@ -30,7 +30,7 @@ export interface CodeScope {
 
 /**
  * A Monaco editor for one field. Problems from the validator show as squiggles at their offsets; `scope` drives
- * completions (one scope is installed at a time: the open editor's).
+ * completions (one scope is installed at a time: the open editor's, or the one the page installs).
  */
 export default function CodeField({
   path,
@@ -42,9 +42,12 @@ export default function CodeField({
   problems = [],
   readOnly,
   scope,
-}: CodeFieldProps & { scope: CodeScope }) {
+}: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
-  useEffect(() => setScope(scope.dts, scope.sample), [scope])
+  // Without a scope, the page installs one itself (the app editor keeps a single scope for all its fields).
+  useEffect(() => {
+    if (scope) setScope(scope.dts, scope.sample)
+  }, [scope])
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor

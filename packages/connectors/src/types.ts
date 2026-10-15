@@ -22,6 +22,11 @@ export interface QueryContext {
   timeoutMs: number
   /** Who is running the query (workflow, run, user), for connectors that can tag their work: BigQuery job labels. */
   labels?: Record<string, string>
+  /**
+   * The `{{ }}` values come from someone who mustn't shape the request beyond them (an app's viewer, through the
+   * browser). SQL binds values anyway; REST puts each one in its URL path as a single encoded segment.
+   */
+  untrustedValues?: boolean
 }
 
 export interface QueryResult {

@@ -1,11 +1,10 @@
 import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { useCallback, useRef, useState } from 'react'
-import { Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
-import { Notifications, useNotifications } from './notifications'
+import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from './runtime/react'
 
 const route = getRouteApi('/app/apps/$slug')
@@ -16,7 +15,14 @@ export function AppViewPage() {
   const { slug } = route.useParams()
   const search = route.useSearch()
   const trpc = useTRPC()
-  const app = useQuery(trpc.apps.open.queryOptions({ slug }))
+  // The live release is loaded once per visit: a publish or rollback meanwhile mustn't restart the app under
+  // someone mid-task (and lose what they typed). The next query they run says a newer version is live (Reload).
+  const app = useQuery({
+    ...trpc.apps.open.queryOptions({ slug }),
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+  })
   const environments = useQuery(trpc.environments.list.queryOptions())
 
   if (app.error)
@@ -78,15 +84,7 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
-  const [asking, setAsking] = useState<{ message: string; answer: (ok: boolean) => void } | null>(null)
-  const confirm = useCallback(
-    (message: string) => new Promise<boolean>((resolve) => setAsking({ message, answer: resolve })),
-    [],
-  )
-  const answer = (ok: boolean) => {
-    asking?.answer(ok)
-    setAsking(null)
-  }
+  const { confirm, dialog: confirmation } = useConfirmations()
   const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {
     definition: release.definition,
     appId: app.id,
@@ -99,8 +97,6 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
     notify,
     confirm,
   })
-  const answerRef = useRef(answer)
-  answerRef.current = answer
 
   return (
     <div className="flex h-full flex-col">
@@ -144,24 +140,7 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
         )}
       </div>
       <Notifications notices={notices} dismiss={dismiss} />
-      {asking && (
-        <Dialog
-          title="Are you sure?"
-          onClose={() => answerRef.current(false)}
-          footer={
-            <>
-              <Button variant="secondary" onClick={() => answer(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={() => answer(true)}>
-                Continue
-              </Button>
-            </>
-          }
-        >
-          <p className="text-sm">{asking.message}</p>
-        </Dialog>
-      )}
+      {confirmation}
     </div>
   )
 }

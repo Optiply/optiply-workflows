@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { applyEdit, formatCell, parseCell, rowKey, sortedRows, tableColumns } from './table-model'
+import {
+  applyEdit,
+  formatCell,
+  parseCell,
+  rowKey,
+  selectionKey,
+  sortedRows,
+  tableColumns,
+} from './table-model'
 
 const rows = [
   { id: 1, name: 'Ada', score: 10, active: true, born: '1815-12-10', meta: { a: 1 } },
@@ -60,6 +68,10 @@ describe('table model', () => {
     expect(applyEdit([], 'id', { name: 'x' }, 'name', 'y')).toEqual([])
     expect(rowKey(rows[0], 'id', 0)).toBe('1')
     expect(rowKey({ name: 'x' }, 'id', 4)).toBe('#4')
+    // Selection matches a row the same way from the data and from selectedRows: by key, or by content without one.
+    expect(selectionKey(rows[0], 'id')).toBe('1')
+    expect(selectionKey({ name: 'x' }, 'id')).toBe(selectionKey({ name: 'x' }, 'id'))
+    expect(selectionKey({ name: 'x' }, 'id')).not.toBe(selectionKey({ name: 'y' }, 'id'))
   })
 
   it('parses and formats cells by type', () => {

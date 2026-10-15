@@ -1,15 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
-import { Badge, Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
+import { useEffect, useState } from 'react'
+import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
-import { Notifications, useNotifications } from '../notifications'
+import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { CodePanel } from './code-panel'
+import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
@@ -28,19 +29,23 @@ export function AppEditorPage() {
   const { slug } = route.useParams()
   const search = route.useSearch()
   const trpc = useTRPC()
-  // Loaded once per visit: refetching would replace edits in progress.
+  // Fetched fresh each visit (gcTime 0: nothing cached from the last one) and loaded into the editor once: a later
+  // refetch (after App settings) only updates the name and description, never the draft being edited.
   const app = useQuery({
     ...trpc.apps.get.queryOptions({ slug }),
     staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
     refetchOnWindowFocus: false,
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
   const load = useAppEditor((s) => s.load)
-  const loadedId = useAppEditor((s) => s.appId)
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
   useEffect(() => {
-    if (app.data) load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash)
-  }, [app.data, load])
+    if (!app.data || loadedFor === app.data.id) return
+    load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash)
+    setLoadedFor(app.data.id)
+  }, [app.data, load, loadedFor])
 
   if (app.error)
     return (
@@ -54,7 +59,8 @@ export function AppEditorPage() {
         <ErrorNote error={environments.error} />
       </Centered>
     )
-  if (!app.data || !environments.data || loadedId !== app.data.id)
+  // The store outlives the page: until this visit's draft is in it, it may hold the last one.
+  if (!app.data || !environments.data || loadedFor !== app.data.id)
     return (
       <Centered>
         <Spinner />
@@ -94,19 +100,11 @@ function Editor({ app, environment, environments }: EditorProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
-  const [asking, setAsking] = useState<{ message: string; answer: (ok: boolean) => void } | null>(null)
+  const { confirm, dialog: confirmation } = useConfirmations()
   const [preview, setPreview] = useState(false)
   const status = useAppEditor((s) => s.status)
   const selected = useAppEditor((s) => s.selected)
   const definition = useAppEditor((s) => s.definition)
-  const confirm = useCallback(
-    (message: string) => new Promise<boolean>((resolve) => setAsking({ message, answer: resolve })),
-    [],
-  )
-  const answer = (ok: boolean) => {
-    asking?.answer(ok)
-    setAsking(null)
-  }
 
   const { ref, host } = useAppHost(`${app.id}:${environment.id}`, {
     definition: useAppEditor.getState().definition,
@@ -205,6 +203,7 @@ function Editor({ app, environment, environments }: EditorProps) {
       <div ref={ref} className="hidden" />
       {host ? (
         <AppHostProvider host={host}>
+          <ScopeSync />
           <div className="flex min-h-0 flex-1">
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface p-3">
@@ -243,24 +242,7 @@ function Editor({ app, environment, environments }: EditorProps) {
         </Centered>
       )}
       <Notifications notices={notices} dismiss={dismiss} />
-      {asking && (
-        <Dialog
-          title="Are you sure?"
-          onClose={() => answer(false)}
-          footer={
-            <>
-              <Button variant="secondary" onClick={() => answer(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={() => answer(true)}>
-                Continue
-              </Button>
-            </>
-          }
-        >
-          <p className="text-sm">{asking.message}</p>
-        </Dialog>
-      )}
+      {confirmation}
     </div>
   )
 }

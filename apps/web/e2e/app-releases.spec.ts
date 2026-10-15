@@ -52,8 +52,15 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   await expect(page.locator('[data-component="text1"]')).toHaveText('Hello v2')
   await expect(page.getByText('v1.1.0')).toBeVisible()
 
-  // Roll back from the editor's Releases.
+  // Back in the editor (from the viewer), it has the latest draft: an edit saves without a conflict.
   await page.getByRole('link', { name: 'Edit', exact: true }).click()
+  await page.getByTestId('frame-text1').click()
+  await expect(page.getByTestId('inspector-text1')).toContainText('Hello v2')
+  await typeInto(page, valueField, 'Hello v3')
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('release-status')).toContainText('Unpublished changes')
+
+  // Roll back from the editor's Releases.
   await page.getByRole('button', { name: 'Releases' }).first().click()
   const releases = page.getByTestId('releases')
   await expect(releases.getByRole('listitem')).toHaveCount(2)

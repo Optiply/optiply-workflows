@@ -10,12 +10,9 @@ import { useAppEditor } from './store'
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('@/components/code/code-field'))
 
-/** A Monaco field whose completions know the app's components, queries and their current values. */
+/** A Monaco field for app code; its completions come from the one scope `ScopeSync` keeps installed. */
 export function AppCodeField(props: Omit<CodeFieldProps, 'path'> & { path: (string | number)[] }) {
-  const definition = useAppEditor((s) => s.definition)
   const appId = useAppEditor((s) => s.appId)
-  const values = useAppHostState((s) => s.values)
-  const scope = useMemo(() => appScope(definition, values), [definition, values])
   return (
     <Suspense
       fallback={
@@ -25,7 +22,7 @@ export function AppCodeField(props: Omit<CodeFieldProps, 'path'> & { path: (stri
         />
       }
     >
-      <LazyCodeField {...props} path={`file:///app/${appId}/${props.path.join('/')}`} scope={scope} />
+      <LazyCodeField {...props} path={`file:///app/${appId}/${props.path.join('/')}`} />
     </Suspense>
   )
 }
@@ -55,6 +52,27 @@ export function useParsedText<T>(
       onChange(fromText(next))
     },
   ]
+}
+
+/** How often completions catch up with the running app's values at most. */
+const SCOPE_DELAY_MS = 300
+
+/**
+ * Keeps Monaco's completions in step with the app: one `.d.ts` of every component, query, transformer and variable
+ * with the types of their current values, rebuilt at most every 300 ms (not once per field per value change).
+ */
+export function ScopeSync() {
+  const definition = useAppEditor((s) => s.definition)
+  const values = useAppHostState((s) => s.values)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const scope = appScope(definition, values)
+      // Monaco is already loading with the code fields; this only waits for it.
+      void import('@/components/code/monaco').then(({ setScope }) => setScope(scope.dts, scope.sample))
+    }, SCOPE_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [definition, values])
+  return null
 }
 
 /** Validator problems at or under a path of the definition, as editor markers. */
