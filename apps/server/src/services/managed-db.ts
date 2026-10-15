@@ -112,7 +112,7 @@ export async function managedTarget(db: Db, environmentId: string): Promise<Mana
 }
 
 /**
- * Runs `fn` in one transaction as the environment's role. Schema changes wait at most 5 s for locks (a busy table
+ * Runs `fn` in one transaction as the environment's role, in UTC. Schema changes wait at most 5 s for locks (a busy table
  * fails the change rather than stalling everyone queued behind it) and run for at most 2 minutes.
  */
 export async function withManagedDb<T>(
@@ -133,7 +133,10 @@ export async function withManagedDb<T>(
   return deps.pool.withClient(postgresConnector, toResolved(deps.keyring, config), async (client) => {
     const { sql } = client as { sql: postgres.Sql }
     return sql.begin(async (tx) => {
-      await tx`select set_config('lock_timeout', '5s', true), set_config('statement_timeout', '120s', true)`
+      // UTC, so datetimes read back as UTC and ones written without an offset are taken as UTC.
+      await tx`
+        select set_config('lock_timeout', '5s', true), set_config('statement_timeout', '120s', true),
+               set_config('TimeZone', 'UTC', true)`
       return fn(tx)
     }) as Promise<T>
   })

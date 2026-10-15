@@ -22,6 +22,16 @@ import {
   renameTable,
   withManagedDb,
 } from '../../services/managed-db'
+import {
+  DELETE_LIMIT,
+  deleteRows,
+  insertRow,
+  RowKey,
+  RowQuery,
+  RowValues,
+  readRows,
+  updateRow,
+} from '../../services/managed-db-rows'
 import { atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -202,5 +212,46 @@ export const databaseRouter = router({
       })
       await audit(ctx, target, 'column_changed', input.table, { column: input.column, change: input.change })
       return table
+    }),
+
+  /** A page of rows, sorted and filtered, with the table's shape and how many rows match. */
+  rows: authedProcedure
+    .input(OnTable.extend({ query: RowQuery.default(RowQuery.parse({})) }))
+    .query(async ({ ctx, input }) => {
+      const target = await open(ctx, input.environmentId)
+      return inDb(ctx, target, (tx) => readRows(tx, target.schemaName, input.table, input.query))
+    }),
+
+  // Row writes are audited by table, key and columns, never values (they're the user's data).
+  insertRow: authedProcedure.input(OnTable.extend({ values: RowValues })).mutation(async ({ ctx, input }) => {
+    const target = await open(ctx, input.environmentId)
+    const row = await inDb(ctx, target, (tx) => insertRow(tx, target.schemaName, input.table, input.values))
+    await audit(ctx, target, 'row_inserted', input.table, { columns: Object.keys(input.values) })
+    return row
+  }),
+
+  updateRow: authedProcedure
+    .input(OnTable.extend({ key: RowKey, values: RowValues }))
+    .mutation(async ({ ctx, input }) => {
+      const target = await open(ctx, input.environmentId)
+      const row = await inDb(ctx, target, (tx) =>
+        updateRow(tx, target.schemaName, input.table, input.key, input.values),
+      )
+      await audit(ctx, target, 'row_updated', input.table, {
+        key: input.key,
+        columns: Object.keys(input.values),
+      })
+      return row
+    }),
+
+  deleteRows: authedProcedure
+    .input(OnTable.extend({ keys: z.array(RowKey).min(1).max(DELETE_LIMIT) }))
+    .mutation(async ({ ctx, input }) => {
+      const target = await open(ctx, input.environmentId)
+      const deleted = await inDb(ctx, target, (tx) =>
+        deleteRows(tx, target.schemaName, input.table, input.keys),
+      )
+      await audit(ctx, target, 'rows_deleted', input.table, { keys: input.keys, deleted })
+      return { deleted }
     }),
 })
