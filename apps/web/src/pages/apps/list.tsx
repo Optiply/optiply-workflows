@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FolderPlus, LayoutGrid, Pencil, Plus } from 'lucide-react'
+import { FolderPlus, GitBranch, LayoutGrid, Pencil, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
   Badge,
   Button,
   Card,
+  Checkbox,
   EmptyState,
   ErrorNote,
   Field,
@@ -74,6 +76,8 @@ function AppRow({ app, hasFolders }: { app: AppSummary; hasFolders: boolean }) {
     }),
   )
   const canEdit = app.level === 'edit' || app.level === 'own'
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
   const body = (
     <>
       <span className="rounded-md bg-accent-soft p-1.5 text-accent">
@@ -106,8 +110,20 @@ function AppRow({ app, hasFolders }: { app: AppSummary; hasFolders: boolean }) {
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
       )}
+      {app.gitProtected && <ProtectedBadge />}
       {app.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Not published</Badge>}
       <Badge tone="accent">{LEVELS[app.level]}</Badge>
+      {git?.configured && app.level === 'own' && !app.gitProtected && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Protect ${app.name} in Git`}
+          onClick={() => setProtecting(true)}
+        >
+          <GitBranch className="size-4" />
+        </Button>
+      )}
+      {protecting && <ProtectDialog kind="app" object={app} onClose={() => setProtecting(false)} />}
       {hasFolders && app.level === 'own' && (
         <FolderSelect
           type="app"
@@ -140,7 +156,9 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
   const [folderId, setFolderId] = useState<string | null>(null)
+  const [inGit, setInGit] = useState(false)
   const { data: folders } = useFolders('app')
+  const { data: git } = useGitInfo()
   const create = useMutation(
     trpc.apps.create.mutationOptions({
       onSuccess: async (app) => {
@@ -155,7 +173,7 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
         }}
       >
         <Field label="Name">
@@ -184,6 +202,15 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
           <Field label="Folder">
             <FolderSelect type="app" value={folderId} onChange={setFolderId} />
           </Field>
+        )}
+        {git?.configured && (
+          <div className="sm:col-span-2">
+            <Checkbox
+              label="Create it in Git: edited on branches and reviewed before it goes live"
+              checked={inGit}
+              onChange={(e) => setInGit(e.target.checked)}
+            />
+          </div>
         )}
         <div className="flex items-center gap-2 sm:col-span-2">
           <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>

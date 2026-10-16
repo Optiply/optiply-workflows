@@ -245,7 +245,12 @@ describe('protecting', () => {
       gitCommit: string | null
       createdBy: unknown
     }[]
-    expect(releases[0]).toMatchObject({ gitCommit: deployed.commit, createdBy: null })
+    // The notes are the pull request's title, not GitHub's "Merge pull request #2 from …".
+    expect(releases[0]).toMatchObject({
+      gitCommit: deployed.commit,
+      createdBy: null,
+      notes: 'Protect app "Order admin" (#2)',
+    })
   })
 
   it('unprotects', async () => {

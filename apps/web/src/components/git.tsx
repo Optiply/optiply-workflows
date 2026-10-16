@@ -1,0 +1,224 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ExternalLink, GitBranch, GitPullRequest } from 'lucide-react'
+import { useState } from 'react'
+import { Badge, Button, Dialog, ErrorNote, Field, Input } from '@/components/ui'
+import { type RouterOutputs, useTRPC } from '@/lib/trpc'
+
+export type GitInfo = RouterOutputs['git']['info']
+type ProtectResult = RouterOutputs['git']['protect']
+
+/** Whether Git sync is set up, its deploy branch, and the repo's web address (for links). */
+export function useGitInfo() {
+  const trpc = useTRPC()
+  return useQuery({ ...trpc.git.info.queryOptions(), staleTime: 60_000 })
+}
+
+/** A short commit sha, linking to the commit when the repo is on the web. */
+export function CommitLink({ sha, webUrl }: { sha: string; webUrl: string | null | undefined }) {
+  const short = <span className="font-mono">{sha.slice(0, 7)}</span>
+  if (!webUrl) return <span title={sha}>{short}</span>
+  return (
+    <a
+      href={`${webUrl}/commit/${sha}`}
+      target="_blank"
+      rel="noreferrer"
+      title={sha}
+      className="hover:underline"
+    >
+      {short}
+    </a>
+  )
+}
+
+/** Who made a release: a person, or Git sync with the commit it deployed. */
+export function ReleaseAuthor({
+  release,
+  webUrl,
+}: {
+  release: { createdBy: { name: string } | null; gitCommit: string | null }
+  webUrl: string | null | undefined
+}) {
+  if (release.gitCommit) {
+    return (
+      <span data-testid="git-sync-author">
+        Git sync from <CommitLink sha={release.gitCommit} webUrl={webUrl} />
+      </span>
+    )
+  }
+  return <>{release.createdBy?.name ?? 'Someone'}</>
+}
+
+/** Marks an object edited on Git branches and deployed from the repo. */
+export function ProtectedBadge() {
+  return (
+    <Badge tone="accent" title="Protected: edited on Git branches and deployed when they merge">
+      <GitBranch className="mr-1 size-3" /> In Git
+    </Badge>
+  )
+}
+
+/** A pull request's link with its state. */
+export function PullRequestLink({
+  pullRequest,
+}: {
+  pullRequest: { number: number; url: string; state: string; merged: boolean; draft?: boolean }
+}) {
+  const state = pullRequest.merged ? 'Merged' : pullRequest.state === 'open' ? 'Open' : 'Closed'
+  return (
+    <a
+      href={pullRequest.url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
+      data-testid="pull-request-link"
+    >
+      <GitPullRequest className="size-3.5" /> #{pullRequest.number}
+      <Badge tone={pullRequest.merged ? 'success' : pullRequest.state === 'open' ? 'accent' : 'neutral'}>
+        {state}
+      </Badge>
+      <ExternalLink className="size-3" />
+    </a>
+  )
+}
+
+/**
+ * Protecting a workflow or app: what it means, an optional branch name, and then the branch and pull request it
+ * made (or how to open one by hand).
+ */
+export function ProtectDialog({
+  kind,
+  object,
+  onClose,
+}: {
+  kind: 'workflow' | 'app'
+  object: { id: string; slug: string; name: string }
+  onClose: () => void
+}) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const { data: git } = useGitInfo()
+  const [branch, setBranch] = useState(`protect/${kind}-${object.slug}`)
+  const [result, setResult] = useState<ProtectResult | null>(null)
+  const protect = useMutation(
+    trpc.git.protect.mutationOptions({
+      onSuccess: async (done) => {
+        setResult(done)
+        await queryClient.invalidateQueries({
+          queryKey: kind === 'workflow' ? trpc.workflows.list.queryKey() : trpc.apps.list.queryKey(),
+        })
+        await queryClient.invalidateQueries({
+          queryKey: kind === 'workflow' ? trpc.workflows.get.queryKey() : trpc.apps.get.queryKey(),
+        })
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Protect “${object.name}”`}
+      onClose={onClose}
+      footer={
+        result ? (
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={protect.isPending}
+              disabled={!branch.trim()}
+              onClick={() => protect.mutate({ kind, id: object.id, branch: branch.trim() })}
+              data-testid="protect-confirm"
+            >
+              Protect
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="flex flex-col gap-3 text-sm" data-testid="protect-result">
+          <p>
+            The {kind} is protected: from now on it’s edited on Git branches, and merging into{' '}
+            <span className="font-mono">{git?.branch}</span> deploys it.
+          </p>
+          <p>
+            Its files are on <span className="font-mono">{result.branch}</span> (
+            <CommitLink sha={result.commit} webUrl={git?.webUrl} />
+            ).
+          </p>
+          {result.pullRequest ? (
+            <div>
+              Review and merge the pull request: <PullRequestLink pullRequest={result.pullRequest} />
+            </div>
+          ) : (
+            <div className="rounded-md bg-amber-50 px-3 py-2 text-amber-900">
+              No pull request was opened: {result.pullRequestError}
+              {git?.webUrl && (
+                <>
+                  {' '}
+                  <a
+                    className="underline"
+                    href={`${git.webUrl}/compare/${git.branch}...${result.branch}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open one on the repo
+                  </a>
+                  .
+                </>
+              )}
+            </div>
+          )}
+          {result.warnings.length > 0 && (
+            <ul className="list-disc pl-5 text-amber-800">
+              {result.warnings.map((w) => (
+                <li key={w.path}>{w.message}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4 text-sm">
+          <p>
+            A protected {kind} is reviewed before it goes live. Its live version is committed to a branch and
+            a pull request into <span className="font-mono">{git?.branch ?? 'main'}</span> is opened. From
+            then on:
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-muted">
+            <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
+            <li>Merging deploys it as a new release; nobody publishes it here any more.</li>
+            <li>Only admins can roll it back here, in an emergency, until the next deploy.</li>
+          </ul>
+          <Field label="Branch" hint="Where its files go first.">
+            <Input className="font-mono" value={branch} onChange={(e) => setBranch(e.target.value)} />
+          </Field>
+          <ErrorNote error={protect.error} />
+        </div>
+      )}
+    </Dialog>
+  )
+}
+
+/** Unprotecting: confirms, then lets the object be edited here again. */
+export function useUnprotect(kind: 'workflow' | 'app') {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  return useMutation(
+    trpc.git.unprotect.mutationOptions({
+      onSuccess: () =>
+        Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: kind === 'workflow' ? trpc.workflows.list.queryKey() : trpc.apps.list.queryKey(),
+          }),
+          queryClient.invalidateQueries({
+            queryKey: kind === 'workflow' ? trpc.workflows.get.queryKey() : trpc.apps.get.queryKey(),
+          }),
+        ]),
+    }),
+  )
+}
+
+export const UNPROTECT_CONFIRM =
+  'Unprotect it? It can then be edited and published here again. Its files stay in the repo, and merges there stop deploying it.'

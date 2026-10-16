@@ -198,3 +198,17 @@ export async function testGitConnection(
     throw err
   }
 }
+
+/**
+ * The repo's web address, for links to commits and branches: an https URL without `.git`. Null for other URLs
+ * (local repos in development).
+ */
+export function repoWebUrl(repoUrl: string): string | null {
+  try {
+    const url = new URL(repoUrl)
+    if (url.protocol !== 'https:') return null
+    return `${url.origin}${url.pathname.replace(/\.git$/, '').replace(/\/$/, '')}`
+  } catch {
+    return null
+  }
+}

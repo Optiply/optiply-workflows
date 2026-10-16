@@ -1,9 +1,12 @@
-import { type ChildProcess, spawn } from 'node:child_process'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
+import { fakeGitHub } from '../../server/test/fake-github'
 import { E2E_PORT } from '../playwright.config'
 
 const serverDir = fileURLToPath(new URL('../../server', import.meta.url))
@@ -15,6 +18,8 @@ export const E2E_PASSWORD = 'e2e-password-not-secret'
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 /** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
 export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
+/** The token the fake GitHub takes (M11). */
+export const E2E_GITHUB_TOKEN = 'github_pat_e2e_not_secret'
 
 /**
  * Starts what the editor needs, as in production: an embedded Postgres, the bundled server (API and worker in one
@@ -36,6 +41,18 @@ export default async function globalSetup() {
   `)
   await seed.close()
 
+  // Git sync (M11): an empty bare repo (optiply/flows) and a fake GitHub for its pull requests. Specs read where
+  // they are from E2E_GIT_REPO_URL and E2E_FAKE_GITHUB, and merge pull requests through the fake's /_test routes.
+  const gitRoot = mkdtempSync(join(tmpdir(), 'ow-e2e-git-'))
+  mkdirSync(join(gitRoot, 'optiply'))
+  const repoPath = join(gitRoot, 'optiply', 'flows.git')
+  execFileSync('git', ['init', '--bare', '--quiet', '--initial-branch=main', repoPath], {
+    env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  })
+  const github = await fakeGitHub({ repoPath, owner: 'optiply', repo: 'flows', token: E2E_GITHUB_TOKEN })
+  process.env.E2E_GIT_REPO_URL = `file://${repoPath}`
+  process.env.E2E_FAKE_GITHUB = github.url
+
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
     ...process.env,
@@ -53,6 +70,10 @@ export default async function globalSetup() {
     AUTO_MIGRATE: 'true',
     MIGRATIONS_DIR: `${serverDir}/../../packages/db/migrations`,
     WEB_DIST_DIR: webDist,
+    GIT_ALLOW_INSECURE_URLS: 'true',
+    GIT_CACHE_DIR: join(gitRoot, 'cache'),
+    GITHUB_API_URL: github.url,
+    GIT_POLL_SECONDS: '2',
   }
 
   for (const [email, name] of [
@@ -113,6 +134,8 @@ export default async function globalSetup() {
     server.kill('SIGTERM')
     await new Promise((resolve) => server.once('exit', resolve))
     await pg.stop()
+    await github.close()
+    rmSync(gitRoot, { recursive: true, force: true })
   }
 }
 

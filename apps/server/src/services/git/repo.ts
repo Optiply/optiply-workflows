@@ -310,12 +310,14 @@ export class GitRepo {
     })
   }
 
-  /** A fetched commit's subject line and author. */
-  commitInfo(commit: string): Promise<{ subject: string; authorName: string; authorEmail: string }> {
+  /** A fetched commit's subject line, body and author. */
+  commitInfo(
+    commit: string,
+  ): Promise<{ subject: string; body: string; authorName: string; authorEmail: string }> {
     return withLock(this.dir, async () => {
-      const { stdout } = await this.git(['show', '-s', '--format=%s%x00%an%x00%ae', commit])
-      const [subject = '', authorName = '', authorEmail = ''] = stdout.replace(/\n$/, '').split('\0')
-      return { subject, authorName, authorEmail }
+      const { stdout } = await this.git(['show', '-s', '--format=%s%x00%an%x00%ae%x00%b', commit])
+      const [subject = '', authorName = '', authorEmail = '', body = ''] = stdout.split('\0')
+      return { subject, body: body.trim(), authorName, authorEmail }
     })
   }
 

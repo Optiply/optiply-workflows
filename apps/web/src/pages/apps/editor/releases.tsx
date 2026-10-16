@@ -1,8 +1,9 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
+import { ReleaseAuthor, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -17,7 +18,11 @@ export interface EditorApp {
   name: string
   description: string | null
   level: 'use' | 'edit' | 'own'
+  /** Edited on Git branches (M11): main is read-only, rollback is for admins. */
+  gitProtected: boolean
 }
+
+const appRoute = getRouteApi('/app')
 
 const BUMPS: { bump: VersionBump; label: string; hint: string }[] = [
   { bump: 'patch', label: 'Patch', hint: 'Fixes' },
@@ -281,7 +286,11 @@ function VersionChoice({
 function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
+  const { me } = appRoute.useRouteContext()
+  const { data: git } = useGitInfo()
   const releases = useReleases(app.id)
+  // A protected app's live release changes by merging; admins can still roll back in an emergency.
+  const canSetLive = !app.gitProtected || me.isAdmin
   const live = releases.data?.find((r) => r.live)
   const setLive = useMutation(
     trpc.apps.setLive.mutationOptions({
@@ -309,16 +318,20 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               <span className="font-mono text-sm font-semibold">v{r.version}</span>
               {r.live && <Badge tone="success">Live</Badge>}
               <span className="flex-1" />
-              {!r.live && (
+              {canSetLive && !r.live && (
                 <Button
                   size="sm"
                   variant="ghost"
                   loading={setLive.isPending && setLive.variables?.releaseId === r.id}
-                  title="Make this release live again"
+                  title={
+                    app.gitProtected
+                      ? 'Emergency rollback: the next deploy from Git replaces it'
+                      : 'Make this release live again'
+                  }
                   onClick={() => {
                     if (
                       confirm(
-                        `Make v${r.version} live? People using the app will see it${live ? ` instead of v${live.version}` : ''}.`,
+                        `Make v${r.version} live? People using the app will see it${live ? ` instead of v${live.version}` : ''}.${app.gitProtected ? ' This app is protected: the next deploy from Git replaces it.' : ''}`,
                       )
                     ) {
                       setLive.mutate({ appId: app.id, releaseId: r.id })
@@ -331,7 +344,7 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
             </div>
             {r.notes && <p className="mt-1 text-sm whitespace-pre-wrap">{r.notes}</p>}
             <p className="mt-1 text-xs text-muted">
-              {r.createdBy?.name ?? 'Someone'} · {new Date(r.createdAt).toLocaleString()} ·{' '}
+              <ReleaseAuthor release={r} webUrl={git?.webUrl} /> · {new Date(r.createdAt).toLocaleString()} ·{' '}
               <span className="font-mono" title={r.definitionHash}>
                 {r.definitionHash.slice(0, 8)}
               </span>

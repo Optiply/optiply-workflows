@@ -241,7 +241,7 @@ async function deployOnce(
     for (;;) {
       const failed: Array<{ item: Pending; outcome: ObjectOutcome }> = []
       for (const item of remaining) {
-        const outcome = await deployObject(db, item, { commit, subject: info.subject })
+        const outcome = await deployObject(db, item, { commit, subject: releaseNotes(info) })
         if (outcome.outcome === 'problem') failed.push({ item, outcome })
         else outcomes.push(outcome)
         await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
@@ -278,7 +278,7 @@ async function deployOnce(
     trigger: opts.trigger,
     status: ok ? 'ok' : 'problems',
     summary: {
-      subject: info.subject,
+      subject: releaseNotes(info),
       author: { name: info.authorName, email: info.authorEmail },
       objects: changed.map(({ kind, slug, outcome, version, problems }) => ({
         kind,
@@ -313,6 +313,16 @@ async function deployOnce(
   })
   opts.log?.info({ commit, trigger: opts.trigger, ok, changed: changed.length }, 'git deploy finished')
   return { status: 'deployed', commit, ok, objects: outcomes, problems: repoProblems }
+}
+
+/**
+ * A release's notes from the commit it deploys: its subject, or for GitHub's merge commits ("Merge pull request
+ * #12 from optiply/branch", the title on the next line) the pull request's title and number.
+ */
+export function releaseNotes(info: { subject: string; body: string }): string {
+  const merge = /^Merge pull request #(\d+) from \S+$/.exec(info.subject)
+  const title = info.body.split('\n')[0]?.trim()
+  return merge && title ? `${title} (#${merge[1]})` : info.subject
 }
 
 /** Creates or updates one workflow or app from its decoded files. Problems come back as an outcome. */

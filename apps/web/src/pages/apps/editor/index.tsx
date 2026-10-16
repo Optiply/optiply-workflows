@@ -83,6 +83,7 @@ export function AppEditorPage() {
         name: app.data.name,
         description: app.data.description,
         level: app.data.level,
+        gitProtected: app.data.gitProtected,
       }}
       environment={environment}
       environments={environments.data}

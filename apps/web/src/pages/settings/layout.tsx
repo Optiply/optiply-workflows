@@ -10,6 +10,7 @@ const TABS = [
   { to: '/settings/environments', label: 'Environments', adminOnly: false },
   { to: '/settings/config-vars', label: 'Config vars', adminOnly: false },
   { to: '/settings/api-keys', label: 'API keys', adminOnly: true },
+  { to: '/settings/git', label: 'Git', adminOnly: true },
   { to: '/settings/audit', label: 'Audit log', adminOnly: true },
 ] as const
 

@@ -23,6 +23,7 @@ import { ApiKeysPage } from './pages/settings/api-keys'
 import { AuditPage } from './pages/settings/audit'
 import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
+import { GitSettingsPage } from './pages/settings/git'
 import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
@@ -176,6 +177,11 @@ const apiKeysRoute = createRoute({
   component: ApiKeysPage,
 })
 const auditRoute = createRoute({ getParentRoute: () => settingsRoute, path: '/audit', component: AuditPage })
+const gitRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/git',
+  component: GitSettingsPage,
+})
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -200,6 +206,7 @@ const routeTree = rootRoute.addChildren([
       environmentsRoute,
       configVarsRoute,
       apiKeysRoute,
+      gitRoute,
       auditRoute,
     ]),
   ]),

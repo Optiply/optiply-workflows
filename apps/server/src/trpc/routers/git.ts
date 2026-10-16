@@ -15,6 +15,8 @@ import { branchNameSchema } from '../../services/git/repo'
 import {
   clearGitSettings,
   gitSettingsView,
+  loadGitSettings,
+  repoWebUrl,
   saveGitSettings,
   testGitConnection,
 } from '../../services/git/settings'
@@ -47,6 +49,14 @@ async function gitObject(
 const Secret = z.string().trim().min(1).max(1000).nullish()
 
 export const gitRouter = router({
+  /** For everyone: whether Git sync is set up, its deploy branch, and the repo's web address for links. */
+  info: authedProcedure.query(async ({ ctx }) => {
+    const loaded = await loadGitSettings(ctx.db, ctx.config.keyring)
+    return loaded
+      ? { configured: true, branch: loaded.row.branch, webUrl: repoWebUrl(loaded.row.repoUrl) }
+      : { configured: false, branch: null, webUrl: null }
+  }),
+
   /** The repo settings; the token and webhook secret only as `{ set }`. */
   settings: adminProcedure.query(({ ctx }) => gitSettingsView(ctx.db, ctx.config.keyring)),
 

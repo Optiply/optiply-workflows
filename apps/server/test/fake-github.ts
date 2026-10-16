@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
@@ -31,6 +32,8 @@ export interface FakePull {
 export async function fakeGitHub(opts: { repoPath: string; owner: string; repo: string; token: string }) {
   const pulls: FakePull[] = []
   const calls: string[] = []
+  /** Where merges send a signed push webhook, like a repo webhook on GitHub (set with `POST /_test/webhook`). */
+  let webhook: { url: string; secret: string } | null = null
   const git = (...args: string[]) =>
     execFileSync('git', ['--git-dir', opts.repoPath, ...args], { env: gitEnv })
       .toString()
@@ -77,7 +80,22 @@ export async function fakeGitHub(opts: { repoPath: string; owner: string; repo: 
     pull.state = 'closed'
     pull.mergedAt = new Date().toISOString()
     pull.updatedAt = pull.mergedAt
+    if (webhook) void deliverPush(webhook, pull.base, commit)
     return commit
+  }
+
+  const deliverPush = async (target: { url: string; secret: string }, branch: string, after: string) => {
+    const body = JSON.stringify({ ref: `refs/heads/${branch}`, after })
+    const signature = `sha256=${createHmac('sha256', target.secret).update(body).digest('hex')}`
+    await fetch(target.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'push',
+        'x-hub-signature-256': signature,
+      },
+      body,
+    }).catch(() => {})
   }
 
   const send = (res: ServerResponse, status: number, body: unknown) => {
@@ -92,6 +110,21 @@ export async function fakeGitHub(opts: { repoPath: string; owner: string; repo: 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     calls.push(`${req.method} ${url.pathname}${url.search}`)
+    // Test controls (no auth): play the reviewer from another process, e.g. a Playwright spec.
+    const testMerge = /^\/_test\/pulls\/(\d+)\/merge$/.exec(url.pathname)
+    if (req.method === 'POST' && testMerge) {
+      try {
+        return send(res, 200, { commit: merge(Number(testMerge[1])) })
+      } catch (err) {
+        return send(res, 409, { message: (err as Error).message })
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/_test/webhook') {
+      const body = (await readBody(req)) as { url?: string; secret?: string }
+      webhook = body.url && body.secret ? { url: body.url, secret: body.secret } : null
+      return send(res, 200, { ok: true })
+    }
+    if (req.method === 'GET' && url.pathname === '/_test/pulls') return send(res, 200, pulls)
     if (req.headers.authorization !== `Bearer ${opts.token}`)
       return send(res, 401, { message: 'Bad credentials' })
     const prefix = `/repos/${opts.owner}/${opts.repo}`
