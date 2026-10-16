@@ -189,6 +189,14 @@ describe('signing in', () => {
 
     const renewed = await Promise.all(sources.map((s) => session(s, true)))
     expect(new Set(renewed).size).toBe(1)
+    // A query that got the variables before someone refreshed them, refused too, uses theirs (no second refresh).
+    const late = source(row)
+    await session(late)
+    await env.db
+      .update(oauthTokens)
+      .set({ updatedAt: new Date(Date.now() + 1000) })
+      .where(eq(oauthTokens.resourceConfigId, row.id))
+    expect(await session(late, true)).toBe(renewed[0])
     expect(renewed[0]).toMatch(/^Renewed-/)
     expect(renewed[0]).not.toBe(first[0])
     expect(refreshes).toBe(refreshesBefore + 1)
@@ -199,7 +207,9 @@ describe('signing in', () => {
 
     // The refresh token stops working: a refresh falls back to signing in.
     refreshTokens.clear()
-    expect(await session(source(row), true)).toMatch(/^Session-/)
+    const again = source(row)
+    await session(again)
+    expect(await session(again, true)).toMatch(/^Session-/)
     expect(logins).toBe(loginsBefore + 1)
   })
 
@@ -221,6 +231,16 @@ describe('signing in', () => {
     })
     expect(await stored(row.id)).toEqual([])
     expect(await session(source(row))).toMatch(/^Session-/)
+  })
+
+  it('scrubs secret variables only', async () => {
+    const { row } = await flowResource('flow_public', {
+      steps: [...signInSteps, { type: 'variable', name: 'tenant', value: 'acme-prod', secret: false }],
+    })
+    const vars = await source(row).authVariables!({ signal: AbortSignal.timeout(5000) })
+    expect(vars.secrets).not.toContain('acme-prod')
+    expect(vars.secrets.some((v) => v.startsWith('Session-'))).toBe(true)
+    expect(await vars.evaluate('auth.tenant')).toBe('acme-prod')
   })
 
   it('keeps unsaved test sign-ins in memory', async () => {

@@ -81,9 +81,9 @@ const loginSteps: AuthFlowStep[] = [
     name: 'expiry',
     code: 'return Date.parse("2026-10-16T00:00:00Z") + login.data.expiresIn * 1000',
   },
-  { type: 'variable', name: 'session', value: '{{ login.data.session }}' },
-  { type: 'variable', name: 'csrf', value: '{{ login.headers["x-csrf"] }}' },
-  { type: 'variable', name: 'until', value: '{{ expiry }}' },
+  { type: 'variable', name: 'session', value: '{{ login.data.session }}', secret: true },
+  { type: 'variable', name: 'csrf', value: '{{ login.headers["x-csrf"] }}', secret: true },
+  { type: 'variable', name: 'until', value: '{{ expiry }}', secret: true },
 ]
 
 const config = (overrides: Partial<RestConfig> = {}): RestConfig =>
@@ -156,7 +156,7 @@ describe('runAuthFlow', () => {
   it('starts a refresh flow from the previous variables', async () => {
     const variables = await runAuthFlow(
       { config: config(), secrets: secrets() },
-      [{ type: 'variable', name: 'session', value: '{{ auth.session + "-renewed" }}' }],
+      [{ type: 'variable', name: 'session', value: '{{ auth.session + "-renewed" }}', secret: true }],
       { sandbox, signal: AbortSignal.timeout(5000), previous: { session: 'old', csrf: 'c' } },
     )
     expect(variables).toEqual({ session: 'old-renewed' })
@@ -193,11 +193,11 @@ describe('the custom auth schema', () => {
       issues({
         type: 'custom',
         steps: [
-          { type: 'variable', name: 'token', value: '{{ 1 }}' },
-          { type: 'variable', name: 'token', value: '{{ 2 }}' },
-          { type: 'variable', name: 'auth', value: 'x' },
-          { type: 'variable', name: '1st', value: 'x' },
-          { type: 'variable', name: 'broken', value: '{{ a' },
+          { type: 'variable', name: 'token', value: '{{ 1 }}', secret: true },
+          { type: 'variable', name: 'token', value: '{{ 2 }}', secret: true },
+          { type: 'variable', name: 'auth', value: 'x', secret: true },
+          { type: 'variable', name: '1st', value: 'x', secret: true },
+          { type: 'variable', name: 'broken', value: '{{ a', secret: true },
           { type: 'request', name: 'get', method: 'GET', body: { type: 'json', json: '{}' } },
         ],
       }),
@@ -259,6 +259,24 @@ describe('queries on a custom auth resource', () => {
     // What went out had the real values (the result above is scrubbed).
     expect(call.path).toBe('/api/data?key=k-csrf-1')
     expect(calls).toEqual([{ force: false }])
+  })
+
+  it("lets a query's own headers override the resource's defaults, as for other auth types", async () => {
+    const cfg = config({
+      headers: [
+        { key: 'x-session', value: '{{ auth.session }}' },
+        { key: 'accept', value: 'application/json' },
+      ],
+    })
+    const sec = secrets()
+    await run(
+      cfg,
+      sec,
+      { path: 'data', headers: [{ key: 'accept', value: 'text/csv' }] },
+      flowSource(cfg, sec).source,
+    )
+    const call = requests.find((r) => r.path.startsWith('/api/data'))!
+    expect(call.headers).toMatchObject({ accept: 'text/csv', 'x-session': 'session-1' })
   })
 
   it('refreshes once when the API answers 401', async () => {

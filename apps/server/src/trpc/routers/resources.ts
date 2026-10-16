@@ -23,7 +23,6 @@ import {
   authorizationCode,
   type ConnectionStatus,
   connectionStatus,
-  consentHash,
   credentialsFor,
   deleteTokens,
 } from '../../services/oauth-tokens'
@@ -114,7 +113,7 @@ function assertNotBuiltIn(resource: Resource) {
 /** The connect checks (shared with the OAuth routes) as tRPC errors. */
 async function oauthTarget(
   ctx: AuthedContext,
-  input: { resourceId: string; environmentId: string; account: AccountKind },
+  input: { resourceId: string; environmentId: string; account: AccountKind; appId?: string | undefined },
 ) {
   try {
     return await connectTarget(ctx.db, ctx.config.keyring, ctx.user, input)
@@ -439,7 +438,7 @@ export const resourcesRouter = router({
         continue
       }
       const shared = auth.tokens === 'shared'
-      const consent = consentHash(auth)
+      const consent = authFingerprint(row.config)!
       let connectedPeople: number | null = null
       if (!shared && atLeast(level, 'edit')) {
         const [counted] = await ctx.db
@@ -459,9 +458,19 @@ export const resourcesRouter = router({
     return { redirectUri: oauthRedirectUri(ctx.config), environments }
   }),
 
-  /** Disconnects the shared account (Edit) or the user's own (Use). The provider isn't told (no revocation). */
+  /**
+   * Disconnects the shared account (Edit) or the user's own (Use, or through `appId` like connecting). The provider
+   * isn't told (no revocation).
+   */
   oauthDisconnect: authedProcedure
-    .input(z.object({ resourceId: Id, environmentId: Id, account: z.enum(['shared', 'mine']) }))
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        account: z.enum(['shared', 'mine']),
+        appId: Id.optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const target = await oauthTarget(ctx, input)
       const removed = await deleteTokens(ctx.db, target.config.id, target.userId)

@@ -383,6 +383,71 @@ describe('connecting the shared account', () => {
   })
 })
 
+describe('connecting through an app', () => {
+  it("lets an app's viewers connect their own account without access to the resource", async () => {
+    // A per-user resource the member has no grant on, queried by a live app the member may use.
+    const id = data(await admin.mutate('resources.create', { type: 'rest', name: 'Notes', slug: 'notes' })).id
+    await saveAuth(id, oauthAuth({ tokens: 'perUser', pkce: false }))
+    const app = data(await admin.mutate('apps.create', { slug: 'notes-app', name: 'Notes' }))
+    const draft = data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [],
+          queries: [{ name: 'me', kind: 'resource', resource: 'notes', query: { path: 'me' }, run: 'auto' }],
+          layout: {},
+        },
+      }),
+    )
+    data(await admin.mutate('apps.publish', { appId: app.id, draftRevision: draft.revision }))
+    const other = data(await admin.mutate('apps.create', { slug: 'other-app', name: 'Other' }))
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    for (const appId of [app.id, other.id]) {
+      await env.db
+        .insert(permissions)
+        .values({ groupId: all!.id, objectType: 'app', objectId: appId, level: 'use' })
+    }
+
+    const startVia = (appId?: string) =>
+      env.app.inject({
+        method: 'GET',
+        url: `${startUrl(id, 'mine')}${appId ? `&appId=${appId}` : ''}`,
+        headers: { cookie: memberCookie },
+      })
+    expect((await startVia()).statusCode).toBe(404)
+    expect((await startVia(other.id)).statusCode).toBe(404)
+    const res = await startVia(app.id)
+    expect(res.statusCode).toBe(302)
+    const pending = res.cookies.find((c) => c.name.startsWith('ow_oauth_'))!
+    const done = await callback(
+      `${memberCookie}; ${pending.name}=${pending.value}`,
+      consent(new URL(String(res.headers.location))),
+    )
+    expect(done.statusCode).toBe(200)
+    expect(await tokensOf(id)).toEqual([expect.objectContaining({ userId: memberId })])
+
+    // The shared account still needs Edit on the resource, app or not.
+    const sharedVia = await env.app.inject({
+      method: 'GET',
+      url: `${startUrl(id, 'shared')}&appId=${app.id}`,
+      headers: { cookie: memberCookie },
+    })
+    expect(sharedVia.statusCode).toBe(404)
+
+    const disconnect = (appId?: string) =>
+      member.mutate('resources.oauthDisconnect', {
+        resourceId: id,
+        environmentId: prodId,
+        account: 'mine',
+        ...(appId && { appId }),
+      })
+    expect((await disconnect()).status).toBe(404)
+    expect(data(await disconnect(app.id))).toEqual({ disconnected: true })
+  })
+})
+
 describe('per-user accounts', () => {
   it('lets each person with Use connect and disconnect their own', async () => {
     const mail = await restResource('mail', oauthAuth({ tokens: 'perUser', pkce: false }))

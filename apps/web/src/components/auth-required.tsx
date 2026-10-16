@@ -13,10 +13,13 @@ export function AuthRequiredNote({
   message,
   onConnected,
   compact,
+  appId,
 }: {
   need: AuthRequired
   message: string
   onConnected?: () => void
+  /** The app the query belongs to: its viewers may connect their own account without access to the resource. */
+  appId?: string
   /** One line, for banners. */
   compact?: boolean
 }) {
@@ -30,6 +33,7 @@ export function AuthRequiredNote({
       resourceId: need.resourceId,
       environmentId: need.environmentId,
       account: 'mine',
+      ...(appId && { appId }),
     })
     setBusy(false)
     if (outcome.ok) onConnected?.()

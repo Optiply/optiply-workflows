@@ -17,12 +17,14 @@ import {
   pendingCookieName,
   resultPage,
 } from '../services/oauth-connect'
-import { consentHash, saveTokens } from '../services/oauth-tokens'
+import { authFingerprint, saveTokens } from '../services/oauth-tokens'
 
 const StartQuery = z.object({
   resourceId: z.string().uuid(),
   environmentId: z.string().uuid(),
   account: z.enum(['shared', 'mine']).default('shared'),
+  /** Connecting one's own account from an app whose resource the person has no access to. */
+  appId: z.string().uuid().optional(),
 })
 
 const CallbackQuery = z.object({
@@ -78,8 +80,9 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         ...(pkce && { verifier: pkce.verifier }),
         ...ids,
         account: query.data.account,
+        ...(query.data.appId && { appId: query.data.appId }),
         userId: user.id,
-        consent: consentHash(target.auth),
+        consent: authFingerprint(target.config.config)!,
       }
       reply.setCookie(pendingCookieName(state), JSON.stringify(pending), {
         ...cookieOptions,
@@ -159,7 +162,7 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         return finish(reply, err.status, { ok: false, message: err.message, ...ids })
       throw err
     }
-    const consent = consentHash(target.auth)
+    const consent = authFingerprint(target.config.config)!
     if (consent !== pending.consent) {
       return finish(reply, 400, {
         ok: false,

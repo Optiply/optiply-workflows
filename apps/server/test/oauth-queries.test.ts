@@ -9,7 +9,7 @@ import { createDb, groups, permissions, resourceConfigs } from '@ow/db'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { authorizationCode, consentHash, saveTokens } from '../src/services/oauth-tokens'
+import { authFingerprint, saveTokens } from '../src/services/oauth-tokens'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -31,6 +31,8 @@ const validAccess = new Map<string, string>()
 /** Refresh token → whose account it is. */
 const validRefresh = new Map<string, string>()
 let refreshes = 0
+/** The Authorization header of every API call. */
+const apiCalls: string[] = []
 
 beforeAll(async () => {
   env = await startTestApp()
@@ -61,6 +63,7 @@ beforeAll(async () => {
       validRefresh.set(`rt-${access}`, owner)
       return send(200, { access_token: access, refresh_token: `rt-${access}`, expires_in: 3600 })
     }
+    apiCalls.push(String(req.headers.authorization ?? ''))
     const who = validAccess.get((req.headers.authorization ?? '').replace(/^Bearer /, ''))
     if (!who) return send(401, { error: 'invalid_token' })
     send(200, { who })
@@ -145,7 +148,7 @@ async function connect(
     environmentId: prodId,
     userId,
     tokens: { accessToken: access, refreshToken: `rt-${access}`, expiresAt, scope: 'me', account: null },
-    consentHash: consentHash(authorizationCode(row!.config)!),
+    consentHash: authFingerprint(row!.config)!,
     connectedBy: userId ?? adminId,
   })
 }
@@ -261,6 +264,18 @@ describe('the playground', () => {
       ok: false,
       error: { details: { reason: 'settings_changed' } },
     })
+    // Settings sending requests to another host (here the same server under another name) don't get the token.
+    const elsewhere = {
+      baseUrl: `${origin.replace('127.0.0.1', 'localhost')}/api/me`,
+      auth: oauth('shared'),
+      allowPrivateNetwork: true,
+    }
+    const before = apiCalls.length
+    expect(await test(elsewhere)).toMatchObject({
+      ok: false,
+      error: { code: 'auth_required', details: { reason: 'settings_changed' } },
+    })
+    expect(apiCalls.length).toBe(before)
   })
 })
 

@@ -13,7 +13,7 @@ import {
   users,
 } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -122,10 +122,19 @@ async function setup(): Promise<CredentialTarget> {
     environmentId: prodId,
     userId: null,
     auth: auth(),
+    consent: consentOf(auth()),
     clientSecret: 'cs',
     allowPrivateNetwork: true,
   }
 }
+
+/** The consent fingerprint of `a` on the resource the tests use (its base URL and allowed hosts). */
+const consentOf = (a: AuthorizationCodeSettings, where: { baseUrl?: string; allowedHosts?: string[] } = {}) =>
+  consentHash({
+    baseUrl: where.baseUrl ?? 'https://api.example.com',
+    allowedHosts: where.allowedHosts ?? [],
+    auth: a,
+  })
 
 const tokenSet = (overrides: Partial<TokenSet> = {}): TokenSet => ({
   accessToken: 'at-0',
@@ -143,7 +152,7 @@ async function connect(target: CredentialTarget, tokens: TokenSet = tokenSet()) 
     environmentId: target.environmentId,
     userId: target.userId,
     tokens,
-    consentHash: consentHash(target.auth),
+    consentHash: target.consent,
     connectedBy: alice,
   })
 }
@@ -172,7 +181,7 @@ async function failure(promise: Promise<unknown>): Promise<ConnectorError> {
 describe('storing a connection', () => {
   it('encrypts the tokens and reports the connection without them', async () => {
     const target = await setup()
-    expect(await connectionStatus(db, target.resourceConfigId, null, consentHash(target.auth))).toEqual({
+    expect(await connectionStatus(db, target.resourceConfigId, null, target.consent)).toEqual({
       connected: false,
     })
     await connect(target, tokenSet({ accessToken: 'at-plain-text-123', refreshToken: 'rt-plain-text-456' }))
@@ -184,7 +193,7 @@ describe('storing a connection', () => {
     expect(row!.tokens).toMatch(/^v1\./)
     expect(JSON.stringify(row)).not.toMatch(/plain-text/)
 
-    const status = await connectionStatus(db, target.resourceConfigId, null, consentHash(target.auth))
+    const status = await connectionStatus(db, target.resourceConfigId, null, target.consent)
     expect(status).toMatchObject({
       connected: true,
       status: 'active',
@@ -228,6 +237,43 @@ describe('storing a connection', () => {
     })
   })
 
+  it("replaces one owner's connection in turn when two connects finish at once", async () => {
+    const target = await setup()
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) => connect(target, tokenSet({ accessToken: `at-${i}` }))),
+    )
+    expect(
+      await db.select().from(oauthTokens).where(eq(oauthTokens.resourceConfigId, target.resourceConfigId)),
+    ).toHaveLength(1)
+
+    // A connect waits for the owner's lock (the one refreshes take: `ow_oauth:<config>:<owner>`).
+    let release!: () => void
+    let locked!: () => void
+    const isLocked = new Promise<void>((r) => {
+      locked = r
+    })
+    const held = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`ow_oauth:${target.resourceConfigId}:shared`}, 0))`,
+      )
+      locked()
+      await new Promise<void>((r) => {
+        release = r
+      })
+    })
+    await isLocked
+    let saved = false
+    const saving = connect(target, tokenSet({ accessToken: 'at-late' })).then(() => {
+      saved = true
+    })
+    await new Promise((r) => setTimeout(r, 300))
+    expect(saved).toBe(false)
+    release()
+    await held
+    await saving
+    expect(await token(target)).toBe('at-late')
+  })
+
   it('goes when the resource config goes', async () => {
     const target = await setup()
     await connect(target)
@@ -250,7 +296,7 @@ describe('refreshing', () => {
     // The new token is stored: the next query uses it without calling the provider.
     expect(await token(target)).toBe(fresh)
     expect(refreshRequests).toBe(1)
-    const status = await connectionStatus(db, target.resourceConfigId, null, consentHash(target.auth))
+    const status = await connectionStatus(db, target.resourceConfigId, null, target.consent)
     expect(status).toMatchObject({ status: 'active', account: 'ada@optiply.nl', scope: 'read' })
     expect(status.connected && status.refreshedAt).toBeInstanceOf(Date)
 
@@ -265,9 +311,17 @@ describe('refreshing', () => {
     const target = await setup()
     await connect(target)
     await expire(target)
-    refreshDelayMs = 200
+    refreshDelayMs = 400
     // Separate sources, as on separate workers; each would spend the same refresh token.
-    const tokens = await Promise.all(Array.from({ length: 5 }, () => token(target)))
+    const pending = Promise.all(Array.from({ length: 5 }, () => token(target)))
+    // While one refreshes, the others wait without holding a connection (or a lock request) in the database.
+    await new Promise((r) => setTimeout(r, 200))
+    const [locks] = await db.execute<{ waiting: number; held: number }>(
+      sql`select count(*) filter (where not granted)::int as waiting, count(*) filter (where granted)::int as held
+          from pg_locks where locktype = 'advisory'`,
+    )
+    expect(locks).toEqual({ waiting: 0, held: 1 })
+    const tokens = await pending
     expect(new Set(tokens).size).toBe(1)
     expect(refreshRequests).toBe(1)
     const [row] = await db
@@ -310,12 +364,10 @@ describe('refreshing', () => {
       details: { reason: 'invalid_grant', account: 'shared' },
     })
     expect(refreshRequests).toBe(1)
-    expect(await connectionStatus(db, target.resourceConfigId, null, consentHash(target.auth))).toMatchObject(
-      {
-        status: 'reconnect',
-        reason: 'invalid_grant',
-      },
-    )
+    expect(await connectionStatus(db, target.resourceConfigId, null, target.consent)).toMatchObject({
+      status: 'reconnect',
+      reason: 'invalid_grant',
+    })
     const audit = await db.select().from(auditEvents).where(eq(auditEvents.objectId, target.resourceId))
     expect(audit).toEqual([
       expect.objectContaining({
@@ -377,8 +429,8 @@ describe('consent', () => {
       { authorizeParams: [{ key: 'prompt', value: 'consent' }] },
     ]
     for (const change of changes) {
-      const changed = { ...target, auth: auth(change) }
-      expect(consentHash(changed.auth)).not.toBe(consentHash(target.auth))
+      const changed = { ...target, auth: auth(change), consent: consentOf(auth(change)) }
+      expect(changed.consent).not.toBe(target.consent)
       expect(await failure(token(changed))).toMatchObject({
         code: 'auth_required',
         details: { reason: 'settings_changed' },
@@ -386,9 +438,9 @@ describe('consent', () => {
     }
     // Same consent: whitespace around scopes, the order of parameters, PKCE, the client secret.
     const same = auth({ scope: ' read ', pkce: false, clientAuth: 'basic' })
-    expect(consentHash(same)).toBe(consentHash(target.auth))
+    expect(consentOf(same)).toBe(target.consent)
     expect(
-      consentHash(
+      consentOf(
         auth({
           authorizeParams: [
             { key: 'b', value: '2' },
@@ -398,7 +450,7 @@ describe('consent', () => {
         }),
       ),
     ).toBe(
-      consentHash(
+      consentOf(
         auth({
           authorizeParams: [
             { key: 'a', value: '1' },
@@ -407,7 +459,9 @@ describe('consent', () => {
         }),
       ),
     )
-    expect(await token({ ...target, auth: same, clientSecret: 'rotated' })).toBe('at-0')
+    expect(await token({ ...target, auth: same, consent: consentOf(same), clientSecret: 'rotated' })).toBe(
+      'at-0',
+    )
   })
 })
 

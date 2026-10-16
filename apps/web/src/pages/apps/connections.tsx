@@ -17,6 +17,7 @@ export function NeededConnections() {
           compact
           need={c.need}
           message={`${c.queries.length === 1 ? 'Query' : 'Queries'} ${c.queries.join(', ')}: ${c.message}`}
+          appId={host.appId}
           onConnected={() => host.accountConnected(c.need.resourceId)}
         />
       ))}
