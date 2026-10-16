@@ -633,6 +633,33 @@ describe('pages', () => {
     expect(t.state['opened.data']).toBe('3')
   })
 
+  it('a query waiting to run when its page closes runs when the page opens again, not meanwhile', async () => {
+    const t = setup(twoPages, { delay: 20 })
+    await t.runtime.start()
+    const before = runs(t).length
+    t.runtime.set({ 'search.value': 'b' })
+    // Leaves the list page within the query's wait.
+    await t.runtime.navigate('detail', { id: '1' })
+    await wait(60)
+    expect(
+      runs(t)
+        .slice(before)
+        .filter((q) => q === 'customers'),
+    ).toEqual([])
+    await t.runtime.navigate('list')
+    await wait(60)
+    expect(runs(t).at(-1)).toBe('customers')
+    expect(t.calls.at(-1)!.values).toEqual({ ' search.value ': 'b' })
+  })
+
+  it('an app with its own entity named url (from before pages) keeps running when the page moves', async () => {
+    const t = setup({ components: [comp('url', 'textInput')] })
+    await t.runtime.start()
+    await expect(t.runtime.navigate('x', { a: '1' })).resolves.toBeUndefined()
+    t.runtime.set({ 'url.value': 'still mine' })
+    expect(t.state['url.value']).toBe('still mine')
+  })
+
   it('utils.openPage asks the page to go there, with parameters as strings', async () => {
     const t = setup({
       ...twoPages,

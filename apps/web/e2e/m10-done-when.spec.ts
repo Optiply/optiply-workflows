@@ -125,6 +125,13 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: groupName })
   await trpcMutate(page, 'groups.addMember', { groupId: group.id, userId: member.id })
 
+  // The admin makes an app folder.
+  await page.goto('/apps')
+  await page.getByRole('button', { name: 'New folder' }).click()
+  await page.getByLabel('Folder name').fill(folderName)
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(page.getByRole('region', { name: `Folder ${folderName}` })).toBeVisible()
+
   // The member isn't an admin: before the folder's grant, the app isn't theirs to see or open.
   const context = await browser.newContext()
   const viewer = await context.newPage()
@@ -143,14 +150,12 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   await viewer.goto('/apps')
   await expect(viewer.getByRole('heading', { name: 'Apps', exact: true })).toBeVisible()
   await expect(viewer.getByTestId(`app-${slug}`)).toHaveCount(0)
+  // Folders exist, but none they manage and nothing in them for them: the empty state, not a blank page.
+  await expect(viewer.getByText('No apps yet')).toBeVisible()
   await viewer.goto(`/apps/${slug}`)
   await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
 
-  // The admin makes a folder, moves the app into it, and grants the group Use on the folder.
-  await page.goto('/apps')
-  await page.getByRole('button', { name: 'New folder' }).click()
-  await page.getByLabel('Folder name').fill(folderName)
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  // The admin moves the app into the folder and grants the group Use on it.
   const folder = page.getByRole('region', { name: `Folder ${folderName}` })
   await page.getByLabel(`Folder of Items ${stamp}`).selectOption({ label: folderName })
   await expect(folder.getByTestId(`app-${slug}`)).toBeVisible()

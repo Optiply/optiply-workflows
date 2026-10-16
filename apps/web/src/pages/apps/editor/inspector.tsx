@@ -276,24 +276,37 @@ function ParsedField({
 }
 
 /** Which page something is on: one of the app's, or every page (null). */
-export function PageField({
+export function PageSelect({
   value,
   onChange,
+  className,
 }: {
   value: string | null
   onChange: (page: string | null) => void
+  className?: string
 }) {
   const pages = useAppEditor((s) => s.definition.pages) ?? []
   return (
+    <Select
+      aria-label="Page"
+      className={className}
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">Every page</option>
+      {pages.map((p) => (
+        <option key={p.name} value={p.name}>
+          {p.title ? `${p.title} (${p.name})` : p.name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+function PageField(props: { value: string | null; onChange: (page: string | null) => void }) {
+  return (
     <EditorField label="Page">
-      <Select aria-label="Page" value={value ?? ''} onChange={(e) => onChange(e.target.value || null)}>
-        <option value="">Every page</option>
-        {pages.map((p) => (
-          <option key={p.name} value={p.name}>
-            {p.title ? `${p.title} (${p.name})` : p.name}
-          </option>
-        ))}
-      </Select>
+      <PageSelect {...props} />
     </EditorField>
   )
 }

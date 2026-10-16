@@ -6,7 +6,7 @@ import {
   TemplateError,
   type TemplatePart,
 } from '@ow/expressions'
-import { coerceProp, type PropSpec } from './components'
+import { coerceProp, type PropSpec, pageSizeOf } from './components'
 import { type AppGraph, buildAppGraph, type Entity, type GraphNode } from './graph'
 import { resolvePage } from './pages'
 import type { AppDefinition } from './schema'
@@ -278,8 +278,7 @@ export class AppModel {
         }
         case 'pagination': {
           const page = this.values.get(`${node.entity}.page`)
-          const size = this.values.get(`${node.entity}.pageSize`)
-          const pageSize = typeof size === 'number' && size >= 1 ? Math.floor(size) : 50
+          const pageSize = pageSizeOf(this.values.get(`${node.entity}.pageSize`))
           const at = typeof page === 'number' && Number.isInteger(page) && page >= 0 ? page : 0
           return this.write(node.key, { page: at, pageSize, offset: at * pageSize })
         }

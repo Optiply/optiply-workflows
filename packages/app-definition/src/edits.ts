@@ -305,17 +305,7 @@ export function renamePage(def: AppDefinition, from: string, to: string): AppDef
   if (from === to || !def.pages?.some((p) => p.name === from) || pageNameReason(def, to, from)) return def
   const follow = <T extends { page?: string }>(item: T): T =>
     item.page === from ? { ...item, page: to } : item
-  const components = def.components.map((c) => {
-    const moved = follow(c)
-    const items = moved.type === 'navigation' ? moved.props?.items : undefined
-    if (!Array.isArray(items)) return moved
-    const relinked = items.map((item) =>
-      item && typeof item === 'object' && !Array.isArray(item) && item.page === from
-        ? { ...item, page: to }
-        : item,
-    )
-    return { ...moved, props: { ...moved.props, items: relinked } }
-  })
+  const components = relinkNavigation(def.components.map(follow), from, to)
   return {
     ...def,
     pages: def.pages.map((p) => (p.name === from ? { ...p, name: to } : p)),
@@ -325,7 +315,25 @@ export function renamePage(def: AppDefinition, from: string, to: string): AppDef
   }
 }
 
-/** Sets a page's title; empty shows its name. */
+/** Navigation links to page `from` point at `to` instead, or with `to` null are dropped. */
+function relinkNavigation(components: AppComponent[], from: string, to: string | null): AppComponent[] {
+  return components.map((c) => {
+    const items = c.type === 'navigation' ? c.props?.items : undefined
+    if (!Array.isArray(items)) return c
+    const links = (item: JsonValue) =>
+      !!item && typeof item === 'object' && !Array.isArray(item) && item.page === from
+    if (!items.some(links)) return c
+    const relinked = items.flatMap((item) =>
+      !links(item) ? [item] : to === null ? [] : [{ ...(item as Record<string, JsonValue>), page: to }],
+    )
+    return { ...c, props: { ...c.props, items: relinked } }
+  })
+}
+
+/**
+ * Sets a page's title, as typed (the panel sets it on each keystroke: trimming here would eat the space before the
+ * next word); blank shows its name.
+ */
 export function setPageTitle(def: AppDefinition, name: string, title: string): AppDefinition {
   if (!def.pages) return def
   return {
@@ -333,7 +341,7 @@ export function setPageTitle(def: AppDefinition, name: string, title: string): A
     pages: def.pages.map((p) => {
       if (p.name !== name) return p
       const { title: _old, ...rest } = p
-      return title.trim() ? { ...rest, title: title.trim().slice(0, 80) } : rest
+      return title.trim() ? { ...rest, title: title.slice(0, 80) } : rest
     }),
   }
 }
@@ -365,7 +373,12 @@ export function removePage(def: AppDefinition, page: string): AppDefinition {
   return {
     ...def,
     pages: def.pages.filter((p) => p.name !== page),
-    components: def.components.filter((c) => !gone.has(c.name)),
+    // Navigation links to it go too (they'd be errors).
+    components: relinkNavigation(
+      def.components.filter((c) => !gone.has(c.name)),
+      page,
+      null,
+    ),
     queries: def.queries.filter((q) => !gone.has(q.name)),
     ...(def.transformers && { transformers: def.transformers.filter((t) => !gone.has(t.name)) }),
     layout: Object.fromEntries(Object.entries(def.layout ?? {}).filter(([k]) => !gone.has(k))),

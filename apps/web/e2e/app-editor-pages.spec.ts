@@ -51,6 +51,9 @@ test('build a multipage app in the editor', async ({ page }) => {
   // Rename and title it.
   await pages.getByLabel('Page name').fill('detail')
   await pages.getByLabel('Page name').press('Enter')
+  // Typed key by key, spaces and all.
+  await pages.getByLabel('Page title').pressSequentially('Order details')
+  await expect(pages.getByLabel('Page title')).toHaveValue('Order details')
   await pages.getByLabel('Page title').fill('Details')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-current', 'page')
   await pages.getByLabel('Page name').fill('edit')

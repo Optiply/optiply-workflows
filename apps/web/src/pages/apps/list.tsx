@@ -51,7 +51,7 @@ export function AppsPage() {
       />
       {panel === 'app' && <NewAppForm onCancel={() => setPanel('none')} />}
       {panel === 'folder' && <NewFolderForm type="app" onDone={() => setPanel('none')} />}
-      {data.length === 0 && !folders?.folders.length ? (
+      {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<LayoutGrid className="size-6" />} title="No apps yet">
           Create one to start building. If you expected to see apps here, ask an admin for access.
         </EmptyState>

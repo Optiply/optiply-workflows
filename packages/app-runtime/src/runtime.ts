@@ -99,6 +99,8 @@ export class AppRuntime {
   navigate(page: string | null, params: Record<string, string> = {}): Promise<void> {
     const before = this.page
     const next = resolvePage(this.definition, page)
+    // An app from before pages may have an entity of its own named `url` (invalid now, but still running).
+    if (this.model.graph.entities.get('url')?.kind !== 'url') return Promise.resolve()
     this.apply({ 'url.page': next, 'url.params': { ...params } })
     if (next === before || next === null) return Promise.resolve()
     const opening = this.definition.queries.filter((q) => this.pages.get(q.name) === next)
@@ -344,7 +346,9 @@ export class AppRuntime {
       name,
       setTimeout(() => {
         this.autoTimers.delete(name)
-        void this.runQuiet(name)
+        // Its page closed while it waited: it runs when the page opens again.
+        if (!this.active(name)) this.stale.add(name)
+        else void this.runQuiet(name)
       }, this.autoRunDelayMs),
     )
   }

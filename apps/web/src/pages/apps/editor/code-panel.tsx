@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/react'
 import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValuePreview } from './fields'
 import { HandlersEditor } from './handlers'
+import { PageSelect } from './inspector'
 import { type PanelTab, useAppEditor } from './store'
 
 /** The bottom panel: queries, transformers and variables; the app's state; problems; the console. */
@@ -740,18 +741,10 @@ function CodePage({ name, page }: { name: string; page?: string }) {
   const update = useAppEditor((s) => s.update)
   if (!pages?.length) return null
   return (
-    <Select
-      aria-label="Page"
+    <PageSelect
       className="w-40"
-      value={page ?? ''}
-      onChange={(e) => update((def) => setEntityPage(def, name, e.target.value || null))}
-    >
-      <option value="">Every page</option>
-      {pages.map((p) => (
-        <option key={p.name} value={p.name}>
-          {p.title ? `${p.title} (${p.name})` : p.name}
-        </option>
-      ))}
-    </Select>
+      value={page ?? null}
+      onChange={(to) => update((def) => setEntityPage(def, name, to))}
+    />
   )
 }

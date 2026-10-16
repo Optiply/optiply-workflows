@@ -3,6 +3,8 @@
  * the changeset an editable table collects, and turning typed text into values.
  */
 
+import { pageSizeOf } from '@ow/app-definition'
+
 export type ColumnType = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'json'
 
 export interface TableColumn {
@@ -221,7 +223,8 @@ export function tableView(opts: {
   searchText: string
   totalRowCount: number | null
 }): TableView {
-  const size = Math.max(1, Math.floor(opts.pageSize) || 50)
+  // The same as the table's `pagination` (AppModel), so the rows shown and the query's page always agree.
+  const size = pageSizeOf(opts.pageSize)
   const asked = Number.isInteger(opts.page) && opts.page > 0 ? opts.page : 0
   if (opts.paging === 'server') {
     const total = opts.totalRowCount !== null && opts.totalRowCount >= 0 ? opts.totalRowCount : null

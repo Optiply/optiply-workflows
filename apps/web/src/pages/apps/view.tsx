@@ -107,12 +107,18 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
     return { page: p, params }
   }, [urlKey])
   const env = typeof search.env === 'string' ? search.env : undefined
-  /** Where `page` with `params` lives, in the environment shown. */
-  const pageLocation = (to: string, params: Record<string, string>) => ({
-    to: '/apps/$slug/{-$page}' as const,
-    params: { slug: app.slug, page: to },
-    search: { ...params, ...(env && { env }) },
-  })
+  /**
+   * Where `page` with `params` lives, in the environment shown. `env` is the platform's (`appParams` leaves it out
+   * on the way in): an app's own `env` param can't switch the viewer's environment.
+   */
+  const pageLocation = (to: string, params: Record<string, string>) => {
+    const { env: _theirs, ...own } = params
+    return {
+      to: '/apps/$slug/{-$page}' as const,
+      params: { slug: app.slug, page: to },
+      search: { ...own, ...(env && { env }) },
+    }
+  }
   const { notices, notify, dismiss } = useNotifications()
   const { confirm, dialog: confirmation } = useConfirmations()
   const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {

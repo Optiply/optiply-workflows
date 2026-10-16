@@ -77,7 +77,7 @@ export function ResourcesPage() {
         </Card>
       )}
 
-      {data.resources.length === 0 && !folders?.folders.length ? (
+      {data.resources.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Plug className="size-6" />} title="No resources yet">
           {data.canCreate
             ? 'Add a database (Postgres, MySQL or BigQuery) or a REST API to query it from workflows.'

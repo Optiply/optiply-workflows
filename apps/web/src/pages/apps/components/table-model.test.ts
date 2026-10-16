@@ -153,6 +153,13 @@ describe('table view', () => {
     expect(v.rows.map((r) => r.index)).toEqual([0, 1])
   })
 
+  it('an odd page size means 50 rows, as for the pagination the query reads', () => {
+    for (const pageSize of [-5, 0, 0.5, Number.NaN]) {
+      expect(view({ paging: 'pages', pageSize })).toMatchObject({ pageCount: 1, total: 23 })
+    }
+    expect(view({ paging: 'server', pageSize: -5, totalRowCount: 120 }).pageCount).toBe(3)
+  })
+
   it('server paging shows the data as it came', () => {
     const server = view({ paging: 'server', page: 4, searchText: 'nobody', sort: { key: 'id', desc: true } })
     expect(ids(server)).toEqual(people.map((p) => p.id))

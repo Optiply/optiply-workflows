@@ -59,7 +59,7 @@ export function WorkflowsPage() {
       />
       {panel === 'workflow' && <NewWorkflowForm onCancel={() => setPanel('none')} />}
       {panel === 'folder' && <NewFolderForm type="workflow" onDone={() => setPanel('none')} />}
-      {data.length === 0 && !folders?.folders.length ? (
+      {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Workflow className="size-6" />} title="No workflows yet">
           Create one to start building. If you expected to see workflows here, ask an admin for access.
         </EmptyState>

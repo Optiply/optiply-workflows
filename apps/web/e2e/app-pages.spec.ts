@@ -40,7 +40,7 @@ test('pages: URLs with parameters, Back and Forward, page-scoped queries', async
             event: 'rowSelect',
             action: {
               type: 'runScript',
-              code: "utils.openPage('detail', { params: { id: people.selectedRow.id } })",
+              code: "utils.openPage('detail', { params: { id: people.selectedRow.id, env: 'staging' } })",
             },
           },
         ],
@@ -85,7 +85,7 @@ test('pages: URLs with parameters, Back and Forward, page-scoped queries', async
   expect(ran('person')).toHaveLength(0)
   await page.getByRole('textbox', { name: 'Note' }).fill('kept')
 
-  // A row opens the detail page with its id in the URL.
+  // A row opens the detail page with its id in the URL (the app's own `env` param can't switch the environment).
   await page.getByRole('grid', { name: 'people' }).getByRole('gridcell', { name: 'person 3' }).click()
   await expect(page).toHaveURL(new RegExp(`/apps/${slug}/detail\\?id=3$`))
   await expect(page.locator('[data-component="who"]')).toContainText('Showing person 3')

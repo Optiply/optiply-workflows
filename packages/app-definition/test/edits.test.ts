@@ -163,10 +163,13 @@ describe('page edits', () => {
 
   it('titles and order', () => {
     const two = addPage(single).definition
-    expect(setPageTitle(two, 'page1', '  Customers ').pages![0]).toEqual({
+    // As typed: the panel sets it on each keystroke, so a trailing space must survive until the next word.
+    expect(setPageTitle(two, 'page1', 'Order ').pages![0]).toEqual({ name: 'page1', title: 'Order ' })
+    expect(setPageTitle(two, 'page1', 'Order details').pages![0]).toEqual({
       name: 'page1',
-      title: 'Customers',
+      title: 'Order details',
     })
+    expect(setPageTitle(two, 'page1', '   ').pages![0]).toEqual({ name: 'page1' })
     expect(setPageTitle(setPageTitle(two, 'page1', 'X'), 'page1', '').pages![0]).toEqual({ name: 'page1' })
     expect(movePage(two, 'page2', -1).pages!.map((p) => p.name)).toEqual(['page2', 'page1'])
     expect(movePage(two, 'page2', 1)).toBe(two)
@@ -183,6 +186,14 @@ describe('page edits', () => {
     expect(left.variables).toEqual([{ name: 'v1' }])
     expect(left.layout).toEqual({})
     expect(removePage(left, 'page2')).toBe(left)
+    // Navigation links to a deleted page go with it (they'd block publishing).
+    const nav = addComponent(addPage(two).definition, 'navigation').definition
+    const linked = setProp(nav, 'navigation1', 'items', [{ page: 'page1' }, { page: 'page2', label: 'Two' }])
+    const without = removePage(linked, 'page2')
+    expect(without.components.find((c) => c.name === 'navigation1')!.props!.items).toEqual([
+      { page: 'page1' },
+    ])
+    expect(validateApp(without).diagnostics.filter((d) => d.code === 'unknown_page')).toEqual([])
   })
 
   it('new things go on the page given; moves follow the page', () => {

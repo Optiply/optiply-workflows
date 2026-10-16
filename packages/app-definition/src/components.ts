@@ -318,6 +318,11 @@ export const COMPONENTS: Readonly<Record<string, ComponentSpec>> = Object.fromEn
   ]),
 )
 
+/** A table's page size as the table and its `pagination` both use it: a whole number of rows, 50 when it isn't one. */
+export function pageSizeOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 1 ? Math.floor(value) : 50
+}
+
 export function componentSpec(type: string): ComponentSpec | undefined {
   return Object.hasOwn(COMPONENTS, type) ? COMPONENTS[type] : undefined
 }

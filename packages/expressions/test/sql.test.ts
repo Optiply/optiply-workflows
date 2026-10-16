@@ -246,21 +246,26 @@ describe('sql.column and sql.direction', () => {
     expect(fragmentText(spec, 'name')).toBe('"name"')
     expect(fragmentText(spec, 'p.price')).toBe('"p"."price"')
     expect(fragmentText(spec, 'p.price', 'mysql')).toBe('`p`.`price`')
-    for (const empty of [null, undefined, '']) expect(fragmentText(spec, empty)).toBe('"id"')
-    for (const bad of [
-      'id',
-      'NAME',
-      'name; drop table products',
-      '"name"',
-      'name"--',
-      ['name'],
-      { name: 1 },
-      1,
-    ]) {
+    for (const empty of [null, undefined, '', 'id']) expect(fragmentText(spec, empty)).toBe('"id"')
+    for (const bad of ['NAME', 'name; drop table products', '"name"', 'name"--', ['name'], { name: 1 }, 1]) {
       expect(() => fragmentText(spec, bad)).toThrow(SqlFragmentError)
     }
     // Without a fallback, an empty value is refused too.
     expect(() => fragmentText(sqlFragment("sql.column(v, ['a'])")!, null)).toThrow(/expected one of "a"/)
+  })
+
+  it("take the fallback as the helper sends it (the README's example: a fallback not among the columns)", () => {
+    const spec = sqlFragment("sql.column(table1.sort?.column, ['name', 'price'], 'id')")!
+    expect(fragmentText(spec, 'id')).toBe('"id"')
+    expect(fragmentText(spec, 'price')).toBe('"price"')
+    expect(() => fragmentText(spec, 'owner')).toThrow('expected one of "name", "price", "id"')
+  })
+
+  it('stay apart from a {{ }} or another fragment right after them', () => {
+    const glued = compileSql("order by {{ sql.column(c, ['a']) }}{{ sql.direction(d) }}{{ x }}")
+    expect(withFragments(glued, ['"a"', 'DESC']).text).toBe('order by "a" DESC $1')
+    const quoted = compileSql(`select {{ sql.column(c, ['a']) }}"b" from t`)
+    expect(withFragments(quoted, ['"a"']).text).toBe('select "a" "b" from t')
   })
 
   it('directions', () => {

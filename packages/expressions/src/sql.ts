@@ -48,6 +48,7 @@ export interface CompiledSql {
 }
 
 const IDENT = /[A-Za-z0-9_$\u0080-￿]/
+const AFTER_FRAGMENT = /[A-Za-z0-9_$\u0080-￿{"'`]/
 const HINT = 'Write the value as {{ expression }}; it becomes a bind parameter automatically.'
 
 /**
@@ -89,7 +90,8 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
         // Keep it a separate token too: `order by{{ … }}` must not become `order by"name"` glued to a keyword.
         if (out.length && IDENT.test(out.at(-1)!)) out += ' '
         fragments.push({ code, spec, start: i, end: end + 2, at: out.length })
-        if (IDENT.test(src[end + 2] ?? '')) out += ' '
+        // Its text goes in later: whatever follows straight away (a word, a quote, another {{ }}) needs the space now.
+        if (AFTER_FRAGMENT.test(src[end + 2] ?? '')) out += ' '
         i = end + 2
         continue
       }
@@ -295,12 +297,14 @@ export function fragmentText(
     )
   }
   let column: string
-  if (typeof value === 'string' && spec.columns.includes(value)) column = value
+  // The helper itself answers with the fallback when nothing is sorted; an empty value means the same.
+  if (typeof value === 'string' && (spec.columns.includes(value) || value === spec.fallback)) column = value
   else if ((value === null || value === undefined || value === '') && spec.fallback !== undefined)
     column = spec.fallback
   else {
+    const allowed = [...new Set([...spec.columns, ...(spec.fallback === undefined ? [] : [spec.fallback])])]
     throw new SqlFragmentError(
-      `sql.column got ${describe(value)}: expected one of ${spec.columns.map((c) => JSON.stringify(c)).join(', ')}`,
+      `sql.column got ${describe(value)}: expected one of ${allowed.map((c) => JSON.stringify(c)).join(', ')}`,
     )
   }
   const quote = dialect === 'postgres' ? '"' : '`'
