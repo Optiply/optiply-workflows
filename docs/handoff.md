@@ -6,9 +6,9 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
 
 | | |
 |---|---|
-| **Branch** | `feat/m9-oauth` (7 steps, plus a handoff fix on top of `main`) |
-| **PR** | [#10 M9: OAuth authorization code and custom auth flows](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10), **draft, not merged**: review it first (as for PRs #8 and #9); CI green on every step |
-| **`main`** | `fe0c65d` (M8 merged as `35150aa` plus its handoff). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `fix/m9-review` (the PR #10 review fixes). M9 was built on `feat/m9-oauth` (7 steps) |
+| **PR** | [#10 M9](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10) **merged** as `ec3dba2` before its review fixes were committed; they are [#11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/11), **open**: merge it (with a merge commit) before anything else |
+| **`main`** | `ec3dba2`, the merge of PR #10 (M9 without the review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -28,10 +28,10 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
-| **M9 OAuth** | ✅ Built on `feat/m9-oauth` (§9c), draft PR #10, **not reviewed or merged yet**. The done-when proven in Playwright and on Docker Compose. |
-| M10 | ⏭️ After merging M9: plan it with the user (§14) |
+| **M9 OAuth** | ✅ On `main` (§9c), merged as PR #10; **its review fixes are PR #11** (10 fixes, one of them security: tokens could be sent to another host), to merge. The done-when proven in Playwright and on Docker Compose. |
+| M10 | ⏭️ After merging PR #11: plan it with the user (§14) |
 
-**Start the next session with:** reviewing PR #10 (the `code-review` skill at high effort, verify each finding, fix them in one commit, as for PRs #8 and #9), then merging it with a merge commit and planning M10 (§14).
+**Start the next session with:** merging PR #11 if it isn't yet (CI green), rebuilding the Compose stack with it (check with the user first), then planning M10 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -695,9 +695,9 @@ Bundles: main 425 kB (414 before M9).
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: review and merge M9, then M10
+## 14. Next step: merge PR #11, then M10
 
-First review PR #10 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
+First merge PR #11 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
 - **Python executor** (nsjail) for code blocks.
 - **SQS/Kafka triggers** for workflows.
 - **Git sync** (canonical JSON already exists for workflows and apps).
@@ -710,7 +710,7 @@ Also open from M8, if the user prefers to finish apps first: the sandbox off the
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m9-oauth && git pull            # M9 (PR #10) is in review; after merging: git switch main && git pull
+git switch main && git pull                      # after merging PR #11 (M9's review fixes)
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
