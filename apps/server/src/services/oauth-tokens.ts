@@ -5,12 +5,14 @@ import {
   type CredentialSource,
   OAuthGrantError,
   refreshAccessToken,
+  restConnector,
   type TokenSet,
 } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
 import { and, eq, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
+import type { z } from 'zod'
 import { recordAudit } from '../audit'
 import { decryptForRow, encryptForRow } from './secrets'
 
@@ -23,10 +25,13 @@ interface StoredTokens {
 /** Access tokens this close to expiring are refreshed before use, so they don't expire mid-request. */
 const EXPIRY_MARGIN_MS = 60_000
 
-/** The authorization-code settings of a REST resource config, or null when it uses another kind of auth. */
-export function authorizationCode(config: unknown): AuthorizationCodeSettings | null {
-  const auth = (config as { auth?: { type?: string } } | null)?.auth
-  return auth?.type === 'oauth2AuthorizationCode' ? (auth as AuthorizationCodeSettings) : null
+type RestAuth = z.output<typeof restConnector.configSchema>['auth']
+export type AuthorizationCodeAuth = Extract<RestAuth, { type: 'oauth2AuthorizationCode' }>
+
+/** The authorization-code settings of a REST resource config (defaults applied), or null for any other config. */
+export function authorizationCode(config: unknown): AuthorizationCodeAuth | null {
+  const parsed = restConnector.configSchema.safeParse(config)
+  return parsed.success && parsed.data.auth.type === 'oauth2AuthorizationCode' ? parsed.data.auth : null
 }
 
 /**

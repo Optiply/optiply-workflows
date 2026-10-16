@@ -1,11 +1,31 @@
 import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
-import { type Db, environments, permissions, type Resource, resourceConfigs, resources } from '@ow/db'
+import {
+  type Db,
+  environments,
+  oauthTokens,
+  permissions,
+  type Resource,
+  resourceConfigs,
+  resources,
+} from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq, sql } from 'drizzle-orm'
+import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
-import { authorizationCode, consentHash, deleteTokens } from '../../services/oauth-tokens'
-import { type Access, loadAccess, requireLevel } from '../../services/permissions'
+import {
+  type AccountKind,
+  connectTarget,
+  OAuthConnectError,
+  oauthRedirectUri,
+} from '../../services/oauth-connect'
+import {
+  authorizationCode,
+  type ConnectionStatus,
+  connectionStatus,
+  consentHash,
+  deleteTokens,
+} from '../../services/oauth-tokens'
+import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
   applySecretPatch,
@@ -86,6 +106,22 @@ function assertNotBuiltIn(resource: Resource) {
       code: 'FORBIDDEN',
       message: 'This is a built-in resource: the platform manages its settings',
     })
+  }
+}
+
+/** The connect checks (shared with the OAuth routes) as tRPC errors. */
+async function oauthTarget(
+  ctx: AuthedContext,
+  input: { resourceId: string; environmentId: string; account: AccountKind },
+) {
+  try {
+    return await connectTarget(ctx.db, ctx.config.keyring, ctx.user, input)
+  } catch (err) {
+    if (!(err instanceof OAuthConnectError)) throw err
+    const code = ({ 400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND' } as const)[
+      err.status
+    ]
+    throw new TRPCError({ code, message: err.message })
   }
 }
 
@@ -355,6 +391,76 @@ export const resourcesRouter = router({
       return result.ok
         ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
         : { ok: false as const, error: errorView(result.error) }
+    }),
+
+  /**
+   * OAuth connections of a REST resource, per environment the user can see: the shared account (with whether the
+   * user may connect it) or, on per-user resources, the user's own; never tokens. Also the redirect URI to
+   * register with the provider.
+   */
+  oauthConnections: authedProcedure.input(z.object({ resourceId: Id })).query(async ({ ctx, input }) => {
+    const { access, resource, envIds } = await visibleResource(ctx, input.resourceId)
+    const environments: {
+      environmentId: string
+      /** Null when the resource doesn't use the authorization code in this environment. */
+      tokens: 'shared' | 'perUser' | null
+      connection: ConnectionStatus | null
+      canConnect: boolean
+      /** Per-user resources, for people with Edit: how many people have connected. */
+      connectedPeople: number | null
+    }[] = []
+    for (const environmentId of envIds) {
+      const level = access.level(resource, environmentId)
+      if (!level) continue
+      const row = await getConfigRow(ctx.db, resource.id, environmentId)
+      const auth = row && authorizationCode(row.config)
+      if (!row || !auth) {
+        environments.push({
+          environmentId,
+          tokens: null,
+          connection: null,
+          canConnect: false,
+          connectedPeople: null,
+        })
+        continue
+      }
+      const shared = auth.tokens === 'shared'
+      const consent = consentHash(auth)
+      let connectedPeople: number | null = null
+      if (!shared && atLeast(level, 'edit')) {
+        const [counted] = await ctx.db
+          .select({ n: count() })
+          .from(oauthTokens)
+          .where(and(eq(oauthTokens.resourceConfigId, row.id), isNotNull(oauthTokens.userId)))
+        connectedPeople = counted?.n ?? 0
+      }
+      environments.push({
+        environmentId,
+        tokens: shared ? 'shared' : 'perUser',
+        connection: await connectionStatus(ctx.db, row.id, shared ? null : ctx.user.id, consent),
+        canConnect: shared ? atLeast(level, 'edit') : true,
+        connectedPeople,
+      })
+    }
+    return { redirectUri: oauthRedirectUri(ctx.config), environments }
+  }),
+
+  /** Disconnects the shared account (Edit) or the user's own (Use). The provider isn't told (no revocation). */
+  oauthDisconnect: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, account: z.enum(['shared', 'mine']) }))
+    .mutation(async ({ ctx, input }) => {
+      const target = await oauthTarget(ctx, input)
+      const removed = await deleteTokens(ctx.db, target.config.id, target.userId)
+      if (removed) {
+        await ctx.audit({
+          action: 'resource.oauth_disconnected',
+          objectType: 'resource',
+          objectId: target.resource.id,
+          environmentId: input.environmentId,
+          metadata: { account: target.userId === null ? 'shared' : 'user' },
+        })
+      }
+      return { disconnected: removed > 0 }
     }),
 
   /**
