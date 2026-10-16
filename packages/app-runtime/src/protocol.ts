@@ -21,6 +21,8 @@ export type Effect =
   | { type: 'openUrl'; url: string; newTab: boolean }
   | { type: 'copy'; text: string }
   | { type: 'download'; data: string; fileName: string; mimeType: string }
+  /** `utils.openPage`: the page changes its URL, then tells the sandbox (`navigate`). */
+  | { type: 'openPage'; page: string; params: Record<string, string>; newTab: boolean }
 
 /** What changed in the app's state. */
 export interface StatePatch {
@@ -38,8 +40,14 @@ export interface RuntimeGlobals {
   appContext: { appSlug: string; environment: string; version: string | null }
 }
 
+/** The page shown and the query parameters of its URL (without the platform's own, like `env`). */
+export interface AppUrl {
+  page: string | null
+  params: Record<string, string>
+}
+
 export type HostMessage =
-  | { type: 'start'; definition: AppDefinition; globals: RuntimeGlobals }
+  | { type: 'start'; definition: AppDefinition; globals: RuntimeGlobals; url: AppUrl }
   /** The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). */
   | { type: 'update'; definition: AppDefinition }
   /**
@@ -57,6 +65,8 @@ export type HostMessage =
   | { type: 'confirmResult'; id: number; ok: boolean }
   /** Asks whether the sandbox is still responding (the host's watchdog); answered with `pong`. */
   | { type: 'ping'; id: number }
+  /** The page's URL changed (a link, `utils.openPage`, Back): show that page with those parameters. */
+  | { type: 'navigate'; url: AppUrl }
 
 export type SandboxMessage =
   /** The sandbox's script loaded; the host may send `start`. */

@@ -154,6 +154,8 @@ Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft liv
 
   Changing the sort or the search goes back to the first page; `pageChange`, `sortChange` and `searchChange` fire, and `table1.setPage(n)`, `setSort(column, desc)` and `setSearchText(text)` do the same from code.
 
+- **Pages**: an app can have pages, at `/apps/<slug>/<page>` (the first page at `/apps/<slug>`). Components, queries and transformers belong to a page or to every page (global: shown above each page, run on all of them); a page's code reads what's global and what's on that page. An automatic query on a page runs only while that page is open (once it opens, if its values changed meanwhile), and run-on-load queries run each time their page opens. `utils.openPage('detail', { params: { id: 42 } })` opens a page, and `url.page` and `url.params` (here `{ id: '42' }`, always strings; `env` is the platform's) say where the app is. Back and Forward work, and moving between pages keeps the app's state. The editor's pages panel comes with M10 step 4.
+
 **Publish** releases the draft as a semver version; people with Use on the app open the live release at `/apps/<slug>` and pick the environment. **Releases** rolls back, **Access** (owners) grants groups Use, Edit or Own.
 
 How it's kept safe:

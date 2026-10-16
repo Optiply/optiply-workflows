@@ -49,6 +49,10 @@ export function useAppHost(key: string, options: AppHostOptions) {
       ...current,
       notify: (...args) => optionsRef.current.notify(...args),
       confirm: (message) => optionsRef.current.confirm(message),
+      ...(current.openPage && {
+        openPage: (...args: Parameters<NonNullable<AppHostOptions['openPage']>>) =>
+          optionsRef.current.openPage?.(...args),
+      }),
       beforeQuery: () => optionsRef.current.beforeQuery?.() ?? Promise.resolve(),
     })
     next.mount(ref.current!)

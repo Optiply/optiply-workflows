@@ -6,7 +6,9 @@ import {
   type CodeRunner,
   type Entity,
   type EventHandler,
+  entityPages,
   formInputs,
+  resolvePage,
   sameValue,
 } from '@ow/app-definition'
 import type { Effect, LogLevel, QueryOutcome, StatePatch } from './protocol'
@@ -35,6 +37,8 @@ export interface AppRuntimeOptions {
   runner?: CodeRunner
   /** How long an automatic query waits for more changes before it runs. Default 100 ms (typing runs it once). */
   autoRunDelayMs?: number
+  /** The page the app opens on (its first when missing or unknown) and the URL's query parameters. */
+  url?: { page?: string | null; params?: Record<string, string> }
 }
 
 /** A query failure, marked once the user has been told so callers up the chain don't tell them again. */
@@ -53,6 +57,10 @@ export class AppRuntime {
   private readonly methodCache = new Map<string, Record<string, unknown>>()
   private readonly notified = new WeakSet<object>()
   private readonly autoRunDelayMs: number
+  /** Each query's page; null for global ones. */
+  private readonly pages: Map<string, string | null>
+  /** Automatic queries on another page whose values changed meanwhile: they run when their page opens. */
+  private readonly stale = new Set<string>()
   private lastErrors = '{}'
   private stopped = false
 
@@ -62,12 +70,49 @@ export class AppRuntime {
     options: AppRuntimeOptions = {},
   ) {
     this.queries = new Map(definition.queries.map((q) => [q.name, q]))
+    this.pages = entityPages(definition)
     this.autoRunDelayMs = options.autoRunDelayMs ?? 100
     this.model = new AppModel(definition, {
       ...(options.runner && { runner: options.runner }),
       globals: { ...options.globals, utils: this.utils() },
       methods: (entity) => this.methodsFor(entity),
+      ...(options.url && { url: options.url }),
     })
+  }
+
+  /** The page shown; null in an app without pages. */
+  get page(): string | null {
+    return (this.model.get('url.page') as string | null | undefined) ?? null
+  }
+
+  /** Whether a query belongs to every page or to the one shown (only those run on their own). */
+  private active(name: string): boolean {
+    const page = this.pages.get(name) ?? null
+    return page === null || page === this.page
+  }
+
+  /**
+   * Shows another page, or the same one with other parameters (the page's URL changed: a link, Back, Forward).
+   * Code reading `url` re-evaluates; on a page just opened, its automatic queries run if they never did or their
+   * values changed while it was closed, and its run-on-load queries run.
+   */
+  navigate(page: string | null, params: Record<string, string> = {}): Promise<void> {
+    const before = this.page
+    const next = resolvePage(this.definition, page)
+    this.apply({ 'url.page': next, 'url.params': { ...params } })
+    if (next === before || next === null) return Promise.resolve()
+    const opening = this.definition.queries.filter((q) => this.pages.get(q.name) === next)
+    // An automatic query reading `url` was scheduled by the change itself.
+    const run = opening.filter(
+      (q) =>
+        q.runOnLoad ||
+        (q.kind === 'resource' &&
+          q.run === 'auto' &&
+          !this.autoTimers.has(q.name) &&
+          (this.stale.has(q.name) || !this.runs.has(q.name))),
+    )
+    for (const q of opening) this.stale.delete(q.name)
+    return Promise.allSettled(run.map((q) => this.runQuiet(q.name))).then(() => {})
   }
 
   /**
@@ -92,6 +137,7 @@ export class AppRuntime {
     const onLoad = this.definition.queries.filter(
       (q) =>
         ((q.kind === 'resource' && q.run === 'auto') || q.runOnLoad) &&
+        this.active(q.name) &&
         (!previous || this.mustRerun(q, previous)),
     )
     await Promise.allSettled(onLoad.map((q) => this.runQuiet(q.name)))
@@ -289,6 +335,10 @@ export class AppRuntime {
   }
 
   private scheduleAuto(name: string) {
+    if (!this.active(name)) {
+      this.stale.add(name)
+      return
+    }
     clearTimeout(this.autoTimers.get(name))
     this.autoTimers.set(
       name,
@@ -505,6 +555,27 @@ export class AppRuntime {
         }),
       openUrl: (url: unknown, options: { newTab?: boolean } = {}) =>
         this.bridge.effect({ type: 'openUrl', url: String(url), newTab: options.newTab ?? false }),
+      /**
+       * Opens one of the app's pages, with query parameters (`{ id: 42 }` becomes `?id=42`, read back as
+       * `url.params.id`, a string). The page changes once the page's URL has (see `navigate`).
+       */
+      openPage: (page: unknown, options: { params?: Record<string, unknown>; newTab?: boolean } = {}) => {
+        const name = String(page)
+        if (!this.definition.pages?.some((p) => p.name === name)) {
+          const known = (this.definition.pages ?? []).map((p) => p.name)
+          throw new Error(
+            known.length
+              ? `No page is named "${name}"; the pages are ${known.join(', ')}`
+              : 'This app has no pages',
+          )
+        }
+        const params: Record<string, string> = {}
+        for (const [key, value] of Object.entries(options.params ?? {})) {
+          if (value === null || value === undefined) continue
+          params[key] = typeof value === 'object' ? JSON.stringify(value) : String(value)
+        }
+        this.bridge.effect({ type: 'openPage', page: name, params, newTab: options.newTab === true })
+      },
       copyToClipboard: (text: unknown) =>
         this.bridge.effect({ type: 'copy', text: typeof text === 'string' ? text : JSON.stringify(text) }),
       /**

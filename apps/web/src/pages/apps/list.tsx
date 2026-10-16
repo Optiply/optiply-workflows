@@ -72,7 +72,11 @@ function AppRow({ app }: { app: AppSummary }) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-canvas" data-testid={`app-${app.slug}`}>
       {app.liveReleaseId ? (
-        <Link to="/apps/$slug" params={{ slug: app.slug }} className="flex min-w-0 flex-1 items-center gap-3">
+        <Link
+          to="/apps/$slug/{-$page}"
+          params={{ slug: app.slug }}
+          className="flex min-w-0 flex-1 items-center gap-3"
+        >
           {body}
         </Link>
       ) : canEdit ? (

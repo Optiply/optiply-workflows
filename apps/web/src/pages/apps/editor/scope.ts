@@ -30,6 +30,8 @@ declare const utils: {
   notify(message: any, tone?: 'info' | 'success' | 'error'): void
   /** Opens an http(s) or mailto link. */
   openUrl(url: string, options?: { newTab?: boolean }): void
+  /** Opens one of the app's pages; params become its URL's query string (read back as url.params, strings). */
+  openPage(page: string, options?: { params?: Record<string, any>; newTab?: boolean }): void
   copyToClipboard(text: any): void
   /** Saves data as a file: a string as-is, an array of objects as CSV for a .csv name, JSON otherwise. */
   downloadFile(data: any, fileName?: string): void

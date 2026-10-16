@@ -114,7 +114,7 @@ describe('pages', () => {
 
   it("pages must exist and be unique; components in containers take their container's", () => {
     const def = app({
-      pages: [{ name: 'a' }, { name: 'a' }],
+      pages: [{ name: 'a' }, { name: 'a' }, { name: 'edit' }],
       components: [
         comp('box', 'container', {}, { page: 'a' }),
         comp('inner', 'text', {}, { parent: 'box', page: 'b' }),
@@ -125,6 +125,7 @@ describe('pages', () => {
     })
     expect(problems(def)).toEqual([
       ['duplicate_page', 'pages.1.name', null],
+      ['invalid_page', 'pages.2.name', null],
       ['invalid_page', 'components.1.page', 'inner'],
       ['unknown_page', 'components.2.page', 'lost'],
       ['unknown_page', 'queries.0.page', 'q'],

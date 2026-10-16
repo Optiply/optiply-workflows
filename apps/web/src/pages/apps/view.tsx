@@ -1,21 +1,34 @@
 import type { AppDefinition } from '@ow/app-definition'
+import type { AppUrl } from '@ow/app-runtime'
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
+import { useEffect, useMemo } from 'react'
 import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
-import { AppHostProvider, useAppHost, useAppHostState } from './runtime/react'
+import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from './runtime/react'
 import { AppStopped } from './stopped'
 
-const route = getRouteApi('/app/apps/$slug')
 const appRoute = getRouteApi('/app')
 
-/** Someone using an app: its live release in the environment they pick (`?env=`, the default one otherwise). */
+/** The query string an app reads as `url.params`: all of it but the platform's own (`env`). */
+function appParams(search: Record<string, unknown>): Record<string, string> {
+  const params: Record<string, string> = {}
+  for (const [key, value] of Object.entries(search)) {
+    if (key !== 'env' && value !== undefined && value !== null) params[key] = String(value)
+  }
+  return params
+}
+
+/**
+ * Someone using an app: its live release in the environment they pick (`?env=`, the default one otherwise), on the
+ * page in the URL (`/apps/<slug>/<page>`, the first page without one).
+ */
 export function AppViewPage() {
-  const { slug } = route.useParams()
-  const search = route.useSearch()
+  const { slug } = useParams({ strict: false }) as { slug: string }
+  const search = useSearch({ strict: false }) as { env?: string }
   const trpc = useTRPC()
   // The live release is loaded once per visit: a publish or rollback meanwhile mustn't restart the app under
   // someone mid-task (and lose what they typed). The next query they run says a newer version is live (Reload).
@@ -85,6 +98,21 @@ interface RunningAppProps {
 function RunningApp({ app, release, environment, environments }: RunningAppProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
+  const router = useRouter()
+  const { page } = useParams({ strict: false }) as { page?: string }
+  const search = useSearch({ strict: false }) as Record<string, unknown>
+  const urlKey = JSON.stringify([page ?? null, appParams(search)])
+  const url = useMemo<AppUrl>(() => {
+    const [p, params] = JSON.parse(urlKey) as [string | null, Record<string, string>]
+    return { page: p, params }
+  }, [urlKey])
+  const env = typeof search.env === 'string' ? search.env : undefined
+  /** Where `page` with `params` lives, in the environment shown. */
+  const pageLocation = (to: string, params: Record<string, string>) => ({
+    to: '/apps/$slug/{-$page}' as const,
+    params: { slug: app.slug, page: to },
+    search: { ...params, ...(env && { env }) },
+  })
   const { notices, notify, dismiss } = useNotifications()
   const { confirm, dialog: confirmation } = useConfirmations()
   const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {
@@ -98,7 +126,18 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
     },
     notify,
     confirm,
+    url,
+    openPage: (to, params, newTab) => {
+      const location = pageLocation(to, params)
+      if (newTab) window.open(router.buildLocation(location).href, '_blank', 'noopener,noreferrer')
+      else void navigate(location)
+    },
   })
+
+  // A link, Back or Forward changed the URL: the app moves along (it keeps running).
+  useEffect(() => {
+    host?.navigate(url)
+  }, [host, url])
 
   return (
     <div className="flex h-full flex-col">
@@ -122,7 +161,11 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
             id="app-env"
             value={environment.slug}
             onChange={(e) =>
-              navigate({ to: '/apps/$slug', params: { slug: app.slug }, search: { env: e.target.value } })
+              navigate({
+                to: '/apps/$slug/{-$page}',
+                params: { slug: app.slug, page },
+                search: { ...url.params, env: e.target.value },
+              })
             }
           >
             {environments.map((e) => (
@@ -150,6 +193,8 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
 function AppBody({ definition }: { definition: AppDefinition }) {
   const status = useAppHostState((s) => s.status)
   const problem = useAppHostState((s) => s.problem)
+  // The page the app shows (resolved by the app: an unknown page in the URL shows its first).
+  const page = useAppValue<string | null>('url.page') ?? null
   if (status === 'failed') return <ErrorNote error={new Error(problem ?? 'The app could not start')} />
   if (status === 'loading') return <Spinner />
   return (
@@ -167,7 +212,7 @@ function AppBody({ definition }: { definition: AppDefinition }) {
       )}
       <AppStopped />
       <NeededConnections />
-      <AppCanvas definition={definition} />
+      <AppCanvas definition={definition} page={page} />
     </>
   )
 }

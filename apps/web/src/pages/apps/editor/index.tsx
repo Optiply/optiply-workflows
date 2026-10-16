@@ -1,3 +1,4 @@
+import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
@@ -8,7 +9,7 @@ import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
-import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
+import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from '../runtime/react'
 import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { CodePanel } from './code-panel'
@@ -223,7 +224,7 @@ function Editor({ app, environment, environments }: EditorProps) {
             )}
             <div className="flex min-w-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 overflow-y-auto bg-canvas px-6 py-4">
-                <Running>{preview ? <AppCanvas definition={definition} /> : <EditCanvas />}</Running>
+                <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
               </div>
               {!preview && (
                 <div className="h-[38%] min-h-48 shrink-0 border-t border-border">
@@ -247,6 +248,12 @@ function Editor({ app, environment, environments }: EditorProps) {
       {confirmation}
     </div>
   )
+}
+
+/** The app as people see it, on the page it's on (`utils.openPage` moves it in place). */
+function PreviewCanvas({ definition }: { definition: AppDefinition }) {
+  const page = useAppValue<string | null>('url.page') ?? null
+  return <AppCanvas definition={definition} page={page} />
 }
 
 /** The canvas once the sandbox runs; its problem if it can't. */

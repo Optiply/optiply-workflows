@@ -1,6 +1,7 @@
 import runtimeCode from 'virtual:app-runtime'
 import type { AppDefinition } from '@ow/app-definition'
 import {
+  type AppUrl,
   CONNECT_MESSAGE,
   type Effect,
   type HostMessage,
@@ -62,6 +63,13 @@ export interface AppHostOptions {
   confirm(message: string): Promise<boolean>
   /** Called before each resource query runs (the editor saves the draft: the server runs what's saved). */
   beforeQuery?: () => Promise<void>
+  /** The page to open on and its query parameters; later changes go through `navigate`. */
+  url?: AppUrl
+  /**
+   * `utils.openPage`: the page this app is shown on changes its URL (then calls `navigate`). Without it (the
+   * editor), the app moves to the page in place.
+   */
+  openPage?(page: string, params: Record<string, string>, newTab: boolean): void
 }
 
 /**
@@ -139,6 +147,8 @@ export class AppHost {
   private definition: AppDefinition
   /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
   private startedWith: AppDefinition | null = null
+  /** Where the app is: sent with `start` (a restart opens the same page), then as `navigate`. */
+  private url: AppUrl
 
   get appId(): string {
     return this.options.appId
@@ -146,6 +156,7 @@ export class AppHost {
 
   constructor(private readonly options: AppHostOptions) {
     this.definition = options.definition
+    this.url = options.url ?? { page: null, params: {} }
     this.store = createStore<AppHostState>(() => ({
       status: 'loading',
       values: {},
@@ -226,6 +237,13 @@ export class AppHost {
     this.post({ type: 'trigger', query })
   }
 
+  /** The page's URL changed: the app shows that page with those parameters. */
+  navigate(url: AppUrl): void {
+    if (url.page === this.url.page && JSON.stringify(url.params) === JSON.stringify(this.url.params)) return
+    this.url = { page: url.page, params: { ...url.params } }
+    if (this.store.getState().status !== 'loading') this.post({ type: 'navigate', url: this.url })
+  }
+
   /**
    * The editor changed the app: the sandbox switches to it, keeping what the user did. An app that stopped
    * responding starts again with the edit (likely the fix).
@@ -294,11 +312,18 @@ export class AppHost {
     switch (message.type) {
       case 'ready':
         this.startedWith = this.definition
-        this.post({ type: 'start', definition: this.definition, globals: this.options.globals })
+        this.post({
+          type: 'start',
+          definition: this.definition,
+          globals: this.options.globals,
+          url: this.url,
+        })
         return
       case 'started':
         this.store.setState({ status: 'ready' })
         if (this.definition !== this.startedWith) this.post({ type: 'update', definition: this.definition })
+        // Moved on while it was starting.
+        this.post({ type: 'navigate', url: this.url })
         return
       case 'fatal':
         this.stopWatchdog()
@@ -438,6 +463,16 @@ export class AppHost {
           () => this.options.notify('Could not copy to the clipboard', 'error'),
         )
         return
+      case 'openPage': {
+        const page = String(effect.page)
+        const params: Record<string, string> = {}
+        if (effect.params && typeof effect.params === 'object') {
+          for (const [key, value] of Object.entries(effect.params)) params[String(key)] = String(value)
+        }
+        if (this.options.openPage) this.options.openPage(page, params, effect.newTab === true)
+        else this.navigate({ page, params })
+        return
+      }
       case 'download': {
         const type = DOWNLOAD_TYPES.has(effect.mimeType) ? effect.mimeType : 'text/plain'
         const href = URL.createObjectURL(new Blob([String(effect.data)], { type }))

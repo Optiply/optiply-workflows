@@ -138,7 +138,7 @@ function handle(message: HostMessage) {
       try {
         const g = globalThis as unknown as { _: unknown; dayjs: unknown; sql: unknown }
         globals = { ...message.globals, _: g._, dayjs: g.dayjs, sql: g.sql, console: appConsole }
-        runtime = new AppRuntime(message.definition, bridge, { globals })
+        runtime = new AppRuntime(message.definition, bridge, { globals, url: message.url })
         const loading = runtime.start()
         send({ type: 'started' })
         void loading
@@ -150,6 +150,7 @@ function handle(message: HostMessage) {
     case 'update': {
       if (!runtime) return
       try {
+        // The page shown carries over with the rest of the state (see AppRuntime.start).
         const next = new AppRuntime(message.definition, bridge, { globals })
         void next.start({ previous: runtime })
         runtime = next
@@ -185,6 +186,9 @@ function handle(message: HostMessage) {
       return
     case 'ping':
       send({ type: 'pong', id: message.id })
+      return
+    case 'navigate':
+      void runtime?.navigate(message.url.page, message.url.params)
       return
   }
 }

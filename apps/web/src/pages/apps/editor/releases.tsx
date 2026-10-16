@@ -79,7 +79,7 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
       </Button>
       {live && (
         <Link
-          to="/apps/$slug"
+          to="/apps/$slug/{-$page}"
           params={{ slug: app.slug }}
           className="px-1.5 text-xs whitespace-nowrap text-accent hover:underline"
           title="Open the live release, as people using the app see it"

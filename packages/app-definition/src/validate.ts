@@ -258,10 +258,20 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   return { ok: !diagnostics.some((d) => d.severity === 'error'), definition: def, diagnostics }
 }
 
+/** Page addresses the platform uses itself. */
+const RESERVED_PAGES = new Set(['edit'])
+
 /** Page names are unique; whatever names a page names one of them; components in containers name none. */
 function checkPages(def: AppDefinition, report: Report) {
   const names = new Set<string>()
   def.pages?.forEach((page, i) => {
+    if (RESERVED_PAGES.has(page.name)) {
+      report({
+        code: 'invalid_page',
+        message: `"${page.name}" can't name a page: /apps/<slug>/${page.name} is the app's editor`,
+        path: ['pages', i, 'name'],
+      })
+    }
     if (names.has(page.name)) {
       report({
         code: 'duplicate_page',
