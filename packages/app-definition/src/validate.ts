@@ -4,6 +4,7 @@ import type { z } from 'zod'
 import { componentSpec, constantFits, QUERY_EVENTS } from './components'
 import { buildAppGraph, type Entity, entityMethods, entityProperties } from './graph'
 import { appNameReason, isAppGlobalName } from './names'
+import { entityPages, pageVisible } from './pages'
 import { expressionSide } from './query-values'
 import { type AppDefinition, appDefinitionSchema, type EventHandler } from './schema'
 
@@ -31,6 +32,10 @@ export type AppDiagnosticCode =
   | 'unknown_resource'
   | 'invalid_query'
   | 'mixed_current_user'
+  | 'unknown_page'
+  | 'duplicate_page'
+  | 'invalid_page'
+  | 'other_page'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -60,7 +65,13 @@ export interface AppValidationResult {
 
 type Report = (d: Omit<AppDiagnostic, 'severity'> & { severity?: AppDiagnostic['severity'] }) => void
 
-const LIST = { component: 'components', query: 'queries', transformer: 'transformers', variable: 'variables' }
+const LIST = {
+  component: 'components',
+  query: 'queries',
+  transformer: 'transformers',
+  variable: 'variables',
+  url: 'url',
+}
 
 /**
  * Checks an app definition and returns every problem found, for the editor to show and for publishing to refuse.
@@ -78,6 +89,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   checkNames(def, report)
   const graph = buildAppGraph(def)
   const { entities } = graph
+  const pages = entityPages(def)
+  checkPages(def, report)
 
   // Components: type, props, parent, events.
   def.components.forEach((c, i) => {
@@ -128,7 +141,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         report({ code: 'invalid_parent', message: `"${c.name}" would end up inside itself`, path, ...at })
       }
     }
-    checkHandlers(c.events, ['components', i, 'events'], spec.events, at.entity, entities, report)
+    checkHandlers(c.events, ['components', i, 'events'], spec.events, at.entity, entities, pages, report)
   })
 
   // Layout entries name components on a grid.
@@ -155,7 +168,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   // Queries: events and, server side, their connector.
   def.queries.forEach((q, i) => {
-    checkHandlers(q.events, ['queries', i, 'events'], QUERY_EVENTS, q.name, entities, report)
+    checkHandlers(q.events, ['queries', i, 'events'], QUERY_EVENTS, q.name, entities, pages, report)
     if (q.kind === 'resource' && options.resolveResource) {
       checkQuery(q, ['queries', i], options.resolveResource, report)
     }
@@ -183,6 +196,12 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         if (!isAppGlobalName(ref.name)) {
           report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }
+        continue
+      }
+      const page = pages.get(ref.name) ?? null
+      const reader = pages.get(field.owner) ?? null
+      if (!pageVisible(page, reader)) {
+        report({ code: 'other_page', message: otherPage(ref.name, page!, field.owner, reader), ...where })
         continue
       }
       if (ref.property === undefined) continue
@@ -239,6 +258,49 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   return { ok: !diagnostics.some((d) => d.severity === 'error'), definition: def, diagnostics }
 }
 
+/** Page names are unique; whatever names a page names one of them; components in containers name none. */
+function checkPages(def: AppDefinition, report: Report) {
+  const names = new Set<string>()
+  def.pages?.forEach((page, i) => {
+    if (names.has(page.name)) {
+      report({
+        code: 'duplicate_page',
+        message: `Another page is already named "${page.name}"`,
+        path: ['pages', i, 'name'],
+      })
+    }
+    names.add(page.name)
+  })
+  const lists = [
+    ['components', def.components],
+    ['queries', def.queries],
+    ['transformers', def.transformers ?? []],
+  ] as const
+  for (const [list, items] of lists) {
+    items.forEach((item: { name: string; page?: string; parent?: string }, i: number) => {
+      if (item.page === undefined) return
+      const path = [list, i, 'page']
+      if (item.parent !== undefined) {
+        report({
+          code: 'invalid_page',
+          message: `"${item.name}" is on the page of the component it's inside; remove its own page`,
+          path,
+          entity: item.name,
+        })
+      } else if (!names.has(item.page)) {
+        report({ code: 'unknown_page', message: `No page is named "${item.page}"`, path, entity: item.name })
+      }
+    })
+  }
+}
+
+/** Why code on `reader` (null: global) can't read `name`, which is on page `page`. */
+function otherPage(name: string, page: string, owner: string, reader: string | null): string {
+  return reader === null
+    ? `"${name}" is on page ${page}; "${owner}" is global (on every page), so it can only use what's global`
+    : `"${name}" is on page ${page}, not on ${reader} with "${owner}"`
+}
+
 /** Every name is a valid identifier, not a global, and unique across components, queries, transformers and variables. */
 function checkNames(def: AppDefinition, report: Report) {
   const seen = new Set<string>()
@@ -272,11 +334,25 @@ function checkHandlers(
   events: readonly string[],
   owner: string,
   entities: ReadonlyMap<string, Entity>,
+  pages: ReadonlyMap<string, string | null>,
   report: Report,
 ) {
+  const reader = pages.get(owner) ?? null
   handlers?.forEach((h, i) => {
     const path = [...base, i]
     const at = { entity: owner }
+    const a = h.action
+    const target =
+      a.type === 'controlQuery' ? a.query : a.type === 'controlComponent' ? a.component : undefined
+    const targetPage = target === undefined ? null : (pages.get(target) ?? null)
+    if (target !== undefined && entities.has(target) && !pageVisible(targetPage, reader)) {
+      report({
+        code: 'other_page',
+        message: otherPage(target, targetPage!, owner, reader),
+        path: [...path, 'action', a.type === 'controlQuery' ? 'query' : 'component'],
+        ...at,
+      })
+    }
     if (!events.includes(h.event)) {
       report({
         code: 'unknown_event',
@@ -287,7 +363,6 @@ function checkHandlers(
         ...at,
       })
     }
-    const a = h.action
     if (a.type === 'controlQuery' && entities.get(a.query)?.kind !== 'query') {
       report({
         code: 'unknown_query',

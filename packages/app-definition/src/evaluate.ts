@@ -8,6 +8,7 @@ import {
 } from '@ow/expressions'
 import { coerceProp, type PropSpec } from './components'
 import { type AppGraph, buildAppGraph, type Entity, type GraphNode } from './graph'
+import { resolvePage } from './pages'
 import type { AppDefinition } from './schema'
 
 /**
@@ -53,6 +54,8 @@ export interface AppModelOptions {
   globals?: Record<string, unknown>
   /** Methods to add to an entity as code sees it (`query1.trigger`, `modal1.open`), supplied by the runtime. */
   methods?: (entity: Entity) => Record<string, unknown> | undefined
+  /** What `url` starts as: the page shown (the app's first when missing) and its query parameters. */
+  url?: { page?: string | null; params?: Record<string, string> }
 }
 
 /** What the model holds for a node. */
@@ -325,6 +328,10 @@ export class AppModel {
         return this.values.get(`${entity.name}.$initial`) ?? null
       case 'transformer':
         return null
+      case 'url':
+        return node.property === 'page'
+          ? resolvePage(this.definition, this.options.url?.page)
+          : { ...this.options.url?.params }
     }
   }
 
