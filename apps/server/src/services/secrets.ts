@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm'
 export const ENCRYPTED_COLUMNS = [
   { table: 'resource_configs', column: 'secrets' },
   { table: 'config_var_values', column: 'value_encrypted' },
+  { table: 'oauth_tokens', column: 'tokens' },
 ] as const
 
 export type EncryptedTable = (typeof ENCRYPTED_COLUMNS)[number]['table']

@@ -4,6 +4,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { authorizationCode, consentHash, deleteTokens } from '../../services/oauth-tokens'
 import { type Access, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
@@ -278,8 +279,16 @@ export const resourcesRouter = router({
         updatedBy: ctx.user.id,
         updatedAt: new Date(),
       }
+      // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
+      const before = existing && authorizationCode(existing.config)
+      const after = authorizationCode(values.config)
+      const consentChanged = !!before && (!after || consentHash(before) !== consentHash(after))
+      let disconnectedAccounts = 0
       if (existing) {
-        await ctx.db.update(resourceConfigs).set(values).where(eq(resourceConfigs.id, existing.id))
+        disconnectedAccounts = await ctx.db.transaction(async (tx) => {
+          await tx.update(resourceConfigs).set(values).where(eq(resourceConfigs.id, existing.id))
+          return consentChanged ? deleteTokens(tx, existing.id) : 0
+        })
       } else {
         await ctx.db.insert(resourceConfigs).values({ ...row, resourceId: resource.id, ...values })
       }
@@ -289,7 +298,11 @@ export const resourcesRouter = router({
         objectType: 'resource',
         objectId: resource.id,
         environmentId: input.environmentId,
-        metadata: { environment: envSlug, changedCredentials: patchedSecretFields(input.secrets) },
+        metadata: {
+          environment: envSlug,
+          changedCredentials: patchedSecretFields(input.secrets),
+          ...(disconnectedAccounts && { disconnectedAccounts }),
+        },
       })
       return { config: values.config, secrets: maskSecrets(secrets) }
     }),

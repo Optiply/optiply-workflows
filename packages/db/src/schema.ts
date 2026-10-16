@@ -244,6 +244,51 @@ export const resourceConfigs = pgTable(
   (t) => [uniqueIndex('resource_configs_env_uq').on(t.resourceId, t.environmentId)],
 )
 
+/**
+ * An account connected to a resource in one environment through OAuth (authorization code): the shared one
+ * (`user_id` null) or one person's. Tokens go with the settings they were granted under (`consent_hash`): once the
+ * client ID, URLs or scopes change, the account must be connected again.
+ */
+export const oauthTokens = pgTable(
+  'oauth_tokens',
+  {
+    id: id(),
+    resourceConfigId: uuid()
+      .notNull()
+      .references(() => resourceConfigs.id, { onDelete: 'cascade' }),
+    /** The config's environment, part of the encryption AAD (`oauth_tokens:<id>:<envId>`). */
+    environmentId: uuid()
+      .notNull()
+      .references(() => environments.id, { onDelete: 'cascade' }),
+    /** Null for the shared account. */
+    userId: uuid().references(() => users.id, { onDelete: 'cascade' }),
+    /** Encrypted JSON `{ accessToken, refreshToken }` (`@ow/crypto` token). Never returned to the browser. */
+    tokens: text().notNull(),
+    /** When the access token expires; null when the provider didn't say. */
+    expiresAt: timestamp({ withTimezone: true }),
+    /** The scopes the provider says it granted. */
+    scope: text(),
+    /** Who was connected (an email, a workspace), for display. */
+    account: text(),
+    /** `reconnect`: the provider refused a refresh (revoked, expired); only connecting again helps. */
+    status: text({ enum: ['active', 'reconnect'] })
+      .notNull()
+      .default('active'),
+    /** Why the last refresh was refused (the provider's error code), for the UI. */
+    lastError: text(),
+    consentHash: text().notNull(),
+    connectedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    refreshedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('oauth_tokens_owner_uq').on(t.resourceConfigId, t.userId).nullsNotDistinct(),
+    index('oauth_tokens_user_idx').on(t.userId),
+    check('oauth_tokens_status_ck', sql`${t.status} in ('active', 'reconnect')`),
+  ],
+)
+
 /** Org-wide values referenced as `{{ configVars.NAME }}`, set per environment. */
 export const configVars = pgTable(
   'config_vars',
@@ -778,6 +823,7 @@ export type PermissionObjectType = (typeof PERMISSION_OBJECT_TYPES)[number]
 export type Resource = typeof resources.$inferSelect
 export type ResourceConfig = typeof resourceConfigs.$inferSelect
 export type ManagedDatabase = typeof managedDatabases.$inferSelect
+export type OAuthToken = typeof oauthTokens.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect
 export type Workflow = typeof workflows.$inferSelect

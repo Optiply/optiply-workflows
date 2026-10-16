@@ -98,6 +98,7 @@ describe('rekeyAll', () => {
     expect(dry).toEqual([
       { table: 'resource_configs', rekeyed: 6, failed: [swapped.id] },
       { table: 'config_var_values', rekeyed: 1, failed: [] },
+      { table: 'oauth_tokens', rekeyed: 0, failed: [] },
     ])
     const afterDry = await db.select().from(resourceConfigs)
     expect(afterDry.every((r) => keyVersionOf(r.secrets!) === 'v1')).toBe(true)
@@ -119,12 +120,14 @@ describe('rekeyAll', () => {
     expect(await rekeyAll(db, rotated)).toEqual([
       { table: 'resource_configs', rekeyed: 0, failed: [swapped.id] },
       { table: 'config_var_values', rekeyed: 0, failed: [] },
+      { table: 'oauth_tokens', rekeyed: 0, failed: [] },
     ])
 
     // verifySecrets decrypts everything, whatever its key: only the swapped row fails. It counts keys in use.
     expect(await verifySecrets(db, rotated, 3)).toEqual([
       { table: 'resource_configs', ok: 6, failed: [swapped.id], keys: { v1: 1, v2: 6 } },
       { table: 'config_var_values', ok: 1, failed: [], keys: { v2: 1 } },
+      { table: 'oauth_tokens', ok: 0, failed: [], keys: {} },
     ])
     // With only the new key, the broken row (still under v1) can't be read either; with a wrong key, nothing can.
     expect((await verifySecrets(db, newOnly))[0]).toMatchObject({ ok: 6, failed: [swapped.id] })
@@ -132,6 +135,7 @@ describe('rekeyAll', () => {
     expect(wrong.map((r) => [r.ok, r.failed.length])).toEqual([
       [0, 7],
       [0, 1],
+      [0, 0],
     ])
   })
 })
