@@ -56,6 +56,13 @@ const ConfigSchema = z
      * for development and tests against local servers.
      */
     CODE_FETCH_ALLOW_PRIVATE_NETWORK: bool,
+    /**
+     * Where each process keeps its bare cache of the Git repo (M11). Not shared between processes: each takes it
+     * for itself. Defaults to `<tmp>/ow-git-<pid>`.
+     */
+    GIT_CACHE_DIR: z.string().optional(),
+    /** Lets the Git repo be a `file://` or `http://` URL: for development and tests against local repos. */
+    GIT_ALLOW_INSECURE_URLS: bool,
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

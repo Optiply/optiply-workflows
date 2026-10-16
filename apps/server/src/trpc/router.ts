@@ -7,6 +7,7 @@ import { auditRouter } from './routers/audit'
 import { configVarsRouter } from './routers/config-vars'
 import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
+import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
 import { releasesRouter } from './routers/releases'
@@ -48,6 +49,7 @@ export const appRouter = router({
   releases: releasesRouter,
   apiKeys: apiKeysRouter,
   apps: appsRouter,
+  git: gitRouter,
 })
 
 export type AppRouter = typeof appRouter

@@ -854,3 +854,31 @@ export const maintenanceJobs = pgTable('maintenance_jobs', {
   /** What the last run did (counts, duration) or why it failed. */
   lastResult: jsonb().$type<Record<string, unknown>>(),
 })
+
+/**
+ * The instance's Git repo (M11): one row at most. The token and webhook secret are one encrypted JSON value
+ * (`git_settings:<id>:-`), never returned to the browser.
+ */
+export const gitSettings = pgTable(
+  'git_settings',
+  {
+    id: id(),
+    /** Always true: the unique constraint keeps the table to one row. */
+    singleton: boolean().notNull().default(true),
+    /** `https://github.com/<owner>/<repo>.git`, without credentials. */
+    repoUrl: text().notNull(),
+    /** The branch deploys come from. */
+    branch: text().notNull().default('main'),
+    /** Encrypted JSON `{ token?, webhookSecret? }` (`@ow/crypto` token). */
+    secrets: text(),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('git_settings_singleton_uq').on(t.singleton),
+    check('git_settings_singleton_ck', sql`${t.singleton}`),
+  ],
+)
+
+export type GitSettings = typeof gitSettings.$inferSelect

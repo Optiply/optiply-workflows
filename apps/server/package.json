@@ -28,6 +28,7 @@
     "@ow/definition": "workspace:*",
     "@ow/engine": "workspace:*",
     "@ow/expressions": "workspace:*",
+    "@ow/git-format": "workspace:*",
     "@ow/sandbox": "workspace:*",
     "@trpc/server": "11.19.0",
     "acorn": "8.19.0",

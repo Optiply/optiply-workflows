@@ -57,6 +57,9 @@ importers:
       '@ow/expressions':
         specifier: workspace:*
         version: link:../../packages/expressions
+      '@ow/git-format':
+        specifier: workspace:*
+        version: link:../../packages/git-format
       '@ow/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox

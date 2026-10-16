@@ -25,6 +25,10 @@ ENV NODE_ENV=production \
     PORT=3000 \
     WEB_DIST_DIR=/app/web \
     MIGRATIONS_DIR=/app/migrations
+# git for Git sync (M11): plumbing on a bare cache repo, over HTTPS (hence the CA certificates).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /repo/apps/server/dist ./dist

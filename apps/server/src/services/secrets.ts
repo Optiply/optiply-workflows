@@ -11,20 +11,23 @@ import type { Db } from '@ow/db'
 import { sql } from 'drizzle-orm'
 
 /**
- * Every encrypted column. A value's AAD is `<table>:<row id>:<environment id>`, so writers and `rekeyAll` must
- * build it the same way: always go through `encryptForRow` / `decryptForRow`.
+ * Every encrypted column. A value's AAD is `<table>:<row id>:<environment id>` (`-` for tables without an
+ * environment), so writers and `rekeyAll` must build it the same way: always go through `encryptForRow` /
+ * `decryptForRow`.
  */
 export const ENCRYPTED_COLUMNS = [
-  { table: 'resource_configs', column: 'secrets' },
-  { table: 'config_var_values', column: 'value_encrypted' },
-  { table: 'oauth_tokens', column: 'tokens' },
+  { table: 'resource_configs', column: 'secrets', environment: true },
+  { table: 'config_var_values', column: 'value_encrypted', environment: true },
+  { table: 'oauth_tokens', column: 'tokens', environment: true },
+  { table: 'git_settings', column: 'secrets', environment: false },
 ] as const
 
 export type EncryptedTable = (typeof ENCRYPTED_COLUMNS)[number]['table']
 
 interface RowRef {
   id: string
-  environmentId: string
+  /** Null for tables without an environment (`git_settings`). */
+  environmentId: string | null
 }
 
 export function encryptForRow(keyring: Keyring, table: EncryptedTable, row: RowRef, value: unknown): string {
@@ -59,17 +62,18 @@ export async function rekeyAll(
 ): Promise<RekeyReport[]> {
   const batchSize = opts.batchSize ?? 500
   const reports: RekeyReport[] = []
-  for (const { table, column } of ENCRYPTED_COLUMNS) {
+  for (const { table, column, environment } of ENCRYPTED_COLUMNS) {
     const report: RekeyReport = { table, rekeyed: 0, failed: [] }
     const t = sql.identifier(table)
     const c = sql.identifier(column)
+    const env = environment ? sql.identifier('environment_id') : sql`null::uuid`
     // Keyset pagination, so rows that fail (and so keep their old key) aren't selected again.
     let after = '00000000-0000-0000-0000-000000000000'
     let fetched: number
     do {
       fetched = await db.transaction(async (tx) => {
-        const rows = await tx.execute<{ id: string; environment_id: string; token: string }>(sql`
-          select id, environment_id, ${c} as token from ${t}
+        const rows = await tx.execute<{ id: string; environment_id: string | null; token: string }>(sql`
+          select id, ${env} as environment_id, ${c} as token from ${t}
           where id > ${after} and ${c} is not null and split_part(${c}, '.', 1) <> ${keyring.current}
           order by id limit ${batchSize} for update`)
         for (const row of rows) {
@@ -110,14 +114,15 @@ export interface VerifyReport {
  */
 export async function verifySecrets(db: Db, keyring: Keyring, batchSize = 500): Promise<VerifyReport[]> {
   const reports: VerifyReport[] = []
-  for (const { table, column } of ENCRYPTED_COLUMNS) {
+  for (const { table, column, environment } of ENCRYPTED_COLUMNS) {
     const report: VerifyReport = { table, ok: 0, failed: [], keys: {} }
     const t = sql.identifier(table)
     const c = sql.identifier(column)
+    const env = environment ? sql.identifier('environment_id') : sql`null::uuid`
     let after = '00000000-0000-0000-0000-000000000000'
     for (;;) {
-      const rows = await db.execute<{ id: string; environment_id: string; token: string }>(sql`
-        select id, environment_id, ${c} as token from ${t}
+      const rows = await db.execute<{ id: string; environment_id: string | null; token: string }>(sql`
+        select id, ${env} as environment_id, ${c} as token from ${t}
         where id > ${after} and ${c} is not null order by id limit ${batchSize}`)
       for (const row of rows) {
         after = row.id
