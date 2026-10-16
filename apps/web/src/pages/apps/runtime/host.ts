@@ -12,6 +12,7 @@ import {
 import { STDLIB_BUNDLE } from '@ow/sandbox/stdlib'
 import { TRPCClientError } from '@trpc/client'
 import { createStore, type StoreApi } from 'zustand/vanilla'
+import { type AuthRequired, authRequired } from '@/lib/oauth'
 import { trpcClient } from '@/lib/trpc'
 
 /**
@@ -33,6 +34,15 @@ export interface AppHostState {
   problem: string | null
   /** The app's console, newest last (at most 500 lines). */
   logs: { id: number; level: LogLevel; message: string; at: number }[]
+  /** Queries that failed for want of a connected account, per resource (see `accountConnected`). */
+  connections: NeededConnection[]
+}
+
+export interface NeededConnection {
+  need: AuthRequired
+  message: string
+  /** The queries that failed for it, in order. */
+  queries: string[]
 }
 
 export interface AppHostOptions {
@@ -95,6 +105,7 @@ export class AppHost {
       errors: {},
       problem: null,
       logs: [],
+      connections: [],
     }))
   }
 
@@ -227,15 +238,61 @@ export class AppHost {
         environmentId: this.options.environmentId,
         values,
       })
-      return outcome.ok
-        ? { ok: true, data: outcome.data }
-        : { ok: false, error: { code: outcome.error.code, message: outcome.error.message } }
+      if (outcome.ok) {
+        this.connectionWorked(String(query))
+        return { ok: true, data: outcome.data }
+      }
+      const need = authRequired(outcome.error)
+      if (need) this.connectionNeeded(need, outcome.error.message, String(query))
+      return { ok: false, error: { code: outcome.error.code, message: outcome.error.message } }
     } catch (err) {
       const code = err instanceof TRPCClientError ? (err.data?.code as string | undefined) : undefined
       const message = err instanceof Error ? err.message : 'The query could not be run'
       if (code === 'CONFLICT') this.store.setState({ problem: message })
       return { ok: false, error: { ...(code && { code }), message } }
     }
+  }
+
+  /**
+   * The person connected an account a query needed: the automatic queries that failed for it run again (manual
+   * ones wait for the person: re-running a write on its own would surprise them).
+   */
+  accountConnected(resourceId: string): void {
+    const done = this.store.getState().connections.filter((c) => c.need.resourceId === resourceId)
+    this.store.setState((s) => ({
+      connections: s.connections.filter((c) => c.need.resourceId !== resourceId),
+    }))
+    const auto = new Set(
+      this.definition.queries.filter((q) => q.kind === 'resource' && q.run === 'auto').map((q) => q.name),
+    )
+    for (const query of new Set(done.flatMap((c) => c.queries))) if (auto.has(query)) this.trigger(query)
+  }
+
+  private connectionNeeded(need: AuthRequired, message: string, query: string) {
+    this.store.setState((s) => {
+      const same = (c: NeededConnection) =>
+        c.need.resourceId === need.resourceId && c.need.environmentId === need.environmentId
+      const existing = s.connections.find(same)
+      const entry: NeededConnection = {
+        need,
+        message,
+        queries: existing?.queries.includes(query) ? existing.queries : [...(existing?.queries ?? []), query],
+      }
+      return {
+        connections: existing ? s.connections.map((c) => (same(c) ? entry : c)) : [...s.connections, entry],
+      }
+    })
+  }
+
+  /** A query that needed a connection works now (connected elsewhere, or someone else connected the shared one). */
+  private connectionWorked(query: string) {
+    const { connections } = this.store.getState()
+    if (!connections.some((c) => c.queries.includes(query))) return
+    this.store.setState({
+      connections: connections
+        .map((c) => ({ ...c, queries: c.queries.filter((q) => q !== query) }))
+        .filter((c) => c.queries.length),
+    })
   }
 
   /** Carries out what the app asks for, within limits: it's the app's code asking. */

@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
+import { AuthRequiredNote } from '@/components/auth-required'
 import { Badge, Button, Card, ErrorNote, Input, Select, Spinner } from '@/components/ui'
+import { authRequired } from '@/lib/oauth'
 import { TYPE_BADGES } from '@/lib/resource-types'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -144,7 +146,16 @@ export function KeyValueEditor({
 
 type ConnectorErrorView = { code: string; message: string; details: Record<string, unknown> | null }
 
-export function ConnectorErrorNote({ error }: { error: ConnectorErrorView }) {
+/** A failed query or test. `onConnected` retries after the person connects an account the query needed. */
+export function ConnectorErrorNote({
+  error,
+  onConnected,
+}: {
+  error: ConnectorErrorView
+  onConnected?: () => void
+}) {
+  const need = authRequired(error)
+  if (need) return <AuthRequiredNote need={need} message={error.message} onConnected={onConnected} />
   const { hint, ...rest } = error.details ?? {}
   const extra = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined && v !== null))
   return (

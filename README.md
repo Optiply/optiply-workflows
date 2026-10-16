@@ -113,6 +113,16 @@ Triggers are set on the start trigger and take effect when you publish:
 
 **Settings → Runs at once** in the editor caps how many runs of a workflow execute at the same time.
 
+## Signing in to APIs
+
+A REST resource authenticates with an API key, a bearer token, basic auth or OAuth 2.0 client credentials, or with one of these:
+
+- **OAuth 2.0 sign-in (authorization code)**, for APIs that act as a person or workspace (Google, HubSpot, Slack, Microsoft 365…). Pick a provider to fill in its URLs and suggested scopes, enter the client ID and secret of an OAuth app you registered with the provider, and register the **redirect URI** the form shows (`<PUBLIC_URL>/api/oauth/callback`, the same for every resource). Save, then **Connect account** under the settings: the provider's consent screen opens in a pop-up.
+  - **One shared account** (default): someone with Edit connects it per environment, and every query uses it, including webhook and schedule runs.
+  - **Each person's own account**: everyone connects their own (the playground, apps and the editor offer a **Connect your account** button when a query needs it). Workflows using such a resource can be run from the editor but not published, since live runs have no person behind them.
+  - Tokens are stored encrypted and refreshed before they expire or when the API answers 401. When the provider refuses a refresh (revoked access), queries ask for a reconnect; changing the client, URLs or scopes disconnects accounts.
+- **Custom auth flow**, for APIs with their own login. Steps run in order: a **request** (through the resource's base URL and allowed hosts), **code** (JavaScript) or a **variable**. Steps read named secret values as `{{ secrets.NAME }}` and earlier steps by name (`{{ login.data.token }}`); each variable becomes `{{ auth.NAME }}`, which the resource's headers and query parameters use (`Authorization: Bearer {{ auth.token }}`). Optional **refresh steps** run when an API answers 401 (with `auth` holding the current variables), and **sign in again after** limits how long the variables last. The variables are stored encrypted and shared by every query; **Test connection** signs in afresh.
+
 ## Managed database
 
 **Database** holds tables in the platform's own Postgres: one schema per environment, owned by a login role that can reach nothing else. Create and change tables (an `id` key is added), edit rows in the grid, import and export CSV. Workflows and apps query them through the built-in **optiply_db** resource; Use on it in an environment is access to its tables, rows and SQL.

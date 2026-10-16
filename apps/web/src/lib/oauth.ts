@@ -1,0 +1,72 @@
+/** Whose account: the resource's shared one, or the signed-in person's own (per-user resources). */
+export type OAuthAccount = 'shared' | 'mine'
+
+export interface ConnectOutcome {
+  ok: boolean
+  message: string
+}
+
+/** What a query's `auth_required` error says about the connection it needs (see the server's `authDetails`). */
+export interface AuthRequired {
+  reason: string
+  account: 'shared' | 'user'
+  resourceId: string
+  environmentId: string
+}
+
+export function authRequired(
+  error: { code?: string; details?: unknown } | null | undefined,
+): AuthRequired | null {
+  if (error?.code !== 'auth_required') return null
+  const d = error.details as Partial<AuthRequired> | null | undefined
+  if (!d || typeof d.resourceId !== 'string' || typeof d.environmentId !== 'string') return null
+  return {
+    reason: String(d.reason ?? ''),
+    account: d.account === 'user' ? 'user' : 'shared',
+    resourceId: d.resourceId,
+    environmentId: d.environmentId,
+  }
+}
+
+const POPUP_FEATURES = 'popup,width=560,height=720'
+
+/**
+ * Connects an account in a popup: the server sends it through the provider's consent screen and ends on a page
+ * that posts `ow:oauth` back here and closes. Resolves when that message arrives, or when the popup is closed
+ * without it.
+ */
+export function connectAccount(target: {
+  resourceId: string
+  environmentId: string
+  account: OAuthAccount
+}): Promise<ConnectOutcome> {
+  const url = `/api/oauth/start?${new URLSearchParams(target)}`
+  const popup = window.open(url, 'ow-oauth', POPUP_FEATURES)
+  if (!popup) {
+    return Promise.resolve({ ok: false, message: 'Allow pop-ups for this site to connect an account.' })
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (outcome: ConnectOutcome) => {
+      if (settled) return
+      settled = true
+      window.removeEventListener('message', onMessage)
+      clearInterval(watch)
+      resolve(outcome)
+    }
+    const onMessage = (event: MessageEvent) => {
+      // Only our own server's page, about this connection.
+      if (event.origin !== window.location.origin || event.source !== popup) return
+      const data = event.data as { type?: unknown; ok?: unknown; message?: unknown; resourceId?: unknown }
+      if (data?.type !== 'ow:oauth') return
+      if (data.resourceId !== undefined && data.resourceId !== target.resourceId) return
+      finish({ ok: data.ok === true, message: typeof data.message === 'string' ? data.message : '' })
+    }
+    window.addEventListener('message', onMessage)
+    // The page posts and then closes: give a message already on its way a moment to arrive.
+    const watch = setInterval(() => {
+      if (popup.closed)
+        setTimeout(() => finish({ ok: false, message: 'The sign-in window was closed.' }), 300)
+    }, 500)
+  })
+}

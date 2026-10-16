@@ -140,7 +140,11 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
             <span className="text-muted">{run.data.durationMs} ms</span>
             {run.data.ok && <Summary metadata={run.data.metadata} />}
           </div>
-          {run.data.ok ? <ResultView data={run.data.data} /> : <ConnectorErrorNote error={run.data.error} />}
+          {run.data.ok ? (
+            <ResultView data={run.data.data} />
+          ) : (
+            <ConnectorErrorNote error={run.data.error} onConnected={execute} />
+          )}
         </Card>
       )}
     </div>

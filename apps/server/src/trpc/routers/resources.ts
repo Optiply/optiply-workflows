@@ -1,10 +1,33 @@
 import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
-import { type Db, environments, permissions, type Resource, resourceConfigs, resources } from '@ow/db'
+import {
+  type Db,
+  environments,
+  oauthTokens,
+  permissions,
+  type Resource,
+  resourceConfigs,
+  resources,
+} from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq, sql } from 'drizzle-orm'
+import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
-import { type Access, loadAccess, requireLevel } from '../../services/permissions'
+import {
+  type AccountKind,
+  connectTarget,
+  OAuthConnectError,
+  oauthRedirectUri,
+} from '../../services/oauth-connect'
+import {
+  authFingerprint,
+  authorizationCode,
+  type ConnectionStatus,
+  connectionStatus,
+  consentHash,
+  credentialsFor,
+  deleteTokens,
+} from '../../services/oauth-tokens'
+import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
   applySecretPatch,
@@ -85,6 +108,22 @@ function assertNotBuiltIn(resource: Resource) {
       code: 'FORBIDDEN',
       message: 'This is a built-in resource: the platform manages its settings',
     })
+  }
+}
+
+/** The connect checks (shared with the OAuth routes) as tRPC errors. */
+async function oauthTarget(
+  ctx: AuthedContext,
+  input: { resourceId: string; environmentId: string; account: AccountKind },
+) {
+  try {
+    return await connectTarget(ctx.db, ctx.config.keyring, ctx.user, input)
+  } catch (err) {
+    if (!(err instanceof OAuthConnectError)) throw err
+    const code = ({ 400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND' } as const)[
+      err.status
+    ]
+    throw new TRPCError({ code, message: err.message })
   }
 }
 
@@ -278,8 +317,15 @@ export const resourcesRouter = router({
         updatedBy: ctx.user.id,
         updatedAt: new Date(),
       }
+      // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
+      const before = existing ? authFingerprint(existing.config) : null
+      const consentChanged = before !== null && before !== authFingerprint(values.config)
+      let disconnectedAccounts = 0
       if (existing) {
-        await ctx.db.update(resourceConfigs).set(values).where(eq(resourceConfigs.id, existing.id))
+        disconnectedAccounts = await ctx.db.transaction(async (tx) => {
+          await tx.update(resourceConfigs).set(values).where(eq(resourceConfigs.id, existing.id))
+          return consentChanged ? deleteTokens(tx, existing.id) : 0
+        })
       } else {
         await ctx.db.insert(resourceConfigs).values({ ...row, resourceId: resource.id, ...values })
       }
@@ -289,7 +335,11 @@ export const resourcesRouter = router({
         objectType: 'resource',
         objectId: resource.id,
         environmentId: input.environmentId,
-        metadata: { environment: envSlug, changedCredentials: patchedSecretFields(input.secrets) },
+        metadata: {
+          environment: envSlug,
+          changedCredentials: patchedSecretFields(input.secrets),
+          ...(disconnectedAccounts && { disconnectedAccounts }),
+        },
       })
       return { config: values.config, secrets: maskSecrets(secrets) }
     }),
@@ -328,7 +378,7 @@ export const resourcesRouter = router({
       if (input.config !== undefined || input.secrets !== undefined) assertNotBuiltIn(resource)
       const connector = connectorFor(resource.type)
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
-      const result = await testResource(connector, {
+      const tested = {
         id: existing?.id ?? 'unsaved',
         resourceId: resource.id,
         environmentId: input.environmentId,
@@ -338,10 +388,93 @@ export const resourcesRouter = router({
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,
         ),
-      })
+      }
+      // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
+      // auth flow signs in afresh for the test, without storing what it gets (`store: false`).
+      const custom = (tested.config as { auth?: { type?: unknown } }).auth?.type === 'custom'
+      const credentials =
+        existing || custom
+          ? credentialsFor(
+              { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+              tested,
+              ctx.user.id,
+              { store: false },
+            )
+          : undefined
+      const result = await testResource(connector, tested, credentials ? { credentials } : {})
       return result.ok
         ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
         : { ok: false as const, error: errorView(result.error) }
+    }),
+
+  /**
+   * OAuth connections of a REST resource, per environment the user can see: the shared account (with whether the
+   * user may connect it) or, on per-user resources, the user's own; never tokens. Also the redirect URI to
+   * register with the provider.
+   */
+  oauthConnections: authedProcedure.input(z.object({ resourceId: Id })).query(async ({ ctx, input }) => {
+    const { access, resource, envIds } = await visibleResource(ctx, input.resourceId)
+    const environments: {
+      environmentId: string
+      /** Null when the resource doesn't use the authorization code in this environment. */
+      tokens: 'shared' | 'perUser' | null
+      connection: ConnectionStatus | null
+      canConnect: boolean
+      /** Per-user resources, for people with Edit: how many people have connected. */
+      connectedPeople: number | null
+    }[] = []
+    for (const environmentId of envIds) {
+      const level = access.level(resource, environmentId)
+      if (!level) continue
+      const row = await getConfigRow(ctx.db, resource.id, environmentId)
+      const auth = row && authorizationCode(row.config)
+      if (!row || !auth) {
+        environments.push({
+          environmentId,
+          tokens: null,
+          connection: null,
+          canConnect: false,
+          connectedPeople: null,
+        })
+        continue
+      }
+      const shared = auth.tokens === 'shared'
+      const consent = consentHash(auth)
+      let connectedPeople: number | null = null
+      if (!shared && atLeast(level, 'edit')) {
+        const [counted] = await ctx.db
+          .select({ n: count() })
+          .from(oauthTokens)
+          .where(and(eq(oauthTokens.resourceConfigId, row.id), isNotNull(oauthTokens.userId)))
+        connectedPeople = counted?.n ?? 0
+      }
+      environments.push({
+        environmentId,
+        tokens: shared ? 'shared' : 'perUser',
+        connection: await connectionStatus(ctx.db, row.id, shared ? null : ctx.user.id, consent),
+        canConnect: shared ? atLeast(level, 'edit') : true,
+        connectedPeople,
+      })
+    }
+    return { redirectUri: oauthRedirectUri(ctx.config), environments }
+  }),
+
+  /** Disconnects the shared account (Edit) or the user's own (Use). The provider isn't told (no revocation). */
+  oauthDisconnect: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, account: z.enum(['shared', 'mine']) }))
+    .mutation(async ({ ctx, input }) => {
+      const target = await oauthTarget(ctx, input)
+      const removed = await deleteTokens(ctx.db, target.config.id, target.userId)
+      if (removed) {
+        await ctx.audit({
+          action: 'resource.oauth_disconnected',
+          objectType: 'resource',
+          objectId: target.resource.id,
+          environmentId: input.environmentId,
+          metadata: { account: target.userId === null ? 'shared' : 'user' },
+        })
+      }
+      return { disconnected: removed > 0 }
     }),
 
   /**
@@ -373,22 +506,23 @@ export const resourcesRouter = router({
         configVars: await publicConfigVars(ctx.db, input.environmentId),
         current_user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name },
       }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resolved,
+        ctx.user.id,
+      )
       const started = performance.now()
       let outcome:
         | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }
         | { ok: false; error: ReturnType<typeof errorView>; durationMs: number }
       try {
-        const result = await runQuery(
-          ctx.services.pool,
-          connector,
-          toResolved(ctx.config.keyring, row),
-          input.query,
-          {
-            evaluate: (code) =>
-              ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
-            labels: { ow_source: 'playground', ow_user: ctx.user.id },
-          },
-        )
+        const result = await runQuery(ctx.services.pool, connector, resolved, input.query, {
+          ...(credentials && { credentials }),
+          evaluate: (code) =>
+            ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
+          labels: { ow_source: 'playground', ow_user: ctx.user.id },
+        })
         outcome = {
           ok: true,
           data: toJson(result.data),

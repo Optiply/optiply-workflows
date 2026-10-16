@@ -27,6 +27,35 @@ export interface QueryContext {
    * browser). SQL binds values anyway; REST puts each one in its URL path as a single encoded segment.
    */
   untrustedValues?: boolean
+  /** Access tokens for resources whose credentials live outside their settings (OAuth authorization code). */
+  credentials?: CredentialSource
+}
+
+/**
+ * Credentials that belong to a connection rather than to the resource's settings: an OAuth access token (the shared
+ * account, or the account of the person running the query), or the variables a custom auth flow signed in for. The
+ * server supplies them; connectors only ask.
+ */
+export interface CredentialSource {
+  /**
+   * OAuth: a token that should be valid now. `force` gets a fresh one even if the stored token looks valid (the API
+   * just refused it). Throws a `ConnectorError` with code `auth_required` when nothing is connected or the provider
+   * no longer accepts the connection.
+   */
+  accessToken?(opts: { signal: AbortSignal; force?: boolean }): Promise<string>
+  /**
+   * Custom auth flows: the variables the flow signed in for, as an evaluator of the `{{ auth.NAME }}` in the
+   * resource's headers and parameters. `force` refreshes them (the API refused them). Throws `auth_required` when
+   * signing in fails.
+   */
+  authVariables?(opts: { signal: AbortSignal; force?: boolean }): Promise<AuthVariables>
+}
+
+export interface AuthVariables {
+  /** Evaluates the inside of a `{{ }}` with `auth` (the flow's variables) in scope. */
+  evaluate: Evaluate
+  /** The variables' values, scrubbed from what queries return. */
+  secrets: string[]
 }
 
 export interface QueryResult {
@@ -55,7 +84,10 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
   readonly scrubResultData?: boolean
   createClient(resource: ResolvedResource<Config, Secrets>): Client | Promise<Client>
   destroyClient(client: Client): Promise<void>
-  testConnection(client: Client, ctx: { signal: AbortSignal; timeoutMs: number }): Promise<TestResult>
+  testConnection(
+    client: Client,
+    ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },
+  ): Promise<TestResult>
   /** Static checks that need no evaluation (e.g. `{{ }}` inside a SQL string literal). */
   validateQuery(query: Query): TemplateError[]
   execute(client: Client, query: Query, ctx: QueryContext): Promise<QueryResult>
@@ -75,6 +107,8 @@ export type ConnectorErrorCode =
   | 'http'
   | 'blocked'
   | 'too_large'
+  /** An account has to be connected (or reconnected) before the resource can be used. */
+  | 'auth_required'
 
 /** Every failure surfaced to users. Messages and details are scrubbed of the resource's secrets. */
 export class ConnectorError extends Error {

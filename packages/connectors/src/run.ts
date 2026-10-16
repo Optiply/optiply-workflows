@@ -1,7 +1,13 @@
 import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import { type Evaluate, TemplateError } from '@ow/expressions'
 import { type PoolManager, parseResource } from './pool'
-import { type AnyConnector, ConnectorError, type QueryResult, type ResolvedResource } from './types'
+import {
+  type AnyConnector,
+  ConnectorError,
+  type CredentialSource,
+  type QueryResult,
+  type ResolvedResource,
+} from './types'
 
 export interface RunOptions {
   evaluate: Evaluate
@@ -13,6 +19,8 @@ export interface RunOptions {
   labels?: Record<string, string>
   /** See `QueryContext.untrustedValues`. */
   untrustedValues?: boolean
+  /** See `QueryContext.credentials`. */
+  credentials?: CredentialSource
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -28,7 +36,7 @@ export async function runQuery(
   rawQuery: unknown,
   opts: RunOptions,
 ): Promise<QueryResult> {
-  const secrets = secretStrings(resource.secrets)
+  const { credentials, secrets } = scrubbing(resource, opts.credentials)
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
@@ -42,6 +50,7 @@ export async function runQuery(
         timeoutMs,
         ...(opts.labels && { labels: opts.labels }),
         ...(opts.untrustedValues && { untrustedValues: true }),
+        ...(credentials && { credentials }),
       }),
     )
     return {
@@ -59,16 +68,20 @@ export async function runQuery(
 export async function testResource(
   connector: AnyConnector,
   resource: ResolvedResource,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; credentials?: CredentialSource } = {},
 ): Promise<{ ok: true; message?: string; durationMs: number } | { ok: false; error: ConnectorError }> {
   const started = performance.now()
   const timeoutMs = opts.timeoutMs ?? 15_000
   const signal = AbortSignal.timeout(timeoutMs)
-  const secrets = secretStrings(resource.secrets)
+  const { credentials, secrets } = scrubbing(resource, opts.credentials)
   let client: unknown
   try {
     client = await connector.createClient(parseResource(connector, resource))
-    const result = await connector.testConnection(client, { signal, timeoutMs })
+    const result = await connector.testConnection(client, {
+      signal,
+      timeoutMs,
+      ...(credentials && { credentials }),
+    })
     const message = result.message === undefined ? undefined : scrubSecrets(result.message, secrets)
     return { ok: true, message, durationMs: Math.round(performance.now() - started) }
   } catch (err) {
@@ -79,6 +92,38 @@ export async function testResource(
   } finally {
     if (client !== undefined) await connector.destroyClient(client).catch(() => {})
   }
+}
+
+/**
+ * The values to scrub from what a query returns: the resource's secrets, plus every access token handed out
+ * during the query (the array grows as tokens are issued, and is read when scrubbing).
+ */
+function scrubbing(
+  resource: ResolvedResource,
+  source: CredentialSource | undefined,
+): { secrets: string[]; credentials: CredentialSource | undefined } {
+  const secrets = secretStrings(resource.secrets)
+  let credentials: CredentialSource | undefined
+  if (source) {
+    credentials = {}
+    if (source.accessToken) {
+      const accessToken = source.accessToken.bind(source)
+      credentials.accessToken = async (opts) => {
+        const token = await accessToken(opts)
+        secrets.push(token)
+        return token
+      }
+    }
+    if (source.authVariables) {
+      const authVariables = source.authVariables.bind(source)
+      credentials.authVariables = async (opts) => {
+        const variables = await authVariables(opts)
+        secrets.push(...variables.secrets)
+        return variables
+      }
+    }
+  }
+  return { secrets, credentials }
 }
 
 function parseQuery(connector: AnyConnector, rawQuery: unknown): unknown {

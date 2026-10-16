@@ -3,9 +3,103 @@ import { Agent, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
-import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
+import { clientCredentialsToken } from './oauth'
+import { OAUTH_PROVIDERS } from './oauth-presets'
+import {
+  type Connector,
+  ConnectorError,
+  type CredentialSource,
+  type QueryContext,
+  type QueryResult,
+} from './types'
 
 const keyValues = z.array(z.object({ key: z.string(), value: z.string() })).default([])
+
+const bodySchema = z
+  .discriminatedUnion('type', [
+    z.object({ type: z.literal('none') }),
+    /** JSON text with `{{ }}`; see `renderJson`. */
+    z.object({ type: z.literal('json'), json: z.string() }),
+    z.object({ type: z.literal('form'), fields: keyValues }),
+    z.object({ type: z.literal('raw'), raw: z.string(), contentType: z.string().default('text/plain') }),
+  ])
+  .default({ type: 'none' })
+
+const querySchema = z.object({
+  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).default('GET'),
+  /** Appended to the base URL, or an absolute URL on an allowed host. May contain `{{ }}`. */
+  path: z.string().default(''),
+  params: keyValues,
+  headers: keyValues,
+  body: bodySchema,
+})
+
+/** Every `{{ }}` template of a REST query (or a custom auth flow's request step). */
+function queryTemplates(query: z.output<typeof querySchema>): string[] {
+  return [
+    query.path,
+    ...query.params.map((p) => p.value),
+    ...query.headers.map((h) => h.value),
+    ...(query.body.type === 'json' ? [query.body.json] : []),
+    ...(query.body.type === 'form' ? query.body.fields.map((f) => f.value) : []),
+    ...(query.body.type === 'raw' ? [query.body.raw] : []),
+  ]
+}
+
+/** Names `auth` and `secrets` are the flow's own; step names must also be JS identifiers (`login.data.token`). */
+const stepName = z
+  .string()
+  .regex(/^[A-Za-z_$][\w$]*$/, 'Use a JavaScript name: letters, digits, _ or $, not starting with a digit')
+  .refine((name) => name !== 'auth' && name !== 'secrets', { message: '"auth" and "secrets" are taken' })
+
+/**
+ * One step of a custom auth flow. A request is a REST request through the resource (base URL, allowed hosts and
+ * network settings, but not its default headers and parameters, which may need `auth`); code runs in the sandbox;
+ * a variable becomes `auth.<name>`. Each step's result is in scope for the next ones by its name, with `secrets`
+ * (the resource's secret values) and, in a refresh flow, `auth` (the variables it refreshes).
+ */
+const flowStep = z.discriminatedUnion('type', [
+  querySchema.extend({ type: z.literal('request'), name: stepName }),
+  z.object({ type: z.literal('code'), name: stepName, code: z.string() }),
+  z.object({ type: z.literal('variable'), name: stepName, value: z.string() }),
+])
+export type AuthFlowStep = z.output<typeof flowStep>
+
+const flowSteps = z.array(flowStep).superRefine((steps, ctx) => {
+  const seen = new Set<string>()
+  steps.forEach((step, i) => {
+    if (seen.has(step.name)) {
+      ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `Another step is named "${step.name}"` })
+    }
+    seen.add(step.name)
+    if (
+      step.type === 'request' &&
+      (step.method === 'GET' || step.method === 'HEAD') &&
+      step.body.type !== 'none'
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [i, 'body'],
+        message: `${step.method} requests can't have a body`,
+      })
+    }
+    const templates =
+      step.type === 'request' ? queryTemplates(step) : step.type === 'variable' ? [step.value] : []
+    for (const template of templates) {
+      try {
+        parseTemplate(template)
+      } catch (err) {
+        if (!(err instanceof TemplateError)) throw err
+        ctx.addIssue({ code: 'custom', path: [i], message: err.message })
+      }
+    }
+  })
+})
+
+/** An http(s) URL with every `{placeholder}` of a provider preset filled in. */
+const oauthUrl = z
+  .url({ protocol: /^https?$/ })
+  .refine((url) => !/\{\w+\}|%7B\w+%7D/i.test(url), { message: 'Fill in the {placeholders} in the URL' })
 
 const authSchema = z
   .discriminatedUnion('type', [
@@ -26,12 +120,50 @@ const authSchema = z
       /** How the client secret is sent to the token endpoint. */
       clientAuth: z.enum(['body', 'basic']).default('body'),
     }),
+    z.object({
+      type: z.literal('oauth2AuthorizationCode'),
+      /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
+      provider: z.enum(OAUTH_PROVIDERS).default('custom'),
+      authorizeUrl: oauthUrl,
+      tokenUrl: oauthUrl,
+      clientId: z.string().min(1),
+      /** As the provider writes them: space-separated for most, comma-separated for Slack. */
+      scope: z.string().default(''),
+      /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
+      authorizeParams: keyValues,
+      clientAuth: z.enum(['body', 'basic']).default('body'),
+      pkce: z.boolean().default(true),
+      /** One connected account per environment, or each person connects their own. */
+      tokens: z.enum(['shared', 'perUser']).default('shared'),
+    }),
+    z
+      .object({
+        type: z.literal('custom'),
+        /** Signs in; its variable steps become `auth.<name>` in the resource's headers and parameters. */
+        steps: flowSteps,
+        /** Run when an API answers 401 (then the request is retried once); empty = sign in again with `steps`. */
+        refreshSteps: flowSteps.default([]),
+        /** How long the variables are good for; omitted = until an API answers 401. */
+        ttlSeconds: z.number().int().positive().optional(),
+      })
+      .superRefine((auth, ctx) => {
+        if (!auth.steps.some((s) => s.type === 'variable')) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['steps'],
+            message: 'Define at least one variable for the headers or parameters to use',
+          })
+        }
+      }),
   ])
   .default({ type: 'none' })
 
 const configSchema = z.object({
   baseUrl: z.url({ protocol: /^https?$/ }),
-  /** Sent with every request; values are plain text (secret headers belong in the secrets). */
+  /**
+   * Sent with every request; values are plain text (secret headers belong in the secrets). With a custom auth flow,
+   * these and `params` may use `{{ auth.NAME }}`.
+   */
   headers: keyValues,
   params: keyValues,
   auth: authSchema,
@@ -53,30 +185,16 @@ const secretsSchema = z.object({
   clientSecret: z.string().optional(),
   /** Header name → value, for credentials sent as custom headers. */
   headers: z.record(z.string(), z.string()).default({}),
-})
-
-const bodySchema = z
-  .discriminatedUnion('type', [
-    z.object({ type: z.literal('none') }),
-    /** JSON text with `{{ }}`; see `renderJson`. */
-    z.object({ type: z.literal('json'), json: z.string() }),
-    z.object({ type: z.literal('form'), fields: keyValues }),
-    z.object({ type: z.literal('raw'), raw: z.string(), contentType: z.string().default('text/plain') }),
-  ])
-  .default({ type: 'none' })
-
-const querySchema = z.object({
-  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).default('GET'),
-  /** Appended to the base URL, or an absolute URL on an allowed host. May contain `{{ }}`. */
-  path: z.string().default(''),
-  params: keyValues,
-  headers: keyValues,
-  body: bodySchema,
+  /** Named values a custom auth flow reads as `{{ secrets.NAME }}` (a username, a password…). */
+  values: z.record(z.string(), z.string()).default({}),
 })
 
 type Config = z.output<typeof configSchema>
 type Secrets = z.output<typeof secretsSchema>
 type Query = z.output<typeof querySchema>
+export type RestConfig = Config
+export type RestSecrets = Secrets
+export type RestQuery = Query
 
 interface Client {
   config: Config
@@ -109,25 +227,25 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
     await agent.close()
   },
 
-  async testConnection(client, { signal }) {
+  async testConnection(client, { signal, credentials }) {
     if (client.config.auth.type === 'oauth2ClientCredentials') await getToken(client, signal, true)
-    const headers = new Headers(authHeaders(client))
-    const res = await send(client, new URL(client.config.baseUrl), { method: 'GET', headers }, signal)
+    const material = await authMaterial(client, { signal, credentials })
+    const url = new URL(client.config.baseUrl)
+    for (const [key, value] of material.params) url.searchParams.append(key, value)
+    const res = await send(
+      client,
+      url,
+      { method: 'GET', headers: new Headers(material.headers) },
+      signal,
+      Object.keys(material.headers),
+    )
     await res.body?.cancel()
     return { message: `HTTP ${res.status} ${res.statusText}`.trim() }
   },
 
   validateQuery(query) {
     const errors: TemplateError[] = []
-    const templates = [
-      query.path,
-      ...query.params.map((p) => p.value),
-      ...query.headers.map((h) => h.value),
-      ...(query.body.type === 'json' ? [query.body.json] : []),
-      ...(query.body.type === 'form' ? query.body.fields.map((f) => f.value) : []),
-      ...(query.body.type === 'raw' ? [query.body.raw] : []),
-    ]
-    for (const template of templates) {
+    for (const template of queryTemplates(query)) {
       try {
         parseTemplate(template)
       } catch (err) {
@@ -144,24 +262,41 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   async execute(client, query, ctx): Promise<QueryResult> {
     const url = await buildUrl(client, query, ctx)
     const headers = new Headers()
-    for (const { key, value } of client.config.headers) if (key) headers.set(key, value)
+    // A custom auth flow's resource headers may use `auth`: they're rendered with each attempt (authMaterial).
+    if (client.config.auth.type !== 'custom') {
+      for (const { key, value } of client.config.headers) if (key) headers.set(key, value)
+    }
     for (const [key, value] of Object.entries(client.secrets.headers)) headers.set(key, value)
     for (const { key, value } of query.headers)
       if (key) headers.set(key, await renderText(value, ctx.evaluate))
     const body = await buildBody(query, headers, ctx)
 
     const started = performance.now()
-    const request = async () => {
-      const auth = await authorize(client, ctx.signal)
-      for (const [k, v] of Object.entries(auth)) headers.set(k, v)
-      return send(client, url, { method: query.method, headers, body }, ctx.signal)
+    const request = async (force = false) => {
+      const material = await authMaterial(client, ctx, force)
+      for (const [k, v] of Object.entries(material.headers)) headers.set(k, v)
+      const target = new URL(url)
+      for (const [key, value] of material.params) target.searchParams.append(key, value)
+      return send(
+        client,
+        target,
+        { method: query.method, headers, body },
+        ctx.signal,
+        Object.keys(material.headers),
+      )
     }
     let res = await request()
-    // An expired or revoked OAuth token: fetch a fresh one and retry once.
-    if (res.status === 401 && client.config.auth.type === 'oauth2ClientCredentials') {
+    // An expired or revoked OAuth token, or a custom flow's session: get fresh ones and retry once.
+    const authType = client.config.auth.type
+    if (
+      res.status === 401 &&
+      (authType === 'oauth2ClientCredentials' ||
+        authType === 'oauth2AuthorizationCode' ||
+        authType === 'custom')
+    ) {
       await res.body?.cancel()
       client.token = undefined
-      res = await request()
+      res = await request(true)
     }
 
     const metadata = {
@@ -206,7 +341,9 @@ async function buildUrl(client: Client, query: Query, ctx: QueryContext): Promis
     url = new URL(path ? `${base}/${path.replace(/^\/+/, '')}` : base)
   }
   checkHost(client.config, url)
-  for (const { key, value } of client.config.params) if (key) url.searchParams.append(key, value)
+  if (client.config.auth.type !== 'custom') {
+    for (const { key, value } of client.config.params) if (key) url.searchParams.append(key, value)
+  }
   for (const { key, value } of query.params) {
     if (key) url.searchParams.append(key, await renderText(value, ctx.evaluate))
   }
@@ -267,6 +404,8 @@ async function send(
   url: URL,
   init: { method: string; headers: Headers; body?: string },
   signal: AbortSignal,
+  /** Headers carrying credentials besides the usual ones (a custom auth flow's), dropped like them. */
+  sensitive: string[] = [],
 ): Promise<Response> {
   let current = url
   let { method, body } = init
@@ -299,6 +438,7 @@ async function send(
         'cookie',
         'proxy-authorization',
         ...Object.keys(client.secrets.headers),
+        ...sensitive,
       ]) {
         headers.delete(name)
       }
@@ -314,11 +454,48 @@ async function send(
   }
 }
 
-async function authorize(client: Client, signal: AbortSignal): Promise<Record<string, string>> {
-  if (client.config.auth.type === 'oauth2ClientCredentials') {
-    return { authorization: `Bearer ${await getToken(client, signal)}` }
+/** What authenticates one attempt of a request: headers to set and query parameters to add. */
+interface AuthMaterial {
+  headers: Record<string, string>
+  params: [string, string][]
+}
+
+async function authMaterial(
+  client: Client,
+  ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
+  force = false,
+): Promise<AuthMaterial> {
+  const auth = client.config.auth
+  switch (auth.type) {
+    case 'oauth2ClientCredentials':
+      return { headers: { authorization: `Bearer ${await getToken(client, ctx.signal)}` }, params: [] }
+    case 'oauth2AuthorizationCode': {
+      if (!ctx.credentials?.accessToken) {
+        throw new ConnectorError('auth_required', 'Connect an account to this resource before using it')
+      }
+      const token = await ctx.credentials.accessToken({ signal: ctx.signal, force })
+      return { headers: { authorization: `Bearer ${token}` }, params: [] }
+    }
+    case 'custom': {
+      if (!ctx.credentials?.authVariables) {
+        throw new ConnectorError(
+          'auth_required',
+          "This resource signs in with a custom auth flow, which can't run here",
+        )
+      }
+      const { evaluate } = await ctx.credentials.authVariables({ signal: ctx.signal, force })
+      const material: AuthMaterial = { headers: {}, params: [] }
+      for (const { key, value } of client.config.headers) {
+        if (key) material.headers[key] = await renderText(value, evaluate)
+      }
+      for (const { key, value } of client.config.params) {
+        if (key) material.params.push([key, await renderText(value, evaluate)])
+      }
+      return material
+    }
+    default:
+      return { headers: authHeaders(client), params: [] }
   }
-  return authHeaders(client)
 }
 
 function authHeaders(client: Client): Record<string, string> {
@@ -327,6 +504,8 @@ function authHeaders(client: Client): Record<string, string> {
   switch (auth.type) {
     case 'none':
     case 'oauth2ClientCredentials':
+    case 'oauth2AuthorizationCode':
+    case 'custom':
       return {}
     case 'apiKey':
       return auth.in === 'header' ? { [auth.name]: requireSecret(secrets.apiKey, 'API key') } : {}
@@ -342,60 +521,20 @@ function authHeaders(client: Client): Record<string, string> {
 /** Client-credentials token, cached on the client until 30s before it expires. */
 async function getToken(client: Client, signal: AbortSignal, force = false): Promise<string> {
   const auth = client.config.auth
-  if (auth.type !== 'oauth2ClientCredentials') throw new Error('not an OAuth2 resource')
+  if (auth.type !== 'oauth2ClientCredentials') throw new Error('not an OAuth2 client-credentials resource')
   if (!force && client.token && client.token.expiresAt > Date.now() + 30_000) return client.token.value
 
   const secret = requireSecret(client.secrets.clientSecret, 'OAuth2 client secret')
-  const form = new URLSearchParams({ grant_type: 'client_credentials' })
-  if (auth.scope) form.set('scope', auth.scope)
-  if (auth.audience) form.set('audience', auth.audience)
-  const headers = new Headers({
-    'content-type': 'application/x-www-form-urlencoded',
-    accept: 'application/json',
+  const token = await clientCredentialsToken(auth, secret, {
+    signal,
+    allowPrivateNetwork: client.config.allowPrivateNetwork,
+    dispatcher: client.agent,
   })
-  if (auth.clientAuth === 'basic') {
-    const credentials = `${encodeURIComponent(auth.clientId)}:${encodeURIComponent(secret)}`
-    headers.set('authorization', `Basic ${Buffer.from(credentials).toString('base64')}`)
-  } else {
-    form.set('client_id', auth.clientId)
-    form.set('client_secret', secret)
+  client.token = {
+    value: token.accessToken,
+    expiresAt: token.expiresAt?.getTime() ?? Date.now() + 3600_000,
   }
-
-  const tokenUrl = new URL(auth.tokenUrl)
-  if (!client.config.allowPrivateNetwork && isPrivateAddress(tokenUrl.hostname)) {
-    throw new ConnectorError('blocked', `${tokenUrl.hostname} is a private address`)
-  }
-  let res: Response
-  try {
-    res = await fetch(tokenUrl, {
-      method: 'POST',
-      headers,
-      body: form.toString(),
-      signal,
-      dispatcher: client.agent,
-    })
-  } catch (err) {
-    throw networkError(err, tokenUrl)
-  }
-  const text = await res.text()
-  if (!res.ok) {
-    throw new ConnectorError('http', `OAuth2 token request failed: HTTP ${res.status}`, {
-      status: res.status,
-      body: text.slice(0, ERROR_BODY_PREVIEW),
-    })
-  }
-  let token: { access_token?: unknown; expires_in?: unknown }
-  try {
-    token = JSON.parse(text)
-  } catch {
-    throw new ConnectorError('http', 'OAuth2 token response is not JSON')
-  }
-  if (typeof token.access_token !== 'string') {
-    throw new ConnectorError('http', 'OAuth2 token response has no access_token')
-  }
-  const ttl = typeof token.expires_in === 'number' ? token.expires_in : 3600
-  client.token = { value: token.access_token, expiresAt: Date.now() + ttl * 1000 }
-  return token.access_token
+  return token.accessToken
 }
 
 /** JSON is parsed; text-like types are decoded; anything else is returned as base64. */

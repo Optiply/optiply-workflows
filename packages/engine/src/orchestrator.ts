@@ -437,6 +437,7 @@ class RunExecution {
       scope: this.scopeFor(block),
       input: this.opts.input,
       environmentId: this.opts.environmentId,
+      actingUserId: this.opts.actingUserId ?? null,
       services: this.opts.services,
       signal: AbortSignal.any([phaseSignal, timeout.signal]),
       timeoutMs,

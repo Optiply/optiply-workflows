@@ -4,6 +4,8 @@ import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
+import { CustomAuthFields } from './custom-auth'
+import { OAuthCodeFields, OAuthConnections } from './oauth'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -71,7 +73,7 @@ function buildPatch(edits: SecretEdits): Record<string, unknown> | undefined {
   return Object.keys(patch).length ? patch : undefined
 }
 
-interface FieldsProps {
+export interface FieldsProps {
   config: Config
   set: (key: string, value: unknown) => void
   secrets: Mask
@@ -84,10 +86,13 @@ export function SettingsPanel({
   resource,
   environmentId,
   canEdit,
+  onSaved,
 }: {
   resource: ResourceDetail
   environmentId: string
   canEdit: boolean
+  /** After a save (the page stays on Settings: a first save would otherwise switch it to Query). */
+  onSaved?: () => void
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -102,11 +107,16 @@ export function SettingsPanel({
     Promise.all([
       queryClient.invalidateQueries({ queryKey: trpc.resources.get.queryKey({ id: resource.id }) }),
       queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
+      // Saving other consent settings disconnects accounts.
+      queryClient.invalidateQueries({
+        queryKey: trpc.resources.oauthConnections.queryKey({ resourceId: resource.id }),
+      }),
     ])
   const save = useMutation(
     trpc.resources.saveConfig.mutationOptions({
       onSuccess: async () => {
         setEdits({})
+        onSaved?.()
         await refresh()
       },
     }),
@@ -142,7 +152,7 @@ export function SettingsPanel({
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
-          <RestFields {...props} />
+          <RestFields {...props} resourceId={resource.id} />
         )}
       </Card>
 
@@ -178,9 +188,12 @@ export function SettingsPanel({
               · {test.data.durationMs} ms
             </p>
           )}
-          {test.data && !test.data.ok && <ConnectorErrorNote error={test.data.error} />}
+          {test.data && !test.data.ok && (
+            <ConnectorErrorNote error={test.data.error} onConnected={() => test.mutate(request)} />
+          )}
         </div>
       )}
+      {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
     </div>
   )
 }
@@ -395,7 +408,15 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+function RestFields({
+  config,
+  set,
+  secrets,
+  edits,
+  setEdit,
+  disabled,
+  resourceId,
+}: FieldsProps & { resourceId: string }) {
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -440,6 +461,10 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
             set('auth', {
               type: e.target.value,
               ...(e.target.value === 'apiKey' ? { in: 'header', name: 'X-API-Key' } : {}),
+              ...(e.target.value === 'oauth2AuthorizationCode'
+                ? { provider: 'custom', scope: '', authorizeParams: [], pkce: true, tokens: 'shared' }
+                : {}),
+              ...(e.target.value === 'custom' ? { steps: [], refreshSteps: [] } : {}),
             })
           }
         >
@@ -448,6 +473,8 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
           <option value="bearer">Bearer token</option>
           <option value="basic">Basic auth</option>
           <option value="oauth2ClientCredentials">OAuth 2.0 client credentials</option>
+          <option value="oauth2AuthorizationCode">OAuth 2.0 sign-in (authorization code)</option>
+          <option value="custom">Custom auth flow</option>
         </Select>
       </Field>
       {auth.type === 'apiKey' && (
@@ -473,6 +500,26 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
           {secret('password', 'Password')}
         </Grid>
       )}
+      {auth.type === 'oauth2AuthorizationCode' && (
+        <OAuthCodeFields
+          resourceId={resourceId}
+          config={config}
+          set={set}
+          auth={auth}
+          clientSecret={secret('clientSecret', 'Client secret')}
+          disabled={disabled}
+        />
+      )}
+      {auth.type === 'custom' && (
+        <CustomAuthFields
+          auth={auth}
+          setAuth={setAuth}
+          secrets={secrets}
+          edits={edits}
+          setEdit={setEdit}
+          disabled={disabled}
+        />
+      )}
       {auth.type === 'oauth2ClientCredentials' && (
         <Grid>
           {authText('tokenUrl', 'Token URL', 'https://auth.example.com/oauth/token')}
@@ -493,7 +540,14 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
         </Grid>
       )}
 
-      <Field label="Headers" hint="Sent with every request. Put credentials in secret headers below instead.">
+      <Field
+        label="Headers"
+        hint={
+          auth.type === 'custom'
+            ? 'Sent with every request; use the flow’s variables here, e.g. Authorization: Bearer {{ auth.token }}.'
+            : 'Sent with every request. Put credentials in secret headers below instead.'
+        }
+      >
         <KeyValueEditor
           rows={(config.headers as KeyValue[]) ?? []}
           onChange={(rows) => set('headers', rows)}
@@ -501,7 +555,17 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
           keyPlaceholder="Header"
         />
       </Field>
-      <SecretHeaders secrets={secrets} edits={edits} setEdit={setEdit} disabled={disabled} />
+      <SecretRecord
+        field="headers"
+        label="Secret headers"
+        hint="Values are encrypted and never shown again."
+        namePlaceholder="Header name"
+        addLabel="Add secret header"
+        secrets={secrets}
+        edits={edits}
+        setEdit={setEdit}
+        disabled={disabled}
+      />
       <Field label="Query parameters" hint="Added to every request.">
         <KeyValueEditor
           rows={(config.params as KeyValue[]) ?? []}
@@ -541,29 +605,40 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
   )
 }
 
-function SecretHeaders({
+/** Named secret values kept in one record of the secrets (`headers`, or a custom auth flow's `values`). */
+export function SecretRecord({
+  field,
+  label,
+  hint,
+  namePlaceholder,
+  addLabel,
   secrets,
   edits,
   setEdit,
   disabled,
-}: Pick<FieldsProps, 'secrets' | 'edits' | 'setEdit' | 'disabled'>) {
-  const stored = Object.keys((secrets?.headers as Record<string, unknown>) ?? {})
-  const headerEdits = (edits.headers as Record<string, SecretEdit>) ?? {}
-  const names = [...new Set([...stored, ...Object.keys(headerEdits)])]
+}: Pick<FieldsProps, 'secrets' | 'edits' | 'setEdit' | 'disabled'> & {
+  field: string
+  label: string
+  hint: string
+  namePlaceholder: string
+  addLabel: string
+}) {
+  const stored = Object.keys((secrets?.[field] as Record<string, unknown>) ?? {})
+  const recordEdits = (edits[field] as Record<string, SecretEdit>) ?? {}
+  const names = [...new Set([...stored, ...Object.keys(recordEdits)])]
   const [name, setName] = useState('')
-  const setHeader = (header: string, edit: SecretEdit) =>
-    setEdit('headers', { ...headerEdits, [header]: edit })
+  const setOne = (key: string, edit: SecretEdit) => setEdit(field, { ...recordEdits, [key]: edit })
   return (
-    <Field label="Secret headers" hint="Values are encrypted and never shown again.">
+    <Field label={label} hint={hint}>
       <div className="space-y-2">
-        {names.map((header) => (
-          <div key={header} className="flex items-center gap-3">
-            <span className="w-48 truncate font-mono text-sm">{header}</span>
+        {names.map((key) => (
+          <div key={key} className="flex items-center gap-3">
+            <span className="w-48 truncate font-mono text-sm">{key}</span>
             <div className="flex-1">
               <SecretField
-                isSet={stored.includes(header)}
-                edit={headerEdits[header]}
-                onChange={(e) => setHeader(header, e)}
+                isSet={stored.includes(key)}
+                edit={recordEdits[key]}
+                onChange={(e) => setOne(key, e)}
                 disabled={disabled}
               />
             </div>
@@ -573,7 +648,7 @@ function SecretHeaders({
           <div className="flex gap-2">
             <Input
               className="font-mono"
-              placeholder="Header name"
+              placeholder={namePlaceholder}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -582,11 +657,11 @@ function SecretHeaders({
               variant="ghost"
               disabled={!name.trim()}
               onClick={() => {
-                setHeader(name.trim(), '')
+                setOne(name.trim(), '')
                 setName('')
               }}
             >
-              <Plus className="size-4" /> Add secret header
+              <Plus className="size-4" /> {addLabel}
             </Button>
           </div>
         )}

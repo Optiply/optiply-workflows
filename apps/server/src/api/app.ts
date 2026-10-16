@@ -20,6 +20,7 @@ import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
 import { databaseApi } from './database'
+import { oauthApi } from './oauth'
 import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
 
@@ -57,7 +58,7 @@ export async function buildApp(deps: {
     db,
     pool: services.pool,
     fetcher,
-    resources: dbResourceProvider(db, config.keyring),
+    resources: dbResourceProvider(db, config.keyring, services.sandbox),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     listener: deps.listener,
@@ -86,6 +87,7 @@ export async function buildApp(deps: {
   })
 
   await app.register(authRoutes, { db, config })
+  await app.register(oauthApi, { db, config })
   const events = deps.listener ? new RunEventHub(deps.listener) : undefined
   app.addHook('onClose', async () => {
     await events?.close()

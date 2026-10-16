@@ -100,6 +100,7 @@ export function ResourceDetailPage() {
             resource={resource}
             environmentId={current.environmentId}
             canEdit={atLeast(current.level as Level, 'edit')}
+            onSaved={() => setTab('settings')}
           />
         </div>
       )}

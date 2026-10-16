@@ -260,7 +260,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
 - **Resources:**
   - `resources`
   - `resource_configs(resource_id, environment_id, config jsonb, secrets)`. In M1, `secrets` became one self-describing token `<keyVersion>.<iv>.<ciphertext>.<tag>` instead of separate ciphertext, IV and key-version columns; see `docs/handoff.md` §2.
-  - `oauth_tokens`
+  - `oauth_tokens` (M9): one row per resource config and owner (`user_id` null = the shared account): the encrypted tokens of an OAuth authorization-code connection, or a custom auth flow's variables; expiry, granted scopes, the account's label, `status` active/reconnect, and a fingerprint of the consent settings (or the flow) they belong to. `UNIQUE NULLS NOT DISTINCT (resource_config_id, user_id)`.
   - `config_vars` + `config_var_values` (per environment, optionally secret)
   - `api_keys` (prefix + sha256 hash, scoped to workflows and environments; built in M4 with expiry, revoke and last use). Runs record the key that started them (`workflow_runs.api_key_id`).
 - **Workflows:**
@@ -311,7 +311,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - **Postgres** (postgres.js): `SET LOCAL statement_timeout`, cancel on abort, `maxRows`, optional read-only mode.
   - **REST** (undici):
     - Config: base URL, default headers and parameters, `allowedHosts`.
-    - Auth: none, API key, bearer, basic, or OAuth2 client-credentials (tokens cached, refreshed once on a 401).
+    - Auth: none, API key, bearer, basic, or OAuth2 client-credentials (tokens cached, refreshed once on a 401). M9: OAuth2 authorization code (shared or per-user accounts; tokens from the server through `QueryContext.credentials`) and custom auth flows (variables rendered into the resource's headers and parameters); see §2.12.
     - Bodies: json, form, raw or multipart.
     - Non-2xx responses error.
   - **MySQL** (mysql2, built in M6): server-side prepared statements, arrays expanded, `KILL QUERY` on cancel and timeouts, a read-only session option, `maxRows`, no local file reads.
@@ -359,7 +359,8 @@ packages/
 | **M6 Hardening** | MySQL, BigQuery, OAuth2 client-credentials, retention, audit UI, Prometheus `/metrics`, backup runbook, User Tasks + inbox | Retention runs without long locks. A User Task resumes its run. |
 | **M7 Database** | Retool-DB clone: a managed Postgres schema per environment, a spreadsheet editor (TanStack Table / Glide Data Grid), schema editor, CSV import/export, exposed as a built-in resource | Create a table, import CSV, query it from a workflow. |
 | **M8 App builder** | 12-column grid (react-grid-layout), component registry (`id`, props, methods, events), reactive `{{ }}` graph in a Web Worker (acorn deps + topological evaluation, reusing `packages/expressions`), queries proxied through the same connectors, event handlers, Table/Form/inputs first | Build a CRUD app on a Postgres table with an editable Table and a save query. |
-| **M9+** | Python executor (nsjail), SQS/Kafka triggers, OAuth auth-code + custom auth flows, Git sync (canonical JSON already exists), multiplayer editing (Yjs), AI actions | n/a |
+| **M9 OAuth** | REST resources sign in with the OAuth 2.0 authorization code (presets for Google, HubSpot, Slack, Microsoft 365; shared or per-user accounts) and with custom auth flows; tokens stored encrypted, refreshed under locks | A resource connected with the authorization code runs queries from the playground, a workflow (incl. a scheduled live run) and an app; expired tokens refresh, revoked ones ask for a reconnect; per-user accounts in an app; a custom flow refreshes once on a 401. |
+| **M10+** | Python executor (nsjail), SQS/Kafka triggers, Git sync (canonical JSON already exists), multiplayer editing (Yjs), AI actions | n/a |
 
 ## 2.7a M0 implementation detail (in progress)
 
@@ -471,8 +472,9 @@ packages/
 6. Run `kill -9` on a worker mid-run. The run resumes on the other worker and completed blocks are not re-run.
 7. M7: on the Database page, create a table and import a CSV into it; a workflow with a query on `optiply_db` returns its rows, in each environment its own (handoff §9a has the Compose run).
 8. M8: build an app on an `optiply_db` table (a query, a Table with an editable column, a save query over `changesetArray`), publish it, edit a cell in the published app and save it; the row changes in the database (`apps/web/e2e/m8-done-when.spec.ts`; handoff §9b has the Compose run).
-9. M6: a run waiting on a User Task survives `docker compose down`/`up` and resumes when the task is completed; retention deletes 100k old block rows while runs keep flowing, with no lock waits (handoff §9 has the numbers).
-10. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
+9. M9: connect a REST resource's shared account through the provider's consent screen (a pop-up), query it from the playground, a scheduled live run and an app; expire the token (refreshed once), revoke it (the playground asks for a reconnect; Reconnect fixes it); a custom flow signs in once and refreshes once on a 401 (`apps/web/e2e/m9-done-when.spec.ts`; handoff §9c has the Compose run).
+10. M6: a run waiting on a User Task survives `docker compose down`/`up` and resumes when the task is completed; retention deletes 100k old block rows while runs keep flowing, with no lock waits (handoff §9 has the numbers).
+11. Automated: `pnpm test` (Vitest unit and golden-semantics tests; Postgres comes from embedded-postgres, not Testcontainers) and `pnpm --filter @ow/web e2e` (Playwright, against the bundled server; see `apps/web/e2e`).
 
 ## 2.9 Open items (defaults chosen; change later if needed)
 - Importing existing Retool workflows: block names, `{{ }}` semantics and settings were kept compatible, so an importer is cheap. It is not in scope yet.
@@ -507,3 +509,14 @@ Retool-style internal UIs: components on a grid, wired together with `{{ }}`, re
 - **Components** (`apps/web/src/pages/apps/components`): Table (virtualized, sorting, selection, keyboard editing into `changesetArray` keyed by primary key, Save fires `save` and clears the changes once it succeeded), Form (`form.data` from its inputs, required inputs checked by the runtime), inputs, Button, Text, Container, Modal, and Chart (Chart.js in its own chunk; the dataviz reference palette in a fixed order, a table view).
 - **Releases:** semver publish and rollback like workflows; `/apps/<slug>` shows the live release in an environment the viewer picks.
 - **Not yet:** multipage apps, modules, a mobile layout, custom components, a Query Library, server-side paging for tables, per-row column templates, folders for apps, multiplayer editing, themes, running the sandbox off the page's thread.
+
+## 2.12 Signing in to APIs (M9)
+
+REST resources that act as a person or a workspace, or that have their own login.
+
+- **OAuth 2.0 authorization code.** The settings hold the authorization and token URLs, client ID, scopes, extra consent parameters, client auth, PKCE (S256, on by default) and the token mode (`shared` or `perUser`); the client secret is with the other secrets. Presets (`@ow/connectors/oauth-presets`, browser-safe) fill these in for Google (offline access and a consent prompt, so a refresh token is issued), HubSpot, Slack (`ok: false` answers; user tokens in `authed_user`) and Microsoft 365 (a `{tenant}` placeholder; the scopes are sent again on refresh; refresh tokens rotate).
+- **The connect flow** (`apps/server/src/api/oauth.ts`): `/api/oauth/start` (session; Edit for the shared account, Use for one's own) puts state, the PKCE verifier, the person and a fingerprint of the consent settings in a signed, HttpOnly cookie named after the state (10 minutes, path `/api/oauth`), then redirects to the consent screen. `/api/oauth/callback` (one redirect URI for every resource) needs that cookie, the same state and the same person's session, checks access and the consent settings again, exchanges the code and stores the tokens; it ends on a page that posts `ow:oauth` to the opener (`PUBLIC_URL`'s origin) and closes. Connects, disconnects and refused refreshes are audited without tokens.
+- **Tokens in queries:** connectors ask the server through `QueryContext.credentials` (`accessToken({ force })`), so user tokens never sit in pooled clients; a 401 forces one refresh and a retry. Refreshes run under the token row's `FOR UPDATE` lock, and whoever waited uses what the other stored: rotating refresh tokens are never spent twice. A refused refresh (`invalid_grant`) marks the row `reconnect` (committed) and later queries fail at once with `auth_required` (details: reason, shared/user, resource, environment), which the UI turns into Connect / Reconnect prompts. Changing the consent settings disconnects accounts.
+- **Whose account:** the shared one, or on per-user resources the person behind the query: the playground's caller, an app's viewer, a draft run's starter (the engine's `actingUserId`). Runs of a release have nobody behind them, so publishing (and rollback) refuses workflows that query a per-user resource.
+- **Custom auth flows** (auth type `custom`): ordered steps (a REST request through the resource's base URL and allowed hosts without its default headers, JavaScript in the sandbox, or a variable), with `secrets.NAME` (named secret values), `auth` and earlier steps in scope; optional refresh steps (run on a 401 from the current variables, falling back to signing in) and `ttlSeconds`. The variables (`auth.NAME`) are rendered into the resource's headers and parameters on each attempt, scrubbed from results, stored encrypted in `oauth_tokens` (one shared row), and signed in for under a transaction-scoped advisory lock per config. Test connection signs in afresh in memory.
+- **Not yet:** token revocation at the provider on disconnect, per-user custom flows (a form step), a back-off for a sign-in that keeps failing, live checks against the real providers (only the fake one so far), admin views of other people's connections.

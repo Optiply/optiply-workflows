@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-15 (end of session 8, which built M8).
+Last updated: 2026-10-16 (end of session 9, which built M9).
 
 | | |
 |---|---|
-| **Branch** | `main`. M8 was built on `feat/m8-apps` (8 steps, 3 flaky-test fixes, 1 review-fix commit) |
-| **PR** | [#9 M8: App builder](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/9), **merged** at the end of session 8 after a review (10 fixes, `cefd37a`); CI green throughout |
-| **`main`** | `35150aa`, the merge of PR #9. Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `feat/m9-oauth` (7 steps, plus a handoff fix on top of `main`) |
+| **PR** | [#10 M9: OAuth authorization code and custom auth flows](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10), **draft, not merged**: review it first (as for PRs #8 and #9); CI green on every step |
+| **`main`** | `fe0c65d` (M8 merged as `35150aa` plus its handoff). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -28,9 +28,10 @@ Last updated: 2026-10-15 (end of session 8, which built M8).
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
-| M9 | ⏭️ **Next**: plan it with the user (§14) |
+| **M9 OAuth** | ✅ Built on `feat/m9-oauth` (§9c), draft PR #10, **not reviewed or merged yet**. The done-when proven in Playwright and on Docker Compose. |
+| M10 | ⏭️ After merging M9: plan it with the user (§14) |
 
-**Start the next session with:** planning M9 with the user (§14), then a new branch and draft PR (§15). Review each milestone's PR before merging (sessions 7 and 8 used the `code-review` skill at high effort, verified each finding, then fixed them in one commit).
+**Start the next session with:** reviewing PR #10 (the `code-review` skill at high effort, verify each finding, fix them in one commit, as for PRs #8 and #9), then merging it with a merge commit and planning M10 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -211,6 +212,22 @@ Last updated: 2026-10-15 (end of session 8, which built M8).
 - **Chart:** the dataviz skill's reference categorical palette, in its validated order (validated on our white surface; three slots under 3:1, hence the Table view), never cycled: past 8 series (7 pie slices) they're named or folded into "Other". Light mode only.
 - **From the PR #9 review:** moving a workflow or app between folders needs Own, into a folder of its own type only, and folder grants count only for their own type; app queries run with `untrustedValues` (REST path values encoded per segment); the editor fetches the draft fresh per visit and loads it once; the viewer keeps the release it opened (a newer one shows through the Reload banner); confirmations queue.
 - **`"sideEffects": false`** on `@ow/definition`, `@ow/app-definition`, `@ow/expressions` and `@ow/app-runtime`: unused zod schemas no longer ship (the sandbox script 649 → 187 kB, the main bundle 590 → 414 kB).
+
+### Taken in M9 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M9** (PR #10's "Decisions"):
+  - **Shared accounts, per-user optional** (Retool's model). A resource's `tokens` is `shared` (someone with Edit connects one account per environment; every query uses it, webhook and schedule runs included) or `perUser` (each person connects their own; used by the playground, apps and their own draft runs; workflows on it can't be published).
+  - **Custom auth flows are part of M9.**
+  - **Presets for Google, HubSpot, Slack and Microsoft 365.** No live provider check yet: the user had no OAuth app credentials (§12).
+- **One callback for every resource:** `<PUBLIC_URL>/api/oauth/callback`. State, the PKCE verifier, the person and the consent fingerprint sit in a signed HttpOnly cookie named after the state (`ow_oauth_<state[:16]>`, path `/api/oauth`, 10 min, SameSite=Lax); the callback needs it, the same state and the same person's session, and re-checks access and the consent settings. The flow ends on a server-rendered page that posts `ow:oauth` to the opener (`PUBLIC_URL`'s origin only) and closes; the web app opens it in a popup (`lib/oauth.ts`).
+- **Access:** connecting or disconnecting the shared account needs Edit on the resource in that environment; one's own needs Use. A resource is either shared or per-user, never both.
+- **Connectors never hold user tokens:** `QueryContext.credentials` (`CredentialSource`: `accessToken({ force })` for OAuth, `authVariables({ force })` for custom flows) is supplied by the server (`credentialsFor` in `services/oauth-tokens.ts`); `runQuery` scrubs everything it hands out. A 401 forces one refresh and a retry.
+- **Storage:** `oauth_tokens` (migration `0013`), encrypted JSON in `tokens` (AAD `oauth_tokens:<id>:<env>`; in `ENCRYPTED_COLUMNS`, so `rekey`/`verify-secrets` cover it). OAuth refreshes run under the row's `FOR UPDATE` lock, custom flows under a transaction-scoped advisory lock per config; the one that waited uses what the other stored. The lock and a pooled connection are held during the provider call (bounded by the query timeout).
+- **Refused refreshes** (`invalid_grant` and Slack's equivalents) mark the row `reconnect`, committed, and are audited (`resource.oauth_refresh_failed`); other provider errors leave it. No refresh token: an expired token needs a reconnect; a refused one is sent back unchanged (the API's own 401 shows).
+- **Consent fingerprint** (`consentHash`): authorize and token URLs, client ID, trimmed scopes, sorted non-empty consent parameters (not the secret, PKCE or client auth); for custom flows (`customFlowHash`) the base URL and the steps. `saveConfig` deletes the config's tokens when it changes; reads refuse a mismatch too.
+- **Whose account:** the engine got `actingUserId` (the person who started a draft run; null for runs of a release); app queries use the viewer; the playground the caller. Publishing and rollback refuse workflows querying a per-user resource in any environment.
+- **`auth_required` errors** carry `{ reason, account: shared|user, resourceId, environmentId }`; the UI turns them into Connect / Reconnect prompts (`components/auth-required.tsx`), and apps re-run their failed **automatic** queries after connecting (manual ones wait for the person).
+- **Custom flows:** steps `request` (a REST query through the resource's base URL, allowed hosts and network settings, without its default headers, parameters or auth), `code` (sandbox, 30 s), `variable` (`auth.<name>`); `secrets.NAME` from the new secret `values`; refresh steps merged over the current variables, falling back to signing in; `ttlSeconds`; one shared set of variables per config (no per-user flows, no form step). Each process has a sandbox for flows (the API's; the worker creates one).
+- **Token endpoints don't follow redirects** (they weren't host-checked before; this changed client credentials too), and a string `expires_in` is read as a number.
 
 ## 3. What M0 built (on `main`)
 
@@ -494,6 +511,38 @@ Tests: 3 server tests (folders, workflows, a REST path against a real HTTP serve
 
 Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the apps chunk (viewer, runtime, sandbox script) 317 kB, the app editor 133 kB, Chart.js 191 kB (with the first chart), the workflow editor 336 kB, the database page 87 kB.
 
+## 9c. What M9 built (on `feat/m9-oauth`, PR #10)
+
+**Done-when** (a REST resource connected with the authorization code runs queries from the playground, a workflow including a scheduled live run, and an app; an expired token refreshes on its own; a revoked one asks for a reconnect; a per-user resource uses each viewer's own account in an app; a custom auth flow refreshes once on a 401), proven:
+- `apps/web/e2e/m9-done-when.spec.ts` (3 tests, against a fake provider and API in the test process; `--repeat-each=3` passed): the resource set up and connected through the UI (popup), the playground, a draft run, a scheduled run (made due through the seeded `shop_db` resource, which reaches the platform database), a published app, expiry (one refresh grant), revocation (the reconnect message, then Reconnect on the card); two people (the global setup now makes `e2e-second@optiply.nl`) each connecting their own account in one app; a custom flow built in the editor, signing in once and refreshing once.
+- On Docker Compose (§10): the same, with the provider on the Mac.
+
+### Step 1, `512bbd6`: connector
+`packages/connectors/src/oauth.ts` (PKCE, state, consent URL, code exchange, refresh, client credentials over one token request, Slack's and Entra ID's quirks, `OAuthGrantError`), `oauth-presets.ts`, the `oauth2AuthorizationCode` auth type, `CredentialSource`, `auth_required`. 27 tests.
+
+### Step 2, `e1430be`: token storage
+Migration `0013`, `services/oauth-tokens.ts` (`saveTokens`, `deleteTokens`, `connectionStatus`, `oauthCredentials` with the locked refresh), `saveConfig` dropping tokens on consent changes. 13 tests (5 workers → 1 refresh against a provider refusing reused refresh tokens).
+
+### Step 3, `b8a4454`: connect flow
+`api/oauth.ts` (start, callback), `services/oauth-connect.ts` (checks, cookie, result page), `resources.oauthConnections` and `resources.oauthDisconnect`. 10 tests.
+
+### Step 4, `a7205a5`: tokens on every path
+The engine's `actingUserId`, `credentialsFor` in the resource provider, apps and the playground, the publish check. 7 integration tests with a real worker against an API that says whose account each token is. An engine test ("stops a workflow that calls itself after 10 levels") failed once locally under load and passed in every rerun and in CI.
+
+### Step 5, `c49ecba`: UI
+`pages/resources/oauth.tsx` (fields with presets and the redirect URI; the connection card), `lib/oauth.ts` (popup), `components/auth-required.tsx`, the app host's `connections` and `NeededConnections` banner; saving keeps the Settings tab open (it used to jump to Query). A Chrome walkthrough (not committed).
+
+### Step 6, `7a6aa32`: custom auth flows (back end)
+The `custom` auth type, `auth-flow.ts` (`runAuthFlow`), per-attempt `authMaterial` in the REST connector, `services/custom-auth.ts`. 17 tests.
+
+### Step 7 (this commit): custom flow UI, done-when, Compose check, docs
+`pages/resources/custom-auth.tsx` (secret values, sign-in and refresh steps, the sign-in-again interval; `SecretRecord` generalizes the secret headers editor), `e2e/m9-done-when.spec.ts`, the second e2e user, README ("Signing in to APIs"), `architecture.md` §2.3/§2.5/§2.7/§2.8/§2.12, this file.
+
+### Totals at the end of M9
+`biome ci` is clean. Typecheck passes **11/11**. **843 tests pass** (server 223, engine 139, connectors 136, definition 124, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **18 Playwright e2e**.
+
+Bundles: main 425 kB (414 before M9).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -501,6 +550,12 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
 - **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 9** (the M9 done-when; `m9-check.mjs` in the session scratchpad, not committed):
+  - Checked first that the user wasn't mid-task (audit: they had signed in 10 minutes before; asked, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build` while running, then `up -d`: localhost:3000 back after **10 s**; migrate applied `0013`.
+  - The `m7-check@optiply.nl` admin got a new random password (`compose/m7-check-password` in this session's scratchpad); `admin@optiply.nl` untouched.
+  - A fake provider on the Mac (listening on 0.0.0.0): the browser reaches its consent screen at `127.0.0.1:<port>`, the containers its token endpoint and API at `host.docker.internal:<port>` (`allowPrivateNetwork` on).
+  - In Chrome as `m7-check`: the redirect URI shown as `http://localhost:3000/api/oauth/callback`; the shared account connected in the popup; the row encrypted; the playground, a scheduled live run (made due with SQL) and a published app all used it; an expired token refreshed once; a revoked one refused with `invalid_grant`, then Reconnect from the card fixed it; a custom flow signed in once, reused its session, and refreshed once on a 401; the audit had `oauth_connected`, `oauth_refresh_failed`, `oauth_connected` and no token or secret anywhere; no page errors.
+  - Afterwards the check's resources, workflow and app were deleted (their tokens went with them) and the session signed out; the user's `test` and `cancel-me` workflows and schedule were untouched.
 - **Docker Compose, session 8** (the M8 done-when; `m8-check.mjs` in the session scratchpad, not committed):
   - Checked first that the user wasn't mid-task (audit: they had signed in 11 minutes before; asked, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build` while running, then `up -d`: localhost:3000 back after **6 s**; migrate applied `0012` (the `apps` table exists); the managed database unchanged.
   - The `m7-check@optiply.nl` admin got a new random password (`compose/m7-check-password` in this session's scratchpad); `admin@optiply.nl` untouched.
@@ -542,14 +597,15 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the M8 image (session 8: step 7 plus step 8's editor fix, built from the working tree; migration `0012` applied). It holds **the user's own app `test`** (created right after the rebuild). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset in session 8, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the M9 image (session 9, built from the `feat/m9-oauth` working tree at step 7; migration `0013` applied; no OAuth connections stored). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 8** the Compose stack was left running on the M8 image **from before the PR #9 review fixes** (rebuild it to get them: `PUBLIC_URL=http://localhost:3000 docker compose up -d --build`, after checking with the user), with the user signed in and working in it (their `test` app). The dev database and dev servers weren't started this session.
+- **At the end of session 9** the Compose stack was left running on the M9 image (step 7, before any PR #10 review fixes: rebuild after merging). The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
+- **At the end of session 8** the Compose stack was left running on the image of `main` (`fe0c65d`, M8 with the review fixes).
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
 ## 12. Still unverified
@@ -562,7 +618,9 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 6. **The 50 MB / 500k-row import caps**: enforced in code, not exercised (the largest import tested was 50,000 rows).
 7. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
 8. **Apps in Firefox and Safari**: the sandbox (opaque-origin iframe, its CSP, the MessageChannel handshake), react-grid-layout and the Table were exercised in Chrome only (locally and Chromium in CI).
-9. **Large app data**: the Table virtualizes rows, but every query result crosses the sandbox and the store whole; nothing measured beyond a few hundred rows.
+9. **OAuth against real providers** (Google, HubSpot, Slack, Microsoft 365): the presets and quirks were checked against the providers' documentation and a fake provider only. Needs an OAuth app per provider with the redirect URI `<PUBLIC_URL>/api/oauth/callback` and its client ID and secret from the user. **Slack requires HTTPS redirect URIs** (as far as I know): its live check needs a tunnel or an HTTPS `PUBLIC_URL`.
+10. **The OAuth popup in Firefox and Safari** (`window.open` plus `postMessage` from the result page; checked in Chrome only).
+11. **Large app data**: the Table virtualizes rows, but every query result crosses the sandbox and the store whole; nothing measured beyond a few hundred rows.
 
 ## 13. Known gaps and TODOs carried forward
 
@@ -592,7 +650,7 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
 - **Web:**
   - Apps have notifications (`pages/apps/notifications.tsx`); the rest of the web app still has no toast system, and `confirm()` is still used for destructive actions (the `Dialog` could replace it).
   - The main bundle is 488 kB; the editor and Monaco are split out, the other pages aren't.
-  - A resource's page jumps from Settings to Query after its first save. The label editors' "Add" button takes the whole field label as its accessible name.
+  - The label editors' "Add" button takes the whole field label as its accessible name (the M9 e2e relies on it: `/^Headers Sent with every request/`).
   - The editor has no undo/redo across blocks, no copy/paste of blocks, and no "create function from selection". No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
   - The run panel's logs tab shows the first 500 lines. The resources playground still uses textareas.
 - **Editor completions** cover the latest finished run only; there's no environment choice for them.
@@ -614,14 +672,20 @@ Bundles: first-load JS ~600 kB (main 414 kB + `ui` 178 kB + small chunks); the a
   - Charts: light mode only, no time-scale axes (dates are categories), no texture fills.
   - Automatic queries aren't audited (by design); manual ones are, without values.
   - Rollback asks with `confirm()`, like the workflow editor.
-- **Not built yet:** multipart REST bodies; `oauth_tokens` (M9).
+- **OAuth and custom auth (M9):**
+  - Disconnecting doesn't revoke the token at the provider.
+  - A custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
+  - No per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows (Test connection signs in).
+  - Refreshes hold a pooled connection and a lock while calling the provider.
+  - Code steps of custom flows run in a sandbox shared by the process (the API's, or the worker's own), not the run's.
+  - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
+- **Not built yet:** multipart REST bodies.
 
-## 14. Next step: M9
+## 14. Next step: review and merge M9, then M10
 
-From `architecture.md` §2.7, M9+ is a list to choose from rather than one milestone; decide with the user which comes first:
+First review PR #10 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
 - **Python executor** (nsjail) for code blocks.
 - **SQS/Kafka triggers** for workflows.
-- **OAuth authorization-code and custom auth flows** for REST resources (`oauth_tokens`).
 - **Git sync** (canonical JSON already exists for workflows and apps).
 - **Multiplayer editing** (Yjs) for the workflow and app editors.
 - **AI actions.**
@@ -632,11 +696,11 @@ Also open from M8, if the user prefers to finish apps first: the sandbox off the
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull                      # M8 (PR #9) is merged
+git switch feat/m9-oauth && git pull            # M9 (PR #10) is in review; after merging: git switch main && git pull
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m9-<topic>                    # then open a draft PR after the first commit
+git switch -c feat/m10-<topic>                   # once M9 is merged; open a draft PR after the first commit
 ```

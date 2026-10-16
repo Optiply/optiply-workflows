@@ -156,6 +156,8 @@ export class RunExecutor {
         runId: run.id,
         definition,
         environmentId: run.environmentId,
+        // Only a draft run has a person behind it (whoever ran it from the editor).
+        actingUserId: run.draftSnapshotId ? run.createdBy : null,
         input: run.input as RunInput,
         globals: {
           configVars: context.configVars,

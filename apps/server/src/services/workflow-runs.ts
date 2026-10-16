@@ -33,7 +33,9 @@ import {
   type ResourceProvider,
   type RunContextProvider,
 } from '@ow/engine'
+import type { CodeRuntime } from '@ow/sandbox'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
@@ -309,9 +311,10 @@ async function draftSnapshot(db: Db, workflowId: string, userId: string) {
 }
 
 /** Resources for the worker: looked up by slug, with secrets decrypted for the run's environment. */
-export function dbResourceProvider(db: Db, keyring: Keyring): ResourceProvider {
+/** `sandbox` runs custom auth flows' code and templates (not the runs' own code: each run has its own). */
+export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntime): ResourceProvider {
   return {
-    async resolve(slug, environmentId) {
+    async resolve(slug, environmentId, opts) {
       const [resource] = await db.select().from(resources).where(eq(resources.slug, slug))
       if (!resource) throw new BlockFailure('resource', `No resource has the slug "${slug}"`)
       const connector = getConnector(resource.type)
@@ -323,7 +326,12 @@ export function dbResourceProvider(db: Db, keyring: Keyring): ResourceProvider {
           and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, environmentId)),
         )
       if (!row) throw new BlockFailure('resource', `Resource "${slug}" isn't configured in this environment`)
-      return { connector, resource: toResolved(keyring, row) }
+      const resolved = toResolved(keyring, row)
+      return {
+        connector,
+        resource: resolved,
+        credentials: credentialsFor({ db, keyring, sandbox }, resolved, opts?.actingUserId ?? null),
+      }
     },
   }
 }

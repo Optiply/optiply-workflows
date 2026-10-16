@@ -268,6 +268,102 @@ describe('auth and secrets', () => {
   })
 })
 
+describe('OAuth2 authorization code', () => {
+  const codeResource = () =>
+    restResource({
+      auth: {
+        type: 'oauth2AuthorizationCode',
+        authorizeUrl: 'https://auth.example.com/authorize',
+        tokenUrl: 'https://auth.example.com/token',
+        clientId: 'cid',
+      },
+    })
+
+  /** Hands out `token-v<n>`: the stored one, or the current one when forced (a refresh). */
+  function credentials(stored: number) {
+    const calls: { force: boolean }[] = []
+    return {
+      calls,
+      source: {
+        async accessToken({ force }: { signal: AbortSignal; force?: boolean }) {
+          calls.push({ force: !!force })
+          return `token-v${force ? tokenVersion : stored}`
+        },
+      },
+    }
+  }
+
+  const runWith = (res: ResolvedResource, query: Record<string, unknown>, source?: unknown) =>
+    runQuery(pool, restConnector, res, query, {
+      evaluate: scopeEvaluator({}),
+      ...(source ? { credentials: source as never } : {}),
+    })
+
+  it('sends the connection’s token, refreshing once when the API refuses it', async () => {
+    const fresh = credentials(tokenVersion)
+    const ok = await runWith(codeResource(), { path: 'protected' }, fresh.source)
+    expect((ok.data as Echo).ok).toBe(true)
+    expect(fresh.calls).toEqual([{ force: false }])
+
+    const stale = credentials(tokenVersion - 1)
+    const retried = await runWith(codeResource(), { path: 'protected' }, stale.source)
+    expect((retried.data as Echo).ok).toBe(true)
+    expect(stale.calls).toEqual([{ force: false }, { force: true }])
+  })
+
+  it('fails with the second 401 rather than looping', async () => {
+    const calls: boolean[] = []
+    const source = {
+      async accessToken({ force }: { force?: boolean }) {
+        calls.push(!!force)
+        return 'token-never-valid'
+      },
+    }
+    const err = await failure(runWith(codeResource(), { path: 'protected' }, source))
+    expect(err).toMatchObject({ code: 'http', details: { status: 401 } })
+    expect(calls).toEqual([false, true])
+  })
+
+  it('asks for a connection when there is none', async () => {
+    const err = await failure(runWith(codeResource(), { path: 'echo' }))
+    expect(err).toMatchObject({ code: 'auth_required', message: expect.stringMatching(/Connect an account/) })
+
+    const revoked = {
+      async accessToken(): Promise<string> {
+        throw new ConnectorError('auth_required', 'Reconnect the account', { reason: 'invalid_grant' })
+      },
+    }
+    expect(await failure(runWith(codeResource(), { path: 'echo' }, revoked))).toMatchObject({
+      code: 'auth_required',
+      message: 'Reconnect the account',
+      details: { reason: 'invalid_grant' },
+    })
+  })
+
+  it('scrubs the access token from what the API echoes back', async () => {
+    const source = { accessToken: async () => 'at-echoed-0123456789' }
+    const result = await runWith(codeResource(), { path: 'echo' }, source)
+    expect((result.data as Echo).headers.authorization).toBe('Bearer [REDACTED]')
+    expect(JSON.stringify(result)).not.toContain('at-echoed-0123456789')
+  })
+
+  it('tests the connection with the token', async () => {
+    const res = restResource({
+      baseUrl: `${origin}/api/protected`,
+      auth: {
+        type: 'oauth2AuthorizationCode',
+        authorizeUrl: 'https://auth.example.com/authorize',
+        tokenUrl: 'https://auth.example.com/token',
+        clientId: 'cid',
+      },
+    })
+    const ok = await testResource(restConnector, res, { credentials: credentials(tokenVersion).source })
+    expect(ok).toMatchObject({ ok: true, message: 'HTTP 200 OK' })
+    const none = await testResource(restConnector, res)
+    expect(none).toMatchObject({ ok: false, error: { code: 'auth_required' } })
+  })
+})
+
 describe('network guard', () => {
   it('blocks private addresses unless the resource allows them', async () => {
     const literal = await failure(run(restResource({ allowPrivateNetwork: false }), { path: 'echo' }))

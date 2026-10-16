@@ -1,9 +1,10 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { auditEvents, configVarValues, permissions, resourceConfigs } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
+import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { saveTokens } from '../src/services/oauth-tokens'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 // Distinctive values, so finding one anywhere in a response is unambiguous.
@@ -280,6 +281,60 @@ describe('resources (admin)', () => {
     expect(run.data.path).toBe('/orders/42')
     expect(run.data.headers.authorization).toBe('Bearer [REDACTED]')
     expect(run.data.headers['x-api-token']).toBe('[REDACTED]')
+  })
+
+  it('disconnects OAuth accounts when the consent settings change, and only then', async () => {
+    const id = data(
+      await admin.mutate('resources.create', { type: 'rest', name: 'CRM', slug: 'crm_oauth' }),
+    ).id
+    const oauth = {
+      type: 'oauth2AuthorizationCode',
+      authorizeUrl: 'https://auth.example.com/authorize',
+      tokenUrl: 'https://auth.example.com/token',
+      clientId: 'cid',
+      scope: 'contacts',
+    }
+    const save = (config: Record<string, unknown>, secrets?: Record<string, unknown>) =>
+      admin.mutate('resources.saveConfig', { resourceId: id, environmentId: prodId, config, secrets })
+    expect((await save({ baseUrl: 'https://api.example.com', auth: oauth })).status).toBe(200)
+    const [config] = await env.db.select().from(resourceConfigs).where(eq(resourceConfigs.resourceId, id))
+    const connectAccounts = async () => {
+      await env.db.delete(oauthTokens).where(eq(oauthTokens.resourceConfigId, config!.id))
+      for (const userId of [null, memberId]) {
+        await saveTokens(env.db, env.config.keyring, {
+          resourceConfigId: config!.id,
+          environmentId: prodId,
+          userId,
+          tokens: { accessToken: 'at', refreshToken: 'rt', expiresAt: null, scope: null, account: null },
+          consentHash: 'any',
+          connectedBy: memberId,
+        })
+      }
+    }
+    const accounts = async () =>
+      (await env.db.select().from(oauthTokens).where(eq(oauthTokens.resourceConfigId, config!.id))).length
+
+    await connectAccounts()
+    // Other settings and the client secret: the accounts stay.
+    await save(
+      { baseUrl: 'https://api2.example.com', auth: { ...oauth, pkce: false } },
+      { clientSecret: 'new' },
+    )
+    expect(await accounts()).toBe(2)
+
+    await save({ baseUrl: 'https://api2.example.com', auth: { ...oauth, scope: 'contacts deals' } })
+    expect(await accounts()).toBe(0)
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.objectId, id))
+      .orderBy(desc(auditEvents.id))
+      .limit(1)
+    expect(audit!.metadata).toMatchObject({ disconnectedAccounts: 2 })
+
+    await connectAccounts()
+    await save({ baseUrl: 'https://api2.example.com', auth: { type: 'bearer' } })
+    expect(await accounts()).toBe(0)
   })
 })
 
