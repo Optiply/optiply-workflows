@@ -106,13 +106,15 @@ export async function runWorkflow() {
   const { slug, environment } = useRun.getState()
   const trigger = useEditor.getState().definition.blocks.find((b) => b.type === 'startTrigger')
   const input = trigger?.type === 'startTrigger' ? trigger.config?.testInput : undefined
-  await start(() => runsApi.start(slug, input ?? null, environment ?? undefined))
+  const draftId = useEditor.getState().branchDraftId
+  await start(() => runsApi.start(slug, input ?? null, environment ?? undefined, draftId))
 }
 
 /** Saves the draft, then runs one block, reusing its ancestors' results from the latest run. */
 export async function runBlock(name: string) {
   const { slug, environment } = useRun.getState()
-  await start(() => runsApi.startBlock(slug, name, environment ?? undefined))
+  const draftId = useEditor.getState().branchDraftId
+  await start(() => runsApi.startBlock(slug, name, environment ?? undefined, draftId))
 }
 
 async function start(launch: () => Promise<RunView>) {

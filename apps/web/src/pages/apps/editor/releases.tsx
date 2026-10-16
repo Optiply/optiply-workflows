@@ -1,9 +1,9 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
+import { GitBranch, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
-import { ReleaseAuthor, useGitInfo } from '@/components/git'
+import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -64,21 +64,24 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
           <span className="text-xs whitespace-nowrap text-amber-700">Unpublished changes</span>
         )}
       </button>
-      <Button
-        size="sm"
-        variant="primary"
-        disabled={errors > 0 || !unpublished || !releases.data}
-        title={
-          errors
-            ? 'Fix the problems first'
-            : unpublished
-              ? 'Release this draft to the people using the app'
-              : 'Nothing changed since the live release'
-        }
-        onClick={() => setOpen('publish')}
-      >
-        <Rocket className="size-3.5" /> Publish
-      </Button>
+      {/* A protected app is published by merging on Git. */}
+      {!app.gitProtected && (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={errors > 0 || !unpublished || !releases.data}
+          title={
+            errors
+              ? 'Fix the problems first'
+              : unpublished
+                ? 'Release this draft to the people using the app'
+                : 'Nothing changed since the live release'
+          }
+          onClick={() => setOpen('publish')}
+        >
+          <Rocket className="size-3.5" /> Publish
+        </Button>
+      )}
       <Button size="icon" variant="ghost" title="Releases" onClick={() => setOpen('releases')}>
         <History className="size-4" />
       </Button>
@@ -402,30 +405,77 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               <Trash2 className="size-3.5" /> Delete app
             </Button>
           )}
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={update.isPending}
-            disabled={!name.trim()}
-            onClick={() => update.mutate({ id: app.id, name, description: description.trim() || null })}
-          >
-            Save
-          </Button>
+          <Button onClick={onClose}>{app.gitProtected ? 'Close' : 'Cancel'}</Button>
+          {!app.gitProtected && (
+            <Button
+              variant="primary"
+              loading={update.isPending}
+              disabled={!name.trim()}
+              onClick={() => update.mutate({ id: app.id, name, description: description.trim() || null })}
+            >
+              Save
+            </Button>
+          )}
         </>
       }
     >
       <div className="flex flex-col gap-4">
-        <Field label="Name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        <Field
+          label="Name"
+          hint={app.gitProtected ? 'A protected app’s name comes from the repo.' : undefined}
+        >
+          <Input value={name} disabled={app.gitProtected} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Description">
-          <Textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+          <Textarea
+            rows={3}
+            value={description}
+            disabled={app.gitProtected}
+            onChange={(e) => setDescription(e.target.value)}
+          />
         </Field>
+        {app.level === 'own' && <AppGitProtection app={app} />}
         <p className="text-xs text-muted">
           Slug <span className="font-mono">{app.slug}</span> (the app's address) can't change.
         </p>
         <ErrorNote error={update.error ?? remove.error} />
       </div>
     </Dialog>
+  )
+}
+
+/** Owners protect the app in Git (M11), or unprotect it. */
+function AppGitProtection({ app }: { app: EditorApp }) {
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
+  const unprotect = useUnprotect('app')
+  if (!git?.configured && !app.gitProtected) return null
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h4 className="text-sm font-medium text-ink">Git</h4>
+      <div>
+        {app.gitProtected ? (
+          <Button
+            size="sm"
+            variant="danger"
+            loading={unprotect.isPending}
+            onClick={() => confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'app', id: app.id })}
+          >
+            Unprotect
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => setProtecting(true)}>
+            <GitBranch className="size-3.5" /> Protect in Git
+          </Button>
+        )}
+      </div>
+      <span className="text-xs text-muted">
+        {app.gitProtected
+          ? `Protected: edited on branches, deployed by merging into ${git?.branch ?? 'the deploy branch'}.`
+          : 'Protect it to have changes reviewed in pull requests before they go live.'}
+      </span>
+      <ErrorNote error={unprotect.error} />
+      {protecting && <ProtectDialog kind="app" object={app} onClose={() => setProtecting(false)} />}
+    </section>
   )
 }

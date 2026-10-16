@@ -74,8 +74,8 @@ const workflowEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows/$workflowId',
   staticData: { fullBleed: true },
-  /** `run` opens that run in the run panel (links from /runs). */
-  validateSearch: z.object({ run: z.string().uuid().optional() }),
+  /** `run` opens that run in the run panel (links from /runs); `branch` edits a protected workflow's draft there (M11). */
+  validateSearch: z.object({ run: z.string().uuid().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/workflows/editor'), 'WorkflowEditorPage'),
 })
 const resourcesRoute = createRoute({
@@ -119,7 +119,8 @@ const appEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps/$slug/edit',
   staticData: { fullBleed: true },
-  validateSearch: z.object({ env: z.string().optional() }),
+  /** `branch` edits a protected app's draft on that Git branch (M11). */
+  validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
 })
 const runsRoute = createRoute({

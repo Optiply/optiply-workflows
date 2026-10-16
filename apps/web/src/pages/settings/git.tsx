@@ -141,10 +141,8 @@ function RepoForm({ settings }: { settings: Settings }) {
             )}
           </div>
         </Field>
-        <div className="flex flex-col gap-1.5" role="group" aria-labelledby="webhook-secret-label">
-          <span id="webhook-secret-label" className="text-sm font-medium text-ink">
-            Webhook secret
-          </span>
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="mb-1.5 text-sm font-medium text-ink">Webhook secret</legend>
           {secret ? (
             <div className="flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/30 pl-3">
               <code className="min-w-0 flex-1 truncate font-mono text-sm" data-testid="new-webhook-secret">
@@ -177,7 +175,7 @@ function RepoForm({ settings }: { settings: Settings }) {
             </span>
           )}
           <span className="text-xs text-muted">Signs GitHub’s push webhook, so merges deploy at once.</span>
-        </div>
+        </fieldset>
         <div className="flex flex-wrap items-center gap-2 md:col-span-2">
           <Button
             type="submit"

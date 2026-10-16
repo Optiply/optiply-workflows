@@ -2,9 +2,10 @@ import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
-import { useTRPC } from '@/lib/trpc'
+import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
@@ -19,6 +20,8 @@ import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
 import { type SaveStatus, useAppEditor } from './store'
+
+type BranchDraft = RouterOutputs['branchDrafts']['get']
 
 const route = getRouteApi('/app/apps/$slug/edit')
 const appRoute = getRouteApi('/app')
@@ -42,19 +45,70 @@ export function AppEditorPage() {
     refetchOnWindowFocus: false,
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
+  const navigate = useNavigate()
   const load = useAppEditor((s) => s.load)
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  const gitProtected = app.data?.gitProtected ?? false
+  const branch = gitProtected ? (search.branch ?? null) : null
+  // A protected app is edited in a draft on a Git branch (M11); opening one makes it if needed.
+  const opened = useQuery({
+    queryKey: ['branchDraft', 'app', app.data?.id, branch],
+    queryFn: () =>
+      trpcClient.branchDrafts.open.mutate({ kind: 'app', id: app.data!.id, branch: branch!, create: true }),
+    enabled: Boolean(app.data && branch),
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    retry: false,
+  })
+  const [draftInfo, setDraftInfo] = useState<BranchDraft | null>(null)
+  const branchDraft = branch ? (draftInfo?.branch === branch ? draftInfo : opened.data) : null
+  // What's loaded: the app, which draft (main, read-only when protected, or a branch's).
+  const wanted = app.data
+    ? `${app.data.id}:${branch ? (branchDraft?.id ?? 'opening') : `main:${gitProtected}`}`
+    : null
 
+  const loadDraft = useCallback(
+    (appId: string, draft: BranchDraft) =>
+      load(appId, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
+        branchDraftId: draft.id,
+      }),
+    [load],
+  )
   useEffect(() => {
-    if (!app.data || loadedFor === app.data.id) return
-    load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash)
-    setLoadedFor(app.data.id)
-  }, [app.data, load, loadedFor])
+    if (!app.data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
+    if (branch && branchDraft) loadDraft(app.data.id, branchDraft)
+    else {
+      load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash, {
+        readOnly: app.data.gitProtected,
+      })
+    }
+    setLoadedFor(wanted)
+  }, [app.data, wanted, loadedFor, branch, branchDraft, load, loadDraft])
 
-  if (app.error)
+  const switchBranch = async (next: string | null) => {
+    try {
+      await ensureSaved()
+    } catch (err) {
+      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+    }
+    setDraftInfo(null)
+    // Main may have moved while on a branch (a merge deployed it): load what's there now.
+    if (next === null) {
+      await app.refetch()
+      setLoadedFor(null)
+    }
+    await navigate({
+      to: '/apps/$slug/edit',
+      params: { slug },
+      search: { ...search, branch: next ?? undefined },
+    })
+  }
+
+  const error = app.error ?? opened.error
+  if (error)
     return (
       <Centered>
-        <ErrorNote error={app.error} />
+        <ErrorNote error={error} />
       </Centered>
     )
   if (environments.error)
@@ -64,7 +118,7 @@ export function AppEditorPage() {
       </Centered>
     )
   // The store outlives the page: until this visit's draft is in it, it may hold the last one.
-  if (!app.data || !environments.data || loadedFor !== app.data.id)
+  if (!app.data || !environments.data || loadedFor !== wanted)
     return (
       <Centered>
         <Spinner />
@@ -76,7 +130,7 @@ export function AppEditorPage() {
     environments.data[0]!
   return (
     <Editor
-      key={`${app.data.id}:${environment.id}`}
+      key={`${app.data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
       app={{
         id: app.data.id,
         slug: app.data.slug,
@@ -87,6 +141,27 @@ export function AppEditorPage() {
       }}
       environment={environment}
       environments={environments.data}
+      branchDraftId={branchDraft?.id ?? null}
+      git={
+        gitProtected ? (
+          <GitBar
+            kind="app"
+            object={app.data}
+            branch={branch}
+            draft={branchDraft ?? null}
+            onSwitch={switchBranch}
+            ensureSaved={ensureSaved}
+            revision={() => useAppEditor.getState().revision}
+            onReplaced={(draft) => {
+              setDraftInfo(draft)
+              loadDraft(app.data!.id, draft)
+              // The running draft follows the replaced definition.
+              setLoadedFor(`${app.data!.id}:${draft.id}`)
+            }}
+            onUpdated={setDraftInfo}
+          />
+        ) : null
+      }
     />
   )
 }
@@ -99,9 +174,13 @@ interface EditorProps {
   app: EditorApp
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
+  /** The Git branch draft being edited (M11), or null for the main draft. */
+  branchDraftId: string | null
+  /** A protected app's Git bar. */
+  git: React.ReactNode
 }
 
-function Editor({ app, environment, environments }: EditorProps) {
+function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
@@ -111,10 +190,12 @@ function Editor({ app, environment, environments }: EditorProps) {
   const selected = useAppEditor((s) => s.selected)
   const definition = useAppEditor((s) => s.definition)
 
-  const { ref, host } = useAppHost(`${app.id}:${environment.id}`, {
+  const readOnly = useAppEditor((s) => s.readOnly)
+  const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     appId: app.id,
     releaseId: null,
+    branchDraftId,
     environmentId: environment.id,
     globals: {
       current_user: { id: me.id, email: me.email, name: me.name },
@@ -184,7 +265,7 @@ function Editor({ app, environment, environments }: EditorProps) {
               navigate({
                 to: '/apps/$slug/edit',
                 params: { slug: app.slug },
-                search: { env: e.target.value },
+                search: (prev) => ({ ...prev, env: e.target.value }),
               })
             }
           >
@@ -205,6 +286,7 @@ function Editor({ app, environment, environments }: EditorProps) {
           <ReleaseControls app={app} />
         </div>
       </header>
+      {git}
       {status === 'conflict' && (
         <div
           role="alert"
@@ -224,10 +306,12 @@ function Editor({ app, environment, environments }: EditorProps) {
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface p-3">
                 <PagesPanel />
-                <section>
-                  <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Add</h2>
-                  <Palette />
-                </section>
+                {!readOnly && (
+                  <section>
+                    <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Add</h2>
+                    <Palette />
+                  </section>
+                )}
                 <section>
                   <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">
                     Components
