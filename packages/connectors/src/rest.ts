@@ -3,9 +3,22 @@ import { Agent, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
-import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
+import { clientCredentialsToken } from './oauth'
+import { OAUTH_PROVIDERS } from './oauth-presets'
+import {
+  type Connector,
+  ConnectorError,
+  type CredentialSource,
+  type QueryContext,
+  type QueryResult,
+} from './types'
 
 const keyValues = z.array(z.object({ key: z.string(), value: z.string() })).default([])
+
+/** An http(s) URL with every `{placeholder}` of a provider preset filled in. */
+const oauthUrl = z
+  .url({ protocol: /^https?$/ })
+  .refine((url) => !/\{\w+\}|%7B\w+%7D/i.test(url), { message: 'Fill in the {placeholders} in the URL' })
 
 const authSchema = z
   .discriminatedUnion('type', [
@@ -25,6 +38,22 @@ const authSchema = z
       audience: z.string().optional(),
       /** How the client secret is sent to the token endpoint. */
       clientAuth: z.enum(['body', 'basic']).default('body'),
+    }),
+    z.object({
+      type: z.literal('oauth2AuthorizationCode'),
+      /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
+      provider: z.enum(OAUTH_PROVIDERS).default('custom'),
+      authorizeUrl: oauthUrl,
+      tokenUrl: oauthUrl,
+      clientId: z.string().min(1),
+      /** As the provider writes them: space-separated for most, comma-separated for Slack. */
+      scope: z.string().default(''),
+      /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
+      authorizeParams: keyValues,
+      clientAuth: z.enum(['body', 'basic']).default('body'),
+      pkce: z.boolean().default(true),
+      /** One connected account per environment, or each person connects their own. */
+      tokens: z.enum(['shared', 'perUser']).default('shared'),
     }),
   ])
   .default({ type: 'none' })
@@ -109,9 +138,9 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
     await agent.close()
   },
 
-  async testConnection(client, { signal }) {
+  async testConnection(client, { signal, credentials }) {
     if (client.config.auth.type === 'oauth2ClientCredentials') await getToken(client, signal, true)
-    const headers = new Headers(authHeaders(client))
+    const headers = new Headers(await authorize(client, { signal, credentials }))
     const res = await send(client, new URL(client.config.baseUrl), { method: 'GET', headers }, signal)
     await res.body?.cancel()
     return { message: `HTTP ${res.status} ${res.statusText}`.trim() }
@@ -151,17 +180,21 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
     const body = await buildBody(query, headers, ctx)
 
     const started = performance.now()
-    const request = async () => {
-      const auth = await authorize(client, ctx.signal)
+    const request = async (force = false) => {
+      const auth = await authorize(client, ctx, force)
       for (const [k, v] of Object.entries(auth)) headers.set(k, v)
       return send(client, url, { method: query.method, headers, body }, ctx.signal)
     }
     let res = await request()
-    // An expired or revoked OAuth token: fetch a fresh one and retry once.
-    if (res.status === 401 && client.config.auth.type === 'oauth2ClientCredentials') {
+    // An expired or revoked OAuth token: get a fresh one and retry once.
+    const authType = client.config.auth.type
+    if (
+      res.status === 401 &&
+      (authType === 'oauth2ClientCredentials' || authType === 'oauth2AuthorizationCode')
+    ) {
       await res.body?.cancel()
       client.token = undefined
-      res = await request()
+      res = await request(true)
     }
 
     const metadata = {
@@ -314,11 +347,23 @@ async function send(
   }
 }
 
-async function authorize(client: Client, signal: AbortSignal): Promise<Record<string, string>> {
-  if (client.config.auth.type === 'oauth2ClientCredentials') {
-    return { authorization: `Bearer ${await getToken(client, signal)}` }
+async function authorize(
+  client: Client,
+  ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
+  force = false,
+): Promise<Record<string, string>> {
+  switch (client.config.auth.type) {
+    case 'oauth2ClientCredentials':
+      return { authorization: `Bearer ${await getToken(client, ctx.signal)}` }
+    case 'oauth2AuthorizationCode': {
+      if (!ctx.credentials) {
+        throw new ConnectorError('auth_required', 'Connect an account to this resource before using it')
+      }
+      return { authorization: `Bearer ${await ctx.credentials.accessToken({ signal: ctx.signal, force })}` }
+    }
+    default:
+      return authHeaders(client)
   }
-  return authHeaders(client)
 }
 
 function authHeaders(client: Client): Record<string, string> {
@@ -327,6 +372,7 @@ function authHeaders(client: Client): Record<string, string> {
   switch (auth.type) {
     case 'none':
     case 'oauth2ClientCredentials':
+    case 'oauth2AuthorizationCode':
       return {}
     case 'apiKey':
       return auth.in === 'header' ? { [auth.name]: requireSecret(secrets.apiKey, 'API key') } : {}
@@ -342,60 +388,20 @@ function authHeaders(client: Client): Record<string, string> {
 /** Client-credentials token, cached on the client until 30s before it expires. */
 async function getToken(client: Client, signal: AbortSignal, force = false): Promise<string> {
   const auth = client.config.auth
-  if (auth.type !== 'oauth2ClientCredentials') throw new Error('not an OAuth2 resource')
+  if (auth.type !== 'oauth2ClientCredentials') throw new Error('not an OAuth2 client-credentials resource')
   if (!force && client.token && client.token.expiresAt > Date.now() + 30_000) return client.token.value
 
   const secret = requireSecret(client.secrets.clientSecret, 'OAuth2 client secret')
-  const form = new URLSearchParams({ grant_type: 'client_credentials' })
-  if (auth.scope) form.set('scope', auth.scope)
-  if (auth.audience) form.set('audience', auth.audience)
-  const headers = new Headers({
-    'content-type': 'application/x-www-form-urlencoded',
-    accept: 'application/json',
+  const token = await clientCredentialsToken(auth, secret, {
+    signal,
+    allowPrivateNetwork: client.config.allowPrivateNetwork,
+    dispatcher: client.agent,
   })
-  if (auth.clientAuth === 'basic') {
-    const credentials = `${encodeURIComponent(auth.clientId)}:${encodeURIComponent(secret)}`
-    headers.set('authorization', `Basic ${Buffer.from(credentials).toString('base64')}`)
-  } else {
-    form.set('client_id', auth.clientId)
-    form.set('client_secret', secret)
+  client.token = {
+    value: token.accessToken,
+    expiresAt: token.expiresAt?.getTime() ?? Date.now() + 3600_000,
   }
-
-  const tokenUrl = new URL(auth.tokenUrl)
-  if (!client.config.allowPrivateNetwork && isPrivateAddress(tokenUrl.hostname)) {
-    throw new ConnectorError('blocked', `${tokenUrl.hostname} is a private address`)
-  }
-  let res: Response
-  try {
-    res = await fetch(tokenUrl, {
-      method: 'POST',
-      headers,
-      body: form.toString(),
-      signal,
-      dispatcher: client.agent,
-    })
-  } catch (err) {
-    throw networkError(err, tokenUrl)
-  }
-  const text = await res.text()
-  if (!res.ok) {
-    throw new ConnectorError('http', `OAuth2 token request failed: HTTP ${res.status}`, {
-      status: res.status,
-      body: text.slice(0, ERROR_BODY_PREVIEW),
-    })
-  }
-  let token: { access_token?: unknown; expires_in?: unknown }
-  try {
-    token = JSON.parse(text)
-  } catch {
-    throw new ConnectorError('http', 'OAuth2 token response is not JSON')
-  }
-  if (typeof token.access_token !== 'string') {
-    throw new ConnectorError('http', 'OAuth2 token response has no access_token')
-  }
-  const ttl = typeof token.expires_in === 'number' ? token.expires_in : 3600
-  client.token = { value: token.access_token, expiresAt: Date.now() + ttl * 1000 }
-  return token.access_token
+  return token.accessToken
 }
 
 /** JSON is parsed; text-like types are decoded; anything else is returned as base64. */

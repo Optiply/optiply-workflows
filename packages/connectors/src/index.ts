@@ -13,6 +13,25 @@ export {
 } from './code-fetch'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
+export {
+  type AuthorizationCodeSettings,
+  buildAuthorizeUrl,
+  createPkce,
+  createState,
+  exchangeCode,
+  OAuthGrantError,
+  parseTokenSet,
+  refreshAccessToken,
+  type TokenRequestOptions,
+  type TokenSet,
+} from './oauth'
+export {
+  fillPlaceholders,
+  OAUTH_PROVIDERS,
+  type OAuthProviderId,
+  type OAuthProviderPreset,
+  oauthPresets,
+} from './oauth-presets'
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export { restConnector } from './rest'

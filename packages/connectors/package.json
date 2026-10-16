@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./oauth-presets": "./src/oauth-presets.ts",
     "./testing": "./src/testing.ts"
   },
   "scripts": {
