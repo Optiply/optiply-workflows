@@ -262,7 +262,11 @@ export class AppHost {
     this.definition = definition
     const { status } = this.store.getState()
     if (status === 'stopped') this.restart()
-    else if (status !== 'loading') this.post({ type: 'update', definition })
+    else if (status !== 'loading') {
+      this.post({ type: 'update', definition })
+      // A page added or renamed with this edit: the navigation to it may have come first, when it didn't exist yet.
+      this.post({ type: 'navigate', url: this.url })
+    }
   }
 
   private connect(iframe: HTMLIFrameElement) {

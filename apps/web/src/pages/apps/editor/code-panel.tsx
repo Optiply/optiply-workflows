@@ -5,6 +5,7 @@ import {
   addVariable,
   type JsonValue,
   removeCode,
+  setEntityPage,
   setHandlers,
   updateQuery,
   updateTransformer,
@@ -73,6 +74,8 @@ function CodeTab() {
     update(() => made.definition)
     openItem(made.name)
   }
+  // New queries and transformers go on the page being edited.
+  const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
   const query = definition.queries.find((q) => q.name === open)
   const transformer = definition.transformers?.find((t) => t.name === open)
   const variable = definition.variables?.find((v) => v.name === open)
@@ -88,7 +91,7 @@ function CodeTab() {
                 size="icon"
                 variant="ghost"
                 title="Add a resource query"
-                onClick={() => add((d) => addQuery(d, 'resource'))}
+                onClick={() => add((d) => addQuery(d, 'resource', { page }))}
               >
                 <Database className="size-3.5" />
               </Button>
@@ -96,7 +99,7 @@ function CodeTab() {
                 size="icon"
                 variant="ghost"
                 title="Add a JS query"
-                onClick={() => add((d) => addQuery(d, 'js'))}
+                onClick={() => add((d) => addQuery(d, 'js', { page }))}
               >
                 <Code2 className="size-3.5" />
               </Button>
@@ -109,6 +112,7 @@ function CodeTab() {
               name={q.name}
               open={open === q.name}
               onOpen={() => openItem(q.name)}
+              page={q.page}
               query
             />
           ))}
@@ -116,13 +120,24 @@ function CodeTab() {
         <ListSection
           title="Transformers"
           actions={
-            <Button size="icon" variant="ghost" title="Add a transformer" onClick={() => add(addTransformer)}>
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Add a transformer"
+              onClick={() => add((d) => addTransformer(d, { page }))}
+            >
               <Braces className="size-3.5" />
             </Button>
           }
         >
           {definition.transformers?.map((t) => (
-            <ListItem key={t.name} name={t.name} open={open === t.name} onOpen={() => openItem(t.name)} />
+            <ListItem
+              key={t.name}
+              name={t.name}
+              open={open === t.name}
+              onOpen={() => openItem(t.name)}
+              page={t.page}
+            />
           ))}
         </ListSection>
         <ListSection
@@ -176,11 +191,14 @@ function ListItem({
   name,
   open,
   onOpen,
+  page,
   query,
 }: {
   name: string
   open: boolean
   onOpen: () => void
+  /** The page it's on, if it's on one. */
+  page?: string
   query?: boolean
 }) {
   const fetching = useAppValue<boolean>(`${name}.isFetching`)
@@ -197,6 +215,11 @@ function ListItem({
         )}
       >
         <span className="min-w-0 flex-1 truncate">{name}</span>
+        {page && (
+          <span className="text-[10px] text-muted" title={`On page ${page}`}>
+            {page}
+          </span>
+        )}
         {query && fetching && <Loader2 className="size-3 animate-spin" />}
         {(problems || (query && failed)) && (
           <span className="size-1.5 rounded-full bg-danger" title="Has problems" />
@@ -242,6 +265,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
         <div className="w-56 shrink-0">
           <NameField name={query.name} onRenamed={openItem} />
         </div>
+        <CodePage name={query.name} page={query.page} />
         {query.kind === 'resource' ? (
           <>
             <Select
@@ -492,6 +516,7 @@ function TransformerEditor({ name }: { name: string }) {
         <div className="w-56 shrink-0">
           <NameField name={name} onRenamed={openItem} />
         </div>
+        <CodePage name={name} page={transformer.page} />
         <span className="self-center text-xs text-muted">
           Re-evaluated whenever what it reads changes; return its value
         </span>
@@ -706,5 +731,27 @@ function ConsoleTab() {
         </li>
       ))}
     </ol>
+  )
+}
+
+/** A query's or transformer's page, in an app with pages: one of them, or every page. */
+function CodePage({ name, page }: { name: string; page?: string }) {
+  const pages = useAppEditor((s) => s.definition.pages)
+  const update = useAppEditor((s) => s.update)
+  if (!pages?.length) return null
+  return (
+    <Select
+      aria-label="Page"
+      className="w-40"
+      value={page ?? ''}
+      onChange={(e) => update((def) => setEntityPage(def, name, e.target.value || null))}
+    >
+      <option value="">Every page</option>
+      {pages.map((p) => (
+        <option key={p.name} value={p.name}>
+          {p.title ? `${p.title} (${p.name})` : p.name}
+        </option>
+      ))}
+    </Select>
   )
 }

@@ -180,7 +180,7 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {host && (
           <AppHostProvider host={host}>
-            <AppBody definition={release.definition} />
+            <AppBody definition={release.definition} appName={app.name} />
           </AppHostProvider>
         )}
       </div>
@@ -190,11 +190,21 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
   )
 }
 
-function AppBody({ definition }: { definition: AppDefinition }) {
+function AppBody({ definition, appName }: { definition: AppDefinition; appName: string }) {
   const status = useAppHostState((s) => s.status)
   const problem = useAppHostState((s) => s.problem)
   // The page the app shows (resolved by the app: an unknown page in the URL shows its first).
   const page = useAppValue<string | null>('url.page') ?? null
+  const pageTitle = definition.pages?.find((p) => p.name === page)
+  const title = pageTitle ? `${pageTitle.title || pageTitle.name} · ${appName}` : appName
+  // The browser tab (and history) names the page.
+  useEffect(() => {
+    const before = document.title
+    document.title = title
+    return () => {
+      document.title = before
+    }
+  }, [title])
   if (status === 'failed') return <ErrorNote error={new Error(problem ?? 'The app could not start')} />
   if (status === 'loading') return <Spinner />
   return (
