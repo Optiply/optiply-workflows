@@ -1,4 +1,11 @@
-import { type AppDefinition, addComponent, COMPONENTS, componentSpec, setPositions } from '@ow/app-definition'
+import {
+  type AppDefinition,
+  addComponent,
+  COMPONENTS,
+  componentSpec,
+  entityPages,
+  setPositions,
+} from '@ow/app-definition'
 import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
 import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
@@ -25,18 +32,34 @@ const PALETTE = [
   'container',
   'modal',
   'chart',
+  'navigation',
 ]
 
-/** A class per grid for its drag handles, so a container's handle never drags the grid outside it. */
-const handleClass = (parent: string | undefined) => `ow-drag-${parent ?? 'page'}`
+/** Which top-level grid: the page's, or the frame's (global components, in an app with pages). */
+const gridId = (parent: string | undefined, page: string | null | undefined) =>
+  parent ?? (page === null ? 'frame' : 'page')
 
-/** One parent's children on a draggable, resizable grid. The page's grid also takes drops from the palette. */
-export function EditGrid({ definition, parent }: { definition: AppDefinition; parent?: string }) {
+/** A class per grid for its drag handles, so a container's handle never drags the grid outside it. */
+const handleClass = (parent: string | undefined, page?: string | null) => `ow-drag-${gridId(parent, page)}`
+
+/**
+ * One parent's children on a draggable, resizable grid. A top-level grid also takes drops from the palette: in an
+ * app with pages, the page being edited (`page`) or the global frame (`page` null) has one each.
+ */
+export function EditGrid({
+  definition,
+  parent,
+  page,
+}: {
+  definition: AppDefinition
+  parent?: string
+  page?: string | null
+}) {
   const { width, containerRef, mounted } = useContainerWidth()
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const selected = useAppEditor((s) => s.selected)
-  const children = useMemo(() => placedChildren(definition, parent), [definition, parent])
+  const children = useMemo(() => placedChildren(definition, parent, page), [definition, parent, page])
   const layout = useMemo(
     () => children.map(({ component, position }) => ({ i: component.name, ...position })),
     [children],
@@ -52,7 +75,7 @@ export function EditGrid({ definition, parent }: { definition: AppDefinition; pa
         ),
       ),
     )
-  const handle = handleClass(parent)
+  const handle = handleClass(parent, page)
 
   return (
     <div
@@ -61,7 +84,7 @@ export function EditGrid({ definition, parent }: { definition: AppDefinition; pa
         'relative',
         parent === undefined ? 'min-h-[70vh]' : 'min-h-16 rounded-md border border-dashed border-border/70',
       )}
-      data-testid={`grid-${parent ?? 'page'}`}
+      data-testid={`grid-${gridId(parent, page)}`}
     >
       {mounted && (
         <ReactGridLayout
@@ -86,6 +109,7 @@ export function EditGrid({ definition, parent }: { definition: AppDefinition; pa
             if (!type || !item) return
             const added = addComponent(useAppEditor.getState().definition, type, {
               position: { x: item.x, y: item.y },
+              ...(page !== undefined && { page }),
             })
             update(() => added.definition)
             select(added.name)
@@ -123,9 +147,14 @@ export function EditGrid({ definition, parent }: { definition: AppDefinition; pa
   )
 }
 
-/** The editor's canvas: the page grid with every component live, and the selected modal over it. */
+/**
+ * The editor's canvas: the page grid with every component live, and the selected modal over it. In an app with
+ * pages, the global components (on every page) have a grid of their own above the page's.
+ */
 export function EditCanvas() {
   const definition = useAppEditor((s) => s.definition)
+  const page = useAppEditor((s) => s.url.page)
+  const hasPages = !!definition.pages?.length
   const selected = useAppEditor((s) => s.selected)
   const select = useAppEditor((s) => s.select)
   // The modal holding the selection, if any: it opens over the canvas.
@@ -158,7 +187,18 @@ export function EditCanvas() {
                 select(null)
             }}
           >
-            <EditGrid definition={definition} />
+            {hasPages ? (
+              <>
+                <GridCaption>On every page</GridCaption>
+                <EditGrid definition={definition} page={null} />
+                <GridCaption className="mt-6">
+                  Page {definition.pages!.find((p) => p.name === page)?.title || page}
+                </GridCaption>
+                <EditGrid definition={definition} page={page} />
+              </>
+            ) : (
+              <EditGrid definition={definition} />
+            )}
           </div>
           {modal && <ComponentView component={modal} definition={definition} />}
         </ShownModalContext.Provider>
@@ -167,15 +207,31 @@ export function EditCanvas() {
   )
 }
 
-/** Component types to drag onto the page, or click to add (into the selected container, or at the bottom). */
+function GridCaption({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn('mb-6 text-[11px] font-semibold tracking-wide text-muted uppercase', className)}>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Component types to drag onto the page, or click to add: into the selected container, or at the bottom of the
+ * page being edited (of the frame, with a global component selected).
+ */
 export function Palette() {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const add = (type: string) => {
-    const { definition, selected } = useAppEditor.getState()
+    const { definition, selected, url } = useAppEditor.getState()
     const target = definition.components.find((c) => c.name === selected)
     const parent = target && componentSpec(target.type)?.container ? target.name : target?.parent
-    const added = addComponent(definition, type, parent ? { parent } : {})
+    const onPage = definition.pages?.length
+      ? target && parent === undefined
+        ? (target.page ?? null)
+        : url.page
+      : null
+    const added = addComponent(definition, type, parent ? { parent } : { page: onPage })
     update(() => added.definition)
     select(added.name)
   }
@@ -205,9 +261,13 @@ export function Palette() {
   )
 }
 
-/** The components as a tree, by parent; modals at the end. */
+/** The components as a tree, by parent; modals at the end. In an app with pages: the global ones and the page's. */
 export function ComponentTree() {
   const definition = useAppEditor((s) => s.definition)
+  const page = useAppEditor((s) => s.url.page)
+  const pages = useMemo(() => entityPages(definition), [definition])
+  const hasPages = !!definition.pages?.length
+  const shown = (name: string) => !hasPages || [null, page].includes(pages.get(name) ?? null)
   const selected = useAppEditor((s) => s.selected)
   const select = useAppEditor((s) => s.select)
   const diagnostics = useAppEditor((s) => s.diagnostics)
@@ -216,16 +276,18 @@ export function ComponentTree() {
     () => new Set(diagnostics.filter((d) => d.severity === 'error').map((d) => d.entity)),
     [diagnostics],
   )
-  const rows: { name: string; type: string; depth: number }[] = []
+  const rows: { name: string; type: string; depth: number; everyPage: boolean }[] = []
   const walk = (parent: string | undefined, depth: number) => {
     for (const { component } of placedChildren(definition, parent)) {
-      rows.push({ name: component.name, type: component.type, depth })
+      if (!shown(component.name)) continue
+      const everyPage = hasPages && parent === undefined && component.page === undefined
+      rows.push({ name: component.name, type: component.type, depth, everyPage })
       if (componentSpec(component.type)?.container) walk(component.name, depth + 1)
     }
   }
   walk(undefined, 0)
-  for (const m of definition.components.filter((c) => componentSpec(c.type)?.overlay)) {
-    rows.push({ name: m.name, type: m.type, depth: 0 })
+  for (const m of definition.components.filter((c) => componentSpec(c.type)?.overlay && shown(c.name))) {
+    rows.push({ name: m.name, type: m.type, depth: 0, everyPage: hasPages && m.page === undefined })
     walk(m.name, 1)
   }
   if (!rows.length) return <p className="px-1 text-xs text-muted">No components yet.</p>
@@ -243,6 +305,11 @@ export function ComponentTree() {
             )}
           >
             <span className="min-w-0 flex-1 truncate">{r.name}</span>
+            {r.everyPage && (
+              <span className="text-[10px] text-muted" title="On every page">
+                all
+              </span>
+            )}
             {problems.has(r.name) && <span className="size-1.5 rounded-full bg-danger" />}
             <span className="text-[10px] text-muted">{COMPONENTS[r.type]?.label ?? r.type}</span>
           </button>

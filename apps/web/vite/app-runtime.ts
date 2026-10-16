@@ -6,8 +6,9 @@ import type { Plugin } from 'vite'
 /**
  * `virtual:app-runtime`: the script of an app's sandbox (src/pages/apps/runtime/sandbox-entry.ts and what it
  * imports), bundled by esbuild into one IIFE and exported as a string. The sandbox is an iframe with an opaque
- * origin and no network access, so its code is written into the frame's document rather than loaded from a URL.
- * Rebuilt whenever a file it includes changes.
+ * origin and no network access running the app in a Worker, so this code is written into the frame's document,
+ * which starts the Worker from it through a blob: URL, rather than loaded from a URL. Rebuilt whenever a file it
+ * includes changes.
  */
 const ID = 'virtual:app-runtime'
 const RESOLVED = `\0${ID}`

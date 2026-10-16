@@ -100,12 +100,17 @@ const appsRoute = createRoute({
   path: '/apps',
   component: AppsPage,
 })
-/** Someone using an app: its live release, in its own chunk (the sandbox's script travels with it). */
+/**
+ * Someone using an app: its live release, in its own chunk (the sandbox's script travels with it). On its first
+ * page, or `/apps/<slug>/<page>`; the query string (but `env`) is the app's `url.params`.
+ */
+const appSearch = z.looseObject({ env: z.string().optional() })
+// One route with the page optional, so moving between pages keeps the running app (another route would remount it).
 const appViewRoute = createRoute({
   getParentRoute: () => appRoute,
-  path: '/apps/$slug',
+  path: '/apps/$slug/{-$page}',
   staticData: { fullBleed: true },
-  validateSearch: z.object({ env: z.string().optional() }),
+  validateSearch: appSearch,
   component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
 })
 /** Building an app: the editor, in its own chunk (the grid layout and Monaco load with it). */
@@ -200,8 +205,26 @@ const routeTree = rootRoute.addChildren([
   ]),
 ])
 
+/**
+ * Search params as plain text (`?id=42` is the string "42"), not the router's default JSON: every param here is a
+ * string, and apps read theirs as `url.params`.
+ */
+function parseSearch(search: string): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(search.startsWith('?') ? search.slice(1) : search))
+}
+function stringifySearch(search: Record<string, unknown>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(search)) {
+    if (value !== undefined && value !== null) params.set(key, String(value))
+  }
+  const text = params.toString()
+  return text ? `?${text}` : ''
+}
+
 export const router = createRouter({
   routeTree,
+  parseSearch,
+  stringifySearch,
   context: { queryClient, trpc: createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient }) },
   defaultPreload: 'intent',
 })

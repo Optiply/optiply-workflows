@@ -3,6 +3,7 @@ import { compileSql, TemplateError } from '@ow/expressions'
 import { Agent, fetch } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
+import { resolveFragments } from './sql-fragments'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
 
 /** Label keys and values: lowercase letters, digits, `_` and `-`, at most 63 characters; keys start with a letter. */
@@ -207,7 +208,7 @@ interface Field {
 
 async function executeQuery(client: Client, query: Query, ctx: QueryContext): Promise<QueryResult> {
   const { config } = client
-  const plan = compileSql(query.sql, 'bigquery')
+  const plan = await resolveFragments(compileSql(query.sql, 'bigquery'), 'bigquery', ctx.evaluate)
   const queryParameters: unknown[] = []
   for (const [i, param] of plan.params.entries()) {
     queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await ctx.evaluate(param.code)) })

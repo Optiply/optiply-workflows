@@ -2,10 +2,11 @@ import {
   type AppComponent,
   type AppDefinition,
   componentSpec,
+  entityPages,
   GRID_COLUMNS,
   type Position,
 } from '@ow/app-definition'
-import { Fragment, useContext } from 'react'
+import { Fragment, useContext, useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
 import { ChildGridContext, EditingContext } from './grid-context'
@@ -15,18 +16,28 @@ import { useAppHostState, useAppValue } from './runtime/react'
 /**
  * Renders an app's components on its 12-column grid: each parent (the page, a container, a form, a modal) is a CSS
  * grid of fixed-height rows. Components without a position are stacked below the rest at their default size.
- * Modals render over the page while open.
+ * Modals render over the page while open. In an app with pages, the global components (the frame) come first, on
+ * a grid of their own, then the page shown.
  */
 
 /** Height of one grid row. */
 export const ROW_HEIGHT = 16
 
-/** Each child of `parent` with its position, in reading order. */
+/**
+ * Each child of `parent` with its position, in reading order. At the top (no parent), `page` keeps those on that
+ * page only (null: the global ones); every top-level component when it's left out.
+ */
 export function placedChildren(
   definition: AppDefinition,
   parent: string | undefined,
+  page?: string | null,
 ): { component: AppComponent; position: Position }[] {
-  const children = definition.components.filter((c) => c.parent === parent && !componentSpec(c.type)?.overlay)
+  const children = definition.components.filter(
+    (c) =>
+      c.parent === parent &&
+      !componentSpec(c.type)?.overlay &&
+      (parent !== undefined || page === undefined || (c.page ?? null) === page),
+  )
   const layout = definition.layout ?? {}
   let bottom = 0
   for (const c of children) {
@@ -45,9 +56,17 @@ export function placedChildren(
   return placed.sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
 }
 
-/** The grid of one parent's children. */
-export function AppGrid({ definition, parent }: { definition: AppDefinition; parent?: string }) {
-  const children = placedChildren(definition, parent)
+/** The grid of one parent's children (at the top, of one page's, or of the global ones with `page` null). */
+export function AppGrid({
+  definition,
+  parent,
+  page,
+}: {
+  definition: AppDefinition
+  parent?: string
+  page?: string | null
+}) {
+  const children = placedChildren(definition, parent, page)
   return (
     <div
       className="grid gap-x-3"
@@ -85,12 +104,21 @@ export function ComponentView({ component, definition }: RendererProps) {
   )
 }
 
-/** The page: the root grid, plus open modals. */
-export function AppCanvas({ definition }: { definition: AppDefinition }) {
-  const modals = definition.components.filter((c) => componentSpec(c.type)?.overlay)
+/** The page shown: the global components, then the page's, plus open modals of either. */
+export function AppCanvas({ definition, page = null }: { definition: AppDefinition; page?: string | null }) {
+  const pages = useMemo(() => entityPages(definition), [definition])
+  const modals = definition.components.filter(
+    (c) => componentSpec(c.type)?.overlay && [null, page].includes(pages.get(c.name) ?? null),
+  )
+  const hasPages = !!definition.pages?.length
   return (
     <ChildGridContext.Provider value={AppGrid}>
-      <AppGrid definition={definition} />
+      <AppGrid definition={definition} page={null} />
+      {hasPages && page !== null && (
+        <div data-page={page} className="mt-3">
+          <AppGrid definition={definition} page={page} />
+        </div>
+      )}
       {modals.map((m) => (
         <Fragment key={m.name}>
           <ComponentView component={m} definition={definition} />

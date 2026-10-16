@@ -3,6 +3,8 @@
  * the changeset an editable table collects, and turning typed text into values.
  */
 
+import { pageSizeOf } from '@ow/app-definition'
+
 export type ColumnType = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'json'
 
 export interface TableColumn {
@@ -184,4 +186,70 @@ export function parseCell(text: string, type: ColumnType): { value: unknown } | 
     default:
       return { value: text }
   }
+}
+
+export type Paging = 'scroll' | 'pages' | 'server'
+
+export interface TableView {
+  /** The rows to show, with their positions in the data. */
+  rows: { row: Row; index: number }[]
+  /** Rows matching the search (before paging); with server paging, `totalRowCount` (null when not given). */
+  total: number | null
+  /** The page shown, from 0, kept within the pages there are. */
+  page: number
+  /** How many pages there are; null with server paging and no `totalRowCount`. */
+  pageCount: number | null
+}
+
+/** Text without case or accents, for searching ("Gómez" matches "gomez"). */
+function fold(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase()
+}
+
+/**
+ * What the table shows: in the browser (`scroll`, `pages`) the rows whose shown values contain the search text,
+ * sorted, then one page of them; with `server` paging the data as it came (a query did all of that).
+ */
+export function tableView(opts: {
+  rows: Row[]
+  columns: TableColumn[]
+  paging: Paging
+  page: number
+  pageSize: number
+  sort: { key: string; desc: boolean } | null
+  searchText: string
+  totalRowCount: number | null
+}): TableView {
+  // The same as the table's `pagination` (AppModel), so the rows shown and the query's page always agree.
+  const size = pageSizeOf(opts.pageSize)
+  const asked = Number.isInteger(opts.page) && opts.page > 0 ? opts.page : 0
+  if (opts.paging === 'server') {
+    const total = opts.totalRowCount !== null && opts.totalRowCount >= 0 ? opts.totalRowCount : null
+    return {
+      rows: opts.rows.map((row, index) => ({ row, index })),
+      total,
+      page: asked,
+      pageCount: total === null ? null : Math.max(1, Math.ceil(total / size)),
+    }
+  }
+  const needle = fold(opts.searchText.trim())
+  const matching = needle
+    ? opts.rows.flatMap((row, index) =>
+        opts.columns.some((col) => fold(formatCell(row?.[col.key], col.type)).includes(needle))
+          ? [index]
+          : [],
+      )
+    : opts.rows.map((_, index) => index)
+  // `sortedRows` numbers the matching rows; map those back to positions in the data.
+  const sorted = sortedRows(
+    matching.map((i) => opts.rows[i]!),
+    opts.sort,
+  ).map(({ row, index }) => ({ row, index: matching[index]! }))
+  if (opts.paging === 'scroll') return { rows: sorted, total: sorted.length, page: 0, pageCount: 1 }
+  const pageCount = Math.max(1, Math.ceil(sorted.length / size))
+  const page = Math.min(asked, pageCount - 1)
+  return { rows: sorted.slice(page * size, (page + 1) * size), total: sorted.length, page, pageCount }
 }

@@ -57,11 +57,27 @@ function propertyName(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+/** The `sql` helpers, for workflows and apps alike. */
+export const SQL_HELPERS = `
+/** For SQL queries: a sort column and direction chosen at run time, from a list written in the query. */
+declare const sql: {
+  /**
+   * One of \`columns\` (or \`fallback\` when \`value\` is empty), quoted into the SQL as a column name:
+   * \`ORDER BY {{ sql.column(table1.sort?.column, ['name', 'price'], 'id') }}\`. Must be the whole {{ }}, with the
+   * columns written as strings; the server checks the value against them.
+   */
+  column(value: any, columns: string[], fallback?: string): string
+  /** \`DESC\` for true or "desc", \`ASC\` for false, "asc" or nothing: \`{{ sql.direction(table1.sort?.desc) }}\`. */
+  direction(value: any): 'ASC' | 'DESC'
+}
+`
+
 const GLOBALS = `
 /** Lodash. */
 declare const _: any
 /** Day.js, with the utc, timezone, customParseFormat and relativeTime plugins. */
 declare const dayjs: any
+${SQL_HELPERS}
 /** Config vars for the run's environment (secret ones only in released runs). */
 declare const configVars: Record<string, string>
 declare const workflowContext: { runId: string; workflowId: string; environment: string; triggerType: string }
@@ -104,6 +120,7 @@ export function scopeDeclarations(
   const sample: Record<string, unknown> = {
     _: {},
     dayjs: {},
+    sql: {},
     configVars: {},
     workflowContext: { runId: '', workflowId: '', environment: '', triggerType: '' },
     idempotencyKey: '',

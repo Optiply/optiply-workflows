@@ -1,13 +1,15 @@
 import { componentSpec, type JsonValue } from './components'
 import { appNameReason } from './names'
-import type {
-  AppComponent,
-  AppDefinition,
-  AppQuery,
-  EventHandler,
-  Position,
-  Transformer,
-  Variable,
+import { RESERVED_PAGES } from './pages'
+import {
+  type AppComponent,
+  type AppDefinition,
+  type AppQuery,
+  appNameSchema,
+  type EventHandler,
+  type Position,
+  type Transformer,
+  type Variable,
 } from './schema'
 
 /**
@@ -49,36 +51,45 @@ export function withDescendants(def: AppDefinition, name: string): Set<string> {
   return out
 }
 
-/** The first free row below `parent`'s children. */
-function bottomOf(def: AppDefinition, parent: string | undefined): number {
+/** The first free row below `parent`'s children (at the top, those on `page`: each page has a grid of its own). */
+function bottomOf(def: AppDefinition, parent: string | undefined, page: string | null = null): number {
   let bottom = 0
   for (const c of def.components) {
     const p = def.layout?.[c.name]
-    if (c.parent === parent && p) bottom = Math.max(bottom, p.y + p.h)
+    const sameGrid = parent !== undefined || (c.page ?? null) === page
+    if (c.parent === parent && sameGrid && p) bottom = Math.max(bottom, p.y + p.h)
   }
   return bottom
 }
 
 /**
  * Adds a component of `type` to `parent` (the page when missing): at `position`, or below what's there at the
- * type's default size. Modals always go on the page, without a position. Returns the new definition and its name.
+ * type's default size. Modals always go on the page, without a position. At the top, `page` puts it on that page
+ * (on every page when null or missing); inside a container it's on its container's. Returns the new definition and
+ * its name.
  */
 export function addComponent(
   def: AppDefinition,
   type: string,
-  opts: { parent?: string; position?: Partial<Position> } = {},
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null } = {},
 ): { definition: AppDefinition; name: string } {
   const spec = componentSpec(type)
   if (!spec) throw new Error(`Unknown component type "${type}"`)
   const name = nextName(def, type)
   const parent = spec.overlay ? undefined : opts.parent
-  const component: AppComponent = { name, type, ...(parent !== undefined && { parent }) }
+  const page = parent === undefined ? (opts.page ?? null) : null
+  const component: AppComponent = {
+    name,
+    type,
+    ...(parent !== undefined && { parent }),
+    ...(page !== null && { page }),
+  }
   const layout = { ...def.layout }
   if (!spec.overlay) {
     const w = Math.min(opts.position?.w ?? spec.defaultSize.w, 12)
     layout[name] = {
       x: Math.min(opts.position?.x ?? 0, 12 - w),
-      y: opts.position?.y ?? bottomOf(def, parent),
+      y: opts.position?.y ?? bottomOf(def, parent, page),
       w,
       h: opts.position?.h ?? spec.defaultSize.h,
     }
@@ -142,9 +153,15 @@ export function setPositions(def: AppDefinition, positions: Record<string, Posit
 
 /**
  * Moves a component (and what's inside it) into another parent, below what's there. Refused (unchanged) for a
- * parent inside the component itself, or one that can't hold components.
+ * parent inside the component itself, or one that can't hold components. Out to the top, it goes on `page` (every
+ * page when null or missing); into a container, it's on the container's page.
  */
-export function moveToParent(def: AppDefinition, name: string, parent: string | undefined): AppDefinition {
+export function moveToParent(
+  def: AppDefinition,
+  name: string,
+  parent: string | undefined,
+  opts: { page?: string | null } = {},
+): AppDefinition {
   const component = def.components.find((c) => c.name === name)
   if (!component || component.parent === parent) return def
   if (parent !== undefined) {
@@ -152,30 +169,38 @@ export function moveToParent(def: AppDefinition, name: string, parent: string | 
     if (!target || !componentSpec(target.type)?.container || withDescendants(def, name).has(parent))
       return def
   }
+  const page = parent === undefined ? (opts.page ?? null) : null
   const moved = updateComponent(def, name, (c) => {
     const next = { ...c }
+    delete next.page
     if (parent === undefined) delete next.parent
     else next.parent = parent
+    if (page !== null) next.page = page
     return next
   })
   const position = def.layout?.[name]
   if (!position) return moved
   // Below the new parent's children, counted before the move (the component's old place doesn't count).
-  return { ...moved, layout: { ...moved.layout, [name]: { ...position, x: 0, y: bottomOf(def, parent) } } }
+  return {
+    ...moved,
+    layout: { ...moved.layout, [name]: { ...position, x: 0, y: bottomOf(def, parent, page) } },
+  }
 }
 
 /** Adds a query: a resource query (manual unless it reads, `auto`) or a JS query. */
 export function addQuery(
   def: AppDefinition,
   kind: 'resource' | 'js',
-  opts: { resource?: string; run?: 'auto' | 'manual' } = {},
+  opts: { resource?: string; run?: 'auto' | 'manual'; page?: string | null } = {},
 ): { definition: AppDefinition; name: string } {
   const name = nextName(def, 'query')
+  const page = opts.page ? { page: opts.page } : {}
   const query: AppQuery =
     kind === 'js'
-      ? { name, kind: 'js', code: 'return 1' }
+      ? { name, ...page, kind: 'js', code: 'return 1' }
       : {
           name,
+          ...page,
           kind: 'resource',
           resource: opts.resource ?? 'optiply_db',
           query: { sql: 'select 1' },
@@ -192,9 +217,12 @@ export function updateQuery(
   return { ...def, queries: def.queries.map((q) => (q.name === name ? edit(q) : q)) }
 }
 
-export function addTransformer(def: AppDefinition): { definition: AppDefinition; name: string } {
+export function addTransformer(
+  def: AppDefinition,
+  opts: { page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
   const name = nextName(def, 'transformer')
-  const transformer: Transformer = { name, code: 'return null' }
+  const transformer: Transformer = { name, ...(opts.page && { page: opts.page }), code: 'return null' }
   return { definition: { ...def, transformers: [...(def.transformers ?? []), transformer] }, name }
 }
 
@@ -228,4 +256,157 @@ export function removeCode(def: AppDefinition, name: string): AppDefinition {
     ...(def.transformers && { transformers: def.transformers.filter((t) => t.name !== name) }),
     ...(def.variables && { variables: def.variables.filter((v) => v.name !== name) }),
   }
+}
+
+/** `page1`, `page2`, …: the first name no page has. */
+function nextPageName(def: AppDefinition): string {
+  const used = new Set((def.pages ?? []).map((p) => p.name))
+  for (let n = 1; ; n++) if (!used.has(`page${n}`)) return `page${n}`
+}
+
+/** Why `name` can't name a page of `def` (besides `except`, the page being renamed), or null if it can. */
+export function pageNameReason(def: AppDefinition, name: string, except?: string): string | null {
+  if (!appNameSchema.safeParse(name).success) {
+    return 'Use letters, digits and _, starting with a letter or _ (it goes in the URL and in code)'
+  }
+  if (RESERVED_PAGES.has(name)) return `"${name}" is taken: /apps/<slug>/${name} is the app's editor`
+  if ((def.pages ?? []).some((p) => p.name === name && p.name !== except)) {
+    return `Another page is already named "${name}"`
+  }
+  return null
+}
+
+/**
+ * Adds a page at the end. An app without pages gets two: `page1`, holding everything it had (its top-level
+ * components, queries and transformers move onto it; variables stay global), and the new one. Returns the new
+ * page's name.
+ */
+export function addPage(def: AppDefinition): { definition: AppDefinition; name: string } {
+  if (def.pages?.length) {
+    const name = nextPageName(def)
+    return { definition: { ...def, pages: [...def.pages, { name }] }, name }
+  }
+  const onFirst = <T extends { page?: string }>(item: T): T => ({ ...item, page: 'page1' })
+  const definition: AppDefinition = {
+    ...def,
+    pages: [{ name: 'page1' }, { name: 'page2' }],
+    components: def.components.map((c) => (c.parent === undefined ? onFirst(c) : c)),
+    queries: def.queries.map(onFirst),
+    ...(def.transformers && { transformers: def.transformers.map(onFirst) }),
+  }
+  return { definition, name: 'page2' }
+}
+
+/**
+ * Renames a page: what's on it follows, and Navigation links to it too (`utils.openPage('…')` in code is left for
+ * the person to change). Unchanged when the name can't be used (see `pageNameReason`).
+ */
+export function renamePage(def: AppDefinition, from: string, to: string): AppDefinition {
+  if (from === to || !def.pages?.some((p) => p.name === from) || pageNameReason(def, to, from)) return def
+  const follow = <T extends { page?: string }>(item: T): T =>
+    item.page === from ? { ...item, page: to } : item
+  const components = relinkNavigation(def.components.map(follow), from, to)
+  return {
+    ...def,
+    pages: def.pages.map((p) => (p.name === from ? { ...p, name: to } : p)),
+    components,
+    queries: def.queries.map(follow),
+    ...(def.transformers && { transformers: def.transformers.map(follow) }),
+  }
+}
+
+/** Navigation links to page `from` point at `to` instead, or with `to` null are dropped. */
+function relinkNavigation(components: AppComponent[], from: string, to: string | null): AppComponent[] {
+  return components.map((c) => {
+    const items = c.type === 'navigation' ? c.props?.items : undefined
+    if (!Array.isArray(items)) return c
+    const links = (item: JsonValue) =>
+      !!item && typeof item === 'object' && !Array.isArray(item) && item.page === from
+    if (!items.some(links)) return c
+    const relinked = items.flatMap((item) =>
+      !links(item) ? [item] : to === null ? [] : [{ ...(item as Record<string, JsonValue>), page: to }],
+    )
+    return { ...c, props: { ...c.props, items: relinked } }
+  })
+}
+
+/**
+ * Sets a page's title, as typed (the panel sets it on each keystroke: trimming here would eat the space before the
+ * next word); blank shows its name.
+ */
+export function setPageTitle(def: AppDefinition, name: string, title: string): AppDefinition {
+  if (!def.pages) return def
+  return {
+    ...def,
+    pages: def.pages.map((p) => {
+      if (p.name !== name) return p
+      const { title: _old, ...rest } = p
+      return title.trim() ? { ...rest, title: title.slice(0, 80) } : rest
+    }),
+  }
+}
+
+/** Moves a page one place earlier (-1) or later (1); the first page is the one the app opens on. */
+export function movePage(def: AppDefinition, name: string, by: -1 | 1): AppDefinition {
+  const pages = [...(def.pages ?? [])]
+  const at = pages.findIndex((p) => p.name === name)
+  const to = at + by
+  if (at === -1 || to < 0 || to >= pages.length) return def
+  ;[pages[at], pages[to]] = [pages[to]!, pages[at]!]
+  return { ...def, pages }
+}
+
+/** What deleting a page takes with it: its components (with what's inside them), queries and transformers. */
+export function onPage(def: AppDefinition, page: string): Set<string> {
+  const names = new Set<string>()
+  for (const c of def.components) if (c.parent === undefined && c.page === page) names.add(c.name)
+  for (const name of [...names]) for (const inside of withDescendants(def, name)) names.add(inside)
+  for (const item of [...def.queries, ...(def.transformers ?? [])])
+    if (item.page === page) names.add(item.name)
+  return names
+}
+
+/** Deletes a page with what's on it (see `onPage`). The app keeps at least one page. */
+export function removePage(def: AppDefinition, page: string): AppDefinition {
+  if (!def.pages || def.pages.length < 2 || !def.pages.some((p) => p.name === page)) return def
+  const gone = onPage(def, page)
+  return {
+    ...def,
+    pages: def.pages.filter((p) => p.name !== page),
+    // Navigation links to it go too (they'd be errors).
+    components: relinkNavigation(
+      def.components.filter((c) => !gone.has(c.name)),
+      page,
+      null,
+    ),
+    queries: def.queries.filter((q) => !gone.has(q.name)),
+    ...(def.transformers && { transformers: def.transformers.filter((t) => !gone.has(t.name)) }),
+    layout: Object.fromEntries(Object.entries(def.layout ?? {}).filter(([k]) => !gone.has(k))),
+  }
+}
+
+/**
+ * Puts a top-level component, a query or a transformer on a page, or on every page (null). A component moves to
+ * the bottom of that page's grid. Components inside containers are on their container's page: unchanged.
+ */
+export function setEntityPage(def: AppDefinition, name: string, page: string | null): AppDefinition {
+  const set = <T extends { name: string; page?: string }>(item: T): T => {
+    if (item.name !== name || (item.page ?? null) === page) return item
+    const { page: _old, ...rest } = item
+    return (page === null ? rest : { ...rest, page }) as T
+  }
+  const component = def.components.find((c) => c.name === name)
+  if (component) {
+    if (component.parent !== undefined || (component.page ?? null) === page) return def
+    const position = def.layout?.[name]
+    const moved = { ...def, components: def.components.map(set) }
+    if (!position) return moved
+    return {
+      ...moved,
+      layout: { ...moved.layout, [name]: { ...position, y: bottomOf(def, undefined, page) } },
+    }
+  }
+  const queries = def.queries.map(set)
+  const transformers = def.transformers?.map(set)
+  return { ...def, queries, ...(transformers && { transformers }) }
 }

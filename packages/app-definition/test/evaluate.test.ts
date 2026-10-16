@@ -9,6 +9,21 @@ const model = (def: Parameters<typeof app>[0], options = {}) => {
 }
 
 describe('AppModel', () => {
+  it("derives a table's pagination from its page and page size, and doesn't let anyone set it", () => {
+    const m = model({ components: [comp('t', 'table', { pageSize: '{{ 10 * 2 }}' })] })
+    expect(m.get('t.pagination')).toEqual({ page: 0, pageSize: 20, offset: 0 })
+    expect(m.set({ 't.page': 3 })).toEqual(new Set(['t.page', 't.pagination']))
+    expect(m.get('t.pagination')).toEqual({ page: 3, pageSize: 20, offset: 60 })
+    // Odd pages count as the first; a missing page size as 50.
+    m.set({ 't.page': -2 })
+    expect(m.get('t.pagination')).toMatchObject({ page: 0, offset: 0 })
+    expect(() => m.set({ 't.pagination': { offset: 999 } })).toThrow("can't be set")
+    const plain = model({ components: [comp('t', 'table', {})] })
+    expect(plain.get('t.pagination')).toEqual({ page: 0, pageSize: 50, offset: 0 })
+    expect(plain.get('t.sort')).toBeNull()
+    expect(plain.get('t.searchText')).toBe('')
+  })
+
   it('evaluates props: defaults, constants, templates and coercion', () => {
     const m = model({
       components: [

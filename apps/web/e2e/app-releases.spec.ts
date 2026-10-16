@@ -14,7 +14,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
 
   await page.getByRole('link', { name: 'Apps' }).click()
   await page.getByRole('button', { name: 'New app' }).click()
-  await page.getByLabel('Name').fill(name)
+  await page.getByLabel('Name', { exact: true }).fill(name)
   await page.getByRole('button', { name: 'Create app' }).click()
   await expect(page).toHaveURL(/\/apps\/release-check-\d+\/edit$/)
   const slug = page.url().split('/apps/')[1]!.replace('/edit', '')

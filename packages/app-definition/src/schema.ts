@@ -96,6 +96,11 @@ export const componentSchema = z.strictObject({
   type: z.string().max(64),
   /** The container, form or modal this component sits in; on the page when missing. */
   parent: appNameSchema.optional(),
+  /**
+   * The page a top-level component is on; on every page when missing (the app's frame, above each page). A
+   * component inside another is on its container's page.
+   */
+  page: appNameSchema.optional(),
   /** Prop values by prop name, sparse: a missing prop takes the registry's default. */
   props: z.record(z.string().max(64), z.json()).optional(),
   events: handlersSchema.optional(),
@@ -104,6 +109,8 @@ export const componentSchema = z.strictObject({
 const queryCommon = {
   name: appNameSchema,
   description: z.string().max(2000).optional(),
+  /** The page the query belongs to: automatic, it runs only while that page is open. Global when missing. */
+  page: appNameSchema.optional(),
   /** A template asking the user to confirm before each run; no prompt when missing. */
   confirm: z.string().optional(),
   /** A template; while truthy, the query doesn't run. */
@@ -145,6 +152,8 @@ export const appQuerySchema = z.discriminatedUnion('kind', [resourceAppQuerySche
 export const transformerSchema = z.strictObject({
   name: appNameSchema,
   description: z.string().max(2000).optional(),
+  /** The page the transformer belongs to (it may read that page's components); global when missing. */
+  page: appNameSchema.optional(),
   /** A pure function body, run synchronously whenever a value it reads changes; returns the transformer's value. */
   code: z.string(),
 })
@@ -156,8 +165,20 @@ export const variableSchema = z.strictObject({
   initialValue: z.json().optional(),
 })
 
+/**
+ * A page of the app, at `/apps/<slug>/<name>`. Its components, queries and transformers name it in `page`; what
+ * names no page is global: shown (components) and run (queries) on every page.
+ */
+export const pageSchema = z.strictObject({
+  name: appNameSchema,
+  /** Shown in navigation and the browser tab; plain text. The name when missing. */
+  title: z.string().max(80).optional(),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
+  /** In order; the first opens by default. An app without pages is one page, holding everything. */
+  pages: z.array(pageSchema).max(50).optional(),
   components: z.array(componentSchema).max(MAX_ENTITIES),
   queries: z.array(appQuerySchema).max(MAX_ENTITIES),
   transformers: z.array(transformerSchema).max(MAX_ENTITIES).optional(),
@@ -167,6 +188,7 @@ export const appDefinitionSchema = z.strictObject({
 })
 
 export type Position = z.infer<typeof positionSchema>
+export type AppPage = z.infer<typeof pageSchema>
 export type HandlerAction = z.infer<typeof handlerActionSchema>
 export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>

@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Plus, Workflow } from 'lucide-react'
+import { FolderPlus, Plus, Workflow } from 'lucide-react'
 import { useState } from 'react'
+import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
 import {
   Badge,
   Button,
@@ -32,7 +33,8 @@ export function workflowSlug(name: string): string {
 export function WorkflowsPage() {
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.workflows.list.queryOptions())
-  const [creating, setCreating] = useState(false)
+  const { data: folders } = useFolders('workflow')
+  const [panel, setPanel] = useState<'none' | 'workflow' | 'folder'>('none')
 
   if (isLoading) return <Spinner />
   if (!data) return <ErrorNote error={error} />
@@ -43,44 +45,73 @@ export function WorkflowsPage() {
         title="Workflows"
         description="Automated backend processes: blocks that query resources, run code and branch."
         actions={
-          <Button variant="primary" onClick={() => setCreating(!creating)}>
-            <Plus className="size-4" /> New workflow
-          </Button>
+          <>
+            {folders?.canManage && (
+              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+                <FolderPlus className="size-4" /> New folder
+              </Button>
+            )}
+            <Button variant="primary" onClick={() => setPanel(panel === 'workflow' ? 'none' : 'workflow')}>
+              <Plus className="size-4" /> New workflow
+            </Button>
+          </>
         }
       />
-      {creating && <NewWorkflowForm onCancel={() => setCreating(false)} />}
-      {data.length === 0 ? (
+      {panel === 'workflow' && <NewWorkflowForm onCancel={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderForm type="workflow" onDone={() => setPanel('none')} />}
+      {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Workflow className="size-6" />} title="No workflows yet">
           Create one to start building. If you expected to see workflows here, ask an admin for access.
         </EmptyState>
       ) : (
-        <Card className="divide-y divide-border">
-          {data.map((w) => (
-            <WorkflowRow key={w.id} workflow={w} />
-          ))}
-        </Card>
+        <FolderSections type="workflow" items={data} listKey={trpc.workflows.list.queryKey()}>
+          {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={!!folders?.folders.length} />}
+        </FolderSections>
       )}
     </>
   )
 }
 
-function WorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
+/** A workflow; owners can move it between folders here (that changes who can reach it). */
+function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasFolders: boolean }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const move = useMutation(
+    trpc.workflows.update.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() }),
+    }),
+  )
   return (
-    <Link
-      to="/workflows/$workflowId"
-      params={{ workflowId: workflow.id }}
+    <div
       className="flex items-center gap-3 px-4 py-3 hover:bg-canvas"
+      data-testid={`workflow-${workflow.slug}`}
     >
-      <span className="rounded-md bg-accent-soft p-1.5 text-accent">
-        <Workflow className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="font-medium">{workflow.name}</div>
-        <div className="truncate font-mono text-xs text-muted">{workflow.slug}</div>
-      </div>
-      {workflow.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Draft only</Badge>}
-      <Badge tone="accent">{LEVELS[workflow.level]}</Badge>
-    </Link>
+      <Link
+        to="/workflows/$workflowId"
+        params={{ workflowId: workflow.id }}
+        className="flex min-w-0 flex-1 items-center gap-3"
+      >
+        <span className="rounded-md bg-accent-soft p-1.5 text-accent">
+          <Workflow className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{workflow.name}</div>
+          <div className="truncate font-mono text-xs text-muted">{workflow.slug}</div>
+        </div>
+        {workflow.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Draft only</Badge>}
+        <Badge tone="accent">{LEVELS[workflow.level]}</Badge>
+      </Link>
+      {hasFolders && workflow.level === 'own' && (
+        <FolderSelect
+          type="workflow"
+          label={`Folder of ${workflow.name}`}
+          className="w-40"
+          value={workflow.folderId}
+          onChange={(folderId) => move.mutate({ id: workflow.id, folderId })}
+        />
+      )}
+      <ErrorNote error={move.error} />
+    </div>
   )
 }
 
@@ -91,6 +122,8 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
+  const [folderId, setFolderId] = useState<string | null>(null)
+  const { data: folders } = useFolders('workflow')
   const create = useMutation(
     trpc.workflows.create.mutationOptions({
       onSuccess: async (workflow) => {
@@ -106,7 +139,7 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug })
+          create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -131,6 +164,11 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
             placeholder="sync-orders"
           />
         </Field>
+        {!!folders?.folders.length && (
+          <Field label="Folder">
+            <FolderSelect type="workflow" value={folderId} onChange={setFolderId} />
+          </Field>
+        )}
         <div className="flex items-center gap-2 sm:col-span-2">
           <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
             Create workflow

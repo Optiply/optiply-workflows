@@ -9,7 +9,7 @@ import {
   testResource,
 } from '../src'
 import { mysqlAvailable, startTestMysql, type TestMysql } from '../src/testing'
-import { resource, scopeEvaluator } from './helpers'
+import { codeEvaluator, resource, scopeEvaluator } from './helpers'
 
 // A real MySQL 8.4: a throwaway Docker container (or MYSQL_TEST_URL). Skipped locally without Docker; CI runs it.
 const available = mysqlAvailable()
@@ -255,6 +255,37 @@ describe.skipIf(!available)('MySQL connector', () => {
       } finally {
         await root.query('SET GLOBAL local_infile = 0')
       }
+    })
+  })
+
+  describe('sql.column and sql.direction', () => {
+    const sql =
+      "SELECT id FROM customers WHERE id IN ({{ ids }}) ORDER BY {{ sql.column(t.sort, ['id', 'email']) }} {{ sql.direction(t.desc) }}"
+    const sorted = (column: unknown, direction: unknown) =>
+      runQuery(
+        pool,
+        mysqlConnector,
+        myResource(),
+        { sql },
+        {
+          evaluate: codeEvaluator({
+            ids: [3, 10, 2],
+            "sql.column(t.sort, ['id', 'email'])": column,
+            'sql.direction(t.desc)': direction,
+          }),
+        },
+      )
+
+    it('sort by a listed column, the array around it still expanded', async () => {
+      expect((await sorted('id', 'DESC')).data).toEqual([{ id: 10 }, { id: 3 }, { id: 2 }])
+      expect((await sorted('email', true)).data).toEqual([{ id: 3 }, { id: 2 }, { id: 10 }])
+    })
+
+    it('refuse other columns', async () => {
+      for (const hostile of ['id; DROP TABLE customers', '`id`', 'profile', null]) {
+        expect((await failure(sorted(hostile, 'ASC'))).code).toBe('expression')
+      }
+      expect(await countRows()).toBe(30)
     })
   })
 

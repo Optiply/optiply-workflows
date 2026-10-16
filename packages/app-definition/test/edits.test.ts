@@ -1,19 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
   addComponent,
+  addPage,
   addQuery,
   addTransformer,
   addVariable,
+  entityPages,
+  movePage,
   moveToParent,
   nextName,
+  onPage,
+  pageNameReason,
   removeCode,
   removeComponent,
+  removePage,
+  renamePage,
+  setEntityPage,
   setHandlers,
+  setPageTitle,
   setPositions,
   setProp,
   validateApp,
 } from '../src'
-import { app, comp } from './helpers'
+import { app, comp, sqlQuery } from './helpers'
 
 describe('edits', () => {
   it('adds components with free names below what is there, modals without a position', () => {
@@ -91,5 +100,144 @@ describe('edits', () => {
     expect([t.name, v.name]).toEqual(['transformer1', 'variable1'])
     def = removeCode(removeCode(removeCode(def, 'query1'), 'transformer1'), 'variable1')
     expect(def).toMatchObject({ queries: [], transformers: [], variables: [] })
+  })
+})
+
+describe('page edits', () => {
+  const single = app({
+    components: [
+      comp('table1', 'table'),
+      comp('box', 'container'),
+      comp('inner', 'text', {}, { parent: 'box' }),
+      comp('dialog', 'modal'),
+    ],
+    queries: [sqlQuery('q1', 'select 1')],
+    transformers: [{ name: 't1', code: 'return 1' }],
+    variables: [{ name: 'v1' }],
+    layout: {
+      table1: { x: 0, y: 0, w: 12, h: 20 },
+      box: { x: 0, y: 20, w: 12, h: 8 },
+      inner: { x: 0, y: 0, w: 4, h: 2 },
+    },
+  })
+
+  it('the first page added moves everything onto page1; later ones are empty', () => {
+    const { definition: two, name } = addPage(single)
+    expect(name).toBe('page2')
+    expect(two.pages).toEqual([{ name: 'page1' }, { name: 'page2' }])
+    expect(Object.fromEntries(entityPages(two))).toEqual({
+      table1: 'page1',
+      box: 'page1',
+      inner: 'page1',
+      dialog: 'page1',
+      q1: 'page1',
+      t1: 'page1',
+      v1: null,
+    })
+    // Only top-level components say so themselves.
+    expect(two.components.find((c) => c.name === 'inner')!.page).toBeUndefined()
+    expect(validateApp(two).diagnostics).toEqual([])
+    const three = addPage(two)
+    expect(three.name).toBe('page3')
+    expect(three.definition.pages!.map((p) => p.name)).toEqual(['page1', 'page2', 'page3'])
+  })
+
+  it('renames a page and what is on it, and links to it', () => {
+    const two = addPage(single).definition
+    const nav = addComponent(two, 'navigation').definition
+    const linked = setProp(nav, 'navigation1', 'items', [{ page: 'page1', label: 'Home' }, { page: 'page2' }])
+    const renamed = renamePage(linked, 'page1', 'home')
+    expect(renamed.pages![0]).toEqual({ name: 'home' })
+    expect(entityPages(renamed).get('table1')).toBe('home')
+    expect(entityPages(renamed).get('q1')).toBe('home')
+    expect(renamed.components.find((c) => c.name === 'navigation1')!.props!.items).toEqual([
+      { page: 'home', label: 'Home' },
+      { page: 'page2' },
+    ])
+    for (const bad of ['page2', 'edit', '2nd', 'has space'])
+      expect(renamePage(renamed, 'home', bad)).toBe(renamed)
+    expect(pageNameReason(renamed, 'page2')).toBe('Another page is already named "page2"')
+    expect(pageNameReason(renamed, 'home', 'home')).toBeNull()
+    expect(pageNameReason(renamed, 'edit')).toMatch(/editor/)
+  })
+
+  it('titles and order', () => {
+    const two = addPage(single).definition
+    // As typed: the panel sets it on each keystroke, so a trailing space must survive until the next word.
+    expect(setPageTitle(two, 'page1', 'Order ').pages![0]).toEqual({ name: 'page1', title: 'Order ' })
+    expect(setPageTitle(two, 'page1', 'Order details').pages![0]).toEqual({
+      name: 'page1',
+      title: 'Order details',
+    })
+    expect(setPageTitle(two, 'page1', '   ').pages![0]).toEqual({ name: 'page1' })
+    expect(setPageTitle(setPageTitle(two, 'page1', 'X'), 'page1', '').pages![0]).toEqual({ name: 'page1' })
+    expect(movePage(two, 'page2', -1).pages!.map((p) => p.name)).toEqual(['page2', 'page1'])
+    expect(movePage(two, 'page2', 1)).toBe(two)
+  })
+
+  it('deleting a page takes what is on it; the last page stays', () => {
+    const two = addPage(single).definition
+    expect([...onPage(two, 'page1')].sort()).toEqual(['box', 'dialog', 'inner', 'q1', 't1', 'table1'])
+    const left = removePage(two, 'page1')
+    expect(left.pages).toEqual([{ name: 'page2' }])
+    expect(left.components).toEqual([])
+    expect(left.queries).toEqual([])
+    expect(left.transformers).toEqual([])
+    expect(left.variables).toEqual([{ name: 'v1' }])
+    expect(left.layout).toEqual({})
+    expect(removePage(left, 'page2')).toBe(left)
+    // Navigation links to a deleted page go with it (they'd block publishing).
+    const nav = addComponent(addPage(two).definition, 'navigation').definition
+    const linked = setProp(nav, 'navigation1', 'items', [{ page: 'page1' }, { page: 'page2', label: 'Two' }])
+    const without = removePage(linked, 'page2')
+    expect(without.components.find((c) => c.name === 'navigation1')!.props!.items).toEqual([
+      { page: 'page1' },
+    ])
+    expect(validateApp(without).diagnostics.filter((d) => d.code === 'unknown_page')).toEqual([])
+  })
+
+  it('new things go on the page given; moves follow the page', () => {
+    const two = addPage(single).definition
+    const added = addComponent(two, 'text', { page: 'page2' })
+    expect(added.definition.components.at(-1)).toMatchObject({ name: 'text1', page: 'page2' })
+    // Its own page's grid: at the top of the empty page, not below page1's table.
+    expect(added.definition.layout!.text1!.y).toBe(0)
+    expect(
+      addComponent(two, 'text', { parent: 'box', page: 'page2' }).definition.components.at(-1)!.page,
+    ).toBeUndefined()
+    expect(addQuery(two, 'js', { page: 'page2' }).definition.queries.at(-1)!.page).toBe('page2')
+    expect(addTransformer(two, { page: 'page2' }).definition.transformers!.at(-1)!.page).toBe('page2')
+    // Out of its container onto a page; into one, the container's page.
+    const out = moveToParent(two, 'inner', undefined, { page: 'page2' })
+    expect(out.components.find((c) => c.name === 'inner')).toEqual({
+      name: 'inner',
+      type: 'text',
+      props: {},
+      page: 'page2',
+    })
+    const back = moveToParent(out, 'inner', 'box')
+    expect(back.components.find((c) => c.name === 'inner')!.page).toBeUndefined()
+    // Onto every page, and back.
+    const global = setEntityPage(two, 'table1', null)
+    expect(entityPages(global).get('table1')).toBeNull()
+    expect(setEntityPage(global, 'table1', 'page2').components.find((c) => c.name === 'table1')!.page).toBe(
+      'page2',
+    )
+    expect(setEntityPage(two, 'q1', null).queries[0]!.page).toBeUndefined()
+    expect(setEntityPage(two, 'inner', 'page2')).toBe(two)
+  })
+
+  it('Navigation links must name pages', () => {
+    const two = addPage(single).definition
+    const nav = addComponent(two, 'navigation').definition
+    const linked = setProp(nav, 'navigation1', 'items', [
+      { page: 'page1' },
+      { page: 'nowhere' },
+      { page: '{{ x }}' },
+    ])
+    expect(validateApp(linked).diagnostics.map((d) => [d.code, d.path.join('.')])).toEqual([
+      ['unknown_page', 'components.4.props.items.1.page'],
+      ['unknown_identifier', 'components.4.props.items.2.page'],
+    ])
   })
 })

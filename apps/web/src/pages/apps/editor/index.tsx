@@ -1,3 +1,4 @@
+import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
@@ -9,10 +10,12 @@ import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
+import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
+import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
 import { type SaveStatus, useAppEditor } from './store'
@@ -119,7 +122,18 @@ function Editor({ app, environment, environments }: EditorProps) {
     notify,
     confirm,
     beforeQuery: ensureSaved,
+    url: useAppEditor.getState().url,
+    // `utils.openPage` and Navigation links move the editor to that page.
+    openPage: (page, params) => useAppEditor.getState().setUrl(page, params),
   })
+
+  // The running draft is on the page being edited.
+  useEffect(() => {
+    if (!host) return
+    return useAppEditor.subscribe((state, before) => {
+      if (state.url !== before.url) host.navigate(state.url)
+    })
+  }, [host])
 
   // The running draft follows the edits.
   useEffect(() => {
@@ -208,6 +222,7 @@ function Editor({ app, environment, environments }: EditorProps) {
           <div className="flex min-h-0 flex-1">
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface p-3">
+                <PagesPanel />
                 <section>
                   <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Add</h2>
                   <Palette />
@@ -222,7 +237,7 @@ function Editor({ app, environment, environments }: EditorProps) {
             )}
             <div className="flex min-w-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 overflow-y-auto bg-canvas px-6 py-4">
-                <Running>{preview ? <AppCanvas definition={definition} /> : <EditCanvas />}</Running>
+                <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
               </div>
               {!preview && (
                 <div className="h-[38%] min-h-48 shrink-0 border-t border-border">
@@ -248,6 +263,12 @@ function Editor({ app, environment, environments }: EditorProps) {
   )
 }
 
+/** The app as people see it, on the page being edited (`utils.openPage` and Navigation move it in place). */
+function PreviewCanvas({ definition }: { definition: AppDefinition }) {
+  const page = useAppEditor((s) => s.url.page)
+  return <AppCanvas definition={definition} page={page} />
+}
+
 /** The canvas once the sandbox runs; its problem if it can't. */
 function Running({ children }: { children: React.ReactNode }) {
   const status = useAppHostState((s) => s.status)
@@ -256,6 +277,7 @@ function Running({ children }: { children: React.ReactNode }) {
   if (status === 'loading') return <Spinner />
   return (
     <>
+      <AppStopped editing />
       <NeededConnections />
       {children}
     </>

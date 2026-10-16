@@ -2,8 +2,8 @@
 // biome-ignore-all lint/a11y/useFocusableInteractive: the grid holds focus and points at the active cell (aria-activedescendant)
 // biome-ignore-all lint/a11y/useKeyWithClickEvents: rows and cells are clicked; the keyboard works on the grid (arrows, Enter, Space)
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp } from 'lucide-react'
-import { type KeyboardEvent, useId, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search } from 'lucide-react'
+import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
@@ -12,20 +12,24 @@ import {
   changeFor,
   editText,
   formatCell,
+  type Paging,
   parseCell,
   type Row,
   rowKey,
   selectionKey,
-  sortedRows,
   type TableColumn,
+  type TableView,
   tableColumns,
+  tableView,
 } from './table-model'
 
 const ROW_HEIGHT = 32
 
 /**
- * The Table: rows from `data` (virtualized, so thousands are fine), sorted by clicking a header, selected by
- * clicking a row (Cmd/Ctrl-click adds to a multiple selection). Editable columns collect changes in
+ * The Table: rows from `data` (virtualized, so thousands are fine), sorted by clicking a header (`sort`), searched
+ * with the optional search box (`searchText`), shown all at once or a page at a time (`paging`; with `server`, a
+ * query fetches each page and the table only keeps `pagination`, `sort` and `searchText`), selected by clicking a
+ * row (Cmd/Ctrl-click adds to a multiple selection). Editable columns collect changes in
  * `changesetArray` (the primary key plus the changed fields per row) until Save fires `save` (and clears them once
  * the save succeeded) or Discard drops them. Arrows move between cells, Enter or a double click edits, Enter saves
  * the cell (and moves down), Tab saves it (and moves right), Escape cancels.
@@ -42,11 +46,38 @@ export function TableRenderer({ component }: RendererProps) {
   const changeset = useAppValue<Row[]>(`${name}.changesetArray`) ?? []
   const selectedRows = useAppValue<Row[]>(`${name}.selectedRows`) ?? []
   const selectedIndex = useAppValue<number | null>(`${name}.selectedIndex`)
+  const showSearch = useAppValue<boolean>(`${name}.search`) === true
+  const paging = useAppValue<Paging>(`${name}.paging`) ?? 'scroll'
+  const pageSize = useAppValue<number>(`${name}.pageSize`) ?? 50
+  const totalRowCount = useAppValue<number | null>(`${name}.totalRowCount`) ?? null
+  const page = useAppValue<number>(`${name}.page`) ?? 0
+  const sortState = useAppValue<{ column?: unknown; desc?: unknown } | null>(`${name}.sort`)
+  const searchText = useAppValue<string>(`${name}.searchText`) ?? ''
 
   const rows = useMemo(() => (Array.isArray(data) ? (data as Row[]) : []), [data])
   const columns = useMemo(() => tableColumns(columnsProp, rows), [columnsProp, rows])
-  const [sort, setSort] = useState<{ key: string; desc: boolean } | null>(null)
-  const ordered = useMemo(() => sortedRows(rows, sort), [rows, sort])
+  const sort = useMemo(
+    () =>
+      sortState && typeof sortState.column === 'string'
+        ? { key: sortState.column, desc: sortState.desc === true }
+        : null,
+    [sortState],
+  )
+  const view = useMemo(
+    () =>
+      tableView({
+        rows,
+        columns,
+        paging,
+        page,
+        pageSize,
+        sort,
+        searchText: typeof searchText === 'string' ? searchText : '',
+        totalRowCount: typeof totalRowCount === 'number' ? totalRowCount : null,
+      }),
+    [rows, columns, paging, page, pageSize, sort, searchText, totalRowCount],
+  )
+  const ordered = view.rows
   const [active, setActive] = useState<{ r: number; c: number } | null>(null)
   /**
    * The cell being edited, by its row's key and its column's key (not positions: the data can change while someone
@@ -63,6 +94,20 @@ export function TableRenderer({ component }: RendererProps) {
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   })
+
+  // A page past the last one (the data shrank, a search narrowed it) shows the last; `page` says so too.
+  useEffect(() => {
+    if (paging === 'pages' && view.page !== page) host.set({ [`${name}.page`]: view.page })
+  }, [paging, view.page, page, host, name])
+
+  const goToPage = (next: number) => {
+    setActive(null)
+    setEditing(null)
+    host.call(name, 'setPage', [next])
+    scrollRef.current?.scrollTo({ top: 0 })
+  }
+  const lastPage = view.pageCount === null ? null : view.pageCount - 1
+  const hasNext = lastPage === null ? rows.length >= pageSize : view.page < lastPage
 
   const selectedKeys = useMemo(() => {
     const keys = new Set(selectedRows.map((r) => selectionKey(r, primaryKey)))
@@ -180,6 +225,24 @@ export function TableRenderer({ component }: RendererProps) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-surface text-sm">
+      {showSearch && (
+        <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+          <Search className="size-3.5 shrink-0 text-muted" aria-hidden />
+          <input
+            type="search"
+            aria-label={`Search ${name}`}
+            placeholder="Search"
+            className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
+            value={typeof searchText === 'string' ? searchText : ''}
+            onChange={(e) => {
+              setActive(null)
+              // Set (acknowledged, so fast typing never jumps back), then the event, like setSearchText.
+              host.set({ [`${name}.searchText`]: e.target.value, [`${name}.page`]: 0 })
+              host.fire(name, 'searchChange')
+            }}
+          />
+        </div>
+      )}
       <div
         ref={gridRef}
         role="grid"
@@ -211,15 +274,16 @@ export function TableRenderer({ component }: RendererProps) {
                     type="button"
                     tabIndex={-1}
                     className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-semibold text-muted hover:text-ink"
-                    onClick={() =>
-                      setSort(
-                        !sorted
-                          ? { key: col.key, desc: false }
-                          : sort.desc
-                            ? null
-                            : { key: col.key, desc: true },
+                    onClick={() => {
+                      setActive(null)
+                      // Ascending, then descending, then unsorted.
+                      host.call(
+                        name,
+                        'setSort',
+                        !sorted ? [col.key, false] : sort.desc ? [null] : [col.key, true],
                       )
-                    }
+                      scrollRef.current?.scrollTo({ top: 0 })
+                    }}
                   >
                     <span className="truncate">{col.label}</span>
                     {sorted &&
@@ -319,9 +383,37 @@ export function TableRenderer({ component }: RendererProps) {
         </div>
       </div>
       <div className="flex items-center gap-2 border-t border-border bg-canvas px-3 py-1.5 text-xs text-muted">
-        <span>
-          {ordered.length} {ordered.length === 1 ? 'row' : 'rows'}
-        </span>
+        <RowCount
+          view={view}
+          rows={rows.length}
+          searching={paging !== 'server' && typeof searchText === 'string' && searchText.trim() !== ''}
+        />
+        {paging !== 'scroll' && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="Previous page"
+              className="rounded p-1 hover:bg-surface hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+              disabled={view.page === 0}
+              onClick={() => goToPage(view.page - 1)}
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+            <span className="tabular-nums" aria-live="polite">
+              Page {view.page + 1}
+              {view.pageCount !== null && ` of ${view.pageCount}`}
+            </span>
+            <button
+              type="button"
+              aria-label="Next page"
+              className="rounded p-1 hover:bg-surface hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+              disabled={!hasNext}
+              onClick={() => goToPage(view.page + 1)}
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
+          </div>
+        )}
         {changeset.length > 0 && (
           <>
             <span className="ml-auto text-ink">
@@ -346,6 +438,13 @@ export function TableRenderer({ component }: RendererProps) {
       </div>
     </div>
   )
+}
+
+/** "23 rows"; "5 of 23 rows" while searching; with server paging, the total when the app gives one. */
+function RowCount({ view, rows, searching }: { view: TableView; rows: number; searching: boolean }) {
+  const count = (n: number) => `${n} ${n === 1 ? 'row' : 'rows'}`
+  if (view.total === null) return null
+  return <span>{searching ? `${view.total} of ${count(rows)}` : count(view.total)}</span>
 }
 
 function CellEditor({

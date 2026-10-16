@@ -19,3 +19,15 @@ export function resource(config: unknown, secrets: unknown = {}, version = '1'):
   n++
   return { id: `rc-${n}`, resourceId: `r-${n}`, environmentId: 'env-prod', version, config, secrets }
 }
+
+/**
+ * Stand-in for an app's browser: the value of each `{{ }}` by its code, whatever it is (a viewer can send anything,
+ * so these may be hostile).
+ */
+export function codeEvaluator(values: Record<string, unknown>): Evaluate {
+  return (code: string) => {
+    const key = code.trim()
+    if (!(key in values)) throw new Error(`no value for {{ ${key} }}`)
+    return values[key]
+  }
+}

@@ -7,7 +7,7 @@ import {
   VARIABLE_METHODS,
 } from '@ow/app-definition'
 import type { CodeScope } from '@/components/code/code-field'
-import { typeOf } from '../../workflows/editor/scope-types'
+import { SQL_HELPERS, typeOf } from '../../workflows/editor/scope-types'
 
 /**
  * Completions for the app editor: a `.d.ts` declaring every component, query, transformer and variable with the
@@ -19,14 +19,19 @@ const GLOBALS = `
 declare const _: any
 /** Day.js, with the utc, timezone, customParseFormat and relativeTime plugins. */
 declare const dayjs: any
+${SQL_HELPERS}
 /** Who is using the app. In a resource query, a {{ }} reading only current_user is filled in by the server. */
 declare const current_user: { id: string; email: string; name: string }
 declare const appContext: { appSlug: string; environment: string; version: string | null }
+/** The page shown (null in an app without pages) and the query parameters of its URL. */
+declare const url: { page: string | null; params: Record<string, string> }
 declare const utils: {
   /** Shows a notification. */
   notify(message: any, tone?: 'info' | 'success' | 'error'): void
   /** Opens an http(s) or mailto link. */
   openUrl(url: string, options?: { newTab?: boolean }): void
+  /** Opens one of the app's pages; params become its URL's query string (read back as url.params, strings). */
+  openPage(page: string, options?: { params?: Record<string, any>; newTab?: boolean }): void
   copyToClipboard(text: any): void
   /** Saves data as a file: a string as-is, an array of objects as CSV for a .csv name, JSON otherwise. */
   downloadFile(data: any, fileName?: string): void
@@ -47,6 +52,7 @@ function methodSignatures(entity: Entity): string[] {
         (name) => `${name}(${params(entity.spec!.methods[name]!.params)}): any`,
       )
     case 'transformer':
+    case 'url':
       return []
   }
 }

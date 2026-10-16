@@ -2,13 +2,13 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
 
-Last updated: 2026-10-16 (end of session 9, which built M9).
+Last updated: 2026-10-16 (end of session 9, which built and merged M9).
 
 | | |
 |---|---|
-| **Branch** | `fix/m9-review` (the PR #10 review fixes). M9 was built on `feat/m9-oauth` (7 steps) |
-| **PR** | [#10 M9](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10) **merged** as `ec3dba2` before its review fixes were committed; they are [#11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/11), **open**: merge it (with a merge commit) before anything else |
-| **`main`** | `ec3dba2`, the merge of PR #10 (M9 without the review fixes). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `main`. M9 was built on `feat/m9-oauth` (7 steps); its review fixes on `fix/m9-review` |
+| **PR** | [#10 M9](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10) merged as `ec3dba2` (before its review fixes were committed); the fixes are [#11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/11), merged as `a04c68e`. CI green throughout |
+| **`main`** | `a04c68e`, the merge of PR #11 (M9 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -28,10 +28,10 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
-| **M9 OAuth** | ✅ On `main` (§9c), merged as PR #10; **its review fixes are PR #11** (10 fixes, one of them security: tokens could be sent to another host), to merge. The done-when proven in Playwright and on Docker Compose. |
-| M10 | ⏭️ After merging PR #11: plan it with the user (§14) |
+| **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
+| **M10 Finishing apps** | 🚧 Planned with the user in session 10 (§14), on `feat/m10-apps` |
 
-**Start the next session with:** merging PR #11 if it isn't yet (CI green), rebuilding the Compose stack with it (check with the user first), then planning M10 (§14).
+**Start the next session with:** the next M10 step (§14) on `feat/m10-apps`. Review the milestone's PR **before** it's merged (session 9: PR #10 was merged before its review fixes were committed, so they needed PR #11).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -611,14 +611,14 @@ Bundles: main 425 kB (414 before M9).
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the M9 image (session 9, built from the `feat/m9-oauth` working tree at step 7; migration `0013` applied; no OAuth connections stored). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; rebuilt at the end of session 9 with the user's OK, back after 7 s; migration `0013` applied; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 9** the Compose stack was left running on the M9 image from step 7, **without the PR #10 review fixes** (rebuild after merging, checking with the user first). The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
+- **At the end of session 9** the Compose stack was left running on the image of `main` (`a04c68e`, M9 with its review fixes), the user signed in to it. The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
 - **At the end of session 8** the Compose stack was left running on the image of `main` (`fe0c65d`, M8 with the review fixes).
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
@@ -695,26 +695,25 @@ Bundles: main 425 kB (414 before M9).
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: merge PR #11, then M10
+## 14. Next step: M10, finishing apps
 
-First merge PR #11 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
-- **Python executor** (nsjail) for code blocks.
-- **SQS/Kafka triggers** for workflows.
-- **Git sync** (canonical JSON already exists for workflows and apps).
-- **Multiplayer editing** (Yjs) for the workflow and app editors.
-- **AI actions.**
-
-Also open from M8, if the user prefers to finish apps first: the sandbox off the page's thread, server-side table paging, multipage apps, folders for workflows and apps.
+Chosen with the user at the start of session 10 (from `architecture.md` §2.7; Python, SQS/Kafka, Git sync, multiplayer and AI actions move to M11+). Branch `feat/m10-apps`. All four parts are in:
+1. **The sandbox in a Worker**: the app's runtime moves into a dedicated Worker started inside the sandbox iframe (keeping its no-network policy; a spike first proves `fetch`, XHR, WebSocket, `importScripts` and nested workers stay blocked). A watchdog stops a Worker that stops replying and offers Restart.
+2. **Table paging, sorting and search**: in the browser by default; server-side mode the Retool way (`pagination`, `sort`, `searchText` state, a `totalRowCount` prop, queries re-running as they change).
+3. **Multipage apps, definition and runtime**: schema v2 with `pages` (v1 apps upgrade to one page). **Global and page-scoped** components and queries (agreed with the user): one namespace across the app; page-scoped automatic queries run only while their page is open. URLs `/apps/$slug/$page?…`, `url.params`, `utils.openPage(name, params)`.
+4. **Multipage apps, editor and viewer**: a pages panel (add, rename, delete, reorder), a layout per page, a Navigation component.
+5. **Folders for workflows and apps**: `folders.*` takes the object type; each type's folders are managed by whoever can create that type; the Workflows and Apps lists group by folder with Move and folder Access.
+6. **Done-when, Compose check, docs.** Done-when in `architecture.md` §2.7.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull                      # after merging PR #11 (M9's review fixes)
+git switch main && git pull                      # M9 (PRs #10 and #11) is merged
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m10-<topic>                   # once M9 is merged; open a draft PR after the first commit
+git switch feat/m10-apps                         # M10 (§14); its draft PR opens after the first commit
 ```

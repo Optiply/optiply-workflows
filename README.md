@@ -62,7 +62,7 @@ A draft run needs Edit on the workflow and Use on every resource it queries. Wit
 
 Run history is kept for `RUN_RETENTION_DAYS` (default 30; `0` keeps everything): once a day one worker deletes runs that finished longer ago, with their blocks, data and logs, plus draft snapshots no run uses any more. It deletes in small batches (at most 5,000 rows per statement, each its own short transaction), so the queue never waits on it. A run with an unfinished child workflow is kept until the child finishes. The last result is in the `maintenance_jobs` table.
 
-In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`, BigQuery `@p1`), so values are never pasted into the SQL; write a table or column name directly. In Postgres, match a list with `= any({{ ids }})`; in BigQuery, with `IN UNNEST({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing). Objects are sent as JSON text (in BigQuery, read them with `PARSE_JSON(...)`). MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings; BigQuery does the same for `NUMERIC`, `INT64` and `TIMESTAMP`, and returns `DATE`/`DATETIME` as BigQuery writes them.
+In SQL queries, every `{{ }}` becomes a bind parameter (Postgres `$1`, MySQL `?`, BigQuery `@p1`), so values are never pasted into the SQL; write a table or column name directly. The exception is sorting by a column chosen at run time (a table's sort): `order by {{ sql.column(table1.sort?.column, ['name', 'price'], 'id') }} {{ sql.direction(table1.sort?.desc) }}`. The column must be one of the names listed in the query (or the fallback, when nothing is sorted), checked on the server, and the direction is `ASC` or `DESC`. In Postgres, match a list with `= any({{ ids }})`; in BigQuery, with `IN UNNEST({{ ids }})`. In MySQL, an array expands into a list, so `id IN ({{ ids }})` works (an empty array matches nothing). Objects are sent as JSON text (in BigQuery, read them with `PARSE_JSON(...)`). MySQL `DATE`/`DATETIME` values come back exactly as stored (`"2026-10-14 09:30:00"`), `TIMESTAMP`s as UTC instants, `DECIMAL`s as strings, and `BIGINT`s past 2^53 as strings; BigQuery does the same for `NUMERIC`, `INT64` and `TIMESTAMP`, and returns `DATE`/`DATETIME` as BigQuery writes them.
 
 A BigQuery resource signs in with a service account's JSON key (it needs the BigQuery Job User role and read access to the datasets). Every query runs as a job with the resource's maximum bytes billed (default 10 GiB; a query that would bill more fails before it runs, at no cost) and labels for cost reports: the resource's own plus `ow_source`, `ow_workflow`, `ow_run`, `ow_environment` and `ow_trigger` (or `ow_user` from the playground). Cancelling a run, or a timeout, cancels the job.
 
@@ -131,7 +131,7 @@ A REST resource authenticates with an API key, a bearer token, basic auth or OAu
 
 Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft live as you build it:
 
-- **Components** (palette on the left, drag onto the page or click to add): Table, Form, Text/Number/Date inputs, Select, Checkbox, Button, Text, Container, Modal and Chart, on a 12-column grid. Containers, forms and modals hold components of their own (move one in with **Inside**).
+- **Components** (palette on the left, drag onto the page or click to add): Table, Form, Text/Number/Date inputs, Select, Checkbox, Button, Text, Container, Modal, Chart and Navigation, on a 12-column grid. Containers, forms and modals hold components of their own (move one in with **Inside**).
 - **Properties** (right): every value can be a constant or `{{ }}` reading other components, queries, transformers and variables (`{{ table1.selectedRow.id }}`); it re-evaluates whenever what it reads changes.
 - **Queries** (bottom): resource queries run automatically when what they read changes (reads) or only when triggered (writes); JS queries run in the browser and can `await query1.trigger()`, call component methods (`modal1.open()`, `table1.clearChangeset()`) and `utils` (`notify`, `openUrl`, `copyToClipboard`, `downloadFile`). Transformers derive values; variables hold state.
 - **Event handlers** on components and queries: control a query or component, set a variable, run a script, notify, open a URL, with an "only run when" condition and debounce.
@@ -143,11 +143,26 @@ Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft liv
   where t.id = x.id
   ```
 
+- **Paging, sorting and search**: a Table's **Paging** is `scroll` (every row), `pages` (pages of **Page size** rows) or `server`; **Search box** adds a search over the shown cells. Headers sort. In the browser modes the table does it all itself. With `server`, `data` is one page that a query fetches, re-running as the table's `pagination`, `sort` and `searchText` change, with **Total row count** for the page count:
+
+  ```sql
+  select id, name, price from products
+  where name ilike {{ '%' + table1.searchText + '%' }}
+  order by {{ sql.column(table1.sort?.column, ['name', 'price'], 'id') }} {{ sql.direction(table1.sort?.desc) }}
+  limit {{ table1.pagination.pageSize }} offset {{ table1.pagination.offset }}
+  ```
+
+  Changing the sort or the search goes back to the first page; `pageChange`, `sortChange` and `searchChange` fire, and `table1.setPage(n)`, `setSort(column, desc)` and `setSearchText(text)` do the same from code.
+
+- **Pages**: an app can have pages, at `/apps/<slug>/<page>` (the first page at `/apps/<slug>`). Components, queries and transformers belong to a page or to every page (global: shown above each page, run on all of them); a page's code reads what's global and what's on that page. An automatic query on a page runs only while that page is open (once it opens, if its values changed meanwhile), and run-on-load queries run each time their page opens. `utils.openPage('detail', { params: { id: 42 } })` opens a page, and `url.page` and `url.params` (here `{ id: '42' }`, always strings; `env` is the platform's) say where the app is. Back and Forward work, and moving between pages keeps the app's state, and the browser tab shows the page's title. In the editor, **Pages** (top left) picks the page being edited, adds one (an app's first added page puts everything it had on `page1`), and renames, titles, reorders or deletes it (with what's on it); new components, queries and transformers go on the page being edited, and their **Page** field moves them ("Every page" makes them global). The canvas shows the global components (**On every page**) above the page's. A **Navigation** component links the pages (all of them, by title, or the **Links** given as `{ page, label }`); put it on every page.
+
 **Publish** releases the draft as a semver version; people with Use on the app open the live release at `/apps/<slug>` and pick the environment. **Releases** rolls back, **Access** (owners) grants groups Use, Edit or Own.
+
+**Folders** group resources, workflows and apps on their list pages; each kind has folders of its own. Whoever can create a kind (Edit on all of them) makes and deletes its folders (what's inside moves out); an owner moves an item into one from its row (moving changes who can reach it, so it needs Own); admins open a folder's **Access** to grant a group Use, Edit or Own on everything inside it.
 
 How it's kept safe:
 
-- App code runs in a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network.
+- App code runs in a Worker inside a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network. An endless loop freezes only the app: after 5 s it's stopped, and Restart starts it again.
 - Queries stay on the server. The browser sends a query's name and the values of its `{{ }}`s, which are bound as parameters. A `{{ }}` reading only `current_user` is filled in by the server, so `where owner = {{ current_user.email }}` can be trusted; mixing `current_user` with app values in one `{{ }}` is refused.
 - People with Use on an app run its queries without access to their resources: whoever publishes needs Use on every resource the app queries, in every environment. Writes (manual queries) are audited without their values.
 

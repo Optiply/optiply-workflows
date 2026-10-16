@@ -98,6 +98,19 @@ const specs: ComponentSpec[] = [
     defaultSize: { w: 4, h: 2 },
   },
   {
+    type: 'navigation',
+    label: 'Navigation',
+    props: {
+      /** `{ page, label? }` per link, in order (the label a template); empty links every page, by title. */
+      items: { type: 'array', default: [], label: 'Links' },
+      orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 12, h: 3 },
+  },
+  {
     type: 'button',
     label: 'Button',
     props: {
@@ -192,6 +205,16 @@ const specs: ComponentSpec[] = [
       primaryKey: str('Primary key column', 'id'),
       rowSelection: oneOf('Row selection', ['none', 'single', 'multiple'], 'single'),
       emptyMessage: str('Empty message', 'No rows'),
+      /** A search box above the rows; its text is `searchText`. */
+      search: bool('Search box'),
+      /**
+       * `scroll`: every row, scrolled. `pages`: pages of `pageSize` rows. `server`: `data` is one page that a query
+       * fetched with `pagination`, `sort` and `searchText` (the table neither sorts, searches nor pages it itself).
+       */
+      paging: oneOf('Paging', ['scroll', 'pages', 'server'], 'scroll'),
+      pageSize: num('Page size', 50),
+      /** With server paging: how many rows there are in all, for the page count. */
+      totalRowCount: num('Total row count'),
     },
     state: {
       selectedRow: { default: null },
@@ -199,6 +222,13 @@ const specs: ComponentSpec[] = [
       selectedIndex: { default: null },
       /** Edited rows: the primary key plus the changed fields, for a bulk update query. */
       changesetArray: { default: [] },
+      /** The page shown, from 0. */
+      page: { default: 0 },
+      // `pagination` (`{ page, pageSize, offset }`) is derived from `page` and `pageSize`; see `appGraph`.
+      pagination: { default: { page: 0, pageSize: 50, offset: 0 } },
+      /** `{ column, desc }`, or null when unsorted. */
+      sort: { default: null },
+      searchText: { default: '' },
     },
     methods: {
       selectRow: { params: ['index'] },
@@ -206,8 +236,14 @@ const specs: ComponentSpec[] = [
       clearChangeset: { params: [] },
       /** Fires `save`, then clears the changeset when every handler succeeded (the table's Save button). */
       saveChanges: { params: [] },
+      /** Shows page `page` (from 0) and fires `pageChange`. */
+      setPage: { params: ['page'] },
+      /** Sorts by `column` (null for none), descending when `desc`; back to the first page; fires `sortChange`. */
+      setSort: { params: ['column', 'desc'] },
+      /** Sets `searchText`; back to the first page; fires `searchChange`. */
+      setSearchText: { params: ['text'] },
     },
-    events: ['rowSelect', 'changeCell', 'save'],
+    events: ['rowSelect', 'changeCell', 'save', 'pageChange', 'sortChange', 'searchChange'],
     defaultSize: { w: 12, h: 20 },
   },
   {
@@ -282,6 +318,11 @@ export const COMPONENTS: Readonly<Record<string, ComponentSpec>> = Object.fromEn
   ]),
 )
 
+/** A table's page size as the table and its `pagination` both use it: a whole number of rows, 50 when it isn't one. */
+export function pageSizeOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 1 ? Math.floor(value) : 50
+}
+
 export function componentSpec(type: string): ComponentSpec | undefined {
   return Object.hasOwn(COMPONENTS, type) ? COMPONENTS[type] : undefined
 }
@@ -297,6 +338,9 @@ export const QUERY_EVENTS = ['success', 'failure'] as const
 export const TRANSFORMER_STATE = ['value'] as const
 
 export const VARIABLE_STATE = ['value'] as const
+
+/** `url.page` (the page shown, null in an app without pages) and `url.params` (its query parameters). */
+export const URL_STATE = ['page', 'params'] as const
 export const VARIABLE_METHODS: Readonly<Record<string, MethodSpec>> = {
   setValue: { params: ['value'] },
   setIn: { params: ['path', 'value'] },

@@ -32,6 +32,7 @@ function setup(
     respond?: (query: string, values: Record<string, unknown>) => unknown
     confirm?: boolean
     delay?: number
+    url?: { page?: string | null; params?: Record<string, string> }
   } = {},
 ) {
   const calls: { query: string; values: Record<string, unknown> }[] = []
@@ -61,7 +62,11 @@ function setup(
       },
       log: () => {},
     },
-    { autoRunDelayMs: opts.delay ?? 0, globals: { current_user: { email: 'a@optiply.nl' } } },
+    {
+      autoRunDelayMs: opts.delay ?? 0,
+      globals: { current_user: { email: 'a@optiply.nl' } },
+      ...(opts.url && { url: opts.url }),
+    },
   )
   return { runtime, calls, effects, patches, confirms, state }
 }
@@ -361,6 +366,64 @@ describe('AppRuntime', () => {
     await expect(t.runtime.call('x', 'explode')).rejects.toThrow('x has no method explode')
   })
 
+  it('pages, sorts and searches a server-side table: its query re-runs with the new values', async () => {
+    const t = setup({
+      components: [
+        comp(
+          't',
+          'table',
+          { data: '{{ page.data }}', paging: 'server', pageSize: 2 },
+          {
+            events: [
+              on('pageChange', { type: 'notify', message: 'page {{ t.page }}' }),
+              on('sortChange', { type: 'notify', message: 'sort {{ t.sort?.column }}' }),
+              on('searchChange', { type: 'notify', message: 'search {{ t.searchText }}' }),
+            ],
+          },
+        ),
+      ],
+      queries: [
+        sql(
+          'page',
+          'select * from c where name ilike {{ t.searchText }} order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
+        ),
+      ],
+    })
+    await t.runtime.start()
+    await wait()
+    const last = () => t.calls.at(-1)!.values
+    expect(last()).toMatchObject({
+      ' t.searchText ': '',
+      ' t.sort?.column ': undefined,
+      ' t.pagination.pageSize ': 2,
+      ' t.pagination.offset ': 0,
+    })
+    await t.runtime.call('t', 'setPage', [2])
+    await wait()
+    expect(last()).toMatchObject({ ' t.pagination.offset ': 4 })
+    // Sorting and searching go back to the first page.
+    await t.runtime.call('t', 'setSort', ['name', true])
+    await wait()
+    expect(last()).toMatchObject({
+      ' t.sort?.column ': 'name',
+      ' t.sort?.desc ': true,
+      ' t.pagination.offset ': 0,
+    })
+    await t.runtime.call('t', 'setPage', ['1'])
+    await t.runtime.call('t', 'setSearchText', ['ada'])
+    await wait()
+    expect(last()).toMatchObject({ ' t.searchText ': 'ada', ' t.pagination.offset ': 0 })
+    await t.runtime.call('t', 'setSort', [null])
+    expect(t.state['t.sort']).toBeNull()
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
+      'page 2',
+      'sort name',
+      'page 1',
+      'search ada',
+      'sort ',
+    ])
+  })
+
   it('saves table changes, clearing them only when every save handler succeeded', async () => {
     let fail = true
     const t = setup(
@@ -503,5 +566,128 @@ describe('AppRuntime', () => {
     expect(before).toEqual({ a: { b: [1, 2] } })
     expect(setIn(null, ['x', 0], 'y')).toEqual({ x: ['y'] })
     expect(toCsv([])).toBe('\r\n')
+  })
+})
+
+describe('pages', () => {
+  const twoPages = {
+    pages: [{ name: 'list' }, { name: 'detail' }],
+    components: [
+      comp('search', 'textInput', {}, { page: 'list' }),
+      comp('title', 'text', { value: '{{ customer.data?.name }}' }, { page: 'detail' }),
+    ],
+    queries: [
+      sql('plans', 'select * from plans'),
+      sql('customers', 'select * from c where name like {{ search.value }}', 'auto', { page: 'list' }),
+      sql('customer', 'select * from c where id = {{ url.params.id }}', 'auto', { page: 'detail' }),
+      js('opened', 'return url.params.id', { page: 'detail', runOnLoad: true }),
+    ],
+  }
+  const runs = (t: ReturnType<typeof setup>) => t.calls.map((c) => c.query)
+
+  it("runs global queries and the open page's, and the others' when their page opens", async () => {
+    const t = setup(twoPages)
+    await t.runtime.start()
+    expect(runs(t).sort()).toEqual(['customers', 'plans'])
+    expect(t.state['url.page']).toBe('list')
+
+    await t.runtime.navigate('detail', { id: '7' })
+    await wait()
+    expect(runs(t).slice(2)).toEqual(['customer'])
+    expect(t.calls.at(-1)!.values).toEqual({ ' url.params.id ': '7' })
+    expect(t.state).toMatchObject({ 'url.page': 'detail', 'url.params': { id: '7' }, 'opened.data': '7' })
+
+    // Same page, other parameters: what reads them runs again (the run-on-load query doesn't).
+    await t.runtime.navigate('detail', { id: '8' })
+    await wait()
+    expect(runs(t).slice(3)).toEqual(['customer'])
+    expect(t.state['opened.data']).toBe('7')
+
+    // Back on the list: nothing changed there, so nothing runs; typing there runs its query again.
+    await t.runtime.navigate('list')
+    await wait()
+    expect(runs(t)).toHaveLength(4)
+    t.runtime.set({ 'search.value': 'a' })
+    await wait()
+    expect(runs(t).at(-1)).toBe('customers')
+  })
+
+  it("doesn't run a closed page's query as its values change; it runs once when the page opens", async () => {
+    const t = setup(twoPages, { url: { page: 'detail', params: { id: '1' } } })
+    await t.runtime.start()
+    expect(runs(t).sort()).toEqual(['customer', 'plans'])
+    expect(t.state['opened.data']).toBe('1')
+    await t.runtime.navigate('list')
+    // A list query never ran: it runs now.
+    await wait()
+    expect(runs(t).at(-1)).toBe('customers')
+    // Detail is closed: its query waits, however often its values change…
+    await t.runtime.navigate('list', { id: '2' })
+    await t.runtime.navigate('list', { id: '3' })
+    await wait()
+    expect(runs(t).filter((q) => q === 'customer')).toHaveLength(1)
+    // …and runs once when it opens (with the run-on-load query, each time its page opens).
+    await t.runtime.navigate('detail', { id: '3' })
+    await wait()
+    expect(runs(t).filter((q) => q === 'customer')).toHaveLength(2)
+    expect(t.state['opened.data']).toBe('3')
+  })
+
+  it('a query waiting to run when its page closes runs when the page opens again, not meanwhile', async () => {
+    const t = setup(twoPages, { delay: 20 })
+    await t.runtime.start()
+    const before = runs(t).length
+    t.runtime.set({ 'search.value': 'b' })
+    // Leaves the list page within the query's wait.
+    await t.runtime.navigate('detail', { id: '1' })
+    await wait(60)
+    expect(
+      runs(t)
+        .slice(before)
+        .filter((q) => q === 'customers'),
+    ).toEqual([])
+    await t.runtime.navigate('list')
+    await wait(60)
+    expect(runs(t).at(-1)).toBe('customers')
+    expect(t.calls.at(-1)!.values).toEqual({ ' search.value ': 'b' })
+  })
+
+  it('an app with its own entity named url (from before pages) keeps running when the page moves', async () => {
+    const t = setup({ components: [comp('url', 'textInput')] })
+    await t.runtime.start()
+    await expect(t.runtime.navigate('x', { a: '1' })).resolves.toBeUndefined()
+    t.runtime.set({ 'url.value': 'still mine' })
+    expect(t.state['url.value']).toBe('still mine')
+  })
+
+  it('utils.openPage asks the page to go there, with parameters as strings', async () => {
+    const t = setup({
+      ...twoPages,
+      queries: [
+        js('go', "utils.openPage('detail', { params: { id: 42, skip: null, tags: ['a'] }, newTab: true })"),
+        js('lost', "utils.openPage('nowhere')"),
+      ],
+    })
+    await t.runtime.start()
+    await t.runtime.trigger('go')
+    expect(t.effects).toEqual([
+      { type: 'openPage', page: 'detail', params: { id: '42', tags: '["a"]' }, newTab: true },
+    ])
+    await expect(t.runtime.trigger('lost')).rejects.toThrow(
+      'No page is named "nowhere"; the pages are list, detail',
+    )
+    // The page doesn't change until the page's URL has.
+    expect(t.state['url.page']).toBe('list')
+  })
+
+  it('an unknown page opens the first; an app without pages has none', async () => {
+    const t = setup(twoPages, { url: { page: 'gone' } })
+    await t.runtime.start()
+    expect(t.state['url.page']).toBe('list')
+    const plain = setup({ components: [comp('t', 'text', { value: '{{ url.page }}' })] })
+    await plain.runtime.start()
+    expect(plain.state['url.page']).toBeNull()
+    await plain.runtime.navigate('x', { a: '1' })
+    expect(plain.state).toMatchObject({ 'url.page': null, 'url.params': { a: '1' } })
   })
 })

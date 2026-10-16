@@ -5,6 +5,7 @@ import {
   componentSpec,
   QUERY_METHODS,
   QUERY_STATE,
+  URL_STATE,
   VARIABLE_METHODS,
   VARIABLE_STATE,
 } from './components'
@@ -25,6 +26,8 @@ export type Entity =
   | { kind: 'query'; name: string; index: number; query: AppQuery }
   | { kind: 'transformer'; name: string; index: number; transformer: Transformer }
   | { kind: 'variable'; name: string; index: number; variable: Variable }
+  /** `url`, built in: the page shown and its query parameters. */
+  | { kind: 'url'; name: 'url'; index: -1 }
 
 export type NodeKind =
   /** A component prop: its template, or its default. */
@@ -33,6 +36,8 @@ export type NodeKind =
   | 'state'
   /** A form's `data`, collected from the inputs inside it. */
   | 'formData'
+  /** A table's `pagination`: `{ page, pageSize, offset }` from its `page` and `pageSize`. */
+  | 'pagination'
   /** A transformer's value. */
   | 'transformer'
   /** A variable's initial value, evaluated once when the app opens. */
@@ -117,6 +122,8 @@ export function entityProperties(entity: Entity): string[] {
       return ['value']
     case 'variable':
       return [...VARIABLE_STATE]
+    case 'url':
+      return [...URL_STATE]
   }
 }
 
@@ -131,6 +138,8 @@ export function entityMethods(entity: Entity): string[] {
       return []
     case 'variable':
       return Object.keys(VARIABLE_METHODS)
+    case 'url':
+      return []
   }
 }
 
@@ -158,6 +167,8 @@ export function formInputs(def: AppDefinition, form: string): string[] {
 
 export function buildAppGraph(def: AppDefinition): AppGraph {
   const entities = appEntities(def)
+  // Built in; an entity of the app named `url` is invalid (and keeps the name here, for the validator to report).
+  if (!entities.has('url')) entities.set('url', { kind: 'url', name: 'url', index: -1 })
   const fields: AnalysedField[] = appFields(def).map((field) => ({
     ...field,
     ...fieldRefs(field, { properties: true }),
@@ -181,6 +192,8 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
         for (const [state, s] of Object.entries(spec.state)) {
           if (entity.component.type === 'form' && state === 'data') {
             add(name, state, 'formData', { inputs: formInputs(def, name) })
+          } else if (entity.component.type === 'table' && state === 'pagination') {
+            add(name, state, 'pagination')
           } else if (s.from) {
             add(name, state, 'state', { from: nodeKey(name, s.from) })
           } else {
@@ -199,6 +212,9 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
       case 'variable':
         add(name, '$initial', 'initial')
         add(name, 'value', 'source')
+        break
+      case 'url':
+        for (const state of URL_STATE) add(name, state, 'source')
         break
     }
   }
@@ -224,6 +240,8 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
   }
   for (const node of nodes.values()) {
     if (node.from) node.deps.push(node.from)
+    if (node.kind === 'pagination')
+      node.deps.push(nodeKey(node.entity, 'page'), nodeKey(node.entity, 'pageSize'))
     if (node.inputs) {
       for (const input of node.inputs) node.deps.push(nodeKey(input, 'value'), nodeKey(input, 'formDataKey'))
     }
@@ -276,6 +294,7 @@ function entityPath(entity: Entity): string {
     query: 'queries',
     transformer: 'transformers',
     variable: 'variables',
+    url: 'url',
   }
   return `${list[entity.kind]}.${entity.index}`
 }

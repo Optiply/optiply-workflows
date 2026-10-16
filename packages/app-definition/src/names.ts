@@ -1,13 +1,20 @@
 import { isReservedWord, JS_GLOBALS } from '@ow/definition'
 
 /** The stdlib the app runtime preloads, like the server sandbox's. */
-export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'console'])
+export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'sql', 'console'])
 
 /**
- * Added by the app runtime: `current_user` (`{ id, email, name }`), `utils` (`notify`, `openUrl`,
- * `copyToClipboard`, `downloadFile`) and `appContext` (`{ appSlug, environment, version }`).
+ * Added by the app runtime: `current_user` (`{ id, email, name }`), `utils` (`notify`, `openUrl`, `openPage`,
+ * `copyToClipboard`, `downloadFile`), `appContext` (`{ appSlug, environment, version }`) and `url` (`{ page,
+ * params }`, the page shown and its URL's query parameters; values in the graph, since they change as people move
+ * between pages).
  */
-export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set(['current_user', 'utils', 'appContext'])
+export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set([
+  'current_user',
+  'utils',
+  'appContext',
+  'url',
+])
 
 /** Names an app's code can read without them being one of its components, queries, transformers or variables. */
 export function isAppGlobalName(name: string): boolean {

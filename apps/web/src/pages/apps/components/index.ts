@@ -10,6 +10,7 @@ import {
   SelectRenderer,
   TextInputRenderer,
 } from './inputs'
+import { NavigationRenderer } from './navigation'
 import { TableRenderer } from './table'
 
 /** Renderers by component type; a type without one shows its state. */
@@ -26,4 +27,5 @@ export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = 
   form: FormRenderer,
   modal: ModalRenderer,
   chart: ChartRenderer,
+  navigation: NavigationRenderer,
 }

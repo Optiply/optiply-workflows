@@ -256,11 +256,13 @@ type Target = { objectType: 'resource' | 'folder' | 'app'; objectId: string | nu
 export function AccessEditor({
   target,
   help = 'Use runs queries · Edit also changes settings · Own also deletes and manages access. The highest grant wins.',
+  perEnvironment = target.objectType !== 'app',
 }: {
   target: Target
   help?: string
+  /** Whether grants can be for one environment (resources and their folders); apps and workflows: every one. */
+  perEnvironment?: boolean
 }) {
-  const perEnvironment = target.objectType !== 'app'
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: grants, isLoading, error } = useQuery(trpc.permissions.list.queryOptions(target))

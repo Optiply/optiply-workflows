@@ -109,6 +109,20 @@ export const permissionsRouter = router({
         const what = input.objectType === 'app' ? 'App' : 'Workflow'
         throw new TRPCError({ code: 'BAD_REQUEST', message: `${what} access applies to every environment` })
       }
+      // Likewise for their folders: a grant for one environment would never count.
+      if (input.objectType === 'folder' && input.objectId !== null && input.environmentId !== null) {
+        const [folder] = await ctx.db
+          .select({ objectType: folders.objectType })
+          .from(folders)
+          .where(eq(folders.id, input.objectId))
+        if (folder && folder.objectType !== 'resource') {
+          const what = folder.objectType === 'app' ? 'App' : 'Workflow'
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `${what} folder access applies to every environment`,
+          })
+        }
+      }
       const [group] = await ctx.db
         .select({ name: groups.name })
         .from(groups)

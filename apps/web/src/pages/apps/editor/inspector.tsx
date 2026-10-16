@@ -5,6 +5,7 @@ import {
   moveToParent,
   type PropSpec,
   removeComponent,
+  setEntityPage,
   setHandlers,
   setProp,
   withDescendants,
@@ -22,6 +23,7 @@ export function ComponentInspector({ name }: { name: string }) {
   const definition = useAppEditor((s) => s.definition)
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
+  const page = useAppEditor((s) => s.url.page)
   const index = definition.components.findIndex((c) => c.name === name)
   const component = definition.components[index]
   if (!component) return null
@@ -63,9 +65,9 @@ export function ComponentInspector({ name }: { name: string }) {
           <Select
             aria-label="Inside"
             value={component.parent ?? ''}
-            onChange={(e) => update((def) => moveToParent(def, name, e.target.value || undefined))}
+            onChange={(e) => update((def) => moveToParent(def, name, e.target.value || undefined, { page }))}
           >
-            <option value="">The page</option>
+            <option value="">{definition.pages?.length ? `Page ${page}` : 'The page'}</option>
             {parents.map((p) => (
               <option key={p.name} value={p.name}>
                 {p.name}
@@ -74,6 +76,13 @@ export function ComponentInspector({ name }: { name: string }) {
           </Select>
         </EditorField>
       )}
+
+      {definition.pages?.length && component.parent === undefined ? (
+        <PageField
+          value={component.page ?? null}
+          onChange={(to) => update((def) => setEntityPage(def, name, to))}
+        />
+      ) : null}
 
       <section className="flex flex-col gap-3">
         <h3 className="text-xs font-semibold tracking-wide text-muted uppercase">Properties</h3>
@@ -263,5 +272,41 @@ function ParsedField({
       problems={problems}
       onChange={setText}
     />
+  )
+}
+
+/** Which page something is on: one of the app's, or every page (null). */
+export function PageSelect({
+  value,
+  onChange,
+  className,
+}: {
+  value: string | null
+  onChange: (page: string | null) => void
+  className?: string
+}) {
+  const pages = useAppEditor((s) => s.definition.pages) ?? []
+  return (
+    <Select
+      aria-label="Page"
+      className={className}
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">Every page</option>
+      {pages.map((p) => (
+        <option key={p.name} value={p.name}>
+          {p.title ? `${p.title} (${p.name})` : p.name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+function PageField(props: { value: string | null; onChange: (page: string | null) => void }) {
+  return (
+    <EditorField label="Page">
+      <PageSelect {...props} />
+    </EditorField>
   )
 }
