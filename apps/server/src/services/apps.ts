@@ -15,6 +15,7 @@ import {
   apps,
   type Db,
   environments,
+  gitBranchDrafts,
   type Resource,
   resourceConfigs,
   resources,
@@ -271,6 +272,8 @@ export async function runAppQuery(
   opts: {
     app: App
     releaseId: string | null
+    /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
+    branchDraftId?: string
     query: string
     environmentId: string
     values: Record<string, unknown>
@@ -285,7 +288,16 @@ export async function runAppQuery(
     if (!atLeast(access.appLevel(app), 'edit')) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to run its draft' })
     }
-    definition = app.draftDefinition
+    if (opts.branchDraftId) {
+      const [draft] = await db
+        .select()
+        .from(gitBranchDrafts)
+        .where(and(eq(gitBranchDrafts.id, opts.branchDraftId), eq(gitBranchDrafts.appId, app.id)))
+      if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'This app has no such branch draft' })
+      definition = draft.definition as AppDefinition
+    } else {
+      definition = app.draftDefinition
+    }
   } else {
     if (!atLeast(access.appLevel(app), 'use')) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'You need use access to this app' })

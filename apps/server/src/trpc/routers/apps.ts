@@ -320,6 +320,8 @@ export const appsRouter = router({
       z.object({
         appId: Id,
         releaseId: Id.nullable(),
+        /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
+        branchDraftId: Id.optional(),
         query: QueryName,
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
@@ -334,6 +336,7 @@ export const appsRouter = router({
         {
           app,
           releaseId: input.releaseId,
+          branchDraftId: input.branchDraftId,
           query: input.query,
           environmentId: input.environmentId,
           values: input.values,

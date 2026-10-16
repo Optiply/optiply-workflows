@@ -409,11 +409,23 @@ export const workflowDraftSnapshots = pgTable(
       .references(() => workflows.id, { onDelete: 'cascade' }),
     /** The `draftRevision` this copies; one snapshot per revision. */
     revision: integer().notNull(),
+    /**
+     * A Git branch draft's snapshot (M11): its `git_branch_drafts` id and revision. No foreign key: runs keep their
+     * snapshot after the draft is discarded (retention removes it once no run uses it).
+     */
+    branchDraftId: uuid(),
     definition: jsonb().$type<WorkflowDefinition>().notNull(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('workflow_draft_snapshots_revision_uq').on(t.workflowId, t.revision)],
+  (t) => [
+    uniqueIndex('workflow_draft_snapshots_revision_uq')
+      .on(t.workflowId, t.revision)
+      .where(sql`${t.branchDraftId} is null`),
+    uniqueIndex('workflow_draft_snapshots_branch_revision_uq')
+      .on(t.branchDraftId, t.revision)
+      .where(sql`${t.branchDraftId} is not null`),
+  ],
 )
 
 /** Published, immutable versions. Only the live release runs from schedules and webhooks. */
@@ -962,3 +974,42 @@ export const gitDeploys = pgTable(
 
 export type GitObject = typeof gitObjects.$inferSelect
 export type GitDeploy = typeof gitDeploys.$inferSelect
+
+/**
+ * A protected workflow's or app's draft on a Git branch (M11): edited and run like the main draft, committed onto
+ * the branch. One per object and branch.
+ */
+export const gitBranchDrafts = pgTable(
+  'git_branch_drafts',
+  {
+    id: id(),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    branch: text().notNull(),
+    /** A workflow or app definition, as the object's kind says. */
+    definition: jsonb().$type<WorkflowDefinition | AppDefinition>().notNull(),
+    name: text().notNull(),
+    description: text(),
+    /** Bumped on every save (optimistic concurrency, and draft snapshots for runs). */
+    revision: integer().notNull().default(1),
+    /** The commit the draft's files came from (or that it last committed): what a commit goes on top of. */
+    baseCommit: text().notNull(),
+    /** False until the first commit makes the branch (it starts from the deploy branch). */
+    branchExists: boolean().notNull(),
+    /** The draft's last commit. */
+    committedCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('git_branch_drafts_workflow_uq')
+      .on(t.workflowId, t.branch)
+      .where(sql`${t.workflowId} is not null`),
+    uniqueIndex('git_branch_drafts_app_uq').on(t.appId, t.branch).where(sql`${t.appId} is not null`),
+    check('git_branch_drafts_object_ck', sql`num_nonnulls(${t.workflowId}, ${t.appId}) = 1`),
+  ],
+)
+
+export type GitBranchDraft = typeof gitBranchDrafts.$inferSelect

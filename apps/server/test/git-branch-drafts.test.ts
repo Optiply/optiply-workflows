@@ -1,0 +1,511 @@
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  auditEvents,
+  gitBranchDrafts,
+  workflowDraftSnapshots,
+  workflowReleases,
+  workflowRuns,
+  workflows,
+} from '@ow/db'
+import { deleteOldRuns } from '@ow/engine'
+import { eq } from 'drizzle-orm'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { runGitDeploy } from '../src/services/git/deploy'
+import { GitRepo } from '../src/services/git/repo'
+import { fakeGitHub } from './fake-github'
+import { bareRepo, scratch } from './git-helpers'
+import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
+
+const TOKEN = 'ghp_branch_draft_tests'
+
+let env: TestEnv
+let dir: string
+let cleanup: () => Promise<void>
+let github: Awaited<ReturnType<typeof fakeGitHub>>
+let admin: ReturnType<typeof trpc>
+let adminCookie: string
+let member: ReturnType<typeof trpc>
+let remote: string
+let other: GitRepo
+let flowId: string
+
+// biome-ignore lint/suspicious/noExplicitAny: test helper over untyped JSON
+const data = (res: { body: { result?: { data: unknown }; error?: unknown } }): any => {
+  if (res.body.error) throw new Error(JSON.stringify(res.body.error))
+  return res.body.result!.data
+}
+const failure = (res: { body: { error?: { message: string; data?: { code: string } } } }) => ({
+  code: res.body.error?.data?.code,
+  message: res.body.error?.message,
+})
+
+const flowDefinition = (code: string) => ({
+  schemaVersion: 1,
+  blocks: [
+    { name: 'startTrigger', type: 'startTrigger' },
+    { name: 'step', type: 'code', config: { code } },
+  ],
+  edges: [{ from: 'startTrigger', port: 'out', to: 'step' }],
+})
+
+const deploy = () => runGitDeploy(env.db, env.config, { trigger: 'poll' })
+const author = { name: 'Someone else', email: 'else@optiply.nl' }
+
+beforeAll(async () => {
+  ;({ dir, cleanup } = await scratch())
+  mkdirSync(join(dir, 'optiply'))
+  remote = bareRepo(join(dir, 'optiply', 'flows.git'))
+  github = await fakeGitHub({ repoPath: remote, owner: 'optiply', repo: 'flows', token: TOKEN })
+  env = await startTestApp({
+    GIT_ALLOW_INSECURE_URLS: 'true',
+    GIT_CACHE_DIR: join(dir, 'cache'),
+    GITHUB_API_URL: github.url,
+  })
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
+  await createLocalUser(env.db, 'member@optiply.nl')
+  adminCookie = await login(env.app, 'admin@optiply.nl')
+  admin = trpc(env.app, adminCookie)
+  member = trpc(env.app, await login(env.app, 'member@optiply.nl'))
+  data(await admin.mutate('git.saveSettings', { repoUrl: `file://${remote}`, token: TOKEN }))
+  other = await GitRepo.open(
+    join(dir, 'other'),
+    { url: `file://${remote}`, token: null },
+    { allowInsecure: true },
+  )
+
+  // A published workflow, protected and merged: main has it, and it's live.
+  flowId = data(await admin.mutate('workflows.create', { slug: 'sync-orders', name: 'Sync orders' })).id
+  data(
+    await admin.mutate('workflows.saveDraft', {
+      id: flowId,
+      revision: 1,
+      definition: flowDefinition('return 1'),
+    }),
+  )
+  data(await admin.mutate('releases.publish', { workflowId: flowId, draftRevision: 2 }))
+  data(await admin.mutate('git.protect', { kind: 'workflow', id: flowId }))
+  github.merge(1)
+  expect(await deploy()).toMatchObject({ status: 'deployed', ok: true })
+})
+afterAll(async () => {
+  await env?.stop()
+  await github?.close()
+  await cleanup?.()
+})
+
+describe('a branch draft, from opening to deploying', () => {
+  let draftId: string
+
+  it('opens on a new branch from main, once', async () => {
+    const main = await other.fetchBranch('main')
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'fabio/faster',
+        create: true,
+      }),
+    )
+    expect(draft).toMatchObject({
+      kind: 'workflow',
+      objectId: flowId,
+      branch: 'fabio/faster',
+      name: 'Sync orders',
+      revision: 1,
+      baseCommit: main,
+      branchExists: false,
+      committedCommit: null,
+      diagnostics: [],
+    })
+    expect(draft.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code).toBe(
+      'return 1',
+    )
+    draftId = draft.id
+    const again = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'fabio/faster',
+        create: true,
+      }),
+    )
+    expect(again.id).toBe(draftId)
+    expect(data(await admin.query('branchDrafts.list', { kind: 'workflow', id: flowId }))).toEqual([
+      expect.objectContaining({ id: draftId, branch: 'fabio/faster', branchExists: false }),
+    ])
+  })
+
+  it('refuses a missing branch without create, unprotected objects, and people without Edit', async () => {
+    expect(
+      failure(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'nope' })),
+    ).toMatchObject({ code: 'NOT_FOUND', message: 'The repo has no branch nope' })
+    const plain = data(await admin.mutate('workflows.create', { slug: 'plain', name: 'Plain' })).id
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.open', { kind: 'workflow', id: plain, branch: 'x', create: true }),
+      ),
+    ).toMatchObject({ code: 'PRECONDITION_FAILED' })
+    expect(failure(await member.query('branchDrafts.get', { id: draftId })).code).toBe('NOT_FOUND')
+    expect(
+      failure(
+        await member.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'x', create: true }),
+      ).code,
+    ).toBe('NOT_FOUND')
+  })
+
+  it('saves with optimistic concurrency, and shows what a commit would change', async () => {
+    const saved = data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 1,
+        definition: flowDefinition('return 2'),
+        name: 'Sync orders, faster',
+      }),
+    )
+    expect(saved).toMatchObject({ revision: 2, diagnostics: [] })
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.save', {
+          id: draftId,
+          revision: 1,
+          definition: flowDefinition('x'),
+        }),
+      ).code,
+    ).toBe('CONFLICT')
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.save', { id: draftId, revision: 2, definition: { blocks: 1 } }),
+      ).code,
+    ).toBe('BAD_REQUEST')
+
+    const changes = data(await admin.query('branchDrafts.changes', { id: draftId }))
+    expect(changes).toMatchObject({ tip: null, behind: false, conflict: false })
+    expect(changes.files).toEqual([
+      {
+        path: 'workflows/sync-orders/blocks/step.js',
+        status: 'modified',
+        before: 'return 1\n',
+        after: 'return 2\n',
+      },
+      expect.objectContaining({ path: 'workflows/sync-orders/workflow.json', status: 'modified' }),
+    ])
+    expect(changes.files[1].after).toContain('"name": "Sync orders, faster"')
+  })
+
+  it('runs the branch draft from its own snapshot, apart from the main draft', async () => {
+    const run = await env.app.inject({
+      method: 'POST',
+      url: '/api/v1/workflows/sync-orders/runs',
+      headers: { cookie: adminCookie, 'content-type': 'application/json' },
+      payload: { draftId },
+    })
+    expect(run.statusCode).toBe(202)
+    const [row] = await env.db.select().from(workflowRuns).where(eq(workflowRuns.id, run.json().run.id))
+    const [snapshot] = await env.db
+      .select()
+      .from(workflowDraftSnapshots)
+      .where(eq(workflowDraftSnapshots.id, row!.draftSnapshotId!))
+    expect(snapshot).toMatchObject({ branchDraftId: draftId, revision: 2 })
+    expect(snapshot!.definition.blocks.find((b) => b.name === 'step')).toMatchObject({
+      config: { code: 'return 2' },
+    })
+
+    // The main draft has revision 2 too: its own snapshot, not the branch's.
+    const mainRun = await env.app.inject({
+      method: 'POST',
+      url: '/api/v1/workflows/sync-orders/runs',
+      headers: { cookie: adminCookie, 'content-type': 'application/json' },
+      payload: {},
+    })
+    const [mainRow] = await env.db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, mainRun.json().run.id))
+    expect(mainRow!.draftSnapshotId).not.toBe(row!.draftSnapshotId)
+    const block = await env.app.inject({
+      method: 'POST',
+      url: '/api/v1/workflows/sync-orders/blocks/step/runs',
+      headers: { cookie: adminCookie, 'content-type': 'application/json' },
+      payload: { draftId, input: {} },
+    })
+    expect(block.statusCode).toBe(202)
+  })
+
+  it('commits onto a new branch as the person, once per change', async () => {
+    expect(
+      failure(await admin.mutate('branchDrafts.commit', { id: draftId, revision: 1, message: 'm' })).code,
+    ).toBe('CONFLICT')
+    const result = data(
+      await admin.mutate('branchDrafts.commit', {
+        id: draftId,
+        revision: 2,
+        message: 'Make sync-orders faster',
+      }),
+    )
+    expect(result).toMatchObject({ changed: true, draft: { branchExists: true, baseCommit: result.commit } })
+    expect(result.draft.committedCommit).toBe(result.commit)
+    const tip = await other.fetchBranch('fabio/faster')
+    expect(tip).toBe(result.commit)
+    expect((await other.readFiles(tip!, ['workflows/']))['workflows/sync-orders/blocks/step.js']).toBe(
+      'return 2\n',
+    )
+    expect(await other.commitInfo(tip!)).toMatchObject({
+      subject: 'Make sync-orders faster',
+      authorEmail: 'admin@optiply.nl',
+    })
+    const again = data(
+      await admin.mutate('branchDrafts.commit', { id: draftId, revision: 2, message: 'Again' }),
+    )
+    expect(again).toMatchObject({ changed: false, commit: result.commit })
+    const [audit] = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'git.committed'))
+    expect(audit!.metadata).toMatchObject({ branch: 'fabio/faster', commit: result.commit })
+    expect(data(await admin.query('branchDrafts.changes', { id: draftId })).files).toEqual([])
+  })
+
+  it('goes live when its pull request merges', async () => {
+    const pr = data(
+      await admin.mutate('git.openPullRequest', { branch: 'fabio/faster', title: 'Faster sync' }),
+    )
+    github.merge(pr.pullRequest.number)
+    const result = await deploy()
+    if (result.status !== 'deployed') throw new Error(JSON.stringify(result))
+    expect(result.objects).toEqual([
+      expect.objectContaining({ slug: 'sync-orders', outcome: 'released', version: '1.0.1' }),
+    ])
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.id, flowId))
+    expect(flow!.name).toBe('Sync orders, faster')
+    const [live] = await env.db
+      .select()
+      .from(workflowReleases)
+      .where(eq(workflowReleases.id, flow!.liveReleaseId!))
+    expect(live!.definition.blocks.find((b) => b.name === 'step')).toMatchObject({
+      config: { code: 'return 2' },
+    })
+  })
+})
+
+describe('when others commit to the same branch', () => {
+  let draftId: string
+
+  it('commits on top of changes to other objects', async () => {
+    draftId = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'shared',
+        create: true,
+      }),
+    ).id
+    // Someone adds a README on the branch first.
+    const main = await other.fetchBranch('main')
+    const readme = await other.commit({
+      parent: main,
+      files: { 'README.md': 'hi\n' },
+      message: 'Readme',
+      author,
+    })
+    await other.push(readme!, 'shared')
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 1,
+        definition: flowDefinition('return 3'),
+      }),
+    )
+    const changes = data(await admin.query('branchDrafts.changes', { id: draftId }))
+    expect(changes).toMatchObject({ tip: readme, behind: true, conflict: false })
+    const result = data(
+      await admin.mutate('branchDrafts.commit', { id: draftId, revision: 2, message: 'Three' }),
+    )
+    expect(await other.fetchBranch('shared')).toBe(result.commit)
+    const files = await other.readFiles(result.commit)
+    expect(files['README.md']).toBe('hi\n')
+    expect(files['workflows/sync-orders/blocks/step.js']).toBe('return 3\n')
+  })
+
+  it('refuses a commit when they changed the same files, until updated from the branch', async () => {
+    const tip = await other.fetchBranch('shared')
+    const theirs = await other.commit({
+      parent: tip,
+      directories: {},
+      files: { 'workflows/sync-orders/blocks/step.js': 'return "theirs"\n' },
+      message: 'Theirs',
+      author,
+    })
+    await other.push(theirs!, 'shared')
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 2,
+        definition: flowDefinition('return 4'),
+      }),
+    )
+    expect(data(await admin.query('branchDrafts.changes', { id: draftId }))).toMatchObject({
+      behind: true,
+      conflict: true,
+    })
+    const refused = failure(
+      await admin.mutate('branchDrafts.commit', { id: draftId, revision: 3, message: 'Four' }),
+    )
+    expect(refused).toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('workflows/sync-orders'),
+    })
+
+    // Updating would drop the uncommitted change: refused unless asked for.
+    expect(failure(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId })).code).toBe(
+      'CONFLICT',
+    )
+    const updated = data(
+      await admin.mutate('branchDrafts.updateFromBranch', { id: draftId, discardChanges: true }),
+    )
+    expect(updated).toMatchObject({ baseCommit: theirs, revision: 4 })
+    expect(updated.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code).toBe(
+      'return "theirs"',
+    )
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 4,
+        definition: flowDefinition('return 5'),
+      }),
+    )
+    expect(
+      data(await admin.mutate('branchDrafts.commit', { id: draftId, revision: 5, message: 'Five' })),
+    ).toMatchObject({
+      changed: true,
+    })
+  })
+
+  it('updates a draft without changes from the branch without asking', async () => {
+    const tip = await other.fetchBranch('shared')
+    const theirs = await other.commit({
+      parent: tip,
+      files: { 'workflows/sync-orders/blocks/step.js': 'return 6\n' },
+      message: 'Six',
+      author,
+    })
+    await other.push(theirs!, 'shared')
+    const updated = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    expect(updated.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code).toBe(
+      'return 6',
+    )
+  })
+
+  it('discards the draft, leaving the branch', async () => {
+    data(await admin.mutate('branchDrafts.discard', { id: draftId }))
+    expect(failure(await admin.query('branchDrafts.get', { id: draftId })).code).toBe('NOT_FOUND')
+    expect(await other.fetchBranch('shared')).not.toBeNull()
+  })
+
+  it("won't open a branch whose files are broken", async () => {
+    const main = await other.fetchBranch('main')
+    const broken = await other.commit({
+      parent: main,
+      files: { 'workflows/sync-orders/workflow.json': '{ nope' },
+      message: 'Broken',
+      author,
+    })
+    await other.push(broken!, 'broken')
+    expect(
+      failure(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'broken' })),
+    ).toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining("isn't valid JSON") })
+  })
+})
+
+describe('objects new to the repo, and apps', () => {
+  it('starts a workflow created protected from the instance, and its first merge deploys it', async () => {
+    const id = data(
+      await admin.mutate('workflows.create', { slug: 'brand-new', name: 'Brand new', protected: true }),
+    ).id
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id,
+        branch: 'new/brand-new',
+        create: true,
+      }),
+    )
+    expect(draft.definition.blocks).toEqual([{ name: 'startTrigger', type: 'startTrigger' }])
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draft.id,
+        revision: 1,
+        definition: flowDefinition('return "new"'),
+      }),
+    )
+    const changes = data(await admin.query('branchDrafts.changes', { id: draft.id }))
+    expect(changes.files.map((f: { status: string }) => f.status)).toEqual(['added', 'added'])
+    data(await admin.mutate('branchDrafts.commit', { id: draft.id, revision: 2, message: 'Add brand-new' }))
+    const pr = data(
+      await admin.mutate('git.openPullRequest', { branch: 'new/brand-new', title: 'Brand new' }),
+    )
+    github.merge(pr.pullRequest.number)
+    const result = await deploy()
+    if (result.status !== 'deployed') throw new Error(JSON.stringify(result))
+    expect(result.objects.find((o) => o.slug === 'brand-new')).toMatchObject({
+      outcome: 'released',
+      version: '1.0.0',
+    })
+  })
+
+  it("runs an app's queries from its branch draft", async () => {
+    const appId = data(
+      await admin.mutate('apps.create', { slug: 'admin-app', name: 'Admin app', protected: true }),
+    ).id
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'app',
+        id: appId,
+        branch: 'app/queries',
+        create: true,
+      }),
+    )
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draft.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [],
+          queries: [
+            { name: 'list', kind: 'resource', resource: 'nowhere', query: { sql: 'select 1' }, run: 'auto' },
+          ],
+        },
+      }),
+    )
+    const envs = data(await admin.query('environments.list')) as { id: string }[]
+    const run = (branchDraftId?: string) =>
+      admin.mutate('apps.runQuery', {
+        appId,
+        releaseId: null,
+        branchDraftId,
+        query: 'list',
+        environmentId: envs[0]!.id,
+      })
+    // The main draft has no such query; the branch draft does (and names a resource that isn't there).
+    expect(failure(await run()).message).toMatch(/no query named "list"/)
+    expect(failure(await run(draft.id)).message).toMatch(/No resource has the slug "nowhere"/)
+  })
+
+  it('keeps the snapshot of an open branch draft through retention', async () => {
+    // brand-new's draft never ran: no run holds on to its snapshots.
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, 'brand-new'))
+    const [draft] = await env.db
+      .select()
+      .from(gitBranchDrafts)
+      .where(eq(gitBranchDrafts.workflowId, flow!.id))
+    const definition = flowDefinition('return 0') as never
+    await env.db.insert(workflowDraftSnapshots).values([
+      { workflowId: flow!.id, branchDraftId: draft!.id, revision: draft!.revision, definition },
+      { workflowId: flow!.id, branchDraftId: draft!.id, revision: 1, definition },
+    ])
+    await deleteOldRuns(env.db, { days: 0, now: new Date(Date.now() + 86_400_000), pauseMs: 0 })
+    const left = await env.db
+      .select({ revision: workflowDraftSnapshots.revision })
+      .from(workflowDraftSnapshots)
+      .where(eq(workflowDraftSnapshots.branchDraftId, draft!.id))
+    expect(left.map((s) => s.revision)).toEqual([draft!.revision])
+  })
+})

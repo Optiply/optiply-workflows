@@ -5,6 +5,7 @@ import {
   configVarValues,
   type Db,
   environments,
+  gitBranchDrafts,
   groups,
   type Resource,
   resourceConfigs,
@@ -34,7 +35,7 @@ import {
   type RunContextProvider,
 } from '@ow/engine'
 import type { CodeRuntime } from '@ow/sandbox'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { toResolved } from './resources'
@@ -69,7 +70,13 @@ export async function startManualRun(
   db: Db,
   access: Access,
   user: { id: string },
-  opts: { workflow: Workflow; environmentId: string; version: RunVersion; input: unknown },
+  opts: {
+    workflow: Workflow
+    environmentId: string
+    version: RunVersion
+    input: unknown
+    branchDraftId?: string
+  },
 ): Promise<WorkflowRun> {
   const { source } = await prepareRun(db, access, user, opts)
   return enqueueRun(db, {
@@ -92,7 +99,14 @@ export async function startBlockRun(
   db: Db,
   access: Access,
   user: { id: string },
-  opts: { workflow: Workflow; environmentId: string; block: string; fromRunId?: string; input?: unknown },
+  opts: {
+    workflow: Workflow
+    environmentId: string
+    block: string
+    fromRunId?: string
+    input?: unknown
+    branchDraftId?: string
+  },
 ): Promise<WorkflowRun> {
   const { definition, source } = await prepareRun(db, access, user, { ...opts, version: 'draft' })
   if (!definition.blocks.some((b) => b.name === opts.block)) {
@@ -147,7 +161,7 @@ async function prepareRun(
   db: Db,
   access: Access,
   user: { id: string },
-  opts: { workflow: Workflow; environmentId: string; version: RunVersion },
+  opts: { workflow: Workflow; environmentId: string; version: RunVersion; branchDraftId?: string },
 ): Promise<{
   definition: WorkflowDefinition
   source: { releaseId: string } | { draftSnapshotId: string }
@@ -162,7 +176,9 @@ async function prepareRun(
   let source: { releaseId: string } | { draftSnapshotId: string }
   if (version === 'draft') {
     if (level === 'use') throw new RunRequestError(403, 'forbidden', 'You need edit access to run the draft')
-    const snapshot = await draftSnapshot(db, workflow.id, user.id)
+    const snapshot = opts.branchDraftId
+      ? await branchDraftSnapshot(db, workflow.id, opts.branchDraftId, user.id)
+      : await draftSnapshot(db, workflow.id, user.id)
     definition = snapshot.definition
     source = { draftSnapshotId: snapshot.id }
   } else {
@@ -305,6 +321,36 @@ async function draftSnapshot(db: Db, workflowId: string, userId: string) {
       and(
         eq(workflowDraftSnapshots.workflowId, workflowId),
         eq(workflowDraftSnapshots.revision, current!.revision),
+        isNull(workflowDraftSnapshots.branchDraftId),
+      ),
+    )
+  return snapshot!
+}
+
+/** The snapshot of a Git branch draft's current revision (M11), created on first use. */
+async function branchDraftSnapshot(db: Db, workflowId: string, branchDraftId: string, userId: string) {
+  const [draft] = await db
+    .select()
+    .from(gitBranchDrafts)
+    .where(and(eq(gitBranchDrafts.id, branchDraftId), eq(gitBranchDrafts.workflowId, workflowId)))
+  if (!draft) throw new RunRequestError(404, 'not_found', 'This workflow has no such branch draft')
+  await db
+    .insert(workflowDraftSnapshots)
+    .values({
+      workflowId,
+      branchDraftId,
+      revision: draft.revision,
+      definition: draft.definition as WorkflowDefinition,
+      createdBy: userId,
+    })
+    .onConflictDoNothing()
+  const [snapshot] = await db
+    .select()
+    .from(workflowDraftSnapshots)
+    .where(
+      and(
+        eq(workflowDraftSnapshots.branchDraftId, branchDraftId),
+        eq(workflowDraftSnapshots.revision, draft.revision),
       ),
     )
   return snapshot!
