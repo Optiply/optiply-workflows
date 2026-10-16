@@ -65,6 +65,8 @@ const ConfigSchema = z
     GIT_ALLOW_INSECURE_URLS: bool,
     /** Workers check the deploy branch this often (seconds; 0 turns polling off: webhooks and Deploy now only). */
     GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
+    /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
+    GITHUB_API_URL: z.string().url().optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

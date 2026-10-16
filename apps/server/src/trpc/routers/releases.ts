@@ -2,6 +2,7 @@ import { users, workflowReleases } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import { publishRelease, setLiveRelease } from '../../services/releases'
 import { authedProcedure, router } from '../init'
 import { visibleWorkflow } from './workflows'
@@ -30,6 +31,8 @@ export const releasesRouter = router({
       definitionHash: release.definitionHash,
       createdAt: release.createdAt,
       createdBy: author,
+      /** Set on releases deployed from Git (made by Git sync: `createdBy` is null). */
+      gitCommit: release.gitCommit,
       live: release.id === workflow.liveReleaseId,
     }))
   }),
@@ -61,6 +64,7 @@ export const releasesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireUnprotected(workflow, 'workflow', 'publish it')
       const release = await publishRelease(ctx.db, access, ctx.user, {
         workflow,
         draftRevision: input.draftRevision,
@@ -82,6 +86,7 @@ export const releasesRouter = router({
     .input(z.object({ workflowId: Id, releaseId: Id }))
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireRollbackAllowed(workflow, 'workflow', ctx.user)
       const release = await setLiveRelease(ctx.db, access, { workflow, releaseId: input.releaseId })
       await ctx.audit({
         action: 'workflow.release_live',
@@ -91,6 +96,7 @@ export const releasesRouter = router({
           releaseId: release.id,
           version: release.version,
           previousReleaseId: workflow.liveReleaseId,
+          ...(workflow.gitProtected ? { emergency: true } : {}),
         },
       })
       return { id: release.id, version: release.version }

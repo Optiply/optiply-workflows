@@ -15,6 +15,7 @@ import {
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
   checkFolderMove,
@@ -65,6 +66,8 @@ const summary = (w: Workflow, access: Access) => ({
   folderId: w.folderId,
   liveReleaseId: w.liveReleaseId,
   maxConcurrentRuns: w.maxConcurrentRuns,
+  /** Edited on Git branches and deployed from the repo (M11); main is read-only here. */
+  gitProtected: w.gitProtected,
   updatedAt: w.updatedAt,
   level: access.workflowLevel(w)!,
 })
@@ -125,8 +128,17 @@ export const workflowsRouter = router({
     }))
   }),
 
+  /** `protected`: made in Git from the start (edited on branches; the first merge deploys it). */
   create: authedProcedure
-    .input(z.object({ slug: Slug, name: Name, description: Description, folderId: Id.nullish() }))
+    .input(
+      z.object({
+        slug: Slug,
+        name: Name,
+        description: Description,
+        folderId: Id.nullish(),
+        protected: z.boolean().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       if (!access.canCreateWorkflows) {
@@ -136,6 +148,7 @@ export const workflowsRouter = router({
         })
       }
       await checkFolderType(ctx.db, 'workflow', input.folderId)
+      if (input.protected) await requireGitRepo(ctx.db, ctx.config)
       const [workflow] = await uniqueOr('A workflow with that slug already exists', () =>
         ctx.db
           .insert(workflows)
@@ -145,6 +158,7 @@ export const workflowsRouter = router({
             description: input.description ?? null,
             folderId: input.folderId ?? null,
             draftDefinition: NEW_DEFINITION,
+            gitProtected: input.protected ?? false,
             createdBy: ctx.user.id,
             updatedBy: ctx.user.id,
           })
@@ -154,7 +168,7 @@ export const workflowsRouter = router({
         action: 'workflow.created',
         objectType: 'workflow',
         objectId: workflow!.id,
-        metadata: { slug: input.slug },
+        metadata: { slug: input.slug, ...(input.protected ? { protected: true } : {}) },
       })
       return summary(workflow!, access)
     }),
@@ -173,6 +187,10 @@ export const workflowsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      // The name and description live in the repo; the folder and concurrency limit are the instance's.
+      if (input.name !== undefined || input.description !== undefined) {
+        requireUnprotected(workflow, 'workflow', 'rename it or change its description')
+      }
       await checkFolderMove(ctx.db, {
         type: 'workflow',
         level: access.workflowLevel(workflow),
@@ -198,6 +216,7 @@ export const workflowsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      requireUnprotected(workflow, 'workflow', 'edit it')
       const parsed = workflowDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('workflow definition', parsed.error.issues)
       const [saved] = await ctx.db

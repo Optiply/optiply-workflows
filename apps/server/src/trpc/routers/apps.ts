@@ -10,6 +10,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
+import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
   checkFolderMove,
@@ -56,6 +57,8 @@ const summary = (a: App, access: Access) => ({
   description: a.description,
   folderId: a.folderId,
   liveReleaseId: a.liveReleaseId,
+  /** Edited on Git branches and deployed from the repo (M11); main is read-only here. */
+  gitProtected: a.gitProtected,
   updatedAt: a.updatedAt,
   level: access.appLevel(a)!,
 })
@@ -116,14 +119,24 @@ export const appsRouter = router({
     }
   }),
 
+  /** `protected`: made in Git from the start (edited on branches; the first merge deploys it). */
   create: authedProcedure
-    .input(z.object({ slug: Slug, name: Name, description: Description, folderId: Id.nullish() }))
+    .input(
+      z.object({
+        slug: Slug,
+        name: Name,
+        description: Description,
+        folderId: Id.nullish(),
+        protected: z.boolean().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       if (!access.canCreateApps) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to all apps to create one' })
       }
       await checkFolderType(ctx.db, 'app', input.folderId)
+      if (input.protected) await requireGitRepo(ctx.db, ctx.config)
       const [app] = await uniqueOr('An app with that slug already exists', () =>
         ctx.db
           .insert(apps)
@@ -133,6 +146,7 @@ export const appsRouter = router({
             description: input.description ?? null,
             folderId: input.folderId ?? null,
             draftDefinition: emptyApp(),
+            gitProtected: input.protected ?? false,
             createdBy: ctx.user.id,
             updatedBy: ctx.user.id,
           })
@@ -142,7 +156,7 @@ export const appsRouter = router({
         action: 'app.created',
         objectType: 'app',
         objectId: app!.id,
-        metadata: { slug: input.slug },
+        metadata: { slug: input.slug, ...(input.protected ? { protected: true } : {}) },
       })
       return summary(app!, access)
     }),
@@ -152,6 +166,10 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, input)
       requireLevel(access.appLevel(app), 'edit', 'this app')
+      // The name and description live in the repo; the folder is the instance's.
+      if (input.name !== undefined || input.description !== undefined) {
+        requireUnprotected(app, 'app', 'rename it or change its description')
+      }
       await checkFolderMove(ctx.db, {
         type: 'app',
         level: access.appLevel(app),
@@ -178,6 +196,7 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, input)
       requireLevel(access.appLevel(app), 'edit', 'this app')
+      requireUnprotected(app, 'app', 'edit it')
       const parsed = appDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('app definition', parsed.error.issues)
       const definition: AppDefinition = parsed.data
@@ -236,6 +255,8 @@ export const appsRouter = router({
       definitionHash: release.definitionHash,
       createdAt: release.createdAt,
       createdBy: author,
+      /** Set on releases deployed from Git (made by Git sync: `createdBy` is null). */
+      gitCommit: release.gitCommit,
       live: release.id === app.liveReleaseId,
     }))
   }),
@@ -253,6 +274,7 @@ export const appsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, { id: input.appId })
+      requireUnprotected(app, 'app', 'publish it')
       const release = await publishAppRelease(ctx.db, access, ctx.user, {
         app,
         draftRevision: input.draftRevision,
@@ -272,12 +294,18 @@ export const appsRouter = router({
   /** Makes another release live (rollback, or forward again). */
   setLive: authedProcedure.input(z.object({ appId: Id, releaseId: Id })).mutation(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireRollbackAllowed(app, 'app', ctx.user)
     const release = await setLiveAppRelease(ctx.db, access, { app, releaseId: input.releaseId })
     await ctx.audit({
       action: 'app.release_live',
       objectType: 'app',
       objectId: app.id,
-      metadata: { releaseId: release.id, version: release.version, previousReleaseId: app.liveReleaseId },
+      metadata: {
+        releaseId: release.id,
+        version: release.version,
+        previousReleaseId: app.liveReleaseId,
+        ...(app.gitProtected ? { emergency: true } : {}),
+      },
     })
     return { id: release.id, version: release.version }
   }),

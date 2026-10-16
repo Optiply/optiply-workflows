@@ -36,12 +36,17 @@ export type RepoObject =
   | { kind: 'workflow'; slug: string; value: WorkflowObject }
   | { kind: 'app'; slug: string; value: AppObject }
 
+/** An object's directory and its files, keyed by their path inside it (what a commit replaces the directory with). */
+export function encodeObjectDir(object: RepoObject): { dir: string; files: Files; warnings: Warning[] } {
+  const encoded = object.kind === 'workflow' ? encodeWorkflow(object.value) : encodeApp(object.value)
+  return { dir: objectDir(object.kind, object.slug), ...encoded }
+}
+
 /** An object's files, keyed by their path from the repo root. */
 export function encodeObject(object: RepoObject): { files: Files; warnings: Warning[] } {
-  const dir = `${objectDir(object.kind, object.slug)}/`
-  const encoded = object.kind === 'workflow' ? encodeWorkflow(object.value) : encodeApp(object.value)
+  const { dir, files: inside } = encodeObjectDir(object)
   const files = Object.fromEntries(
-    Object.entries(encoded.files).map(([path, content]) => [dir + path, content]),
+    Object.entries(inside).map(([path, content]) => [`${dir}/${path}`, content]),
   )
   return { files, warnings: caseCollisions(files) }
 }
