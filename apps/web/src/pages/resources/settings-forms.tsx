@@ -4,6 +4,7 @@ import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
+import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import {
   ConnectorErrorNote,
@@ -72,7 +73,7 @@ function buildPatch(edits: SecretEdits): Record<string, unknown> | undefined {
   return Object.keys(patch).length ? patch : undefined
 }
 
-interface FieldsProps {
+export interface FieldsProps {
   config: Config
   set: (key: string, value: unknown) => void
   secrets: Mask
@@ -463,6 +464,7 @@ function RestFields({
               ...(e.target.value === 'oauth2AuthorizationCode'
                 ? { provider: 'custom', scope: '', authorizeParams: [], pkce: true, tokens: 'shared' }
                 : {}),
+              ...(e.target.value === 'custom' ? { steps: [], refreshSteps: [] } : {}),
             })
           }
         >
@@ -472,6 +474,7 @@ function RestFields({
           <option value="basic">Basic auth</option>
           <option value="oauth2ClientCredentials">OAuth 2.0 client credentials</option>
           <option value="oauth2AuthorizationCode">OAuth 2.0 sign-in (authorization code)</option>
+          <option value="custom">Custom auth flow</option>
         </Select>
       </Field>
       {auth.type === 'apiKey' && (
@@ -507,6 +510,16 @@ function RestFields({
           disabled={disabled}
         />
       )}
+      {auth.type === 'custom' && (
+        <CustomAuthFields
+          auth={auth}
+          setAuth={setAuth}
+          secrets={secrets}
+          edits={edits}
+          setEdit={setEdit}
+          disabled={disabled}
+        />
+      )}
       {auth.type === 'oauth2ClientCredentials' && (
         <Grid>
           {authText('tokenUrl', 'Token URL', 'https://auth.example.com/oauth/token')}
@@ -527,7 +540,14 @@ function RestFields({
         </Grid>
       )}
 
-      <Field label="Headers" hint="Sent with every request. Put credentials in secret headers below instead.">
+      <Field
+        label="Headers"
+        hint={
+          auth.type === 'custom'
+            ? 'Sent with every request; use the flow’s variables here, e.g. Authorization: Bearer {{ auth.token }}.'
+            : 'Sent with every request. Put credentials in secret headers below instead.'
+        }
+      >
         <KeyValueEditor
           rows={(config.headers as KeyValue[]) ?? []}
           onChange={(rows) => set('headers', rows)}
@@ -535,7 +555,17 @@ function RestFields({
           keyPlaceholder="Header"
         />
       </Field>
-      <SecretHeaders secrets={secrets} edits={edits} setEdit={setEdit} disabled={disabled} />
+      <SecretRecord
+        field="headers"
+        label="Secret headers"
+        hint="Values are encrypted and never shown again."
+        namePlaceholder="Header name"
+        addLabel="Add secret header"
+        secrets={secrets}
+        edits={edits}
+        setEdit={setEdit}
+        disabled={disabled}
+      />
       <Field label="Query parameters" hint="Added to every request.">
         <KeyValueEditor
           rows={(config.params as KeyValue[]) ?? []}
@@ -575,29 +605,40 @@ function RestFields({
   )
 }
 
-function SecretHeaders({
+/** Named secret values kept in one record of the secrets (`headers`, or a custom auth flow's `values`). */
+export function SecretRecord({
+  field,
+  label,
+  hint,
+  namePlaceholder,
+  addLabel,
   secrets,
   edits,
   setEdit,
   disabled,
-}: Pick<FieldsProps, 'secrets' | 'edits' | 'setEdit' | 'disabled'>) {
-  const stored = Object.keys((secrets?.headers as Record<string, unknown>) ?? {})
-  const headerEdits = (edits.headers as Record<string, SecretEdit>) ?? {}
-  const names = [...new Set([...stored, ...Object.keys(headerEdits)])]
+}: Pick<FieldsProps, 'secrets' | 'edits' | 'setEdit' | 'disabled'> & {
+  field: string
+  label: string
+  hint: string
+  namePlaceholder: string
+  addLabel: string
+}) {
+  const stored = Object.keys((secrets?.[field] as Record<string, unknown>) ?? {})
+  const recordEdits = (edits[field] as Record<string, SecretEdit>) ?? {}
+  const names = [...new Set([...stored, ...Object.keys(recordEdits)])]
   const [name, setName] = useState('')
-  const setHeader = (header: string, edit: SecretEdit) =>
-    setEdit('headers', { ...headerEdits, [header]: edit })
+  const setOne = (key: string, edit: SecretEdit) => setEdit(field, { ...recordEdits, [key]: edit })
   return (
-    <Field label="Secret headers" hint="Values are encrypted and never shown again.">
+    <Field label={label} hint={hint}>
       <div className="space-y-2">
-        {names.map((header) => (
-          <div key={header} className="flex items-center gap-3">
-            <span className="w-48 truncate font-mono text-sm">{header}</span>
+        {names.map((key) => (
+          <div key={key} className="flex items-center gap-3">
+            <span className="w-48 truncate font-mono text-sm">{key}</span>
             <div className="flex-1">
               <SecretField
-                isSet={stored.includes(header)}
-                edit={headerEdits[header]}
-                onChange={(e) => setHeader(header, e)}
+                isSet={stored.includes(key)}
+                edit={recordEdits[key]}
+                onChange={(e) => setOne(key, e)}
                 disabled={disabled}
               />
             </div>
@@ -607,7 +648,7 @@ function SecretHeaders({
           <div className="flex gap-2">
             <Input
               className="font-mono"
-              placeholder="Header name"
+              placeholder={namePlaceholder}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -616,11 +657,11 @@ function SecretHeaders({
               variant="ghost"
               disabled={!name.trim()}
               onClick={() => {
-                setHeader(name.trim(), '')
+                setOne(name.trim(), '')
                 setName('')
               }}
             >
-              <Plus className="size-4" /> Add secret header
+              <Plus className="size-4" /> {addLabel}
             </Button>
           </div>
         )}

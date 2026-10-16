@@ -11,6 +11,8 @@ const webDist = fileURLToPath(new URL('../dist', import.meta.url))
 
 export const E2E_EMAIL = 'e2e@optiply.nl'
 export const E2E_PASSWORD = 'e2e-password-not-secret'
+/** A second person, for what differs between people (their own OAuth accounts). Same password. */
+export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 
 /**
  * Starts what the editor needs, as in production: an embedded Postgres, the bundled server (API and worker in one
@@ -51,10 +53,15 @@ export default async function globalSetup() {
     WEB_DIST_DIR: webDist,
   }
 
-  await run(['dist/cli/create-admin.js', '--email', E2E_EMAIL, '--name', 'E2E'], {
-    ...env,
-    ADMIN_PASSWORD: E2E_PASSWORD,
-  })
+  for (const [email, name] of [
+    [E2E_EMAIL, 'E2E'],
+    [E2E_SECOND_EMAIL, 'Second'],
+  ] as const) {
+    await run(['dist/cli/create-admin.js', '--email', email, '--name', name], {
+      ...env,
+      ADMIN_PASSWORD: E2E_PASSWORD,
+    })
+  }
   const server = spawn('node', ['--no-node-snapshot', 'dist/main.js'], {
     cwd: serverDir,
     env,
