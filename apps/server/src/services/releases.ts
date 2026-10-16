@@ -1,6 +1,7 @@
 import {
   type Db,
   environments,
+  resourceConfigs,
   type Workflow,
   type WorkflowRelease,
   workflowReleases,
@@ -21,8 +22,9 @@ import {
   type WorkflowDefinition,
 } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
-import { and, eq, ne, notInArray } from 'drizzle-orm'
+import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
+import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { checkDefinition } from './workflow-runs'
 
@@ -179,6 +181,32 @@ async function checkReleasable(
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to resource "${resource.slug}" in every environment to release this workflow`,
+      })
+    }
+  }
+
+  // Nobody is behind a live run, so there's no one whose own account a per-user resource could use.
+  if (resources.length) {
+    const configs = await db
+      .select({
+        resourceId: resourceConfigs.resourceId,
+        environmentId: resourceConfigs.environmentId,
+        config: resourceConfigs.config,
+      })
+      .from(resourceConfigs)
+      .where(
+        inArray(
+          resourceConfigs.resourceId,
+          resources.map((r) => r.id),
+        ),
+      )
+    const perUser = configs.find((c) => authorizationCode(c.config)?.tokens === 'perUser')
+    if (perUser) {
+      const resource = resources.find((r) => r.id === perUser.resourceId)!
+      const env = envs.find((e) => e.id === perUser.environmentId)
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `Resource "${resource.slug}" uses each person's own account${env ? ` in ${env.slug}` : ''}, which a live run (webhook, schedule) has no one to use. Give it a shared account to release this workflow.`,
       })
     }
   }

@@ -23,6 +23,7 @@ import {
   type ConnectionStatus,
   connectionStatus,
   consentHash,
+  credentialsFor,
   deleteTokens,
 } from '../../services/oauth-tokens'
 import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
@@ -377,7 +378,7 @@ export const resourcesRouter = router({
       if (input.config !== undefined || input.secrets !== undefined) assertNotBuiltIn(resource)
       const connector = connectorFor(resource.type)
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
-      const result = await testResource(connector, {
+      const tested = {
         id: existing?.id ?? 'unsaved',
         resourceId: resource.id,
         environmentId: input.environmentId,
@@ -387,7 +388,12 @@ export const resourcesRouter = router({
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,
         ),
-      })
+      }
+      // Connected accounts belong to the saved settings: changed consent settings need a reconnect first.
+      const credentials = existing
+        ? credentialsFor({ db: ctx.db, keyring: ctx.config.keyring }, tested, ctx.user.id)
+        : undefined
+      const result = await testResource(connector, tested, credentials ? { credentials } : {})
       return result.ok
         ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
         : { ok: false as const, error: errorView(result.error) }
@@ -492,22 +498,19 @@ export const resourcesRouter = router({
         configVars: await publicConfigVars(ctx.db, input.environmentId),
         current_user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name },
       }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const credentials = credentialsFor({ db: ctx.db, keyring: ctx.config.keyring }, resolved, ctx.user.id)
       const started = performance.now()
       let outcome:
         | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }
         | { ok: false; error: ReturnType<typeof errorView>; durationMs: number }
       try {
-        const result = await runQuery(
-          ctx.services.pool,
-          connector,
-          toResolved(ctx.config.keyring, row),
-          input.query,
-          {
-            evaluate: (code) =>
-              ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
-            labels: { ow_source: 'playground', ow_user: ctx.user.id },
-          },
-        )
+        const result = await runQuery(ctx.services.pool, connector, resolved, input.query, {
+          ...(credentials && { credentials }),
+          evaluate: (code) =>
+            ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
+          labels: { ow_source: 'playground', ow_user: ctx.user.id },
+        })
         outcome = {
           ok: true,
           data: toJson(result.data),

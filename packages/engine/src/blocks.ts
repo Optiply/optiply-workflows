@@ -21,6 +21,8 @@ export interface BlockContext {
   scope: Record<string, unknown>
   input: RunInput
   environmentId: string
+  /** See `ExecuteRunOptions.actingUserId`. */
+  actingUserId: string | null
   services: EngineServices
   /** Aborted on timeout, run failure or interruption. */
   signal: AbortSignal
@@ -433,7 +435,7 @@ export async function runResourceQuery(
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
-    target = await ctx.services.resources.resolve(slug, ctx.environmentId)
+    target = await ctx.services.resources.resolve(slug, ctx.environmentId, { actingUserId: ctx.actingUserId })
   } catch (err) {
     if (err instanceof BlockFailure) throw err
     throw new BlockFailure('resource', `Resource "${slug}" is unavailable: ${(err as Error).message}`)
@@ -445,6 +447,7 @@ export async function runResourceQuery(
     evaluate: evaluatorFor(work, ctx),
     signal: work.signal,
     timeoutMs: work.timeoutMs,
+    ...(target.credentials && { credentials: target.credentials }),
     labels: {
       ow_source: 'workflow',
       ow_run: ctx.runId,

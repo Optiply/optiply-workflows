@@ -1,4 +1,10 @@
-import type { AnyConnector, CodeFetcher, PoolManager, ResolvedResource } from '@ow/connectors'
+import type {
+  AnyConnector,
+  CodeFetcher,
+  CredentialSource,
+  PoolManager,
+  ResolvedResource,
+} from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import type { CodeRuntime } from '@ow/sandbox'
@@ -89,7 +95,8 @@ export interface ResourceProvider {
   resolve(
     slug: string,
     environmentId: string,
-  ): Promise<{ connector: AnyConnector; resource: ResolvedResource }>
+    opts?: { actingUserId?: string | null },
+  ): Promise<{ connector: AnyConnector; resource: ResolvedResource; credentials?: CredentialSource }>
 }
 
 export interface EngineServices {
@@ -168,6 +175,11 @@ export interface ExecuteRunOptions {
   runId: string
   definition: WorkflowDefinition
   environmentId: string
+  /**
+   * Whose own accounts resources that connect one per person (OAuth) use: the person who started a draft run.
+   * Null for runs of a release, which nobody is behind (webhooks, schedules, child runs).
+   */
+  actingUserId?: string | null
   input: RunInput
   /** Merged into every evaluation's scope: `configVars`, `workflowContext`, `idempotencyKey`. */
   globals: Record<string, unknown>

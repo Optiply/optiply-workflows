@@ -4,6 +4,7 @@ import {
   ConnectorError,
   type CredentialSource,
   OAuthGrantError,
+  type ResolvedResource,
   refreshAccessToken,
   restConnector,
   type TokenSet,
@@ -298,6 +299,42 @@ export function oauthCredentials(
       return token
     },
   }
+}
+
+/**
+ * The credentials a query against this resource config uses, or undefined when it doesn't connect accounts. A
+ * shared account is everyone's; on per-user resources, `actingUserId`'s own account is used, and a query nobody
+ * runs (a live workflow run) fails asking for a resource with a shared account.
+ */
+export function credentialsFor(
+  deps: { db: Db; keyring: Keyring },
+  resource: ResolvedResource,
+  actingUserId: string | null,
+): CredentialSource | undefined {
+  const parsed = restConnector.configSchema.safeParse(resource.config)
+  if (!parsed.success || parsed.data.auth.type !== 'oauth2AuthorizationCode') return undefined
+  const auth = parsed.data.auth
+  if (auth.tokens === 'perUser' && actingUserId === null) {
+    return {
+      async accessToken() {
+        throw new ConnectorError(
+          'auth_required',
+          "This resource uses each person's own account, and nobody is behind this run. Use a resource with a shared account in workflows that run on their own.",
+          { reason: 'no_user', account: 'user' },
+        )
+      },
+    }
+  }
+  const secrets = resource.secrets as { clientSecret?: unknown }
+  return oauthCredentials(deps, {
+    resourceId: resource.resourceId,
+    resourceConfigId: resource.id,
+    environmentId: resource.environmentId,
+    userId: auth.tokens === 'shared' ? null : actingUserId,
+    auth,
+    clientSecret: typeof secrets.clientSecret === 'string' ? secrets.clientSecret : undefined,
+    allowPrivateNetwork: parsed.data.allowPrivateNetwork,
+  })
 }
 
 function notConnected(userId: string | null): ConnectorError {

@@ -23,6 +23,7 @@ import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow
 import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
+import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { errorView, toJson } from './query-results'
 import { toResolved } from './resources'
@@ -279,8 +280,12 @@ export async function runAppQuery(
   const started = performance.now()
   let outcome: AppQueryOutcome
   try {
-    const result = await runQuery(deps.pool, connector, toResolved(deps.keyring, row), query.query, {
+    const resolved = toResolved(deps.keyring, row)
+    // Apps always have a person behind them: per-user resources use the viewer's own account.
+    const credentials = credentialsFor({ db, keyring: deps.keyring }, resolved, user.id)
+    const result = await runQuery(deps.pool, connector, resolved, query.query, {
       evaluate,
+      ...(credentials && { credentials }),
       ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
       ...(opts.signal && { signal: opts.signal }),
       labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
