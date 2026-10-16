@@ -1,14 +1,14 @@
 # Session handoff
 
-What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M9).
+What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M10, M11+ to choose from).
 
-Last updated: 2026-10-16 (end of session 9, which built and merged M9).
+Last updated: 2026-10-16 (end of session 10, which built, reviewed and merged M10).
 
 | | |
 |---|---|
-| **Branch** | `main`. M9 was built on `feat/m9-oauth` (7 steps); its review fixes on `fix/m9-review` |
-| **PR** | [#10 M9](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10) merged as `ec3dba2` (before its review fixes were committed); the fixes are [#11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/11), merged as `a04c68e`. CI green throughout |
-| **`main`** | `a04c68e`, the merge of PR #11 (M9 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `main`. M10 was built on `feat/m10-apps` (the plan, 6 steps of which 2–4 in two commits each, and the review fixes) |
+| **PR** | [#12 M10](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/12), reviewed **before** merging (10 fixes, `6c95f5a`), merged as `bb7f6b7`. CI green on every push (one rerun: Docker Hub timed out pulling `mysql:8.4`) |
+| **`main`** | `bb7f6b7`, the merge of PR #12 (M10 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -29,9 +29,10 @@ Last updated: 2026-10-16 (end of session 9, which built and merged M9).
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
-| **M10 Finishing apps** | 🚧 Planned with the user in session 10 (§14), on `feat/m10-apps` |
+| **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
+| M11 | ⏭️ **Next**: plan it with the user (§14) |
 
-**Start the next session with:** the next M10 step (§14) on `feat/m10-apps`. Review the milestone's PR **before** it's merged (session 9: PR #10 was merged before its review fixes were committed, so they needed PR #11).
+**Start the next session with:** planning M11 with the user (§14), then a new branch and draft PR (§15). Review the milestone's PR **before** it's merged, as in session 10.
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -229,6 +230,22 @@ Last updated: 2026-10-16 (end of session 9, which built and merged M9).
 - **Custom flows:** steps `request` (a REST query through the resource's base URL, allowed hosts and network settings, without its default headers, parameters or auth), `code` (sandbox, 30 s), `variable` (`auth.<name>`; `secret: false` keeps it out of the scrubbing, for values like a tenant id); `secrets.NAME` from the new secret `values`; refresh steps merged over the current variables, falling back to signing in; `ttlSeconds`; one shared set of variables per config (no per-user flows, no form step). Each process has a sandbox for flows (the API's; the worker creates one).
 - **REST requests are assembled the same way for every auth type** (`prepareAttempt`, `attemptHeaders`, `attemptUrl`): the resource's default headers and parameters (rendered with `auth` for custom flows), the secret headers, the query's own (which override the defaults), then the credentials. On a cross-origin redirect, credentials and defaults that use `auth` are dropped.
 - **Token endpoints follow redirects on the same origin only** (re-sending the POST; at most 5): the request carries the client secret. Before M9, client credentials followed any redirect. A string `expires_in` is read as a number.
+
+### Taken in M10 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M10** (PR #12's "Decisions"):
+  - **M10 is finishing apps**, all four parts: the sandbox off the page's thread, Table paging, multipage apps, folders for workflows and apps. Python, SQS/Kafka, Git sync, multiplayer editing and AI actions moved to M11+.
+  - **Multipage apps are global + page-scoped** (Retool's model): one namespace; page-scoped automatic queries run only while their page is open.
+  - **Server-side sorting uses a safe helper** (`sql.column`/`sql.direction`, checked on the server), not the CASE-per-column pattern.
+  - **Tables have no search box by default** (a prop turns it on).
+- **The sandbox:** the iframe starts a Worker from a blob: URL holding the stdlib and runtime (CSP `worker-src blob:` added, nothing else); the Worker inherits the frame's CSP. Spiked in Chrome 155, Firefox 157 and WebKit 27.2 (fetch cors/no-cors/data:, sync and async XHR, WebSocket, EventSource, `importScripts`, `import()`, nested and http workers, IndexedDB all refused; a server recording every request received none; a control run without `default-src 'none'` let them all through). The Worker refuses to start if `fetch('data:,')` isn't blocked. The page talks to the Worker over the same MessagePort, passed on by the frame. A srcdoc frame inherits any page CSP too (none today).
+- **Watchdog** (`runtime/watchdog.ts`, pure): a ping a second, one unanswered for 5 s means stopped; a tick later than twice the interval (background tab, sleep) starts a new ping instead, so throttling never stops a working app. Stopping removes the frame (which ends the Worker) and shows `AppStopped` with Restart (a fresh start: typed values and results are lost, the console kept); in the editor an edit restarts it. Replies go only to the port that asked (a restarted sandbox reuses request ids).
+- **SQL fragments:** `{{ sql.column(value, ['a', 'b'], 'fallback') }}` and `{{ sql.direction(value) }}` must be the whole `{{ }}`, the list string literals (`sqlFragment`); the connector re-checks the value (the helper's own result: a listed column or the fallback; empty means the fallback) and quotes it per dialect, before the statement reaches the database (`resolveFragments`). `sql` is a stdlib global, so a reserved name (like `url`): entities and blocks named so must be renamed.
+- **Table:** `paging` `scroll` (default) / `pages` / `server`; `pageSize` 50 (`pageSizeOf` shared with `pagination`); `search` (off); `totalRowCount`. State `page`, `sort` (`{ column, desc }`), `searchText`, and the derived read-only `pagination` (`{ page, pageSize, offset }`, a graph node kind like a form's `data`). `setPage`/`setSort`/`setSearchText` and `pageChange`/`sortChange`/`searchChange`; sort and search go back to page 0. The search box writes with the acknowledged `set`. In the browser modes the pure `tableView` searches the shown cells (case and accents ignored), sorts and pages.
+- **Pages:** optional `pages` and `page` (**no schema v2**: an app without pages is one page holding everything). `page` on top-level components, queries and transformers; components in containers take their container's; variables are global. Code on a page reads globals and its page's; global code only globals; handler targets likewise (`other_page`). `url` is a built-in graph entity (`url.page`, `url.params`). `edit` can't name a page. Automatic queries on a closed page mark themselves stale (also when their timer fires after the page closed) and run when it opens; run-on-load queries run each time their page opens.
+- **Page URLs:** one viewer route `/apps/$slug/{-$page}` (two routes remounted the app between pages); **search params are plain text router-wide** (`URLSearchParams`, not TanStack's JSON). `url.params` is the query string without `env`, and `env` is stripped from `openPage` params too (app code can't switch the environment). The viewer passes the URL to the host (`start`, then `navigate`); `utils.openPage` and Navigation links go through `host.openPage` (the viewer navigates; the editor's host moves in place).
+- **The editor's pages:** the page being edited is the store's `url`; the draft follows it, and the host re-sends it after every definition update (a page added or renamed is navigated to before the draft has it). The first page added to a one-page app puts everything on `page1`. New components, queries and transformers go on the edited page. The canvas has the frame grid (global) above the page's.
+- **Folders:** `folders.*` per type (`resource` by default); `list` returns `{ folders, canManage }`; managing a type's folders needs that type's create right; folder grants stay admin-only, and for workflow/app folders they apply to every environment (a one-environment grant is refused). `components/folders.tsx` is shared by the three lists. Moving still needs Own.
+- **e2e users:** `e2e-member@optiply.nl` isn't an admin (made with the CLI, then removed from the admins group in the global setup).
 
 ## 3. What M0 built (on `main`)
 
@@ -557,6 +574,51 @@ Tests: 6 server tests (connecting through an app, testing settings that send els
 
 Bundles: main 425 kB (414 before M9).
 
+## 9d. What M10 built (on `main`)
+
+**Done-when** (a two-page app: its list page pages, sorts and searches a 100k-row table server-side; a row opens the detail page with the id in the URL; the app sits in a folder granting a group Use; an infinite loop in its code is stopped and the tab stays responsive), proven:
+- `apps/web/e2e/m10-done-when.spec.ts`: a published app over a 100,000-row managed table; as the non-admin `e2e-member`: nothing visible before the folder's grant (the empty state, folders existing), then 100000 rows 25 at a time (Page 1 of 4000, the request with offset 25 seen), sorted by id descending through `sql.column`/`sql.direction`, "item 4242" giving 11 rows, a row opening `/item?id=42425`, the tab named after the page, the global Navigation back with the search kept, an endless loop stopped while the tab keeps drawing, Restart. The admin makes the folder, moves the app and grants the group Use through the UI.
+- On Docker Compose (§10): the same in Chrome.
+
+### Plan, `a5b86bd`
+`architecture.md` §2.7 (the M10 row, M11+), this file's §14.
+
+### Step 1, `bb2baab`: the sandbox in a Worker
+The spike (above), `runtime/host.ts` (bootstrap document, watchdog, `stopped`, `restart`, replies per port), `runtime/watchdog.ts` (5 tests), `sandbox-entry.ts` as the Worker with the self-check, `stopped.tsx`, `ping`/`pong`. e2e: more escape probes (no request may be answered; Chrome reports the XHR and fails it with `csp`), an endless loop (frames, the Worker closed, Restart), a loop at start, an edit restarting the editor's app. 4 mutation checks.
+
+### Step 2a, `37f3d32`: `sql.column` and `sql.direction`
+`expressions/src/sql.ts` (fragments, `fragmentText`, `withFragments`), `connectors/src/sql-fragments.ts`, the stdlib's `sql`, typings in both editors. Tests on real Postgres, MySQL (Docker), the BigQuery fake, the sandbox and the server's app path. 2 mutation checks.
+
+### Step 2b, `ed0b806`: Table paging, sorting and search
+The Table's props, state, methods and events, the `pagination` node, `tableView`, the renderer (search box, pager, row count). `e2e/app-table.spec.ts` (browser and server-side tables over 120 rows).
+
+### Step 3a, `9cd0420`: pages in the definition
+Schema, `pages.ts`, the `url` entity, the validator's page rules. `test/pages.test.ts`.
+
+### Step 3b, `e5b2d1c`: pages at run time
+`AppRuntime.navigate`, page-scoped auto queries, `utils.openPage`, the protocol, the host, the router (one route, plain search params), the viewer, the canvas's frame and page grids. `e2e/app-pages.spec.ts` (URLs, Back and Forward keeping one sandbox and what was typed).
+
+### Step 4a, `732dfa4`: page edits and Navigation
+`addPage`, `renamePage`, `setPageTitle`, `movePage`, `onPage`, `removePage`, `setEntityPage`, page options on the other edits; the Navigation component; `host.openPage`.
+
+### Step 4b, `a9ae3f4`: pages in the editor
+The store's `url`, `editor/pages.tsx` (pages panel), the two grids, the palette and tree per page, the Page fields, the host re-sending the page after updates (its mutation needed a `url.page` assertion to be caught), the tab title. `e2e/app-editor-pages.spec.ts`.
+
+### Step 5, `8c692bd`: folders for workflows and apps
+`folders.*` per type, `components/folders.tsx`, the Workflows and Apps lists. `e2e/folders.spec.ts`; two existing specs' `getByLabel('Name')` made exact (a row's "Folder of … (renamed)" select matched).
+
+### Step 6, `b62f132`: done-when, Compose check
+`e2e/m10-done-when.spec.ts`, the member user, workflow/app folder grants for every environment (found while writing it: a one-environment grant was stored and never counted).
+
+### Review fixes (before merging), `6c95f5a`
+The `code-review` skill (high) on PR #12 found 10 issues; each was checked against the code and all held (the reserved `sql` name being a noted trade-off):
+- **`sql.column`'s fallback was refused by the server** (the helper sends it when nothing is sorted): the README's own example failed on every unsorted load. My tests had always listed the fallback among the columns.
+- Page titles lost their spaces while typing (trimmed per keystroke); an app's own `url` entity broke navigation in the Worker; list pages went blank for people with nothing shared while folders existed; app code could switch the viewer's environment through an `env` param; deleting a page left Navigation links to it (blocking publishing); a query waiting when its page closed still ran; a `{{ }}` right after a fragment was glued to it (`DESC$1`); odd page sizes were handled two ways; two page pickers.
+Tests for each (the e2e ones mutation-checked).
+
+### Totals at the end of M10
+`biome ci` is clean. Typecheck passes **11/11**. **897 tests pass** (server 228, engine 139, connectors 144, definition 124, expressions 103, app-definition 53, crypto 25, db 20, sandbox 20, app-runtime 22, web 19), plus the two benchmarks and **25 Playwright e2e**. Bundles weren't measured this session.
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -564,6 +626,11 @@ Bundles: main 425 kB (414 before M9).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
 - **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 10** (the M10 done-when; `compose-check/` in the session scratchpad: a copy of the spec with its own accounts and a config pointing at `localhost:3000`, not committed):
+  - Asked first (the stack is shared); `PUBLIC_URL=http://localhost:3000 docker compose up -d --build` with the step 6 code: healthy within seconds, no migration (still `0013`), the managed database as it was.
+  - `m7-check@optiply.nl` got a new random password (`compose/m7-check-password` in this session's scratchpad); a non-admin `m10-member@optiply.nl` was made with `create-admin` and taken out of the admins group with SQL.
+  - The spec's steps in Chrome (Playwright, `channel: 'chrome'`): passed in 10.7 s.
+  - Afterwards, with the user's OK: the stack rebuilt on merged `main` (`bb7f6b7`), and the check's app, folder, group (through the API as `m7-check`), table (`database.dropTable`) and the member user (SQL, in a transaction) deleted.
 - **Docker Compose, session 9** (the M9 done-when; `m9-check.mjs` in the session scratchpad, not committed):
   - Checked first that the user wasn't mid-task (audit: they had signed in 10 minutes before; asked, they said go ahead). `PUBLIC_URL=http://localhost:3000 docker compose build` while running, then `up -d`: localhost:3000 back after **10 s**; migrate applied `0013`.
   - The `m7-check@optiply.nl` admin got a new random password (`compose/m7-check-password` in this session's scratchpad); `admin@optiply.nl` untouched.
@@ -611,13 +678,14 @@ Bundles: main 425 kB (414 before M9).
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; rebuilt at the end of session 9 with the user's OK, back after 7 s; migration `0013` applied; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the image of `main` at `bb7f6b7` (M10 with its review fixes; rebuilt at the end of session 10 with the user's OK; migration `0013`, M10 added none). Session 10's check left nothing behind (§10); `m7-check`'s password is in session 10's scratchpad. Before that: the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
+- **At the end of session 10** the Compose stack was left running on the image of `main` (`bb7f6b7`). The dev database and dev servers weren't started. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from `main` before the merge commit (the same code). Playwright's Firefox and WebKit (for the step 1 spike) were installed into session 10's scratchpad only.
 - **At the end of session 9** the Compose stack was left running on the image of `main` (`a04c68e`, M9 with its review fixes), the user signed in to it. The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
 - **At the end of session 8** the Compose stack was left running on the image of `main` (`fe0c65d`, M8 with the review fixes).
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
@@ -631,10 +699,10 @@ Bundles: main 425 kB (414 before M9).
 5. **A restore onto a different Postgres server** (the roles missing): reasoned from the dump and covered by the provisioning test that drops the role; not run end to end.
 6. **The 50 MB / 500k-row import caps**: enforced in code, not exercised (the largest import tested was 50,000 rows).
 7. **Prometheus scraping** by a real Prometheus (the endpoints were scraped with curl and fetch only); no dashboards or alerts exist yet.
-8. **Apps in Firefox and Safari**: the sandbox (opaque-origin iframe, its CSP, the MessageChannel handshake), react-grid-layout and the Table were exercised in Chrome only (locally and Chromium in CI).
+8. **Apps in Firefox and Safari**: the Worker sandbox's isolation was spiked in Firefox 157 and WebKit 27.2 (Playwright's builds, session 10: everything refused, as in Chrome); the rest (the running app, the watchdog, react-grid-layout, the Table, pages and Back/Forward) was exercised in Chrome only (locally and Chromium in CI).
 9. **OAuth against real providers** (Google, HubSpot, Slack, Microsoft 365): the presets and quirks were checked against the providers' documentation and a fake provider only. Needs an OAuth app per provider with the redirect URI `<PUBLIC_URL>/api/oauth/callback` and its client ID and secret from the user. **Slack requires HTTPS redirect URIs** (as far as I know): its live check needs a tunnel or an HTTPS `PUBLIC_URL`.
 10. **The OAuth popup in Firefox and Safari** (`window.open` plus `postMessage` from the result page; checked in Chrome only).
-11. **Large app data**: the Table virtualizes rows, but every query result crosses the sandbox and the store whole; nothing measured beyond a few hundred rows.
+11. **Large app data**: the Table virtualizes rows and pages server-side (100k rows in the done-when, 25 at a time), but every query result still crosses the sandbox and the store whole: a big unpaged result (thousands of rows in `scroll` mode) wasn't measured.
 
 ## 13. Known gaps and TODOs carried forward
 
@@ -678,10 +746,13 @@ Bundles: main 425 kB (414 before M9).
   - The CSV preview reads the first 256 kB; a column whose only odd value comes later can be guessed wrong (the import then reports the line).
   - MySQL's `NOT IN ({{ [] }})` matches nothing (documented in `mysql.ts`; from the PR #7 review).
   - With `TEST_DATABASE_URL` (a shared server), test databases leave their `owdb_*` roles behind.
-- **Apps (M8):**
-  - **The sandbox shares the page's thread:** an infinite loop in app code freezes the tab. A Worker inside the iframe (loaded the same way in dev and production) or a watchdog that replaces the iframe would fix it.
-  - No multipage apps, modules, mobile layout, custom components, Query Library, themes, multiplayer editing, or folders for apps (grants per app or for all apps).
-  - Table: all of `data` is read (no server-side paging, filtering or search box), no per-row column templates (`currentRow`), no adding rows inside the table (use a Form), no column resizing.
+- **Apps (M8, M10):**
+  - The watchdog's 5 s also stops legitimate synchronous work that long (a huge sort in a JS query); Restart starts afresh (typed values and results lost).
+  - No modules, mobile layout, custom components, Query Library, themes or multiplayer editing.
+  - Table: no column filters (one search box), no per-row column templates (`currentRow`), no adding rows inside the table (use a Form), no column resizing. Server-side mode needs a second query for `totalRowCount` (or none: Next stays on while a page comes back full). `sql.column` is for SQL resources; REST APIs take the sort as plain values.
+  - Pages: no per-page access (pages are navigation, not security: every page's queries run with Use on the app); page names in code strings (`utils.openPage('…')`) aren't rewritten on rename; no page-scoped variables; Navigation renders buttons, not links (no middle-click to a new tab); pages reorder with up/down only; deleting a page uses `confirm()`.
+  - Folders: nested folders exist in the API (`parentId`) but the lists show one level and offer no rename; folder names are visible to everyone listing that kind.
+  - Apps and workflows from before M10 with an entity or block named `url` or `sql` must rename it (the validator says so).
   - Editor: no dragging between containers ("Inside" moves a component), no undo/redo, no copy/paste of components, REST queries edited as JSON (SQL resources have the full editor), no release diff.
   - Charts: light mode only, no time-scale axes (dates are categories), no texture fills.
   - Automatic queries aren't audited (by design); manual ones are, without values.
@@ -695,25 +766,26 @@ Bundles: main 425 kB (414 before M9).
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: M10, finishing apps
+## 14. Next step: M11
 
-Chosen with the user at the start of session 10 (from `architecture.md` §2.7; Python, SQS/Kafka, Git sync, multiplayer and AI actions move to M11+). Branch `feat/m10-apps`. All four parts are in:
-1. **The sandbox in a Worker**: the app's runtime moves into a dedicated Worker started inside the sandbox iframe (keeping its no-network policy; a spike first proves `fetch`, XHR, WebSocket, `importScripts` and nested workers stay blocked). A watchdog stops a Worker that stops replying and offers Restart.
-2. **Table paging, sorting and search**: in the browser by default; server-side mode the Retool way (`pagination`, `sort`, `searchText` state, a `totalRowCount` prop, queries re-running as they change).
-3. **Multipage apps, definition and runtime**: schema v2 with `pages` (v1 apps upgrade to one page). **Global and page-scoped** components and queries (agreed with the user): one namespace across the app; page-scoped automatic queries run only while their page is open. URLs `/apps/$slug/$page?…`, `url.params`, `utils.openPage(name, params)`.
-4. **Multipage apps, editor and viewer**: a pages panel (add, rename, delete, reorder), a layout per page, a Navigation component.
-5. **Folders for workflows and apps**: `folders.*` takes the object type; each type's folders are managed by whoever can create that type; the Workflows and Apps lists group by folder with Move and folder Access.
-6. **Done-when, Compose check, docs.** Done-when in `architecture.md` §2.7.
+From `architecture.md` §2.7, M11+ is a list to choose from; decide with the user which comes first:
+- **Python executor** (nsjail) for code blocks.
+- **SQS/Kafka triggers** for workflows.
+- **Git sync** (canonical JSON already exists for workflows and apps).
+- **Multiplayer editing** (Yjs) for the workflow and app editors.
+- **AI actions.**
+
+Also open on apps, if the user prefers to keep going there (§13): modules, a mobile layout, custom components, a Query Library, per-row column templates, themes; editor undo/redo and copy/paste.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull                      # M9 (PRs #10 and #11) is merged
+git switch main && git pull                      # M10 (PR #12) is merged
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch feat/m10-apps                         # M10 (§14); its draft PR opens after the first commit
+git switch -c feat/m11-<topic>                   # once M11 is chosen (§14); open a draft PR after the first commit
 ```
