@@ -361,6 +361,64 @@ describe('AppRuntime', () => {
     await expect(t.runtime.call('x', 'explode')).rejects.toThrow('x has no method explode')
   })
 
+  it('pages, sorts and searches a server-side table: its query re-runs with the new values', async () => {
+    const t = setup({
+      components: [
+        comp(
+          't',
+          'table',
+          { data: '{{ page.data }}', paging: 'server', pageSize: 2 },
+          {
+            events: [
+              on('pageChange', { type: 'notify', message: 'page {{ t.page }}' }),
+              on('sortChange', { type: 'notify', message: 'sort {{ t.sort?.column }}' }),
+              on('searchChange', { type: 'notify', message: 'search {{ t.searchText }}' }),
+            ],
+          },
+        ),
+      ],
+      queries: [
+        sql(
+          'page',
+          'select * from c where name ilike {{ t.searchText }} order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
+        ),
+      ],
+    })
+    await t.runtime.start()
+    await wait()
+    const last = () => t.calls.at(-1)!.values
+    expect(last()).toMatchObject({
+      ' t.searchText ': '',
+      ' t.sort?.column ': undefined,
+      ' t.pagination.pageSize ': 2,
+      ' t.pagination.offset ': 0,
+    })
+    await t.runtime.call('t', 'setPage', [2])
+    await wait()
+    expect(last()).toMatchObject({ ' t.pagination.offset ': 4 })
+    // Sorting and searching go back to the first page.
+    await t.runtime.call('t', 'setSort', ['name', true])
+    await wait()
+    expect(last()).toMatchObject({
+      ' t.sort?.column ': 'name',
+      ' t.sort?.desc ': true,
+      ' t.pagination.offset ': 0,
+    })
+    await t.runtime.call('t', 'setPage', ['1'])
+    await t.runtime.call('t', 'setSearchText', ['ada'])
+    await wait()
+    expect(last()).toMatchObject({ ' t.searchText ': 'ada', ' t.pagination.offset ': 0 })
+    await t.runtime.call('t', 'setSort', [null])
+    expect(t.state['t.sort']).toBeNull()
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
+      'page 2',
+      'sort name',
+      'page 1',
+      'search ada',
+      'sort ',
+    ])
+  })
+
   it('saves table changes, clearing them only when every save handler succeeded', async () => {
     let fail = true
     const t = setup(

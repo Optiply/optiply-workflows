@@ -273,6 +273,13 @@ export class AppModel {
           }
           return this.write(node.key, data)
         }
+        case 'pagination': {
+          const page = this.values.get(`${node.entity}.page`)
+          const size = this.values.get(`${node.entity}.pageSize`)
+          const pageSize = typeof size === 'number' && size >= 1 ? Math.floor(size) : 50
+          const at = typeof page === 'number' && Number.isInteger(page) && page >= 0 ? page : 0
+          return this.write(node.key, { page: at, pageSize, offset: at * pageSize })
+        }
         case 'transformer':
           if (entity.kind !== 'transformer') return false
           return this.write(node.key, this.runFunctionBody(entity.transformer.code))

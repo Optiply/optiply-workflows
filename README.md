@@ -143,6 +143,17 @@ Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft liv
   where t.id = x.id
   ```
 
+- **Paging, sorting and search**: a Table's **Paging** is `scroll` (every row), `pages` (pages of **Page size** rows) or `server`; **Search box** adds a search over the shown cells. Headers sort. In the browser modes the table does it all itself. With `server`, `data` is one page that a query fetches, re-running as the table's `pagination`, `sort` and `searchText` change, with **Total row count** for the page count:
+
+  ```sql
+  select id, name, price from products
+  where name ilike {{ '%' + table1.searchText + '%' }}
+  order by {{ sql.column(table1.sort?.column, ['name', 'price'], 'id') }} {{ sql.direction(table1.sort?.desc) }}
+  limit {{ table1.pagination.pageSize }} offset {{ table1.pagination.offset }}
+  ```
+
+  Changing the sort or the search goes back to the first page; `pageChange`, `sortChange` and `searchChange` fire, and `table1.setPage(n)`, `setSort(column, desc)` and `setSearchText(text)` do the same from code.
+
 **Publish** releases the draft as a semver version; people with Use on the app open the live release at `/apps/<slug>` and pick the environment. **Releases** rolls back, **Access** (owners) grants groups Use, Edit or Own.
 
 How it's kept safe:

@@ -33,6 +33,8 @@ export type NodeKind =
   | 'state'
   /** A form's `data`, collected from the inputs inside it. */
   | 'formData'
+  /** A table's `pagination`: `{ page, pageSize, offset }` from its `page` and `pageSize`. */
+  | 'pagination'
   /** A transformer's value. */
   | 'transformer'
   /** A variable's initial value, evaluated once when the app opens. */
@@ -181,6 +183,8 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
         for (const [state, s] of Object.entries(spec.state)) {
           if (entity.component.type === 'form' && state === 'data') {
             add(name, state, 'formData', { inputs: formInputs(def, name) })
+          } else if (entity.component.type === 'table' && state === 'pagination') {
+            add(name, state, 'pagination')
           } else if (s.from) {
             add(name, state, 'state', { from: nodeKey(name, s.from) })
           } else {
@@ -224,6 +228,8 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
   }
   for (const node of nodes.values()) {
     if (node.from) node.deps.push(node.from)
+    if (node.kind === 'pagination')
+      node.deps.push(nodeKey(node.entity, 'page'), nodeKey(node.entity, 'pageSize'))
     if (node.inputs) {
       for (const input of node.inputs) node.deps.push(nodeKey(input, 'value'), nodeKey(input, 'formDataKey'))
     }

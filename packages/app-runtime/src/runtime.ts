@@ -410,6 +410,26 @@ export class AppRuntime {
             if (ok) this.apply({ [key('changesetArray')]: [] })
             return ok
           }
+          methods.setPage = (page: unknown) => {
+            const n = Number(page)
+            this.apply({ [key('page')]: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0 })
+            return this.fire(name, 'pageChange')
+          }
+          methods.setSort = (column: unknown, desc?: unknown) => {
+            const sort =
+              column === null || column === undefined || column === ''
+                ? null
+                : { column: String(column), desc: truthy(desc) }
+            this.apply({ [key('sort')]: sort, [key('page')]: 0 })
+            return this.fire(name, 'sortChange')
+          }
+          methods.setSearchText = (text: unknown) => {
+            this.apply({
+              [key('searchText')]: text === null || text === undefined ? '' : String(text),
+              [key('page')]: 0,
+            })
+            return this.fire(name, 'searchChange')
+          }
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

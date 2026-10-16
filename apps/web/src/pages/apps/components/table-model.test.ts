@@ -7,6 +7,7 @@ import {
   selectionKey,
   sortedRows,
   tableColumns,
+  tableView,
 } from './table-model'
 
 const rows = [
@@ -85,5 +86,78 @@ describe('table model', () => {
     expect(parseCell(' kept ', 'text')).toEqual({ value: ' kept ' })
     expect(formatCell({ a: 1 }, 'json')).toBe('{"a":1}')
     expect(formatCell(null, 'text')).toBe('')
+  })
+})
+
+describe('table view', () => {
+  const people = Array.from({ length: 23 }, (_, i) => ({
+    id: i + 1,
+    name: i === 4 ? 'José Gómez' : `person ${i + 1}`,
+  }))
+  const columns = tableColumns([], people)
+  const view = (o: Partial<Parameters<typeof tableView>[0]>) =>
+    tableView({
+      rows: people,
+      columns,
+      paging: 'scroll',
+      page: 0,
+      pageSize: 10,
+      sort: null,
+      searchText: '',
+      totalRowCount: null,
+      ...o,
+    })
+  const ids = (v: ReturnType<typeof tableView>) => v.rows.map((r) => r.row.id)
+
+  it('scroll shows every row', () => {
+    expect(view({}).rows).toHaveLength(23)
+    expect(view({}).pageCount).toBe(1)
+  })
+
+  it('pages slice the sorted, searched rows, keeping positions in the data', () => {
+    const second = view({ paging: 'pages', page: 1 })
+    expect(ids(second)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    expect(second.rows[0]!.index).toBe(10)
+    expect(second).toMatchObject({ total: 23, page: 1, pageCount: 3 })
+    expect(ids(view({ paging: 'pages', page: 2 }))).toEqual([21, 22, 23])
+    // Past the last page: the last one.
+    expect(view({ paging: 'pages', page: 9 })).toMatchObject({ page: 2, pageCount: 3 })
+    const desc = view({ paging: 'pages', sort: { key: 'id', desc: true } })
+    expect(ids(desc).slice(0, 3)).toEqual([23, 22, 21])
+    expect(desc.rows[0]!.index).toBe(22)
+  })
+
+  it('search ignores case and accents, in the shown columns only', () => {
+    expect(ids(view({ searchText: 'GOMEZ' }))).toEqual([5])
+    expect(view({ searchText: 'jose' }).rows[0]!.index).toBe(4)
+    const two = view({ paging: 'pages', searchText: 'person 2' })
+    expect(ids(two)).toEqual([2, 20, 21, 22, 23])
+    expect(two).toMatchObject({ total: 5, pageCount: 1 })
+    const nameOnly = tableColumns(['name'], people)
+    expect(ids(view({ columns: nameOnly, searchText: '7' }))).toEqual([7, 17])
+    expect(view({ searchText: 'nobody' })).toMatchObject({ rows: [], total: 0 })
+  })
+
+  it('duplicate rows keep their own positions', () => {
+    const row = { id: 1 }
+    const v = tableView({
+      rows: [row, row, { id: 2 }],
+      columns: tableColumns([], [row]),
+      paging: 'pages',
+      page: 0,
+      pageSize: 10,
+      sort: { key: 'id', desc: true },
+      searchText: '1',
+      totalRowCount: null,
+    })
+    expect(v.rows.map((r) => r.index)).toEqual([0, 1])
+  })
+
+  it('server paging shows the data as it came', () => {
+    const server = view({ paging: 'server', page: 4, searchText: 'nobody', sort: { key: 'id', desc: true } })
+    expect(ids(server)).toEqual(people.map((p) => p.id))
+    expect(server).toMatchObject({ page: 4, total: null, pageCount: null })
+    expect(view({ paging: 'server', totalRowCount: 95 })).toMatchObject({ total: 95, pageCount: 10 })
+    expect(view({ paging: 'server', totalRowCount: 0 })).toMatchObject({ total: 0, pageCount: 1 })
   })
 })
