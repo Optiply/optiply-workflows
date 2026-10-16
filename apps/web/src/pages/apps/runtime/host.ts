@@ -14,18 +14,22 @@ import { TRPCClientError } from '@trpc/client'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { type AuthRequired, authRequired } from '@/lib/oauth'
 import { trpcClient } from '@/lib/trpc'
+import { Watchdog } from './watchdog'
 
 /**
  * The page's side of a running app. It creates the app's sandbox (a hidden iframe with an opaque origin and no
- * network access), sends it the definition, and then:
+ * network access, running the app in a Worker so the app's code can't freeze the page), sends it the definition,
+ * and then:
  * - runs the resource queries it asks for through the API (the server checks them against the stored app);
  * - keeps the app's state in a store for the components to render;
  * - passes the user's input and events in;
- * - carries out effects (notifications, links, downloads) after checking them, since the app's code is untrusted.
+ * - carries out effects (notifications, links, downloads) after checking them, since the app's code is untrusted;
+ * - stops the sandbox when it stops responding (an endless loop), until the person restarts it or edits the app.
  */
 
 export interface AppHostState {
-  status: 'loading' | 'ready' | 'failed'
+  /** `stopped`: the app's code stopped responding, so the sandbox was stopped (see `restart`). */
+  status: 'loading' | 'ready' | 'failed' | 'stopped'
   /** Values by node key (`table1.selectedRow`). */
   values: Record<string, unknown>
   /** Errors by node key. */
@@ -60,8 +64,15 @@ export interface AppHostOptions {
   beforeQuery?: () => Promise<void>
 }
 
-/** The sandbox's own policy: inline scripts and `new Function` only; no requests of any kind. */
-const SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'"
+/**
+ * The sandbox's own policy: inline scripts, `new Function` and a Worker from a blob: URL only; no requests of any
+ * kind. The Worker inherits it (the sandbox checks before starting the app). The frame is a srcdoc document, so a
+ * CSP on the page (it has none today) would apply to it as well, and would need to allow the same.
+ */
+const SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; worker-src blob:"
+
+/** A ping every second; one unanswered for 5 s means the app's code is stuck. */
+const WATCHDOG = { intervalMs: 1000, stallMs: 5000 }
 
 /** Only these can be opened from an app. */
 const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
@@ -72,21 +83,53 @@ function inlineScript(code: string): string {
   return `<script>${code.replaceAll('</script', '<\\/script')}</script>`
 }
 
+/** A string literal safe inside a `<script>`: no `<` at all, so nothing in it can end or reopen the element. */
+function scriptString(text: string): string {
+  return JSON.stringify(text).replaceAll('<', '\\u003c')
+}
+
+/**
+ * The frame's own script: it starts the Worker running the app (the stdlib, then the runtime) and hands it the
+ * page's port. The frame can't load anything, so the Worker's code comes as a string, through a blob: URL.
+ */
+function bootstrap(): string {
+  return `
+const source = ${scriptString(`${STDLIB_BUNDLE}\n;${runtimeCode}`)};
+let worker = null;
+let failure = '';
+try {
+  worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+} catch (err) {
+  failure = String((err && err.message) || err);
+}
+let connected = false;
+window.addEventListener('message', (event) => {
+  // Only the page that holds this frame, only once.
+  if (connected || event.source !== window.parent || event.data !== ${JSON.stringify(CONNECT_MESSAGE)}) return;
+  const port = event.ports[0];
+  if (!port) return;
+  connected = true;
+  if (worker) worker.postMessage(event.data, [port]);
+  else port.postMessage({ type: 'fatal', message: "The app's sandbox could not start: " + failure });
+});`
+}
+
 export function sandboxDocument(): string {
   return [
     '<!doctype html><html><head><meta charset="utf-8">',
     `<meta http-equiv="Content-Security-Policy" content="${SANDBOX_CSP}">`,
     '</head><body>',
-    inlineScript(STDLIB_BUNDLE),
-    inlineScript(runtimeCode),
+    inlineScript(bootstrap()),
     '</body></html>',
   ].join('')
 }
 
 export class AppHost {
   readonly store: StoreApi<AppHostState>
+  private container: HTMLElement | null = null
   private iframe: HTMLIFrameElement | null = null
   private port: MessagePort | null = null
+  private watchdog: { dog: Watchdog; timer: ReturnType<typeof setInterval> } | null = null
   private destroyed = false
   private logId = 0
   /** The last `set` sent, and per key the `set` whose value the page shows until the sandbox has it. */
@@ -115,6 +158,11 @@ export class AppHost {
 
   /** Creates the sandbox inside `container` (it stays hidden) and starts the app. */
   mount(container: HTMLElement): void {
+    this.container = container
+    this.createSandbox()
+  }
+
+  private createSandbox() {
     const iframe = document.createElement('iframe')
     // No allow-same-origin: the frame gets an opaque origin, so it can't touch this page or its cookies.
     iframe.setAttribute('sandbox', 'allow-scripts')
@@ -124,16 +172,35 @@ export class AppHost {
     iframe.style.display = 'none'
     iframe.srcdoc = sandboxDocument()
     iframe.addEventListener('load', () => this.connect(iframe), { once: true })
-    container.appendChild(iframe)
+    this.container!.appendChild(iframe)
     this.iframe = iframe
   }
 
-  destroy(): void {
-    this.destroyed = true
+  /** Removes the sandbox: the browser ends the Worker with its frame, endless loop or not. */
+  private removeSandbox() {
+    this.stopWatchdog()
     this.port?.close()
     this.iframe?.remove()
     this.iframe = null
     this.port = null
+  }
+
+  destroy(): void {
+    this.destroyed = true
+    this.removeSandbox()
+  }
+
+  /**
+   * Starts the app afresh in a new sandbox (after it stopped responding): what the user typed and the queries'
+   * results are gone with the old one. The console and a newer-release notice stay.
+   */
+  restart(): void {
+    if (this.destroyed || !this.container) return
+    this.removeSandbox()
+    this.pending.clear()
+    this.startedWith = null
+    this.store.setState({ status: 'loading', values: {}, errors: {}, connections: [] })
+    this.createSandbox()
   }
 
   /**
@@ -159,28 +226,71 @@ export class AppHost {
     this.post({ type: 'trigger', query })
   }
 
-  /** The editor changed the app: the sandbox switches to it, keeping what the user did. */
+  /**
+   * The editor changed the app: the sandbox switches to it, keeping what the user did. An app that stopped
+   * responding starts again with the edit (likely the fix).
+   */
   update(definition: AppDefinition): void {
     if (definition === this.definition) return
     this.definition = definition
-    if (this.store.getState().status !== 'loading') this.post({ type: 'update', definition })
+    const { status } = this.store.getState()
+    if (status === 'stopped') this.restart()
+    else if (status !== 'loading') this.post({ type: 'update', definition })
   }
 
   private connect(iframe: HTMLIFrameElement) {
-    if (this.destroyed || !iframe.contentWindow) return
+    if (this.destroyed || iframe !== this.iframe || !iframe.contentWindow) return
     const channel = new MessageChannel()
-    this.port = channel.port1
-    this.port.onmessage = (e: MessageEvent<SandboxMessage>) => void this.handle(e.data)
+    const port = channel.port1
+    this.port = port
+    port.onmessage = (e: MessageEvent<SandboxMessage>) => void this.handle(e.data, port)
     // The frame's origin is opaque, so `*` is the only target that reaches it; the port does the rest.
     iframe.contentWindow.postMessage(CONNECT_MESSAGE, '*', [channel.port2])
+    this.startWatchdog()
+  }
+
+  private startWatchdog() {
+    this.stopWatchdog()
+    const dog = new Watchdog(WATCHDOG)
+    const timer = setInterval(() => {
+      const action = dog.tick(performance.now())
+      if (action?.type === 'ping') this.post({ type: 'ping', id: action.id })
+      else if (action?.type === 'stalled') this.stalled()
+    }, WATCHDOG.intervalMs)
+    this.watchdog = { dog, timer }
+  }
+
+  private stopWatchdog() {
+    if (this.watchdog) clearInterval(this.watchdog.timer)
+    this.watchdog = null
+  }
+
+  private stalled() {
+    this.removeSandbox()
+    this.store.setState({ status: 'stopped' })
+    this.log(
+      'error',
+      `The app's code stopped responding for ${WATCHDOG.stallMs / 1000} s (an endless loop?), so it was stopped`,
+    )
+  }
+
+  private log(level: LogLevel, message: string) {
+    this.store.setState((s) => ({
+      logs: [...s.logs, { id: ++this.logId, level, message, at: Date.now() }].slice(-500),
+    }))
   }
 
   private post(message: HostMessage) {
     this.port?.postMessage(message)
   }
 
-  private async handle(message: SandboxMessage) {
-    if (this.destroyed) return
+  /** Answers the sandbox that asked, unless it was replaced meanwhile (its ids mean nothing to the new one). */
+  private reply(port: MessagePort, message: HostMessage) {
+    if (port === this.port) port.postMessage(message)
+  }
+
+  private async handle(message: SandboxMessage, port: MessagePort) {
+    if (this.destroyed || port !== this.port) return
     switch (message.type) {
       case 'ready':
         this.startedWith = this.definition
@@ -191,7 +301,11 @@ export class AppHost {
         if (this.definition !== this.startedWith) this.post({ type: 'update', definition: this.definition })
         return
       case 'fatal':
+        this.stopWatchdog()
         this.store.setState({ status: 'failed', problem: message.message })
+        return
+      case 'pong':
+        this.watchdog?.dog.pong(message.id)
         return
       case 'patch': {
         const { errors } = message.patch
@@ -205,14 +319,14 @@ export class AppHost {
         for (const [key, seq] of this.pending) if (seq <= message.seq) this.pending.delete(key)
         return
       case 'runQuery':
-        this.post({
+        this.reply(port, {
           type: 'queryResult',
           id: message.id,
           outcome: await this.runQuery(message.query, message.values),
         })
         return
       case 'confirm':
-        this.post({
+        this.reply(port, {
           type: 'confirmResult',
           id: message.id,
           ok: await this.options.confirm(String(message.message)),
@@ -222,12 +336,7 @@ export class AppHost {
         this.effect(message.effect)
         return
       case 'log':
-        this.store.setState((s) => ({
-          logs: [
-            ...s.logs,
-            { id: ++this.logId, level: message.level, message: String(message.message), at: Date.now() },
-          ].slice(-500),
-        }))
+        this.log(message.level, String(message.message))
         return
     }
   }

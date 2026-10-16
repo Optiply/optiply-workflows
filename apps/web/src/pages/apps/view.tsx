@@ -7,6 +7,7 @@ import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from './runtime/react'
+import { AppStopped } from './stopped'
 
 const route = getRouteApi('/app/apps/$slug')
 const appRoute = getRouteApi('/app')
@@ -164,6 +165,7 @@ function AppBody({ definition }: { definition: AppDefinition }) {
           </Button>
         </div>
       )}
+      <AppStopped />
       <NeededConnections />
       <AppCanvas definition={definition} />
     </>

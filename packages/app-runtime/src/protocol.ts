@@ -1,9 +1,10 @@
 import type { AppDefinition } from '@ow/app-definition'
 
 /**
- * Messages between the page (the host) and the app's sandbox: an iframe with an opaque origin, so the app's code
- * can't reach the page, its cookies or the platform's API. They travel over a MessageChannel the host hands the
- * iframe once (`ow:connect`), so no other window can talk to either side.
+ * Messages between the page (the host) and the app's sandbox: a Worker started by an iframe with an opaque origin
+ * and no network access, so the app's code can't reach the page, its cookies or the platform's API, and an endless
+ * loop in it can't freeze the page. They travel over a MessageChannel the host hands the iframe once (`ow:connect`),
+ * which passes it on to the Worker, so nothing else can talk to either side.
  *
  * Everything the sandbox sends is untrusted: the host runs only the app's own queries (the server checks them),
  * opens only http(s) and mailto URLs, and renders values as text.
@@ -54,6 +55,8 @@ export type HostMessage =
   | { type: 'trigger'; query: string }
   | { type: 'queryResult'; id: number; outcome: QueryOutcome }
   | { type: 'confirmResult'; id: number; ok: boolean }
+  /** Asks whether the sandbox is still responding (the host's watchdog); answered with `pong`. */
+  | { type: 'ping'; id: number }
 
 export type SandboxMessage =
   /** The sandbox's script loaded; the host may send `start`. */
@@ -69,6 +72,7 @@ export type SandboxMessage =
   | { type: 'log'; level: LogLevel; message: string }
   /** The app couldn't start. */
   | { type: 'fatal'; message: string }
+  | { type: 'pong'; id: number }
 
-/** The first message from the host, carrying the port as its transfer. */
+/** The first message from the host, carrying the port as its transfer; the iframe sends it on to its Worker. */
 export const CONNECT_MESSAGE = 'ow:connect'

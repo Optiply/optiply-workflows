@@ -147,7 +147,7 @@ Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft liv
 
 How it's kept safe:
 
-- App code runs in a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network.
+- App code runs in a Worker inside a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network. An endless loop freezes only the app: after 5 s it's stopped, and Restart starts it again.
 - Queries stay on the server. The browser sends a query's name and the values of its `{{ }}`s, which are bound as parameters. A `{{ }}` reading only `current_user` is filled in by the server, so `where owner = {{ current_user.email }}` can be trusted; mixing `current_user` with app values in one `{{ }}` is refused.
 - People with Use on an app run its queries without access to their resources: whoever publishes needs Use on every resource the app queries, in every environment. Writes (manual queries) are audited without their values.
 

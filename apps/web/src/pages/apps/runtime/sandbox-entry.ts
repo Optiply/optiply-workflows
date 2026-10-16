@@ -1,7 +1,8 @@
 /**
- * Runs inside the app's sandbox: an iframe with an opaque origin (`sandbox="allow-scripts"`) and a CSP without
- * network access, so the app's code can't read the page, use the viewer's session or send data anywhere. It talks
- * to the page only over the MessagePort the page hands it in its first message.
+ * Runs inside the app's sandbox: a Worker started by an iframe with an opaque origin (`sandbox="allow-scripts"`)
+ * whose CSP allows no requests. The Worker inherits that policy, so the app's code can't read the page, use the
+ * viewer's session or send data anywhere, and an endless loop in it freezes only the Worker (the host's watchdog
+ * notices and stops it). It talks to the page only over the MessagePort the iframe hands it in its first message.
  *
  * Bundled on its own by vite/app-runtime.ts; the stdlib (`_`, `dayjs`) is loaded before it.
  */
@@ -23,13 +24,34 @@ let globals: Record<string, unknown> = {}
 let nextId = 1
 const pending = new Map<number, (value: never) => void>()
 
-window.addEventListener('message', (event) => {
-  // Only the page that holds this frame, only once.
-  if (port || event.source !== window.parent || event.data !== CONNECT_MESSAGE || !event.ports[0]) return
-  port = event.ports[0]
-  port.onmessage = (e: MessageEvent<HostMessage>) => handle(e.data)
-  send({ type: 'ready' })
+const UNSAFE_BROWSER = "This browser doesn't keep the app's code off the network, so it can't run"
+
+// Only the iframe that started this Worker can post to it; the port comes once.
+globalThis.addEventListener('message', (event: MessageEvent) => {
+  if (port || event.data !== CONNECT_MESSAGE || !event.ports[0]) return
+  const connected = event.ports[0]
+  port = connected
+  // The host's messages wait in the port until the check passes; if it fails, none is ever handled.
+  void networkClosed().then((closed) => {
+    if (!closed) return send({ type: 'fatal', message: UNSAFE_BROWSER })
+    connected.onmessage = (e: MessageEvent<HostMessage>) => handle(e.data)
+    send({ type: 'ready' })
+  })
 })
+
+/**
+ * Whether the iframe's CSP reached this Worker (every current browser passes it on to workers started from a blob:
+ * URL). Without it the app's code could send requests, so the app doesn't start. `connect-src` (from `default-src
+ * 'none'`) refuses even data: URLs.
+ */
+async function networkClosed(): Promise<boolean> {
+  try {
+    await fetch('data:,')
+    return false
+  } catch {
+    return true
+  }
+}
 
 function send(message: SandboxMessage) {
   port?.postMessage(message)
@@ -160,6 +182,9 @@ function handle(message: HostMessage) {
       return
     case 'confirmResult':
       settle(message.id, message.ok)
+      return
+    case 'ping':
+      send({ type: 'pong', id: message.id })
       return
   }
 }

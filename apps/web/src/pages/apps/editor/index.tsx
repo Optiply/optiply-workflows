@@ -9,6 +9,7 @@ import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
+import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
@@ -256,6 +257,7 @@ function Running({ children }: { children: React.ReactNode }) {
   if (status === 'loading') return <Spinner />
   return (
     <>
+      <AppStopped editing />
       <NeededConnections />
       {children}
     </>
