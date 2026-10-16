@@ -379,6 +379,8 @@ export const workflows = pgTable(
     liveReleaseId: uuid().references((): AnyPgColumn => workflowReleases.id, { onDelete: 'set null' }),
     /** Null = no limit. Enforced by the dispatcher (M4). */
     maxConcurrentRuns: integer(),
+    /** Protected (M11): edited on Git branches and deployed from the repo's branch; read-only on the instance. */
+    gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
@@ -429,6 +431,8 @@ export const workflowReleases = pgTable(
     /** `definitionHash`: SHA-256 of the canonical definition without layout. */
     definitionHash: text().notNull(),
     notes: text(),
+    /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
+    gitCommit: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -751,6 +755,8 @@ export const apps = pgTable(
     draftRevision: integer().notNull().default(1),
     /** The release people using the app see. Null until the first release. */
     liveReleaseId: uuid().references((): AnyPgColumn => appReleases.id, { onDelete: 'set null' }),
+    /** Protected (M11): edited on Git branches and deployed from the repo's branch; read-only on the instance. */
+    gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
@@ -774,6 +780,8 @@ export const appReleases = pgTable(
     /** `appDefinitionHash`: SHA-256 of the canonical definition, layout included. */
     definitionHash: text().notNull(),
     notes: text(),
+    /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
+    gitCommit: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -871,6 +879,16 @@ export const gitSettings = pgTable(
     branch: text().notNull().default('main'),
     /** Encrypted JSON `{ token?, webhookSecret? }` (`@ow/crypto` token). */
     secrets: text(),
+    /** The branch commit the last deploy went through (null: never, or the repo or branch changed since). */
+    deployedCommit: text(),
+    /** When a deploy last checked the branch, and why it couldn't when it couldn't (cleared on success). */
+    checkedAt: timestamp({ withTimezone: true }),
+    lastError: text(),
+    /** A webhook or an admin asked for a deploy; the process holding the lease goes again when it's done. */
+    deployRequestedAt: timestamp({ withTimezone: true }),
+    deployRequestedBy: text({ enum: ['poll', 'webhook', 'manual'] }),
+    /** One deploy at a time across processes: whoever moves this into the future runs it. */
+    deployLeaseUntil: timestamp({ withTimezone: true }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -882,3 +900,65 @@ export const gitSettings = pgTable(
 )
 
 export type GitSettings = typeof gitSettings.$inferSelect
+
+export const GIT_OBJECT_KINDS = ['workflow', 'app'] as const
+export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
+
+/** A problem with an object's files or definition, by path from the repo's root (`@ow/git-format`'s shape). */
+export interface GitProblem {
+  path: string
+  code: string
+  message: string
+}
+
+/**
+ * Each workflow and app directory on the deploy branch, as the last deploy left it (M11): the tree it deployed (so
+ * an unchanged directory is skipped), and its problems, or `missing` once the directory left the branch.
+ */
+export const gitObjects = pgTable(
+  'git_objects',
+  {
+    id: id(),
+    kind: text({ enum: GIT_OBJECT_KINDS }).notNull(),
+    slug: text().notNull(),
+    /** The workflow or app on the instance; null when none could be made. */
+    objectId: uuid(),
+    /** The directory's tree when it last deployed (or failed to). */
+    treeSha: text(),
+    /** The branch commit it was last seen at. */
+    commit: text().notNull(),
+    status: text({ enum: GIT_OBJECT_STATUSES }).notNull(),
+    problems: jsonb().$type<GitProblem[]>().notNull().default([]),
+    /** The version the last deploy made live, if it made one. */
+    version: text(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
+    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app')`),
+    check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
+  ],
+)
+
+export const GIT_DEPLOY_TRIGGERS = ['poll', 'webhook', 'manual'] as const
+
+/** What each deploy of a new branch commit (or an admin's Deploy now) did. */
+export const gitDeploys = pgTable(
+  'git_deploys',
+  {
+    id: id(),
+    commit: text().notNull(),
+    previousCommit: text(),
+    trigger: text({ enum: GIT_DEPLOY_TRIGGERS }).notNull(),
+    /** `ok`: every object deployed or was unchanged; `problems`: some didn't (see `summary`). */
+    status: text({ enum: ['ok', 'problems'] }).notNull(),
+    /** The commit's subject, author and per-object outcomes; repo-wide problems. */
+    summary: jsonb().$type<Record<string, unknown>>().notNull(),
+    startedAt: timestamp({ withTimezone: true }).notNull(),
+    finishedAt: timestamp({ withTimezone: true }).notNull(),
+  },
+  (t) => [index('git_deploys_started_idx').on(t.startedAt)],
+)
+
+export type GitObject = typeof gitObjects.$inferSelect
+export type GitDeploy = typeof gitDeploys.$inferSelect

@@ -95,7 +95,15 @@ export async function saveGitSettings(
     Object.keys(secrets).length > 0
       ? encryptForRow(config.keyring, 'git_settings', { id, environmentId: null }, secrets)
       : null
-  const values = { repoUrl, branch: input.branch, secrets: encrypted, updatedBy: user.id }
+  // Another repo or branch: what was deployed from the old one says nothing about the new one.
+  const moved = existing && (existing.row.repoUrl !== repoUrl || existing.row.branch !== input.branch)
+  const values = {
+    repoUrl,
+    branch: input.branch,
+    secrets: encrypted,
+    updatedBy: user.id,
+    ...(moved ? { deployedCommit: null, lastError: null } : {}),
+  }
   await db
     .insert(gitSettings)
     .values({ id, ...values })

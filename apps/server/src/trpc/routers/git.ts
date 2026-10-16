@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
 import { branchNameSchema } from '../../services/git/repo'
 import {
   clearGitSettings,
@@ -58,4 +59,16 @@ export const gitRouter = router({
 
   /** Signs in to the repo and reads the deploy branch; changes nothing. */
   testConnection: adminProcedure.mutation(({ ctx }) => testGitConnection(ctx.db, ctx.config)),
+
+  /** What the last deploys did, and each workflow and app directory's state. */
+  status: adminProcedure.query(({ ctx }) => gitDeployStatus(ctx.db)),
+
+  /**
+   * Deploys the branch now, re-checking every directory (after creating a resource a deploy was missing, say).
+   * When another process is deploying, it goes again right after (`busy`).
+   */
+  deployNow: adminProcedure.mutation(async ({ ctx }) => {
+    await ctx.audit({ action: 'git.deploy_requested', objectType: 'git_settings' })
+    return requestGitDeploy(ctx.db, ctx.config, { trigger: 'manual', force: true })
+  }),
 })

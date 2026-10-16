@@ -63,6 +63,8 @@ const ConfigSchema = z
     GIT_CACHE_DIR: z.string().optional(),
     /** Lets the Git repo be a `file://` or `http://` URL: for development and tests against local repos. */
     GIT_ALLOW_INSECURE_URLS: bool,
+    /** Workers check the deploy branch this often (seconds; 0 turns polling off: webhooks and Deploy now only). */
+    GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring
