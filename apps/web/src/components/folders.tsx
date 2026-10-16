@@ -141,7 +141,10 @@ export function FolderSections<T extends { id: string; folderId: string | null }
               <p className="mb-3 text-sm text-muted">
                 Grants on this folder apply to every {type} inside it.
               </p>
-              <AccessEditor target={{ objectType: 'folder', objectId: folder.id }} />
+              <AccessEditor
+                target={{ objectType: 'folder', objectId: folder.id }}
+                perEnvironment={type === 'resource'}
+              />
             </Card>
           )}
           <Card className="divide-y divide-border">

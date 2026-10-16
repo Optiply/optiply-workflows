@@ -437,6 +437,20 @@ describe('apps: folders', () => {
       code: 'FORBIDDEN',
     })
     data(await admin.mutate('folders.rename', { id: folder.id, name: 'Sales' }))
+    // App access applies to every environment, through a folder too.
+    const grant = (environmentId: string | null) =>
+      admin.mutate('permissions.set', {
+        objectType: 'folder',
+        objectId: folder.id,
+        groupId: memberGroupId,
+        environmentId,
+        level: 'use',
+      })
+    expect(failure(await grant(prodId))).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'App folder access applies to every environment',
+    })
+    data(await grant(null))
 
     // An app in it; deleting the folder leaves the app at the top.
     const app = await appWith('in-folder', crudApp())

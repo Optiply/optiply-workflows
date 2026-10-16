@@ -13,6 +13,8 @@ export const E2E_EMAIL = 'e2e@optiply.nl'
 export const E2E_PASSWORD = 'e2e-password-not-secret'
 /** A second person, for what differs between people (their own OAuth accounts). Same password. */
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
+/** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
+export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
 
 /**
  * Starts what the editor needs, as in production: an embedded Postgres, the bundled server (API and worker in one
@@ -56,12 +58,22 @@ export default async function globalSetup() {
   for (const [email, name] of [
     [E2E_EMAIL, 'E2E'],
     [E2E_SECOND_EMAIL, 'Second'],
+    [E2E_MEMBER_EMAIL, 'Member'],
   ] as const) {
     await run(['dist/cli/create-admin.js', '--email', email, '--name', name], {
       ...env,
       ADMIN_PASSWORD: E2E_PASSWORD,
     })
   }
+  // The CLI only makes admins: the member leaves the admins group.
+  const members = createDb(pg.url, { max: 1 })
+  await members.sql.unsafe(
+    `delete from group_members
+      where user_id = (select id from users where email = $1)
+        and group_id = (select id from groups where system_kind = 'admins')`,
+    [E2E_MEMBER_EMAIL],
+  )
+  await members.close()
   const server = spawn('node', ['--no-node-snapshot', 'dist/main.js'], {
     cwd: serverDir,
     env,
