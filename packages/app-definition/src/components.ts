@@ -98,6 +98,19 @@ const specs: ComponentSpec[] = [
     defaultSize: { w: 4, h: 2 },
   },
   {
+    type: 'navigation',
+    label: 'Navigation',
+    props: {
+      /** `{ page, label? }` per link, in order (the label a template); empty links every page, by title. */
+      items: { type: 'array', default: [], label: 'Links' },
+      orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 12, h: 3 },
+  },
+  {
     type: 'button',
     label: 'Button',
     props: {

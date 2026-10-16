@@ -29,6 +29,9 @@ export function entityPages(def: AppDefinition): Map<string, string | null> {
   return pages
 }
 
+/** Page names the platform uses itself: `/apps/<slug>/edit` is the app's editor. */
+export const RESERVED_PAGES: ReadonlySet<string> = new Set(['edit'])
+
 /** The page an app opens on: its first, or null for an app without pages. */
 export function defaultPage(def: AppDefinition): string | null {
   return def.pages?.[0]?.name ?? null

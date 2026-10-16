@@ -237,6 +237,15 @@ export class AppHost {
     this.post({ type: 'trigger', query })
   }
 
+  /**
+   * Opens one of the app's pages (`utils.openPage`, a Navigation link): the page this app is shown on changes its
+   * URL, which comes back as `navigate`; without `openPage` (the editor), the app moves in place.
+   */
+  openPage(page: string, params: Record<string, string>, newTab = false): void {
+    if (this.options.openPage) this.options.openPage(page, params, newTab)
+    else this.navigate({ page, params })
+  }
+
   /** The page's URL changed: the app shows that page with those parameters. */
   navigate(url: AppUrl): void {
     if (url.page === this.url.page && JSON.stringify(url.params) === JSON.stringify(this.url.params)) return
@@ -464,13 +473,11 @@ export class AppHost {
         )
         return
       case 'openPage': {
-        const page = String(effect.page)
         const params: Record<string, string> = {}
         if (effect.params && typeof effect.params === 'object') {
           for (const [key, value] of Object.entries(effect.params)) params[String(key)] = String(value)
         }
-        if (this.options.openPage) this.options.openPage(page, params, effect.newTab === true)
-        else this.navigate({ page, params })
+        this.openPage(String(effect.page), params, effect.newTab === true)
         return
       }
       case 'download': {

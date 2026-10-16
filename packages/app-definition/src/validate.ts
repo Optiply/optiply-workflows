@@ -4,7 +4,7 @@ import type { z } from 'zod'
 import { componentSpec, constantFits, QUERY_EVENTS } from './components'
 import { buildAppGraph, type Entity, entityMethods, entityProperties } from './graph'
 import { appNameReason, isAppGlobalName } from './names'
-import { entityPages, pageVisible } from './pages'
+import { entityPages, pageVisible, RESERVED_PAGES } from './pages'
 import { expressionSide } from './query-values'
 import { type AppDefinition, appDefinitionSchema, type EventHandler } from './schema'
 
@@ -142,6 +142,19 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
       }
     }
     checkHandlers(c.events, ['components', i, 'events'], spec.events, at.entity, entities, pages, report)
+    if (c.type === 'navigation' && Array.isArray(c.props?.items)) {
+      c.props.items.forEach((item, n) => {
+        const page = item && typeof item === 'object' && !Array.isArray(item) ? item.page : undefined
+        if (typeof page === 'string' && !page.includes('{{') && !def.pages?.some((p) => p.name === page)) {
+          report({
+            code: 'unknown_page',
+            message: `No page is named "${page}"`,
+            path: ['components', i, 'props', 'items', n, 'page'],
+            ...at,
+          })
+        }
+      })
+    }
   })
 
   // Layout entries name components on a grid.
@@ -257,9 +270,6 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   return { ok: !diagnostics.some((d) => d.severity === 'error'), definition: def, diagnostics }
 }
-
-/** Page addresses the platform uses itself. */
-const RESERVED_PAGES = new Set(['edit'])
 
 /** Page names are unique; whatever names a page names one of them; components in containers name none. */
 function checkPages(def: AppDefinition, report: Report) {
