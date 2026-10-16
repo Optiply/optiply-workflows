@@ -14,3 +14,31 @@ dayjs.extend(relativeTime)
 
 globalThis._ = _
 globalThis.dayjs = dayjs
+
+const quoted = (value) => (value === undefined ? 'nothing' : JSON.stringify(value))
+
+// For SQL queries: `ORDER BY {{ sql.column(table1.sort.column, ['name', 'price'], 'id') }} {{ sql.direction(…) }}`
+// picks a sort column and direction from a list written in the query. The SQL connectors check the result again
+// against that list before it becomes SQL text (see compileSql in @ow/expressions), whoever computed it.
+globalThis.sql = Object.freeze({
+  column(value, columns, fallback) {
+    if (!Array.isArray(columns)) throw new TypeError('sql.column needs the list of columns it may be')
+    if (typeof value === 'string' && columns.includes(value)) return value
+    if ((value === null || value === undefined || value === '') && fallback !== undefined) return fallback
+    throw new Error(`sql.column got ${quoted(value)}: expected one of ${columns.map(quoted).join(', ')}`)
+  },
+  direction(value) {
+    if (value === true || (typeof value === 'string' && /^desc$/i.test(value))) return 'DESC'
+    if (
+      value === false ||
+      value === null ||
+      value === undefined ||
+      (typeof value === 'string' && /^(asc)?$/i.test(value))
+    ) {
+      return 'ASC'
+    }
+    throw new Error(
+      `sql.direction got ${quoted(value)}: expected true or "desc" (DESC), false or "asc" (ASC)`,
+    )
+  },
+})

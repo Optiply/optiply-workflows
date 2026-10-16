@@ -1,6 +1,7 @@
 import { type CompiledSql, compileSql, TemplateError } from '@ow/expressions'
 import mysql from 'mysql2'
 import { z } from 'zod'
+import { resolveFragments } from './sql-fragments'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -105,7 +106,7 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   },
 
   async execute(client, query, ctx): Promise<QueryResult> {
-    const plan = compileSql(query.sql, 'mysql')
+    const plan = await resolveFragments(compileSql(query.sql, 'mysql'), 'mysql', ctx.evaluate)
     const values: unknown[] = []
     for (const param of plan.params) values.push(await ctx.evaluate(param.code))
     const { text, params } = expandParams(plan, values)

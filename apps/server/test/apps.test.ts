@@ -215,6 +215,42 @@ describe('apps: running queries', () => {
     expect(all.data).toHaveLength(2)
   })
 
+  it('sorts by a column the browser picks, only from the list in the stored query', async () => {
+    const column = " sql.column(table1.sort?.column, ['id', 'name'], 'id') "
+    const direction = ' sql.direction(table1.sort?.desc) '
+    await app.save(
+      crudApp({
+        queries: [
+          sqlQuery('sorted', `select name from customers order by {{${column}}} {{${direction}}}, id`),
+          sqlQuery('misused', 'select name from customers order by {{ sql.column(table1.sort, cols) }}'),
+        ],
+      }),
+    )
+    const names = async (values: Record<string, unknown>) => data(await run(admin, app.id, 'sorted', values))
+    const byName = await names({ [column]: 'name', [direction]: 'DESC' })
+    expect(byName).toMatchObject({ ok: true })
+    expect(byName.data.map((r: { name: string }) => r.name)[0]).toMatch(/^Robert/)
+    expect(
+      (await names({ [column]: null, [direction]: 'ASC' })).data.map((r: { name: string }) => r.name),
+    ).toEqual([expect.stringMatching(/^Robert/), 'Ada'])
+    for (const hostile of ['owner', 'name; drop table customers', '(select 1)', { name: 1 }]) {
+      expect(await names({ [column]: hostile, [direction]: 'ASC' })).toMatchObject({
+        ok: false,
+        error: { code: 'expression', message: expect.stringContaining('expected one of "id", "name"') },
+      })
+    }
+    expect(await names({ [column]: 'name', [direction]: 'asc, owner' })).toMatchObject({
+      ok: false,
+      error: { code: 'expression' },
+    })
+    // The server's own check, also shown to whoever edits the app.
+    const got = data(await admin.query('apps.get', { id: app.id }))
+    expect(got.diagnostics).toContainEqual(
+      expect.objectContaining({ entity: 'misused', message: expect.stringContaining('list of strings') }),
+    )
+    await app.save(crudApp())
+  })
+
   it('evaluates current_user on the server, whatever the browser sends', async () => {
     const who = data(await run(admin, app.id, 'whoami', { ' current_user.email ': 'ceo@optiply.nl' }))
     expect(who).toMatchObject({ ok: true, data: [{ email: 'admin@optiply.nl' }] })

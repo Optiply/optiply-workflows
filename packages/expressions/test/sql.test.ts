@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileSql, TemplateError } from '../src'
+import { compileSql, fragmentText, SqlFragmentError, sqlFragment, TemplateError, withFragments } from '../src'
 
 const text = (sql: string) => compileSql(sql).text
 const codes = (sql: string) => compileSql(sql).params.map((p) => p.code.trim())
@@ -42,7 +42,7 @@ describe('compileSql (postgres)', () => {
     ['select "{{col}}" from t', 'identifier'],
   ])('never turns {{ }} in quotes or comments into parameters: %s', (sql, where) => {
     if (where === 'comment') {
-      expect(compileSql(sql)).toEqual({ text: sql, params: [], offsets: [] })
+      expect(compileSql(sql)).toEqual({ text: sql, params: [], offsets: [], fragments: [] })
     } else {
       expect(() => compileSql(sql)).toThrow(TemplateError)
     }
@@ -200,5 +200,117 @@ describe('compileSql (bigquery)', () => {
       const compiled = bq(`SELECT * FROM users WHERE email = {{ ${JSON.stringify(payload)} }}`)
       expect(compiled.text).toBe('SELECT * FROM users WHERE email = @p1')
     })
+  })
+})
+
+describe('sql.column and sql.direction', () => {
+  const sort =
+    "select * from products order by {{ sql.column(t.sort?.column, ['name', 'price'], 'id') }} {{ sql.direction(t.sort?.desc) }} limit {{ t.pageSize }}"
+
+  it('become fragments, not placeholders, and the values around them keep their numbers', () => {
+    const plan = compileSql(sort)
+    expect(plan.text).toBe('select * from products order by   limit $1')
+    expect(plan.params.map((p) => p.code.trim())).toEqual(['t.pageSize'])
+    expect(plan.fragments.map((f) => [f.code.trim(), f.spec, f.at])).toEqual([
+      [
+        "sql.column(t.sort?.column, ['name', 'price'], 'id')",
+        { kind: 'column', columns: ['name', 'price'], fallback: 'id' },
+        32,
+      ],
+      ['sql.direction(t.sort?.desc)', { kind: 'direction' }, 33],
+    ])
+    const done = withFragments(plan, ['"price"', 'DESC'])
+    expect(done.text).toBe('select * from products order by "price" DESC limit $1')
+    expect(done.text.slice(done.offsets[0], done.offsets[0]! + 2)).toBe('$1')
+    expect(done.fragments).toEqual([])
+  })
+
+  it('stay separate tokens', () => {
+    const plan = compileSql("order by{{ sql.column(c, ['a']) }}desc")
+    expect(withFragments(plan, ['"a"']).text).toBe('order by "a" desc')
+  })
+
+  it('shift MySQL and BigQuery placeholders too', () => {
+    const my = compileSql("select {{ a }} order by {{ sql.column(c, ['a']) }}, {{ b }}", 'mysql')
+    const done = withFragments(my, ['`a`'])
+    expect(done.text).toBe('select ? order by `a`, ?')
+    expect(done.offsets.map((o) => done.text[o])).toEqual(['?', '?'])
+    const bq = compileSql("order by {{ sql.column(c, ['x.y']) }} limit {{ n }}", 'bigquery')
+    expect(withFragments(bq, [fragmentText(bq.fragments[0]!.spec, 'x.y', 'bigquery')]).text).toBe(
+      'order by `x`.`y` limit @p1',
+    )
+  })
+
+  it('quote only listed columns, per dialect', () => {
+    const spec = sqlFragment("sql.column(v, ['name', 'p.price'], 'id')")!
+    expect(fragmentText(spec, 'name')).toBe('"name"')
+    expect(fragmentText(spec, 'p.price')).toBe('"p"."price"')
+    expect(fragmentText(spec, 'p.price', 'mysql')).toBe('`p`.`price`')
+    for (const empty of [null, undefined, '']) expect(fragmentText(spec, empty)).toBe('"id"')
+    for (const bad of [
+      'id',
+      'NAME',
+      'name; drop table products',
+      '"name"',
+      'name"--',
+      ['name'],
+      { name: 1 },
+      1,
+    ]) {
+      expect(() => fragmentText(spec, bad)).toThrow(SqlFragmentError)
+    }
+    // Without a fallback, an empty value is refused too.
+    expect(() => fragmentText(sqlFragment("sql.column(v, ['a'])")!, null)).toThrow(/expected one of "a"/)
+  })
+
+  it('directions', () => {
+    const spec = { kind: 'direction' } as const
+    for (const v of [true, 'desc', 'DESC']) expect(fragmentText(spec, v)).toBe('DESC')
+    for (const v of [false, null, undefined, '', 'asc', 'Asc']) expect(fragmentText(spec, v)).toBe('ASC')
+    for (const v of ['descending', 'desc; drop table x', 1, {}])
+      expect(() => fragmentText(spec, v)).toThrow(SqlFragmentError)
+  })
+
+  it('need the call to be the whole {{ }} and the columns written as strings', () => {
+    const misuse = [
+      "sql.column(v, ['a']) + ''",
+      "x ? sql.column(v, ['a']) : 'b'",
+      'sql.column(v, cols)',
+      "sql.column(v, ['a', b])",
+      'sql.column(v, [...cols])',
+      'sql.column(v, [])',
+      "sql.column(v, ['a'], fallback)",
+      'sql.column(v)',
+      "sql.column(v, ['a\"b'])",
+      "sql.column(v, ['a..b'])",
+      "sql.column(v, ['a'], 'b`c')",
+      'sql.direction()',
+      'sql.direction(a, b)',
+      "sql?.column(v, ['a'])",
+      "sql.column?.(v, ['a'])",
+    ]
+    for (const code of misuse) {
+      expect(() => compileSql(`select 1 order by {{ ${code} }}`), code).toThrow(TemplateError)
+    }
+    expect(() => compileSql('order by {{ sql.column(v, cols) }}')).toThrow(/list of strings/)
+  })
+
+  it('leave other code alone', () => {
+    for (const code of [
+      "$sql.column(v, ['a'])",
+      'obj.sql.column(v)',
+      "'sql.column(v)'",
+      'mysql.column',
+      'sql.columns(x)',
+    ]) {
+      expect(sqlFragment(code), code).toBeNull()
+    }
+    // A syntax error is the evaluator's to report.
+    expect(sqlFragment('sql.column(')).toBeNull()
+  })
+
+  it("can't appear inside strings, quoted identifiers or comments as SQL", () => {
+    expect(() => compileSql('select \'{{ sql.column(v, ["a"]) }}\'')).toThrow(TemplateError)
+    expect(compileSql("-- {{ sql.column(v, ['a']) }}\nselect 1").fragments).toEqual([])
   })
 })

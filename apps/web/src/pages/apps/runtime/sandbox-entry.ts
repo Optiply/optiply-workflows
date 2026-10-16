@@ -4,7 +4,7 @@
  * viewer's session or send data anywhere, and an endless loop in it freezes only the Worker (the host's watchdog
  * notices and stops it). It talks to the page only over the MessagePort the iframe hands it in its first message.
  *
- * Bundled on its own by vite/app-runtime.ts; the stdlib (`_`, `dayjs`) is loaded before it.
+ * Bundled on its own by vite/app-runtime.ts; the stdlib (`_`, `dayjs`, `sql`) is loaded before it.
  */
 import {
   AppRuntime,
@@ -136,8 +136,8 @@ function handle(message: HostMessage) {
     case 'start': {
       if (runtime) return
       try {
-        const g = globalThis as unknown as { _: unknown; dayjs: unknown }
-        globals = { ...message.globals, _: g._, dayjs: g.dayjs, console: appConsole }
+        const g = globalThis as unknown as { _: unknown; dayjs: unknown; sql: unknown }
+        globals = { ...message.globals, _: g._, dayjs: g.dayjs, sql: g.sql, console: appConsole }
         runtime = new AppRuntime(message.definition, bridge, { globals })
         const loading = runtime.start()
         send({ type: 'started' })

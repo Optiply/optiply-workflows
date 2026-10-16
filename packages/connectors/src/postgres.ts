@@ -1,6 +1,7 @@
 import { compileSql, TemplateError } from '@ow/expressions'
 import postgres from 'postgres'
 import { z } from 'zod'
+import { resolveFragments } from './sql-fragments'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -95,7 +96,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
   },
 
   async execute({ sql, config }, query, ctx): Promise<QueryResult> {
-    const plan = compileSql(query.sql)
+    const plan = await resolveFragments(compileSql(query.sql), 'postgres', ctx.evaluate)
     const timeoutMs = Math.min(ctx.timeoutMs, config.statementTimeoutMs)
     // Extended protocol always (simple: false), so a multi-statement string like `commit; delete …` is rejected
     // by Postgres instead of escaping the transaction. Unnamed statements (prepare: false), so arbitrary user SQL

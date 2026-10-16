@@ -44,6 +44,20 @@ describe('IvmRuntime: expressions and code', () => {
     ).toBe('2026-03-29 01:30')
   })
 
+  it('exposes the sql helpers for sort columns and directions', async () => {
+    runtime = new IvmRuntime()
+    const column = "sql.column(sort, ['name', 'p.price'], 'id')"
+    expect(await runtime.evalExpression(column, { sort: 'p.price' })).toBe('p.price')
+    expect(await runtime.evalExpression(column, { sort: null })).toBe('id')
+    await expect(runtime.evalExpression(column, { sort: 'name; drop table x' })).rejects.toThrow(
+      /expected one of "name", "p.price"/,
+    )
+    expect(
+      await runtime.evalExpression('[sql.direction(true), sql.direction("asc"), sql.direction()]', {}),
+    ).toEqual(['DESC', 'ASC', 'ASC'])
+    await expect(runtime.evalExpression('sql.direction("sideways")', {})).rejects.toThrow(/sql.direction got/)
+  })
+
   it('forwards console output, including circular values', async () => {
     runtime = new IvmRuntime()
     const logs: [string, unknown[]][] = []

@@ -7,7 +7,7 @@ import {
   VARIABLE_METHODS,
 } from '@ow/app-definition'
 import type { CodeScope } from '@/components/code/code-field'
-import { typeOf } from '../../workflows/editor/scope-types'
+import { SQL_HELPERS, typeOf } from '../../workflows/editor/scope-types'
 
 /**
  * Completions for the app editor: a `.d.ts` declaring every component, query, transformer and variable with the
@@ -19,6 +19,7 @@ const GLOBALS = `
 declare const _: any
 /** Day.js, with the utc, timezone, customParseFormat and relativeTime plugins. */
 declare const dayjs: any
+${SQL_HELPERS}
 /** Who is using the app. In a resource query, a {{ }} reading only current_user is filled in by the server. */
 declare const current_user: { id: string; email: string; name: string }
 declare const appContext: { appSlug: string; environment: string; version: string | null }

@@ -9,7 +9,7 @@ import {
   testResource,
 } from '../src'
 import { FakeBigQuery } from './bigquery-fake'
-import { resource, scopeEvaluator } from './helpers'
+import { codeEvaluator, resource, scopeEvaluator } from './helpers'
 
 // Against a fake BigQuery API (bigquery-fake.ts) that checks the signed JWT and records every request.
 const fake = new FakeBigQuery()
@@ -387,5 +387,28 @@ describe('testResource', () => {
     const result = await testResource(connector, res)
     expect(result.ok).toBe(false)
     expect(JSON.stringify(result)).not.toContain('PRIVATE KEY')
+  })
+})
+
+describe('sql.column and sql.direction', () => {
+  it('put the checked column and direction into the query text; values stay parameters', async () => {
+    await runQuery(
+      pool,
+      connector,
+      bqResource(),
+      {
+        sql: "SELECT * FROM shop.orders WHERE n > {{ n }} ORDER BY {{ sql.column(c, ['o.created_at', 'total']) }} {{ sql.direction(d) }}",
+      },
+      {
+        evaluate: codeEvaluator({
+          n: 1,
+          "sql.column(c, ['o.created_at', 'total'])": 'o.created_at',
+          'sql.direction(d)': 'DESC',
+        }),
+      },
+    ).catch(() => {})
+    const { query } = insertBody().configuration
+    expect(query.query).toBe('SELECT * FROM shop.orders WHERE n > @p1 ORDER BY `o`.`created_at` DESC')
+    expect(query.queryParameters.map((p: { name: string }) => p.name)).toEqual(['p1'])
   })
 })

@@ -306,6 +306,7 @@ Built in M2 unless the status says otherwise. Engine tests are in `packages/engi
   - MySQL uses `?` and expands arrays.
   - BigQuery uses `@pN` named parameters.
   - A `{{ }}` inside a string literal is a validation error that suggests a fix.
+  - **Sort columns (M10):** `{{ sql.column(value, ['name', 'price'], 'id') }}` and `{{ sql.direction(value) }}` become SQL text, not parameters. The compiler accepts them only as the whole `{{ }}` with the columns written as string literals (`sqlFragment`); the connector evaluates the value like any other (in apps, the browser sends it) and checks it against that list (or the fallback) before quoting it as an identifier for the dialect (`fragmentText`, `"p"."name"` or `` `p`.`name` ``) or writing `ASC`/`DESC`, all before the database sees the statement. `sql` is a stdlib global (server sandbox and app Worker), so it's a reserved name since M10.
   - Per-resource `disablePreparedStatements` is for Own/admin only (not built: every connector binds parameters).
 - **MVP connectors:**
   - **Postgres** (postgres.js): `SET LOCAL statement_timeout`, cancel on abort, `maxRows`, optional read-only mode.

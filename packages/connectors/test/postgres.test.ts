@@ -9,7 +9,7 @@ import {
   runQuery,
   testResource,
 } from '../src'
-import { resource, scopeEvaluator } from './helpers'
+import { codeEvaluator, resource, scopeEvaluator } from './helpers'
 
 let stopDb: () => Promise<void>
 let admin: postgres.Sql
@@ -230,5 +230,45 @@ describe('testResource', () => {
   it('rejects invalid configuration with field paths', async () => {
     const bad = await testResource(postgresConnector, resource({ host: '' }, {}))
     expect(bad).toMatchObject({ ok: false, error: { code: 'invalid_config' } })
+  })
+})
+
+describe('sql.column and sql.direction', () => {
+  const sql =
+    "select id, email from customers where id <= {{ n }} order by {{ sql.column(t.sort, ['id', 'email'], 'id') }} {{ sql.direction(t.desc) }} limit {{ size }}"
+  const sorted = (values: Record<string, unknown>) =>
+    runQuery(pool, postgresConnector, pgResource(), { sql }, { evaluate: codeEvaluator(values) })
+  const ids = async (values: Record<string, unknown>) =>
+    ((await sorted(values)).data as { id: number }[]).map((r) => r.id)
+  const values = (column: unknown, direction: unknown) => ({
+    n: 12,
+    size: 3,
+    "sql.column(t.sort, ['id', 'email'], 'id')": column,
+    'sql.direction(t.desc)': direction,
+  })
+
+  it('sort by a listed column, in either direction, with the values around them still bound', async () => {
+    expect(await ids(values('id', 'DESC'))).toEqual([12, 11, 10])
+    // Text order is the database's collation: compare with the same query written by hand.
+    const byEmail = await admin.unsafe('select id from customers where id <= 12 order by email asc limit 3')
+    expect(await ids(values('email', 'ASC'))).toEqual(byEmail.map((r) => r.id))
+    // The fallback, when nothing is sorted.
+    expect(await ids(values(null, 'ASC'))).toEqual([1, 2, 3])
+  })
+
+  it('refuse anything else a browser sends, before the database sees a thing', async () => {
+    for (const hostile of ['id; drop table customers', 'id desc, (select 1)', '"id"', 'profile', ['id'], 1]) {
+      const err = await failure(sorted(values(hostile, 'ASC')))
+      expect(err.code).toBe('expression')
+      expect(err.message).toMatch(/expected one of "id", "email"/)
+    }
+    const err = await failure(sorted(values('id', 'desc; drop table customers')))
+    expect(err.message).toMatch(/sql.direction got/)
+    expect(await countRows()).toBe(30)
+  })
+
+  it('a misused helper is an invalid query', async () => {
+    const err = await failure(run(pgResource(), 'select 1 order by {{ sql.column(t.sort, cols) }}', {}))
+    expect(err.code).toBe('invalid_query')
   })
 })
