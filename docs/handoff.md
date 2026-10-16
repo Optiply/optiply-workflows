@@ -1,12 +1,12 @@
 # Session handoff
 
-What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M10, M11+ to choose from).
+What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M11, M12+ to choose from).
 
-Last updated: 2026-10-16 (end of session 10, which built, reviewed and merged M10).
+Last updated: 2026-10-16 (start of session 11: M11, Git sync, planned with the user).
 
 | | |
 |---|---|
-| **Branch** | `main`. M10 was built on `feat/m10-apps` (the plan, 6 steps of which 2–4 in two commits each, and the review fixes) |
+| **Branch** | `feat/m11-git-sync` (M11). M10 was built on `feat/m10-apps` (the plan, 6 steps of which 2–4 in two commits each, and the review fixes) |
 | **PR** | [#12 M10](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/12), reviewed **before** merging (10 fixes, `6c95f5a`), merged as `bb7f6b7`. CI green on every push (one rerun: Docker Hub timed out pulling `mysql:8.4`) |
 | **`main`** | `bb7f6b7`, the merge of PR #12 (M10 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
@@ -30,9 +30,9 @@ Last updated: 2026-10-16 (end of session 10, which built, reviewed and merged M1
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
-| M11 | ⏭️ **Next**: plan it with the user (§14) |
+| **M11 Git sync** | 🚧 Planned with the user in session 11 (§14, `architecture.md` §2.13), on `feat/m11-git-sync` |
 
-**Start the next session with:** planning M11 with the user (§14), then a new branch and draft PR (§15). Review the milestone's PR **before** it's merged, as in session 10.
+**Start the next session with:** the next M11 step (§14) on `feat/m11-git-sync`. Review the milestone's PR **before** it's merged, as in session 10.
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -766,26 +766,30 @@ Tests for each (the e2e ones mutation-checked).
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: M11
+## 14. Next step: M11, Git sync
 
-From `architecture.md` §2.7, M11+ is a list to choose from; decide with the user which comes first:
-- **Python executor** (nsjail) for code blocks.
-- **SQS/Kafka triggers** for workflows.
-- **Git sync** (canonical JSON already exists for workflows and apps).
-- **Multiplayer editing** (Yjs) for the workflow and app editors.
-- **AI actions.**
+Chosen with the user at the start of session 11 (from the M11+ list; Python, SQS/Kafka, multiplayer and AI actions move to M12+). Branch `feat/m11-git-sync`. Agreed with the user:
+- **Retool-style protection**: protected objects are edited on branches, reviewed in a PR, and deployed when it merges; unprotected ones work as before.
+- **GitHub** (plain git for the content, the GitHub API for PRs and the push webhook).
+- **Code split out**: code blocks, JS queries and transformers as `.js`, SQL as `.sql`, next to canonical JSON, with the layout in its own file.
+- **Workflows and apps only** (no resources, folders or config vars).
 
-Also open on apps, if the user prefers to keep going there (§13): modules, a mobile layout, custom components, a Query Library, per-row column templates, themes; editor undo/redo and copy/paste.
+The design is `architecture.md` §2.13; the done-when is in §2.7. Steps:
+1. **The file format** (`packages/git-format`, browser-safe): workflow and app definitions to files and back, the split rules, `ow.json`; a round-trip property test over generated definitions; problems naming the file.
+2. **Git on the server**: `git` in the runtime image; a client on a bare cache repo with plumbing only (read a tree at a ref, write an object's files as a commit on a branch, push with retry on a moved branch), the token through `GIT_ASKPASS`; `git_settings` (encrypted token and webhook secret) with an admin API and Test connection. Tests against local bare repos.
+3. **Deploy from main**: the poll and the signed push webhook, the deploy job (claimed in `maintenance_jobs`), diffing against the last deployed commit, releases made by Git sync with the commit SHA, new objects created, removed ones flagged, problems recorded per object, audit.
+4. **Protection and branches** (server): the `protected` flag and the protect flow, `git_branch_drafts` (save, run, pull from the branch), Commit, Open PR / PR status through the GitHub API (a fake GitHub in tests), main read-only for protected objects, admin rollback.
+5. **The UI**: the Git settings page (with the deploy status and problems), Protect, a branch picker in the workflow and app editors, the Commit dialog (message, the files that change), the PR link and status, the read-only banner on main, Git sync releases in the release lists.
+6. **Done-when, Compose check, docs**: Playwright against a bare repo and the fake GitHub API; Compose; one check against a real GitHub repo if the user provides one (a scratch repo and a fine-grained token).
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull                      # M10 (PR #12) is merged
+git switch feat/m11-git-sync && git pull        # M11 (§14)
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
 corepack pnpm --filter @ow/server dev &          # API + worker on :3000 (auto-migrates; needs ENCRYPTION_KEYS in .env)
 corepack pnpm --filter @ow/web dev               # http://localhost:5173
-git switch -c feat/m11-<topic>                   # once M11 is chosen (§14); open a draft PR after the first commit
 ```
