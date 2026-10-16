@@ -3,6 +3,7 @@ import {
   type AuthorizationCodeSettings,
   ConnectorError,
   type CredentialSource,
+  type FlowSandbox,
   OAuthGrantError,
   type ResolvedResource,
   refreshAccessToken,
@@ -15,6 +16,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import type { z } from 'zod'
 import { recordAudit } from '../audit'
+import { customAuthCredentials, customFlowHash } from './custom-auth'
 import { decryptForRow, encryptForRow } from './secrets'
 
 /** What `oauth_tokens.tokens` holds once decrypted. */
@@ -28,6 +30,18 @@ const EXPIRY_MARGIN_MS = 60_000
 
 type RestAuth = z.output<typeof restConnector.configSchema>['auth']
 export type AuthorizationCodeAuth = Extract<RestAuth, { type: 'oauth2AuthorizationCode' }>
+
+/**
+ * What connected accounts and signed-in variables were granted under: the consent settings of an
+ * authorization-code resource, or a custom auth flow. Null for any other config. When it changes, they go.
+ */
+export function authFingerprint(config: unknown): string | null {
+  const parsed = restConnector.configSchema.safeParse(config)
+  if (!parsed.success) return null
+  if (parsed.data.auth.type === 'oauth2AuthorizationCode') return consentHash(parsed.data.auth)
+  if (parsed.data.auth.type === 'custom') return customFlowHash(parsed.data)
+  return null
+}
 
 /** The authorization-code settings of a REST resource config (defaults applied), or null for any other config. */
 export function authorizationCode(config: unknown): AuthorizationCodeAuth | null {
@@ -194,7 +208,7 @@ export interface CredentialTarget {
 export function oauthCredentials(
   deps: { db: Db; keyring: Keyring },
   target: CredentialTarget,
-): CredentialSource {
+): Required<Pick<CredentialSource, 'accessToken'>> {
   const { db, keyring } = deps
   const currentConsent = consentHash(target.auth)
   /** The token this source last handed out: a forced refresh replaces it unless someone already has. */
@@ -307,12 +321,23 @@ export function oauthCredentials(
  * runs (a live workflow run) fails asking for a resource with a shared account.
  */
 export function credentialsFor(
-  deps: { db: Db; keyring: Keyring },
+  deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
   resource: ResolvedResource,
   actingUserId: string | null,
+  opts: { store?: boolean } = {},
 ): CredentialSource | undefined {
   const parsed = restConnector.configSchema.safeParse(resource.config)
-  if (!parsed.success || parsed.data.auth.type !== 'oauth2AuthorizationCode') return undefined
+  if (!parsed.success) return undefined
+  if (parsed.data.auth.type === 'custom') {
+    return customAuthCredentials(deps, {
+      resourceConfigId: resource.id,
+      environmentId: resource.environmentId,
+      config: parsed.data,
+      secrets: restConnector.secretsSchema.parse(resource.secrets ?? {}),
+      store: opts.store ?? true,
+    })
+  }
+  if (parsed.data.auth.type !== 'oauth2AuthorizationCode') return undefined
   const auth = parsed.data.auth
   if (auth.tokens === 'perUser' && actingUserId === null) {
     return {

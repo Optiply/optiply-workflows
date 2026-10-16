@@ -19,6 +19,7 @@ import {
   oauthRedirectUri,
 } from '../../services/oauth-connect'
 import {
+  authFingerprint,
   authorizationCode,
   type ConnectionStatus,
   connectionStatus,
@@ -317,9 +318,8 @@ export const resourcesRouter = router({
         updatedAt: new Date(),
       }
       // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
-      const before = existing && authorizationCode(existing.config)
-      const after = authorizationCode(values.config)
-      const consentChanged = !!before && (!after || consentHash(before) !== consentHash(after))
+      const before = existing ? authFingerprint(existing.config) : null
+      const consentChanged = before !== null && before !== authFingerprint(values.config)
       let disconnectedAccounts = 0
       if (existing) {
         disconnectedAccounts = await ctx.db.transaction(async (tx) => {
@@ -389,10 +389,18 @@ export const resourcesRouter = router({
           input.secrets,
         ),
       }
-      // Connected accounts belong to the saved settings: changed consent settings need a reconnect first.
-      const credentials = existing
-        ? credentialsFor({ db: ctx.db, keyring: ctx.config.keyring }, tested, ctx.user.id)
-        : undefined
+      // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
+      // auth flow signs in afresh for the test, without storing what it gets (`store: false`).
+      const custom = (tested.config as { auth?: { type?: unknown } }).auth?.type === 'custom'
+      const credentials =
+        existing || custom
+          ? credentialsFor(
+              { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+              tested,
+              ctx.user.id,
+              { store: false },
+            )
+          : undefined
       const result = await testResource(connector, tested, credentials ? { credentials } : {})
       return result.ok
         ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
@@ -499,7 +507,11 @@ export const resourcesRouter = router({
         current_user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name },
       }
       const resolved = toResolved(ctx.config.keyring, row)
-      const credentials = credentialsFor({ db: ctx.db, keyring: ctx.config.keyring }, resolved, ctx.user.id)
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resolved,
+        ctx.user.id,
+      )
       const started = performance.now()
       let outcome:
         | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }

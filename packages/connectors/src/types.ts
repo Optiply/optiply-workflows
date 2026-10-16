@@ -32,16 +32,30 @@ export interface QueryContext {
 }
 
 /**
- * Hands a connector an access token that belongs to a connection rather than to the resource's settings: the
- * shared account, or the account of the person running the query. The server supplies it; connectors only ask.
+ * Credentials that belong to a connection rather than to the resource's settings: an OAuth access token (the shared
+ * account, or the account of the person running the query), or the variables a custom auth flow signed in for. The
+ * server supplies them; connectors only ask.
  */
 export interface CredentialSource {
   /**
-   * A token that should be valid now. `force` gets a fresh one even if the stored token looks valid (the API just
-   * refused it). Throws a `ConnectorError` with code `auth_required` when nothing is connected or the provider
+   * OAuth: a token that should be valid now. `force` gets a fresh one even if the stored token looks valid (the API
+   * just refused it). Throws a `ConnectorError` with code `auth_required` when nothing is connected or the provider
    * no longer accepts the connection.
    */
-  accessToken(opts: { signal: AbortSignal; force?: boolean }): Promise<string>
+  accessToken?(opts: { signal: AbortSignal; force?: boolean }): Promise<string>
+  /**
+   * Custom auth flows: the variables the flow signed in for, as an evaluator of the `{{ auth.NAME }}` in the
+   * resource's headers and parameters. `force` refreshes them (the API refused them). Throws `auth_required` when
+   * signing in fails.
+   */
+  authVariables?(opts: { signal: AbortSignal; force?: boolean }): Promise<AuthVariables>
+}
+
+export interface AuthVariables {
+  /** Evaluates the inside of a `{{ }}` with `auth` (the flow's variables) in scope. */
+  evaluate: Evaluate
+  /** The variables' values, scrubbed from what queries return. */
+  secrets: string[]
 }
 
 export interface QueryResult {

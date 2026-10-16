@@ -1,0 +1,166 @@
+import { createHash } from 'node:crypto'
+import {
+  type AuthVariables,
+  type CredentialSource,
+  type FlowSandbox,
+  type RestConfig,
+  type RestSecrets,
+  runAuthFlow,
+} from '@ow/connectors'
+import { type Keyring, secretStrings } from '@ow/crypto'
+import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
+import { and, eq, isNull, sql } from 'drizzle-orm'
+import { v7 as uuidv7 } from 'uuid'
+import { decryptForRow, encryptForRow } from './secrets'
+
+type CustomAuth = Extract<RestConfig['auth'], { type: 'custom' }>
+
+/** What a custom flow's row in `oauth_tokens` holds once decrypted. */
+interface StoredVariables {
+  variables: Record<string, unknown>
+}
+
+/** Variables this close to their `ttlSeconds` are signed in for again before use. */
+const EXPIRY_MARGIN_MS = 5_000
+const EXPRESSION_TIMEOUT_MS = 5_000
+
+/**
+ * Identifies a custom flow: its steps and the base URL its requests go to. Variables signed in for with another
+ * flow aren't used (the next query signs in again).
+ */
+export function customFlowHash(config: RestConfig): string {
+  const auth = config.auth as CustomAuth
+  const flow = [config.baseUrl, auth.steps, auth.refreshSteps]
+  return createHash('sha256').update(JSON.stringify(flow)).digest('base64url')
+}
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+/**
+ * A custom auth flow's variables for one resource config, shared by every query (flows run without a person, so
+ * there are no per-user variables).
+ *
+ * Signed in on first use, again when `ttlSeconds` runs out, and refreshed when an API answers 401: the refresh steps
+ * when there are some (starting from the current variables, merged over them), otherwise (or if they fail) the
+ * sign-in steps. Signing in happens under a transaction-scoped advisory lock per config, so processes don't sign in
+ * at once; whoever waited uses what the other stored. The variables are stored encrypted like OAuth tokens.
+ *
+ * `store: false` keeps the variables in this source only (Test connection with unsaved settings).
+ */
+export function customAuthCredentials(
+  deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
+  target: {
+    resourceConfigId: string
+    environmentId: string
+    config: RestConfig
+    secrets: RestSecrets
+    store: boolean
+  },
+): CredentialSource {
+  const { db, keyring, sandbox } = deps
+  const auth = target.config.auth as CustomAuth
+  const flowHash = customFlowHash(target.config)
+  const resource = { config: target.config, secrets: target.secrets }
+
+  const view = (variables: Record<string, unknown>): AuthVariables => ({
+    evaluate: (code) =>
+      sandbox.evalExpression(code, { auth: variables }, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
+    secrets: secretStrings(variables),
+  })
+  const expiresAt = () => (auth.ttlSeconds ? new Date(Date.now() + auth.ttlSeconds * 1000) : null)
+
+  /** Signs in again: the refresh steps from `previous` when asked and possible, else (or if they fail) the steps. */
+  async function signIn(
+    signal: AbortSignal,
+    previous: Record<string, unknown> | undefined,
+    refresh: boolean,
+  ) {
+    if (refresh && previous && auth.refreshSteps.length) {
+      try {
+        const renewed = await runAuthFlow(resource, auth.refreshSteps, { sandbox, signal, previous })
+        return { ...previous, ...renewed }
+      } catch (err) {
+        if (signal.aborted) throw err
+        // The refresh didn't work (its token expired too, say): sign in from scratch.
+      }
+    }
+    return runAuthFlow(resource, auth.steps, { sandbox, signal })
+  }
+
+  if (!target.store) {
+    let memory: { variables: Record<string, unknown>; until: Date | null } | undefined
+    return {
+      async authVariables({ signal, force }) {
+        const fresh = memory && (!memory.until || memory.until.getTime() > Date.now() + EXPIRY_MARGIN_MS)
+        if (!memory || force || !fresh) {
+          memory = { variables: await signIn(signal, memory?.variables, !!force), until: expiresAt() }
+        }
+        return view(memory.variables)
+      },
+    }
+  }
+
+  const usable = (row: OAuthToken | undefined): row is OAuthToken =>
+    !!row &&
+    row.consentHash === flowHash &&
+    row.status === 'active' &&
+    (!row.expiresAt || row.expiresAt.getTime() > Date.now() + EXPIRY_MARGIN_MS)
+  const decrypt = (row: OAuthToken) =>
+    decryptForRow<StoredVariables>(keyring, 'oauth_tokens', row, row.tokens).variables
+  const load = async (q: Db | Tx) => {
+    const [row] = await q
+      .select()
+      .from(oauthTokens)
+      .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), isNull(oauthTokens.userId)))
+    return row
+  }
+
+  return {
+    async authVariables({ signal, force }) {
+      const seen = await load(db)
+      if (!force && usable(seen)) return view(decrypt(seen))
+
+      const variables = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`ow_custom_auth:${target.resourceConfigId}`}, 0))`,
+        )
+        const row = await load(tx)
+        // Someone signed in or refreshed while this waited (for a refresh: the row changed since it was read).
+        const changed = !seen || !row || row.updatedAt.getTime() !== seen.updatedAt.getTime()
+        if (usable(row) && (!force || changed)) return decrypt(row)
+
+        const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
+        const next = await signIn(signal, previous, !!force)
+        const values = {
+          expiresAt: expiresAt(),
+          status: 'active' as const,
+          lastError: null,
+          consentHash: flowHash,
+          refreshedAt: new Date(),
+          updatedAt: new Date(),
+        }
+        const id = row?.id ?? uuidv7()
+        const tokens = encryptForRow(keyring, 'oauth_tokens', { id, environmentId: target.environmentId }, {
+          variables: next,
+        } satisfies StoredVariables)
+        if (row) {
+          await tx
+            .update(oauthTokens)
+            .set({ ...values, tokens })
+            .where(eq(oauthTokens.id, row.id))
+        } else {
+          await tx.insert(oauthTokens).values({
+            id,
+            resourceConfigId: target.resourceConfigId,
+            environmentId: target.environmentId,
+            userId: null,
+            tokens,
+            ...values,
+          })
+        }
+        return next
+      })
+      return view(variables)
+    },
+  }
+}

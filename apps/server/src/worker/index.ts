@@ -1,6 +1,7 @@
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { Dispatcher, RetentionJob, Scheduler } from '@ow/engine'
+import { IvmRuntime } from '@ow/sandbox'
 import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
@@ -25,12 +26,14 @@ export async function startWorker(deps: {
   const metrics = deps.metrics ?? new Metrics(db)
   const pool = new PoolManager()
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
+  // For custom auth flows (sign-in steps' code and templates); runs get sandboxes of their own.
+  const authSandbox = new IvmRuntime()
   const dispatcher = new Dispatcher({
     db,
     listener: sql,
     pool,
     fetcher,
-    resources: dbResourceProvider(db, config.keyring),
+    resources: dbResourceProvider(db, config.keyring, authSandbox),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WORKER_CONCURRENCY,
     log: log.child({ component: 'dispatcher' }),
@@ -59,6 +62,7 @@ export async function startWorker(deps: {
       await dispatcher.stop()
       await pool.closeAll()
       await fetcher.close()
+      authSandbox.dispose()
     },
   }
 }

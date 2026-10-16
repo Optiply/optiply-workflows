@@ -282,7 +282,11 @@ export async function runAppQuery(
   try {
     const resolved = toResolved(deps.keyring, row)
     // Apps always have a person behind them: per-user resources use the viewer's own account.
-    const credentials = credentialsFor({ db, keyring: deps.keyring }, resolved, user.id)
+    const credentials = credentialsFor(
+      { db, keyring: deps.keyring, sandbox: deps.sandbox },
+      resolved,
+      user.id,
+    )
     const result = await runQuery(deps.pool, connector, resolved, query.query, {
       evaluate,
       ...(credentials && { credentials }),

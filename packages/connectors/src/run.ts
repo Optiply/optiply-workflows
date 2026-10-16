@@ -103,12 +103,25 @@ function scrubbing(
   source: CredentialSource | undefined,
 ): { secrets: string[]; credentials: CredentialSource | undefined } {
   const secrets = secretStrings(resource.secrets)
-  const credentials = source && {
-    async accessToken(opts: Parameters<CredentialSource['accessToken']>[0]) {
-      const token = await source.accessToken(opts)
-      secrets.push(token)
-      return token
-    },
+  let credentials: CredentialSource | undefined
+  if (source) {
+    credentials = {}
+    if (source.accessToken) {
+      const accessToken = source.accessToken.bind(source)
+      credentials.accessToken = async (opts) => {
+        const token = await accessToken(opts)
+        secrets.push(token)
+        return token
+      }
+    }
+    if (source.authVariables) {
+      const authVariables = source.authVariables.bind(source)
+      credentials.authVariables = async (opts) => {
+        const variables = await authVariables(opts)
+        secrets.push(...variables.secrets)
+        return variables
+      }
+    }
   }
   return { secrets, credentials }
 }

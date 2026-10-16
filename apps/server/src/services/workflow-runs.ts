@@ -33,6 +33,7 @@ import {
   type ResourceProvider,
   type RunContextProvider,
 } from '@ow/engine'
+import type { CodeRuntime } from '@ow/sandbox'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
@@ -310,7 +311,8 @@ async function draftSnapshot(db: Db, workflowId: string, userId: string) {
 }
 
 /** Resources for the worker: looked up by slug, with secrets decrypted for the run's environment. */
-export function dbResourceProvider(db: Db, keyring: Keyring): ResourceProvider {
+/** `sandbox` runs custom auth flows' code and templates (not the runs' own code: each run has its own). */
+export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntime): ResourceProvider {
   return {
     async resolve(slug, environmentId, opts) {
       const [resource] = await db.select().from(resources).where(eq(resources.slug, slug))
@@ -328,7 +330,7 @@ export function dbResourceProvider(db: Db, keyring: Keyring): ResourceProvider {
       return {
         connector,
         resource: resolved,
-        credentials: credentialsFor({ db, keyring }, resolved, opts?.actingUserId ?? null),
+        credentials: credentialsFor({ db, keyring, sandbox }, resolved, opts?.actingUserId ?? null),
       }
     },
   }

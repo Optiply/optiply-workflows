@@ -58,7 +58,7 @@ export async function buildApp(deps: {
     db,
     pool: services.pool,
     fetcher,
-    resources: dbResourceProvider(db, config.keyring),
+    resources: dbResourceProvider(db, config.keyring, services.sandbox),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     listener: deps.listener,
