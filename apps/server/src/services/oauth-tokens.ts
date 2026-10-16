@@ -203,9 +203,9 @@ export function oauthCredentials(
   const fresh = (row: OAuthToken) => !row.expiresAt || row.expiresAt.getTime() > Date.now() + EXPIRY_MARGIN_MS
 
   const check = (row: OAuthToken | undefined): OAuthToken => {
-    if (!row) throw notConnected(target.userId)
+    if (!row) throw notConnected(target)
     const problem = problemOf(row, currentConsent)
-    if (problem) throw mustReconnect(target.userId, problem)
+    if (problem) throw mustReconnect(target, problem)
     return row
   }
 
@@ -279,7 +279,7 @@ export function oauthCredentials(
         userId: target.userId,
       },
     })
-    throw mustReconnect(target.userId, refusal!.reason)
+    throw mustReconnect(target, refusal!.reason)
   }
 
   return {
@@ -320,7 +320,12 @@ export function credentialsFor(
         throw new ConnectorError(
           'auth_required',
           "This resource uses each person's own account, and nobody is behind this run. Use a resource with a shared account in workflows that run on their own.",
-          { reason: 'no_user', account: 'user' },
+          {
+            reason: 'no_user',
+            account: 'user',
+            resourceId: resource.resourceId,
+            environmentId: resource.environmentId,
+          },
         )
       },
     }
@@ -337,26 +342,36 @@ export function credentialsFor(
   })
 }
 
-function notConnected(userId: string | null): ConnectorError {
+/** What the UI needs to offer a Connect button: whose account, and for which resource and environment. */
+function authDetails(target: CredentialTarget, reason: string) {
+  return {
+    reason,
+    account: target.userId === null ? 'shared' : 'user',
+    resourceId: target.resourceId,
+    environmentId: target.environmentId,
+  }
+}
+
+function notConnected(target: CredentialTarget): ConnectorError {
   return new ConnectorError(
     'auth_required',
-    userId === null
+    target.userId === null
       ? "No account is connected to this resource in this environment. Connect one in the resource's settings."
       : 'Connect your account to this resource to use it.',
-    { reason: 'not_connected', account: userId === null ? 'shared' : 'user' },
+    authDetails(target, 'not_connected'),
   )
 }
 
-function mustReconnect(userId: string | null, reason: string): ConnectorError {
+function mustReconnect(target: CredentialTarget, reason: string): ConnectorError {
   const why =
     reason === 'settings_changed'
       ? "the resource's OAuth settings changed since it was connected"
       : `the provider no longer accepts it (${reason})`
   return new ConnectorError(
     'auth_required',
-    userId === null
+    target.userId === null
       ? `The account connected to this resource must be connected again: ${why}.`
       : `Connect your account to this resource again: ${why}.`,
-    { reason, account: userId === null ? 'shared' : 'user' },
+    authDetails(target, reason),
   )
 }

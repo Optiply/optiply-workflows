@@ -4,6 +4,7 @@ import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
+import { NeededConnections } from './connections'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from './runtime/react'
 
@@ -163,6 +164,7 @@ function AppBody({ definition }: { definition: AppDefinition }) {
           </Button>
         </div>
       )}
+      <NeededConnections />
       <AppCanvas definition={definition} />
     </>
   )

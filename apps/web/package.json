@@ -16,6 +16,7 @@
     "@monaco-editor/react": "4.7.0",
     "@ow/app-definition": "workspace:*",
     "@ow/app-runtime": "workspace:*",
+    "@ow/connectors": "workspace:*",
     "@ow/definition": "workspace:*",
     "@ow/sandbox": "workspace:*",
     "@tanstack/react-query": "5.104.2",

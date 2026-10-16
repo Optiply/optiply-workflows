@@ -4,6 +4,7 @@ import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
+import { OAuthCodeFields, OAuthConnections } from './oauth'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -84,10 +85,13 @@ export function SettingsPanel({
   resource,
   environmentId,
   canEdit,
+  onSaved,
 }: {
   resource: ResourceDetail
   environmentId: string
   canEdit: boolean
+  /** After a save (the page stays on Settings: a first save would otherwise switch it to Query). */
+  onSaved?: () => void
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -102,11 +106,16 @@ export function SettingsPanel({
     Promise.all([
       queryClient.invalidateQueries({ queryKey: trpc.resources.get.queryKey({ id: resource.id }) }),
       queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
+      // Saving other consent settings disconnects accounts.
+      queryClient.invalidateQueries({
+        queryKey: trpc.resources.oauthConnections.queryKey({ resourceId: resource.id }),
+      }),
     ])
   const save = useMutation(
     trpc.resources.saveConfig.mutationOptions({
       onSuccess: async () => {
         setEdits({})
+        onSaved?.()
         await refresh()
       },
     }),
@@ -142,7 +151,7 @@ export function SettingsPanel({
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
-          <RestFields {...props} />
+          <RestFields {...props} resourceId={resource.id} />
         )}
       </Card>
 
@@ -178,9 +187,12 @@ export function SettingsPanel({
               · {test.data.durationMs} ms
             </p>
           )}
-          {test.data && !test.data.ok && <ConnectorErrorNote error={test.data.error} />}
+          {test.data && !test.data.ok && (
+            <ConnectorErrorNote error={test.data.error} onConnected={() => test.mutate(request)} />
+          )}
         </div>
       )}
+      {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
     </div>
   )
 }
@@ -395,7 +407,15 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+function RestFields({
+  config,
+  set,
+  secrets,
+  edits,
+  setEdit,
+  disabled,
+  resourceId,
+}: FieldsProps & { resourceId: string }) {
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -440,6 +460,9 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
             set('auth', {
               type: e.target.value,
               ...(e.target.value === 'apiKey' ? { in: 'header', name: 'X-API-Key' } : {}),
+              ...(e.target.value === 'oauth2AuthorizationCode'
+                ? { provider: 'custom', scope: '', authorizeParams: [], pkce: true, tokens: 'shared' }
+                : {}),
             })
           }
         >
@@ -448,6 +471,7 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
           <option value="bearer">Bearer token</option>
           <option value="basic">Basic auth</option>
           <option value="oauth2ClientCredentials">OAuth 2.0 client credentials</option>
+          <option value="oauth2AuthorizationCode">OAuth 2.0 sign-in (authorization code)</option>
         </Select>
       </Field>
       {auth.type === 'apiKey' && (
@@ -472,6 +496,16 @@ function RestFields({ config, set, secrets, edits, setEdit, disabled }: FieldsPr
           {authText('username', 'Username')}
           {secret('password', 'Password')}
         </Grid>
+      )}
+      {auth.type === 'oauth2AuthorizationCode' && (
+        <OAuthCodeFields
+          resourceId={resourceId}
+          config={config}
+          set={set}
+          auth={auth}
+          clientSecret={secret('clientSecret', 'Client secret')}
+          disabled={disabled}
+        />
       )}
       {auth.type === 'oauth2ClientCredentials' && (
         <Grid>

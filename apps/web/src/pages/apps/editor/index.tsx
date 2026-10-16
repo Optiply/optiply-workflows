@@ -6,6 +6,7 @@ import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
+import { NeededConnections } from '../connections'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
@@ -253,7 +254,12 @@ function Running({ children }: { children: React.ReactNode }) {
   const problem = useAppHostState((s) => s.problem)
   if (status === 'failed') return <ErrorNote error={new Error(problem ?? 'The app could not start')} />
   if (status === 'loading') return <Spinner />
-  return <>{children}</>
+  return (
+    <>
+      <NeededConnections />
+      {children}
+    </>
+  )
 }
 
 const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {

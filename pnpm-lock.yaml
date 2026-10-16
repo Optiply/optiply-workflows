@@ -133,6 +133,9 @@ importers:
       '@ow/app-runtime':
         specifier: workspace:*
         version: link:../../packages/app-runtime
+      '@ow/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors
       '@ow/definition':
         specifier: workspace:*
         version: link:../../packages/definition
