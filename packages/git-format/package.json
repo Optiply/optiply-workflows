@@ -1,0 +1,22 @@
+{
+  "name": "@ow/git-format",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ow/app-definition": "workspace:*",
+    "@ow/definition": "workspace:*",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "vitest": "5.0.4"
+  }
+}
