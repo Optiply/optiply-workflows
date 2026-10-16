@@ -6,9 +6,9 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
 
 | | |
 |---|---|
-| **Branch** | `feat/m9-oauth` (7 steps, plus a handoff fix on top of `main`) |
-| **PR** | [#10 M9: OAuth authorization code and custom auth flows](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10), **draft, not merged**: review it first (as for PRs #8 and #9); CI green on every step |
-| **`main`** | `fe0c65d` (M8 merged as `35150aa` plus its handoff). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `fix/m9-review` (the PR #10 review fixes). M9 was built on `feat/m9-oauth` (7 steps) |
+| **PR** | [#10 M9](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/10) **merged** as `ec3dba2` before its review fixes were committed; they are [#11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/11), **open**: merge it (with a merge commit) before anything else |
+| **`main`** | `ec3dba2`, the merge of PR #10 (M9 without the review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -28,10 +28,10 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
 | **M6 Hardening** | ✅ On `main` (§9), merged in session 7 after a review pass (7 fixes, `41cad4a`) |
 | **M7 Database** | ✅ On `main` (§9a), merged at the start of session 8 |
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
-| **M9 OAuth** | ✅ Built on `feat/m9-oauth` (§9c), draft PR #10, **not reviewed or merged yet**. The done-when proven in Playwright and on Docker Compose. |
-| M10 | ⏭️ After merging M9: plan it with the user (§14) |
+| **M9 OAuth** | ✅ On `main` (§9c), merged as PR #10; **its review fixes are PR #11** (10 fixes, one of them security: tokens could be sent to another host), to merge. The done-when proven in Playwright and on Docker Compose. |
+| M10 | ⏭️ After merging PR #11: plan it with the user (§14) |
 
-**Start the next session with:** reviewing PR #10 (the `code-review` skill at high effort, verify each finding, fix them in one commit, as for PRs #8 and #9), then merging it with a merge commit and planning M10 (§14).
+**Start the next session with:** merging PR #11 if it isn't yet (CI green), rebuilding the Compose stack with it (check with the user first), then planning M10 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -219,15 +219,16 @@ Last updated: 2026-10-16 (end of session 9, which built M9).
   - **Custom auth flows are part of M9.**
   - **Presets for Google, HubSpot, Slack and Microsoft 365.** No live provider check yet: the user had no OAuth app credentials (§12).
 - **One callback for every resource:** `<PUBLIC_URL>/api/oauth/callback`. State, the PKCE verifier, the person and the consent fingerprint sit in a signed HttpOnly cookie named after the state (`ow_oauth_<state[:16]>`, path `/api/oauth`, 10 min, SameSite=Lax); the callback needs it, the same state and the same person's session, and re-checks access and the consent settings. The flow ends on a server-rendered page that posts `ow:oauth` to the opener (`PUBLIC_URL`'s origin only) and closes; the web app opens it in a popup (`lib/oauth.ts`).
-- **Access:** connecting or disconnecting the shared account needs Edit on the resource in that environment; one's own needs Use. A resource is either shared or per-user, never both.
+- **Access:** connecting or disconnecting the shared account needs Edit on the resource in that environment; one's own needs Use, or Use on an app whose live release queries the resource (`appId`; app viewers have no resource access). A resource is either shared or per-user, never both.
 - **Connectors never hold user tokens:** `QueryContext.credentials` (`CredentialSource`: `accessToken({ force })` for OAuth, `authVariables({ force })` for custom flows) is supplied by the server (`credentialsFor` in `services/oauth-tokens.ts`); `runQuery` scrubs everything it hands out. A 401 forces one refresh and a retry.
-- **Storage:** `oauth_tokens` (migration `0013`), encrypted JSON in `tokens` (AAD `oauth_tokens:<id>:<env>`; in `ENCRYPTED_COLUMNS`, so `rekey`/`verify-secrets` cover it). OAuth refreshes run under the row's `FOR UPDATE` lock, custom flows under a transaction-scoped advisory lock per config; the one that waited uses what the other stored. The lock and a pooled connection are held during the provider call (bounded by the query timeout).
+- **Storage:** `oauth_tokens` (migration `0013`), encrypted JSON in `tokens` (AAD `oauth_tokens:<id>:<env>`; in `ENCRYPTED_COLUMNS`, so `rekey`/`verify-secrets` cover it). Refreshes, sign-ins and connects take a transaction-scoped advisory lock per owner (`withRefreshLock` in `services/refresh-lock.ts`): waiters try the lock and sleep outside any transaction, so only the one refreshing holds a pooled connection (during the provider call). Whoever waited uses what the other stored; a forced refresh is skipped when the stored token or variables are no longer the ones the failing request used.
 - **Refused refreshes** (`invalid_grant` and Slack's equivalents) mark the row `reconnect`, committed, and are audited (`resource.oauth_refresh_failed`); other provider errors leave it. No refresh token: an expired token needs a reconnect; a refused one is sent back unchanged (the API's own 401 shows).
-- **Consent fingerprint** (`consentHash`): authorize and token URLs, client ID, trimmed scopes, sorted non-empty consent parameters (not the secret, PKCE or client auth); for custom flows (`customFlowHash`) the base URL and the steps. `saveConfig` deletes the config's tokens when it changes; reads refuse a mismatch too.
+- **Consent fingerprint** (`consentHash`): authorize and token URLs, client ID, trimmed scopes, sorted non-empty consent parameters, the token mode, and **where tokens go** (the base URL's origin and the allowed hosts), not the secret, PKCE or client auth; for custom flows (`customFlowHash`) the base URL, allowed hosts and the steps. `saveConfig` deletes the config's tokens when it changes; reads (and tests of unsaved settings) refuse a mismatch, so nobody with Edit can point a resource elsewhere and receive its token.
 - **Whose account:** the engine got `actingUserId` (the person who started a draft run; null for runs of a release); app queries use the viewer; the playground the caller. Publishing and rollback refuse workflows querying a per-user resource in any environment.
 - **`auth_required` errors** carry `{ reason, account: shared|user, resourceId, environmentId }`; the UI turns them into Connect / Reconnect prompts (`components/auth-required.tsx`), and apps re-run their failed **automatic** queries after connecting (manual ones wait for the person).
-- **Custom flows:** steps `request` (a REST query through the resource's base URL, allowed hosts and network settings, without its default headers, parameters or auth), `code` (sandbox, 30 s), `variable` (`auth.<name>`); `secrets.NAME` from the new secret `values`; refresh steps merged over the current variables, falling back to signing in; `ttlSeconds`; one shared set of variables per config (no per-user flows, no form step). Each process has a sandbox for flows (the API's; the worker creates one).
-- **Token endpoints don't follow redirects** (they weren't host-checked before; this changed client credentials too), and a string `expires_in` is read as a number.
+- **Custom flows:** steps `request` (a REST query through the resource's base URL, allowed hosts and network settings, without its default headers, parameters or auth), `code` (sandbox, 30 s), `variable` (`auth.<name>`; `secret: false` keeps it out of the scrubbing, for values like a tenant id); `secrets.NAME` from the new secret `values`; refresh steps merged over the current variables, falling back to signing in; `ttlSeconds`; one shared set of variables per config (no per-user flows, no form step). Each process has a sandbox for flows (the API's; the worker creates one).
+- **REST requests are assembled the same way for every auth type** (`prepareAttempt`, `attemptHeaders`, `attemptUrl`): the resource's default headers and parameters (rendered with `auth` for custom flows), the secret headers, the query's own (which override the defaults), then the credentials. On a cross-origin redirect, credentials and defaults that use `auth` are dropped.
+- **Token endpoints follow redirects on the same origin only** (re-sending the POST; at most 5): the request carries the client secret. Before M9, client credentials followed any redirect. A string `expires_in` is read as a number.
 
 ## 3. What M0 built (on `main`)
 
@@ -538,8 +539,21 @@ The `custom` auth type, `auth-flow.ts` (`runAuthFlow`), per-attempt `authMateria
 ### Step 7 (this commit): custom flow UI, done-when, Compose check, docs
 `pages/resources/custom-auth.tsx` (secret values, sign-in and refresh steps, the sign-in-again interval; `SecretRecord` generalizes the secret headers editor), `e2e/m9-done-when.spec.ts`, the second e2e user, README ("Signing in to APIs"), `architecture.md` §2.3/§2.5/§2.7/§2.8/§2.12, this file.
 
+### Review fixes (before merging)
+The `code-review` skill (high) on PR #10 found 10 issues; each was checked against the code and all 10 held:
+- **Tokens could be sent elsewhere:** the consent fingerprint didn't cover where requests go, so someone with Edit could test (or save) settings pointing at their own host and receive the connected account's token. It now covers the base URL's origin and the allowed hosts (custom flows too).
+- **App viewers couldn't connect their own account** on a per-user resource they have no grant on, though app queries would use it: `/api/oauth/start` and `oauthDisconnect` take `appId` (Use on an app whose live release queries the resource); the app banner passes it.
+- **Switching shared ↔ per-user kept the other mode's tokens** (an old shared token came back when switching back): the token mode is in the fingerprint.
+- **Waiters held pooled connections** while one process called a slow provider under a lock: `withRefreshLock` (try, sleep outside the transaction) for OAuth refreshes, custom sign-ins and connects.
+- **A custom flow's forced refresh** compared with the row read at refresh time, not the variables the failing request used, so it could sign in again after someone else had: it now tracks what it handed out (like OAuth's last token).
+- **Two connects at once** for the same owner could hit the unique constraint (a 500): connects take the owner's lock.
+- **With custom auth the resource's default headers overrode the query's own**, and custom auth was special-cased in three places: one assembly for every auth type (above).
+- **Every custom variable was scrubbed**, corrupting results containing a non-secret value: `secret: false` per variable (a checkbox in the editor).
+- **Token endpoints that redirect** (a trailing slash) stopped working: same-origin redirects are followed.
+Tests: 6 server tests (connecting through an app, testing settings that send elsewhere, base URL / allowed hosts / mode changes disconnecting, no lock waits in `pg_locks` during a slow refresh, a connect waiting for the owner's lock, a late refresh, non-secret variables), 2 connector tests (header precedence, token redirects); each fix mutation-checked. Correction: step 1 added 21 tests (16 in `oauth.test.ts`, 5 REST), not 27.
+
 ### Totals at the end of M9
-`biome ci` is clean. Typecheck passes **11/11**. **843 tests pass** (server 223, engine 139, connectors 136, definition 124, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **18 Playwright e2e**.
+`biome ci` is clean. Typecheck passes **11/11**. **848 tests pass** after the review fixes (server 226, engine 139, connectors 138, definition 124, expressions 93, app-definition 41, crypto 25, db 20, sandbox 19, app-runtime 15, web 8), plus the two benchmarks and **18 Playwright e2e**.
 
 Bundles: main 425 kB (414 before M9).
 
@@ -604,7 +618,7 @@ Bundles: main 425 kB (414 before M9).
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
-- **At the end of session 9** the Compose stack was left running on the M9 image (step 7, before any PR #10 review fixes: rebuild after merging). The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
+- **At the end of session 9** the Compose stack was left running on the M9 image from step 7, **without the PR #10 review fixes** (rebuild after merging, checking with the user first). The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
 - **At the end of session 8** the Compose stack was left running on the image of `main` (`fe0c65d`, M8 with the review fixes).
 - **At the end of session 7** the Compose stack was left running on the M7 step 7 image (the user's `cancel-me` schedule still fires hourly). **At the end of session 6** the Compose stack was left running (the user's `cancel-me` schedule is active; private-network fetch off); stop it with `docker compose down` (add `-v` to drop its database). The dev database (still at migration `0003`) and dev servers weren't started this session.
 
@@ -676,14 +690,14 @@ Bundles: main 425 kB (414 before M9).
   - Disconnecting doesn't revoke the token at the provider.
   - A custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
   - No per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows (Test connection signs in).
-  - Refreshes hold a pooled connection and a lock while calling the provider.
+  - The process refreshing holds a pooled connection (and the lock) while calling the provider; waiters don't.
   - Code steps of custom flows run in a sandbox shared by the process (the API's, or the worker's own), not the run's.
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: review and merge M9, then M10
+## 14. Next step: merge PR #11, then M10
 
-First review PR #10 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
+First merge PR #11 (§1). Then, from `architecture.md` §2.7, M10+ is a list to choose from; decide with the user which comes first:
 - **Python executor** (nsjail) for code blocks.
 - **SQS/Kafka triggers** for workflows.
 - **Git sync** (canonical JSON already exists for workflows and apps).
@@ -696,7 +710,7 @@ Also open from M8, if the user prefers to finish apps first: the sandbox off the
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m9-oauth && git pull            # M9 (PR #10) is in review; after merging: git switch main && git pull
+git switch main && git pull                      # after merging PR #11 (M9's review fixes)
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433

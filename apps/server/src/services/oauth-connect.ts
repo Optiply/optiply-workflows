@@ -1,9 +1,17 @@
 import { type AuthorizationCodeSettings, restConnector } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
-import { type Db, type Resource, type ResourceConfig, resourceConfigs, resources } from '@ow/db'
+import {
+  appReleases,
+  apps,
+  type Db,
+  type Resource,
+  type ResourceConfig,
+  resourceConfigs,
+  resources,
+} from '@ow/db'
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../config'
-import { atLeast, loadAccess } from './permissions'
+import { type Access, atLeast, loadAccess } from './permissions'
 import { decryptConfigSecrets } from './resources'
 
 /** Whose account a connect or disconnect is about: the resource's shared one, or the signed-in person's. */
@@ -36,19 +44,27 @@ export interface ConnectTarget {
 
 /**
  * Checks that `user` may connect (or disconnect) this account and returns what the flow needs. The shared account
- * needs Edit on the resource in the environment (it acts for everyone); one's own account needs Use. The resource
- * must be a REST resource using the authorization code with the matching kind of tokens.
+ * needs Edit on the resource in the environment (it acts for everyone); one's own account needs Use, or Use on an
+ * app (`appId`) whose live release queries the resource: app viewers run its queries without access to the
+ * resource, so they must be able to connect the account those queries use. The resource must be a REST resource
+ * using the authorization code with the matching kind of tokens.
  */
 export async function connectTarget(
   db: Db,
   keyring: Keyring,
   user: { id: string; isAdmin: boolean },
-  input: { resourceId: string; environmentId: string; account: AccountKind },
+  input: { resourceId: string; environmentId: string; account: AccountKind; appId?: string | undefined },
 ): Promise<ConnectTarget> {
   const access = await loadAccess(db, user)
   const [resource] = await db.select().from(resources).where(eq(resources.id, input.resourceId))
   const level = resource ? access.level(resource, input.environmentId) : null
-  if (!resource || !level) throw new OAuthConnectError(404, 'Resource not found')
+  const throughApp =
+    !!resource &&
+    !level &&
+    input.account === 'mine' &&
+    !!input.appId &&
+    (await liveAppQueries(db, access, input.appId, resource.slug))
+  if (!resource || (!level && !throughApp)) throw new OAuthConnectError(404, 'Resource not found')
   if (resource.type !== restConnector.type) {
     throw new OAuthConnectError(400, 'Only REST resources connect accounts')
   }
@@ -90,6 +106,14 @@ export async function connectTarget(
   }
 }
 
+/** Whether the user may use the app and its live release queries the resource (by slug). */
+async function liveAppQueries(db: Db, access: Access, appId: string, resourceSlug: string): Promise<boolean> {
+  const [app] = await db.select().from(apps).where(eq(apps.id, appId))
+  if (!app?.liveReleaseId || !access.appLevel(app)) return false
+  const [release] = await db.select().from(appReleases).where(eq(appReleases.id, app.liveReleaseId))
+  return !!release?.definition.queries.some((q) => q.kind === 'resource' && q.resource === resourceSlug)
+}
+
 /** What the start route keeps (signed, in a cookie of its own) for the callback. */
 export interface PendingConnect {
   state: string
@@ -98,6 +122,8 @@ export interface PendingConnect {
   resourceId: string
   environmentId: string
   account: AccountKind
+  /** The app the person connects through, when they have no access to the resource itself. */
+  appId?: string
   /** Who started: the callback must come back in the same person's session. */
   userId: string
   /** The consent settings at the start: if they change before the callback, the code is for other settings. */

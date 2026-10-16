@@ -151,6 +151,9 @@ const GRANT_ERRORS = new Set([
 
 const ERROR_BODY_PREVIEW = 2000
 
+/** Redirects a token request follows (same origin only), re-sending the POST. */
+const TOKEN_REDIRECTS = new Set([301, 302, 307, 308])
+
 let guardedAgent: Agent | undefined
 let openAgent: Agent | undefined
 
@@ -192,18 +195,32 @@ async function requestToken(
   }
   const dispatcher = opts.dispatcher ?? sharedAgent(opts.allowPrivateNetwork)
 
+  // Redirects are followed by hand, and only on the same origin: the request carries the client secret, and a
+  // token URL answered with a redirect is usually a trailing slash (`/oauth/token` → `/oauth/token/`).
   let res: Response
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: form.toString(),
-      signal: opts.signal,
-      redirect: 'error',
-      dispatcher,
-    })
-  } catch (err) {
-    throw networkError(err, url)
+  let current = url
+  for (let hop = 0; ; hop++) {
+    try {
+      res = await fetch(current, {
+        method: 'POST',
+        headers,
+        body: form.toString(),
+        signal: opts.signal,
+        redirect: 'manual',
+        dispatcher,
+      })
+    } catch (err) {
+      throw networkError(err, current)
+    }
+    const location = res.headers.get('location')
+    if (!TOKEN_REDIRECTS.has(res.status) || !location) break
+    await res.body?.cancel()
+    const next = new URL(location, current)
+    if (next.origin !== url.origin) {
+      throw new ConnectorError('http', `The OAuth2 token URL redirects to another origin (${next.origin})`)
+    }
+    if (hop >= 4) throw new ConnectorError('http', 'The OAuth2 token URL redirects too many times')
+    current = next
   }
   const text = await res.text()
   const body = parseBody(text, res.headers.get('content-type'))

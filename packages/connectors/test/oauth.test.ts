@@ -37,7 +37,16 @@ beforeAll(async () => {
     for await (const chunk of req) body += chunk
     const url = new URL(req.url ?? '/', 'http://x')
     if (url.pathname === '/moved') {
-      res.writeHead(307, { location: '/token' })
+      res.writeHead(308, { location: '/token' })
+      return res.end()
+    }
+    if (url.pathname === '/elsewhere') {
+      // Same server, another origin (localhost instead of 127.0.0.1).
+      res.writeHead(307, { location: `http://localhost:${(server.address() as AddressInfo).port}/token` })
+      return res.end()
+    }
+    if (url.pathname === '/loop') {
+      res.writeHead(302, { location: '/loop' })
       return res.end()
     }
     const request = { form: new URLSearchParams(body), headers: req.headers }
@@ -225,7 +234,7 @@ describe('exchanging the code', () => {
     ).toBe('OAuth2 token response is not JSON')
   })
 
-  it('refuses private token URLs unless the resource allows them, and redirects', async () => {
+  it('refuses private token URLs unless the resource allows them', async () => {
     const blocked = await failure(
       exchangeCode(
         settings(),
@@ -245,12 +254,33 @@ describe('exchanging the code', () => {
       ),
     )
     expect(named).toMatchObject({ code: 'blocked', message: expect.stringMatching(/private address/) })
-
-    const moved = await failure(
-      exchangeCode(settings({ tokenUrl: `${origin}/moved` }), 'cs', { code: 'c', redirectUri: 'r' }, opts()),
-    )
-    expect(moved.code).toBe('connection')
     expect(requests).toHaveLength(0)
+  })
+
+  it('follows redirects on the same origin only, re-sending the request', async () => {
+    const moved = await exchangeCode(
+      settings({ tokenUrl: `${origin}/moved` }),
+      'cs',
+      { code: 'c', redirectUri: 'r' },
+      opts(),
+    )
+    expect(moved.accessToken).toBe('at-1')
+    expect(requests[0]!.form.get('client_secret')).toBe('cs')
+
+    const elsewhere = await failure(
+      exchangeCode(
+        settings({ tokenUrl: `${origin}/elsewhere` }),
+        'cs',
+        { code: 'c', redirectUri: 'r' },
+        opts(),
+      ),
+    )
+    expect(elsewhere.message).toMatch(/redirects to another origin \(http:\/\/localhost:/)
+    const loop = await failure(
+      exchangeCode(settings({ tokenUrl: `${origin}/loop` }), 'cs', { code: 'c', redirectUri: 'r' }, opts()),
+    )
+    expect(loop.message).toBe('The OAuth2 token URL redirects too many times')
+    expect(requests).toHaveLength(1)
   })
 })
 

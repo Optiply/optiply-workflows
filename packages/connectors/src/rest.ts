@@ -61,7 +61,13 @@ const stepName = z
 const flowStep = z.discriminatedUnion('type', [
   querySchema.extend({ type: z.literal('request'), name: stepName }),
   z.object({ type: z.literal('code'), name: stepName, code: z.string() }),
-  z.object({ type: z.literal('variable'), name: stepName, value: z.string() }),
+  z.object({
+    type: z.literal('variable'),
+    name: stepName,
+    value: z.string(),
+    /** Scrubbed from query results like other credentials; off for values that aren't secret (a tenant id). */
+    secret: z.boolean().default(true),
+  }),
 ])
 export type AuthFlowStep = z.output<typeof flowStep>
 
@@ -229,15 +235,14 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
 
   async testConnection(client, { signal, credentials }) {
     if (client.config.auth.type === 'oauth2ClientCredentials') await getToken(client, signal, true)
-    const material = await authMaterial(client, { signal, credentials })
-    const url = new URL(client.config.baseUrl)
-    for (const [key, value] of material.params) url.searchParams.append(key, value)
+    const attempt = await prepareAttempt(client, { signal, credentials })
+    const url = attemptUrl(new URL(client.config.baseUrl), attempt, [])
     const res = await send(
       client,
       url,
-      { method: 'GET', headers: new Headers(material.headers) },
+      { method: 'GET', headers: attemptHeaders(client, attempt, []) },
       signal,
-      Object.keys(material.headers),
+      attempt.sensitive,
     )
     await res.body?.cancel()
     return { message: `HTTP ${res.status} ${res.statusText}`.trim() }
@@ -260,29 +265,22 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   },
 
   async execute(client, query, ctx): Promise<QueryResult> {
-    const url = await buildUrl(client, query, ctx)
-    const headers = new Headers()
-    // A custom auth flow's resource headers may use `auth`: they're rendered with each attempt (authMaterial).
-    if (client.config.auth.type !== 'custom') {
-      for (const { key, value } of client.config.headers) if (key) headers.set(key, value)
+    const { url, params } = await buildUrl(client, query, ctx)
+    const queryHeaders: [string, string][] = []
+    for (const { key, value } of query.headers) {
+      if (key) queryHeaders.push([key, await renderText(value, ctx.evaluate)])
     }
-    for (const [key, value] of Object.entries(client.secrets.headers)) headers.set(key, value)
-    for (const { key, value } of query.headers)
-      if (key) headers.set(key, await renderText(value, ctx.evaluate))
-    const body = await buildBody(query, headers, ctx)
+    const { body, contentType } = await buildBody(query, ctx)
 
     const started = performance.now()
     const request = async (force = false) => {
-      const material = await authMaterial(client, ctx, force)
-      for (const [k, v] of Object.entries(material.headers)) headers.set(k, v)
-      const target = new URL(url)
-      for (const [key, value] of material.params) target.searchParams.append(key, value)
+      const attempt = await prepareAttempt(client, ctx, force)
       return send(
         client,
-        target,
-        { method: query.method, headers, body },
+        attemptUrl(url, attempt, params),
+        { method: query.method, headers: attemptHeaders(client, attempt, queryHeaders, contentType), body },
         ctx.signal,
-        Object.keys(material.headers),
+        attempt.sensitive,
       )
     }
     let res = await request()
@@ -323,7 +321,12 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   },
 }
 
-async function buildUrl(client: Client, query: Query, ctx: QueryContext): Promise<URL> {
+/** The query's URL (without parameters; checked against the allowed hosts) and its rendered parameters. */
+async function buildUrl(
+  client: Client,
+  query: Query,
+  ctx: QueryContext,
+): Promise<{ url: URL; params: [string, string][] }> {
   // Untrusted values can't climb out of their segment (`../admin`) or start a query string: each is encoded.
   const evaluate: QueryContext['evaluate'] = ctx.untrustedValues
     ? async (code) => {
@@ -341,38 +344,32 @@ async function buildUrl(client: Client, query: Query, ctx: QueryContext): Promis
     url = new URL(path ? `${base}/${path.replace(/^\/+/, '')}` : base)
   }
   checkHost(client.config, url)
-  if (client.config.auth.type !== 'custom') {
-    for (const { key, value } of client.config.params) if (key) url.searchParams.append(key, value)
-  }
+  const params: [string, string][] = []
   for (const { key, value } of query.params) {
-    if (key) url.searchParams.append(key, await renderText(value, ctx.evaluate))
+    if (key) params.push([key, await renderText(value, ctx.evaluate)])
   }
-  const auth = client.config.auth
-  if (auth.type === 'apiKey' && auth.in === 'query') {
-    url.searchParams.set(auth.name, requireSecret(client.secrets.apiKey, 'API key'))
-  }
-  return url
+  return { url, params }
 }
 
-async function buildBody(query: Query, headers: Headers, ctx: QueryContext): Promise<string | undefined> {
+/** The body and the content type it implies (used unless a header sets one). */
+async function buildBody(query: Query, ctx: QueryContext): Promise<{ body?: string; contentType?: string }> {
   const body = query.body
-  const setType = (type: string) => headers.has('content-type') || headers.set('content-type', type)
   switch (body.type) {
     case 'none':
-      return undefined
+      return {}
     case 'json':
-      setType('application/json')
-      return JSON.stringify(await renderJson(body.json, ctx.evaluate))
+      return {
+        body: JSON.stringify(await renderJson(body.json, ctx.evaluate)),
+        contentType: 'application/json',
+      }
     case 'form': {
-      setType('application/x-www-form-urlencoded')
       const form = new URLSearchParams()
       for (const { key, value } of body.fields)
         if (key) form.append(key, await renderText(value, ctx.evaluate))
-      return form.toString()
+      return { body: form.toString(), contentType: 'application/x-www-form-urlencoded' }
     }
     case 'raw':
-      setType(body.contentType)
-      return renderText(body.raw, ctx.evaluate)
+      return { body: await renderText(body.raw, ctx.evaluate), contentType: body.contentType }
   }
 }
 
@@ -454,27 +451,48 @@ async function send(
   }
 }
 
-/** What authenticates one attempt of a request: headers to set and query parameters to add. */
-interface AuthMaterial {
-  headers: Record<string, string>
-  params: [string, string][]
+/**
+ * What one attempt of a request sends besides the query's own parts. Every auth type is assembled the same way
+ * (attemptHeaders, attemptUrl): the resource's defaults, then the secret headers, then the query's own, then the
+ * credentials. A custom flow only changes how the defaults are rendered (with `auth`).
+ */
+interface Attempt {
+  defaultHeaders: [string, string][]
+  defaultParams: [string, string][]
+  authHeaders: Record<string, string>
+  authParams: [string, string][]
+  /** Headers dropped on a cross-origin redirect besides the usual ones: credentials, and defaults using `auth`. */
+  sensitive: string[]
 }
 
-async function authMaterial(
+/** A template that reads the custom flow's variables. */
+const USES_AUTH = /\{\{[^}]*\bauth\b/
+
+async function prepareAttempt(
   client: Client,
   ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
   force = false,
-): Promise<AuthMaterial> {
+): Promise<Attempt> {
   const auth = client.config.auth
+  const attempt: Attempt = {
+    defaultHeaders: [],
+    defaultParams: [],
+    authHeaders: {},
+    authParams: [],
+    sensitive: [],
+  }
+  let render = async (text: string) => text
   switch (auth.type) {
     case 'oauth2ClientCredentials':
-      return { headers: { authorization: `Bearer ${await getToken(client, ctx.signal)}` }, params: [] }
+      attempt.authHeaders.authorization = `Bearer ${await getToken(client, ctx.signal)}`
+      break
     case 'oauth2AuthorizationCode': {
       if (!ctx.credentials?.accessToken) {
         throw new ConnectorError('auth_required', 'Connect an account to this resource before using it')
       }
       const token = await ctx.credentials.accessToken({ signal: ctx.signal, force })
-      return { headers: { authorization: `Bearer ${token}` }, params: [] }
+      attempt.authHeaders.authorization = `Bearer ${token}`
+      break
     }
     case 'custom': {
       if (!ctx.credentials?.authVariables) {
@@ -484,18 +502,50 @@ async function authMaterial(
         )
       }
       const { evaluate } = await ctx.credentials.authVariables({ signal: ctx.signal, force })
-      const material: AuthMaterial = { headers: {}, params: [] }
-      for (const { key, value } of client.config.headers) {
-        if (key) material.headers[key] = await renderText(value, evaluate)
-      }
-      for (const { key, value } of client.config.params) {
-        if (key) material.params.push([key, await renderText(value, evaluate)])
-      }
-      return material
+      render = (text) => renderText(text, evaluate)
+      break
     }
+    case 'apiKey':
+      if (auth.in === 'query')
+        attempt.authParams.push([auth.name, requireSecret(client.secrets.apiKey, 'API key')])
+      else Object.assign(attempt.authHeaders, authHeaders(client))
+      break
     default:
-      return { headers: authHeaders(client), params: [] }
+      Object.assign(attempt.authHeaders, authHeaders(client))
   }
+  for (const { key, value } of client.config.headers) {
+    if (!key) continue
+    attempt.defaultHeaders.push([key, await render(value)])
+    if (auth.type === 'custom' && USES_AUTH.test(value)) attempt.sensitive.push(key)
+  }
+  for (const { key, value } of client.config.params) {
+    if (key) attempt.defaultParams.push([key, await render(value)])
+  }
+  attempt.sensitive.push(...Object.keys(attempt.authHeaders))
+  return attempt
+}
+
+function attemptHeaders(
+  client: Client,
+  attempt: Attempt,
+  queryHeaders: [string, string][],
+  contentType?: string,
+): Headers {
+  const headers = new Headers()
+  for (const [key, value] of attempt.defaultHeaders) headers.set(key, value)
+  for (const [key, value] of Object.entries(client.secrets.headers)) headers.set(key, value)
+  for (const [key, value] of queryHeaders) headers.set(key, value)
+  if (contentType && !headers.has('content-type')) headers.set('content-type', contentType)
+  for (const [key, value] of Object.entries(attempt.authHeaders)) headers.set(key, value)
+  return headers
+}
+
+function attemptUrl(base: URL, attempt: Attempt, queryParams: [string, string][]): URL {
+  const url = new URL(base)
+  for (const [key, value] of attempt.defaultParams) url.searchParams.append(key, value)
+  for (const [key, value] of queryParams) url.searchParams.append(key, value)
+  for (const [key, value] of attempt.authParams) url.searchParams.set(key, value)
+  return url
 }
 
 function authHeaders(client: Client): Record<string, string> {

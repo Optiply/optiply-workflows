@@ -39,8 +39,16 @@ export function connectAccount(target: {
   resourceId: string
   environmentId: string
   account: OAuthAccount
+  /** The app it's for, when the person has no access to the resource itself. */
+  appId?: string
 }): Promise<ConnectOutcome> {
-  const url = `/api/oauth/start?${new URLSearchParams(target)}`
+  const params = new URLSearchParams({
+    resourceId: target.resourceId,
+    environmentId: target.environmentId,
+    account: target.account,
+    ...(target.appId && { appId: target.appId }),
+  })
+  const url = `/api/oauth/start?${params}`
   const popup = window.open(url, 'ow-oauth', POPUP_FEATURES)
   if (!popup) {
     return Promise.resolve({ ok: false, message: 'Allow pop-ups for this site to connect an account.' })

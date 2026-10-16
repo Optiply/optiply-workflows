@@ -9,8 +9,9 @@ import {
 } from '@ow/connectors'
 import { type Keyring, secretStrings } from '@ow/crypto'
 import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
+import { type Tx, withRefreshLock } from './refresh-lock'
 import { decryptForRow, encryptForRow } from './secrets'
 
 type CustomAuth = Extract<RestConfig['auth'], { type: 'custom' }>
@@ -30,11 +31,12 @@ const EXPRESSION_TIMEOUT_MS = 5_000
  */
 export function customFlowHash(config: RestConfig): string {
   const auth = config.auth as CustomAuth
-  const flow = [config.baseUrl, auth.steps, auth.refreshSteps]
+  // Where the variables go is part of it too: someone who may edit the resource can't point it elsewhere and
+  // receive them.
+  const hosts = config.allowedHosts.map((h) => h.trim().toLowerCase()).sort()
+  const flow = [config.baseUrl, hosts, auth.steps, auth.refreshSteps]
   return createHash('sha256').update(JSON.stringify(flow)).digest('base64url')
 }
-
-type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
 /**
  * A custom auth flow's variables for one resource config, shared by every query (flows run without a person, so
@@ -42,8 +44,10 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
  *
  * Signed in on first use, again when `ttlSeconds` runs out, and refreshed when an API answers 401: the refresh steps
  * when there are some (starting from the current variables, merged over them), otherwise (or if they fail) the
- * sign-in steps. Signing in happens under a transaction-scoped advisory lock per config, so processes don't sign in
- * at once; whoever waited uses what the other stored. The variables are stored encrypted like OAuth tokens.
+ * sign-in steps. Signing in happens under an advisory lock per config (`withRefreshLock`: waiters hold no database
+ * connection), so processes don't sign in at once; whoever waited uses what the other stored. A refresh after a
+ * 401 is skipped when the stored variables are no longer the ones this query used (someone refreshed already). The
+ * variables are stored encrypted like OAuth tokens. Variables marked `secret: false` aren't scrubbed from results.
  *
  * `store: false` keeps the variables in this source only (Test connection with unsaved settings).
  */
@@ -62,10 +66,23 @@ export function customAuthCredentials(
   const flowHash = customFlowHash(target.config)
   const resource = { config: target.config, secrets: target.secrets }
 
+  // A variable defined anywhere in the flow as secret stays secret.
+  const variableSteps = [...auth.steps, ...auth.refreshSteps].filter((s) => s.type === 'variable')
+  const notSecret = new Set(
+    variableSteps
+      .filter(
+        (s) => s.secret === false && !variableSteps.some((t) => t.name === s.name && t.secret !== false),
+      )
+      .map((s) => s.name),
+  )
   const view = (variables: Record<string, unknown>): AuthVariables => ({
     evaluate: (code) =>
       sandbox.evalExpression(code, { auth: variables }, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
-    secrets: secretStrings(variables),
+    secrets: secretStrings(
+      Object.entries(variables)
+        .filter(([name]) => !notSecret.has(name))
+        .map(([, v]) => v),
+    ),
   })
   const expiresAt = () => (auth.ttlSeconds ? new Date(Date.now() + auth.ttlSeconds * 1000) : null)
 
@@ -107,6 +124,8 @@ export function customAuthCredentials(
     (!row.expiresAt || row.expiresAt.getTime() > Date.now() + EXPIRY_MARGIN_MS)
   const decrypt = (row: OAuthToken) =>
     decryptForRow<StoredVariables>(keyring, 'oauth_tokens', row, row.tokens).variables
+  /** When the variables this source last handed out were stored (`updated_at`): a refresh replaces only those. */
+  let handedOut: number | undefined
   const load = async (q: Db | Tx) => {
     const [row] = await q
       .select()
@@ -117,28 +136,35 @@ export function customAuthCredentials(
 
   return {
     async authVariables({ signal, force }) {
-      const seen = await load(db)
-      if (!force && usable(seen)) return view(decrypt(seen))
+      if (!force) {
+        const seen = await load(db)
+        if (usable(seen)) {
+          handedOut = seen.updatedAt.getTime()
+          return view(decrypt(seen))
+        }
+      }
 
-      const variables = await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`ow_custom_auth:${target.resourceConfigId}`}, 0))`,
-        )
+      const lock = `ow_custom_auth:${target.resourceConfigId}`
+      const variables = await withRefreshLock(db, lock, signal, async (tx) => {
         const row = await load(tx)
-        // Someone signed in or refreshed while this waited (for a refresh: the row changed since it was read).
-        const changed = !seen || !row || row.updatedAt.getTime() !== seen.updatedAt.getTime()
-        if (usable(row) && (!force || changed)) return decrypt(row)
+        // Someone signed in while this waited; for a refresh, someone already replaced the variables it used.
+        if (usable(row) && (!force || row.updatedAt.getTime() !== handedOut)) {
+          handedOut = row.updatedAt.getTime()
+          return decrypt(row)
+        }
 
         const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
         const next = await signIn(signal, previous, !!force)
+        const now = new Date()
         const values = {
           expiresAt: expiresAt(),
           status: 'active' as const,
           lastError: null,
           consentHash: flowHash,
-          refreshedAt: new Date(),
-          updatedAt: new Date(),
+          refreshedAt: now,
+          updatedAt: now,
         }
+        handedOut = now.getTime()
         const id = row?.id ?? uuidv7()
         const tokens = encryptForRow(keyring, 'oauth_tokens', { id, environmentId: target.environmentId }, {
           variables: next,

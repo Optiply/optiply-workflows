@@ -97,6 +97,10 @@ export class AppHost {
   /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
   private startedWith: AppDefinition | null = null
 
+  get appId(): string {
+    return this.options.appId
+  }
+
   constructor(private readonly options: AppHostOptions) {
     this.definition = options.definition
     this.store = createStore<AppHostState>(() => ({

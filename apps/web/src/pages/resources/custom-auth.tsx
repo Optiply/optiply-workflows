@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
-import { Badge, Button, Field, Input, Select, Textarea } from '@/components/ui'
+import { Badge, Button, Checkbox, Field, Input, Select, Textarea } from '@/components/ui'
 import { type FieldsProps, SecretRecord } from './settings-forms'
 import { type KeyValue, KeyValueEditor } from './shared'
 
@@ -20,7 +20,7 @@ type Step =
       body: Body
     }
   | { type: 'code'; name: string; code: string }
-  | { type: 'variable'; name: string; value: string }
+  | { type: 'variable'; name: string; value: string; secret?: boolean }
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
@@ -46,7 +46,7 @@ function newStep(type: Step['type'], name: string): Step {
     case 'code':
       return { type, name, code: 'return ' }
     case 'variable':
-      return { type, name, value: '' }
+      return { type, name, value: '', secret: true }
   }
 }
 
@@ -218,14 +218,22 @@ function StepsEditor({
               />
             )}
             {step.type === 'variable' && (
-              <Input
-                aria-label={`${at} value`}
-                className="font-mono"
-                placeholder="{{ login.data.token }}"
-                value={step.value}
-                disabled={disabled}
-                onChange={(e) => update(i, { ...step, value: e.target.value })}
-              />
+              <div className="space-y-2">
+                <Input
+                  aria-label={`${at} value`}
+                  className="font-mono"
+                  placeholder="{{ login.data.token }}"
+                  value={step.value}
+                  disabled={disabled}
+                  onChange={(e) => update(i, { ...step, value: e.target.value })}
+                />
+                <Checkbox
+                  checked={step.secret !== false}
+                  disabled={disabled}
+                  onChange={(e) => update(i, { ...step, secret: e.target.checked })}
+                  label="Hide from query results (a credential). Untick for values that aren't secret, like a tenant ID."
+                />
+              </div>
             )}
           </div>
         )

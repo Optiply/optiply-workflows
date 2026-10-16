@@ -317,12 +317,12 @@ describe('resources (admin)', () => {
     await connectAccounts()
     // Other settings and the client secret: the accounts stay.
     await save(
-      { baseUrl: 'https://api2.example.com', auth: { ...oauth, pkce: false } },
+      { baseUrl: 'https://api.example.com/v2', auth: { ...oauth, pkce: false } },
       { clientSecret: 'new' },
     )
     expect(await accounts()).toBe(2)
 
-    await save({ baseUrl: 'https://api2.example.com', auth: { ...oauth, scope: 'contacts deals' } })
+    await save({ baseUrl: 'https://api.example.com/v2', auth: { ...oauth, scope: 'contacts deals' } })
     expect(await accounts()).toBe(0)
     const [audit] = await env.db
       .select()
@@ -332,9 +332,19 @@ describe('resources (admin)', () => {
       .limit(1)
     expect(audit!.metadata).toMatchObject({ disconnectedAccounts: 2 })
 
-    await connectAccounts()
-    await save({ baseUrl: 'https://api2.example.com', auth: { type: 'bearer' } })
-    expect(await accounts()).toBe(0)
+    // Tokens go only where they were connected for: another host, more allowed hosts, the other token mode, or
+    // another auth type disconnects them.
+    for (const elsewhere of [
+      { baseUrl: 'https://attacker.example.com', auth: oauth },
+      { baseUrl: 'https://api.example.com/v2', auth: oauth, allowedHosts: ['*.example.org'] },
+      { baseUrl: 'https://api.example.com/v2', auth: { ...oauth, tokens: 'perUser' } },
+      { baseUrl: 'https://api.example.com/v2', auth: { type: 'bearer' } },
+    ]) {
+      await save({ baseUrl: 'https://api.example.com/v2', auth: oauth })
+      await connectAccounts()
+      await save(elsewhere)
+      expect(await accounts(), JSON.stringify(elsewhere)).toBe(0)
+    }
   })
 })
 

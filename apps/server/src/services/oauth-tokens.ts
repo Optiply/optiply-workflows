@@ -17,6 +17,7 @@ import { v7 as uuidv7 } from 'uuid'
 import type { z } from 'zod'
 import { recordAudit } from '../audit'
 import { customAuthCredentials, customFlowHash } from './custom-auth'
+import { withRefreshLock } from './refresh-lock'
 import { decryptForRow, encryptForRow } from './secrets'
 
 /** What `oauth_tokens.tokens` holds once decrypted. */
@@ -38,7 +39,9 @@ export type AuthorizationCodeAuth = Extract<RestAuth, { type: 'oauth2Authorizati
 export function authFingerprint(config: unknown): string | null {
   const parsed = restConnector.configSchema.safeParse(config)
   if (!parsed.success) return null
-  if (parsed.data.auth.type === 'oauth2AuthorizationCode') return consentHash(parsed.data.auth)
+  if (parsed.data.auth.type === 'oauth2AuthorizationCode') {
+    return consentHash({ ...parsed.data, auth: parsed.data.auth })
+  }
   if (parsed.data.auth.type === 'custom') return customFlowHash(parsed.data)
   return null
 }
@@ -50,17 +53,39 @@ export function authorizationCode(config: unknown): AuthorizationCodeAuth | null
 }
 
 /**
- * Identifies what an account consented to: the client, the URLs and what the consent screen asked for. Tokens
- * granted under other settings can't be used (the account has to be connected again).
+ * Identifies what an account consented to and where its tokens go: the client, the URLs, what the consent screen
+ * asked for, whose account it is (shared or per-user), and the hosts requests may reach (the base URL's origin and
+ * the allowed hosts). Tokens granted under other settings aren't used or sent anywhere: the account has to be
+ * connected again. So someone who may edit the resource can't point it, or a test of unsaved settings, at a host
+ * of their own and receive the connected account's token.
  */
-export function consentHash(auth: AuthorizationCodeSettings): string {
+export function consentHash(config: {
+  baseUrl: string
+  allowedHosts: readonly string[]
+  auth: AuthorizationCodeSettings & { tokens?: 'shared' | 'perUser' }
+}): string {
+  const { auth } = config
+  const byKey = ([a]: string[], [b]: string[]) => (a! < b! ? -1 : a! > b! ? 1 : 0)
   const params = auth.authorizeParams
     .filter((p) => p.key)
     .map((p) => [p.key, p.value])
-    .sort(([a], [b]) => (a! < b! ? -1 : a! > b! ? 1 : 0))
-  const consent = [auth.authorizeUrl, auth.tokenUrl, auth.clientId, auth.scope.trim(), params]
+    .sort(byKey)
+  const consent = [
+    auth.authorizeUrl,
+    auth.tokenUrl,
+    auth.clientId,
+    auth.scope.trim(),
+    params,
+    auth.tokens ?? 'shared',
+    new URL(config.baseUrl).origin,
+    config.allowedHosts.map((h) => h.trim().toLowerCase()).sort(),
+  ]
   return createHash('sha256').update(JSON.stringify(consent)).digest('base64url')
 }
+
+/** The advisory lock serializing refreshes and replacements of one owner's connection. */
+const ownerLock = (resourceConfigId: string, userId: string | null) =>
+  `ow_oauth:${resourceConfigId}:${userId ?? 'shared'}`
 
 const ownedBy = (userId: string | null) =>
   userId === null ? isNull(oauthTokens.userId) : eq(oauthTokens.userId, userId)
@@ -99,12 +124,13 @@ export async function saveTokens(
     createdAt: new Date(),
     updatedAt: new Date(),
   }
-  await db.transaction(async (tx) => {
+  // The owner's lock (the one refreshes take): two connects finishing at once replace each other in turn.
+  const lock = ownerLock(input.resourceConfigId, input.userId)
+  await withRefreshLock(db, lock, AbortSignal.timeout(30_000), async (tx) => {
     const [existing] = await tx
       .select({ id: oauthTokens.id })
       .from(oauthTokens)
       .where(and(eq(oauthTokens.resourceConfigId, input.resourceConfigId), ownedBy(input.userId)))
-      .for('update')
     // The row id is part of the encryption AAD, so a replacement keeps the existing row's id.
     const row = { id: existing?.id ?? uuidv7(), environmentId: input.environmentId }
     const tokens = encryptForRow(keyring, 'oauth_tokens', row, stored)
@@ -197,20 +223,22 @@ export interface CredentialTarget {
   auth: AuthorizationCodeSettings
   clientSecret: string | undefined
   allowPrivateNetwork: boolean
+  /** The resource's current `consentHash`: tokens stored under another aren't used. */
+  consent: string
 }
 
 /**
  * Access tokens for one owner's connection, refreshed when they're about to expire or an API refused them.
- * Refreshes happen under the token row's lock: with providers that rotate refresh tokens (Microsoft, HubSpot),
- * two workers refreshing at once would otherwise spend the same refresh token twice and lose the connection.
- * Whoever waited for the lock uses the token the other one stored.
+ * Refreshes happen under the owner's advisory lock (`withRefreshLock`: waiters hold no database connection):
+ * with providers that rotate refresh tokens (Microsoft, HubSpot), two workers refreshing at once would otherwise
+ * spend the same refresh token twice and lose the connection. Whoever waited uses the token the other one stored.
  */
 export function oauthCredentials(
   deps: { db: Db; keyring: Keyring },
   target: CredentialTarget,
 ): Required<Pick<CredentialSource, 'accessToken'>> {
   const { db, keyring } = deps
-  const currentConsent = consentHash(target.auth)
+  const currentConsent = target.consent
   /** The token this source last handed out: a forced refresh replaces it unless someone already has. */
   let lastToken: string | undefined
 
@@ -225,60 +253,64 @@ export function oauthCredentials(
 
   async function refresh(refused: string | undefined, signal: AbortSignal): Promise<string> {
     let refusal: OAuthGrantError | undefined
-    const token = await db.transaction(async (tx) => {
-      const [locked] = await tx
-        .select()
-        .from(oauthTokens)
-        .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), ownedBy(target.userId)))
-        .for('update')
-      const row = check(locked)
-      const stored = decryptTokens(keyring, row)
-      // Someone refreshed while this waited for the lock.
-      if (fresh(row) && (refused === undefined || stored.accessToken !== refused)) return stored.accessToken
+    const token = await withRefreshLock(
+      db,
+      ownerLock(target.resourceConfigId, target.userId),
+      signal,
+      async (tx) => {
+        const [locked] = await tx
+          .select()
+          .from(oauthTokens)
+          .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), ownedBy(target.userId)))
+        const row = check(locked)
+        const stored = decryptTokens(keyring, row)
+        // Someone refreshed while this waited for the lock.
+        if (fresh(row) && (refused === undefined || stored.accessToken !== refused)) return stored.accessToken
 
-      if (!stored.refreshToken) {
-        // An API refused a token we can't refresh: let the request fail with the API's own answer.
-        if (refused !== undefined && fresh(row)) return stored.accessToken
-        refusal = new OAuthGrantError(
-          'The access token expired and the provider gave no refresh token',
-          'expired',
-        )
+        if (!stored.refreshToken) {
+          // An API refused a token we can't refresh: let the request fail with the API's own answer.
+          if (refused !== undefined && fresh(row)) return stored.accessToken
+          refusal = new OAuthGrantError(
+            'The access token expired and the provider gave no refresh token',
+            'expired',
+          )
+          await tx
+            .update(oauthTokens)
+            .set({ status: 'reconnect', lastError: refusal.reason })
+            .where(eq(oauthTokens.id, row.id))
+          return undefined
+        }
+
+        let tokens: TokenSet
+        try {
+          tokens = await refreshAccessToken(target.auth, target.clientSecret, stored.refreshToken, {
+            signal,
+            allowPrivateNetwork: target.allowPrivateNetwork,
+          })
+        } catch (err) {
+          if (!(err instanceof OAuthGrantError)) throw err
+          // Committed (not rolled back): every later query should ask for a reconnect without calling the provider.
+          refusal = err
+          await tx
+            .update(oauthTokens)
+            .set({ status: 'reconnect', lastError: err.reason })
+            .where(eq(oauthTokens.id, row.id))
+          return undefined
+        }
+        const next: StoredTokens = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken }
         await tx
           .update(oauthTokens)
-          .set({ status: 'reconnect', lastError: refusal.reason })
+          .set({
+            tokens: encryptForRow(keyring, 'oauth_tokens', row, next),
+            expiresAt: tokens.expiresAt,
+            scope: tokens.scope ?? row.scope,
+            account: tokens.account ?? row.account,
+            refreshedAt: new Date(),
+          })
           .where(eq(oauthTokens.id, row.id))
-        return undefined
-      }
-
-      let tokens: TokenSet
-      try {
-        tokens = await refreshAccessToken(target.auth, target.clientSecret, stored.refreshToken, {
-          signal,
-          allowPrivateNetwork: target.allowPrivateNetwork,
-        })
-      } catch (err) {
-        if (!(err instanceof OAuthGrantError)) throw err
-        // Committed (not rolled back): every later query should ask for a reconnect without calling the provider.
-        refusal = err
-        await tx
-          .update(oauthTokens)
-          .set({ status: 'reconnect', lastError: err.reason })
-          .where(eq(oauthTokens.id, row.id))
-        return undefined
-      }
-      const next: StoredTokens = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken }
-      await tx
-        .update(oauthTokens)
-        .set({
-          tokens: encryptForRow(keyring, 'oauth_tokens', row, next),
-          expiresAt: tokens.expiresAt,
-          scope: tokens.scope ?? row.scope,
-          account: tokens.account ?? row.account,
-          refreshedAt: new Date(),
-        })
-        .where(eq(oauthTokens.id, row.id))
-      return tokens.accessToken
-    })
+        return tokens.accessToken
+      },
+    )
     if (token !== undefined) return token
 
     await recordAudit(db, {
@@ -364,6 +396,7 @@ export function credentialsFor(
     auth,
     clientSecret: typeof secrets.clientSecret === 'string' ? secrets.clientSecret : undefined,
     allowPrivateNetwork: parsed.data.allowPrivateNetwork,
+    consent: consentHash({ ...parsed.data, auth }),
   })
 }
 
