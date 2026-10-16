@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useState } from 'react'
+import { useFolders } from '@/components/folders'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Spinner, Tabs } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -149,7 +150,7 @@ function BuiltInSettings({ environmentSlug, user }: { environmentSlug?: string; 
 function GeneralCard({ resource }: { resource: ResourceDetail }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
-  const { data: folders } = useQuery(trpc.folders.list.queryOptions())
+  const { data: folders } = useFolders('resource')
   const [form, setForm] = useState({
     name: resource.name,
     description: resource.description ?? '',
@@ -186,7 +187,7 @@ function GeneralCard({ resource }: { resource: ResourceDetail }) {
         <Field label="Folder">
           <Select value={form.folderId} onChange={(e) => setForm({ ...form, folderId: e.target.value })}>
             <option value="">None</option>
-            {folders?.map((f) => (
+            {folders?.folders.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.name}
               </option>

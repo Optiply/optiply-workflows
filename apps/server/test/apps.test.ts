@@ -407,6 +407,50 @@ describe('apps: releases', () => {
 })
 
 describe('apps: folders', () => {
+  it('folders per type: managed by who can create that type, listed apart, deleted without what they hold', async () => {
+    expect(failure(await member.mutate('folders.create', { name: 'Mine', type: 'app' }))).toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'You need edit access to all apps to manage their folders',
+    })
+    const folder = data(await admin.mutate('folders.create', { name: 'Sales apps', type: 'app' }))
+    const workflowFolder = data(
+      await admin.mutate('folders.create', { name: 'Sales flows', type: 'workflow' }),
+    )
+    expect(data(await admin.query('folders.list', { type: 'app' }))).toMatchObject({
+      canManage: true,
+      folders: [{ id: folder.id, name: 'Sales apps', parentId: null }],
+    })
+    expect(data(await member.query('folders.list', { type: 'app' })).canManage).toBe(false)
+    // Resources' folders when no type is given; each type's apart.
+    const resourceFolders = data(await admin.query('folders.list')).folders.map((f: { id: string }) => f.id)
+    expect(resourceFolders).not.toContain(folder.id)
+    expect(data(await admin.query('folders.list', { type: 'workflow' })).folders).toEqual([
+      expect.objectContaining({ id: workflowFolder.id }),
+    ])
+    // A subfolder is of its parent's type.
+    expect(
+      failure(
+        await admin.mutate('folders.create', { name: 'Sub', type: 'app', parentId: workflowFolder.id }),
+      ),
+    ).toMatchObject({ code: 'BAD_REQUEST' })
+    expect(failure(await member.mutate('folders.rename', { id: folder.id, name: 'X' }))).toMatchObject({
+      code: 'FORBIDDEN',
+    })
+    data(await admin.mutate('folders.rename', { id: folder.id, name: 'Sales' }))
+
+    // An app in it; deleting the folder leaves the app at the top.
+    const app = await appWith('in-folder', crudApp())
+    data(await admin.mutate('apps.update', { id: app.id, folderId: folder.id }))
+    expect(data(await admin.query('apps.get', { id: app.id })).folderId).toBe(folder.id)
+    data(await admin.mutate('folders.delete', { id: folder.id }))
+    expect(data(await admin.query('apps.get', { id: app.id })).folderId).toBeNull()
+    const [deleted] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'folder.deleted'), eq(auditEvents.objectId, folder.id)))
+    expect(deleted!.metadata).toEqual({ name: 'Sales', type: 'app' })
+  })
+
   it('needs Own to move an app between folders, and only into app folders', async () => {
     const app = await appWith('foldered', crudApp())
     const [resourceFolder] = await env.db

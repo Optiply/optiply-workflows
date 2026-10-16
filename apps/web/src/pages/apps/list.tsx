@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { LayoutGrid, Pencil, Plus } from 'lucide-react'
+import { FolderPlus, LayoutGrid, Pencil, Plus } from 'lucide-react'
 import { useState } from 'react'
+import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
 import {
   Badge,
   Button,
@@ -24,7 +25,8 @@ const LEVELS = { use: 'Can use', edit: 'Can edit', own: 'Owner' } as const
 export function AppsPage() {
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.apps.list.queryOptions())
-  const [creating, setCreating] = useState(false)
+  const { data: folders } = useFolders('app')
+  const [panel, setPanel] = useState<'none' | 'app' | 'folder'>('none')
 
   if (isLoading) return <Spinner />
   if (!data) return <ErrorNote error={error} />
@@ -35,28 +37,42 @@ export function AppsPage() {
         title="Apps"
         description="Internal tools built from components and queries: tables, forms and charts on your data."
         actions={
-          <Button variant="primary" onClick={() => setCreating(!creating)}>
-            <Plus className="size-4" /> New app
-          </Button>
+          <>
+            {folders?.canManage && (
+              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+                <FolderPlus className="size-4" /> New folder
+              </Button>
+            )}
+            <Button variant="primary" onClick={() => setPanel(panel === 'app' ? 'none' : 'app')}>
+              <Plus className="size-4" /> New app
+            </Button>
+          </>
         }
       />
-      {creating && <NewAppForm onCancel={() => setCreating(false)} />}
-      {data.length === 0 ? (
+      {panel === 'app' && <NewAppForm onCancel={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderForm type="app" onDone={() => setPanel('none')} />}
+      {data.length === 0 && !folders?.folders.length ? (
         <EmptyState icon={<LayoutGrid className="size-6" />} title="No apps yet">
           Create one to start building. If you expected to see apps here, ask an admin for access.
         </EmptyState>
       ) : (
-        <Card className="divide-y divide-border">
-          {data.map((a) => (
-            <AppRow key={a.id} app={a} />
-          ))}
-        </Card>
+        <FolderSections type="app" items={data} listKey={trpc.apps.list.queryKey()}>
+          {(a) => <AppRow key={a.id} app={a} hasFolders={!!folders?.folders.length} />}
+        </FolderSections>
       )}
     </>
   )
 }
 
-function AppRow({ app }: { app: AppSummary }) {
+/** An app; owners can move it between folders here (that changes who can reach it). */
+function AppRow({ app, hasFolders }: { app: AppSummary; hasFolders: boolean }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const move = useMutation(
+    trpc.apps.update.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() }),
+    }),
+  )
   const canEdit = app.level === 'edit' || app.level === 'own'
   const body = (
     <>
@@ -92,6 +108,16 @@ function AppRow({ app }: { app: AppSummary }) {
       )}
       {app.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Not published</Badge>}
       <Badge tone="accent">{LEVELS[app.level]}</Badge>
+      {hasFolders && app.level === 'own' && (
+        <FolderSelect
+          type="app"
+          label={`Folder of ${app.name}`}
+          className="w-40"
+          value={app.folderId}
+          onChange={(folderId) => move.mutate({ id: app.id, folderId })}
+        />
+      )}
+      <ErrorNote error={move.error} />
       {canEdit && (
         <Link
           to="/apps/$slug/edit"
@@ -113,6 +139,8 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
+  const [folderId, setFolderId] = useState<string | null>(null)
+  const { data: folders } = useFolders('app')
   const create = useMutation(
     trpc.apps.create.mutationOptions({
       onSuccess: async (app) => {
@@ -127,7 +155,7 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug })
+          create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -152,6 +180,11 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
             placeholder="customer-lookup"
           />
         </Field>
+        {!!folders?.folders.length && (
+          <Field label="Folder">
+            <FolderSelect type="app" value={folderId} onChange={setFolderId} />
+          </Field>
+        )}
         <div className="flex items-center gap-2 sm:col-span-2">
           <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
             Create app

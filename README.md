@@ -158,6 +158,8 @@ Open **Apps** to create one. The editor (`/apps/<slug>/edit`) runs the draft liv
 
 **Publish** releases the draft as a semver version; people with Use on the app open the live release at `/apps/<slug>` and pick the environment. **Releases** rolls back, **Access** (owners) grants groups Use, Edit or Own.
 
+**Folders** group resources, workflows and apps on their list pages; each kind has folders of its own. Whoever can create a kind (Edit on all of them) makes and deletes its folders (what's inside moves out); an owner moves an item into one from its row (moving changes who can reach it, so it needs Own); admins open a folder's **Access** to grant a group Use, Edit or Own on everything inside it.
+
 How it's kept safe:
 
 - App code runs in a Worker inside a sandboxed iframe with an opaque origin and no network access: it can't reach the page, the session or anything on the network. An endless loop freezes only the app: after 5 s it's stopped, and Restart starts it again.

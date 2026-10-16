@@ -38,7 +38,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   await test.step('a new app', async () => {
     await page.getByRole('link', { name: 'Apps' }).click()
     await page.getByRole('button', { name: 'New app' }).click()
-    await page.getByLabel('Name').fill(`Stock ${table}`)
+    await page.getByLabel('Name', { exact: true }).fill(`Stock ${table}`)
     await page.getByRole('button', { name: 'Create app' }).click()
     await expect(page).toHaveURL(/\/edit$/)
   })

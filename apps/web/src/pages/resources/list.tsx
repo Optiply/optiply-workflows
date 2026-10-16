@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { Folder, FolderPlus, Plug, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { FolderPlus, Plug, Plus, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
+import { FolderSections, NewFolderForm, useFolders } from '@/components/folders'
 import {
   Badge,
   Button,
@@ -31,33 +32,13 @@ export function slugify(name: string): string {
 export function ResourcesPage() {
   const { me } = appRoute.useRouteContext()
   const trpc = useTRPC()
-  const queryClient = useQueryClient()
   const { data, isLoading, error } = useQuery(trpc.resources.list.queryOptions())
-  const { data: folders } = useQuery(trpc.folders.list.queryOptions())
+  const { data: folders } = useFolders('resource')
   const { data: environments } = useQuery(trpc.environments.list.queryOptions())
   const [panel, setPanel] = useState<'none' | 'resource' | 'folder' | 'access'>('none')
-  const [folderAccess, setFolderAccess] = useState<string | null>(null)
-
-  const deleteFolder = useMutation(
-    trpc.folders.delete.mutationOptions({
-      onSuccess: () =>
-        Promise.all([
-          queryClient.invalidateQueries({ queryKey: trpc.folders.list.queryKey() }),
-          queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
-        ]),
-    }),
-  )
 
   if (isLoading) return <Spinner />
   if (!data) return <ErrorNote error={error} />
-
-  const groups = [
-    ...(folders ?? []).map((f) => ({ folder: f, items: data.resources.filter((r) => r.folderId === f.id) })),
-    {
-      folder: null,
-      items: data.resources.filter((r) => !r.folderId || !folders?.some((f) => f.id === r.folderId)),
-    },
-  ].filter((g) => g.items.length > 0 || (g.folder && data.canCreate))
 
   return (
     <>
@@ -84,7 +65,7 @@ export function ResourcesPage() {
       />
 
       {panel === 'resource' && <NewResourceForm onDone={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm onDone={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderForm type="resource" onDone={() => setPanel('none')} />}
       {panel === 'access' && (
         <Card className="mb-6 p-5">
           <h2 className="mb-1 font-semibold">Access to all resources</h2>
@@ -96,62 +77,16 @@ export function ResourcesPage() {
         </Card>
       )}
 
-      {data.resources.length === 0 && groups.length === 0 ? (
+      {data.resources.length === 0 && !folders?.folders.length ? (
         <EmptyState icon={<Plug className="size-6" />} title="No resources yet">
           {data.canCreate
             ? 'Add a database (Postgres, MySQL or BigQuery) or a REST API to query it from workflows.'
             : 'Nothing has been shared with you yet. Ask an admin for access to a resource.'}
         </EmptyState>
       ) : (
-        <div className="space-y-6">
-          <ErrorNote error={deleteFolder.error} />
-          {groups.map(({ folder, items }) => (
-            <section key={folder?.id ?? 'none'}>
-              {(folder || (folders?.length ?? 0) > 0) && (
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-muted">
-                  <Folder className="size-4" /> {folder?.name ?? 'Not in a folder'}
-                  {folder && me.isAdmin && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setFolderAccess(folderAccess === folder.id ? null : folder.id)}
-                    >
-                      Access
-                    </Button>
-                  )}
-                  {folder && data.canCreate && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      title="Delete folder"
-                      onClick={() => {
-                        if (confirm(`Delete folder "${folder.name}"? Its resources move out of it.`)) {
-                          deleteFolder.mutate({ id: folder.id })
-                        }
-                      }}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  )}
-                </div>
-              )}
-              {folder && folderAccess === folder.id && (
-                <Card className="mb-3 p-4">
-                  <p className="mb-3 text-sm text-muted">
-                    Grants on this folder apply to every resource inside it.
-                  </p>
-                  <AccessEditor target={{ objectType: 'folder', objectId: folder.id }} />
-                </Card>
-              )}
-              <Card className="divide-y divide-border">
-                {items.length === 0 && <p className="px-4 py-4 text-sm text-muted">Empty folder.</p>}
-                {items.map((r) => (
-                  <ResourceRow key={r.id} resource={r} environments={environments ?? []} />
-                ))}
-              </Card>
-            </section>
-          ))}
-        </div>
+        <FolderSections type="resource" items={data.resources} listKey={trpc.resources.list.queryKey()}>
+          {(r) => <ResourceRow key={r.id} resource={r} environments={environments ?? []} />}
+        </FolderSections>
       )}
     </>
   )
@@ -204,7 +139,7 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { data: types } = useQuery(trpc.resources.types.queryOptions())
-  const { data: folders } = useQuery(trpc.folders.list.queryOptions())
+  const { data: folders } = useFolders('resource')
   const [form, setForm] = useState({ type: 'postgres', name: '', slug: '', folderId: '' })
   const [slugTouched, setSlugTouched] = useState(false)
   const create = useMutation(
@@ -256,7 +191,7 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
         <Field label="Folder">
           <Select value={form.folderId} onChange={(e) => setForm({ ...form, folderId: e.target.value })}>
             <option value="">None</option>
-            {folders?.map((f) => (
+            {folders?.folders.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.name}
               </option>
@@ -285,40 +220,6 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
           Cancel
         </Button>
       </div>
-    </Card>
-  )
-}
-
-function NewFolderForm({ onDone }: { onDone: () => void }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
-  const [name, setName] = useState('')
-  const create = useMutation(
-    trpc.folders.create.mutationOptions({
-      onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: trpc.folders.list.queryKey() })
-        onDone()
-      },
-    }),
-  )
-  return (
-    <Card className="mb-6 space-y-3 p-5">
-      <h2 className="font-semibold">New folder</h2>
-      <div className="flex max-w-md gap-2">
-        <Input autoFocus value={name} placeholder="Finance" onChange={(e) => setName(e.target.value)} />
-        <Button
-          variant="primary"
-          disabled={!name.trim()}
-          loading={create.isPending}
-          onClick={() => create.mutate({ name })}
-        >
-          Create
-        </Button>
-        <Button variant="ghost" onClick={onDone}>
-          Cancel
-        </Button>
-      </div>
-      <ErrorNote error={create.error} />
     </Card>
   )
 }
