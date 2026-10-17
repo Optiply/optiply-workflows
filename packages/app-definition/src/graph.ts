@@ -179,7 +179,7 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
   const add = (entity: string, property: string, kind: NodeKind, extra: Partial<GraphNode> = {}) => {
     const key = nodeKey(entity, property)
     nodes.set(key, { key, entity, property, kind, deps: [], fields: [], ...extra })
-    byEntity.set(entity, [...(byEntity.get(entity) ?? []), key])
+    pushTo(byEntity, entity, key)
   }
 
   for (const entity of entities.values()) {
@@ -253,7 +253,7 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
 
   const dependents = new Map<string, string[]>()
   for (const node of nodes.values()) {
-    for (const dep of node.deps) dependents.set(dep, [...(dependents.get(dep) ?? []), node.key])
+    for (const dep of node.deps) pushTo(dependents, dep, node.key)
   }
 
   const cycles = findCycles(nodes)
@@ -285,6 +285,13 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
       return [...seen].sort((a, b) => rank.get(a)! - rank.get(b)!)
     },
   }
+}
+
+/** Appends to the list under `key` in place (copying it on every append made a value read by many quadratic). */
+function pushTo(map: Map<string, string[]>, key: string, value: string): void {
+  const list = map.get(key)
+  if (list) list.push(value)
+  else map.set(key, [value])
 }
 
 /** `components.3`, the path prefix of the fields belonging to an entity. */
