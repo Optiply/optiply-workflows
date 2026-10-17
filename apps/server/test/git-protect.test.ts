@@ -354,3 +354,21 @@ describe('branches and pull requests', () => {
     expect(githubTarget('https://github.com/flows')).toBeNull()
   })
 })
+
+// Last: it adds branches and pull requests the tests above count.
+describe('protecting again', () => {
+  it('protects onto a branch other than the deploy branch, under a free name', async () => {
+    const id = await publishedWorkflow('twice')
+    expect(code(await admin.mutate('git.protect', { kind: 'workflow', id, branch: 'main' }))).toBe(
+      'BAD_REQUEST',
+    )
+    // Protected, then unprotected before its pull request merged: protect/workflow-twice is still there.
+    const first = data(await admin.mutate('git.protect', { kind: 'workflow', id })) as { branch: string }
+    expect(first.branch).toBe('protect/workflow-twice')
+    data(await admin.mutate('git.unprotect', { kind: 'workflow', id }))
+    const again = data(await admin.mutate('git.protect', { kind: 'workflow', id })) as { branch: string }
+    expect(again.branch).toBe('protect/workflow-twice-2')
+    const files = await reader.readFiles((await reader.fetchBranch(again.branch))!, ['workflows/'])
+    expect(files['workflows/twice/blocks/step.js']).toBe('return 1\n')
+  })
+})

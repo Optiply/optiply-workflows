@@ -97,7 +97,8 @@ export function ProtectDialog({
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: git } = useGitInfo()
-  const [branch, setBranch] = useState(`protect/${kind}-${object.slug}`)
+  const defaultBranch = `protect/${kind}-${object.slug}`
+  const [branch, setBranch] = useState(defaultBranch)
   const [result, setResult] = useState<ProtectResult | null>(null)
   const protect = useMutation(
     trpc.git.protect.mutationOptions({
@@ -128,7 +129,14 @@ export function ProtectDialog({
               variant="primary"
               loading={protect.isPending}
               disabled={!branch.trim()}
-              onClick={() => protect.mutate({ kind, id: object.id, branch: branch.trim() })}
+              onClick={() =>
+                protect.mutate({
+                  kind,
+                  id: object.id,
+                  // The default: the server picks the next free name if an earlier protect left that branch.
+                  ...(branch.trim() !== defaultBranch && { branch: branch.trim() }),
+                })
+              }
               data-testid="protect-confirm"
             >
               Protect
@@ -189,9 +197,12 @@ export function ProtectDialog({
           <ul className="list-disc space-y-1 pl-5 text-muted">
             <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
             <li>Merging deploys it as a new release; nobody publishes it here any more.</li>
-            <li>Only admins can roll it back here, in an emergency, until the next deploy.</li>
+            <li>Only admins can roll it back here, in an emergency, until its next change in Git.</li>
           </ul>
-          <Field label="Branch" hint="Where its files go first.">
+          <Field
+            label="Branch"
+            hint="Where its files go first. Left as it is, a name already taken gets a number (-2, -3…)."
+          >
             <Input className="font-mono" value={branch} onChange={(e) => setBranch(e.target.value)} />
           </Field>
           <ErrorNote error={protect.error} />

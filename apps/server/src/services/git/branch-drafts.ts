@@ -1,13 +1,11 @@
 import { type AppDefinition, appDefinitionHash, appDefinitionSchema, validateApp } from '@ow/app-definition'
 import {
   type App,
-  appReleases,
   apps,
   type Db,
   type GitBranchDraft,
   gitBranchDrafts,
   type Workflow,
-  workflowReleases,
   workflows,
 } from '@ow/db'
 import {
@@ -29,8 +27,15 @@ import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import { invalidInput } from '../../trpc/errors'
-import { commitToBranch } from './commit'
-import { ensureBaseBranch, gitTrpcError, manifestIfMissing, requireGitRepo } from './protection'
+import { commitToBranch, GitConflictError } from './commit'
+import {
+  ensureBaseBranch,
+  gitTrpcError,
+  liveOrDraft,
+  manifestIfMissing,
+  requireGitRepo,
+  requireNotDeployBranch,
+} from './protection'
 import type { GitRepo } from './repo'
 
 type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
@@ -103,19 +108,6 @@ function problemsError(problems: Problem[]): TRPCError {
   })
 }
 
-/** The live release's definition, or the draft's: where a branch starts when the repo doesn't have the object yet. */
-async function instanceDefinition(db: Db, target: DraftObject) {
-  const { kind, object } = target
-  if (object.liveReleaseId) {
-    const [release] =
-      kind === 'workflow'
-        ? await db.select().from(workflowReleases).where(eq(workflowReleases.id, object.liveReleaseId))
-        : await db.select().from(appReleases).where(eq(appReleases.id, object.liveReleaseId))
-    if (release) return release.definition
-  }
-  return object.draftDefinition
-}
-
 /**
  * The object's draft on a branch: the one already open, or a new one from the branch's files (or, when the branch
  * doesn't exist yet and `create` is set, from the deploy branch's). Where the repo doesn't have the object yet
@@ -135,6 +127,8 @@ export async function openBranchDraft(
       message: `This ${kind} isn't protected: edit it here`,
     })
   }
+  const { repo, branch: deployBranch } = await requireGitRepo(db, config)
+  requireNotDeployBranch(branch, deployBranch)
   const column = kind === 'workflow' ? gitBranchDrafts.workflowId : gitBranchDrafts.appId
   const [existing] = await db
     .select()
@@ -142,7 +136,6 @@ export async function openBranchDraft(
     .where(and(eq(column, object.id), eq(gitBranchDrafts.branch, branch)))
   if (existing) return existing
 
-  const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   let base: string
   let branchExists: boolean
   let read: Awaited<ReturnType<typeof readObjectAt>>
@@ -162,7 +155,7 @@ export async function openBranchDraft(
     value = {
       name: object.name,
       description: object.description,
-      definition: await instanceDefinition(db, target),
+      definition: await liveOrDraft(db, kind, object),
     }
   } else if (!read.decoded.ok) {
     throw problemsError(read.decoded.problems)
@@ -251,6 +244,9 @@ export async function branchDraftChanges(
   const { repo } = await requireGitRepo(db, config)
   try {
     const tip = await repo.fetchBranch(draft.branch)
+    // A new process's cache (a restart, another replica) may not have the base yet.
+    const haveBase = await repo.ensureCommit(draft.baseCommit)
+    if (!tip && !haveBase) throw lostBase()
     const against = tip ?? draft.baseCommit
     const { dir, files: now } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
     const { files: there } = await readObjectAt(repo, against, target.kind, target.object.slug)
@@ -272,7 +268,7 @@ export async function branchDraftChanges(
     })
     const behind = tip !== null && tip !== draft.baseCommit
     const conflict =
-      behind && (await repo.ensureCommit(draft.baseCommit))
+      behind && haveBase
         ? (await repo.entryAt(tip!, dir)) !== (await repo.entryAt(draft.baseCommit, dir))
         : behind
     return { tip, behind, conflict, files }
@@ -280,6 +276,14 @@ export async function branchDraftChanges(
     throw gitTrpcError(err)
   }
 }
+
+/** The draft's base commit is gone from the repo (its branch was rewritten): only updating and discarding helps. */
+const lostBase = () =>
+  new TRPCError({
+    code: 'CONFLICT',
+    message:
+      'The commit this draft started from is no longer in the repo (was the branch rewritten?): update it from the branch and discard its changes',
+  })
 
 /** Whether the draft holds changes its base commit doesn't have (anything a commit would write). */
 async function hasUncommittedChanges(
@@ -311,15 +315,15 @@ export async function updateBranchDraftFromBranch(
     tip = await repo.fetchBranch(draft.branch)
     if (!tip)
       throw new TRPCError({ code: 'NOT_FOUND', message: `The repo has no branch ${draft.branch} yet` })
-    if (
-      !opts.discardChanges &&
-      (await repo.ensureCommit(draft.baseCommit)) &&
-      (await hasUncommittedChanges(repo, target, draft))
-    ) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: 'The draft has changes that aren’t committed: commit them, or update and discard them',
-      })
+    if (!opts.discardChanges) {
+      // Without its base (the branch was rewritten) nobody can tell what's uncommitted: ask, as with changes.
+      if (!(await repo.ensureCommit(draft.baseCommit))) throw lostBase()
+      if (await hasUncommittedChanges(repo, target, draft)) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'The draft has changes that aren’t committed: commit them, or update and discard them',
+        })
+      }
     }
     read = await readObjectAt(repo, tip, target.kind, target.object.slug)
   } catch (err) {
@@ -340,9 +344,15 @@ export async function updateBranchDraftFromBranch(
       revision: draft.revision + 1,
       updatedBy: user.id,
     })
-    .where(eq(gitBranchDrafts.id, draft.id))
+    .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.revision, draft.revision)))
     .returning()
-  return updated!
+  if (!updated) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'The draft was saved while updating it from the branch: reload, then update again',
+    })
+  }
+  return updated
 }
 
 /**
@@ -364,10 +374,14 @@ export async function commitBranchDraft(
     })
   }
   const { repo, branch: deployBranch } = await requireGitRepo(db, config)
+  // A draft opened before the deploy branch was changed in Settings → Git could be on it now.
+  requireNotDeployBranch(draft.branch, deployBranch)
   const { dir, files } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
   let result: { commit: string; changed: boolean }
   try {
     const main = await ensureBaseBranch(repo, deployBranch, user)
+    // A new process's cache may not have the base yet; gone from the remote too, the branch was rewritten.
+    if (!(await repo.ensureCommit(draft.baseCommit))) throw new GitConflictError(draft.branch, [dir])
     result = await commitToBranch(repo, {
       branch: draft.branch,
       base: draft.baseCommit,
@@ -380,6 +394,8 @@ export async function commitBranchDraft(
   } catch (err) {
     throw gitTrpcError(err)
   }
+  // The commit is on the branch: it's the draft's base now, even if someone saved meanwhile (their edits are
+  // uncommitted changes on top of it). Unless an update from the branch moved the base in the meantime.
   const [updated] = await db
     .update(gitBranchDrafts)
     .set({
@@ -387,7 +403,7 @@ export async function commitBranchDraft(
       branchExists: true,
       ...(result.changed ? { committedCommit: result.commit } : {}),
     })
-    .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.revision, opts.revision)))
+    .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.baseCommit, draft.baseCommit)))
     .returning()
   return { ...result, draft: updated ?? draft }
 }

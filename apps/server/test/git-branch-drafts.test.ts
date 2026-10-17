@@ -1,8 +1,9 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   auditEvents,
   gitBranchDrafts,
+  users,
   workflowDraftSnapshots,
   workflowReleases,
   workflowRuns,
@@ -11,6 +12,11 @@ import {
 import { deleteOldRuns } from '@ow/engine'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import {
+  commitBranchDraft,
+  loadBranchDraft,
+  updateBranchDraftFromBranch,
+} from '../src/services/git/branch-drafts'
 import { runGitDeploy } from '../src/services/git/deploy'
 import { GitRepo } from '../src/services/git/repo'
 import { fakeGitHub } from './fake-github'
@@ -140,6 +146,17 @@ describe('a branch draft, from opening to deploying', () => {
     expect(
       failure(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'nope' })),
     ).toMatchObject({ code: 'NOT_FOUND', message: 'The repo has no branch nope' })
+    // The deploy branch takes changes through pull requests only.
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.open', {
+          kind: 'workflow',
+          id: flowId,
+          branch: 'main',
+          create: true,
+        }),
+      ),
+    ).toMatchObject({ code: 'BAD_REQUEST', message: expect.stringContaining('through pull requests') })
     const plain = data(await admin.mutate('workflows.create', { slug: 'plain', name: 'Plain' })).id
     expect(
       failure(
@@ -411,6 +428,120 @@ describe('when others commit to the same branch', () => {
     expect(
       failure(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'broken' })),
     ).toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining("isn't valid JSON") })
+  })
+})
+
+describe('a new process, saves during a commit, and a rewritten branch', () => {
+  let draftId: string
+  const forgetCache = () => rmSync(join(dir, 'cache'), { recursive: true, force: true })
+  const adminUser = async () =>
+    (await env.db.select().from(users).where(eq(users.email, 'admin@optiply.nl')))[0]!
+  const stepCode = (draft: { definition: { blocks: { name: string; config?: { code?: string } }[] } }) =>
+    draft.definition.blocks.find((b) => b.name === 'step')!.config!.code
+
+  it('shows changes and commits with an empty cache (a restart, another replica)', async () => {
+    draftId = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'fresh',
+        create: true,
+      }),
+    ).id
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 1,
+        definition: flowDefinition('return 7'),
+      }),
+    )
+    // The branch isn't made yet: its changes are against the base commit, which a new cache doesn't have.
+    forgetCache()
+    expect(data(await admin.query('branchDrafts.changes', { id: draftId })).files).toHaveLength(1)
+    data(await admin.mutate('branchDrafts.commit', { id: draftId, revision: 2, message: 'Seven' }))
+    // Now the base is a commit only on this branch.
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: 2,
+        definition: flowDefinition('return 8'),
+      }),
+    )
+    forgetCache()
+    const second = data(
+      await admin.mutate('branchDrafts.commit', { id: draftId, revision: 3, message: 'Eight' }),
+    )
+    expect(second).toMatchObject({ changed: true })
+    expect(await other.fetchBranch('fresh')).toBe(second.commit)
+  })
+
+  it('moves the base to its commit even when someone saved during it', async () => {
+    const { draft: before, target } = await loadBranchDraft(env.db, draftId)
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: before.revision,
+        definition: flowDefinition('return 9'),
+      }),
+    )
+    // The commit started from what the person saw (before the save), and pushes that.
+    const committed = await commitBranchDraft(env.db, env.config, await adminUser(), {
+      target,
+      draft: { ...before, definition: flowDefinition('return "seen"') as never },
+      revision: before.revision,
+      message: 'What I saw',
+    })
+    expect(committed.draft).toMatchObject({ baseCommit: committed.commit, revision: before.revision + 1 })
+    // The save made meanwhile is an uncommitted change on top of it, not a conflict with our own commit.
+    const changes = data(await admin.query('branchDrafts.changes', { id: draftId }))
+    expect(changes).toMatchObject({ behind: false, conflict: false })
+    expect(changes.files[0]).toMatchObject({ before: 'return "seen"\n', after: 'return 9\n' })
+  })
+
+  it('refuses updating from the branch over a save it did not see', async () => {
+    const { draft: before, target } = await loadBranchDraft(env.db, draftId)
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id: draftId,
+        revision: before.revision,
+        definition: flowDefinition('return 10'),
+      }),
+    )
+    await expect(
+      updateBranchDraftFromBranch(env.db, env.config, await adminUser(), {
+        target,
+        draft: before,
+        discardChanges: true,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+    expect(stepCode(data(await admin.query('branchDrafts.get', { id: draftId })))).toBe('return 10')
+  })
+
+  it("asks before replacing a draft whose base commit is gone, and won't commit it", async () => {
+    await env.db
+      .update(gitBranchDrafts)
+      .set({ baseCommit: 'f'.repeat(40) })
+      .where(eq(gitBranchDrafts.id, draftId))
+    forgetCache()
+    expect(data(await admin.query('branchDrafts.changes', { id: draftId }))).toMatchObject({
+      behind: true,
+      conflict: true,
+    })
+    expect(failure(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))).toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('no longer in the repo'),
+    })
+    const { draft } = await loadBranchDraft(env.db, draftId)
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.commit', { id: draftId, revision: draft.revision, message: 'x' }),
+      ).code,
+    ).toBe('CONFLICT')
+    const updated = data(
+      await admin.mutate('branchDrafts.updateFromBranch', { id: draftId, discardChanges: true }),
+    )
+    expect(updated.baseCommit).toBe(await other.fetchBranch('fresh'))
+    expect(stepCode(updated)).toBe('return "seen"')
   })
 })
 

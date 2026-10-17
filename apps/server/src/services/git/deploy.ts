@@ -108,20 +108,29 @@ export async function runGitDeploy(
   let result: DeployResult = { status: 'not_configured' }
   let trigger = opts.trigger
   let force = opts.force ?? false
+  // Once handed back, the lease may be someone else's: only a lease still held here is released at the end.
+  let held = true
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       result = await deployOnce(db, config, { trigger, force, log: opts.log })
       const next = await handBackLease(db)
-      if (!next.again) return result
+      if (!next.again) {
+        held = false
+        return result
+      }
       trigger = next.by ?? 'webhook'
       force = trigger === 'manual'
     }
+    // Out of rounds with a request taken for one more: put it back for the next deploy (a poll, a webhook).
+    await db.update(gitSettings).set({ deployRequestedAt: sql`now()`, deployRequestedBy: trigger })
     return result
   } finally {
-    await db
-      .update(gitSettings)
-      .set({ deployLeaseUntil: null })
-      .catch(() => {})
+    if (held) {
+      await db
+        .update(gitSettings)
+        .set({ deployLeaseUntil: null })
+        .catch(() => {})
+    }
   }
 }
 

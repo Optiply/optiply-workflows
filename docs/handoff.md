@@ -253,7 +253,8 @@ Last updated: 2026-10-17 (start of session 12: the CI timeouts analysed and fixe
 - **Decided while building it** (told the user in the step reports):
   - **Protection takes effect at once**, not when the protect PR merges (main would drift meanwhile). Unprotect (Own) undoes it; the directory stays in the repo and stops deploying (`not_protected`).
   - **Writing to the deploy branch is the right to deploy**: deploys check everything publishing does except people's grants. Releases made by Git sync have no `created_by`, carry `git_commit`, and their notes are the commit subject, or the PR title and number for GitHub merge commits.
-  - **Admins keep an emergency rollback** (Make live on a protected object; audited `emergency: true`; the next deploy replaces it).
+  - **Admins keep an emergency rollback** (Make live on a protected object; audited `emergency: true`). It stays until a deploy that changes the object's directory, or an admin's Deploy now: a merge touching only other objects leaves it (session 12, from the PR #13 review; the text had said "the next deploy").
+  - **The deploy branch never takes a draft or a protect commit**: changes reach it through pull requests only (refused on the server). Protecting again picks a free branch name (`protect/<kind>-<slug>-2`, …) when an earlier protect left one.
   - **A directory removed from the branch doesn't delete the object** (`missing`); a slug held by an unprotected object isn't touched; one broken directory doesn't stop the others; no `ow.json` deploys nothing; an object deleted on the instance comes back on the next deploy.
   - **`maxConcurrentRuns`, folders and grants stay on the instance**; a workflow's name and description are in the repo.
   - **Empty workflow layouts aren't kept** in the repo; an app's layout is kept exactly (it counts in its hash). Files end with one newline that reading takes off.
@@ -670,8 +671,11 @@ The CI timeouts of "stops a workflow that calls itself after 10 levels" (4.3 s n
 ### Step 6 (this commit): done-when, Compose check, docs
 `e2e/m11-done-when.spec.ts` (with `E2E_GIT_REPO_DIR` for running it against another stack); the app editor stays mounted while main turns read-only after Protect (found by the spec: the Protect dialog vanished); `docker-compose.yml` passes `GIT_POLL_SECONDS`, `GIT_ALLOW_INSECURE_URLS` and `GITHUB_API_URL`; the test git server and fake GitHub take a listening address.
 
+### Review fixes (session 12, PR #13 review; this commit)
+Ten findings from the `code-review` skill, each checked against the code: (1) branch drafts and protect refused on the deploy branch (an Edit-only person could commit straight to main with the instance token, deployed unreviewed); (2, 3) changes and commit fetch the draft's base commit first (a new process's cache didn't have it: BAD_GATEWAY after a restart); (4) update from branch only at the revision it read (a concurrent save was overwritten); (5) a draft whose base commit is gone asks before being replaced; (6) a commit moves the base even when someone saved meanwhile (a false conflict with our own commit); (7) the deploy lease released only while held, and a request left at the round limit put back; (8) the rollback wording (above); (9) protecting again picks a free branch name, the Protect dialog leaving the default to the server; (10) one `liveOrDraft`. Tests: five in `git-branch-drafts.test.ts` (failed before the fixes), one in `git-protect.test.ts` (failed before).
+
 ### Totals at the end of M11
-`biome ci` is clean. Typecheck passes **12/12**. **1,794 tests pass** (git-format 824, server 295, connectors 144, engine 140, definition 124, expressions 103, app-definition 53, crypto 25, web 24, app-runtime 22, db 20, sandbox 20; 2 skipped), plus the two benchmarks and **26 Playwright e2e** (19 spec files, 1.7 min locally). Main bundle 447 kB (130 kB gzipped).
+`biome ci` is clean. Typecheck passes **12/12**. **1,799 tests pass** (git-format 824, server 300, connectors 144, engine 140, definition 124, expressions 103, app-definition 53, crypto 25, web 24, app-runtime 22, db 20, sandbox 20; 2 skipped), plus the two benchmarks and **26 Playwright e2e** (19 spec files, 1.7 min locally). Main bundle 447 kB (130 kB gzipped).
 
 ## 10. How things were verified (and how to repeat it)
 

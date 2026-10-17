@@ -309,13 +309,13 @@ function ReleaseRow({
             loading={setLive.isPending}
             title={
               workflow.gitProtected
-                ? 'Emergency rollback: the next deploy from Git replaces it'
+                ? 'Emergency rollback: it stays until the workflow’s next change in Git (or Deploy now)'
                 : 'Make this release live again'
             }
             onClick={() => {
               const current = workflow.liveRelease ? ` instead of v${workflow.liveRelease.version}` : ''
               const emergency = workflow.gitProtected
-                ? ' This workflow is protected: the next deploy from Git replaces it.'
+                ? ' This workflow is protected: this stays until its next change in Git (or Deploy now).'
                 : ''
               if (
                 confirm(

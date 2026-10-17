@@ -328,13 +328,13 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
                   loading={setLive.isPending && setLive.variables?.releaseId === r.id}
                   title={
                     app.gitProtected
-                      ? 'Emergency rollback: the next deploy from Git replaces it'
+                      ? 'Emergency rollback: it stays until the app’s next change in Git (or Deploy now)'
                       : 'Make this release live again'
                   }
                   onClick={() => {
                     if (
                       confirm(
-                        `Make v${r.version} live? People using the app will see it${live ? ` instead of v${live.version}` : ''}.${app.gitProtected ? ' This app is protected: the next deploy from Git replaces it.' : ''}`,
+                        `Make v${r.version} live? People using the app will see it${live ? ` instead of v${live.version}` : ''}.${app.gitProtected ? ' This app is protected: this stays until its next change in Git (or Deploy now).' : ''}`,
                       )
                     ) {
                       setLive.mutate({ appId: app.id, releaseId: r.id })

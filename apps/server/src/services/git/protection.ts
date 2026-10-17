@@ -38,8 +38,9 @@ export function requireUnprotected(
 }
 
 /**
- * Changing which release of a protected object is live: admins only, as an emergency rollback (the next deploy
- * from Git replaces it).
+ * Changing which release of a protected object is live: admins only, as an emergency rollback. It stays until Git
+ * changes the object (a deploy that changes its directory) or an admin's Deploy now: a merge touching only other
+ * objects leaves it, so nobody's unrelated change puts back what was rolled back.
  */
 export function requireRollbackAllowed(
   object: { gitProtected: boolean },
@@ -49,7 +50,7 @@ export function requireRollbackAllowed(
   if (object.gitProtected && !user.isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: `This ${kind} is protected: only admins can change its live release (an emergency rollback, until the next deploy from Git)`,
+      message: `This ${kind} is protected: only admins can change its live release (an emergency rollback, until its next change in Git or Deploy now)`,
     })
   }
 }
@@ -68,6 +69,16 @@ export function gitTrpcError(err: unknown): TRPCError {
     return new TRPCError({ code, message: err.message })
   }
   return new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: (err as Error).message, cause: err })
+}
+
+/** Changes reach the deploy branch through pull requests only: drafts and protecting work on other branches. */
+export function requireNotDeployBranch(branch: string, deployBranch: string): void {
+  if (branch === deployBranch) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `Changes reach ${deployBranch} through pull requests: pick another branch`,
+    })
+  }
 }
 
 /** The repo, or PRECONDITION_FAILED when Git sync isn't set up. */
@@ -131,6 +142,7 @@ export async function protectObject(
   if (object.gitProtected)
     throw new TRPCError({ code: 'CONFLICT', message: `This ${kind} is already protected` })
   const { repo, branch: base } = await requireGitRepo(db, config)
+  if (opts.branch) requireNotDeployBranch(opts.branch, base)
   const definition = await liveOrDraft(db, kind, object)
   const meta = { name: object.name, description: object.description }
   const { dir, files, warnings } = encodeObjectDir(
@@ -138,10 +150,11 @@ export async function protectObject(
       ? { kind, slug: object.slug, value: { ...meta, definition: definition as WorkflowDefinition } }
       : { kind, slug: object.slug, value: { ...meta, definition: definition as AppDefinition } },
   )
-  const branch = opts.branch ?? `protect/${kind}-${object.slug}`
   const author = { name: user.name, email: user.email }
+  let branch: string
   let commit: string
   try {
+    branch = opts.branch ?? (await freeProtectBranch(repo, `protect/${kind}-${object.slug}`))
     const main = await ensureBaseBranch(repo, base, author)
     const result = await commitToBranch(repo, {
       branch,
@@ -200,7 +213,20 @@ export async function openPullRequestFor(
   }
 }
 
-async function liveOrDraft(db: Db, kind: ObjectKind, object: Workflow | App) {
+/**
+ * The default protect branch, or the first of `<name>-2`, `<name>-3` … the repo doesn't have yet: one left from an
+ * earlier protect (unprotected before it merged) holds that version, and building on it would conflict.
+ */
+async function freeProtectBranch(repo: GitRepo, name: string): Promise<string> {
+  for (let n = 1; n <= 100; n++) {
+    const candidate = n === 1 ? name : `${name}-${n}`
+    if ((await repo.fetchBranch(candidate)) === null) return candidate
+  }
+  throw new GitError('failed', `Every branch from ${name} to ${name}-100 exists: delete some`)
+}
+
+/** What the instance holds of an object: its live release's definition, or its draft when nothing is live. */
+export async function liveOrDraft(db: Db, kind: ObjectKind, object: Workflow | App) {
   if (!object.liveReleaseId) return object.draftDefinition
   const [release]: Array<WorkflowRelease | AppRelease> =
     kind === 'workflow'
