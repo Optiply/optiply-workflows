@@ -292,6 +292,7 @@ export async function finishRun(
   },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
+    await lockParents(tx, [claim.runId])
     const rows = await tx.execute<{ parent_run_id: string | null }>(sql`
       update workflow_runs
       set status = ${outcome.status},
@@ -320,6 +321,8 @@ export async function finishRun(
  */
 export async function suspendRun(db: Db, claim: Claim, resumeAt: Date): Promise<boolean> {
   return db.transaction(async (tx) => {
+    // It may end here (cancelled), waking its parent.
+    await lockParents(tx, [claim.runId])
     const rows = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
       update workflow_runs
       set status = case when cancel_requested_at is null then 'waiting' else 'cancelled' end,
@@ -343,7 +346,8 @@ export async function suspendRun(db: Db, claim: Claim, resumeAt: Date): Promise<
     } else {
       // A child this run waits for may have ended, or its User Task been completed, just before it paused, while it
       // was still `running`, so that wake-up missed it. This statement sees every commit up to now; a later one
-      // waits on our row lock and then finds the run waiting. (`completeTask` locks the run row before it looks.)
+      // waits on our row lock and then finds the run waiting. A child ending (`lockParents`) and `completeTask`
+      // both lock this row before they look, so none can be halfway through, looked but not committed, here.
       await tx.execute(sql`
         update workflow_runs r set available_at = now()
         where r.id = ${claim.runId} and (
@@ -375,6 +379,7 @@ export async function cancelRun(
   runId: string,
 ): Promise<'cancelled' | 'requested' | 'finished' | 'not_found'> {
   const outcome = await db.transaction(async (tx) => {
+    await lockParents(tx, [runId])
     const [run] = await tx.execute<{ status: string; parent_run_id: string | null }>(sql`
       select status, parent_run_id from workflow_runs where id = ${runId} for update`)
     if (!run) return 'not_found' as const
@@ -410,9 +415,36 @@ export async function cancelRun(
   return outcome
 }
 
+/** Our own uuids as one array parameter (a Postgres array literal). */
+const uuidArray = (ids: readonly string[]) => `{${ids.join(',')}}`
+
+/**
+ * Locks the parents of runs that may end in this transaction, before the runs themselves, so a child ending and
+ * its parent pausing (`suspendRun`) never overlap: whichever goes second sees the other committed, the child's
+ * `wakeParents` finding the parent waiting, or the parent's re-check finding the child ended. Without it, a child
+ * whose wake-up ran while the parent was still `running` but committed after the parent's re-check looked was
+ * seen by neither, and the parent slept until its recheck an hour later. Locks always go ancestor first (a run's
+ * parent, then the run), so they can't deadlock; `for no key update` doesn't hold up children being inserted
+ * (their foreign key only takes a key-share lock). With `skipLocked` it doesn't wait, and returns the parents it
+ * locked.
+ */
+async function lockParents(
+  tx: Executor,
+  runIds: readonly string[],
+  opts: { skipLocked?: boolean } = {},
+): Promise<Set<string>> {
+  if (!runIds.length) return new Set()
+  const locked = await tx.execute<{ id: string }>(sql`
+    select p.id from workflow_runs p
+    where p.id in (select parent_run_id from workflow_runs where id = any(${uuidArray(runIds)}::uuid[]))
+    order by p.id
+    for no key update of p ${opts.skipLocked ? sql`skip locked` : sql``}`)
+  return new Set(locked.map((p) => p.id))
+}
+
 /**
  * A child run ended (finished, failed, cancelled): its parent, if it's paused waiting for it, can go now instead
- * of at its recheck time.
+ * of at its recheck time. The caller has locked the parents first (`lockParents`).
  */
 async function wakeParents(tx: Executor, rows: readonly { parent_run_id?: string | null }[]) {
   const parents = [...new Set(rows.flatMap((r) => (r.parent_run_id ? [r.parent_run_id] : [])))]
@@ -503,12 +535,27 @@ export async function reapExpiredLeases(
     message: `The worker running this run stopped responding ${maxRecoveries + 1} times`,
   })
   return db.transaction(async (tx) => {
+    // Failed and cancelled runs wake their parents: lock those first (`lockParents`), then the expired runs, which
+    // are checked again under their lock. Several parents at once could be locked in an order that isn't ancestor
+    // first, so the reaper never waits for one: a run whose parent is busy is reaped on a later pass.
+    const candidates = await tx.execute<{ id: string; parent_run_id: string | null }>(sql`
+      select id, parent_run_id from workflow_runs
+      where status = 'running' and lease_expires_at < now()
+      order by lease_expires_at
+      limit ${batch}`)
+    if (!candidates.length) return { requeued: [], failed: [], cancelled: [] }
+    const parents = await lockParents(
+      tx,
+      candidates.map((c) => c.id),
+      { skipLocked: true },
+    )
+    const ids = candidates.filter((c) => !c.parent_run_id || parents.has(c.parent_run_id)).map((c) => c.id)
+    if (!ids.length) return { requeued: [], failed: [], cancelled: [] }
     const rows = await tx.execute<{ id: string; status: string; parent_run_id: string | null }>(sql`
       with expired as (
         select id from workflow_runs
-        where status = 'running' and lease_expires_at < now()
+        where id = any(${uuidArray(ids)}::uuid[]) and status = 'running' and lease_expires_at < now()
         order by lease_expires_at
-        limit ${batch}
         for update skip locked
       )
       update workflow_runs r
