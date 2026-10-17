@@ -38,6 +38,7 @@ export function Canvas() {
   const fn = useEditor((s) => s.graph)
   const allDiagnostics = useEditor((s) => s.diagnostics)
   const selected = useEditor((s) => s.selected)
+  const selection = useEditor((s) => s.selection)
   const select = useEditor((s) => s.select)
   // Read-only (Use, or a protected workflow's main draft): blocks can be selected, not moved, connected or deleted.
   const editable = !useEditor((s) => s.readOnly)
@@ -50,18 +51,32 @@ export function Canvas() {
   const runBlocks = useRun((s) => s.blocks)
   const live = fn === null ? runBlocks : NO_LIVE
   const derived = useMemo(
-    () => toNodes(graph, diagnostics, selected, live, fn),
-    [graph, diagnostics, selected, live, fn],
+    () => toNodes(graph, diagnostics, selection, live, fn),
+    [graph, diagnostics, selection, live, fn],
   )
-  // React Flow owns node state while dragging; it's rebuilt whenever the definition changes.
+  // React Flow owns node state while dragging; it's rebuilt whenever the definition changes. What's selected comes
+  // from the store alone (see onNodesChange), so the two never disagree about it.
   const [nodes, setNodes] = useState<BlockNode[]>(derived)
   useEffect(() => setNodes(derived), [derived])
   const edges = useMemo(() => toEdges(graph, diagnostics, live, fn), [graph, diagnostics, live, fn])
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange<BlockNode>[]) => setNodes((current) => applyNodeChanges(changes, current)),
-    [],
-  )
+  // Clicks, ⌘/Ctrl-clicks and box selection arrive as `select` changes: they go to the store's selection (in the
+  // graph's order), which the nodes are rebuilt from. Everything else (dragging, measuring) stays React Flow's.
+  const onNodesChange = useCallback((changes: NodeChange<BlockNode>[]) => {
+    const picks = changes.filter((c) => c.type === 'select')
+    if (picks.length) {
+      const state = useEditor.getState()
+      const chosen = new Set(state.selection)
+      for (const c of picks) {
+        if (c.selected) chosen.add(c.id)
+        else chosen.delete(c.id)
+      }
+      const order = graphOf(state.definition, state.graph).blocks.map((b) => b.name)
+      state.setSelection(order.filter((name) => chosen.has(name)))
+    }
+    const rest = changes.filter((c) => c.type !== 'select')
+    if (rest.length) setNodes((current) => applyNodeChanges(rest, current))
+  }, [])
 
   const onConnect = useCallback(({ source, sourceHandle, target }: Connection) => {
     if (source === target) return
@@ -87,6 +102,7 @@ export function Canvas() {
       const ids = new Set(cut.map((e) => e.id))
       updateGraph((g) => removeFrom(g, names, ids))
       if (selected && names.has(selected)) select(null)
+      else useEditor.getState().setSelection(useEditor.getState().selection.filter((n) => !names.has(n)))
     },
     [select, selected],
   )
@@ -102,7 +118,8 @@ export function Canvas() {
       onConnect={onConnect}
       onNodeDragStop={onNodeDragStop}
       onDelete={onDelete}
-      onNodeClick={(_, node) => select(node.id)}
+      // A click shows the block; React Flow keeps the selection (several with ⌘/Ctrl-click or a box), for copying.
+      onNodeClick={(_, node) => useEditor.getState().inspect(node.id)}
       onPaneClick={() => select(null)}
       nodesDraggable={editable}
       nodesConnectable={editable}
@@ -143,17 +160,18 @@ const edgeId = (e: { from: string; port: string; to: string }) => `${e.from}|${e
 function toNodes(
   def: GraphPart,
   diagnostics: Diagnostic[],
-  selected: string | null,
+  selection: string[],
   live: Record<string, LiveBlock>,
   fn: string | null,
 ): BlockNode[] {
+  const chosen = new Set(selection)
   const positions = positionsFor(def)
   return def.blocks.map((block) => ({
     id: block.name,
     type: 'block',
     position: positions[block.name] ?? { x: 0, y: 0 },
     data: { block, problems: problemsOf(diagnostics, block.name, fn), live: live[block.name] },
-    selected: block.name === selected,
+    selected: chosen.has(block.name),
     deletable: block.type !== 'startTrigger',
   }))
 }

@@ -584,7 +584,7 @@ function checkGraph(
 }
 
 /** Why a block can't be part of a function, or null if it can. */
-function notInFunction(block: Block): string | null {
+export function notInFunction(block: Block): string | null {
   switch (block.type) {
     case 'startTrigger':
       return "A function doesn't have a start trigger; it starts with the blocks nothing connects into"

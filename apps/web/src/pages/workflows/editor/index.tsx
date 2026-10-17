@@ -17,11 +17,13 @@ import {
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { textSelected } from '@/lib/clipboard'
 import { dialogOpen, isTextTarget, shortcutFor, shortcutLabel } from '@/lib/shortcuts'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { addableIn, BLOCK_KINDS, newBlock, nextName, PYTHON_KIND } from './catalog'
+import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
@@ -217,6 +219,7 @@ function EditorLayout({
               <Canvas />
               {editable && <Toolbar />}
               <FunctionBanner />
+              <PasteNotice />
             </div>
             {panelOpen && <RunPanel />}
           </div>
@@ -224,7 +227,7 @@ function EditorLayout({
         </div>
       </div>
       {editable && <Autosave />}
-      {editable && <UndoShortcuts />}
+      <EditorShortcuts editable={editable} />
     </ReactFlowProvider>
   )
 }
@@ -380,20 +383,66 @@ function UndoButtons() {
   )
 }
 
-/** ⌘Z / Ctrl+Z and the redo keys on the editor; text fields and Monaco keep them for their own undo. */
-function UndoShortcuts() {
+/**
+ * The editor's keys: undo and redo, ⌘D to duplicate, and copy and paste through the browser's own events (Edit
+ * menu included). Text fields and Monaco keep them for themselves. Copying works on a read-only draft; the rest
+ * only where it can be edited.
+ */
+function EditorShortcuts({ editable }: { editable: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const shortcut = shortcutFor(e)
-      if ((shortcut !== 'undo' && shortcut !== 'redo') || isTextTarget(e.target) || dialogOpen()) return
+      if (!shortcut || !editable || isTextTarget(e.target) || dialogOpen()) return
       e.preventDefault()
       if (shortcut === 'undo') useEditor.getState().undo()
-      else useEditor.getState().redo()
+      else if (shortcut === 'redo') useEditor.getState().redo()
+      else duplicateChosen()
+    }
+    const onCopy = (e: ClipboardEvent) => {
+      if (isTextTarget(e.target) || dialogOpen() || textSelected()) return
+      const text = copyText()
+      if (text === null || !e.clipboardData) return
+      e.clipboardData.setData('text/plain', text)
+      e.preventDefault()
+    }
+    const onPaste = (e: ClipboardEvent) => {
+      if (!editable || isTextTarget(e.target) || dialogOpen() || !e.clipboardData) return
+      if (pasteText(e.clipboardData.getData('text/plain'))) e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    document.addEventListener('copy', onCopy)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('copy', onCopy)
+      document.removeEventListener('paste', onPaste)
+    }
+  }, [editable])
   return null
+}
+
+/** What the last paste renamed, skipped or brought along; it goes after a while, or when dismissed. */
+function PasteNotice() {
+  const notice = useEditor((s) => s.notice)
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => useEditor.getState().notify(null), 15_000)
+    return () => clearTimeout(timer)
+  }, [notice])
+  if (!notice) return null
+  return (
+    <div
+      role="status"
+      data-testid="paste-notice"
+      className="absolute bottom-3 left-1/2 z-10 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm shadow-md"
+    >
+      <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+      <span className="min-w-0">{notice}</span>
+      <Button size="sm" variant="ghost" onClick={() => useEditor.getState().notify(null)}>
+        Dismiss
+      </Button>
+    </div>
+  )
 }
 
 /** Environment, Run (saves first, then runs with the test input) and the run panel toggle. */

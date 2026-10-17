@@ -95,6 +95,19 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor().status).toBe('saved')
   })
 
+  it('keeps the canvas selection: one block when selected in code, several from the canvas', () => {
+    editor().select('code1')
+    expect(editor().selection).toEqual(['code1'])
+    const state = editor()
+    editor().setSelection(['code1'])
+    expect(editor()).toBe(state) // the same selection changes nothing (no one is notified)
+    editor().setSelection(['startTrigger', 'code1'])
+    editor().inspect('startTrigger')
+    expect(editor()).toMatchObject({ selected: 'startTrigger', selection: ['startTrigger', 'code1'] })
+    editor().select(null)
+    expect(editor().selection).toEqual([])
+  })
+
   it('raises the epoch on undo and redo, and clears the history when a draft is loaded', () => {
     typeCode('x')
     const epoch = editor().epoch

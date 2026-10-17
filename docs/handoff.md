@@ -738,7 +738,7 @@ Ten findings from the `code-review` skill, checked against the code (nine real, 
 ### Plan, `2073d5d`
 `docs/architecture.md` §2.7 (M13, M14, M15+ with AI actions last), §2.8 item 12, §2.15; this file (§1, "Taken in M13", §14, §15). Before it, on `main`: PR #16 (`c2cf787`), the CI timeout after #15's merge (a 30 s test timeout in the seven packages still on vitest's 5 s default: the runner was overloaded, the suite 80× slower than here) and a quadratic in `buildAppGraph` (a value read by 40,000 components: 2.6 s → 0.5 s).
 
-### Step 1 (this commit): history and workflow undo/redo
+### Step 1, `6b8a033`: history and workflow undo/redo
 - `apps/web/src/lib/history.ts`: `record`, `undo`, `redo`, `seal` over snapshots (`{before, after, view, key, at}`, 100 at most). **Grouping is automatic**, not keyed at the call sites as planned: `changeKey(before, after)` compares the definitions by reference and names the plain values the edit replaced (`.blocks.1.config.code`); consecutive edits with the same key less than 1 s apart merge, and edits that change the shape (adding or removing blocks, edges, objects) never do. That covers every field (25 call sites) without touching them. `sameValue` (JSON equality, by reference first).
 - **Found by the e2e:** some call sites rebuild the definition without changing it (a field reporting the value it has): 13 such edits while building a three-block workflow. They used to mark the draft dirty and save it again; they would have been invisible steps to undo. `update` now ignores an edit equal to what it replaces (`sameValue`): no step, no save.
 - `apps/web/src/lib/shortcuts.ts`: `shortcutFor` (⌘ on a Mac, Ctrl elsewhere; Ctrl+Y redoes; nothing with Alt or while composing), `isTextTarget` (inputs, text areas, editable content, `.monaco-editor`: they keep the keys for their own undo), `dialogOpen`, `shortcutLabel`.
@@ -746,6 +746,28 @@ Ten findings from the `code-review` skill, checked against the code (nine real, 
 - The editor: Undo and Redo in the toolbar (titles with the shortcut), ⌘Z / ⇧⌘Z / Ctrl+Y on the page while editable.
 - **The Use-level fix:** people with Use load the main draft read-only (`mainReadOnly`: protected or Use), so edits are ignored and the stale check no longer reloads on every refetch; a read-only canvas doesn't drag, connect or delete.
 - Tests: `history.test.ts` (10), `shortcuts.test.ts` (5), `store.test.ts` (7: exact definition back and forward, typing merged and split by a pause or a selection, the view restored or dropped, epoch and load, read-only and conflict, a save in flight, a no-op edit); `e2e/workflow-undo.spec.ts` (toolbar undo shows the block it undid, the code back as it was, keyboard redo and undo, ⌘Z inside Monaco is Monaco's own, what undo left is what reloads; Use: read-only, no drag, Delete or undo).
+
+### Fix, `4926474`: a flaky check timeout
+CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client.test.ts` gave every test's client the 300 ms check timeout only "gives up on a check that doesn't answer" needs, and a busy runner took longer than that to get the fake executor's immediate answer back. The test client now defaults to 30 s.
+
+### Step 2 (this commit): copy, paste and duplicate blocks
+- **The spike** (as planned): the browser's `copy` and `paste` events carry `clipboardData` under Playwright in Chrome, without granting clipboard permissions, from one tab to another. (CI's headless Chromium is checked by CI.)
+- `packages/definition/src/paste.ts`:
+  - `blockClipSchema`, the clipboard's JSON: `{ ow: 'workflow-blocks', v: 1, blocks, edges, positions, functions }`.
+  - `copyBlocks`: the blocks, the edges between them, their positions, and the functions they call, followed through the functions those call. Never the start trigger.
+  - `pasteBlocks`:
+    - **Names:** fresh names (the stem and the next free number, never one of the pasted names, so renames never chain), given through `renameBlock` on a definition holding only the pasted blocks, so references between them follow and nothing else's do; a name a local would capture is passed over.
+    - **What's left out:** the start trigger, a second error handler, and what a function can't hold (`notInFunction`, now exported). Edges to what was skipped go too.
+    - **Functions:** added when missing, reused when the same (canonical JSON, layout aside), the target's kept when different, not added when a block has the name.
+    - Connected after the selected block like Add; placed at `at` or moved by `offset`.
+    - Lists references to blocks that weren't copied, and whether the target has a block of that name.
+- `apps/web/src/lib/clipboard.ts`: `readClip` (JSON of one `ow` kind, parsed with its schema, at most 2 MB; anything else is left to the browser), `rememberCopy` / `copiedHere` (a hash of the last copied text in `localStorage`, shared by tabs), `textSelected`.
+- The workflow editor:
+  - `editor/clipboard.ts`: `copyText` (with the positions the canvas shows), `pasteText` (asks first when the text wasn't copied in this browser; to the right of the selected block, connected to it, or of the rightmost), `duplicateChosen` (⌘D, 40 px down and right, unconnected), `pasteSummary`.
+  - `EditorShortcuts` handles the keys and the copy and paste events (copy works read-only too).
+  - `PasteNotice` shows the summary of a paste (what was skipped, brought along, or still reads blocks that weren't copied).
+- **Found by the e2e, twice:** "Maximum update depth exceeded". First, `onSelectionChange` as an inline arrow (React Flow calls it again for every new function) with an equality guard that still notified. Then React Flow and the store fought over `selected` after a click on a multi-selection (React Flow's `StoreUpdater`). Fixed by making the store the only source: React Flow's `select` changes go to the store and the nodes are built from it; `onSelectionChange` is gone.
+- Tests: `test/paste.test.ts` (12, including 300 seeded random workflows: the target unchanged and first, the pasted names fresh and distinct, edges and references among the pasted blocks the copied ones renamed, no duplicate names; two mutation checks, both caught); `clipboard.test.ts` (3); `store.test.ts` (+1: the selection); `e2e/workflow-clipboard.spec.ts` (two blocks copied to another workflow after its block: fresh names, the reference and the function follow, the edges; undo and redo of the paste; ⌘D; a paste this browser didn't copy asks, and is pasted once accepted; plain text is left alone).
 
 ## 10. How things were verified (and how to repeat it)
 

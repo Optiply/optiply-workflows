@@ -59,8 +59,12 @@ interface EditorState {
   savedJson: string
   status: SaveStatus
   saveError: string | null
-  /** The block selected on the canvas, in the open graph. */
+  /** The block whose inspector shows, in the open graph. */
   selected: string | null
+  /** The blocks selected on the canvas (several with ⌘/Ctrl-click or a box), for copy; the nodes show it. */
+  selection: string[]
+  /** A message about the last paste (what was renamed, skipped or brought along), until dismissed. */
+  notice: string | null
   /** The function open on the canvas, or null for the workflow itself. */
   graph: string | null
   diagnostics: Diagnostic[]
@@ -85,7 +89,13 @@ interface EditorState {
   undo(): void
   /** Makes the last undone edit again. */
   redo(): void
+  /** Selects one block (or none), as the only one selected on the canvas. */
   select(name: string | null): void
+  /** Shows a block's inspector, leaving the canvas selection as React Flow's click made it (⌘/Ctrl adds). */
+  inspect(name: string): void
+  /** The canvas selection changed: React Flow's `select` changes, from clicks and box selection. */
+  setSelection(names: string[]): void
+  notify(message: string | null): void
   /** Opens a function on the canvas (or the workflow, with null), selecting `block` in it. */
   openGraph(fn: string | null, block?: string | null): void
   saving(): void
@@ -112,6 +122,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   status: 'saved',
   saveError: null,
   selected: null,
+  selection: [],
+  notice: null,
   graph: null,
   diagnostics: [],
   samples: {},
@@ -131,6 +143,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
       status: 'saved',
       saveError: null,
       selected: null,
+      selection: [],
+      notice: null,
       graph: null,
       diagnostics: validateDefinition(definition).diagnostics,
       history: emptyHistory(),
@@ -173,8 +187,15 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
 
   // A new selection ends the step being typed: the next edit is undone on its own.
-  select: (selected) => set((s) => ({ selected, history: seal(s.history) })),
-  openGraph: (graph, block = null) => set((s) => ({ graph, selected: block, history: seal(s.history) })),
+  select: (selected) =>
+    set((s) => ({ selected, selection: selected ? [selected] : [], history: seal(s.history) })),
+  inspect: (selected) => set((s) => ({ selected, history: seal(s.history) })),
+  setSelection: (names) =>
+    // The same selection returns the state itself, so nothing is notified.
+    set((s) => (sameNames(s.selection, names) ? s : { selection: names, history: seal(s.history) })),
+  notify: (notice) => set({ notice }),
+  openGraph: (graph, block = null) =>
+    set((s) => ({ graph, selected: block, selection: block ? [block] : [], history: seal(s.history) })),
   saving: () => set({ status: 'saving', saveError: null }),
   saved: (revision, savedJson, draftHash) =>
     set({
@@ -211,13 +232,17 @@ function applied(
 }
 
 /** `view` in `def`: a function that's gone opens the workflow; a block that's gone isn't selected. */
-function restoredView(def: WorkflowDefinition, view: EditorView): EditorView {
+function restoredView(def: WorkflowDefinition, view: EditorView): EditorView & { selection: string[] } {
   const graph = view.graph !== null && def.functions?.some((f) => f.name === view.graph) ? view.graph : null
   const selected =
     view.selected !== null && graphOf(def, graph).blocks.some((b) => b.name === view.selected)
       ? view.selected
       : null
-  return { graph, selected }
+  return { graph, selected, selection: selected ? [selected] : [] }
+}
+
+function sameNames(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((name, i) => name === b[i])
 }
 
 /** Applies an edit to the open graph (the workflow's, or the open function's). */
