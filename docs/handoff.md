@@ -31,7 +31,7 @@ Last updated: 2026-10-17 (session 12: the CI timeouts fixed as an engine race, P
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
-| **M12 Python** | 🚧 On `feat/m12-python` (§9f), PR #14: planned in session 12 (§14, `architecture.md` §2.14); steps 1 (the executor), 2 (the definition), 3 (engine and server) and 4 (the editor) built |
+| **M12 Python** | 🚧 On `feat/m12-python` (§9f), PR #14: planned in session 12 (§14, `architecture.md` §2.14); steps 1 (the executor), 2 (the definition), 3 (engine and server), 4 (the editor) and 5 (ops) built |
 
 **Start the next session with:** M12 step 1 (§14): the executor spike and service, unless it's already pushed (check the draft PR's checklist).
 
@@ -706,6 +706,12 @@ Ten findings from the `code-review` skill, each checked against the code: (1) br
 - `inspectors.tsx`: `LanguageCode` (Language picker, the editor in that language, the validator's and the executor's problems, the "can't run here" note) for code blocks and loop code runners; `withLanguage` keeps `language` sparse. Both used to replace the whole config on a keystroke (would have dropped `language`).
 - `python-check.ts` (`usePythonCheck`), `components/code/monaco.ts` (Python completions from the sample scope), `code-field.tsx` (the `python` language).
 - e2e: the executor container in the global setup when Docker is there (`E2E_PYTHON`; CI has Docker), its URL and token for the server. `python.spec.ts`: add a Python block after a query (picking `shop_db`: other specs add REST resources, and a new query takes the first resource), a syntax error marked by the executor's check before running (balanced brackets: Monaco's Python mode closes an open one), fixed, run on the executor, the query renamed and the Python rewritten, run again. 3 repeats and the whole suite (27) pass; a screenshot walkthrough checked the canvas, the inspector, the marker and completions.
+
+### Step 5 (this commit): ops
+- `docker-compose.yml`: the `code-executor` service and the internal `executor` network (above, `architecture.md` §2.14); `PYTHON_EXECUTOR_URL` and the required `PYTHON_EXECUTOR_TOKEN` in the app's environment. **The Compose stack needs `PYTHON_EXECUTOR_TOKEN` in `.env` from now on** (Compose refuses to start without it).
+- `.env.example`: the token and the executor's settings. `.github/workflows/ci.yml`: the docker job builds the executor image.
+- `docs/runbooks/python.md` (new).
+- Checked in a separate Compose project (`ow-step5`, not the shared stack): healthy in seconds; a pandas run; a 400 MB allocation stopped as `memory` at the 256 MB default; the container can't reach the internet (internal network); the seccomp profile's relative path works; no published port, not privileged. Removed afterwards.
 
 ## 10. How things were verified (and how to repeat it)
 
