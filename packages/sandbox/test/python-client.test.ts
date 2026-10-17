@@ -30,7 +30,10 @@ beforeAll(async () => {
 })
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())))
 
-const client = () => new PythonExecutorClient({ url, token: 't'.repeat(16), checkTimeoutMs: 300 })
+// A short check timeout only where the fake never answers: elsewhere a busy CI runner can take longer than that to
+// get the fake's immediate answer back (it did: "didn't answer within 0.3 s").
+const client = (checkTimeoutMs = 30_000) =>
+  new PythonExecutorClient({ url, token: 't'.repeat(16), checkTimeoutMs })
 const failure = async (p: Promise<unknown>) => {
   const err = await p.catch((e: unknown) => e)
   expect(err).toBeInstanceOf(SandboxError)
@@ -69,7 +72,7 @@ it("never reads a failed check as 'no problems'", async () => {
 
 it("gives up on a check that doesn't answer, and says so", async () => {
   handler = () => {} // never answers
-  expect(await failure(client().check([{ id: 'a', code: 'x' }]))).toMatchObject({
+  expect(await failure(client(300).check([{ id: 'a', code: 'x' }]))).toMatchObject({
     kind: 'unavailable',
     message: "The Python executor didn't answer within 0.3 s",
   })
