@@ -29,7 +29,10 @@ async function post(path: string, body: unknown, opts: { token?: string; signal?
 async function run(code: string, scope: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<Outcome> {
   const res = await post('/run', { code, scope, timeoutMs })
   expect(res.status).toBe(200)
-  return (await res.json()) as Outcome
+  const outcome = (await res.json()) as Outcome
+  // The jail itself failing isn't any test's subject: say why, instead of a bare `ok: false`.
+  if (outcome.error?.kind === 'internal') throw new Error(outcome.error.message)
+  return outcome
 }
 
 /** Lines of Python, so the tests read like the code people write. */
@@ -273,7 +276,7 @@ describe.skipIf(!available)('the code executor', () => {
         ),
       )
       expect(outcome.result).toEqual({
-        seen: ['bin', 'dev', 'etc', 'lib', 'opt', 'tmp', 'usr'],
+        seen: ['bin', 'dev', 'etc', 'lib', 'lib64', 'opt', 'tmp', 'usr'],
         gone: [],
         refused: ['/x', '/usr/x', '/opt/py/x', '/opt/runner/x'],
         tmp: 'fine',

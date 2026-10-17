@@ -65,7 +65,7 @@ class Execution:
         args = [
             NSJAIL,
             "--config", JAIL_CONFIG,
-            "--really_quiet",
+            "--quiet",
             "--log_fd", str(jail_log_w),
             "--pass_fd", str(result_w),
             "--time_limit", str(seconds + 1),
@@ -197,7 +197,15 @@ class Execution:
                     return outcome
             except ValueError:
                 pass
-        # No outcome: the jail killed it, or the code ended the interpreter itself.
+        # No outcome: the jail never started, the jail killed it, or the code ended the interpreter itself.
+        jail_errors = [
+            line for line in self.jail_log.decode("utf-8", "replace").splitlines() if line.startswith(("[E]", "[F]"))
+        ]
+        if jail_errors and not self.logs:
+            log("jail_failed", message="\n".join(jail_errors)[-2000:])
+            reason = jail_errors[0].split("] ", 2)[-1] if "] " in jail_errors[0] else jail_errors[0]
+            error = {"kind": "internal", "message": f"The executor couldn't start a jail: {reason}"}
+            return {"ok": False, "error": error, "logs": logs}
         if killed == "timeout" or elapsed * 1000 >= self.timeout_ms or code in (128 + signal.SIGXCPU, -signal.SIGXCPU):
             error = {"kind": "timeout", "message": f"The code didn't finish within {self.timeout_ms} ms"}
         elif code in (137, -signal.SIGKILL):

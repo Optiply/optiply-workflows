@@ -58,6 +58,22 @@ export function executorImage(): string {
       stdio: ['ignore', 'ignore', 'inherit'],
       timeout: 900_000,
     })
+    // Earlier sources' images (433 MB each) would pile up; one still running a container stays.
+    const old = execFileSync('docker', [
+      'image',
+      'ls',
+      'ow-code-executor',
+      '--format',
+      '{{.Repository}}:{{.Tag}}',
+    ])
+      .toString()
+      .split('\n')
+      .filter((tag) => tag.startsWith('ow-code-executor:test-') && tag !== image)
+    for (const tag of old) {
+      try {
+        execFileSync('docker', ['image', 'rm', tag], { stdio: 'ignore' })
+      } catch {}
+    }
   }
   return image
 }
