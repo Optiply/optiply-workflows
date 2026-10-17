@@ -9,7 +9,7 @@ import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
-import { addableIn, BLOCK_KINDS, newBlock, nextName } from './catalog'
+import { addableIn, BLOCK_KINDS, newBlock, nextName, PYTHON_KIND } from './catalog'
 import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
@@ -238,6 +238,8 @@ function Header({
   )
 }
 
+type AddableType = Exclude<BlockType, 'startTrigger'>
+
 function Toolbar() {
   const trpc = useTRPC()
   const select = useEditor((s) => s.select)
@@ -249,13 +251,14 @@ function Toolbar() {
   const { fitView } = useReactFlow()
   const types = addableIn(fn !== null, graphOf(definition, fn).blocks)
 
-  const add = (type: Exclude<BlockType, 'startTrigger'>) => {
+  const add = (type: Exclude<BlockType, 'startTrigger'>, python = false) => {
     let added = ''
     const functions = (useEditor.getState().definition.functions ?? []).map((f) => f.name)
     updateGraph((def) => {
       // Block names can't be function names either (code calls functions by name).
-      added = nextName(type, [...def.blocks.map((b) => b.name), ...functions])
-      const block = newBlock(type, added, queryable[0], { functions, inFunction: fn !== null })
+      const taken = [...def.blocks.map((b) => b.name), ...functions]
+      added = python ? nextName(type, taken, PYTHON_KIND) : nextName(type, taken)
+      const block = newBlock(type, added, queryable[0], { functions, inFunction: fn !== null, python })
       const positions = positionsFor(def)
       // To the right of the selected block, or after the rightmost one.
       const anchor = selected && positions[selected]
@@ -284,25 +287,29 @@ function Toolbar() {
   return (
     <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
       <Plus className="mx-1 size-3.5 text-muted" />
-      {types.map((type) => {
-        const kind = BLOCK_KINDS[type]
-        const Icon = kind.icon
-        const disabled = type === 'resourceQuery' && queryable.length === 0
-        const label = `Add a ${kind.label.toLowerCase()} block`
-        return (
-          <Button
-            key={type}
-            size="icon"
-            variant="ghost"
-            disabled={disabled}
-            title={disabled ? 'Add a resource first' : label}
-            aria-label={label}
-            onClick={() => add(type)}
-          >
-            <Icon className="size-4" />
-          </Button>
+      {types
+        .flatMap((type): { type: AddableType; python?: boolean }[] =>
+          type === 'code' ? [{ type }, { type, python: true }] : [{ type }],
         )
-      })}
+        .map(({ type, python }) => {
+          const kind = python ? PYTHON_KIND : BLOCK_KINDS[type]
+          const Icon = kind.icon
+          const disabled = type === 'resourceQuery' && queryable.length === 0
+          const label = python ? 'Add a Python code block' : `Add a ${kind.label.toLowerCase()} block`
+          return (
+            <Button
+              key={python ? 'python' : type}
+              size="icon"
+              variant="ghost"
+              disabled={disabled}
+              title={disabled ? 'Add a resource first' : label}
+              aria-label={label}
+              onClick={() => add(type, python)}
+            >
+              <Icon className="size-4" />
+            </Button>
+          )
+        })}
       <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"

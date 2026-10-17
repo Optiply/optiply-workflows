@@ -1,4 +1,4 @@
-import { canonicalJson, type WorkflowDefinition } from '@ow/definition'
+import { canonicalJson, type WorkflowDefinition, workflowDefinitionSchema } from '@ow/definition'
 import { describe, expect, it } from 'vitest'
 import {
   decodeWorkflow,
@@ -6,6 +6,7 @@ import {
   type Files,
   LAYOUT_FILE,
   WORKFLOW_FILE,
+  type WorkflowObject,
   workflowForGit,
 } from '../src'
 
@@ -227,6 +228,51 @@ describe('decodeWorkflow', () => {
     expect(problems({ ...files, [LAYOUT_FILE]: JSON.stringify(bad) })).toEqual([
       [LAYOUT_FILE, 'invalid_definition'],
       [LAYOUT_FILE, 'invalid_definition'],
+    ])
+  })
+})
+
+describe('Python code', () => {
+  const python: WorkflowObject = {
+    name: 'Python',
+    description: null,
+    definition: workflowDefinitionSchema.parse({
+      schemaVersion: 1,
+      blocks: [
+        { name: 'startTrigger', type: 'startTrigger' },
+        { name: 'shape', type: 'code', config: { code: 'return startTrigger.data\n', language: 'python' } },
+        {
+          name: 'each',
+          type: 'loop',
+          config: { input: '{{ [1] }}', runner: { kind: 'code', code: 'return value', language: 'python' } },
+        },
+        { name: 'js', type: 'code', config: { code: 'return 1' } },
+      ],
+      edges: [],
+    }),
+  }
+
+  it('goes into .py files (JavaScript stays .js), and reads back', () => {
+    const { files } = encodeWorkflow(python)
+    expect(Object.keys(files).sort()).toEqual([
+      'blocks/each.py',
+      'blocks/js.js',
+      'blocks/shape.py',
+      'workflow.json',
+    ])
+    expect(files['blocks/shape.py']).toBe('return startTrigger.data\n\n')
+    expect(files['workflow.json']).toContain('"language": "python"')
+    const decoded = decodeWorkflow(files)
+    expect(decoded.ok && decoded.value.definition).toEqual(workflowForGit(python.definition))
+  })
+
+  it('reports a Python block whose code is in a .js file', () => {
+    const { files } = encodeWorkflow(python)
+    const { 'blocks/shape.py': code, ...rest } = files
+    const decoded = decodeWorkflow({ ...rest, 'blocks/shape.js': code! })
+    expect(decoded.ok ? [] : decoded.problems.map((p) => [p.path, p.code])).toEqual([
+      ['blocks/shape.py', 'missing_file'],
+      ['blocks/shape.js', 'unexpected_file'],
     ])
   })
 })

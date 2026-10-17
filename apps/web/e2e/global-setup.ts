@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { executorAvailable, startTestExecutor } from '@ow/code-executor/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { fakeGitHub } from '../../server/test/fake-github'
@@ -53,6 +54,11 @@ export default async function globalSetup() {
   process.env.E2E_GIT_REPO_URL = `file://${repoPath}`
   process.env.E2E_FAKE_GITHUB = github.url
 
+  // Python (M12): the code executor in a container, when Docker is there (CI must have it). Specs that need it read
+  // E2E_PYTHON.
+  const executor = executorAvailable() ? await startTestExecutor() : null
+  if (executor) process.env.E2E_PYTHON = '1'
+
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
     ...process.env,
@@ -74,6 +80,7 @@ export default async function globalSetup() {
     GIT_CACHE_DIR: join(gitRoot, 'cache'),
     GITHUB_API_URL: github.url,
     GIT_POLL_SECONDS: '2',
+    ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
   }
 
   for (const [email, name] of [
@@ -135,6 +142,7 @@ export default async function globalSetup() {
     await new Promise((resolve) => server.once('exit', resolve))
     await pg.stop()
     await github.close()
+    await executor?.stop()
     rmSync(gitRoot, { recursive: true, force: true })
   }
 }

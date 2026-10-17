@@ -10,6 +10,8 @@ export type FieldKind =
   | 'function-body'
   /** A function body run synchronously (app transformers). */
   | 'sync-function-body'
+  /** A Python code block's body. */
+  | 'python-body'
 
 /** One piece of user code inside a block. */
 export interface CodeField {
@@ -41,7 +43,7 @@ export function codeFields(block: Block): CodeField[] {
     case 'startTrigger':
       return []
     case 'code':
-      return [{ path: ['config', 'code'], kind: 'function-body', source: block.config.code }]
+      return [{ path: ['config', 'code'], kind: codeKind(block.config.language), source: block.config.code }]
     case 'resourceQuery':
       // Connector-agnostic: every string in the query is a template.
       return templateStrings(block.config.query, ['config', 'query'])
@@ -172,7 +174,9 @@ function runnerFields(runner: LoopRunner): CodeField[] {
   const at = ['config', 'runner']
   switch (runner.kind) {
     case 'code':
-      return [{ path: [...at, 'code'], kind: 'function-body', source: runner.code, locals: ITEM_LOCALS }]
+      return [
+        { path: [...at, 'code'], kind: codeKind(runner.language), source: runner.code, locals: ITEM_LOCALS },
+      ]
     case 'query':
       return templateStrings(runner.query, [...at, 'query'], ITEM_LOCALS)
     case 'function':
@@ -182,6 +186,11 @@ function runnerFields(runner: LoopRunner): CodeField[] {
         ? []
         : [{ path: [...at, 'input'], kind: 'template', source: runner.input, locals: ITEM_LOCALS }]
   }
+}
+
+/** A code block's or code runner's field kind by its language. */
+function codeKind(language: 'python' | undefined): FieldKind {
+  return language === 'python' ? 'python-body' : 'function-body'
 }
 
 /** A function call's argument templates, by parameter name. */

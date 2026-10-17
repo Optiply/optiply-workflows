@@ -41,6 +41,7 @@
     "zustand": "5.0.15"
   },
   "devDependencies": {
+    "@ow/code-executor": "workspace:*",
     "@ow/db": "workspace:*",
     "@ow/server": "workspace:*",
     "@playwright/test": "1.64.0",

@@ -2,6 +2,7 @@ import type { Block, BlockType } from '@ow/definition'
 import {
   Code2,
   Database,
+  FileCode2,
   Filter,
   GitBranch,
   Hourglass,
@@ -60,6 +61,19 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   },
 }
 
+/** A Python code block (a code block with `language: 'python'`) on the canvas, in the inspector and the toolbar. */
+export const PYTHON_KIND: BlockKind = {
+  label: 'Python',
+  icon: FileCode2,
+  tone: 'bg-blue-100 text-blue-700',
+  prefix: 'python',
+}
+
+/** How a block is shown: its type's kind, or Python's for a Python code block. */
+export function kindOf(block: Block): BlockKind {
+  return block.type === 'code' && block.config.language === 'python' ? PYTHON_KIND : BLOCK_KINDS[block.type]
+}
+
 /** Block types the user can add (there's exactly one start trigger). */
 export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'resourceQuery',
@@ -91,9 +105,13 @@ export function addableIn(
 }
 
 /** The first free `<prefix><n>` name. */
-export function nextName(type: BlockType, taken: Iterable<string>): string {
+export function nextName(
+  type: BlockType,
+  taken: Iterable<string>,
+  kind: BlockKind = BLOCK_KINDS[type],
+): string {
   const used = new Set(taken)
-  const prefix = BLOCK_KINDS[type].prefix
+  const prefix = kind.prefix
   for (let n = 1; ; n++) if (!used.has(`${prefix}${n}`)) return `${prefix}${n}`
 }
 
@@ -105,7 +123,7 @@ export function newBlock(
   type: Exclude<BlockType, 'startTrigger'>,
   name: string,
   resource?: { slug: string; type: string },
-  context: { functions?: string[]; inFunction?: boolean } = {},
+  context: { functions?: string[]; inFunction?: boolean; python?: boolean } = {},
 ): Block {
   switch (type) {
     case 'resourceQuery':
@@ -120,7 +138,9 @@ export function newBlock(
         },
       }
     case 'code':
-      return { name, type, config: { code: 'return null' } }
+      return context.python
+        ? { name, type, config: { code: 'return None', language: 'python' } }
+        : { name, type, config: { code: 'return null' } }
     case 'branch':
       return { name, type, config: { conditions: [{ id: 'c1', expression: 'true' }] } }
     case 'filter':

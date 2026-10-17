@@ -1,6 +1,7 @@
 import { type Node, type Options, parseExpressionAt } from 'acorn'
 import { analyze } from 'eslint-scope'
 import type * as ESTree from 'estree'
+import { analyzePython } from './python'
 import { TemplateError } from './template'
 
 /** A reference to a variable the code doesn't declare itself (a block, global, or stdlib name). */
@@ -25,9 +26,11 @@ export type CodeKind =
   | 'function-body'
   /** A function body run synchronously (app transformers): `await` is a syntax error. */
   | 'sync-function-body'
+  /** A Python code block's body (`analyzePython`): never a syntax error here; the executor checks Python. */
+  | 'python-body'
 
 // Mirrors how @ow/sandbox runs code, so analysis and execution see the same program.
-const WRAP: Record<CodeKind, [string, string]> = {
+const WRAP: Record<Exclude<CodeKind, 'python-body'>, [string, string]> = {
   expression: ['(\n', '\n)'],
   'function-body': ['(async () => {\n', '\n})'],
   'sync-function-body': ['(() => {\n', '\n})'],
@@ -47,6 +50,7 @@ export function freeIdentifierRefs(
   kind: CodeKind = 'expression',
   options: { properties?: boolean } = {},
 ): IdentifierRef[] {
+  if (kind === 'python-body') return analyzePython(code, options).refs
   const [prefix, suffix] = WRAP[kind]
   const src = prefix + code + suffix
   const offset = prefix.length

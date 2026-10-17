@@ -201,7 +201,7 @@ async function runner(block: LoopBlock, ctx: BlockContext, work: Work, key: stri
   const { runner } = block.config
   switch (runner.kind) {
     case 'code':
-      return runCode(block, runner.code, work, ctx)
+      return runCode(block, runner.code, work, ctx, runner.language)
     case 'query':
       return (await runResourceQuery(runner.resource, runner.query, work, ctx)).data
     case 'function':

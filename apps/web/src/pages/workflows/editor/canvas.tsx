@@ -17,7 +17,7 @@ import '@xyflow/react/dist/style.css'
 import { AlertCircle } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { BLOCK_KINDS, summary } from './catalog'
+import { kindOf, summary } from './catalog'
 import { NODE_WIDTH, positionsFor } from './layout'
 import { type LiveBlock, useRun } from './run-state'
 import { type GraphPart, graphOf, problemsOf, updateGraph, useEditor } from './store'
@@ -185,7 +185,7 @@ function toEdges(
 
 function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
   const { block, problems, live } = data
-  const kind = BLOCK_KINDS[block.type]
+  const kind = kindOf(block)
   const Icon = kind.icon
   const ports = blockPorts(block)
   const errors = problems.filter((p) => p.severity === 'error').length

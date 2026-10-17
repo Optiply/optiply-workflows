@@ -49,13 +49,16 @@ export interface CodeRuntime {
   dispose(): void
 }
 
-export type SandboxErrorKind = 'timeout' | 'memory' | 'runtime' | 'syntax' | 'serialization'
+/** `unavailable`: Python's executor couldn't be reached, was busy, or couldn't start a jail. */
+export type SandboxErrorKind = 'timeout' | 'memory' | 'runtime' | 'syntax' | 'serialization' | 'unavailable'
 
 export class SandboxError extends Error {
   constructor(
     readonly kind: SandboxErrorKind,
     message: string,
     readonly userStack?: string,
+    /** Where it happened, for Python: `{ line, column?, traceback? }` (they reach the run's error). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'SandboxError'

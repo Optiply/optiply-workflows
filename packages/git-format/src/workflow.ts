@@ -32,7 +32,7 @@ export interface WorkflowObject extends ObjectMeta {
  * A workflow as the files of its directory:
  * - `workflow.json`: the name, the description and the canonical definition without its layouts, and without the
  *   strings that have files of their own;
- * - `blocks/<name>.js`: a code block's code, or a loop's code runner;
+ * - `blocks/<name>.js`: a code block's code, or a loop's code runner (`blocks/<name>.py` when it's Python);
  * - `blocks/<name>.sql`: a resource query's `sql` (the loop's query runner too), its `{{ }}`s as they are;
  * - `functions/<function>/blocks/…`: the same for a function's blocks;
  * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any.
@@ -124,7 +124,7 @@ export function workflowForGit(def: WorkflowDefinition): WorkflowDefinition {
 function moveOut(block: Block, dir: string, files: Files): Block {
   switch (block.type) {
     case 'code': {
-      files[`${dir}${block.name}.js`] = textFile(block.config.code)
+      files[`${dir}${block.name}.${extension(block.config.language)}`] = textFile(block.config.code)
       const { code: _code, ...config } = block.config
       return { ...block, config } as Block
     }
@@ -137,7 +137,7 @@ function moveOut(block: Block, dir: string, files: Files): Block {
     case 'loop': {
       const runner = block.config.runner
       if (runner.kind === 'code') {
-        files[`${dir}${block.name}.js`] = textFile(runner.code)
+        files[`${dir}${block.name}.${extension(runner.language)}`] = textFile(runner.code)
         const { code: _code, ...rest } = runner
         return { ...block, config: { ...block.config, runner: rest } } as Block
       }
@@ -154,13 +154,26 @@ function moveOut(block: Block, dir: string, files: Files): Block {
   }
 }
 
+/** A code file's extension by the code's language (from the raw JSON too: anything but `python` is JavaScript). */
+function extension(language: unknown): 'py' | 'js' {
+  return language === 'python' ? 'py' : 'js'
+}
+
 /** The reverse of `moveOut`, on the raw JSON (the schema checks the result). */
 function moveIn(block: Record<string, unknown> & { name: string }, dir: string, slots: FileSlots): void {
   const config = block.config
   const what = (kind: string) => `${kind} ${dir === 'blocks/' ? '' : `${dir.split('/')[1]}.`}${block.name}`
   switch (block.type) {
     case 'code':
-      slots.take(`${dir}${block.name}.js`, config, 'code', { required: true, what: what('code block') })
+      slots.take(
+        `${dir}${block.name}.${extension(isRecord(config) ? config.language : undefined)}`,
+        config,
+        'code',
+        {
+          required: true,
+          what: what('code block'),
+        },
+      )
       return
     case 'resourceQuery':
       if (isRecord(config)) {
@@ -171,7 +184,10 @@ function moveIn(block: Record<string, unknown> & { name: string }, dir: string, 
       const runner = isRecord(config) ? config.runner : undefined
       if (!isRecord(runner)) return
       if (runner.kind === 'code') {
-        slots.take(`${dir}${block.name}.js`, runner, 'code', { required: true, what: what('loop') })
+        slots.take(`${dir}${block.name}.${extension(runner.language)}`, runner, 'code', {
+          required: true,
+          what: what('loop'),
+        })
       } else if (runner.kind === 'query') {
         slots.take(`${dir}${block.name}.sql`, runner.query, 'sql', { required: false, what: what('loop') })
       }

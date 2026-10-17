@@ -8,7 +8,7 @@ import {
   workflowRuns,
 } from '@ow/db'
 import { DEFAULT_RUN_TIMEOUT_MS, type WorkflowDefinition } from '@ow/definition'
-import { type CodeRuntime, IvmRuntime } from '@ow/sandbox'
+import { type CodeRuntime, IvmRuntime, type PythonRunner } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
 import { PgChildRuns } from './children'
 import { LeaseLostError, RunCancelledError } from './errors'
@@ -49,6 +49,8 @@ export interface RunExecutorOptions {
   fetcher?: Pick<CodeFetcher, 'fetch'>
   /** One sandbox per run lease. Default: a fresh `IvmRuntime`. */
   createSandbox?: () => CodeRuntime
+  /** Runs Python code blocks; shared by every run of the process. Without it they fail (`python_unavailable`). */
+  python?: PythonRunner
   /** Default 30s; renewed every third of it. */
   leaseMs?: number
   log?: DispatcherLogger
@@ -176,6 +178,7 @@ export class RunExecutor {
           fetcher: this.opts.fetcher,
           children: this.children,
           tasks: this.tasks,
+          python: this.opts.python,
         },
         store,
         checkpoints,

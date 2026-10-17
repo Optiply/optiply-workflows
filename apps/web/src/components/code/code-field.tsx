@@ -12,7 +12,7 @@ export interface FieldProblem {
 export interface CodeFieldProps {
   /** Unique per block and field, so each keeps its own model and undo history. */
   path: string
-  language: 'javascript' | 'sql' | 'json' | 'plaintext'
+  language: 'javascript' | 'python' | 'sql' | 'json' | 'plaintext'
   value: string
   onChange: (value: string) => void
   /** Pixel height; one-line fields use about 34. */
