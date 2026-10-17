@@ -61,6 +61,11 @@ function names(r: Rng, prefix: string, count: number): string[] {
   return Array.from({ length: count }, (_, i) => `${r.chance(0.2) ? prefix.toUpperCase() : prefix}${i}`)
 }
 
+/** Python sometimes (a `.py` file), JavaScript otherwise (stored as no language). */
+function language(r: Rng): { language?: 'python' } {
+  return r.chance(0.4) ? { language: 'python' } : {}
+}
+
 function block(r: Rng, name: string): Block {
   const settings = r.chance(0.3)
     ? { settings: { timeoutMs: 1000 + r.int(1000), finally: 'continue' as const } }
@@ -74,7 +79,7 @@ function block(r: Rng, name: string): Block {
     ])
   switch (r.int(8)) {
     case 0:
-      return { name, type: 'code', config: { code: text(r) }, ...settings }
+      return { name, type: 'code', config: { code: text(r), ...language(r) }, ...settings }
     case 1:
       return { name, type: 'resourceQuery', config: { resource: 'shop', query: query() }, ...settings }
     case 2:
@@ -84,7 +89,7 @@ function block(r: Rng, name: string): Block {
         config: {
           input: '{{ x }}',
           runner: r.pick([
-            { kind: 'code' as const, code: text(r) },
+            { kind: 'code' as const, code: text(r), ...language(r) },
             { kind: 'query' as const, resource: 'shop', query: query() },
             { kind: 'function' as const, function: 'fn0' },
             { kind: 'workflow' as const, workflow: 'child-flow', input: text(r) },

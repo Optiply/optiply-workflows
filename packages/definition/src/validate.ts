@@ -1,4 +1,4 @@
-import type { TemplateError } from '@ow/expressions'
+import { analyzePython, type TemplateError } from '@ow/expressions'
 import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
@@ -57,6 +57,8 @@ export type DiagnosticCode =
   | 'task_in_handler'
   | 'unknown_workflow'
   | 'unpublished_workflow'
+  | 'python_unsupported'
+  | 'python_builtin'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -469,9 +471,37 @@ function checkGraph(
           ...(err.hint && { hint: err.hint }),
         })
       }
+      const python = field.kind === 'python-body'
+      if (python) {
+        // A block named like a Python builtin can't be read from Python: the builtin wins.
+        for (const ref of analyzePython(field.source).builtins) {
+          if (!byName.has(ref.name)) continue
+          report({
+            severity: 'warning',
+            code: 'python_builtin',
+            message: `In Python, "${ref.name}" is the builtin, not the block "${ref.name}"`,
+            hint: `Rename the block to read its result from Python`,
+            path,
+            ...at,
+            start: ref.start,
+            end: ref.end,
+          })
+        }
+      }
       for (const ref of refs) {
         const where = { path, ...at, start: ref.start, end: ref.end }
-        if (byName.has(ref.name)) {
+        if (python && (functions.has(ref.name) || CODE_ONLY_GLOBALS.has(ref.name)) && !byName.has(ref.name)) {
+          report({
+            code: 'python_unsupported',
+            message: functions.has(ref.name)
+              ? `Python code can't call the function "${ref.name}"`
+              : `Python code can't use ${ref.name}: it has no network`,
+            hint: functions.has(ref.name)
+              ? 'Use a Function block, or a JavaScript code block'
+              : 'Make the request with a REST resource query, or in a JavaScript code block',
+            ...where,
+          })
+        } else if (byName.has(ref.name)) {
           if (ref.name === block.name) {
             report({ code: 'self_reference', message: `"${block.name}" can't read its own result`, ...where })
           } else if (!readable(ref.name)) {
@@ -498,7 +528,8 @@ function checkGraph(
             hint: 'Call it from a code block',
             ...where,
           })
-        } else if (!(isGlobalName(ref.name) || (fn && ref.name === PARAMS_NAME))) {
+        } else if (!python && !(isGlobalName(ref.name) || (fn && ref.name === PARAMS_NAME))) {
+          // Python's other names are its own business (imports, variables): a NameError says what's missing.
           report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }
       }

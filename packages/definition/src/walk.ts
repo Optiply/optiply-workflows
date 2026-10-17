@@ -76,6 +76,8 @@ export function calledFunctions(block: Block, functions: ReadonlySet<string>): S
   if (block.type === 'loop' && block.config.runner.kind === 'function')
     called.add(block.config.runner.function)
   for (const field of codeFields(block)) {
+    // Python can't call functions (the validator says so); a name there is a variable of the code's.
+    if (field.kind === 'python-body') continue
     for (const ref of fieldRefs(field).refs) if (functions.has(ref.name)) called.add(ref.name)
   }
   return called

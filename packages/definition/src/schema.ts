@@ -101,12 +101,23 @@ export const startTriggerBlockSchema = z.strictObject({
     .optional(),
 })
 
+/** The languages code runs in. Stored only for Python: no `language` is JavaScript (so older hashes stand). */
+export const CODE_LANGUAGES = ['javascript', 'python'] as const
+export type CodeLanguage = (typeof CODE_LANGUAGES)[number]
+
+/** `python` for Python; JavaScript otherwise. */
+const languageSchema = z.literal('python').optional()
+
 export const codeBlockSchema = z.strictObject({
   ...executable,
   type: z.literal('code'),
   config: z.strictObject({
-    /** JavaScript run as an async function body: may `await`, and `return`s the block's data. */
+    /**
+     * Run as a function body that `return`s the block's data: JavaScript (async: may `await`), or Python with
+     * `language: 'python'` (run by the code executor; reads blocks as variables, can't call functions or fetch).
+     */
     code: z.string(),
+    language: languageSchema,
   }),
 })
 
@@ -176,8 +187,9 @@ export const WORKFLOW_CALL_MODES = ['sync', 'async'] as const
 export const loopRunnerSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('code'),
-    /** An async function body, like a code block's; its `return` is the iteration's data. */
+    /** A function body, like a code block's (JavaScript, or Python); its `return` is the iteration's data. */
     code: z.string(),
+    language: languageSchema,
   }),
   z.strictObject({
     kind: z.literal('query'),
