@@ -7,7 +7,7 @@ Last updated: 2026-10-17 (session 12: the CI timeouts fixed as an engine race, P
 | | |
 |---|---|
 | **Branch** | `feat/m12-python` (M12, from `main` at `ee42bc7`). M11 was built on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
-| **PR** | M12's draft PR is opened with the plan commit. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
+| **PR** | [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), draft. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
 | **`main`** | `ee42bc7`, the merge of PR #13 (M11 with its engine fix and review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
@@ -31,7 +31,7 @@ Last updated: 2026-10-17 (session 12: the CI timeouts fixed as an engine race, P
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
-| **M12 Python** | 📝 Planned in session 12 (§14, `architecture.md` §2.14): Python in workflow Code blocks through an nsjail `code-executor` service |
+| **M12 Python** | 🚧 On `feat/m12-python` (§9f), PR #14: planned in session 12 (§14, `architecture.md` §2.14); step 1 (the executor) built |
 
 **Start the next session with:** M12 step 1 (§14): the executor spike and service, unless it's already pushed (check the draft PR's checklist).
 
@@ -677,6 +677,18 @@ Ten findings from the `code-review` skill, each checked against the code: (1) br
 ### Totals at the end of M11
 `biome ci` is clean. Typecheck passes **12/12**. **1,799 tests pass** (git-format 824, server 300, connectors 144, engine 140, definition 124, expressions 103, app-definition 53, crypto 25, web 24, app-runtime 22, db 20, sandbox 20; 2 skipped), plus the two benchmarks and **26 Playwright e2e** (19 spec files, 1.7 min locally). Main bundle 447 kB (130 kB gzipped).
 
+## 9f. What M12 built (on `feat/m12-python`, PR #14)
+
+### Plan, `c99a281`
+`architecture.md` §2.7 (the M12 row, M13+), §2.14 (the design), this file's §14.
+
+### Step 1 (this commit): the executor
+- **The spike** (timeboxed, as planned): nsjail isn't in Debian (bookworm or trixie), so it's built from source (3.6, March 2026, pinned commit). In Docker Desktop: `--privileged` works; so does **`--cap-add SYS_ADMIN` plus Docker's seccomp profile with `pivot_root` added**, which is what we use (plus `apparmor=unconfined` for Linux hosts). Without SYS_ADMIN, no namespaces; with the default seccomp profile, `pivot_root` is refused; the cgroup is read-only until the entrypoint remounts it and delegates the controllers; a new `/proc` can't be mounted under Docker's masked one (the jail has none, so the loader needs `/etc/ld.so.cache`); kafel calls `umount2` `umount` (checked against both its amd64 and aarch64 tables). Timing: a jailed interpreter 12 ms, pandas' import 213 ms, a trivial block over HTTP 39 ms p50.
+- `apps/code-executor`: `Dockerfile` (nsjail build stage; Python 3.12 slim; the virtualenv from `requirements.lock` with hashes), `seccomp.json`, `executor/server.py` (stdlib HTTP: `/run`, `/check`, `/health`, token, concurrency, cancel on hang-up, log framing and caps, outcome without a result → timeout/memory/exit code), `executor/runner.py` (in the jail: the code as a function body through the AST so line numbers and strings stay as written, `Obj` for attribute access, JSON conversion of pandas/numpy/datetime/Decimal/NaN/NaT, errors with the user's frames only, syntax checks), `executor/jail.cfg`, `executor/entrypoint.sh`.
+- `@ow/code-executor/testing`: `startTestExecutor` (image tagged by a hash of its sources, built when missing; `PYTHON_EXECUTOR_TEST_URL`), `executorAvailable`, `EXECUTOR_DOCKER_FLAGS`.
+- `test/executor.test.ts`, 23 tests against the container: the protocol and token; scope by attribute and key; conversions; empty code; prints in order with levels; a printed outcome isn't taken; syntax, runtime (trimmed traceback), serialization (16 MB) errors and `os._exit`; `/check` compiles without running; the jail (nobody, its own environment only, sees only `bin dev etc lib opt tmp usr`, can't write outside `/tmp`, no network even to the executor, no `unshare`/`ptrace`/`mount`, `fork` allowed); limits (an infinite loop at the timeout, 1 GB → memory and the next run fine, a fork bomb under 32, `/tmp` and file size, the log cap); a hung-up caller's jail killed; 8 runs 4 at a time; latency.
+- Found while testing: a refused request's unread body was read as the next request on a kept-alive connection (`'{}POST'`); stdout and stderr on two pipes lost their order (now framed on one); pandas' `NaT` is a `datetime` (it came back as `"NaT"`).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -745,7 +757,7 @@ Ten findings from the `code-review` skill, each checked against the code: (1) br
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
-- **Docker images used by tests:** `mysql:8.4` (pulled on first use).
+- **Docker images used by tests:** `mysql:8.4` (pulled on first use) and, since M12, `ow-code-executor:test-<hash>` (built from `apps/code-executor` by the first test that needs it: ~35 s with the layers cached, a few minutes cold; old tags can be removed with `docker image rm`).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
 - **At the end of session 11** the Compose stack was left running on the M11 branch's image (above). The dev database and dev servers weren't started. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 6. `git` must be on PATH for the server tests and e2e (it is on this Mac and in CI).

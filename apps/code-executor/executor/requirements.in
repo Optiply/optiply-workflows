@@ -1,0 +1,7 @@
+# The packages Python code blocks can import (besides the standard library), pinned to releases at least two weeks
+# old. Adding or upgrading one: docs/runbooks/python.md (then regenerate requirements.lock with hashes).
+numpy==2.5.3
+pandas==3.0.6
+python-dateutil==2.9.0.post0
+pytz==2026.4
+tzdata==2026.5
