@@ -5,6 +5,8 @@ import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { UndoButtons } from '@/components/undo-buttons'
+import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
@@ -193,6 +195,15 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
   const definition = useAppEditor((s) => s.definition)
 
   const readOnly = useAppEditor((s) => s.readOnly)
+  const epoch = useAppEditor((s) => s.epoch)
+  const canUndo = useAppEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
+  const canRedo = useAppEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  // Undo and redo while editing (not in Preview, where the keys are the app's).
+  useEditorKeys({
+    editable: !readOnly && !preview,
+    undo: () => useAppEditor.getState().undo(),
+    redo: () => useAppEditor.getState().redo(),
+  })
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     appId: app.id,
@@ -256,6 +267,16 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
       <header className="flex items-center gap-3 border-b border-border bg-surface px-4 py-2">
         <h1 className="font-semibold">{app.name}</h1>
         <SaveBadge status={status} />
+        {!readOnly && !preview && (
+          <div className="flex items-center">
+            <UndoButtons
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={() => useAppEditor.getState().undo()}
+              onRedo={() => useAppEditor.getState().redo()}
+            />
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-2 text-sm">
           <label htmlFor="editor-env" className="text-muted">
             Environment
@@ -307,7 +328,8 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
           <div className="flex min-h-0 flex-1">
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface p-3">
-                <PagesPanel />
+                {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
+                <PagesPanel key={epoch} />
                 {!readOnly && (
                   <section>
                     <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Add</h2>
@@ -328,13 +350,13 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
               </div>
               {!preview && (
                 <div className="h-[38%] min-h-48 shrink-0 border-t border-border">
-                  <CodePanel />
+                  <CodePanel key={epoch} />
                 </div>
               )}
             </div>
             {!preview && selected && (
               <aside className="w-80 shrink-0 overflow-y-auto border-l border-border bg-surface">
-                <ComponentInspector name={selected} />
+                <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
               </aside>
             )}
           </div>

@@ -1,11 +1,19 @@
 import { type AppDefinition, type AppDiagnostic, resolvePage, validateApp } from '@ow/app-definition'
 import type { AppUrl } from '@ow/app-runtime'
 import { create } from 'zustand'
+import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
 
 export type SaveStatus = 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
 
 /** What the bottom panel shows. */
 export type PanelTab = 'code' | 'state' | 'problems' | 'console'
+
+/** What was showing when an edit was made: undoing it shows it again. */
+export interface AppEditorView {
+  selected: string | null
+  openCode: string | null
+  page: string | null
+}
 
 interface AppEditorState {
   appId: string | null
@@ -34,6 +42,10 @@ interface AppEditorState {
    * The running draft follows it; it stays a page the app has (a deleted page gives way to the first).
    */
   url: AppUrl
+  /** The edits that can be undone and redone (M13); cleared when a draft is loaded. */
+  history: History<AppDefinition, AppEditorView>
+  /** Raised by undo and redo: the panels remount, so what they read once starts afresh. */
+  epoch: number
 
   load(
     appId: string,
@@ -42,8 +54,12 @@ interface AppEditorState {
     draftHash: string,
     opts?: { branchDraftId?: string | null; readOnly?: boolean },
   ): void
-  /** Applies an edit; the draft becomes dirty and is validated again. */
+  /** Applies an edit; the draft becomes dirty and is validated again, and the edit can be undone. */
   update(edit: (def: AppDefinition) => AppDefinition): void
+  /** Puts back the definition before the last edit, and what was showing then. */
+  undo(): void
+  /** Makes the last undone edit again. */
+  redo(): void
   select(name: string | null): void
   openCodeItem(name: string | null): void
   setPanelTab(tab: PanelTab): void
@@ -70,6 +86,8 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   openCode: null,
   panelTab: 'code',
   url: { page: null, params: {} },
+  history: emptyHistory(),
+  epoch: 0,
 
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
@@ -86,29 +104,52 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       url: { page: resolvePage(definition, null), params: {} },
+      history: emptyHistory(),
     }),
 
   update: (edit) => {
-    if (get().readOnly) return
-    const { definition, status } = get()
-    const next = edit(definition)
-    if (next === definition) return
-    const unchanged = JSON.stringify(next) === get().savedJson
-    const { url } = get()
-    const page = resolvePage(next, url.page)
+    const state = get()
+    if (state.readOnly) return
+    const before = state.definition
+    const next = edit(before)
+    // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
+    if (next === before || sameValue(before, next)) return
     set({
-      definition: next,
-      ...(page !== url.page && { url: { page, params: {} } }),
-      diagnostics: validateApp(next).diagnostics,
-      // A save in flight finishes first; `saved` then sees whether this edit is still unsaved.
-      status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
+      ...applied(state, next),
+      history: record(state.history, { before, after: next, view: viewOf(state), at: Date.now() }),
     })
   },
 
-  select: (selected) => set({ selected }),
-  openCodeItem: (openCode) => set({ openCode, panelTab: 'code' }),
+  undo: () => {
+    const state = get()
+    if (state.readOnly || state.status === 'conflict') return
+    const step = undo(state.history)
+    if (step)
+      set({
+        ...applied(state, step.entry.before, step.entry.view),
+        history: step.history,
+        epoch: state.epoch + 1,
+      })
+  },
+
+  redo: () => {
+    const state = get()
+    if (state.readOnly || state.status === 'conflict') return
+    const step = redo(state.history)
+    if (step)
+      set({
+        ...applied(state, step.entry.after, step.entry.view),
+        history: step.history,
+        epoch: state.epoch + 1,
+      })
+  },
+
+  // A new selection, code item or page ends the step being typed: the next edit is undone on its own.
+  select: (selected) => set((s) => ({ selected, history: seal(s.history) })),
+  openCodeItem: (openCode) => set((s) => ({ openCode, panelTab: 'code', history: seal(s.history) })),
   setPanelTab: (panelTab) => set({ panelTab }),
-  setUrl: (page, params = {}) => set((s) => ({ url: { page: resolvePage(s.definition, page), params } })),
+  setUrl: (page, params = {}) =>
+    set((s) => ({ url: { page: resolvePage(s.definition, page), params }, history: seal(s.history) })),
   saving: () => set({ status: 'saving' }),
   saved: (revision, json, draftHash) =>
     set((s) => ({
@@ -122,3 +163,47 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   conflict: () => set({ status: 'conflict' }),
   failed: (saveError) => set({ status: 'error', saveError }),
 }))
+
+function viewOf(state: AppEditorState): AppEditorView {
+  return { selected: state.selected, openCode: state.openCode, page: state.url.page }
+}
+
+/**
+ * The state after `definition` replaces the current one: validated, on a page it has, and saved or dirty by whether
+ * it differs from what the server has (undoing back to it needs no save). A save in flight finishes first: `saved`
+ * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
+ * still there.
+ */
+function applied(
+  state: AppEditorState,
+  definition: AppDefinition,
+  view?: AppEditorView,
+): Partial<AppEditorState> {
+  const { status, url } = state
+  const unchanged = JSON.stringify(definition) === state.savedJson
+  const page = resolvePage(definition, view ? view.page : url.page)
+  const names = new Set([
+    ...definition.components.map((c) => c.name),
+    ...definition.queries.map((q) => q.name),
+    ...(definition.transformers ?? []).map((t) => t.name),
+    ...(definition.variables ?? []).map((v) => v.name),
+  ])
+  return {
+    definition,
+    ...(page !== url.page && { url: { page, params: {} } }),
+    diagnostics: validateApp(definition).diagnostics,
+    status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
+    ...(status === 'error' && unchanged && { saveError: null }),
+    ...(view && {
+      selected:
+        view.selected !== null && definition.components.some((c) => c.name === view.selected)
+          ? view.selected
+          : null,
+      // The code item shown then, or the one open now; one that's gone (an undone query) gives way to the first.
+      openCode:
+        [view.openCode, state.openCode].find((n) => n !== null && names.has(n)) ??
+        definition.queries[0]?.name ??
+        null,
+    }),
+  }
+}

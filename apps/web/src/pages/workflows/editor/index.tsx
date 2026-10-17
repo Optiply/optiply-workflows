@@ -2,23 +2,12 @@ import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import {
-  AlertCircle,
-  ArrowLeft,
-  CheckCircle2,
-  History,
-  LayoutGrid,
-  Loader2,
-  Play,
-  Plus,
-  Redo2,
-  Undo2,
-} from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
-import { textSelected } from '@/lib/clipboard'
-import { dialogOpen, isTextTarget, shortcutFor, shortcutLabel } from '@/lib/shortcuts'
+import { UndoButtons } from '@/components/undo-buttons'
+import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
@@ -339,7 +328,7 @@ function Toolbar() {
           )
         })}
       <div className="mx-1 h-5 w-px bg-border" />
-      <UndoButtons />
+      <WorkflowUndoButtons />
       <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
@@ -353,71 +342,30 @@ function Toolbar() {
   )
 }
 
-/** Undo and Redo, with their shortcuts in the titles. Off while the draft conflicts (its edits can't be saved). */
-function UndoButtons() {
+/** Undo and Redo. Off while the draft conflicts (its edits can't be saved). */
+function WorkflowUndoButtons() {
   const canUndo = useEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
   const canRedo = useEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
   return (
-    <>
-      <Button
-        size="icon"
-        variant="ghost"
-        disabled={!canUndo}
-        title={`Undo (${shortcutLabel('Z')})`}
-        aria-label="Undo"
-        onClick={() => useEditor.getState().undo()}
-      >
-        <Undo2 className="size-4" />
-      </Button>
-      <Button
-        size="icon"
-        variant="ghost"
-        disabled={!canRedo}
-        title={`Redo (${shortcutLabel('Z', { shift: true })})`}
-        aria-label="Redo"
-        onClick={() => useEditor.getState().redo()}
-      >
-        <Redo2 className="size-4" />
-      </Button>
-    </>
+    <UndoButtons
+      canUndo={canUndo}
+      canRedo={canRedo}
+      onUndo={() => useEditor.getState().undo()}
+      onRedo={() => useEditor.getState().redo()}
+    />
   )
 }
 
-/**
- * The editor's keys: undo and redo, ⌘D to duplicate, and copy and paste through the browser's own events (Edit
- * menu included). Text fields and Monaco keep them for themselves. Copying works on a read-only draft; the rest
- * only where it can be edited.
- */
+/** The editor's keys: undo, redo, ⌘D, copy and paste (copy works on a read-only draft too). */
 function EditorShortcuts({ editable }: { editable: boolean }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const shortcut = shortcutFor(e)
-      if (!shortcut || !editable || isTextTarget(e.target) || dialogOpen()) return
-      e.preventDefault()
-      if (shortcut === 'undo') useEditor.getState().undo()
-      else if (shortcut === 'redo') useEditor.getState().redo()
-      else duplicateChosen()
-    }
-    const onCopy = (e: ClipboardEvent) => {
-      if (isTextTarget(e.target) || dialogOpen() || textSelected()) return
-      const text = copyText()
-      if (text === null || !e.clipboardData) return
-      e.clipboardData.setData('text/plain', text)
-      e.preventDefault()
-    }
-    const onPaste = (e: ClipboardEvent) => {
-      if (!editable || isTextTarget(e.target) || dialogOpen() || !e.clipboardData) return
-      if (pasteText(e.clipboardData.getData('text/plain'))) e.preventDefault()
-    }
-    window.addEventListener('keydown', onKey)
-    document.addEventListener('copy', onCopy)
-    document.addEventListener('paste', onPaste)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      document.removeEventListener('copy', onCopy)
-      document.removeEventListener('paste', onPaste)
-    }
-  }, [editable])
+  useEditorKeys({
+    editable,
+    undo: () => useEditor.getState().undo(),
+    redo: () => useEditor.getState().redo(),
+    duplicate: duplicateChosen,
+    copy: copyText,
+    paste: pasteText,
+  })
   return null
 }
 
