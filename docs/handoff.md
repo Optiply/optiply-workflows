@@ -2,12 +2,12 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M11, M12+ to choose from).
 
-Last updated: 2026-10-16 (start of session 11: M11, Git sync, planned with the user).
+Last updated: 2026-10-17 (start of session 12: the CI timeouts analysed and fixed as an engine race, `25218f0`; step 6 committed; PR #13 not yet reviewed or merged).
 
 | | |
 |---|---|
 | **Branch** | `feat/m11-git-sync` (M11). M10 was built on `feat/m10-apps` (the plan, 6 steps of which 2–4 in two commits each, and the review fixes) |
-| **PR** | [#12 M10](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/12), reviewed **before** merging (10 fixes, `6c95f5a`), merged as `bb7f6b7`. CI green on every push (one rerun: Docker Hub timed out pulling `mysql:8.4`) |
+| **PR** | [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), draft, all six steps pushed; **review it before merging** (as with #12). CI green except twice an engine test timing out (a real race, fixed in `25218f0`, session 12) and once a lint error (fixed in 5b). Before: [#12 M10](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/12), merged as `bb7f6b7` |
 | **`main`** | `bb7f6b7`, the merge of PR #12 (M10 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
@@ -30,9 +30,10 @@ Last updated: 2026-10-16 (start of session 11: M11, Git sync, planned with the u
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
-| **M11 Git sync** | 🚧 Planned with the user in session 11 (§14, `architecture.md` §2.13), on `feat/m11-git-sync` |
+| **M11 Git sync** | ✅ Built on `feat/m11-git-sync` (§9e), PR #13: workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). The done-when proven in Playwright and on Docker Compose. **Not reviewed or merged yet.** |
+| M12 | ⏭️ Next: review and merge PR #13, then plan M12 with the user (§14) |
 
-**Start the next session with:** the next M11 step (§14) on `feat/m11-git-sync`. Review the milestone's PR **before** it's merged, as in session 10.
+**Start the next session with:** reviewing PR #13 (the `code-review` skill, as for #12), committing the fixes **before** it's merged, then merging it; then planning M12 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -246,6 +247,20 @@ Last updated: 2026-10-16 (start of session 11: M11, Git sync, planned with the u
 - **The editor's pages:** the page being edited is the store's `url`; the draft follows it, and the host re-sends it after every definition update (a page added or renamed is navigated to before the draft has it). The first page added to a one-page app puts everything on `page1`. New components, queries and transformers go on the edited page. The canvas has the frame grid (global) above the page's.
 - **Folders:** `folders.*` per type (`resource` by default); `list` returns `{ folders, canManage }`; managing a type's folders needs that type's create right; folder grants stay admin-only, and for workflow/app folders they apply to every environment (a one-environment grant is refused). `components/folders.tsx` is shared by the three lists. Moving still needs Own.
 - **e2e users:** `e2e-member@optiply.nl` isn't an admin (made with the CLI, then removed from the admins group in the global setup).
+
+### Taken in M11 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M11:** Git sync the Retool way (protected objects on branches, reviewed in pull requests, deployed on merge); GitHub (plain git for content, its API for pull requests, its push webhook); code and SQL split out into files; workflows and apps only (not resources, folders or config vars). Python, SQS/Kafka, multiplayer and AI actions move to M12+.
+- **Decided while building it** (told the user in the step reports):
+  - **Protection takes effect at once**, not when the protect PR merges (main would drift meanwhile). Unprotect (Own) undoes it; the directory stays in the repo and stops deploying (`not_protected`).
+  - **Writing to the deploy branch is the right to deploy**: deploys check everything publishing does except people's grants. Releases made by Git sync have no `created_by`, carry `git_commit`, and their notes are the commit subject, or the PR title and number for GitHub merge commits.
+  - **Admins keep an emergency rollback** (Make live on a protected object; audited `emergency: true`; the next deploy replaces it).
+  - **A directory removed from the branch doesn't delete the object** (`missing`); a slug held by an unprotected object isn't touched; one broken directory doesn't stop the others; no `ow.json` deploys nothing; an object deleted on the instance comes back on the next deploy.
+  - **`maxConcurrentRuns`, folders and grants stay on the instance**; a workflow's name and description are in the repo.
+  - **Empty workflow layouts aren't kept** in the repo; an app's layout is kept exactly (it counts in its hash). Files end with one newline that reading takes off.
+  - **Update from branch replaces** the draft (no merging of both sides' edits).
+  - **A branch-draft snapshot has no foreign key** to its draft (runs outlive a discarded draft).
+- **The git client** uses plumbing only on a bare cache per process (no working tree), a fast-forward push, the token through `GIT_ASKPASS`, only https (plus http/file with `GIT_ALLOW_INSECURE_URLS`), no redirects, no hooks or credential helpers; a repo on another host needs the token again.
+- **Tests run git for real**: local bare repos (`file://`), `git http-backend` behind basic auth for the token path, a fake GitHub (`apps/server/test/fake-github.ts`) that merges PRs for real and can send signed push webhooks; the e2e setup starts both.
 
 ## 3. What M0 built (on `main`)
 
@@ -619,6 +634,45 @@ Tests for each (the e2e ones mutation-checked).
 ### Totals at the end of M10
 `biome ci` is clean. Typecheck passes **11/11**. **897 tests pass** (server 228, engine 139, connectors 144, definition 124, expressions 103, app-definition 53, crypto 25, db 20, sandbox 20, app-runtime 22, web 19), plus the two benchmarks and **25 Playwright e2e**. Bundles weren't measured this session.
 
+## 9e. What M11 built (on `feat/m11-git-sync`, PR #13)
+
+**Done-when** (protect a workflow and an app; edit both on a branch and run the branch drafts; commit, the repo showing code as `.js` and SQL as `.sql`, and open a PR; merging it deploys a new live release of each within seconds of the webhook, and on the next poll without it, and a workflow added on the branch is created; main is read-only for protected objects; an invalid commit on main deploys nothing and says why), proven:
+- `apps/web/e2e/m11-done-when.spec.ts` (~19 s; passed 3 times in a row): Git sync set up in Settings → Git with a generated webhook secret; a published workflow (SQL + code) protected from the list, a published app (SQL in a Text) from its settings; both protect PRs merged; main read-only; on a new branch the code edited and the branch draft run (`ADA@EXAMPLE.COM`); Commit with the diff; the app on the same branch with its SQL edited and its branch draft showing the second customer; the repo's `.js` and `.sql` read with git; a developer pushes a new workflow on the branch with git; the PR opened from the Commit dialog and merged on the fake GitHub, whose signed push webhook deploys it all (under 10 s; both 1.0.1, the new one created and protected, 1.0.0); main and the app's live release show the change; with the webhook off, an invalid commit pushed straight to main is deployed by polling with its problems shown on Settings → Git, the live release kept.
+- On Docker Compose (§10): the same spec against localhost:3000, through a git server and the fake GitHub on the Mac.
+
+### Plan, `ba22cdc`
+`architecture.md` §2.7 (the M11 row, M12+), §2.13 (the design), this file's §14.
+
+### Step 1, `b159b32`: the file format
+`packages/git-format` (browser-safe): workflows and apps to files and back, `ow.json`, repo splitting, problems by path, case-collision warnings. 824 tests, mostly a seeded round trip over 400 workflows and 400 apps (2 mutation checks).
+
+### Step 2, `55d74e2`: git on the server
+git in the image; `services/git/cli.ts` (clean environment, askpass, error kinds, scrubbing), `repo.ts` (bare cache, plumbing read and write, fast-forward push), `commit.ts` (`commitToBranch`, conflicts, retries), `settings.ts`; `git_settings` (migration 0014), `git.*` admin API, Test connection; `git_settings` covered by rekey/verify. 24 tests.
+
+### Step 3, `c4ea6bb`: deploy from main
+`services/git/deploy.ts` (lease, requests and rounds, per-directory trees, passes, problems, missing, history), `deployer.ts` (polling in workers), `api/git-webhook.ts` (signed push webhook); the release services split so publishing and deploying share the release path; `git_objects`, `git_deploys` and the Git columns (migration 0015). 17 tests. (CI: the engine race below once; rerun green.)
+
+### Step 4a, `61f8e82`: protection, read-only main, pull requests
+`services/git/protection.ts`, `github.ts` (api.github.com, GHES, `GITHUB_API_URL`), `git.protect`/`unprotect`/`branches`/`pullRequest`/`openPullRequest`, the read-only rules and admin rollback in the routers, objects created protected. 12 tests over the fake GitHub.
+
+### Step 4b, `4e7d86f`: branch drafts
+`services/git/branch-drafts.ts` and `branchDrafts.*` (open, save, changes, update from branch, commit, discard), branch-draft runs and app queries, branch snapshots kept by retention (migration 0016). 14 tests.
+
+### Step 5a, `376d7ee`: Settings → Git, Protect in the lists
+`pages/settings/git.tsx`, `components/git.tsx`, "In Git" and Protect in the lists, "Create it in Git", Git sync release authors, `git.info`; release notes from PR titles; the e2e setup's repo and fake GitHub. (CI: a lint error, `role="group"` on a div, fixed in 5b.)
+
+### Step 5b, `e2ee242`: the editors
+`components/git-bar.tsx` (branch picker, status, Update, PR, Commit dialog with diffs), `lib/diff.ts` (5 tests), both editors on branches (read-only main, branch drafts saved and run), Protect/Unprotect in their settings. A walkthrough found main stale after a merge (fixed). (CI: the engine race again; see the fix below.)
+
+### Engine fix, `25218f0` (session 12): a child ending while its parent pauses
+The CI timeouts of "stops a workflow that calls itself after 10 levels" (4.3 s normally, past 30 s twice) were a missed wake-up, not slowness: a child's `wakeParents` that ran while the parent was still `running`, committed after the parent's `suspendRun` re-check had looked, was seen by neither, and the parent slept for its hour-long recheck. Now `finishRun`, `suspendRun` and `cancelRun` lock the parent's row first (`lockParents`, `for no key update`, ancestor before descendant); the reaper locks parents with `skip locked` and leaves a run whose parent is busy for its next pass. Regression test in `children-pg.test.ts`: a test-only deferred constraint trigger holds the child's commit open after its wake-up (failed before the fix: the parent an hour out). Step 6's 90 s limit for the test was dropped (it only hid the stall).
+
+### Step 6 (this commit): done-when, Compose check, docs
+`e2e/m11-done-when.spec.ts` (with `E2E_GIT_REPO_DIR` for running it against another stack); the app editor stays mounted while main turns read-only after Protect (found by the spec: the Protect dialog vanished); `docker-compose.yml` passes `GIT_POLL_SECONDS`, `GIT_ALLOW_INSECURE_URLS` and `GITHUB_API_URL`; the test git server and fake GitHub take a listening address.
+
+### Totals at the end of M11
+`biome ci` is clean. Typecheck passes **12/12**. **1,794 tests pass** (git-format 824, server 295, connectors 144, engine 140, definition 124, expressions 103, app-definition 53, crypto 25, web 24, app-runtime 22, db 20, sandbox 20; 2 skipped), plus the two benchmarks and **26 Playwright e2e** (19 spec files, 1.7 min locally). Main bundle 447 kB (130 kB gzipped).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -626,6 +680,11 @@ Tests for each (the e2e ones mutation-checked).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
 - **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 11** (the M11 done-when; `compose-check/` in the session scratchpad: `servers.mts`, the spec copy, `cleanup.mjs`, not committed):
+  - Asked first (the user had signed in 50 minutes before). On the Mac: a git server (`git http-backend` behind a random token) and the fake GitHub, listening on 0.0.0.0 (ports 53017 and 53018), reached from the containers at `host.docker.internal`. The stack rebuilt on the branch with `GIT_ALLOW_INSECURE_URLS=true GITHUB_API_URL=http://host.docker.internal:53018 GIT_POLL_SECONDS=5`: back after 6 s, migrations 0014–0016 applied (17 in all), git 2.39.5 in the containers.
+  - A throwaway database `m11_check` (a `customers` table) behind its own resource; `m7-check@optiply.nl` got a new random password (`compose/m7-check-password` in this session's scratchpad).
+  - The spec copy in Chrome as `m7-check` (the instance using `http://host.docker.internal:53017/optiply/flows.git`, the test reading the repo from disk): passed in 12.6 s on the second run (the first found the test race fixed in step 6: it checked the app before the deploy reached it). Deploys from merges came through the webhook (39–87 ms each); the invalid commit through polling (`problems`: the bad block type in `workflow.json`, and its `emails.js` no longer belonging to anything).
+  - Afterwards: the check's workflows, apps and resources deleted through the API, Git sync disconnected, `git_objects` and `git_deploys` emptied (check data only), `m11_check` dropped (`WITH (FORCE)`: a pooled connection of the deleted resource held it), the session signed out; the stack recreated without the test-only flags (back after 3 s) and left on the M11 image; the servers on the Mac stopped.
 - **Docker Compose, session 10** (the M10 done-when; `compose-check/` in the session scratchpad: a copy of the spec with its own accounts and a config pointing at `localhost:3000`, not committed):
   - Asked first (the stack is shared); `PUBLIC_URL=http://localhost:3000 docker compose up -d --build` with the step 6 code: healthy within seconds, no migration (still `0013`), the managed database as it was.
   - `m7-check@optiply.nl` got a new random password (`compose/m7-check-password` in this session's scratchpad); a non-admin `m10-member@optiply.nl` was made with `create-admin` and taken out of the admins group with SQL.
@@ -678,13 +737,14 @@ Tests for each (the e2e ones mutation-checked).
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
-- **Compose stack** (volume `optiply-workflows_pgdata`): running the image of `main` at `bb7f6b7` (M10 with its review fixes; rebuilt at the end of session 10 with the user's OK; migration `0013`, M10 added none). Session 10's check left nothing behind (§10); `m7-check`'s password is in session 10's scratchpad. Before that: the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
+- **Compose stack** (volume `optiply-workflows_pgdata`): running the image of **`feat/m11-git-sync`** (step 6, uncommitted at build time but the same code as the step 6 commit; rebuilt in session 11 with the user's OK; **migrations 0014–0016 applied**, so going back to `main`'s image runs it on a newer schema: additive tables and columns only). Git sync isn't set up on it. Session 11's check left nothing behind (§10); `m7-check`'s password is in session 11's scratchpad. Before that: the image of `main` at `bb7f6b7` (M10 with its review fixes; migration `0013`). Session 10's check left nothing behind (§10); `m7-check`'s password is in session 10's scratchpad. Before that: the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
 - **The session scratchpad can be cleared mid-session** (it happened in session 6): recreate the `pnpm` shim with `corepack enable --install-directory <scratchpad>/bin pnpm`.
 - **isolated-vm compiles on `pnpm install`** (the patch): needs the Xcode command-line tools.
 - **Docker images used by tests:** `mysql:8.4` (pulled on first use).
 - **`.env`** (gitignored) has `SESSION_SECRET`, `LOCAL_LOGIN_ENABLED=true` and a generated `ENCRYPTION_KEYS=v1:…`. `WORKER_CONCURRENCY` defaults to 4 and `WEBHOOK_INLINE_CONCURRENCY` to 8 when unset.
 - **Dev admins (dev database):** `admin@optiply.nl` (password given to the user in session 2) and `m2-smoke@optiply.nl` (session 3, random password; harmless). Set a password with `corepack pnpm --filter @ow/server create-admin -- --email admin@optiply.nl --name Admin` (prompts, or reads `ADMIN_PASSWORD`).
+- **At the end of session 11** the Compose stack was left running on the M11 branch's image (above). The dev database and dev servers weren't started. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 6. `git` must be on PATH for the server tests and e2e (it is on this Mac and in CI).
 - **At the end of session 10** the Compose stack was left running on the image of `main` (`bb7f6b7`). The dev database and dev servers weren't started. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from `main` before the merge commit (the same code). Playwright's Firefox and WebKit (for the step 1 spike) were installed into session 10's scratchpad only.
 - **At the end of session 9** the Compose stack was left running on the image of `main` (`a04c68e`, M9 with its review fixes), the user signed in to it. The dev database and dev servers weren't started this session. The e2e builds (`apps/web/dist`, `apps/server/dist`) are from step 7.
 - **At the end of session 8** the Compose stack was left running on the image of `main` (`fe0c65d`, M8 with the review fixes).
@@ -703,6 +763,8 @@ Tests for each (the e2e ones mutation-checked).
 9. **OAuth against real providers** (Google, HubSpot, Slack, Microsoft 365): the presets and quirks were checked against the providers' documentation and a fake provider only. Needs an OAuth app per provider with the redirect URI `<PUBLIC_URL>/api/oauth/callback` and its client ID and secret from the user. **Slack requires HTTPS redirect URIs** (as far as I know): its live check needs a tunnel or an HTTPS `PUBLIC_URL`.
 10. **The OAuth popup in Firefox and Safari** (`window.open` plus `postMessage` from the result page; checked in Chrome only).
 11. **Large app data**: the Table virtualizes rows and pages server-side (100k rows in the done-when, 25 at a time), but every query result still crosses the sandbox and the store whole: a big unpaged result (thousands of rows in `scroll` mode) wasn't measured.
+12. **Git sync against real GitHub** (session 11 used a local git server and a fake GitHub): pushing over https with a fine-grained token through askpass, the REST pull request calls, GitHub's push webhook and its signature, branch protection refusing pushes to main (`[remote rejected]`), fetching a commit by sha (`ensureCommit`), and GitHub Enterprise Server's `/api/v3`. Needs a scratch repo and a fine-grained token (Contents and Pull requests, read and write, on that repo only) from the user.
+13. **Big repos**: every deploy of a new commit reads and decodes every directory under `workflows/` and `apps/` (fine for tens of objects; not measured for hundreds), and the bare cache fetches whole branches.
 
 ## 13. Known gaps and TODOs carried forward
 
@@ -717,7 +779,6 @@ Tests for each (the e2e ones mutation-checked).
   - **No per-run cap on in-flight `fetch` requests** (the architecture's 50); the shared agent allows 32 connections per origin.
   - **A loop's sync workflow runner holds the worker** while its children run (it waits within the iteration timeout, default 10 s: raise it for slow children); a Workflow block pauses instead.
   - **Renaming a function parameter doesn't rewrite `params.x`** in its blocks (renaming functions and blocks does).
-  - The `suspendRun` race fix for child runs (a child ending just before its parent pauses) has no test, and `PgChildRuns` doesn't lock the parent's row the way `completeTask` does, so a tiny window remains for children (tasks are covered).
   - A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails. That's expected; noted for ops docs.
 - **Webhooks:** API key only (no public or HMAC-signed webhooks, no `?api_key=` query parameter); no rate limiting; no OpenAPI document for the public REST routes yet. API keys can read single runs, not list them.
 - **Scheduler:** fires up to 5 s late (tick interval); a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
@@ -764,29 +825,31 @@ Tests for each (the e2e ones mutation-checked).
   - The process refreshing holds a pooled connection (and the lock) while calling the provider; waiters don't.
   - Code steps of custom flows run in a sandbox shared by the process (the API's, or the worker's own), not the run's.
   - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
+- **Git sync (M11):**
+  - GitHub only (other hosts work for push and pull without the pull request API: no PR is opened, a compare link is shown).
+  - Resources, folders and config vars aren't in Git; no promotion between instances.
+  - Update from branch replaces the draft: no three-way merge of both sides' edits. A conflict needs updating (dropping local edits) or committing first.
+  - A protected object's name and description can't be changed in the editors yet (the API's `branchDrafts.save` takes them).
+  - On a protected app's main the inspector's inputs aren't disabled (edits are ignored; the banner explains).
+  - Deploys aren't retried on their own for problems the instance fixes later (a resource created): Deploy now does it.
+  - The GitHub token is one per instance; commits are authored by the person but pushed with that token. No GitHub App.
+  - The branch list shows every branch of the repo; no filtering by object.
+  - The Git settings page polls deploys every 15 s; there's no notification when a deploy has problems.
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: M11, Git sync
+## 14. Next step: review PR #13, then M12
 
-Chosen with the user at the start of session 11 (from the M11+ list; Python, SQS/Kafka, multiplayer and AI actions move to M12+). Branch `feat/m11-git-sync`. Agreed with the user:
-- **Retool-style protection**: protected objects are edited on branches, reviewed in a PR, and deployed when it merges; unprotected ones work as before.
-- **GitHub** (plain git for the content, the GitHub API for PRs and the push webhook).
-- **Code split out**: code blocks, JS queries and transformers as `.js`, SQL as `.sql`, next to canonical JSON, with the layout in its own file.
-- **Workflows and apps only** (no resources, folders or config vars).
+1. **Review PR #13** before merging (the `code-review` skill, as for #12), commit the fixes on `feat/m11-git-sync`, watch CI, then merge with a merge commit.
+2. **A live check against real GitHub** if the user provides a scratch repo and a fine-grained token (§12, item 12).
+3. **Plan M12** with the user. From `architecture.md` §2.7, M12+: Python executor (nsjail), SQS/Kafka triggers, multiplayer editing (Yjs), AI actions. Also open: Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch), and the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
 
-The design is `architecture.md` §2.13; the done-when is in §2.7. Steps:
-1. **The file format** (`packages/git-format`, browser-safe): workflow and app definitions to files and back, the split rules, `ow.json`; a round-trip property test over generated definitions; problems naming the file.
-2. **Git on the server**: `git` in the runtime image; a client on a bare cache repo with plumbing only (read a tree at a ref, write an object's files as a commit on a branch, push with retry on a moved branch), the token through `GIT_ASKPASS`; `git_settings` (encrypted token and webhook secret) with an admin API and Test connection. Tests against local bare repos.
-3. **Deploy from main**: the poll and the signed push webhook, the deploy job (claimed in `maintenance_jobs`), diffing against the last deployed commit, releases made by Git sync with the commit SHA, new objects created, removed ones flagged, problems recorded per object, audit.
-4. **Protection and branches** (server): the `protected` flag and the protect flow, `git_branch_drafts` (save, run, pull from the branch), Commit, Open PR / PR status through the GitHub API (a fake GitHub in tests), main read-only for protected objects, admin rollback.
-5. **The UI**: the Git settings page (with the deploy status and problems), Protect, a branch picker in the workflow and app editors, the Commit dialog (message, the files that change), the PR link and status, the read-only banner on main, Git sync releases in the release lists.
-6. **Done-when, Compose check, docs**: Playwright against a bare repo and the fake GitHub API; Compose; one check against a real GitHub repo if the user provides one (a scratch repo and a fine-grained token).
+M11 as agreed (for the record): Retool-style protection; GitHub; code split out; workflows and apps only. The design is `architecture.md` §2.13.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m11-git-sync && git pull        # M11 (§14)
+git switch feat/m11-git-sync && git pull        # PR #13, to review (§14)
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433

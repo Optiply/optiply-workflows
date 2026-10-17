@@ -17,11 +17,17 @@ describe('loadConfig', () => {
       OIDC_CLIENT_SECRET: '',
       LOG_LEVEL: '',
       LOCAL_LOGIN_ENABLED: '',
+      GIT_ALLOW_INSECURE_URLS: '',
+      GITHUB_API_URL: '',
+      GIT_POLL_SECONDS: '',
     })
     expect(config.keyring.current).toBe('v2')
     expect(config.oidcEnabled).toBe(false)
     expect(config.LOG_LEVEL).toBe('info')
     expect(config.LOCAL_LOGIN_ENABLED).toBe(false)
+    expect(config.GIT_ALLOW_INSECURE_URLS).toBe(false)
+    expect(config.GITHUB_API_URL).toBeUndefined()
+    expect(config.GIT_POLL_SECONDS).toBe(60)
   })
 
   it('still reports an unknown current key version', () => {

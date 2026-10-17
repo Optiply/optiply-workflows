@@ -36,7 +36,14 @@ export async function protectBranch(repoPath: string, branch: string): Promise<v
 export async function gitHttpServer(
   root: string,
   token: string,
-): Promise<{ url: string; requests: { authorized: number; refused: number }; close: () => Promise<void> }> {
+  /** Where to listen; 0.0.0.0 to serve containers too (a Compose check). */
+  host = '127.0.0.1',
+): Promise<{
+  url: string
+  port: number
+  requests: { authorized: number; refused: number }
+  close: () => Promise<void>
+}> {
   const backend = join(
     execFileSync('git', ['--exec-path'], { env: cleanEnv }).toString().trim(),
     'git-http-backend',
@@ -88,10 +95,11 @@ export async function gitHttpServer(
     })
     child.on('close', () => res.end())
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(0, host, resolve))
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${port}`,
+    port,
     requests,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }

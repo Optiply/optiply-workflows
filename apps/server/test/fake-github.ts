@@ -29,7 +29,14 @@ export interface FakePull {
  * reading pull requests, and merging them for real (`git merge-tree` + a merge commit on the base branch), so a
  * test can play the reviewer. Every call needs `Authorization: Bearer <token>`.
  */
-export async function fakeGitHub(opts: { repoPath: string; owner: string; repo: string; token: string }) {
+export async function fakeGitHub(opts: {
+  repoPath: string
+  owner: string
+  repo: string
+  token: string
+  /** Where to listen; 0.0.0.0 to serve containers too (a Compose check). */
+  host?: string
+}) {
   const pulls: FakePull[] = []
   const calls: string[] = []
   /** Where merges send a signed push webhook, like a repo webhook on GitHub (set with `POST /_test/webhook`). */
@@ -176,10 +183,11 @@ export async function fakeGitHub(opts: { repoPath: string; owner: string; repo: 
     }
     return send(res, 404, { message: 'Not Found' })
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(0, opts.host ?? '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${port}`,
+    port,
     pulls,
     calls,
     merge,

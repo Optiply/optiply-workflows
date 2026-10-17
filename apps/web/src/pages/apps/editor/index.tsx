@@ -118,7 +118,9 @@ export function AppEditorPage() {
       </Centered>
     )
   // The store outlives the page: until this visit's draft is in it, it may hold the last one.
-  if (!app.data || !environments.data || loadedFor !== wanted)
+  // The same app reloading (main turning read-only after Protect) keeps the editor and its dialogs on screen.
+  const ready = app.data && wanted && !wanted.endsWith(':opening') && loadedFor?.split(':')[0] === app.data.id
+  if (!app.data || !environments.data || !ready)
     return (
       <Centered>
         <Spinner />
