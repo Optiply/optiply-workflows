@@ -65,7 +65,29 @@ function templateCompletions(
   })
   const open = before.lastIndexOf('{{')
   if (open === -1 || before.lastIndexOf('}}') > open) return { suggestions: [] }
-  const expression = before.slice(open + 2)
+  return sampleCompletions(before.slice(open + 2), model, position)
+}
+
+/** Names the JavaScript sandbox has and Python code doesn't. */
+const JS_ONLY = new Set(['_', 'dayjs', 'sql'])
+
+/** Completes `query1.data[0].|` in Python code from sample values (the line before the cursor). */
+function pythonCompletions(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): monaco.languages.ProviderResult<monaco.languages.CompletionList> {
+  const line = model.getLineContent(position.lineNumber).slice(0, position.column - 1)
+  if (line.trimStart().startsWith('#')) return { suggestions: [] }
+  return sampleCompletions(line, model, position, JS_ONLY)
+}
+
+/** Completions for the name path ending `expression`: blocks and globals, or a sample value's keys. */
+function sampleCompletions(
+  expression: string,
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+  exclude: ReadonlySet<string> = new Set(),
+): monaco.languages.ProviderResult<monaco.languages.CompletionList> {
   const match = /([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[\d+\])*)(\.?)([\w$]*)$/.exec(expression)
   const word = model.getWordUntilPosition(position)
   const range = {
@@ -80,7 +102,10 @@ function templateCompletions(
 
   if (!match || (!match[3] && !match[2])) {
     // A bare (partial) name: blocks and globals.
-    return items(Object.keys(sampleScope), monaco.languages.CompletionItemKind.Variable)
+    return items(
+      Object.keys(sampleScope).filter((k) => !exclude.has(k)),
+      monaco.languages.CompletionItemKind.Variable,
+    )
   }
   if (!match[3]) return { suggestions: [] }
   let value: unknown = sampleScope[match[1]!]
@@ -105,5 +130,9 @@ for (const language of ['sql', 'plaintext']) {
     provideCompletionItems: templateCompletions,
   })
 }
+monaco.languages.registerCompletionItemProvider('python', {
+  triggerCharacters: ['.'],
+  provideCompletionItems: pythonCompletions,
+})
 
 export { monaco }

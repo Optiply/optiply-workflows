@@ -22,8 +22,9 @@ import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
-import { BLOCK_KINDS } from './catalog'
+import { kindOf } from './catalog'
 import type { CodeFieldProps, FieldProblem } from './code-field'
+import { usePythonCheck } from './python-check'
 import { runBlock, useRun } from './run-state'
 import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
 import { TriggersForm } from './triggers'
@@ -85,7 +86,7 @@ export function Inspector({ name }: { name: string }) {
   // Block names repeat across functions, so the function is part of each field's model.
   const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
   const ctx: FormContext = { problemsAt, modelPath }
-  const kind = BLOCK_KINDS[block.type]
+  const kind = kindOf(block)
   const Icon = kind.icon
 
   return (
@@ -289,19 +290,87 @@ function StartTriggerForm({ block, ctx }: { block: BlockOf<'startTrigger'>; ctx:
 
 function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) {
   return (
-    <EditorField
-      label="JavaScript"
-      hint="An async function body: use other blocks' results, await, and return the data."
-    >
-      <Code
-        path={ctx.modelPath('code.js')}
-        language="javascript"
-        height={260}
-        value={block.config.code}
-        problems={ctx.problemsAt('config', 'code')}
-        onChange={(code) => updateBlock<BlockOf<'code'>>(block.name, (b) => ({ ...b, config: { code } }))}
-      />
-    </EditorField>
+    <LanguageCode
+      language={block.config.language}
+      code={block.config.code}
+      model="code"
+      height={260}
+      hints={{
+        javascript: "An async function body: use other blocks' results, await, and return the data.",
+        python:
+          'A function body: read other blocks as variables (query1.data) and return the data. pandas and numpy are available; no network.',
+      }}
+      problems={ctx.problemsAt('config', 'code')}
+      ctx={ctx}
+      onChange={(next) =>
+        updateBlock<BlockOf<'code'>>(block.name, (b) => ({
+          ...b,
+          config: withLanguage({ ...b.config, ...next }),
+        }))
+      }
+    />
+  )
+}
+
+/** A code or runner config with `language` only for Python (JavaScript is no language: hashes stay as they were). */
+function withLanguage<T extends { language?: 'python' }>(config: T): T {
+  const { language, ...rest } = config
+  return (language === 'python' ? { ...rest, language } : rest) as T
+}
+
+/**
+ * Code in JavaScript or Python: the language picker (switching keeps the text), the editor in that language with
+ * the validator's problems and, for Python, the executor's syntax check.
+ */
+function LanguageCode({
+  language,
+  code,
+  model,
+  height,
+  hints,
+  problems,
+  ctx,
+  onChange,
+}: {
+  language: 'python' | undefined
+  code: string
+  /** The Monaco model's name: `<model>.js` or `<model>.py`. */
+  model: string
+  height: number
+  hints: { javascript: string; python: string }
+  problems: FieldProblem[]
+  ctx: FormContext
+  onChange: (next: { code?: string; language?: 'python' }) => void
+}) {
+  const python = language === 'python'
+  const check = usePythonCheck(code, python)
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Language">
+        <Select
+          value={python ? 'python' : 'javascript'}
+          onChange={(e) => onChange({ language: e.target.value === 'python' ? 'python' : undefined })}
+        >
+          <option value="javascript">JavaScript</option>
+          <option value="python">Python</option>
+        </Select>
+      </Field>
+      <EditorField label={python ? 'Python' : 'JavaScript'} hint={python ? hints.python : hints.javascript}>
+        <Code
+          path={ctx.modelPath(`${model}.${python ? 'py' : 'js'}`)}
+          language={python ? 'python' : 'javascript'}
+          height={height}
+          value={code}
+          problems={[...problems, ...check.problems]}
+          onChange={(next) => onChange({ code: next })}
+        />
+        {check.unavailable && (
+          <span className="flex items-center gap-1 text-xs text-amber-700" data-testid="python-unavailable">
+            <AlertCircle className="size-3.5" /> {check.unavailable}: this code can't run here.
+          </span>
+        )}
+      </EditorField>
+    </div>
   )
 }
 
@@ -838,19 +907,19 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
         </Select>
       </Field>
       {runner.kind === 'code' && (
-        <EditorField
-          label="JavaScript"
-          hint="value is the item and index its position; return the item's result."
-        >
-          <Code
-            path={ctx.modelPath('runner.js')}
-            language="javascript"
-            height={180}
-            value={runner.code}
-            problems={ctx.problemsAt('config', 'runner', 'code')}
-            onChange={(code) => setRunner({ kind: 'code', code })}
-          />
-        </EditorField>
+        <LanguageCode
+          language={runner.language}
+          code={runner.code}
+          model="runner"
+          height={180}
+          hints={{
+            javascript: "value is the item and index its position; return the item's result.",
+            python: "value is the item and index its position; return the item's result (no network).",
+          }}
+          problems={ctx.problemsAt('config', 'runner', 'code')}
+          ctx={ctx}
+          onChange={(next) => setRunner(withLanguage({ ...runner, ...next }))}
+        />
       )}
       {runner.kind === 'query' && (
         <QueryEditor
