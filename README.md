@@ -172,6 +172,23 @@ How it's kept safe:
 - Queries stay on the server. The browser sends a query's name and the values of its `{{ }}`s, which are bound as parameters. A `{{ }}` reading only `current_user` is filled in by the server, so `where owner = {{ current_user.email }}` can be trusted; mixing `current_user` with app values in one `{{ }}` is refused.
 - People with Use on an app run its queries without access to their resources: whoever publishes needs Use on every resource the app queries, in every environment. Writes (manual queries) are audited without their values.
 
+## Undo, copy and paste
+
+Both editors (workflows and apps) undo and redo every change to the draft, and copy, paste and duplicate what's selected:
+
+| | Mac | Windows / Linux |
+|---|---|---|
+| Undo | ⌘Z | Ctrl+Z |
+| Redo | ⇧⌘Z | Ctrl+Shift+Z or Ctrl+Y |
+| Copy / paste | ⌘C / ⌘V (or the Edit menu) | Ctrl+C / Ctrl+V |
+| Duplicate | ⌘D | Ctrl+D |
+
+- **Undo** is also in the toolbar (workflows) and the header (apps). Typing in one field, or moving one thing, is one step. Undo shows what it undid (the block or component, the code item, the page), and what it leaves is saved like any edit. Reloading or switching branches starts a fresh history.
+- **Inside a code field** the keys are the field's own: ⌘Z there undoes typing in that field.
+- **Workflows:** select blocks (click, ⌘/Ctrl-click or drag a box) and copy them; paste in another workflow (or tab) puts them to the right of the selected block, connected to it. Names that are taken get new ones, references between the pasted blocks follow, and the functions they call come along (a workflow that already has a different function of that name keeps its own). A note says what wasn't pasted and which references point at blocks that weren't copied.
+- **Apps:** copy the selected component (with everything inside it), or the query, transformer or variable open in the code panel. Components paste where the palette would add one: into the selected container, else next to the selected component, on the page being edited. Queries that run by themselves start running as soon as they're pasted.
+- **What's pasted is checked:** only content copied from an editor is read, and pasting something this browser didn't copy (another site can put anything on the clipboard) asks first, naming any queries that would run straight away.
+
 ## Checks
 
 ```bash

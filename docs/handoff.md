@@ -2,12 +2,12 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M15+; M13 in progress).
 
-Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned on `feat/m13-editor-polish`; Docker Desktop reset to factory, so the Compose stack was rebuilt on `main` with an empty database (§11); Google SSO turned on and checked against real Google (§12, item 1). Before that, session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned, built, reviewed (10 fixes) and merged as PR #14).
+Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `feat/m13-editor-polish`, PR #17, not yet reviewed or merged; Docker Desktop reset to factory, so the Compose stack was rebuilt on `main` with an empty database (§11); Google SSO turned on and checked against real Google (§12, item 1). Before that, session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned, built, reviewed (10 fixes) and merged as PR #14).
 
 | | |
 |---|---|
 | **Branch** | `feat/m13-editor-polish` (M13, from `main` at `c2cf787`). M12 was built on `feat/m12-python` (from `main` at `ee42bc7`); M11 on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
-| **PR** | The M13 draft PR, opened with the plan commit. [#16](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/16): the CI timeout on `main` after #15's merge (a 30 s test timeout in every package; the runner was overloaded, not the test slow) and a quadratic in the app graph, merged as `c2cf787`. [#15](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/15) (session 13's docs: Google SSO, the Docker reset), merged as `7d2b7df`. [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), reviewed before merging (10 fixes, `bca9e7f`), merged by the user as `13ea53e`. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
+| **PR** | [#17 M13](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/17), draft, all five steps pushed plus three test fixes; **review it before merging**. [#16](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/16): the CI timeout on `main` after #15's merge (a 30 s test timeout in every package; the runner was overloaded, not the test slow) and a quadratic in the app graph, merged as `c2cf787`. [#15](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/15) (session 13's docs: Google SSO, the Docker reset), merged as `7d2b7df`. [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), reviewed before merging (10 fixes, `bca9e7f`), merged by the user as `13ea53e`. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
 | **`main`** | `c2cf787`, the merge of PR #16 (the CI fix); before it `7d2b7df` (PR #15, docs; its CI failed on a test timeout, which #16 fixed) and `13ea53e` (PR #14, M12 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
@@ -32,10 +32,10 @@ Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned on `feat/m13-e
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
 | **M12 Python** | ✅ On `main` (§9f): PR #14, reviewed before merging (10 fixes, `bca9e7f`). Python code blocks and loop runners run by an nsjail code executor (pandas, numpy; no network), Python's references found by a tokenizer checked against `symtable`, syntax checked by the executor, the editor's Python mode, Compose and CI. The done-when proven in Playwright and on Docker Compose (p50 35 ms). |
-| **M13 Editor polish** | 📝 Planned (`architecture.md` §2.15, steps in §14) on `feat/m13-editor-polish`: undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. |
+| **M13 Editor polish** | ✅ Built on `feat/m13-editor-polish` (§9g), PR #17: undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors (snapshots grouped automatically, the clipboard through the browser's events and read as untrusted, functions brought along with pasted blocks). The done-when proven in Playwright and on Docker Compose. **Not reviewed or merged yet.** |
 | **M14 Modules & Query Library** | Next, after M13. AI actions go last (the user's choice). |
 
-**Start the next session with:** the next M13 step (§14).
+**Start the next session with:** reviewing PR #17 (the `code-review` skill), committing the fixes **before** it's merged; the user merges it. Then planning M14 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -778,7 +778,7 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 - Checked: people with only Use can't open the app editor (`apps.get` needs Edit), so it has no counterpart to step 1's Use-level fix.
 - Tests: `apps/editor/store.test.ts` (5: back to the exact start and forward, typing merged per prop and split by another prop or a page, the view restored, what's gone dropped, no-op edits, read-only and conflict); `e2e/app-undo.spec.ts` (add two components, bind one, move one; each undo leaves the saved draft equal to the one before, exactly; keyboard redo back to the last; ⌘Z in a Monaco prop field is the field's; Preview has no undo).
 
-### Step 4 (this commit): copy, paste and duplicate in the app editor
+### Step 4, `767222b`: copy, paste and duplicate in the app editor
 - `packages/app-definition/src/paste.ts`:
   - **Two clip kinds:** `componentClipSchema` (`{ ow: 'app-components', v: 1, components, layout }`: components with everything inside them) and `codeClipSchema` (`{ ow: 'app-code', v: 1, queries, transformers, variables }`).
   - **Copying:** `copyComponents` (with `withDescendants`) and `copyCode`.
@@ -808,6 +808,17 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
     - A query copied across reads the target's input, and says so.
     - Crafted code with an automatic query asks first, naming it.
 
+### Step 5 (this commit): done-when, Compose check, docs
+- `e2e/m13-done-when.spec.ts`, the done-when as written in §2.7:
+  - **The workflow editor:** 50 edits, five kinds cycled ten times: add a code block after the last one, type its code, rename it, drag it, Arrange. ⌘Z fifty times leaves the saved draft equal to the start, layout included, **and the server's `draftHash` is the start's**. ⇧⌘Z fifty times gives the end again, hash and all. ⌘Z inside a code field is Monaco's.
+  - **Copying with a function:** two blocks and the function they call copied into another workflow. Names, the reference, the edge and the function follow, and the copy runs.
+  - **The app editor:** 48 edits, six kinds cycled eight times: add a Text, type its value, rename it, drag it, add a JS query, type its code. Undone to the exact start (definition and hash) and redone to the end.
+  - **Copying a container** with an input and a text into another app: they stay nested, and typing in the pasted input shows in the pasted text in the running draft.
+  - Locally both pass in 37 s.
+- **Found while writing it:** the validator's `function_call` message says to call a function as `await name({ ... })`, but calls are positional, as the README and the editor's typings say (`await name(a, b)`). `sum({ values })` made `params.values` the whole object. Noted in §13, not changed in M13.
+- **On Docker Compose (§10):** the same spec, passed.
+- README: "Undo, copy and paste" (the keys and what each editor does).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -815,6 +826,15 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
 - **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7); 27 tests in 20 files with M12's Python spec (it needs the executor container: Docker). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 13** (the M13 done-when; `compose-check/` in the session scratchpad: a copy of the spec and `helpers.ts`, a config pointing at `localhost:3000`, the check account's password and `cleanup.mjs`, not committed):
+  - The user had used the stack 5 minutes before (a resource, queries, a workflow `test`). They had said yes to the rebuild beforehand; told that it keeps their work and only restarts the api and workers.
+  - `PUBLIC_URL=http://localhost:3000 docker compose up --build -d` on `767222b` (with the uncommitted done-when spec, which isn't in the image).
+  - A new local admin `m13-check@optiply.nl` with a random password (`create-admin`, `ADMIN_PASSWORD`).
+  - The done-when spec in Chrome against the stack: **2 passed** (the workflow editor 16.0 s, the app editor 17.6 s).
+  - Afterwards:
+    - The check's two workflows and two apps (`m13-check-…`, listed by slug first) deleted through the API as the check account.
+    - The check account **disabled** (`disabled_at` set in the database: an account can't disable itself, and the user's session wasn't used).
+    - The user's `test` workflow and their resource untouched.
 - **Docker Compose, session 12** (the M12 done-when; `compose/` in the session scratchpad: `setup.mjs`, `latency.mjs`, `cleanup.mjs`, `m7-check-password`; the spec copy ran from a temporary `apps/web/.compose-check/`, deleted):
   - Asked first (the user's last activity was the night before; they said yes to all three: the token, the rebuild, the check). `PYTHON_EXECUTOR_TOKEN` (generated, 48 hex characters) appended to `.env`. `PUBLIC_URL=http://localhost:3000 docker compose up -d --build` on `ec7280b`: 91 s, nearly all image builds (the executor's included); localhost:3000 down for a few seconds; no migrations (M12 has none); the code executor healthy first, then the API and workers on the `executor` network.
   - `m7-check@optiply.nl` got a new random password; a throwaway database `m12_check` (`customers`: Ada pro, Grace free) behind its own resource.
@@ -877,6 +897,7 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
+- **Compose stack, end of session 13:** the image of `feat/m13-editor-polish` at `767222b` (M13 steps 1–4; rebuilt for the Compose check, §10). The user's `test` workflow and a resource of theirs on it; `m13-check@optiply.nl` disabled.
 - **Compose stack: Docker Desktop was reset to factory in session 13** (after an error the user couldn't capture). That deleted every image and the `optiply-workflows_pgdata` volume, and there was no backup, so everything the history below describes is gone (the `admin@optiply.nl` and `m7-check` admins, the user's `test` workflow, API key and `cancel-me` schedule, the managed database's contents). It was rebuilt from `main` at `13ea53e` with `PUBLIC_URL=http://localhost:3000 docker compose up --build -d`: migrations from scratch, the managed database re-provisioned (`owdb_production`, `owdb_staging`), the code executor, Google SSO on. Its only user is **`fabioceriaco@optiply.nl`** (admin as the first user, signed in with Google; also has a local password). **Always start or recreate it with `PUBLIC_URL=http://localhost:3000`**: Compose reads `.env`, whose `PUBLIC_URL` is Vite's `:5173`, and the Google callback is built from it. Docker Desktop's memory is the factory 4 GB.
 - **The Compose stack before the reset** (volume `optiply-workflows_pgdata`): it ran the image of **`feat/m12-python`** at `ec7280b` (rebuilt in session 12 with the user's OK), **with the `code-executor` service** and **`PYTHON_EXECUTOR_TOKEN` in `.env`** (added in session 12; every `docker compose` command, even `ps`, refuses to run without it). Python works on it. Session 12's check left nothing behind (§10); `m7-check`'s password is in session 12's scratchpad. Before that: the image of **`feat/m11-git-sync`** (step 6, uncommitted at build time but the same code as the step 6 commit; rebuilt in session 11 with the user's OK; **migrations 0014–0016 applied**, so going back to `main`'s image runs it on a newer schema: additive tables and columns only). Git sync isn't set up on it. Session 11's check left nothing behind (§10); `m7-check`'s password is in session 11's scratchpad. Before that: the image of `main` at `bb7f6b7` (M10 with its review fixes; migration `0013`). Session 10's check left nothing behind (§10); `m7-check`'s password is in session 10's scratchpad. Before that: the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
 - **Don't kill side processes inside the Postgres container** (see the runbook): Postgres is PID 1 there and crash-restarts when an adopted child dies by signal.
@@ -939,7 +960,7 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
   - Apps have notifications (`pages/apps/notifications.tsx`); the rest of the web app still has no toast system, and `confirm()` is still used for destructive actions (the `Dialog` could replace it).
   - The main bundle is 488 kB; the editor and Monaco are split out, the other pages aren't.
   - The label editors' "Add" button takes the whole field label as its accessible name (the M9 e2e relies on it: `/^Headers Sent with every request/`).
-  - The editor has no undo/redo across blocks, no copy/paste of blocks, and no "create function from selection". No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
+  - The editor has undo/redo and copy/paste since M13; no "create function from selection" yet, and undo doesn't outlive a reload. No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
   - The run panel's logs tab shows the first 500 lines. The resources playground still uses textareas.
 - **Editor completions** cover the latest finished run only; there's no environment choice for them.
 - **Managed database (M7):**
@@ -959,7 +980,7 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
   - Pages: no per-page access (pages are navigation, not security: every page's queries run with Use on the app); page names in code strings (`utils.openPage('…')`) aren't rewritten on rename; no page-scoped variables; Navigation renders buttons, not links (no middle-click to a new tab); pages reorder with up/down only; deleting a page uses `confirm()`.
   - Folders: nested folders exist in the API (`parentId`) but the lists show one level and offer no rename; folder names are visible to everyone listing that kind.
   - Apps and workflows from before M10 with an entity or block named `url` or `sql` must rename it (the validator says so).
-  - Editor: no dragging between containers ("Inside" moves a component), no undo/redo, no copy/paste of components, REST queries edited as JSON (SQL resources have the full editor), no release diff.
+  - Editor: no dragging between containers ("Inside" moves a component), one component selected at a time (copy takes it with what's inside it; M13), REST queries edited as JSON (SQL resources have the full editor), no release diff.
   - Charts: light mode only, no time-scale axes (dates are categories), no texture fills.
   - Automatic queries aren't audited (by design); manual ones are, without values.
   - Rollback asks with `confirm()`, like the workflow editor.
@@ -991,24 +1012,17 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
   - dict methods win over keys in attribute access (`row.items` is the method): use `row["items"]`.
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next: M13 Editor polish
+- **From M13:**
+  - The validator's `function_call` message says `await name({ ... })`; calls are positional (`await name(a, b)`, as the README and the typings say). Fix the message.
+  - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. Two people editing one draft still conflict as before.
+  - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
 
-The design is `architecture.md` §2.15. Six commits on `feat/m13-editor-polish`, each reported before the next:
+## 14. Next: review PR #17, then M14
 
-0. **Plan** (this commit): §2.7 split into M13, M14 and M15+ (AI actions last), §2.8 item 12, §2.15, this file; the draft PR.
-1. **History and workflow undo/redo:** `lib/history.ts`, `lib/shortcuts.ts` (vitest), the workflow store (`update` with groups, undo/redo, the saved-JSON check, `epoch`), group keys at the Monaco and input call sites, toolbar buttons, the Use-level read-only fix; Playwright.
-2. **Workflow copy, paste, duplicate:** first a spike of the clipboard events in headless Chromium; `packages/definition/src/paste.ts` (tests, a property test: pasting adds no problems beyond the references it lists), `selection[]`, the copy and paste listeners, the hash check and its confirmation, the summary; Playwright.
-3. **App undo/redo:** the same history in the app store (groups for props, code and names; one step per grid stop; the view put back through `resolvePage`; `epoch`); Playwright.
-4. **App copy, paste, duplicate:** `packages/app-definition/src/paste.ts` (tests), containers and pages, the confirmation for queries that run by themselves; Playwright.
-5. **Done-when, Compose check, docs:** `e2e/m13-done-when.spec.ts`, the Compose check (ask first: the stack is shared; `PUBLIC_URL=http://localhost:3000`), README (shortcuts), `architecture.md`, this file.
+1. **Review PR #17** before merging (the `code-review` skill, as for #12–#14), commit the fixes on `feat/m13-editor-polish`, watch CI; **the user merges it** (with a merge commit).
+2. **Plan M14 Modules & Query Library** with the user (`architecture.md` §2.7): app modules (reusable sub-apps with typed inputs and outputs) and the Query Library (org-wide versioned queries, pinned or following the latest). Each is a new object kind (tables, permissions, folders, releases, Git format), and the server only runs queries stored in the app's own release today (`runAppQuery`), so how a release vouches for a module's or a library query is the first decision. AI actions stay last (the user's choice).
 
-Planning M13 (for the record):
-
-
-1. ~~**Review PR #14**~~ done in session 12: 10 fixes in `bca9e7f`, merged by the user as `13ea53e`.
-2. ~~**Plan M13** with the user.~~ Done in session 13: Editor polish (above). The list it was chosen from, `architecture.md` §2.7: SQS/Kafka triggers, multiplayer editing (Yjs), AI actions; Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch) and a live check against real GitHub (§12, item 12); Python's follow-ups (§13: network through a guarded proxy, functions, per-workflow packages, a warm pool); the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
-
-M12 as agreed (for the record): an nsjail service; a curated set of packages; data in, data out. The design is `architecture.md` §2.14.
+M13 as built (for the record): the plan's six commits (plan and five steps) plus three test fixes (`4926474`, `6426961`); the design is `architecture.md` §2.15.
 
 ## 15. How to start the next session
 
