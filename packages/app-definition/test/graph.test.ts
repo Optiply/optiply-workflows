@@ -89,6 +89,19 @@ describe('buildAppGraph', () => {
     expect(graph.cycles[0]).toHaveLength(n)
   })
 
+  it('handles a value read by many components', () => {
+    // Appending to `dependents` used to copy the list each time: quadratic in the number of readers (40,000: 2.6 s).
+    const n = 5000
+    const components = Array.from({ length: n }, (_, i) =>
+      comp(`r${i}`, 'text', { value: '{{ hub.value }}' }),
+    )
+    components.push(comp('hub', 'text', { value: 'x' }))
+    const graph = buildAppGraph(app({ components }))
+    expect(graph.dependents.get('hub.value')).toHaveLength(n)
+    expect(graph.affected(['hub.value'])).toEqual(components.slice(0, n).map((c) => `${c.name}.value`))
+    expect(graph.cycles).toEqual([])
+  })
+
   it('ignores the fields of a duplicate name', () => {
     const graph = buildAppGraph(
       app({
