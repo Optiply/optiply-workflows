@@ -1,14 +1,14 @@
 # Session handoff
 
-What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M12, M13+ to choose from).
+What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M15+; M13 in progress).
 
-Last updated: 2026-10-17 (session 13: Docker Desktop reset to factory, so the Compose stack was rebuilt on `main` with an empty database (§11); Google SSO turned on and checked against real Google (§12, item 1). Before that, session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned, built, reviewed (10 fixes) and merged as PR #14).
+Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned on `feat/m13-editor-polish`; Docker Desktop reset to factory, so the Compose stack was rebuilt on `main` with an empty database (§11); Google SSO turned on and checked against real Google (§12, item 1). Before that, session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned, built, reviewed (10 fixes) and merged as PR #14).
 
 | | |
 |---|---|
-| **Branch** | `main` (session 13's docs on `docs/google-sso`). M12 was built on `feat/m12-python` (from `main` at `ee42bc7`); M11 on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
-| **PR** | [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), reviewed before merging (10 fixes, `bca9e7f`), merged by the user as `13ea53e`. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
-| **`main`** | `13ea53e`, the merge of PR #14 (M12 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
+| **Branch** | `feat/m13-editor-polish` (M13, from `main` at `c2cf787`). M12 was built on `feat/m12-python` (from `main` at `ee42bc7`); M11 on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
+| **PR** | The M13 draft PR, opened with the plan commit. [#16](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/16): the CI timeout on `main` after #15's merge (a 30 s test timeout in every package; the runner was overloaded, not the test slow) and a quadratic in the app graph, merged as `c2cf787`. [#15](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/15) (session 13's docs: Google SSO, the Docker reset), merged as `7d2b7df`. [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), reviewed before merging (10 fixes, `bca9e7f`), merged by the user as `13ea53e`. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
+| **`main`** | `c2cf787`, the merge of PR #16 (the CI fix); before it `7d2b7df` (PR #15, docs; its CI failed on a test timeout, which #16 fixed) and `13ea53e` (PR #14, M12 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -32,8 +32,10 @@ Last updated: 2026-10-17 (session 13: Docker Desktop reset to factory, so the Co
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
 | **M12 Python** | ✅ On `main` (§9f): PR #14, reviewed before merging (10 fixes, `bca9e7f`). Python code blocks and loop runners run by an nsjail code executor (pandas, numpy; no network), Python's references found by a tokenizer checked against `symtable`, syntax checked by the executor, the editor's Python mode, Compose and CI. The done-when proven in Playwright and on Docker Compose (p50 35 ms). |
+| **M13 Editor polish** | 📝 Planned (`architecture.md` §2.15, steps in §14) on `feat/m13-editor-polish`: undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. |
+| **M14 Modules & Query Library** | Next, after M13. AI actions go last (the user's choice). |
 
-**Start the next session with:** planning M13 with the user (§14).
+**Start the next session with:** the next M13 step (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -262,6 +264,12 @@ Last updated: 2026-10-17 (session 13: Docker Desktop reset to factory, so the Co
   - **A branch-draft snapshot has no foreign key** to its draft (runs outlive a discarded draft).
 - **The git client** uses plumbing only on a bare cache per process (no working tree), a fast-forward push, the token through `GIT_ASKPASS`, only https (plus http/file with `GIT_ALLOW_INSECURE_URLS`), no redirects, no hooks or credential helpers; a repo on another host needs the token again.
 - **Tests run git for real**: local bare repos (`file://`), `git http-backend` behind basic auth for the token path, a fake GitHub (`apps/server/test/fake-github.ts`) that merges PRs for real and can send signed push webhooks; the e2e setup starts both.
+
+### Taken in M13 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M13 (session 13):** M13 is undo/redo, copy/paste, duplicate and shortcuts in **both** editors; modules and the Query Library are **M14**; **AI actions go last** ("keep the AI for the end"). Hosting on GCP was talked through (a VM with Compose, Caddy, Cloud SQL or Postgres on the VM) and put aside for now.
+- **Snapshots, not patches**, for the history; **undo is a forward edit** to the server (autosave unchanged); the history is cleared on `load()`.
+- **The browser's copy and paste events**, not `navigator.clipboard` (no permission prompts), with **pasted JSON treated as untrusted** (schemas, a size cap, a confirmation when it isn't what this browser copied).
+- **Pasted blocks bring the functions they call**; references to blocks that weren't copied are listed, not dropped.
 
 ## 3. What M0 built (on `main`)
 
@@ -908,10 +916,22 @@ Ten findings from the `code-review` skill, checked against the code (nine real, 
   - dict methods win over keys in attribute access (`row.items` is the method): use `row["items"]`.
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next: M13
+## 14. Next: M13 Editor polish
+
+The design is `architecture.md` §2.15. Six commits on `feat/m13-editor-polish`, each reported before the next:
+
+0. **Plan** (this commit): §2.7 split into M13, M14 and M15+ (AI actions last), §2.8 item 12, §2.15, this file; the draft PR.
+1. **History and workflow undo/redo:** `lib/history.ts`, `lib/shortcuts.ts` (vitest), the workflow store (`update` with groups, undo/redo, the saved-JSON check, `epoch`), group keys at the Monaco and input call sites, toolbar buttons, the Use-level read-only fix; Playwright.
+2. **Workflow copy, paste, duplicate:** first a spike of the clipboard events in headless Chromium; `packages/definition/src/paste.ts` (tests, a property test: pasting adds no problems beyond the references it lists), `selection[]`, the copy and paste listeners, the hash check and its confirmation, the summary; Playwright.
+3. **App undo/redo:** the same history in the app store (groups for props, code and names; one step per grid stop; the view put back through `resolvePage`; `epoch`); Playwright.
+4. **App copy, paste, duplicate:** `packages/app-definition/src/paste.ts` (tests), containers and pages, the confirmation for queries that run by themselves; Playwright.
+5. **Done-when, Compose check, docs:** `e2e/m13-done-when.spec.ts`, the Compose check (ask first: the stack is shared; `PUBLIC_URL=http://localhost:3000`), README (shortcuts), `architecture.md`, this file.
+
+Planning M13 (for the record):
+
 
 1. ~~**Review PR #14**~~ done in session 12: 10 fixes in `bca9e7f`, merged by the user as `13ea53e`.
-2. **Plan M13** with the user. From `architecture.md` §2.7, M13+: SQS/Kafka triggers, multiplayer editing (Yjs), AI actions; Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch) and a live check against real GitHub (§12, item 12); Python's follow-ups (§13: network through a guarded proxy, functions, per-workflow packages, a warm pool); the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
+2. ~~**Plan M13** with the user.~~ Done in session 13: Editor polish (above). The list it was chosen from, `architecture.md` §2.7: SQS/Kafka triggers, multiplayer editing (Yjs), AI actions; Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch) and a live check against real GitHub (§12, item 12); Python's follow-ups (§13: network through a guarded proxy, functions, per-workflow packages, a warm pool); the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
 
 M12 as agreed (for the record): an nsjail service; a curated set of packages; data in, data out. The design is `architecture.md` §2.14.
 
@@ -919,7 +939,7 @@ M12 as agreed (for the record): an nsjail service; a curated set of packages; da
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull
+git switch feat/m13-editor-polish && git pull
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
