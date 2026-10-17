@@ -15,6 +15,7 @@ import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
+import { configurePython } from '../services/python'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
@@ -63,6 +64,7 @@ export async function buildApp(deps: {
     resources: dbResourceProvider(db, config.keyring, services.sandbox),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
+    python: configurePython(config) ?? undefined,
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),
     observer: metrics.observer,

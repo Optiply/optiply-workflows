@@ -59,6 +59,8 @@ export type DiagnosticCode =
   | 'unpublished_workflow'
   | 'python_unsupported'
   | 'python_builtin'
+  /** The server's: no code executor for Python (or it couldn't be reached to check the code). */
+  | 'python_unavailable'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'

@@ -12,6 +12,7 @@ import {
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '@ow/definition'
+import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -23,6 +24,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { pythonRunner } from '../../services/python'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -239,6 +241,30 @@ export const workflowsRouter = router({
     }),
 
   /** Deletes the workflow with its releases and run history. */
+  /**
+   * Python syntax errors for the editor's markers (M12): the executor compiles the fields without running them. A
+   * mutation, as code can be long. `available: false` when Python isn't set up or the executor can't be reached.
+   */
+  checkPython: authedProcedure
+    .input(
+      z.object({
+        fields: z
+          .array(z.object({ id: z.string().min(1).max(200), code: z.string().max(1_000_000) }))
+          .max(200),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const python = pythonRunner()
+      if (!python)
+        return { available: false as const, message: "Python isn't set up on this instance", problems: [] }
+      try {
+        return { available: true as const, problems: await python.check(input.fields) }
+      } catch (err) {
+        if (!(err instanceof SandboxError)) throw err
+        return { available: false as const, message: err.message, problems: [] }
+      }
+    }),
+
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')

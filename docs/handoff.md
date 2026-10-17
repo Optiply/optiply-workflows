@@ -31,7 +31,7 @@ Last updated: 2026-10-17 (session 12: the CI timeouts fixed as an engine race, P
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
-| **M12 Python** | 🚧 On `feat/m12-python` (§9f), PR #14: planned in session 12 (§14, `architecture.md` §2.14); steps 1 (the executor) and 2 (the definition) built |
+| **M12 Python** | 🚧 On `feat/m12-python` (§9f), PR #14: planned in session 12 (§14, `architecture.md` §2.14); steps 1 (the executor), 2 (the definition) and 3 (engine and server) built |
 
 **Start the next session with:** M12 step 1 (§14): the executor spike and service, unless it's already pushed (check the draft PR's checklist).
 
@@ -694,6 +694,12 @@ Ten findings from the `code-review` skill, each checked against the code: (1) br
 - `@ow/expressions`: `python.ts` (`analyzePython`: refs, builtins, bound; `PYTHON_KEYWORDS`, `PYTHON_BUILTINS` taken from Python 3.12 itself) and the `python-body` code kind through `freeIdentifierRefs`, so field references, the engine's scope (`referencedNames`) and rename work unchanged. 12 unit tests, and `python-symtable.test.ts`: the same names as Python's `symtable` on 38 snippets (`test/python-corpus.ts`; it caught `del`).
 - `@ow/definition`: `language: 'python'` on code blocks and code loop runners (optional, so JavaScript is no language and old hashes stand; `'javascript'` isn't accepted, keeping one spelling), `CODE_LANGUAGES`/`CodeLanguage`; the `python-body` field kind; `python_unsupported` (functions, `fetch`) and `python_builtin` (warning); no `unknown_identifier` for Python; Python-only keywords reserved for workflow blocks; `calledFunctions` skips Python. 9 tests (`test/python.test.ts`).
 - `@ow/git-format`: `blocks/<name>.py` for Python (code blocks and loop runners), `.js` otherwise; the round-trip property test generates Python too. 2 tests.
+
+### Step 3 (this commit): engine and server
+- `@ow/sandbox`: `PythonExecutorClient`/`PythonRunner` (`python.ts`); `SandboxError` gets the `unavailable` kind and `details`.
+- `@ow/engine`: `services.python` and `RunExecutorOptions.python`; `runCode(…, language)` → `runPython` for code blocks and loop runners; `toEngineError` keeps `details`. 7 tests against the executor container (`test/python.test.ts`: scope and result with pandas and logs, a loop runner, errors with line and traceback, timeout and retries, an aborted run hangs up, an unreachable executor, none at all).
+- `@ow/definition`: `pythonFields`, `lineColumnOffset`, the `python_unavailable` code.
+- Server: `PYTHON_EXECUTOR_URL`/`PYTHON_EXECUTOR_TOKEN` (`config.ts`), `services/python.ts` (`configurePython`, `pythonRunner`, `pythonDiagnostics`), `checkDefinition` adds them, the worker and the API give their runners the client, `workflows.checkPython`. 5 tests against the executor (`test/python.test.ts`: a draft run on a worker with its logs, refusing to run and publish broken Python with the diagnostic's place, publishing and running a release, checkPython, no executor), and one in `config.test.ts`.
 
 ## 10. How things were verified (and how to repeat it)
 

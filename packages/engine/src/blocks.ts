@@ -96,7 +96,7 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   },
 
   async code(block, ctx) {
-    return { data: await runCode(block, block.config.code, ctx, ctx) }
+    return { data: await runCode(block, block.config.code, ctx, ctx, block.config.language) }
   },
 
   async resourceQuery(block, ctx) {
@@ -397,7 +397,14 @@ async function waitUntil(block: BlockOf<'wait'>, ctx: BlockContext): Promise<Dat
  * workflow functions it references (`await name(...)`). Host calls are aborted with the work (timeout, run
  * failure, cancel) and once the code finishes, so a request it didn't await doesn't outlive it.
  */
-export async function runCode(block: Block, code: string, work: Work, ctx: BlockContext): Promise<unknown> {
+export async function runCode(
+  block: Block,
+  code: string,
+  work: Work,
+  ctx: BlockContext,
+  language?: 'python',
+): Promise<unknown> {
+  if (language === 'python') return runPython(code, work, ctx)
   const done = new AbortController()
   const signal = AbortSignal.any([work.signal, done.signal])
   const fetcher = ctx.services.fetcher
@@ -424,6 +431,24 @@ export async function runCode(block: Block, code: string, work: Work, ctx: Block
   } finally {
     done.abort()
   }
+}
+
+/**
+ * Runs Python code in the code executor: the same scope as JavaScript's (the blocks it reads, the run's globals,
+ * `value`/`index` in a loop, `params` in a function), as JSON; its prints become the block's logs. Aborting the
+ * work (timeout, run failure, cancel) hangs up, and the executor kills the jail.
+ */
+async function runPython(code: string, work: Work, ctx: BlockContext): Promise<unknown> {
+  const python = ctx.services.python
+  if (!python) {
+    throw new BlockFailure('python_unavailable', "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)")
+  }
+  // As JSON (the client serializes it once; results already are JSON).
+  return python.run(code, work.scope, {
+    timeoutMs: work.timeoutMs,
+    signal: work.signal,
+    onLog: (level, args) => work.log(level, formatLogArgs(args)),
+  })
 }
 
 /** Runs a query (a query block, or a loop's query runner) against a resource in the run's environment. */

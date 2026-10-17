@@ -38,6 +38,7 @@ import type { CodeRuntime } from '@ow/sandbox'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
+import { pythonDiagnostics } from './python'
 import { toResolved } from './resources'
 import { decryptForRow } from './secrets'
 
@@ -297,11 +298,10 @@ export async function checkDefinition(
       return child.liveReleaseId ? 'published' : 'unpublished'
     },
   })
-  return {
-    resources: rows,
-    children,
-    errors: validation.diagnostics.filter((d) => d.severity === 'error'),
-  }
+  const errors = validation.diagnostics.filter((d) => d.severity === 'error')
+  // Python's syntax is the executor's to check (only when the rest is valid: a broken schema has no fields).
+  if (!errors.some((d) => d.code === 'schema')) errors.push(...(await pythonDiagnostics(definition)))
+  return { resources: rows, children, errors }
 }
 
 /** The snapshot of the current draft revision, created on first use. */

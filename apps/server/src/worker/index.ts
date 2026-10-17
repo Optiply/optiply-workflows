@@ -7,6 +7,7 @@ import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { GitDeployer } from '../services/git/deployer'
+import { configurePython } from '../services/python'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
@@ -38,6 +39,7 @@ export async function startWorker(deps: {
     resources: dbResourceProvider(db, config.keyring, authSandbox),
     context: dbRunContext(db, config.keyring),
     concurrency: config.WORKER_CONCURRENCY,
+    python: configurePython(config) ?? undefined,
     log: log.child({ component: 'dispatcher' }),
     observer: metrics.observer,
   })

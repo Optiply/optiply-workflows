@@ -67,8 +67,23 @@ const ConfigSchema = z
     GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
     /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
     GITHUB_API_URL: z.string().url().optional(),
+    /**
+     * The code executor that runs Python code blocks (M12, apps/code-executor), e.g. `http://code-executor:8080`.
+     * Without it, workflows with Python can't run or be published.
+     */
+    PYTHON_EXECUTOR_URL: z.string().url().optional(),
+    /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN); needed with the URL. */
+    PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
+    if (c.PYTHON_EXECUTOR_URL && !c.PYTHON_EXECUTOR_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PYTHON_EXECUTOR_TOKEN'],
+        message: 'Required with PYTHON_EXECUTOR_URL',
+      })
+      return z.NEVER
+    }
     let keyring: Keyring
     try {
       keyring = parseKeyring(ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT)

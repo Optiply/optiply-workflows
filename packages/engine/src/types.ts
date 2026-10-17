@@ -7,7 +7,7 @@ import type {
 } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
-import type { CodeRuntime } from '@ow/sandbox'
+import type { CodeRuntime, PythonRunner } from '@ow/sandbox'
 
 /** Why a block or run failed, as stored and shown. Messages are scrubbed of known secrets. */
 export interface EngineError {
@@ -110,6 +110,8 @@ export interface EngineServices {
   children?: ChildRuns
   /** Opens User Tasks and reads their answers. Without it User Task blocks fail. */
   tasks?: UserTasks
+  /** Runs Python code (the code executor). Without it Python blocks fail with `python_unavailable`. */
+  python?: PythonRunner
 }
 
 /** A User Task as its block sees it. */

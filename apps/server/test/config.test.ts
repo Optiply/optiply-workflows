@@ -30,6 +30,28 @@ describe('loadConfig', () => {
     expect(config.GIT_POLL_SECONDS).toBe(60)
   })
 
+  it('needs the Python executor token with its URL', () => {
+    expect(() => loadConfig({ ...base, PYTHON_EXECUTOR_URL: 'http://code-executor:8080' })).toThrow(
+      /PYTHON_EXECUTOR_TOKEN: Required with PYTHON_EXECUTOR_URL/,
+    )
+    expect(() =>
+      loadConfig({
+        ...base,
+        PYTHON_EXECUTOR_URL: 'http://code-executor:8080',
+        PYTHON_EXECUTOR_TOKEN: 'short',
+      }),
+    ).toThrow(/PYTHON_EXECUTOR_TOKEN/)
+    const config = loadConfig({
+      ...base,
+      PYTHON_EXECUTOR_URL: 'http://code-executor:8080',
+      PYTHON_EXECUTOR_TOKEN: 'a-token-of-16-chars',
+    })
+    expect(config.PYTHON_EXECUTOR_URL).toBe('http://code-executor:8080')
+    expect(
+      loadConfig({ ...base, PYTHON_EXECUTOR_URL: '', PYTHON_EXECUTOR_TOKEN: '' }).PYTHON_EXECUTOR_URL,
+    ).toBeUndefined()
+  })
+
   it('still reports an unknown current key version', () => {
     expect(() => loadConfig({ ...base, ENCRYPTION_KEY_CURRENT: 'v9' })).toThrow(/ENCRYPTION_KEY_CURRENT/)
   })

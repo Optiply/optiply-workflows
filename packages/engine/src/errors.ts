@@ -35,7 +35,7 @@ export function toEngineError(err: unknown, secrets: readonly string[] = []): En
   if (err instanceof BlockFailure || err instanceof ConnectorError) {
     error = { code: err.code, message: err.message, ...(err.details && { details: err.details }) }
   } else if (err instanceof SandboxError) {
-    error = { code: err.kind, message: err.message }
+    error = { code: err.kind, message: err.message, ...(err.details && { details: err.details }) }
   } else if (err instanceof TemplateError) {
     error = {
       code: 'expression',
