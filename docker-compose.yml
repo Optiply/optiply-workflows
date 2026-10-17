@@ -30,8 +30,9 @@ x-app: &app
     GIT_ALLOW_INSECURE_URLS: ${GIT_ALLOW_INSECURE_URLS:-false}
     GITHUB_API_URL: ${GITHUB_API_URL:-}
     # Python code blocks (M12): the code-executor service below, on its own network.
+    # Without a token Python stays off (a warning at start): the app runs, Python blocks can't.
     PYTHON_EXECUTOR_URL: http://code-executor:8080
-    PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:?set PYTHON_EXECUTOR_TOKEN in .env (see .env.example)}
+    PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
 
 services:
   postgres:
@@ -70,8 +71,10 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Optional: the app starts without it (Python blocks then fail until it's up).
       code-executor:
-        condition: service_healthy
+        condition: service_started
+        required: false
 
   worker:
     <<: *app
@@ -85,7 +88,8 @@ services:
       migrate:
         condition: service_completed_successfully
       code-executor:
-        condition: service_healthy
+        condition: service_started
+        required: false
 
   # Runs Python code blocks, each in a fresh nsjail jail (docs/architecture.md §2.14, docs/runbooks/python.md).
   # The only service with extra privileges: SYS_ADMIN for nsjail's namespaces, Docker's seccomp profile plus
@@ -97,7 +101,8 @@ services:
     image: optiply-workflows-code-executor:local
     restart: unless-stopped
     environment:
-      PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:?set PYTHON_EXECUTOR_TOKEN in .env (see .env.example)}
+      # Without one it refuses to start (and Python stays off in the app).
+      PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
       PYTHON_MEMORY_MB: ${PYTHON_MEMORY_MB:-256}
       PYTHON_MAX_CONCURRENT: ${PYTHON_MAX_CONCURRENT:-4}
     cap_add: [SYS_ADMIN]

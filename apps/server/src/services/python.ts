@@ -23,18 +23,31 @@ export function configurePython(config: Pick<Config, 'PYTHON_EXECUTOR_URL' | 'PY
   return runner
 }
 
+/** Why Python is off although configured (a URL without its token), for a warning at start; null otherwise. */
+export function pythonConfigWarning(
+  config: Pick<Config, 'PYTHON_EXECUTOR_URL' | 'PYTHON_EXECUTOR_TOKEN'>,
+): string | null {
+  return config.PYTHON_EXECUTOR_URL && !config.PYTHON_EXECUTOR_TOKEN
+    ? 'PYTHON_EXECUTOR_URL is set without PYTHON_EXECUTOR_TOKEN: Python code blocks are off'
+    : null
+}
+
 export function pythonRunner(): PythonRunner | null {
   return runner
 }
 
-const UNAVAILABLE = "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)"
+const UNAVAILABLE = "Python isn't set up on this instance (PYTHON_EXECUTOR_URL and PYTHON_EXECUTOR_TOKEN)"
 
 /**
- * The definition's Python syntax errors, from the executor (`compile()` in a jail, nothing runs): a `syntax`
- * diagnostic per broken field, at its line and column. Without an executor, or when it can't be reached, every
- * Python field is `python_unavailable` (such a workflow couldn't run anyway).
+ * The definition's Python problems: without an executor, every Python field is `python_unavailable` (such a
+ * workflow couldn't run). With `syntax` (publishing, rollback, Git deploys), the executor also compiles the fields
+ * (nothing runs): a `syntax` diagnostic per broken field at its line and column, or `python_unavailable` when it
+ * can't be reached. Runs skip that: a busy executor mustn't refuse them, and a syntax error fails its block anyway.
  */
-export async function pythonDiagnostics(definition: WorkflowDefinition): Promise<Diagnostic[]> {
+export async function pythonDiagnostics(
+  definition: WorkflowDefinition,
+  opts: { syntax: boolean },
+): Promise<Diagnostic[]> {
   const fields = pythonFields(definition)
   if (!fields.length) return []
   const unavailable = (message: string) =>
@@ -42,6 +55,7 @@ export async function pythonDiagnostics(definition: WorkflowDefinition): Promise
       (field): Diagnostic => ({ ...where(field), severity: 'error', code: 'python_unavailable', message }),
     )
   if (!runner) return unavailable(UNAVAILABLE)
+  if (!opts.syntax) return []
   let problems: Awaited<ReturnType<PythonRunner['check']>>
   try {
     problems = await runner.check(fields.map((f) => ({ id: f.id, code: f.source })))

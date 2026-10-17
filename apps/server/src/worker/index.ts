@@ -7,7 +7,7 @@ import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { GitDeployer } from '../services/git/deployer'
-import { configurePython } from '../services/python'
+import { configurePython, pythonConfigWarning } from '../services/python'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
@@ -31,6 +31,8 @@ export async function startWorker(deps: {
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   // For custom auth flows (sign-in steps' code and templates); runs get sandboxes of their own.
   const authSandbox = new IvmRuntime()
+  const pythonWarning = pythonConfigWarning(config)
+  if (pythonWarning) log.warn(pythonWarning)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,

@@ -194,7 +194,7 @@ async function prepareRun(
     source = { releaseId: release!.id }
   }
 
-  const { resources: rows, children, errors } = await checkDefinition(db, definition)
+  const { resources: rows, children, errors } = await checkDefinition(db, definition, 'run')
   if (errors.length) {
     throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
       diagnostics: errors satisfies Diagnostic[],
@@ -258,6 +258,8 @@ async function prepareRun(
 export async function checkDefinition(
   db: Db,
   definition: WorkflowDefinition,
+  /** `run`: Python only needs an executor; `release` (the default): the executor checks its syntax too. */
+  purpose: 'run' | 'release' = 'release',
 ): Promise<{ resources: Resource[]; children: Workflow[]; errors: Diagnostic[] }> {
   const slugs = queriedResources(definition)
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
@@ -300,7 +302,9 @@ export async function checkDefinition(
   })
   const errors = validation.diagnostics.filter((d) => d.severity === 'error')
   // Python's syntax is the executor's to check (only when the rest is valid: a broken schema has no fields).
-  if (!errors.some((d) => d.code === 'schema')) errors.push(...(await pythonDiagnostics(definition)))
+  if (!errors.some((d) => d.code === 'schema')) {
+    errors.push(...(await pythonDiagnostics(definition, { syntax: purpose === 'release' })))
+  }
   return { resources: rows, children, errors }
 }
 

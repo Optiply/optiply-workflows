@@ -240,20 +240,21 @@ export const workflowsRouter = router({
       }
     }),
 
-  /** Deletes the workflow with its releases and run history. */
   /**
-   * Python syntax errors for the editor's markers (M12): the executor compiles the fields without running them. A
-   * mutation, as code can be long. `available: false` when Python isn't set up or the executor can't be reached.
+   * Python syntax errors for the editor's markers (M12): the executor compiles the fields without running them (in
+   * slots of its own: checks never hold up runs). For people who can edit the workflow; a mutation, as code can be
+   * long. `available: false` when Python isn't set up or the executor can't be reached.
    */
   checkPython: authedProcedure
     .input(
       z.object({
-        fields: z
-          .array(z.object({ id: z.string().min(1).max(200), code: z.string().max(1_000_000) }))
-          .max(200),
+        workflowId: Id,
+        fields: z.array(z.object({ id: z.string().min(1).max(200), code: z.string().max(200_000) })).max(20),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
       const python = pythonRunner()
       if (!python)
         return { available: false as const, message: "Python isn't set up on this instance", problems: [] }
@@ -265,6 +266,7 @@ export const workflowsRouter = router({
       }
     }),
 
+  /** Deletes the workflow with its releases and run history. */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')

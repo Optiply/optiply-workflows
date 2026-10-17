@@ -1,9 +1,9 @@
-import { analyzePython, type TemplateError } from '@ow/expressions'
+import { analyzePython, PYTHON_KEYWORDS, type TemplateError } from '@ow/expressions'
 import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
-import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, reservedNameReason } from './names'
+import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
 import {
   type Block,
   type BlockOf,
@@ -17,7 +17,13 @@ import {
   workflowDefinitionSchema,
 } from './schema'
 import { parseWebhookAlias } from './triggers'
-import { type BlockGraphSource, blockGraphs, calledFunctions, functionReturnBlock } from './walk'
+import {
+  type BlockGraphSource,
+  blockGraphs,
+  calledFunctions,
+  functionReturnBlock,
+  pythonFields,
+} from './walk'
 
 export type DiagnosticCode =
   | 'schema'
@@ -59,6 +65,10 @@ export type DiagnosticCode =
   | 'unpublished_workflow'
   | 'python_unsupported'
   | 'python_builtin'
+  /** Python code assigns a block's or run global's name: there it's the code's own variable (a warning). */
+  | 'python_shadowed'
+  /** A block named like a Python keyword, in a workflow with Python: Python can't read it (a warning). */
+  | 'python_keyword'
   /** The server's: no code executor for Python (or it couldn't be reached to check the code). */
   | 'python_unavailable'
 
@@ -126,8 +136,9 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   const functions = new Map<string, FunctionDefinition>()
   checkFunctions(def, functions, report)
   let start: string | undefined
+  const usesPython = pythonFields(def).length > 0
   for (const source of blockGraphs(def)) {
-    const found = checkGraph(source, functions, report)
+    const found = checkGraph(source, functions, report, usesPython)
     if (!source.function) start = found
   }
   checkRecursion(def, functions, report)
@@ -257,6 +268,7 @@ function checkGraph(
   source: BlockGraphSource,
   functions: ReadonlyMap<string, FunctionDefinition>,
   report: Report,
+  usesPython = false,
 ): string | undefined {
   const fn = source.function
   const { blocks, edges } = source
@@ -269,7 +281,16 @@ function checkGraph(
     const at = { path: blockPath(i, 'name'), block: block.name, ...inFunction }
     const reason = reservedNameReason(block.name)
     if (reason) report({ code: 'invalid_name', message: reason, ...at })
-    else if (functions.has(block.name)) {
+    else if (usesPython && PYTHON_KEYWORDS.has(block.name)) {
+      // Not reserved (older JavaScript workflows may use such names), but Python can't read the block.
+      report({
+        severity: 'warning',
+        code: 'python_keyword',
+        message: `"${block.name}" is a Python keyword: Python code can't read this block`,
+        hint: 'Rename it to read its result from Python',
+        ...at,
+      })
+    } else if (functions.has(block.name)) {
       report({ code: 'duplicate_name', message: `A function is already named "${block.name}"`, ...at })
     }
     if (indexOf.has(block.name)) {
@@ -475,6 +496,27 @@ function checkGraph(
       }
       const python = field.kind === 'python-body'
       if (python) {
+        // Assigning a name makes it the code's own in Python: reading the block (or `value`, `params`, …) before
+        // the assignment fails with UnboundLocalError.
+        const hidden = new Set([
+          ...byName.keys(),
+          ...RUN_GLOBALS,
+          ...(field.locals ?? []),
+          ...(fn ? [PARAMS_NAME] : []),
+        ])
+        for (const binding of analyzePython(field.source).bindings) {
+          if (!hidden.has(binding.name)) continue
+          report({
+            severity: 'warning',
+            code: 'python_shadowed',
+            message: `"${binding.name}" is assigned in this code, so in Python it's the code's own variable here`,
+            hint: `Use another name: reading ${byName.has(binding.name) ? 'the block' : `"${binding.name}"`} before this assignment fails with UnboundLocalError`,
+            path,
+            ...at,
+            start: binding.start,
+            end: binding.end,
+          })
+        }
         // A block named like a Python builtin can't be read from Python: the builtin wins.
         for (const ref of analyzePython(field.source).builtins) {
           if (!byName.has(ref.name)) continue

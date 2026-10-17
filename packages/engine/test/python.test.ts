@@ -150,6 +150,22 @@ describe.skipIf(!available)('Python code blocks', () => {
     expect(retried.outcome.results.get('flaky')?.attempt).toBe(2)
   })
 
+  it('keeps what the code printed before its timeout', async () => {
+    const { outcome, store } = await run(
+      services(),
+      wf(
+        [python('slow', 'print("started")\nwhile True: pass', { timeoutMs: 2500 })],
+        [['startTrigger', 'slow']],
+      ),
+    )
+    expect(outcome.error).toMatchObject({
+      block: 'slow',
+      code: 'timeout',
+      message: "The Python code didn't finish within 2500 ms",
+    })
+    expect(store.logs.map((l) => l.message)).toEqual(['started'])
+  })
+
   it('hangs up on the executor when the run is aborted', async () => {
     const controller = new AbortController()
     setTimeout(() => controller.abort(), 500)

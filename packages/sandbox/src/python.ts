@@ -36,27 +36,47 @@ interface Outcome {
 }
 
 const KINDS = new Set(['syntax', 'runtime', 'timeout', 'memory', 'serialization'])
+/** The executor is asked to stop this much before the run's timeout, so it reports the timeout (with the prints). */
+const RUN_MARGIN_MS = 500
+/** How long a check may take, the executor's queue included, before it counts as unavailable. */
+const CHECK_TIMEOUT_MS = 15_000
+/** Beyond a run's timeout, if nothing hangs up first: the executor's queue (30 s) and a margin. */
+const RUN_SLACK_MS = 35_000
 const LEVELS = new Set<LogLevel>(['log', 'info', 'warn', 'error'])
 
 /** The code executor over HTTP, with its bearer token. */
 export class PythonExecutorClient implements PythonRunner {
   private readonly url: string
 
-  constructor(private readonly opts: { url: string; token: string }) {
+  constructor(
+    private readonly opts: {
+      url: string
+      token: string
+      /** How long a check may take (default 15 s). */
+      checkTimeoutMs?: number
+    },
+  ) {
     this.url = opts.url.replace(/\/$/, '')
   }
 
   async run(code: string, scope: Record<string, unknown>, opts: PythonRunOptions): Promise<unknown> {
+    const timeoutMs = Math.max(1, Math.round(opts.timeoutMs))
+    // Stop a little before the caller's own timeout: the executor's answer then carries the prints.
+    const asked = timeoutMs > RUN_MARGIN_MS * 2 ? timeoutMs - RUN_MARGIN_MS : timeoutMs
     const outcome = await this.post(
       '/run',
-      { code, scope, timeoutMs: Math.max(1, Math.round(opts.timeoutMs)) },
+      { code, scope, timeoutMs: asked },
       opts.signal,
+      timeoutMs + RUN_SLACK_MS,
     )
     for (const entry of outcome.logs ?? []) {
       const level = LEVELS.has(entry.level as LogLevel) ? (entry.level as LogLevel) : 'log'
       opts.onLog?.(level, [entry.message])
     }
     if (outcome.ok) return outcome.result ?? null
+    if (outcome.error?.kind === 'timeout') {
+      throw new SandboxError('timeout', `The Python code didn't finish within ${timeoutMs} ms`)
+    }
     throw toSandboxError(outcome.error)
   }
 
@@ -65,21 +85,45 @@ export class PythonExecutorClient implements PythonRunner {
     opts: { signal?: AbortSignal } = {},
   ): Promise<PythonProblem[]> {
     if (!fields.length) return []
-    const outcome = await this.post('/check', { fields }, opts.signal)
+    const outcome = await this.post(
+      '/check',
+      { fields },
+      opts.signal,
+      this.opts.checkTimeoutMs ?? CHECK_TIMEOUT_MS,
+    )
+    // A check that failed (no jail, out of time) says nothing about the code: never read it as "no problems".
+    if (!outcome.ok) {
+      throw new SandboxError(
+        'unavailable',
+        `The Python executor couldn't check the code: ${outcome.error?.message ?? 'unknown error'}`,
+      )
+    }
     return outcome.problems ?? []
   }
 
-  private async post(path: string, body: unknown, signal?: AbortSignal): Promise<Outcome> {
+  private async post(
+    path: string,
+    body: unknown,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<Outcome> {
+    const deadline = AbortSignal.timeout(timeoutMs)
     let res: Response
     try {
       res = await fetch(`${this.url}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${this.opts.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
-        signal,
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       })
     } catch (err) {
       if (signal?.aborted) throw signal.reason ?? err
+      if (deadline.aborted) {
+        throw new SandboxError(
+          'unavailable',
+          `The Python executor didn't answer within ${timeoutMs / 1000} s`,
+        )
+      }
       throw new SandboxError('unavailable', `The Python executor isn't reachable: ${(err as Error).message}`)
     }
     if (res.status === 503) {

@@ -6,7 +6,7 @@ import { executorAvailable, startTestExecutor, type TestExecutor } from '@ow/cod
 import { createDb } from '@ow/db'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { configurePython } from '../src/services/python'
+import { configurePython, pythonDiagnostics } from '../src/services/python'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -119,16 +119,21 @@ describe.skipIf(!available)('Python on the server', () => {
     expect(logs.logs.map((l) => l.message)).toEqual(['rows 2'])
   })
 
-  it("refuses to run or publish Python that doesn't compile, saying where", async () => {
+  it("refuses to publish Python that doesn't compile, saying where; a draft run fails at the block", async () => {
     const wf = await workflowWith(
       'py-broken',
       [python('typo', 'x = 1\nreturn x +')],
       [['startTrigger', 'typo']],
     )
-    const refused = await rest('POST', `/workflows/${wf.slug}/runs`, {})
-    expect(refused.status).toBe(400)
-    expect(refused.body.error).toMatchObject({ code: 'invalid_definition' })
-    expect(refused.body.error.details.diagnostics).toEqual([
+    const diagnostics = await pythonDiagnostics(
+      {
+        schemaVersion: 1,
+        blocks: [{ name: 'startTrigger', type: 'startTrigger' }, python('typo', 'x = 1\nreturn x +')],
+        edges: [],
+      } as never,
+      { syntax: true },
+    )
+    expect(diagnostics).toEqual([
       expect.objectContaining({
         code: 'syntax',
         block: 'typo',
@@ -141,6 +146,14 @@ describe.skipIf(!available)('Python on the server', () => {
     ])
     const publish = await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: wf.revision })
     expect(publish.body.error?.message).toContain('SyntaxError: invalid syntax (line 2)')
+    // Runs don't wait for the executor's check (a busy executor mustn't refuse them): the block says it.
+    const started = await rest('POST', `/workflows/${wf.slug}/runs`, {})
+    expect(started.status).toBe(202)
+    const run = await waitForRun(started.body.run.id)
+    expect(run).toMatchObject({
+      status: 'failed',
+      error: { block: 'typo', code: 'syntax', message: 'SyntaxError: invalid syntax (line 2, column 11)' },
+    })
   })
 
   it('publishes valid Python, and runs the release', async () => {
@@ -154,9 +167,19 @@ describe.skipIf(!available)('Python on the server', () => {
     expect(body.block.data).toBe(42)
   })
 
-  it('checks fields for the editor', async () => {
+  it('checks fields for the editor, for people who can edit the workflow', async () => {
+    const editorFlow = (await workflowWith('py-editor', [], [])).id
+    expect(
+      (
+        await admin.mutate('workflows.checkPython', {
+          workflowId: '01900000-0000-7000-8000-000000000000',
+          fields: [],
+        })
+      ).body.error?.data?.code,
+    ).toBe('NOT_FOUND')
     const result = data(
       await admin.mutate('workflows.checkPython', {
+        workflowId: editorFlow,
         fields: [
           { id: 'a', code: 'return 1' },
           { id: 'b', code: 'if x\n  pass' },
@@ -172,13 +195,19 @@ describe.skipIf(!available)('Python on the server', () => {
   it('says Python is unavailable without an executor', async () => {
     configurePython({})
     try {
-      expect(data(await admin.mutate('workflows.checkPython', { fields: [{ id: 'a', code: 'x' }] }))).toEqual(
-        {
-          available: false,
-          message: "Python isn't set up on this instance",
-          problems: [],
-        },
-      )
+      const someFlow = (await workflowWith('py-off', [], [])).id
+      expect(
+        data(
+          await admin.mutate('workflows.checkPython', {
+            workflowId: someFlow,
+            fields: [{ id: 'a', code: 'x' }],
+          }),
+        ),
+      ).toEqual({
+        available: false,
+        message: "Python isn't set up on this instance",
+        problems: [],
+      })
       const wf = await workflowWith('py-nowhere', [python('p', 'return 1')], [['startTrigger', 'p']])
       const refused = await rest('POST', `/workflows/${wf.slug}/runs`, {})
       expect(refused.status).toBe(400)
@@ -186,7 +215,7 @@ describe.skipIf(!available)('Python on the server', () => {
         expect.objectContaining({
           code: 'python_unavailable',
           block: 'p',
-          message: "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)",
+          message: "Python isn't set up on this instance (PYTHON_EXECUTOR_URL and PYTHON_EXECUTOR_TOKEN)",
         }),
       ])
     } finally {

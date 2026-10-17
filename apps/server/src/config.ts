@@ -72,18 +72,10 @@ const ConfigSchema = z
      * Without it, workflows with Python can't run or be published.
      */
     PYTHON_EXECUTOR_URL: z.string().url().optional(),
-    /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN); needed with the URL. */
+    /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN). Without it Python stays off (a warning at start). */
     PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
-    if (c.PYTHON_EXECUTOR_URL && !c.PYTHON_EXECUTOR_TOKEN) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['PYTHON_EXECUTOR_TOKEN'],
-        message: 'Required with PYTHON_EXECUTOR_URL',
-      })
-      return z.NEVER
-    }
     let keyring: Keyring
     try {
       keyring = parseKeyring(ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT)

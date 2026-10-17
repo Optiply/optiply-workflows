@@ -27,6 +27,8 @@ TOKEN = os.environ.get("PYTHON_EXECUTOR_TOKEN", "")
 PORT = int(os.environ.get("PORT", "8080"))
 MEMORY_MB = int(os.environ.get("PYTHON_MEMORY_MB", "256"))
 MAX_CONCURRENT = int(os.environ.get("PYTHON_MAX_CONCURRENT", str(os.cpu_count() or 2)))
+# Syntax checks (the editor's, before publishing) have slots of their own: they never hold up runs.
+MAX_CHECKS = int(os.environ.get("PYTHON_MAX_CHECKS", "2"))
 # How long a request waits for a free slot before it's refused as busy.
 QUEUE_WAIT_S = float(os.environ.get("PYTHON_QUEUE_WAIT_SECONDS", "30"))
 MAX_REQUEST_BYTES = int(os.environ.get("PYTHON_MAX_REQUEST_MB", "64")) * 1024 * 1024
@@ -37,7 +39,8 @@ CHECK_TIMEOUT_MS = 5000
 JAIL_CONFIG = os.path.join(HERE, "jail.cfg")
 NSJAIL = os.environ.get("NSJAIL", "/usr/local/bin/nsjail")
 
-slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+run_slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+check_slots = threading.BoundedSemaphore(MAX_CHECKS)
 
 
 def log(event, **fields):
@@ -93,7 +96,9 @@ class Execution:
             sel.register(proc.stderr, selectors.EVENT_READ, "error")
             sel.register(result_r, selectors.EVENT_READ, "result")
             sel.register(jail_log_r, selectors.EVENT_READ, "jail")
-            deadline = started + self.timeout_ms / 1000 + 1.5  # nsjail's own limit comes first
+            # The timeout, exactly (nsjail's limits, in whole seconds and a second later, are the backstop): the
+            # answer then carries what the code printed.
+            deadline = started + self.timeout_ms / 1000
             while sel.get_map():
                 if cancelled():
                     killed = "cancelled"
@@ -294,6 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             timeout_ms = CHECK_TIMEOUT_MS
             request = {"mode": "check", "fields": fields}
 
+        slots = run_slots if self.path == "/run" else check_slots
         if not slots.acquire(timeout=QUEUE_WAIT_S):
             return self.refuse(HTTPStatus.SERVICE_UNAVAILABLE, "The executor is busy; try again")
         started = time.monotonic()

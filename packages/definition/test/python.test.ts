@@ -156,23 +156,67 @@ describe('Python code', () => {
     expect(validateDefinition(def).diagnostics).toEqual([])
   })
 
-  it("reserves Python's keywords as block names", () => {
-    expect(diagnostics(wf([start, code('lambda'), code('pass'), code('None')]))).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: 'invalid_name',
-          message: expect.stringContaining('"lambda" is a Python keyword'),
-        }),
-        expect.objectContaining({
-          code: 'invalid_name',
-          message: expect.stringContaining('"pass" is a Python keyword'),
-        }),
-        expect.objectContaining({
-          code: 'invalid_name',
-          message: expect.stringContaining('"None" is a Python keyword'),
-        }),
-      ]),
+  it('warns about blocks named like Python keywords only in workflows with Python', () => {
+    // JavaScript-only workflows keep such names (they worked before M12).
+    expect(validateDefinition(wf([start, code('pass')], [['startTrigger', 'pass']])).diagnostics).toEqual([])
+    expect(
+      diagnostics(
+        wf(
+          [start, code('pass'), python('p', 'return 1')],
+          [
+            ['startTrigger', 'pass'],
+            ['pass', 'p'],
+          ],
+        ),
+      ),
+    ).toEqual([
+      {
+        severity: 'warning',
+        code: 'python_keyword',
+        block: 'pass',
+        message: '"pass" is a Python keyword: Python code can\'t read this block',
+      },
+    ])
+  })
+
+  it('warns when Python code assigns a block or a run global, hiding it', () => {
+    const def = wf(
+      [
+        start,
+        sql('rows', 'select 1'),
+        python('p', 'rows = rows.data\nconfigVars = {}\nreturn rows'),
+        {
+          name: 'each',
+          type: 'loop',
+          config: {
+            input: '{{ [1] }}',
+            runner: { kind: 'code', code: 'value = value * 2\nreturn value', language: 'python' },
+          },
+        },
+      ],
+      [
+        ['startTrigger', 'rows'],
+        ['rows', 'p'],
+        ['p', 'each'],
+      ],
     )
+    expect(diagnostics(def).map((d) => [d.code, d.block, d.message])).toEqual([
+      [
+        'python_shadowed',
+        'p',
+        '"rows" is assigned in this code, so in Python it\'s the code\'s own variable here',
+      ],
+      [
+        'python_shadowed',
+        'p',
+        '"configVars" is assigned in this code, so in Python it\'s the code\'s own variable here',
+      ],
+      [
+        'python_shadowed',
+        'each',
+        '"value" is assigned in this code, so in Python it\'s the code\'s own variable here',
+      ],
+    ])
   })
 })
 
@@ -223,6 +267,8 @@ describe('renaming a block read from Python', () => {
       error: '"label" is already a variable in block "summary"; pick another name',
     })
     expect(renameBlock(def(), 'orders', 'len')).toMatchObject({ ok: false })
+    // Not reserved any more, but Python reading the block can't follow it to a keyword.
+    expect(renameBlock(def(), 'orders', 'pass')).toMatchObject({ ok: false })
   })
 
   it('leaves a local that shares its name alone', () => {

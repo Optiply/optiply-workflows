@@ -94,6 +94,20 @@ describe('analyzePython', () => {
     expect(refs(code)).toEqual(['pairs', 'p', 'default', 'Base', 'compute', 'values', 'fallback', 'x'])
   })
 
+  it("reads a name it deletes an item or attribute of (del a[0] doesn't bind a)", () => {
+    expect(
+      refs(py('del query1.data[0]', 'del cache.entry', 'del gone', 'return query1.data, cache')),
+    ).toEqual(['query1', 'cache'])
+  })
+
+  it('says where each bound name is first bound', () => {
+    const code = 'value = value * 2\nrows = 1\nrows = 2'
+    expect(analyzePython(code).bindings).toEqual([
+      { name: 'value', start: 0, end: 5 },
+      { name: 'rows', start: 18, end: 22 },
+    ])
+  })
+
   it('keeps names declared global or nonlocal as references', () => {
     expect(refs(py('global counter, total', 'counter = counter + 1'))).toEqual(['counter', 'total'])
   })

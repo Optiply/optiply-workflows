@@ -18,6 +18,8 @@ export interface PythonAnalysis {
   builtins: IdentifierRef[]
   /** Names the code binds (its own variables). */
   bound: Set<string>
+  /** Where each bound name is first bound (for a warning when it hides a block or a run global). */
+  bindings: IdentifierRef[]
 }
 
 /** Python 3.12's keywords (`keyword.kwlist`): never names. */
@@ -294,6 +296,7 @@ export function analyzePython(code: string, options: { properties?: boolean } = 
   }
 
   const bound = new Set<string>()
+  const bindings: IdentifierRef[] = []
   const declared = new Set<string>() // global / nonlocal: not the code's own
   const notRef = new Set<number>() // name tokens that aren't references (attributes, kwargs, import paths, keywords)
 
@@ -338,7 +341,10 @@ export function analyzePython(code: string, options: { properties?: boolean } = 
       declared.add(tok.value)
       continue
     }
-    if (bindsName(tokens, t, context, statement)) bound.add(tok.value)
+    if (bindsName(tokens, t, context, statement)) {
+      if (!bound.has(tok.value)) bindings.push({ name: tok.value, start: tok.start, end: tok.end })
+      bound.add(tok.value)
+    }
   }
   for (const name of declared) bound.delete(name)
 
@@ -355,7 +361,7 @@ export function analyzePython(code: string, options: { properties?: boolean } = 
     if (PYTHON_BUILTINS.has(tok.value)) builtins.push(ref)
     else refs.push(ref)
   }
-  return { refs, builtins, bound }
+  return { refs, builtins, bound, bindings: bindings.filter((b) => bound.has(b.name)) }
 }
 
 /** Statements whose header ends with a `:` that may be followed by a statement on the same line. */
@@ -451,9 +457,11 @@ function bindsName(
   const kw = (tok: Token | undefined) => (tok?.type === 'name' ? tok.value : undefined)
   const ctx = context[t]
 
-  if (kw(prev) === 'as' || kw(prev) === 'def' || kw(prev) === 'class' || kw(prev) === 'del') return true
-  // del a, b: deleting makes a name local too.
-  if (!ctx && op(prev) === ',' && kw(tokens[statement[t]!]) === 'del') return true
+  if (kw(prev) === 'as' || kw(prev) === 'def' || kw(prev) === 'class') return true
+  // del a, b: deleting a name makes it local too; del a[0] or del a.b doesn't (it reads a).
+  const plainDelTarget = !['.', '[', '('].includes(op(next) ?? '')
+  if (kw(prev) === 'del' && plainDelTarget) return true
+  if (!ctx && op(prev) === ',' && kw(tokens[statement[t]!]) === 'del' && plainDelTarget) return true
   if (op(next) === ':=') return true
   // The middle of a chained assignment: a = b = 1.
   if (!ctx && op(prev) === '=' && op(next) === '=') return true

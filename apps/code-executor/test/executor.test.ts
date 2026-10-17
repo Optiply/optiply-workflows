@@ -391,6 +391,16 @@ describe.skipIf(!available)('the code executor', () => {
       }
     })
 
+    it('checks code while every run slot is busy (checks have slots of their own)', async () => {
+      const busy = Array.from({ length: 4 }, () => run('import time\ntime.sleep(3)\nreturn 1', {}, 5000))
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const started = Date.now()
+      const res = await post('/check', { fields: [{ id: 'a', code: 'return 1' }] })
+      expect(await res.json()).toMatchObject({ ok: true, problems: [] })
+      expect(Date.now() - started).toBeLessThan(2000)
+      await Promise.all(busy)
+    })
+
     it('runs at most PYTHON_MAX_CONCURRENT at once, queueing the rest', async () => {
       const started = Date.now()
       const outcomes = await Promise.all(

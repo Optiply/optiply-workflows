@@ -15,7 +15,7 @@ import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
-import { configurePython } from '../services/python'
+import { configurePython, pythonConfigWarning } from '../services/python'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
@@ -57,6 +57,8 @@ export async function buildApp(deps: {
   const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
+  const pythonWarning = pythonConfigWarning(config)
+  if (pythonWarning) app.log.warn(pythonWarning)
   const runner = new InlineRunner({
     db,
     pool: services.pool,

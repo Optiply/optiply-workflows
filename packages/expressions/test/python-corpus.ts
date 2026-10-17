@@ -38,4 +38,5 @@ export const CORPUS: string[] = [
   'e = f = 5\ng = 0\ng += 1\nh: int = 6\nreturn e + f + g + h + base',
   'import os.path\nfrom collections.abc import Mapping\nreturn isinstance(cfg, Mapping) and os.path.sep',
   'def outer():\n    def inner(z):\n        return z + offset\n    return inner(1)\nreturn outer()',
+  'del query1.data[0]\ndel cache.entry\ndel gone\nreturn query1.data, cache',
 ]

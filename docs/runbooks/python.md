@@ -22,9 +22,10 @@ worker / api ──HTTP + bearer token──▶ code-executor ──▶ nsjail �
 | Where | Variable | Default | What |
 |---|---|---|---|
 | app (api, worker) | `PYTHON_EXECUTOR_URL` | none (Compose: `http://code-executor:8080`) | Where the executor is. Without it, workflows with Python can't run or be published (`python_unavailable`). |
-| app and executor | `PYTHON_EXECUTOR_TOKEN` | none (required by Compose) | Shared bearer token, 16+ characters. Generate: `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`. Set the same value on both sides; restart both to rotate. |
+| app and executor | `PYTHON_EXECUTOR_TOKEN` | none | Shared bearer token, 16+ characters. Generate: `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`. Set the same value on both sides; restart both to rotate. Without it Python is off: the app starts (a warning in its log) and Python blocks fail `python_unavailable`; the executor refuses to start. |
 | executor | `PYTHON_MEMORY_MB` | 256 | Memory per execution (cgroup, no swap). Over it: a `memory` error. |
 | executor | `PYTHON_MAX_CONCURRENT` | CPU count (Compose: 4) | Executions at once; more wait up to `PYTHON_QUEUE_WAIT_SECONDS` (30), then 503 (`unavailable`: the block fails, retries apply). |
+| executor | `PYTHON_MAX_CHECKS` | 2 | Syntax checks at once (the editor's, before publishing), in slots apart from runs: checks never hold up runs. |
 | executor | `PYTHON_MAX_REQUEST_MB` | 64 | The largest request (code plus the blocks it reads). |
 | executor container | `mem_limit` (Compose) | 2g | Must hold `PYTHON_MAX_CONCURRENT × PYTHON_MEMORY_MB` plus the server. |
 
@@ -84,7 +85,7 @@ What the code printed is in the run's logs in the app, not here.
 
 | Symptom | Likely cause |
 |---|---|
-| Blocks fail `python_unavailable: Python isn't set up on this instance` | The app has no `PYTHON_EXECUTOR_URL`/`PYTHON_EXECUTOR_TOKEN`. |
+| Blocks fail `python_unavailable: Python isn't set up on this instance` | The app has no `PYTHON_EXECUTOR_URL`/`PYTHON_EXECUTOR_TOKEN` (a URL without the token logs a warning at start). |
 | `unavailable: The Python executor isn't reachable` | The executor is down or unhealthy (`docker compose ps code-executor`, its logs), or the app isn't on the `executor` network. |
 | `unavailable: … refused the request (401)` | The token differs between the app and the executor. |
 | `unavailable: The Python executor is busy` | All `PYTHON_MAX_CONCURRENT` slots taken for 30 s: long-running Python. Raise the limit (and `mem_limit`) or shorten the code. |

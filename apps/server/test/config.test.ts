@@ -1,6 +1,7 @@
 import { generateKey } from '@ow/crypto'
 import { describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config'
+import { configurePython, pythonConfigWarning } from '../src/services/python'
 
 const base = {
   DATABASE_URL: 'postgres://ow:ow@127.0.0.1:5432/ow',
@@ -30,9 +31,11 @@ describe('loadConfig', () => {
     expect(config.GIT_POLL_SECONDS).toBe(60)
   })
 
-  it('needs the Python executor token with its URL', () => {
-    expect(() => loadConfig({ ...base, PYTHON_EXECUTOR_URL: 'http://code-executor:8080' })).toThrow(
-      /PYTHON_EXECUTOR_TOKEN: Required with PYTHON_EXECUTOR_URL/,
+  it('turns Python off, with a warning, when the URL comes without its token', () => {
+    const config = loadConfig({ ...base, PYTHON_EXECUTOR_URL: 'http://code-executor:8080' })
+    expect(configurePython(config)).toBeNull()
+    expect(pythonConfigWarning(config)).toBe(
+      'PYTHON_EXECUTOR_URL is set without PYTHON_EXECUTOR_TOKEN: Python code blocks are off',
     )
     expect(() =>
       loadConfig({
@@ -41,15 +44,14 @@ describe('loadConfig', () => {
         PYTHON_EXECUTOR_TOKEN: 'short',
       }),
     ).toThrow(/PYTHON_EXECUTOR_TOKEN/)
-    const config = loadConfig({
+    const both = loadConfig({
       ...base,
       PYTHON_EXECUTOR_URL: 'http://code-executor:8080',
       PYTHON_EXECUTOR_TOKEN: 'a-token-of-16-chars',
     })
-    expect(config.PYTHON_EXECUTOR_URL).toBe('http://code-executor:8080')
-    expect(
-      loadConfig({ ...base, PYTHON_EXECUTOR_URL: '', PYTHON_EXECUTOR_TOKEN: '' }).PYTHON_EXECUTOR_URL,
-    ).toBeUndefined()
+    expect(configurePython(both)).not.toBeNull()
+    expect(pythonConfigWarning(both)).toBeNull()
+    configurePython({})
   })
 
   it('still reports an unknown current key version', () => {
