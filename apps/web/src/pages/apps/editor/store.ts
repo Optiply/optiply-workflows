@@ -36,6 +36,8 @@ interface AppEditorState {
   selected: string | null
   /** The query, transformer or variable open in the bottom panel. */
   openCode: string | null
+  /** What was chosen last, for copy and duplicate: the selected component, or the open code item. */
+  focus: 'component' | 'code'
   panelTab: PanelTab
   /**
    * Where the draft is: the page being edited (null without pages) and the parameters `utils.openPage` gave it.
@@ -84,6 +86,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   diagnostics: [],
   selected: null,
   openCode: null,
+  focus: 'component',
   panelTab: 'code',
   url: { page: null, params: {} },
   history: emptyHistory(),
@@ -103,6 +106,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       diagnostics: validateApp(definition).diagnostics,
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
+      focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
       history: emptyHistory(),
     }),
@@ -145,8 +149,14 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   },
 
   // A new selection, code item or page ends the step being typed: the next edit is undone on its own.
-  select: (selected) => set((s) => ({ selected, history: seal(s.history) })),
-  openCodeItem: (openCode) => set((s) => ({ openCode, panelTab: 'code', history: seal(s.history) })),
+  select: (selected) =>
+    set((s) => ({
+      selected,
+      ...(selected !== null && { focus: 'component' as const }),
+      history: seal(s.history),
+    })),
+  openCodeItem: (openCode) =>
+    set((s) => ({ openCode, panelTab: 'code', focus: 'code' as const, history: seal(s.history) })),
   setPanelTab: (panelTab) => set({ panelTab }),
   setUrl: (page, params = {}) =>
     set((s) => ({ url: { page: resolvePage(s.definition, page), params }, history: seal(s.history) })),

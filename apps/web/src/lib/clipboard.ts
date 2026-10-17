@@ -46,7 +46,7 @@ export function readClip<S extends z.ZodType>(
   }
   if ((json as { ow?: unknown } | null)?.ow !== kind) return null
   const parsed = schema.safeParse(json)
-  if (!parsed.success) return { ok: false, error: "The clipboard has blocks this editor can't read" }
+  if (!parsed.success) return { ok: false, error: "The clipboard holds something this editor can't read" }
   return { ok: true, clip: parsed.data }
 }
 

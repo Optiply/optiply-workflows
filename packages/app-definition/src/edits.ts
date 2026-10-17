@@ -52,7 +52,7 @@ export function withDescendants(def: AppDefinition, name: string): Set<string> {
 }
 
 /** The first free row below `parent`'s children (at the top, those on `page`: each page has a grid of its own). */
-function bottomOf(def: AppDefinition, parent: string | undefined, page: string | null = null): number {
+export function bottomOf(def: AppDefinition, parent: string | undefined, page: string | null = null): number {
   let bottom = 0
   for (const c of def.components) {
     const p = def.layout?.[c.name]

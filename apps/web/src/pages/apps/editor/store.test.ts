@@ -81,6 +81,16 @@ describe('undo and redo in the app editor', () => {
     expect(editor().openCode).toBe('orders')
   })
 
+  it('copies what was chosen last: a component, or a code item', () => {
+    expect(editor().focus).toBe('component')
+    editor().openCodeItem('orders')
+    expect(editor().focus).toBe('code')
+    editor().select('title')
+    expect(editor().focus).toBe('component')
+    editor().select(null) // deselecting doesn't move it to the code
+    expect(editor().focus).toBe('component')
+  })
+
   it('ignores edits that change nothing, read-only drafts, and undo while in conflict', () => {
     editor().update((d) => ({ ...d }))
     expect(editor().history.past).toEqual([])

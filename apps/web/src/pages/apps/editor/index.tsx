@@ -15,6 +15,7 @@ import { Notifications, useConfirmations, useNotifications } from '../notificati
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
+import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
@@ -203,6 +204,10 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
     editable: !readOnly && !preview,
     undo: () => useAppEditor.getState().undo(),
     redo: () => useAppEditor.getState().redo(),
+    duplicate: () => duplicateChosen(notify),
+    // Copying works on a read-only draft too; not in Preview, where the page is the app's.
+    copy: () => (preview ? null : copyText()),
+    paste: (text) => pasteText(text, notify),
   })
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,

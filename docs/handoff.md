@@ -771,12 +771,42 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 
 - `6426961`: `python.spec.ts` timed out in full local e2e runs (checked on step 1's code too, by stashing step 2): with the run panel open, `python1` sat under React Flow's minimap and every real click landed there. Its block clicks are now dispatched on the blocks (React Flow's own handler still selects them).
 
-### Step 3 (this commit): undo and redo in the app editor
+### Step 3, `536268c`: undo and redo in the app editor
 - The app store, like the workflow store: `update` records each edit (edits equal to what they replace are ignored), `undo` / `redo` (off while read-only or in conflict) put back the definition and the view (the selected component, the open code item, the page; a component that's gone isn't selected, a code item that's gone gives way to the one open now or the first query), `select` / `openCodeItem` / `setUrl` end the open step, `load` clears the history; `epoch` keys the pages panel, the code panel and the inspector. Grid drags and resizes were already one `setPositions` each; app layouts count in the hash, and undo puts them back exactly.
 - Shared with the workflow editor (which now uses them): `lib/editor-keys.ts` `useEditorKeys` (the keys and the copy and paste events, with the latest handlers through a ref, registered once), `components/undo-buttons.tsx`.
 - In the app editor: Undo and Redo in the header, and the keys, while editing (not read-only, not in Preview, where the keys are the app's).
 - Checked: people with only Use can't open the app editor (`apps.get` needs Edit), so it has no counterpart to step 1's Use-level fix.
 - Tests: `apps/editor/store.test.ts` (5: back to the exact start and forward, typing merged per prop and split by another prop or a page, the view restored, what's gone dropped, no-op edits, read-only and conflict); `e2e/app-undo.spec.ts` (add two components, bind one, move one; each undo leaves the saved draft equal to the one before, exactly; keyboard redo back to the last; ⌘Z in a Monaco prop field is the field's; Preview has no undo).
+
+### Step 4 (this commit): copy, paste and duplicate in the app editor
+- `packages/app-definition/src/paste.ts`:
+  - **Two clip kinds:** `componentClipSchema` (`{ ow: 'app-components', v: 1, components, layout }`: components with everything inside them) and `codeClipSchema` (`{ ow: 'app-code', v: 1, queries, transformers, variables }`).
+  - **Copying:** `copyComponents` (with `withDescendants`) and `copyCode`.
+  - **Naming:** fresh names in the app's one namespace through `renameAppEntity` on a definition holding only what's pasted, so references, parents, handler targets and layout keys among the pasted items follow. As in workflows, renames never chain, and a name a local would capture is passed over.
+  - **`pasteComponents`** into a target: into a container, else at the top on a page.
+    - Roots go below what the target grid holds (`bottomOf`, now exported), keeping their offsets; what's inside them keeps its place.
+    - Modals go at the top without a position.
+    - Lists what the pasted components read that wasn't copied.
+  - **`pasteCode`:** items that belonged to a page go on the page being edited, global ones stay global.
+  - `runsByItself`: automatic resource queries and those that run on load.
+- The app editor:
+  - `focus` in the store: what was chosen last, a component (`select`) or a code item (`openCodeItem`), is what ⌘C and ⌘D act on.
+  - `editor/clipboard.ts`:
+    - Components paste where the palette adds one: into the selected container, else next to the selected component, on the page being edited. The selected component's own copy, and a duplicate, go next to it, not into it.
+    - Code pastes into the code panel and opens.
+    - Content this browser didn't copy asks first, **naming the queries that would run straight away** (the running draft follows edits).
+    - The summary goes to the editor's notifications.
+  - The keys through `useEditorKeys` (copy works read-only; not in Preview).
+- `readClip`'s error no longer says "blocks" (it's shared).
+- Tests:
+  - `test/paste.test.ts` (7, including 300 seeded random apps: the app unchanged and first, the pasted names fresh and distinct, nesting and references among the pasted kept; two mutation checks, both caught).
+  - `apps/editor/store.test.ts` (+1, `focus`).
+  - `e2e/app-clipboard.spec.ts`:
+    - A container with an input and a text copied into another app: names and the reference follow, nested.
+    - Undo and redo of the paste.
+    - ⌘D next to itself.
+    - A query copied across reads the target's input, and says so.
+    - Crafted code with an automatic query asks first, naming it.
 
 ## 10. How things were verified (and how to repeat it)
 
