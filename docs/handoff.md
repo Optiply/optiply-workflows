@@ -1,14 +1,14 @@
 # Session handoff
 
-What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M11, M12+ to choose from).
+What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M12, M13+ to choose from).
 
-Last updated: 2026-10-17 (start of session 12: the CI timeouts analysed and fixed as an engine race, `25218f0`; step 6 committed; PR #13 not yet reviewed or merged).
+Last updated: 2026-10-17 (session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned with the user).
 
 | | |
 |---|---|
-| **Branch** | `feat/m11-git-sync` (M11). M10 was built on `feat/m10-apps` (the plan, 6 steps of which 2–4 in two commits each, and the review fixes) |
-| **PR** | [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), draft, all six steps pushed; **review it before merging** (as with #12). CI green except twice an engine test timing out (a real race, fixed in `25218f0`, session 12) and once a lint error (fixed in 5b). Before: [#12 M10](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/12), merged as `bb7f6b7` |
-| **`main`** | `bb7f6b7`, the merge of PR #12 (M10 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. |
+| **Branch** | `feat/m12-python` (M12, from `main` at `ee42bc7`). M11 was built on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
+| **PR** | M12's draft PR is opened with the plan commit. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
+| **`main`** | `ee42bc7`, the merge of PR #13 (M11 with its engine fix and review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -30,10 +30,10 @@ Last updated: 2026-10-17 (start of session 12: the CI timeouts analysed and fixe
 | **M8 App builder** | ✅ On `main` (§9b), merged in session 8 after a review pass (10 fixes, `cefd37a`). The done-when (build a CRUD app on a Postgres table with an editable Table and a save query) proven in Playwright and on Docker Compose. |
 | **M9 OAuth** | ✅ On `main` (§9c): PR #10, then its review fixes as PR #11 (10 fixes, one of them security: tokens could be sent to another host). The done-when proven in Playwright and on Docker Compose. |
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
-| **M11 Git sync** | ✅ Built on `feat/m11-git-sync` (§9e), PR #13: workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). The done-when proven in Playwright and on Docker Compose. **Not reviewed or merged yet.** |
-| M12 | ⏭️ Next: review and merge PR #13, then plan M12 with the user (§14) |
+| **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
+| **M12 Python** | 📝 Planned in session 12 (§14, `architecture.md` §2.14): Python in workflow Code blocks through an nsjail `code-executor` service |
 
-**Start the next session with:** reviewing PR #13 (the `code-review` skill, as for #12), committing the fixes **before** it's merged, then merging it; then planning M12 (§14).
+**Start the next session with:** M12 step 1 (§14): the executor spike and service, unless it's already pushed (check the draft PR's checklist).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -841,19 +841,24 @@ Ten findings from the `code-review` skill, each checked against the code: (1) br
   - The Git settings page polls deploys every 15 s; there's no notification when a deploy has problems.
 - **Not built yet:** multipart REST bodies.
 
-## 14. Next step: review PR #13, then M12
+## 14. Next: M12, Python (planned in session 12)
 
-1. **Review PR #13** before merging (the `code-review` skill, as for #12), commit the fixes on `feat/m11-git-sync`, watch CI, then merge with a merge commit.
-2. **A live check against real GitHub** if the user provides a scratch repo and a fine-grained token (§12, item 12).
-3. **Plan M12** with the user. From `architecture.md` §2.7, M12+: Python executor (nsjail), SQS/Kafka triggers, multiplayer editing (Yjs), AI actions. Also open: Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch), and the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
+Agreed with the user (session 12): **an nsjail service**, **a curated set of packages**, **data in, data out**. The design is `architecture.md` §2.14; the milestone row is §2.7. Branch `feat/m12-python`, a draft PR from the plan commit. Six steps, each its own commit (big ones split a/b, as in M10 and M11):
 
-M11 as agreed (for the record): Retool-style protection; GitHub; code split out; workflows and apps only. The design is `architecture.md` §2.13.
+1. **The executor** (`apps/code-executor`), starting with a timeboxed spike: nsjail built from source in Docker Desktop and on a GitHub Actions runner (which privileges it needs: `privileged`, or `SYS_ADMIN` plus seccomp/AppArmor relaxed and cgroup v2 delegation), and what an execution costs (a bare interpreter; `import pandas`). Then the image (Python 3.12, nsjail, the curated virtualenv pinned with hashes), the stdlib HTTP server (`/run`, `/check`, `/health`, bearer token, concurrency limit, kill on a closed request), the jail's config and limits, the protocol (stdin in, fd 3 out, logs capped), the JSON conversion (pandas, numpy, datetime, Decimal, NaN). Tests against the container: no environment, no network, no writes outside `/tmp`, memory, time, PID and output limits, a forged result on stdout ignored. `startTestExecutor` (like `startTestMysql`). Sets the latency target for the done-when.
+2. **The definition**: `language` on code blocks and loop code runners (sparse), the Python tokenizer and its references in `@ow/expressions` (f-strings, keyword arguments, attributes), scope references, `self_reference`/`not_ancestor`, rename, Python keywords reserved, `python_unsupported`; git-format writes `.py`. Property tests for the tokenizer (round-trips, rename only touching names).
+3. **Engine and server**: `PythonRuntime` (HTTP) in the engine's services, `runCode` by language, cancel and timeouts, logs and errors; config (`PYTHON_EXECUTOR_URL`, `PYTHON_EXECUTOR_TOKEN`), `checkDefinition`'s syntax check through `/check`, `workflows.checkPython`, `python_unavailable` without an executor. Engine and server tests against the executor container.
+4. **The editor**: the language in the toolbar's Code menu and the inspector (switching keeps the text), Monaco's Python mode, completions from the last run, markers from `workflows.checkPython`, the loop's code runner; Playwright.
+5. **Ops**: the `code-executor` Compose service (narrowest privileges from step 1, no published port), CI (the image built in the docker job; the executor started for `check` and `e2e`), a runbook page (limits, adding a package, logs).
+6. **Done-when, Compose check, docs**: the done-when in Playwright and on the Compose stack (ask first: it's shared), the latency measured there; this file and `architecture.md`.
+
+Also open, for later milestones (M13+, `architecture.md` §2.7): SQS/Kafka triggers, multiplayer editing (Yjs), AI actions; Git sync's gaps (§13: resources and config vars in Git, three-way merge, renaming on a branch) and a live check against real GitHub (§12, item 12); the apps list (modules, mobile layout, custom components, a Query Library, themes; editor undo/redo and copy/paste).
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m11-git-sync && git pull        # PR #13, to review (§14)
+git switch feat/m12-python && git pull           # M12 (§14)
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
