@@ -6,13 +6,15 @@ import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
+import { GitDeployer } from '../services/git/deployer'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
  * The workflow worker: claims queued runs and executes them (see `Dispatcher` in @ow/engine), renews their
  * leases and recovers runs whose worker died, and fires due schedules every 5 s (`Scheduler`; every worker ticks,
  * and each due schedule is fired by one of them), and once a day deletes runs older than `RUN_RETENTION_DAYS`
- * (`RetentionJob`; one worker a day wins the job). `stop()` stops firing and hands in-flight runs back to the queue.
+ * (`RetentionJob`; one worker a day wins the job), and deploys from Git every `GIT_POLL_SECONDS` (`GitDeployer`; one
+ * process at a time). `stop()` stops firing and hands in-flight runs back to the queue.
  */
 export async function startWorker(deps: {
   db: Db
@@ -52,11 +54,20 @@ export async function startWorker(deps: {
     log: log.child({ component: 'retention' }),
   })
   retention.start()
+  const git = new GitDeployer({
+    db,
+    config,
+    log: log.child({ component: 'git' }),
+    pollMs: config.GIT_POLL_SECONDS * 1000,
+  })
+  git.start()
   return {
     dispatcher,
     scheduler,
     retention,
+    git,
     stop: async () => {
+      await git.stop()
       await retention.stop()
       await scheduler.stop()
       await dispatcher.stop()

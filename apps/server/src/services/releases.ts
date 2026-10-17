@@ -11,6 +11,7 @@ import {
 import {
   bumpVersion,
   canonicalize,
+  canonicalJson,
   compareVersions,
   DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   definitionHash,
@@ -68,50 +69,126 @@ export async function publishRelease(
         message: `The draft changed since revision ${opts.draftRevision}; reload before publishing`,
       })
     }
-    const existing = await tx
-      .select({
-        id: workflowReleases.id,
-        version: workflowReleases.version,
-        hash: workflowReleases.definitionHash,
-      })
-      .from(workflowReleases)
-      .where(eq(workflowReleases.workflowId, workflow.id))
-    const live = existing.find((r) => r.id === locked.liveReleaseId)
-    if (live?.hash === hash) {
+    const release = await insertRelease(tx, locked, definition, hash, {
+      version: opts.version,
+      bump: opts.bump,
+      notes: opts.notes,
+      createdBy: user.id,
+      gitCommit: null,
+    })
+    if ('unchanged' in release) {
       throw new TRPCError({
         code: 'CONFLICT',
-        message: `Nothing changed since the live release, v${live.version}`,
+        message: `Nothing changed since the live release, v${release.unchanged}`,
       })
     }
-    const highest =
-      existing
-        .map((r) => r.version)
-        .sort(compareVersions)
-        .at(-1) ?? null
-    const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
-    if (!parseSemver(version)) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
-    }
-    if (highest && compareVersions(version, highest) <= 0) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: `The version must be higher than v${highest}, the latest release`,
-      })
-    }
-    const [release] = await tx
-      .insert(workflowReleases)
-      .values({
-        workflowId: workflow.id,
-        version,
-        definition,
-        definitionHash: hash,
-        notes: opts.notes?.trim() || null,
-        createdBy: user.id,
-      })
-      .returning()
-    await makeLive(tx, workflow.id, release!, plan, opts.now ?? new Date())
-    return release!
+    await makeLive(tx, workflow.id, release, plan, opts.now ?? new Date())
+    return release
   })
+}
+
+/**
+ * Deploys a workflow from Git (M11): its draft, name and description become what the branch holds, and when the
+ * definition differs from the live release's, a new patch release made by Git sync (`created_by` null, the commit
+ * SHA) goes live. Nobody's grants are checked (writing to the branch is the right to deploy); everything else
+ * publishing checks is. Returns the release, or null when the definition was already live.
+ */
+export async function deployWorkflowFromGit(
+  db: Db,
+  opts: {
+    workflow: Workflow
+    name: string
+    description: string | null
+    definition: WorkflowDefinition
+    commit: string
+    notes: string | null
+    now?: Date
+  },
+): Promise<WorkflowRelease | null> {
+  const definition = canonicalize(opts.definition)
+  const hash = await definitionHash(definition)
+  const plan = await checkReleasable(db, null, opts.workflow, definition)
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(workflows).where(eq(workflows.id, opts.workflow.id)).for('update')
+    if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The workflow was deleted meanwhile' })
+    // Compared canonically: jsonb doesn't keep key order.
+    const draftChanged = canonicalJson(canonicalize(locked.draftDefinition)) !== canonicalJson(definition)
+    await tx
+      .update(workflows)
+      .set({
+        name: opts.name,
+        description: opts.description,
+        ...(draftChanged
+          ? { draftDefinition: definition, draftRevision: locked.draftRevision + 1, updatedBy: null }
+          : {}),
+      })
+      .where(eq(workflows.id, locked.id))
+    const release = await insertRelease(tx, locked, definition, hash, {
+      notes: opts.notes,
+      createdBy: null,
+      gitCommit: opts.commit,
+    })
+    if ('unchanged' in release) return null
+    await makeLive(tx, locked.id, release, plan, opts.now ?? new Date())
+    return release
+  })
+}
+
+/**
+ * Inserts the next release of a locked workflow, unless the live one already has this hash. The version is given
+ * or bumped from the highest, and must be higher than every existing one.
+ */
+async function insertRelease(
+  tx: Tx,
+  locked: Workflow,
+  definition: WorkflowDefinition,
+  hash: string,
+  opts: {
+    version?: string
+    bump?: VersionBump
+    notes?: string | null
+    createdBy: string | null
+    gitCommit: string | null
+  },
+): Promise<WorkflowRelease | { unchanged: string }> {
+  const existing = await tx
+    .select({
+      id: workflowReleases.id,
+      version: workflowReleases.version,
+      hash: workflowReleases.definitionHash,
+    })
+    .from(workflowReleases)
+    .where(eq(workflowReleases.workflowId, locked.id))
+  const live = existing.find((r) => r.id === locked.liveReleaseId)
+  if (live?.hash === hash) return { unchanged: live.version }
+  const highest =
+    existing
+      .map((r) => r.version)
+      .sort(compareVersions)
+      .at(-1) ?? null
+  const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
+  if (!parseSemver(version)) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
+  }
+  if (highest && compareVersions(version, highest) <= 0) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: `The version must be higher than v${highest}, the latest release`,
+    })
+  }
+  const [release] = await tx
+    .insert(workflowReleases)
+    .values({
+      workflowId: locked.id,
+      version,
+      definition,
+      definitionHash: hash,
+      notes: opts.notes?.trim() || null,
+      createdBy: opts.createdBy,
+      gitCommit: opts.gitCommit,
+    })
+    .returning()
+  return release!
 }
 
 /** Makes an earlier (or later) release the live one: rollback. The same checks as publishing apply. */
@@ -147,16 +224,17 @@ interface ReleasePlan {
 /**
  * The checks for making a definition live. Its runs start from webhooks and schedules with no user behind them, so
  * whoever makes it live vouches for it: they need Edit on the workflow, Use on every resource it queries in every
- * environment (a webhook can pick any environment), and Use on every workflow it calls (each must be published). The definition must be valid, with each query checked by its
- * connector, its schedules' environments must exist, and its webhook alias must be free.
+ * environment (a webhook can pick any environment), and Use on every workflow it calls (each must be published).
+ * The definition must be valid, with each query checked by its connector, its schedules' environments must exist,
+ * and its webhook alias must be free. `access` null is Git sync (M11): no grants are checked, the rest is.
  */
 async function checkReleasable(
   db: Db,
-  access: Access,
+  access: Access | null,
   workflow: Workflow,
   definition: WorkflowDefinition,
 ): Promise<ReleasePlan> {
-  if (!atLeast(access.workflowLevel(workflow), 'edit')) {
+  if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
   }
   const { resources, children, errors } = await checkDefinition(db, definition)
@@ -168,10 +246,10 @@ async function checkReleasable(
     })
   }
   const envs = await db.select().from(environments)
-  for (const resource of resources) {
+  for (const resource of access ? resources : []) {
     if (
       !atLeast(
-        access.levelEverywhere(
+        access!.levelEverywhere(
           resource,
           envs.map((e) => e.id),
         ),
@@ -212,8 +290,8 @@ async function checkReleasable(
   }
 
   // Its child runs start unattended too. Workflow access applies in every environment.
-  for (const child of children) {
-    if (!atLeast(access.workflowLevel(child), 'use')) {
+  for (const child of access ? children : []) {
+    if (!atLeast(access!.workflowLevel(child), 'use')) {
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to workflow "${child.slug}" to release this workflow, which calls it`,

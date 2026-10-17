@@ -60,7 +60,12 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
     const { slug } = parse(z.object({ slug: z.string() }), req.params)
     const query = parse(z.object({ environment: z.string().optional() }), req.query)
     const body = parse(
-      z.object({ input: z.unknown().optional(), version: z.enum(['draft', 'live']).default('draft') }),
+      z.object({
+        input: z.unknown().optional(),
+        version: z.enum(['draft', 'live']).default('draft'),
+        /** A Git branch draft of a protected workflow (M11), instead of the main draft. */
+        draftId: z.string().uuid().optional(),
+      }),
       req.body ?? {},
     )
     const { access, workflow } = await visibleWorkflow(req, slug)
@@ -70,6 +75,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       environmentId: environment.id,
       version: body.version,
       input: body.input,
+      branchDraftId: body.draftId,
     })
     await recordAudit(db, {
       action: 'workflow.run_started',
@@ -79,7 +85,11 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       actorUserId: req.user!.id,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      metadata: { runId: run.id, version: body.version },
+      metadata: {
+        runId: run.id,
+        version: body.version,
+        ...(body.draftId ? { branchDraftId: body.draftId } : {}),
+      },
     })
     return reply.code(202).send({ run: runView(run, workflow, environment.slug) })
   })
@@ -92,7 +102,11 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
     const { slug, block } = parse(z.object({ slug: z.string(), block: z.string() }), req.params)
     const query = parse(z.object({ environment: z.string().optional() }), req.query)
     const body = parse(
-      z.object({ fromRunId: z.string().uuid().optional(), input: z.unknown().optional() }),
+      z.object({
+        fromRunId: z.string().uuid().optional(),
+        input: z.unknown().optional(),
+        draftId: z.string().uuid().optional(),
+      }),
       req.body ?? {},
     )
     const { access, workflow } = await visibleWorkflow(req, slug)
@@ -101,7 +115,9 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       workflow,
       environmentId: environment.id,
       block,
-      ...body,
+      fromRunId: body.fromRunId,
+      input: body.input,
+      branchDraftId: body.draftId,
     })
     await recordAudit(db, {
       action: 'workflow.block_run_started',

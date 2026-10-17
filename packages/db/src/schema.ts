@@ -379,6 +379,8 @@ export const workflows = pgTable(
     liveReleaseId: uuid().references((): AnyPgColumn => workflowReleases.id, { onDelete: 'set null' }),
     /** Null = no limit. Enforced by the dispatcher (M4). */
     maxConcurrentRuns: integer(),
+    /** Protected (M11): edited on Git branches and deployed from the repo's branch; read-only on the instance. */
+    gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
@@ -407,11 +409,23 @@ export const workflowDraftSnapshots = pgTable(
       .references(() => workflows.id, { onDelete: 'cascade' }),
     /** The `draftRevision` this copies; one snapshot per revision. */
     revision: integer().notNull(),
+    /**
+     * A Git branch draft's snapshot (M11): its `git_branch_drafts` id and revision. No foreign key: runs keep their
+     * snapshot after the draft is discarded (retention removes it once no run uses it).
+     */
+    branchDraftId: uuid(),
     definition: jsonb().$type<WorkflowDefinition>().notNull(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('workflow_draft_snapshots_revision_uq').on(t.workflowId, t.revision)],
+  (t) => [
+    uniqueIndex('workflow_draft_snapshots_revision_uq')
+      .on(t.workflowId, t.revision)
+      .where(sql`${t.branchDraftId} is null`),
+    uniqueIndex('workflow_draft_snapshots_branch_revision_uq')
+      .on(t.branchDraftId, t.revision)
+      .where(sql`${t.branchDraftId} is not null`),
+  ],
 )
 
 /** Published, immutable versions. Only the live release runs from schedules and webhooks. */
@@ -429,6 +443,8 @@ export const workflowReleases = pgTable(
     /** `definitionHash`: SHA-256 of the canonical definition without layout. */
     definitionHash: text().notNull(),
     notes: text(),
+    /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
+    gitCommit: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -751,6 +767,8 @@ export const apps = pgTable(
     draftRevision: integer().notNull().default(1),
     /** The release people using the app see. Null until the first release. */
     liveReleaseId: uuid().references((): AnyPgColumn => appReleases.id, { onDelete: 'set null' }),
+    /** Protected (M11): edited on Git branches and deployed from the repo's branch; read-only on the instance. */
+    gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
@@ -774,6 +792,8 @@ export const appReleases = pgTable(
     /** `appDefinitionHash`: SHA-256 of the canonical definition, layout included. */
     definitionHash: text().notNull(),
     notes: text(),
+    /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
+    gitCommit: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -854,3 +874,142 @@ export const maintenanceJobs = pgTable('maintenance_jobs', {
   /** What the last run did (counts, duration) or why it failed. */
   lastResult: jsonb().$type<Record<string, unknown>>(),
 })
+
+/**
+ * The instance's Git repo (M11): one row at most. The token and webhook secret are one encrypted JSON value
+ * (`git_settings:<id>:-`), never returned to the browser.
+ */
+export const gitSettings = pgTable(
+  'git_settings',
+  {
+    id: id(),
+    /** Always true: the unique constraint keeps the table to one row. */
+    singleton: boolean().notNull().default(true),
+    /** `https://github.com/<owner>/<repo>.git`, without credentials. */
+    repoUrl: text().notNull(),
+    /** The branch deploys come from. */
+    branch: text().notNull().default('main'),
+    /** Encrypted JSON `{ token?, webhookSecret? }` (`@ow/crypto` token). */
+    secrets: text(),
+    /** The branch commit the last deploy went through (null: never, or the repo or branch changed since). */
+    deployedCommit: text(),
+    /** When a deploy last checked the branch, and why it couldn't when it couldn't (cleared on success). */
+    checkedAt: timestamp({ withTimezone: true }),
+    lastError: text(),
+    /** A webhook or an admin asked for a deploy; the process holding the lease goes again when it's done. */
+    deployRequestedAt: timestamp({ withTimezone: true }),
+    deployRequestedBy: text({ enum: ['poll', 'webhook', 'manual'] }),
+    /** One deploy at a time across processes: whoever moves this into the future runs it. */
+    deployLeaseUntil: timestamp({ withTimezone: true }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('git_settings_singleton_uq').on(t.singleton),
+    check('git_settings_singleton_ck', sql`${t.singleton}`),
+  ],
+)
+
+export type GitSettings = typeof gitSettings.$inferSelect
+
+export const GIT_OBJECT_KINDS = ['workflow', 'app'] as const
+export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
+
+/** A problem with an object's files or definition, by path from the repo's root (`@ow/git-format`'s shape). */
+export interface GitProblem {
+  path: string
+  code: string
+  message: string
+}
+
+/**
+ * Each workflow and app directory on the deploy branch, as the last deploy left it (M11): the tree it deployed (so
+ * an unchanged directory is skipped), and its problems, or `missing` once the directory left the branch.
+ */
+export const gitObjects = pgTable(
+  'git_objects',
+  {
+    id: id(),
+    kind: text({ enum: GIT_OBJECT_KINDS }).notNull(),
+    slug: text().notNull(),
+    /** The workflow or app on the instance; null when none could be made. */
+    objectId: uuid(),
+    /** The directory's tree when it last deployed (or failed to). */
+    treeSha: text(),
+    /** The branch commit it was last seen at. */
+    commit: text().notNull(),
+    status: text({ enum: GIT_OBJECT_STATUSES }).notNull(),
+    problems: jsonb().$type<GitProblem[]>().notNull().default([]),
+    /** The version the last deploy made live, if it made one. */
+    version: text(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
+    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app')`),
+    check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
+  ],
+)
+
+export const GIT_DEPLOY_TRIGGERS = ['poll', 'webhook', 'manual'] as const
+
+/** What each deploy of a new branch commit (or an admin's Deploy now) did. */
+export const gitDeploys = pgTable(
+  'git_deploys',
+  {
+    id: id(),
+    commit: text().notNull(),
+    previousCommit: text(),
+    trigger: text({ enum: GIT_DEPLOY_TRIGGERS }).notNull(),
+    /** `ok`: every object deployed or was unchanged; `problems`: some didn't (see `summary`). */
+    status: text({ enum: ['ok', 'problems'] }).notNull(),
+    /** The commit's subject, author and per-object outcomes; repo-wide problems. */
+    summary: jsonb().$type<Record<string, unknown>>().notNull(),
+    startedAt: timestamp({ withTimezone: true }).notNull(),
+    finishedAt: timestamp({ withTimezone: true }).notNull(),
+  },
+  (t) => [index('git_deploys_started_idx').on(t.startedAt)],
+)
+
+export type GitObject = typeof gitObjects.$inferSelect
+export type GitDeploy = typeof gitDeploys.$inferSelect
+
+/**
+ * A protected workflow's or app's draft on a Git branch (M11): edited and run like the main draft, committed onto
+ * the branch. One per object and branch.
+ */
+export const gitBranchDrafts = pgTable(
+  'git_branch_drafts',
+  {
+    id: id(),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    branch: text().notNull(),
+    /** A workflow or app definition, as the object's kind says. */
+    definition: jsonb().$type<WorkflowDefinition | AppDefinition>().notNull(),
+    name: text().notNull(),
+    description: text(),
+    /** Bumped on every save (optimistic concurrency, and draft snapshots for runs). */
+    revision: integer().notNull().default(1),
+    /** The commit the draft's files came from (or that it last committed): what a commit goes on top of. */
+    baseCommit: text().notNull(),
+    /** False until the first commit makes the branch (it starts from the deploy branch). */
+    branchExists: boolean().notNull(),
+    /** The draft's last commit. */
+    committedCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('git_branch_drafts_workflow_uq')
+      .on(t.workflowId, t.branch)
+      .where(sql`${t.workflowId} is not null`),
+    uniqueIndex('git_branch_drafts_app_uq').on(t.appId, t.branch).where(sql`${t.appId} is not null`),
+    check('git_branch_drafts_object_ck', sql`num_nonnulls(${t.workflowId}, ${t.appId}) = 1`),
+  ],
+)
+
+export type GitBranchDraft = typeof gitBranchDrafts.$inferSelect

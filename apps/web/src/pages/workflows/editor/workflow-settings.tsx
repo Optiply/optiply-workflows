@@ -1,6 +1,8 @@
 import { DEFAULT_RUN_TIMEOUT_MS, MAX_RUN_TIMEOUT_MS } from '@ow/definition'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Button, ErrorNote, Field, Input } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
@@ -11,7 +13,17 @@ type Workflow = RouterOutputs['workflows']['get']
  * Workflow-wide settings: the run timeout is part of the definition (saved with the draft, live once published);
  * the concurrency limit belongs to the workflow and applies to every run at once.
  */
-export function WorkflowSettingsTab({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean }) {
+export function WorkflowSettingsTab({
+  workflow,
+  canEdit,
+  hasEdit = canEdit,
+}: {
+  workflow: Workflow
+  /** The draft shown can be edited (not a protected workflow's main draft). */
+  canEdit: boolean
+  /** The person has Edit on the workflow: settings outside the draft. */
+  hasEdit?: boolean
+}) {
   const timeoutMs = useEditor((s) => s.definition.settings?.timeoutMs)
   const setTimeoutMinutes = (text: string) =>
     useEditor.getState().update((def) => {
@@ -38,8 +50,48 @@ export function WorkflowSettingsTab({ workflow, canEdit }: { workflow: Workflow;
           onChange={(e) => setTimeoutMinutes(e.target.value)}
         />
       </Field>
-      <ConcurrencyLimit workflow={workflow} canEdit={canEdit} />
+      <ConcurrencyLimit workflow={workflow} canEdit={hasEdit} />
+      {workflow.level === 'own' && <GitProtection workflow={workflow} />}
     </div>
+  )
+}
+
+/** Owners protect the workflow in Git (M11), or unprotect it. */
+function GitProtection({ workflow }: { workflow: Workflow }) {
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
+  const unprotect = useUnprotect('workflow')
+  if (!git?.configured && !workflow.gitProtected) return null
+  return (
+    // Not a Field: that's a <label>, and these are buttons.
+    <section className="flex flex-col gap-1.5">
+      <h4 className="text-sm font-medium text-ink">Git</h4>
+      <div>
+        {workflow.gitProtected ? (
+          <Button
+            size="sm"
+            variant="danger"
+            loading={unprotect.isPending}
+            onClick={() =>
+              confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'workflow', id: workflow.id })
+            }
+          >
+            Unprotect
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => setProtecting(true)}>
+            <GitBranch className="size-3.5" /> Protect in Git
+          </Button>
+        )}
+      </div>
+      <span className="text-xs text-muted">
+        {workflow.gitProtected
+          ? `Protected: edited on branches, deployed by merging into ${git?.branch ?? 'the deploy branch'}.`
+          : 'Protect it to have changes reviewed in pull requests before they go live.'}
+      </span>
+      <ErrorNote error={unprotect.error} />
+      {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}
+    </section>
   )
 }
 

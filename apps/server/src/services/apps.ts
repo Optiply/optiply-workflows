@@ -15,11 +15,12 @@ import {
   apps,
   type Db,
   environments,
+  gitBranchDrafts,
   type Resource,
   resourceConfigs,
   resources,
 } from '@ow/db'
-import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
+import { bumpVersion, canonicalJson, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
@@ -27,6 +28,8 @@ import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { errorView, toJson } from './query-results'
 import { toResolved } from './resources'
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
 /** Each server-side `{{ }}` (one reading `current_user`) gets this long in the sandbox. */
 const EXPRESSION_TIMEOUT_MS = 5_000
@@ -56,10 +59,16 @@ export async function checkApp(
 /**
  * What making a definition live takes. People with only Use on the app run its queries, so whoever publishes
  * vouches for them: Edit on the app and Use on every resource it queries in every environment (the viewer picks
- * the environment). The definition must be valid, with each query checked by its connector.
+ * the environment). The definition must be valid, with each query checked by its connector. `access` null is Git
+ * sync (M11): no grants are checked, the rest is.
  */
-async function checkReleasable(db: Db, access: Access, app: App, definition: AppDefinition): Promise<void> {
-  if (!atLeast(access.appLevel(app), 'edit')) {
+async function checkReleasable(
+  db: Db,
+  access: Access | null,
+  app: App,
+  definition: AppDefinition,
+): Promise<void> {
+  if (access && !atLeast(access.appLevel(app), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to release it' })
   }
   const { resources: used, errors } = await checkApp(db, definition)
@@ -68,8 +77,8 @@ async function checkReleasable(db: Db, access: Access, app: App, definition: App
     throw new TRPCError({ code: 'BAD_REQUEST', message: `The app isn't valid: ${errors[0]!.message}${more}` })
   }
   const envIds = (await db.select({ id: environments.id }).from(environments)).map((e) => e.id)
-  for (const resource of used) {
-    if (!atLeast(access.levelEverywhere(resource, envIds), 'use')) {
+  for (const resource of access ? used : []) {
+    if (!atLeast(access!.levelEverywhere(resource, envIds), 'use')) {
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to resource "${resource.slug}" in every environment to release this app`,
@@ -105,45 +114,116 @@ export async function publishAppRelease(
     // Serializes publishing and setting the live release of one app.
     const [locked] = await tx.select().from(apps).where(eq(apps.id, app.id)).for('update')
     if (!locked || locked.draftRevision !== opts.draftRevision) throw changedSince(opts.draftRevision)
-    const existing = await tx
-      .select({ id: appReleases.id, version: appReleases.version, hash: appReleases.definitionHash })
-      .from(appReleases)
-      .where(eq(appReleases.appId, app.id))
-    const live = existing.find((r) => r.id === locked.liveReleaseId)
-    if (live?.hash === hash) {
+    const release = await insertAppRelease(tx, locked, definition, hash, {
+      version: opts.version,
+      bump: opts.bump,
+      notes: opts.notes,
+      createdBy: user.id,
+      gitCommit: null,
+    })
+    if ('unchanged' in release) {
       throw new TRPCError({
         code: 'CONFLICT',
-        message: `Nothing changed since the live release, v${live.version}`,
+        message: `Nothing changed since the live release, v${release.unchanged}`,
       })
     }
-    const highest =
-      existing
-        .map((r) => r.version)
-        .sort(compareVersions)
-        .at(-1) ?? null
-    const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
-    if (!parseSemver(version))
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
-    if (highest && compareVersions(version, highest) <= 0) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: `The version must be higher than v${highest}, the latest release`,
-      })
-    }
-    const [release] = await tx
-      .insert(appReleases)
-      .values({
-        appId: app.id,
-        version,
-        definition,
-        definitionHash: hash,
-        notes: opts.notes?.trim() || null,
-        createdBy: user.id,
-      })
-      .returning()
-    await tx.update(apps).set({ liveReleaseId: release!.id }).where(eq(apps.id, app.id))
-    return release!
+    await tx.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, app.id))
+    return release
   })
+}
+
+/**
+ * Deploys an app from Git (M11): its draft, name and description become what the branch holds, and when the
+ * definition differs from the live release's, a new patch release made by Git sync (`created_by` null, the commit
+ * SHA) goes live. Nobody's grants are checked; everything else publishing checks is. Returns the release, or null
+ * when the definition was already live.
+ */
+export async function deployAppFromGit(
+  db: Db,
+  opts: {
+    app: App
+    name: string
+    description: string | null
+    definition: AppDefinition
+    commit: string
+    notes: string | null
+  },
+): Promise<AppRelease | null> {
+  const definition = canonicalizeApp(opts.definition)
+  const hash = await appDefinitionHash(definition)
+  await checkReleasable(db, null, opts.app, definition)
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(apps).where(eq(apps.id, opts.app.id)).for('update')
+    if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The app was deleted meanwhile' })
+    // Compared canonically: jsonb doesn't keep key order.
+    const draftChanged = canonicalJson(canonicalizeApp(locked.draftDefinition)) !== canonicalJson(definition)
+    await tx
+      .update(apps)
+      .set({
+        name: opts.name,
+        description: opts.description,
+        ...(draftChanged
+          ? { draftDefinition: definition, draftRevision: locked.draftRevision + 1, updatedBy: null }
+          : {}),
+      })
+      .where(eq(apps.id, locked.id))
+    const release = await insertAppRelease(tx, locked, definition, hash, {
+      notes: opts.notes,
+      createdBy: null,
+      gitCommit: opts.commit,
+    })
+    if ('unchanged' in release) return null
+    await tx.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, locked.id))
+    return release
+  })
+}
+
+/** Inserts the next release of a locked app, unless the live one already has this hash. */
+async function insertAppRelease(
+  tx: Tx,
+  locked: App,
+  definition: AppDefinition,
+  hash: string,
+  opts: {
+    version?: string
+    bump?: VersionBump
+    notes?: string | null
+    createdBy: string | null
+    gitCommit: string | null
+  },
+): Promise<AppRelease | { unchanged: string }> {
+  const existing = await tx
+    .select({ id: appReleases.id, version: appReleases.version, hash: appReleases.definitionHash })
+    .from(appReleases)
+    .where(eq(appReleases.appId, locked.id))
+  const live = existing.find((r) => r.id === locked.liveReleaseId)
+  if (live?.hash === hash) return { unchanged: live.version }
+  const highest =
+    existing
+      .map((r) => r.version)
+      .sort(compareVersions)
+      .at(-1) ?? null
+  const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
+  if (!parseSemver(version)) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
+  if (highest && compareVersions(version, highest) <= 0) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: `The version must be higher than v${highest}, the latest release`,
+    })
+  }
+  const [release] = await tx
+    .insert(appReleases)
+    .values({
+      appId: locked.id,
+      version,
+      definition,
+      definitionHash: hash,
+      notes: opts.notes?.trim() || null,
+      createdBy: opts.createdBy,
+      gitCommit: opts.gitCommit,
+    })
+    .returning()
+  return release!
 }
 
 /** Makes another release live (rollback, or forward again). The same checks as publishing apply. */
@@ -192,6 +272,8 @@ export async function runAppQuery(
   opts: {
     app: App
     releaseId: string | null
+    /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
+    branchDraftId?: string
     query: string
     environmentId: string
     values: Record<string, unknown>
@@ -206,7 +288,16 @@ export async function runAppQuery(
     if (!atLeast(access.appLevel(app), 'edit')) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to run its draft' })
     }
-    definition = app.draftDefinition
+    if (opts.branchDraftId) {
+      const [draft] = await db
+        .select()
+        .from(gitBranchDrafts)
+        .where(and(eq(gitBranchDrafts.id, opts.branchDraftId), eq(gitBranchDrafts.appId, app.id)))
+      if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'This app has no such branch draft' })
+      definition = draft.definition as AppDefinition
+    } else {
+      definition = app.draftDefinition
+    }
   } else {
     if (!atLeast(access.appLevel(app), 'use')) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'You need use access to this app' })

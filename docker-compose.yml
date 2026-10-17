@@ -23,6 +23,11 @@ x-app: &app
     RUN_RETENTION_DAYS: ${RUN_RETENTION_DAYS:-30}
     # When set, /metrics (API: PUBLIC port; workers: METRICS_PORT, default 9464) needs this Bearer token.
     METRICS_TOKEN: ${METRICS_TOKEN:-}
+    # Git sync (M11): workers check the deploy branch this often (seconds; 0: webhook and Deploy now only).
+    GIT_POLL_SECONDS: ${GIT_POLL_SECONDS:-60}
+    # Local test repos and a fake GitHub only (file:// and http:// repos; another GitHub API). Keep unset.
+    GIT_ALLOW_INSECURE_URLS: ${GIT_ALLOW_INSECURE_URLS:-false}
+    GITHUB_API_URL: ${GITHUB_API_URL:-}
 
 services:
   postgres:

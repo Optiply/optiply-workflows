@@ -11,11 +11,17 @@ export async function saveDraftNow(): Promise<void> {
   const json = JSON.stringify(snapshot)
   state.saving()
   try {
-    const result = await trpcClient.workflows.saveDraft.mutate({
-      id: state.workflowId,
-      revision: state.revision,
-      definition: snapshot,
-    })
+    const result = state.branchDraftId
+      ? await trpcClient.branchDrafts.save.mutate({
+          id: state.branchDraftId,
+          revision: state.revision,
+          definition: snapshot,
+        })
+      : await trpcClient.workflows.saveDraft.mutate({
+          id: state.workflowId,
+          revision: state.revision,
+          definition: snapshot,
+        })
     useEditor.getState().saved(result.revision, json, result.draftHash)
   } catch (err) {
     if (err instanceof TRPCClientError && err.data?.code === 'CONFLICT') useEditor.getState().conflict()

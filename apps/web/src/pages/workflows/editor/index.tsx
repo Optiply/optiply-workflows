@@ -1,11 +1,12 @@
-import type { BlockType, Diagnostic } from '@ow/definition'
+import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
-import { type RouterOutputs, useTRPC } from '@/lib/trpc'
+import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { addableIn, BLOCK_KINDS, newBlock, nextName } from './catalog'
@@ -17,59 +18,145 @@ import { useRunEvents } from './live'
 import { ReleaseControls, ReleasesTab } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
-import { saveDraftNow } from './save'
+import { ensureSaved, saveDraftNow } from './save'
 import { graphOf, type SaveStatus, type SideTab, updateGraph, useEditor } from './store'
 import { WorkflowSettingsTab } from './workflow-settings'
 
 const route = getRouteApi('/app/workflows/$workflowId')
 
 type Workflow = RouterOutputs['workflows']['get']
+type BranchDraft = RouterOutputs['branchDrafts']['get']
 
 /** How long the draft must be idle before it's saved. */
 const AUTOSAVE_MS = 800
 
 export function WorkflowEditorPage() {
   const { workflowId } = route.useParams()
+  const { branch } = route.useSearch()
+  const navigate = route.useNavigate()
   const trpc = useTRPC()
   const workflow = useQuery({ ...trpc.workflows.get.queryOptions({ id: workflowId }), staleTime: 0 })
   const load = useEditor((s) => s.load)
   const loadedId = useEditor((s) => s.workflowId)
+  const loadedDraft = useEditor((s) => s.branchDraftId)
+  const gitProtected = workflow.data?.gitProtected ?? false
+  // A protected workflow is edited in a draft on a Git branch (M11); opening one makes it if needed.
+  const opened = useQuery({
+    queryKey: ['branchDraft', 'workflow', workflowId, branch],
+    queryFn: () =>
+      trpcClient.branchDrafts.open.mutate({
+        kind: 'workflow',
+        id: workflowId,
+        branch: branch!,
+        create: true,
+      }),
+    enabled: Boolean(branch && gitProtected),
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    retry: false,
+  })
+  // The draft's Git details after a commit or an update (its base moves on).
+  const [draftInfo, setDraftInfo] = useState<BranchDraft | null>(null)
+  const branchDraft = branch && gitProtected ? (draftInfo?.branch === branch ? draftInfo : opened.data) : null
+  const wantDraftId = branch && gitProtected ? (branchDraft?.id ?? undefined) : null
 
-  // Load once per workflow: later refetches (after publishing, on window focus) must not reset the editor.
+  const loadDraft = useCallback(
+    (draft: BranchDraft) =>
+      load(workflowId, draft.definition as WorkflowDefinition, draft.revision, draft.draftHash, {
+        branchDraftId: draft.id,
+      }),
+    [load, workflowId],
+  )
+
+  // Load once per workflow and branch: later refetches (after publishing, on window focus) must not reset it.
   useEffect(() => {
     const data = workflow.data
-    if (data && useEditor.getState().workflowId !== data.id) {
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash)
-    }
-  }, [workflow.data, load])
+    if (!data || wantDraftId === undefined) return
+    const state = useEditor.getState()
+    const stale =
+      state.workflowId !== data.id ||
+      state.branchDraftId !== wantDraftId ||
+      (wantDraftId === null && state.readOnly !== data.gitProtected)
+    if (!stale) return
+    if (wantDraftId && branchDraft) loadDraft(branchDraft)
+    else
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+  }, [workflow.data, wantDraftId, branchDraft, load, loadDraft])
   // Coming back to the editor later loads the workflow afresh.
-  useEffect(() => () => useEditor.setState({ workflowId: null }), [])
+  useEffect(() => () => useEditor.setState({ workflowId: null, branchDraftId: null }), [])
   const reload = async () => {
+    const draftId = useEditor.getState().branchDraftId
+    if (draftId) return loadDraft(await trpcClient.branchDrafts.get.query({ id: draftId }))
     const { data } = await workflow.refetch()
-    if (data) load(data.id, data.draftDefinition, data.draftRevision, data.draftHash)
+    if (data)
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+  }
+  const switchBranch = async (next: string | null) => {
+    try {
+      await ensureSaved()
+    } catch (err) {
+      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+    }
+    setDraftInfo(null)
+    // Main may have moved while on a branch (a merge deployed it): load what's there now.
+    if (next === null) await workflow.refetch()
+    await navigate({ search: (prev) => ({ ...prev, branch: next ?? undefined, run: undefined }) })
   }
 
-  if (workflow.error) {
+  const error = workflow.error ?? opened.error
+  if (error) {
     return (
       <div className="p-8">
-        <ErrorNote error={workflow.error} />
+        <ErrorNote error={error} />
       </div>
     )
   }
-  if (!workflow.data || loadedId !== workflow.data.id) return <Spinner />
+  if (
+    !workflow.data ||
+    loadedId !== workflow.data.id ||
+    (wantDraftId ?? undefined) !== (loadedDraft ?? undefined)
+  )
+    return <Spinner />
 
   const canEdit = workflow.data.level !== 'use'
-  return <EditorLayout workflow={workflow.data} canEdit={canEdit} onReload={reload} />
+  return (
+    <EditorLayout
+      workflow={workflow.data}
+      canEdit={canEdit}
+      onReload={reload}
+      git={
+        gitProtected && canEdit ? (
+          <GitBar
+            kind="workflow"
+            object={workflow.data}
+            branch={branch ?? null}
+            draft={branchDraft ?? null}
+            onSwitch={switchBranch}
+            ensureSaved={ensureSaved}
+            revision={() => useEditor.getState().revision}
+            onReplaced={(draft) => {
+              setDraftInfo(draft)
+              loadDraft(draft)
+            }}
+            onUpdated={setDraftInfo}
+          />
+        ) : null
+      }
+    />
+  )
 }
 
 function EditorLayout({
   workflow,
   canEdit,
   onReload,
+  git,
 }: {
   workflow: Workflow
   canEdit: boolean
   onReload: () => void
+  /** A protected workflow's Git bar (M11). */
+  git: React.ReactNode
 }) {
   const { slug } = workflow
   const trpc = useTRPC()
@@ -90,25 +177,29 @@ function EditorLayout({
   }, [environments, slug])
   useLastRunSamples(slug)
   useRunEvents()
+  // A protected workflow's main draft is read-only: it changes on branches. Running it still works.
+  const readOnly = useEditor((s) => s.readOnly)
+  const editable = canEdit && !readOnly
 
   return (
     <ReactFlowProvider>
       <div className="flex h-full flex-col">
         <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
+        {git}
         <ConflictBanner onReload={onReload} />
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
-              {canEdit && <Toolbar />}
+              {editable && <Toolbar />}
               <FunctionBanner />
             </div>
             {panelOpen && <RunPanel />}
           </div>
-          <SidePanel workflow={workflow} canEdit={canEdit} />
+          <SidePanel workflow={workflow} canEdit={editable} hasEdit={canEdit} />
         </div>
       </div>
-      {canEdit && <Autosave />}
+      {editable && <Autosave />}
     </ReactFlowProvider>
   )
 }
@@ -139,7 +230,8 @@ function Header({
       <SaveIndicator />
       <div className="flex-1" />
       {!canEdit && <Badge>Read only</Badge>}
-      <ReleaseControls workflow={workflow} canEdit={canEdit} />
+      {/* A protected workflow is published by merging on Git. */}
+      <ReleaseControls workflow={workflow} canEdit={canEdit && !workflow.gitProtected} />
       <div className="h-6 w-px bg-border" />
       <RunControls canEdit={canEdit} environments={environments} />
     </header>
@@ -359,7 +451,17 @@ const SIDE_TABS: { value: SideTab; label: string }[] = [
 ]
 
 /** The selected block's inspector or, with nothing selected, the workflow's problems, releases and settings. */
-function SidePanel({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean }) {
+function SidePanel({
+  workflow,
+  canEdit,
+  hasEdit,
+}: {
+  workflow: Workflow
+  /** Whether the draft shown can be edited (not a protected workflow's main draft). */
+  canEdit: boolean
+  /** Whether the person has Edit on the workflow (releases and settings outside the draft). */
+  hasEdit: boolean
+}) {
   const selected = useEditor((s) => s.selected)
   const definition = useEditor((s) => s.definition)
   const diagnostics = useEditor((s) => s.diagnostics)
@@ -383,8 +485,10 @@ function SidePanel({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean
           <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
           {tab === 'problems' && <Problems diagnostics={diagnostics} />}
           {tab === 'functions' && <FunctionsTab canEdit={canEdit} />}
-          {tab === 'releases' && <ReleasesTab workflow={workflow} canEdit={canEdit} />}
-          {tab === 'settings' && <WorkflowSettingsTab workflow={workflow} canEdit={canEdit} />}
+          {tab === 'releases' && <ReleasesTab workflow={workflow} canEdit={hasEdit} />}
+          {tab === 'settings' && (
+            <WorkflowSettingsTab workflow={workflow} canEdit={canEdit} hasEdit={hasEdit} />
+          )}
         </div>
       )}
     </aside>

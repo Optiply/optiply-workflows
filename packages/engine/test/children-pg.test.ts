@@ -3,12 +3,12 @@
  * parent woken as soon as its child ends, and cancel cascading to children.
  */
 import { PoolManager } from '@ow/connectors'
-import { type Db, workflowRuns } from '@ow/db'
+import { blockRuns, type Db, workflowRuns } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { sql as dsql, eq } from 'drizzle-orm'
 import type postgres from 'postgres'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
-import { cancelRun, Dispatcher } from '../src'
+import { cancelRun, claimRuns, Dispatcher, finishRun, releaseRun, startRun, suspendRun } from '../src'
 import {
   blocksOf,
   connect,
@@ -169,6 +169,59 @@ it('stops a workflow that calls itself after 10 levels', async () => {
     )
     select count(*)::int as n from down`)
   expect(below!.n).toBe(9)
+})
+
+it('wakes a parent whose child ends while the parent pauses', async () => {
+  // A child ending wakes its parent only if the parent is already waiting; a parent pausing looks for children
+  // that already ended. A child's ending committed just after the parent looked was seen by neither, and the parent
+  // slept for its hour (CI, M11). A deferred trigger holds the child's transaction open after its wake-up, at
+  // commit, while the parent pauses.
+  await db.execute(dsql`
+    create function test_slow_finish() returns trigger language plpgsql as $$
+    begin perform pg_sleep(0.5); return null; end $$`)
+  await db.execute(dsql`
+    create constraint trigger test_slow_finish after update on workflow_runs
+    deferrable initially deferred for each row
+    when (old.status = 'running' and new.status = 'succeeded' and new.parent_run_id is not null)
+    execute function test_slow_finish()`)
+  try {
+    const parent = await queueRun(db, wf([], []))
+    const { run: child } = await startRun(db, {
+      workflowId: parent.workflowId,
+      releaseId: parent.releaseId,
+      environmentId: parent.environmentId,
+      triggerType: 'workflow',
+      parentRunId: parent.id,
+      input: { data: null },
+    })
+    const claims = await claimRuns(db, 'test-worker', 100, 30_000)
+    const ours = [parent.id, child.id]
+    for (const other of claims.filter((c) => !ours.includes(c.runId))) await releaseRun(db, other)
+    const parentClaim = claims.find((c) => c.runId === parent.id)!
+    const childClaim = claims.find((c) => c.runId === child.id)!
+    const anHour = new Date(Date.now() + 3_600_000)
+    await db.insert(blockRuns).values({
+      runId: parent.id,
+      blockKey: 'call',
+      status: 'waiting',
+      attempt: 1,
+      epoch: parentClaim.epoch,
+      metadata: { until: anHour.toISOString(), childRunId: child.id },
+      startedAt: new Date(),
+    })
+
+    const finishing = finishRun(db, childClaim, { status: 'succeeded', error: null })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(await suspendRun(db, parentClaim, anHour)).toBe(true)
+    expect(await finishing).toBe(true)
+
+    const after = await getRun(db, parent.id)
+    expect(after.status).toBe('waiting')
+    expect(after.availableAt.getTime()).toBeLessThanOrEqual(Date.now())
+  } finally {
+    await db.execute(dsql`drop trigger test_slow_finish on workflow_runs`)
+    await db.execute(dsql`drop function test_slow_finish()`)
+  }
 })
 
 it('runs a child per loop iteration', async () => {

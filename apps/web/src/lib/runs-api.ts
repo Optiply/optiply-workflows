@@ -84,15 +84,16 @@ async function call<T>(path: string, init?: { method: 'POST'; body: unknown }): 
 const env = (environment?: string) => (environment ? `?environment=${encodeURIComponent(environment)}` : '')
 
 export const runsApi = {
-  start: (slug: string, input: unknown, environment?: string) =>
+  /** `draftId`: a Git branch draft of a protected workflow (M11) instead of the main draft. */
+  start: (slug: string, input: unknown, environment?: string, draftId?: string | null) =>
     call<{ run: RunView }>(`/workflows/${slug}/runs${env(environment)}`, {
       method: 'POST',
-      body: { input },
+      body: { input, ...(draftId ? { draftId } : {}) },
     }).then((r) => r.run),
-  startBlock: (slug: string, block: string, environment?: string) =>
+  startBlock: (slug: string, block: string, environment?: string, draftId?: string | null) =>
     call<{ run: RunView }>(`/workflows/${slug}/blocks/${encodeURIComponent(block)}/runs${env(environment)}`, {
       method: 'POST',
-      body: {},
+      body: draftId ? { draftId } : {},
     }).then((r) => r.run),
   get: (id: string) => call<{ run: RunView }>(`/runs/${id}`).then((r) => r.run),
   list: (params: { status?: string; before?: string; limit?: number } = {}) => {

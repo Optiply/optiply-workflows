@@ -9,6 +9,10 @@ export type PanelTab = 'code' | 'state' | 'problems' | 'console'
 
 interface AppEditorState {
   appId: string | null
+  /** The Git branch draft being edited (M11), or null for the app's own (main) draft. */
+  branchDraftId: string | null
+  /** A protected app's main draft: shown and run, but edits are ignored (they're made on a branch). */
+  readOnly: boolean
   definition: AppDefinition
   /** The draft revision the server has; saves send it for optimistic concurrency. */
   revision: number
@@ -31,7 +35,13 @@ interface AppEditorState {
    */
   url: AppUrl
 
-  load(appId: string, definition: AppDefinition, revision: number, draftHash: string): void
+  load(
+    appId: string,
+    definition: AppDefinition,
+    revision: number,
+    draftHash: string,
+    opts?: { branchDraftId?: string | null; readOnly?: boolean },
+  ): void
   /** Applies an edit; the draft becomes dirty and is validated again. */
   update(edit: (def: AppDefinition) => AppDefinition): void
   select(name: string | null): void
@@ -47,6 +57,8 @@ interface AppEditorState {
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
   appId: null,
+  branchDraftId: null,
+  readOnly: false,
   definition: { schemaVersion: 1, components: [], queries: [] },
   revision: 0,
   draftHash: null,
@@ -59,9 +71,11 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   panelTab: 'code',
   url: { page: null, params: {} },
 
-  load: (appId, definition, revision, draftHash) =>
+  load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
       appId,
+      branchDraftId: opts.branchDraftId ?? null,
+      readOnly: opts.readOnly ?? false,
       definition,
       revision,
       draftHash,
@@ -75,6 +89,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     }),
 
   update: (edit) => {
+    if (get().readOnly) return
     const { definition, status } = get()
     const next = edit(definition)
     if (next === definition) return

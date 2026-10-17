@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FolderPlus, Plus, Workflow } from 'lucide-react'
+import { FolderPlus, GitBranch, Plus, Workflow } from 'lucide-react'
 import { useState } from 'react'
 import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
   Badge,
   Button,
   Card,
+  Checkbox,
   EmptyState,
   ErrorNote,
   Field,
@@ -76,6 +78,8 @@ export function WorkflowsPage() {
 function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasFolders: boolean }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
   const move = useMutation(
     trpc.workflows.update.mutationOptions({
       onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() }),
@@ -98,9 +102,21 @@ function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasF
           <div className="font-medium">{workflow.name}</div>
           <div className="truncate font-mono text-xs text-muted">{workflow.slug}</div>
         </div>
+        {workflow.gitProtected && <ProtectedBadge />}
         {workflow.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Draft only</Badge>}
         <Badge tone="accent">{LEVELS[workflow.level]}</Badge>
       </Link>
+      {git?.configured && workflow.level === 'own' && !workflow.gitProtected && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Protect ${workflow.name} in Git`}
+          onClick={() => setProtecting(true)}
+        >
+          <GitBranch className="size-4" />
+        </Button>
+      )}
+      {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}
       {hasFolders && workflow.level === 'own' && (
         <FolderSelect
           type="workflow"
@@ -123,7 +139,9 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
   const [folderId, setFolderId] = useState<string | null>(null)
+  const [inGit, setInGit] = useState(false)
   const { data: folders } = useFolders('workflow')
+  const { data: git } = useGitInfo()
   const create = useMutation(
     trpc.workflows.create.mutationOptions({
       onSuccess: async (workflow) => {
@@ -139,7 +157,7 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
         }}
       >
         <Field label="Name">
@@ -168,6 +186,15 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
           <Field label="Folder">
             <FolderSelect type="workflow" value={folderId} onChange={setFolderId} />
           </Field>
+        )}
+        {git?.configured && (
+          <div className="sm:col-span-2">
+            <Checkbox
+              label="Create it in Git: edited on branches and reviewed before it goes live"
+              checked={inGit}
+              onChange={(e) => setInGit(e.target.checked)}
+            />
+          </div>
         )}
         <div className="flex items-center gap-2 sm:col-span-2">
           <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>

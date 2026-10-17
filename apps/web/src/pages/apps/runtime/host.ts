@@ -55,6 +55,8 @@ export interface AppHostOptions {
   appId: string
   /** The release being shown, or null for the draft (the editor). */
   releaseId: string | null
+  /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
+  branchDraftId?: string | null
   environmentId: string
   globals: RuntimeGlobals
   /** Shows a notification. */
@@ -385,6 +387,7 @@ export class AppHost {
       const outcome = await trpcClient.apps.runQuery.mutate({
         appId: this.options.appId,
         releaseId: this.options.releaseId,
+        ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
         query: String(query),
         environmentId: this.options.environmentId,
         values,

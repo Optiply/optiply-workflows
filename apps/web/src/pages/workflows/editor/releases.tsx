@@ -1,7 +1,9 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { getRouteApi } from '@tanstack/react-router'
 import { Clock, Rocket, Undo2, Webhook } from 'lucide-react'
 import { useState } from 'react'
+import { ReleaseAuthor, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -10,6 +12,8 @@ import { useEditor } from './store'
 
 type Workflow = RouterOutputs['workflows']['get']
 type Release = RouterOutputs['releases']['list'][number]
+
+const appRoute = getRouteApi('/app')
 
 /** Refetches what a new live release changes. */
 function useRefreshReleases(workflowId: string) {
@@ -282,7 +286,11 @@ function ReleaseRow({
 }) {
   const trpc = useTRPC()
   const refresh = useRefreshReleases(workflow.id)
+  const { me } = appRoute.useRouteContext()
+  const { data: git } = useGitInfo()
   const setLive = useMutation(trpc.releases.setLive.mutationOptions({ onSuccess: () => refresh() }))
+  // A protected workflow's live release changes by merging; admins can still roll back in an emergency.
+  const canSetLive = canEdit && (!workflow.gitProtected || me.isAdmin)
   return (
     <li
       className={cn(
@@ -294,15 +302,26 @@ function ReleaseRow({
         <span className="font-mono text-sm font-semibold">v{release.version}</span>
         {release.live && <Badge tone="success">Live</Badge>}
         <span className="flex-1" />
-        {canEdit && !release.live && (
+        {canSetLive && !release.live && (
           <Button
             size="sm"
             variant="ghost"
             loading={setLive.isPending}
-            title="Make this release live again"
+            title={
+              workflow.gitProtected
+                ? 'Emergency rollback: it stays until the workflow’s next change in Git (or Deploy now)'
+                : 'Make this release live again'
+            }
             onClick={() => {
               const current = workflow.liveRelease ? ` instead of v${workflow.liveRelease.version}` : ''
-              if (confirm(`Make v${release.version} live? Its webhook and schedules will run${current}.`)) {
+              const emergency = workflow.gitProtected
+                ? ' This workflow is protected: this stays until its next change in Git (or Deploy now).'
+                : ''
+              if (
+                confirm(
+                  `Make v${release.version} live? Its webhook and schedules will run${current}.${emergency}`,
+                )
+              ) {
                 setLive.mutate({ workflowId: workflow.id, releaseId: release.id })
               }
             }}
@@ -313,7 +332,8 @@ function ReleaseRow({
       </div>
       {release.notes && <p className="mt-1 text-sm whitespace-pre-wrap">{release.notes}</p>}
       <p className="mt-1 text-xs text-muted">
-        {release.createdBy?.name ?? 'Someone'} · {new Date(release.createdAt).toLocaleString()} ·{' '}
+        <ReleaseAuthor release={release} webUrl={git?.webUrl} /> ·{' '}
+        {new Date(release.createdAt).toLocaleString()} ·{' '}
         <span className="font-mono" title={release.definitionHash}>
           {release.definitionHash.slice(0, 8)}
         </span>

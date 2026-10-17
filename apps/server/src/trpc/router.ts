@@ -4,9 +4,11 @@ import { authedProcedure, publicProcedure, router } from './init'
 import { apiKeysRouter } from './routers/api-keys'
 import { appsRouter } from './routers/apps'
 import { auditRouter } from './routers/audit'
+import { branchDraftsRouter } from './routers/branch-drafts'
 import { configVarsRouter } from './routers/config-vars'
 import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
+import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
 import { permissionsRouter } from './routers/permissions'
 import { releasesRouter } from './routers/releases'
@@ -48,6 +50,8 @@ export const appRouter = router({
   releases: releasesRouter,
   apiKeys: apiKeysRouter,
   apps: appsRouter,
+  git: gitRouter,
+  branchDrafts: branchDraftsRouter,
 })
 
 export type AppRouter = typeof appRouter

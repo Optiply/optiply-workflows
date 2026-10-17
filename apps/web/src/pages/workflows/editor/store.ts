@@ -39,6 +39,10 @@ export function withGraph(def: WorkflowDefinition, fn: string | null, part: Grap
 
 interface EditorState {
   workflowId: string | null
+  /** The Git branch draft being edited (M11), or null for the workflow's own (main) draft. */
+  branchDraftId: string | null
+  /** A protected workflow's main draft: shown and run, but edits are ignored (they're made on a branch). */
+  readOnly: boolean
   definition: WorkflowDefinition
   /** The draft revision the server has; saves send it for optimistic concurrency. */
   revision: number
@@ -55,7 +59,13 @@ interface EditorState {
   samples: Record<string, SampleResult>
   sideTab: SideTab
 
-  load(workflowId: string, definition: WorkflowDefinition, revision: number, draftHash: string): void
+  load(
+    workflowId: string,
+    definition: WorkflowDefinition,
+    revision: number,
+    draftHash: string,
+    opts?: { branchDraftId?: string | null; readOnly?: boolean },
+  ): void
   /** Applies an edit; the draft becomes dirty and is re-validated. */
   update(edit: (def: WorkflowDefinition) => WorkflowDefinition): void
   select(name: string | null): void
@@ -76,6 +86,8 @@ const EMPTY: WorkflowDefinition = { schemaVersion: 1, blocks: [], edges: [] }
 /** The editor's state. One editor is open at a time; `load` resets it. */
 export const useEditor = create<EditorState>()((set, get) => ({
   workflowId: null,
+  branchDraftId: null,
+  readOnly: false,
   definition: EMPTY,
   revision: 0,
   draftHash: null,
@@ -87,9 +99,11 @@ export const useEditor = create<EditorState>()((set, get) => ({
   samples: {},
   sideTab: 'problems',
 
-  load: (workflowId, definition, revision, draftHash) =>
+  load: (workflowId, definition, revision, draftHash, opts = {}) =>
     set({
       workflowId,
+      branchDraftId: opts.branchDraftId ?? null,
+      readOnly: opts.readOnly ?? false,
       definition,
       revision,
       draftHash,
@@ -101,6 +115,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
     }),
 
   update: (edit) => {
+    if (get().readOnly) return
     const definition = edit(get().definition)
     if (definition === get().definition) return
     const status = get().status === 'conflict' ? 'conflict' : 'dirty'

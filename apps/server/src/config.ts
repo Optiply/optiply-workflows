@@ -56,6 +56,17 @@ const ConfigSchema = z
      * for development and tests against local servers.
      */
     CODE_FETCH_ALLOW_PRIVATE_NETWORK: bool,
+    /**
+     * Where each process keeps its bare cache of the Git repo (M11). Not shared between processes: each takes it
+     * for itself. Defaults to `<tmp>/ow-git-<pid>`.
+     */
+    GIT_CACHE_DIR: z.string().optional(),
+    /** Lets the Git repo be a `file://` or `http://` URL: for development and tests against local repos. */
+    GIT_ALLOW_INSECURE_URLS: bool,
+    /** Workers check the deploy branch this often (seconds; 0 turns polling off: webhooks and Deploy now only). */
+    GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
+    /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
+    GITHUB_API_URL: z.string().url().optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring
