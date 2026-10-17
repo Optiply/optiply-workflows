@@ -733,6 +733,20 @@ Ten findings from the `code-review` skill, checked against the code (nine real, 
 ### Totals at the end of M12
 `biome ci` is clean. Typecheck passes **13/13**. **1,868 tests pass** after the review fixes (git-format 826, server 306, engine 148, connectors 144, definition 134, expressions 118, app-definition 53, crypto 25, web 24, sandbox 24, code-executor 24, app-runtime 22, db 20; 2 skipped), plus the two benchmarks and **28 Playwright e2e** (21 files, 2 min locally; two need the executor: Docker). Main bundle 448 kB (130 kB gzipped).
 
+## 9g. What M13 built (on `feat/m13-editor-polish`, PR #17)
+
+### Plan, `2073d5d`
+`docs/architecture.md` §2.7 (M13, M14, M15+ with AI actions last), §2.8 item 12, §2.15; this file (§1, "Taken in M13", §14, §15). Before it, on `main`: PR #16 (`c2cf787`), the CI timeout after #15's merge (a 30 s test timeout in the seven packages still on vitest's 5 s default: the runner was overloaded, the suite 80× slower than here) and a quadratic in `buildAppGraph` (a value read by 40,000 components: 2.6 s → 0.5 s).
+
+### Step 1 (this commit): history and workflow undo/redo
+- `apps/web/src/lib/history.ts`: `record`, `undo`, `redo`, `seal` over snapshots (`{before, after, view, key, at}`, 100 at most). **Grouping is automatic**, not keyed at the call sites as planned: `changeKey(before, after)` compares the definitions by reference and names the plain values the edit replaced (`.blocks.1.config.code`); consecutive edits with the same key less than 1 s apart merge, and edits that change the shape (adding or removing blocks, edges, objects) never do. That covers every field (25 call sites) without touching them. `sameValue` (JSON equality, by reference first).
+- **Found by the e2e:** some call sites rebuild the definition without changing it (a field reporting the value it has): 13 such edits while building a three-block workflow. They used to mark the draft dirty and save it again; they would have been invisible steps to undo. `update` now ignores an edit equal to what it replaces (`sameValue`): no step, no save.
+- `apps/web/src/lib/shortcuts.ts`: `shortcutFor` (⌘ on a Mac, Ctrl elsewhere; Ctrl+Y redoes; nothing with Alt or while composing), `isTextTarget` (inputs, text areas, editable content, `.monaco-editor`: they keep the keys for their own undo), `dialogOpen`, `shortcutLabel`.
+- The workflow store: `update` records, `undo`/`redo` (off while read-only or in conflict) put back the definition and the view (the open function and the selected block, when they still exist), `select`/`openGraph` seal the open step, `load` clears the history; `savedJson`, so an undo back to what's saved is `saved` (a save in flight finishes first, as in the app store); `epoch`, raised by undo and redo, keys the side panel's inspector, function settings and tabs.
+- The editor: Undo and Redo in the toolbar (titles with the shortcut), ⌘Z / ⇧⌘Z / Ctrl+Y on the page while editable.
+- **The Use-level fix:** people with Use load the main draft read-only (`mainReadOnly`: protected or Use), so edits are ignored and the stale check no longer reloads on every refetch; a read-only canvas doesn't drag, connect or delete.
+- Tests: `history.test.ts` (10), `shortcuts.test.ts` (5), `store.test.ts` (7: exact definition back and forward, typing merged and split by a pause or a selection, the view restored or dropped, epoch and load, read-only and conflict, a save in flight, a no-op edit); `e2e/workflow-undo.spec.ts` (toolbar undo shows the block it undid, the code back as it was, keyboard redo and undo, ⌘Z inside Monaco is Monaco's own, what undo left is what reloads; Use: read-only, no drag, Delete or undo).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.

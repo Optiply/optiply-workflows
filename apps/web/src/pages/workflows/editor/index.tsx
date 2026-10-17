@@ -2,10 +2,22 @@ import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
+import {
+  AlertCircle,
+  ArrowLeft,
+  CheckCircle2,
+  History,
+  LayoutGrid,
+  Loader2,
+  Play,
+  Plus,
+  Redo2,
+  Undo2,
+} from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { dialogOpen, isTextTarget, shortcutFor, shortcutLabel } from '@/lib/shortcuts'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
@@ -76,11 +88,13 @@ export function WorkflowEditorPage() {
     const stale =
       state.workflowId !== data.id ||
       state.branchDraftId !== wantDraftId ||
-      (wantDraftId === null && state.readOnly !== data.gitProtected)
+      (wantDraftId === null && state.readOnly !== mainReadOnly(data))
     if (!stale) return
     if (wantDraftId && branchDraft) loadDraft(branchDraft)
     else
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: mainReadOnly(data),
+      })
   }, [workflow.data, wantDraftId, branchDraft, load, loadDraft])
   // Coming back to the editor later loads the workflow afresh.
   useEffect(() => () => useEditor.setState({ workflowId: null, branchDraftId: null }), [])
@@ -89,7 +103,9 @@ export function WorkflowEditorPage() {
     if (draftId) return loadDraft(await trpcClient.branchDrafts.get.query({ id: draftId }))
     const { data } = await workflow.refetch()
     if (data)
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: mainReadOnly(data),
+      })
   }
   const switchBranch = async (next: string | null) => {
     try {
@@ -146,6 +162,14 @@ export function WorkflowEditorPage() {
   )
 }
 
+/**
+ * The main draft can't be edited by people with Use (they see it, and its releases), nor on a protected workflow
+ * (it changes on Git branches).
+ */
+function mainReadOnly(workflow: Workflow): boolean {
+  return workflow.gitProtected || workflow.level === 'use'
+}
+
 function EditorLayout({
   workflow,
   canEdit,
@@ -200,6 +224,7 @@ function EditorLayout({
         </div>
       </div>
       {editable && <Autosave />}
+      {editable && <UndoShortcuts />}
     </ReactFlowProvider>
   )
 }
@@ -311,6 +336,8 @@ function Toolbar() {
           )
         })}
       <div className="mx-1 h-5 w-px bg-border" />
+      <UndoButtons />
+      <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
         variant="ghost"
@@ -321,6 +348,52 @@ function Toolbar() {
       </Button>
     </div>
   )
+}
+
+/** Undo and Redo, with their shortcuts in the titles. Off while the draft conflicts (its edits can't be saved). */
+function UndoButtons() {
+  const canUndo = useEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
+  const canRedo = useEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  return (
+    <>
+      <Button
+        size="icon"
+        variant="ghost"
+        disabled={!canUndo}
+        title={`Undo (${shortcutLabel('Z')})`}
+        aria-label="Undo"
+        onClick={() => useEditor.getState().undo()}
+      >
+        <Undo2 className="size-4" />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
+        disabled={!canRedo}
+        title={`Redo (${shortcutLabel('Z', { shift: true })})`}
+        aria-label="Redo"
+        onClick={() => useEditor.getState().redo()}
+      >
+        <Redo2 className="size-4" />
+      </Button>
+    </>
+  )
+}
+
+/** ⌘Z / Ctrl+Z and the redo keys on the editor; text fields and Monaco keep them for their own undo. */
+function UndoShortcuts() {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const shortcut = shortcutFor(e)
+      if ((shortcut !== 'undo' && shortcut !== 'redo') || isTextTarget(e.target) || dialogOpen()) return
+      e.preventDefault()
+      if (shortcut === 'undo') useEditor.getState().undo()
+      else useEditor.getState().redo()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  return null
 }
 
 /** Environment, Run (saves first, then runs with the test input) and the run panel toggle. */
@@ -474,6 +547,7 @@ function SidePanel({
   const diagnostics = useEditor((s) => s.diagnostics)
   const tab = useEditor((s) => s.sideTab)
   const fn = useEditor((s) => s.graph)
+  const epoch = useEditor((s) => s.epoch)
   const block = graphOf(definition, fn).blocks.find((b) => b.name === selected)
 
   return (
@@ -484,11 +558,12 @@ function SidePanel({
       data-testid="side-panel"
     >
       {block ? (
-        <Inspector key={`${fn ?? ''}/${block.name}`} name={block.name} />
+        // `epoch`: after an undo or redo, fields start again from the definition (some read it only when mounted).
+        <Inspector key={`${epoch}/${fn ?? ''}/${block.name}`} name={block.name} />
       ) : fn !== null ? (
-        <FunctionSettings key={fn} name={fn} canEdit={canEdit} />
+        <FunctionSettings key={`${epoch}/${fn}`} name={fn} canEdit={canEdit} />
       ) : (
-        <div className="flex min-h-0 flex-col p-4">
+        <div key={epoch} className="flex min-h-0 flex-col p-4">
           <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
           {tab === 'problems' && <Problems diagnostics={diagnostics} />}
           {tab === 'functions' && <FunctionsTab canEdit={canEdit} />}

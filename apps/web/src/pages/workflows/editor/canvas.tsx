@@ -39,6 +39,8 @@ export function Canvas() {
   const allDiagnostics = useEditor((s) => s.diagnostics)
   const selected = useEditor((s) => s.selected)
   const select = useEditor((s) => s.select)
+  // Read-only (Use, or a protected workflow's main draft): blocks can be selected, not moved, connected or deleted.
+  const editable = !useEditor((s) => s.readOnly)
   const graph = useMemo(() => graphOf(definition, fn), [definition, fn])
   const diagnostics = useMemo(
     () => allDiagnostics.filter((d) => (d.function ?? null) === fn),
@@ -102,7 +104,9 @@ export function Canvas() {
       onDelete={onDelete}
       onNodeClick={(_, node) => select(node.id)}
       onPaneClick={() => select(null)}
-      deleteKeyCode={['Backspace', 'Delete']}
+      nodesDraggable={editable}
+      nodesConnectable={editable}
+      deleteKeyCode={editable ? ['Backspace', 'Delete'] : null}
       fitView
       fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
       minZoom={0.2}
