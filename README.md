@@ -45,7 +45,13 @@ The first user to sign in becomes an admin. After that, admins manage access und
 
 ### Google SSO
 
-Create an OAuth client of type "Web application" in Google Cloud Console. Set its redirect URI to `<PUBLIC_URL>/api/auth/oidc/callback`, then fill in `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`. Only verified `@optiply.nl` accounts can sign in (`OIDC_ALLOWED_DOMAIN`).
+In Google Cloud Console, under **Google Auth Platform**:
+
+1. **Branding** and **Audience**: an app name, a support email, and user type **Internal**. Then only accounts in the Workspace can sign in, and Google doesn't need to verify the app. The default `openid`, `email` and `profile` scopes are all it asks for.
+2. **Clients → Create client**, type "Web application", with a redirect URI `<PUBLIC_URL>/api/auth/oidc/callback` for every URL the app is served at: `http://localhost:5173/api/auth/oidc/callback` for dev through Vite, `http://localhost:3000/api/auth/oidc/callback` for Docker Compose.
+3. Fill in `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`. Download the JSON when the client is created: the secret may not be shown again. SSO is on when both are set, and local login (`LOCAL_LOGIN_ENABLED`) can stay on alongside it.
+
+Only verified `@optiply.nl` accounts can sign in (`OIDC_ALLOWED_DOMAIN`, sent to Google as `hd` and checked again on the callback). New accounts are created on their first sign-in.
 
 ## Building and running workflows
 
@@ -191,7 +197,7 @@ pnpm --filter @ow/web e2e   # uses the installed Chrome locally; CI installs Chr
 docker compose up --build        # postgres:18, one-shot migrate, api (serves the web app on :3000), 2 workers
 ```
 
-Compose reads `.env`; set `PUBLIC_URL=http://localhost:3000` there (or in the shell) when the app is served by the `api` container rather than Vite. Create the first admin with `docker compose exec api node dist/cli/create-admin.js --email you@optiply.nl --name You`.
+Compose reads `.env`; set `PUBLIC_URL=http://localhost:3000` there (or in the shell: `PUBLIC_URL=http://localhost:3000 docker compose up -d`) when the app is served by the `api` container rather than Vite. The Google SSO callback is built from it. The first person to sign in becomes admin; or create one with `docker compose exec api node dist/cli/create-admin.js --email you@optiply.nl --name You`.
 
 The image (`Dockerfile`) runs on `node:24-bookworm-slim`, with `TZ=UTC` and `--no-node-snapshot` (both required by the sandbox).
 
