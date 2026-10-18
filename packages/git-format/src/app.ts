@@ -110,7 +110,7 @@ function moveQueryOut(query: AppQuery, files: Files): AppQuery {
     files[`queries/${out.name}.js`] = textFile(out.code)
     const { code: _code, ...rest } = out
     out = rest as AppQuery
-  } else {
+  } else if (out.kind === 'resource') {
     const { sql, ...rest } = out.query
     if (typeof sql === 'string') {
       files[`queries/${out.name}.sql`] = textFile(sql)

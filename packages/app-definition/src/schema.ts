@@ -1,4 +1,4 @@
-import { blockNameSchema, conditionIdSchema, resourceSlugSchema } from '@ow/definition'
+import { blockNameSchema, conditionIdSchema, resourceSlugSchema, workflowSlugSchema } from '@ow/definition'
 import { z } from 'zod'
 
 /**
@@ -147,7 +147,35 @@ export const jsAppQuerySchema = z.strictObject({
   code: z.string(),
 })
 
-export const appQuerySchema = z.discriminatedUnion('kind', [resourceAppQuerySchema, jsAppQuerySchema])
+/** `latest` (the library query's live release, whichever it is when the query runs) or a pinned `1.2.3`. */
+export const libraryVersionSchema = z.union([
+  z.literal('latest'),
+  z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, 'Use latest or a version like 1.2.3'),
+])
+
+/**
+ * A query from the Query Library (M14): the library query's own resource and query run on the server; the app
+ * passes its parameters, each a template evaluated like a resource query's `{{ }}`s (in the browser, or on the
+ * server for `current_user`).
+ */
+export const libraryAppQuerySchema = z.strictObject({
+  ...queryCommon,
+  kind: z.literal('library'),
+  /** The library query's slug. */
+  library: workflowSlugSchema,
+  version: libraryVersionSchema,
+  /** Values by parameter name; a parameter not given is null. Strings are templates. */
+  params: z.record(appNameSchema, z.json()).optional(),
+  run: z.enum(['auto', 'manual']),
+})
+
+export const appQuerySchema = z.discriminatedUnion('kind', [
+  resourceAppQuerySchema,
+  jsAppQuerySchema,
+  libraryAppQuerySchema,
+])
 
 export const transformerSchema = z.strictObject({
   name: appNameSchema,
@@ -194,10 +222,26 @@ export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>
 export type ResourceAppQuery = z.infer<typeof resourceAppQuerySchema>
 export type JsAppQuery = z.infer<typeof jsAppQuerySchema>
+export type LibraryAppQuery = z.infer<typeof libraryAppQuerySchema>
+/** The queries the server runs: resource and library queries. */
+export type ServerAppQuery = ResourceAppQuery | LibraryAppQuery
 export type AppQuery = z.infer<typeof appQuerySchema>
 export type Transformer = z.infer<typeof transformerSchema>
 export type Variable = z.infer<typeof variableSchema>
 export type AppDefinition = z.infer<typeof appDefinitionSchema>
+
+/** Whether the server runs the query (resource and library queries); JS queries run in the browser. */
+export const isServerQuery = (q: AppQuery): q is ServerAppQuery => q.kind !== 'js'
+
+/** Whether the query runs by itself whenever what it reads changes (automatic server queries). */
+export const runsAutomatically = (q: AppQuery): boolean => isServerQuery(q) && q.run === 'auto'
+
+/**
+ * The JSON whose templates the browser evaluates before a server query runs: a resource query's connector query,
+ * a library query's parameters.
+ */
+export const queryTemplates = (q: ServerAppQuery): Record<string, unknown> =>
+  q.kind === 'resource' ? q.query : (q.params ?? {})
 
 /** A new, empty app. */
 export function emptyApp(): AppDefinition {

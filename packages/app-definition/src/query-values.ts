@@ -35,8 +35,9 @@ export function expressionSide(code: string): ExpressionSide {
 }
 
 /**
- * The code of every `{{ }}` in a resource query whose value the browser sends, without duplicates. Fields whose
- * templates don't parse are skipped (running the query reports them).
+ * The code of every `{{ }}` in a server query's templates (`queryTemplates`: a resource query's connector query, a
+ * library query's parameters) whose value the browser sends, without duplicates. Fields whose templates don't
+ * parse are skipped (running the query reports them).
  */
 export function browserExpressions(query: Record<string, unknown>): string[] {
   const codes = new Set<string>()

@@ -1,5 +1,5 @@
 import runtimeCode from 'virtual:app-runtime'
-import type { AppDefinition } from '@ow/app-definition'
+import { type AppDefinition, runsAutomatically } from '@ow/app-definition'
 import {
   type AppUrl,
   CONNECT_MESSAGE,
@@ -416,9 +416,7 @@ export class AppHost {
     this.store.setState((s) => ({
       connections: s.connections.filter((c) => c.need.resourceId !== resourceId),
     }))
-    const auto = new Set(
-      this.definition.queries.filter((q) => q.kind === 'resource' && q.run === 'auto').map((q) => q.name),
-    )
+    const auto = new Set(this.definition.queries.filter(runsAutomatically).map((q) => q.name))
     for (const query of new Set(done.flatMap((c) => c.queries))) if (auto.has(query)) this.trigger(query)
   }
 

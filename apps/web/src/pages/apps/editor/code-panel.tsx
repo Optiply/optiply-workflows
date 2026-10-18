@@ -335,7 +335,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
             onChange={(next) => edit((q) => (q.kind === 'resource' ? { ...q, query: next } : q))}
           />
         )
-      ) : (
+      ) : query.kind === 'js' ? (
         <AppCodeField
           path={[...base, 'code']}
           language="javascript"
@@ -344,6 +344,11 @@ function QueryEditor({ query }: { query: AppQuery }) {
           problems={problemsAt(diagnostics, [...base, 'code'])}
           onChange={(code) => edit((q) => (q.kind === 'js' ? { ...q, code } : q))}
         />
+      ) : (
+        // Library queries get their editor (version, parameters) in M14 step 3.
+        <p className="text-sm text-muted">
+          From the Query Library: {query.library} ({query.version})
+        </p>
       )}
 
       <QueryResult name={query.name} />

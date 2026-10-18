@@ -14,6 +14,7 @@ import {
   componentSchema,
   type Position,
   positionSchema,
+  runsAutomatically,
   transformerSchema,
   variableSchema,
 } from './schema'
@@ -209,7 +210,7 @@ export function pasteCode(def: AppDefinition, clip: CodeClip, page: string | nul
 
 /** Whether a query runs without anyone asking: an automatic resource query, or one that runs when the app loads. */
 export function runsByItself(query: AppQuery): boolean {
-  return (query.kind === 'resource' && query.run === 'auto') || query.runOnLoad === true
+  return runsAutomatically(query) || query.runOnLoad === true
 }
 
 /**

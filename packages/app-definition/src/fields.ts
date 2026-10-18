@@ -1,5 +1,5 @@
 import type { FieldKind } from '@ow/definition'
-import type { AppDefinition, EventHandler } from './schema'
+import { type AppDefinition, type EventHandler, runsAutomatically } from './schema'
 
 /** One piece of user code in an app. */
 export interface AppField {
@@ -40,7 +40,7 @@ export function appFields(def: AppDefinition): AppField[] {
 
   def.queries.forEach((q, i) => {
     const base = ['queries', i]
-    const deps = q.kind === 'resource' && q.run === 'auto' ? nodeKey(q.name, '$deps') : undefined
+    const deps = runsAutomatically(q) ? nodeKey(q.name, '$deps') : undefined
     const at = (
       path: (string | number)[],
       kind: FieldKind,
@@ -52,6 +52,10 @@ export function appFields(def: AppDefinition): AppField[] {
     }
     if (q.kind === 'resource') {
       templateStrings(q.query, [...base, 'query'], (path, source) => at(path, 'template', source, deps))
+    } else if (q.kind === 'library') {
+      templateStrings(q.params ?? {}, [...base, 'params'], (path, source) =>
+        at(path, 'template', source, deps),
+      )
     } else {
       at([...base, 'code'], 'function-body', q.code)
     }

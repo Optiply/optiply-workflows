@@ -8,7 +8,11 @@ import {
   type EventHandler,
   entityPages,
   formInputs,
+  isServerQuery,
+  queryTemplates,
   resolvePage,
+  runsAutomatically,
+  type ServerAppQuery,
   sameValue,
 } from '@ow/app-definition'
 import type { Effect, LogLevel, QueryOutcome, StatePatch } from './protocol'
@@ -108,8 +112,7 @@ export class AppRuntime {
     const run = opening.filter(
       (q) =>
         q.runOnLoad ||
-        (q.kind === 'resource' &&
-          q.run === 'auto' &&
+        (runsAutomatically(q) &&
           !this.autoTimers.has(q.name) &&
           (this.stale.has(q.name) || !this.runs.has(q.name))),
     )
@@ -138,7 +141,7 @@ export class AppRuntime {
     this.publish(values)
     const onLoad = this.definition.queries.filter(
       (q) =>
-        ((q.kind === 'resource' && q.run === 'auto') || q.runOnLoad) &&
+        (runsAutomatically(q) || q.runOnLoad) &&
         this.active(q.name) &&
         (!previous || this.mustRerun(q, previous)),
     )
@@ -172,7 +175,7 @@ export class AppRuntime {
     const before = previous.queries.get(query.name)
     if (!before || JSON.stringify(before) !== JSON.stringify(query)) return true
     if (previous.model.get(`${query.name}.isFetching`) === true) return true
-    if (query.kind !== 'resource') return false
+    if (!isServerQuery(query)) return false
     const last = previous.sent.get(query.name)
     if (last === undefined) return true
     try {
@@ -184,10 +187,10 @@ export class AppRuntime {
     return false
   }
 
-  /** The values of a resource query's `{{ }}`s, as the browser evaluates them. */
-  private valuesFor(query: AppQuery & { kind: 'resource' }, locals: Record<string, unknown>) {
+  /** The values of a server query's `{{ }}`s (`queryTemplates`), as the browser evaluates them. */
+  private valuesFor(query: ServerAppQuery, locals: Record<string, unknown>) {
     const values: Record<string, unknown> = {}
-    for (const code of browserExpressions(query.query)) {
+    for (const code of browserExpressions(queryTemplates(query))) {
       try {
         values[code] = this.model.evaluateExpression(code, locals)
       } catch (err) {
@@ -263,7 +266,7 @@ export class AppRuntime {
 
     try {
       let data: unknown
-      if (query.kind === 'resource') {
+      if (isServerQuery(query)) {
         const values = this.valuesFor(query, locals)
         this.sent.set(name, JSON.stringify(values))
         const outcome = await this.bridge.runQuery(name, values)

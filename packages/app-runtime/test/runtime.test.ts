@@ -691,3 +691,31 @@ describe('pages', () => {
     expect(plain.state).toMatchObject({ 'url.page': null, 'url.params': { a: '1' } })
   })
 })
+
+describe('library queries (M14)', () => {
+  it('send their parameters’ values, run automatically and re-run when a parameter changes', async () => {
+    const t = setup(
+      {
+        components: [comp('customer', 'numberInput', { defaultValue: 7 })],
+        queries: [
+          {
+            name: 'orders',
+            kind: 'library',
+            library: 'orders_by_customer',
+            version: 'latest',
+            params: { customerId: '{{ customer.value }}', owner: '{{ current_user.email }}', limit: 10 },
+            run: 'auto',
+          } as AppDefinition['queries'][number],
+        ],
+      },
+      { respond: () => [{ id: 1 }] },
+    )
+    await t.runtime.start()
+    // current_user is evaluated on the server; constants need nothing from the browser.
+    expect(t.calls).toEqual([{ query: 'orders', values: { ' customer.value ': 7 } }])
+    expect(t.state['orders.data']).toEqual([{ id: 1 }])
+    t.runtime.set({ 'customer.value': 8 })
+    await wait(20)
+    expect(t.calls.at(-1)).toEqual({ query: 'orders', values: { ' customer.value ': 8 } })
+  })
+})

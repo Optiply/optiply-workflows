@@ -10,7 +10,14 @@ import {
   VARIABLE_STATE,
 } from './components'
 import { type AppField, appFields, nodeKey } from './fields'
-import type { AppComponent, AppDefinition, AppQuery, Transformer, Variable } from './schema'
+import {
+  type AppComponent,
+  type AppDefinition,
+  type AppQuery,
+  runsAutomatically,
+  type Transformer,
+  type Variable,
+} from './schema'
 
 /**
  * The app's reactive graph, spreadsheet-style: one node per value code can read (`textInput1.value`,
@@ -204,7 +211,7 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
       }
       case 'query':
         for (const state of QUERY_STATE) add(name, state, 'source')
-        if (entity.query.kind === 'resource' && entity.query.run === 'auto') add(name, '$deps', 'trigger')
+        if (runsAutomatically(entity.query)) add(name, '$deps', 'trigger')
         break
       case 'transformer':
         add(name, 'value', 'transformer')

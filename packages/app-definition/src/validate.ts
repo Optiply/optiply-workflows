@@ -6,7 +6,7 @@ import { buildAppGraph, type Entity, entityMethods, entityProperties } from './g
 import { appNameReason, isAppGlobalName } from './names'
 import { entityPages, pageVisible, RESERVED_PAGES } from './pages'
 import { expressionSide } from './query-values'
-import { type AppDefinition, appDefinitionSchema, type EventHandler } from './schema'
+import { type AppDefinition, appDefinitionSchema, type EventHandler, type LibraryAppQuery } from './schema'
 
 export type AppDiagnosticCode =
   | 'schema'
@@ -36,6 +36,11 @@ export type AppDiagnosticCode =
   | 'duplicate_page'
   | 'invalid_page'
   | 'other_page'
+  | 'unknown_library'
+  | 'unpublished_library'
+  | 'unknown_version'
+  | 'unknown_param'
+  | 'missing_param'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -51,9 +56,22 @@ export interface AppDiagnostic {
   hint?: string
 }
 
+/** What the validator needs to know about a library query an app uses (M14). */
+export interface LibraryInfo {
+  /** The live release's version, or null when it has none. */
+  liveVersion: string | null
+  /** Each release's parameter names, by version. */
+  versions: Record<string, readonly string[]>
+}
+
 export interface AppValidateOptions {
   /** Server side: the connector for a resource slug, or undefined if there is no such resource. */
   resolveResource?: (slug: string) => QueryValidator | undefined
+  /**
+   * The library queries the app may use, by slug; undefined for none with that slug (or none the person can see).
+   * Without it, library queries aren't checked against the library.
+   */
+  resolveLibrary?: (slug: string) => LibraryInfo | undefined
 }
 
 export interface AppValidationResult {
@@ -185,6 +203,9 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     if (q.kind === 'resource' && options.resolveResource) {
       checkQuery(q, ['queries', i], options.resolveResource, report)
     }
+    if (q.kind === 'library' && options.resolveLibrary) {
+      checkLibraryUse(q, ['queries', i], options.resolveLibrary, report)
+    }
   })
 
   // Code: syntax, names, properties.
@@ -240,7 +261,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   // Resource query values come from the browser, except those reading only current_user.
   for (const field of graph.fields) {
-    if (field.path[0] !== 'queries' || field.path[2] !== 'query' || field.errors.length) continue
+    const sent = field.path[2] === 'query' || field.path[2] === 'params'
+    if (field.path[0] !== 'queries' || !sent || field.errors.length) continue
     for (const part of parseTemplate(field.source)) {
       if (part.type !== 'expression' || expressionSide(part.code) !== 'mixed') continue
       report({
@@ -472,6 +494,70 @@ function checkQuery(
       end: err.end,
       ...(err.hint && { hint: err.hint }),
     })
+  }
+}
+
+/**
+ * A library query's reference: the library query exists, the version is live (`latest`) or released, and the
+ * parameters passed are the ones that release declares (one not passed is null: a warning).
+ */
+function checkLibraryUse(
+  q: LibraryAppQuery,
+  base: (string | number)[],
+  resolve: NonNullable<AppValidateOptions['resolveLibrary']>,
+  report: Report,
+) {
+  const at = { entity: q.name }
+  const info = resolve(q.library)
+  if (!info) {
+    report({
+      code: 'unknown_library',
+      message: `No library query has the slug "${q.library}"`,
+      path: [...base, 'library'],
+      ...at,
+    })
+    return
+  }
+  const version = q.version === 'latest' ? info.liveVersion : q.version
+  if (version === null) {
+    report({
+      code: 'unpublished_library',
+      message: `Library query "${q.library}" has no live release yet`,
+      path: [...base, 'version'],
+      ...at,
+    })
+    return
+  }
+  const params = Object.hasOwn(info.versions, version) ? info.versions[version] : undefined
+  if (!params) {
+    report({
+      code: 'unknown_version',
+      message: `Library query "${q.library}" has no release ${version}`,
+      path: [...base, 'version'],
+      ...at,
+    })
+    return
+  }
+  for (const name of Object.keys(q.params ?? {})) {
+    if (!params.includes(name)) {
+      report({
+        code: 'unknown_param',
+        message: `"${q.library}" v${version} has no parameter "${name}"`,
+        path: [...base, 'params', name],
+        ...at,
+      })
+    }
+  }
+  for (const name of params) {
+    if (!Object.hasOwn(q.params ?? {}, name)) {
+      report({
+        severity: 'warning',
+        code: 'missing_param',
+        message: `No value for the parameter "${name}"; it will be null`,
+        path: [...base, 'params'],
+        ...at,
+      })
+    }
   }
 }
 
