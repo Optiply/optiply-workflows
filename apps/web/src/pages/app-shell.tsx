@@ -12,6 +12,7 @@ const route = getRouteApi('/app')
 const NAV: { to: string; label: string }[] = [
   { to: '/workflows', label: 'Workflows' },
   { to: '/apps', label: 'Apps' },
+  { to: '/library', label: 'Library' },
   { to: '/resources', label: 'Resources' },
   { to: '/database', label: 'Database' },
   { to: '/runs', label: 'Runs' },

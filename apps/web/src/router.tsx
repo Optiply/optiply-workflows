@@ -15,6 +15,7 @@ import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
 import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
+import { LibraryPage } from './pages/library/list'
 import { LoginPage } from './pages/login'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
@@ -123,6 +124,18 @@ const appEditorRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
 })
+/** The Query Library (M14): library queries, and each one's editor in its own chunk (Monaco loads with it). */
+const libraryRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/library',
+  component: LibraryPage,
+})
+const libraryEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/library/$slug',
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/library/editor'), 'LibraryEditorPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -196,6 +209,8 @@ const routeTree = rootRoute.addChildren([
     appsRoute,
     appViewRoute,
     appEditorRoute,
+    libraryRoute,
+    libraryEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

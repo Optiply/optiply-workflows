@@ -247,7 +247,7 @@ function Cell({ value }: { value: unknown }) {
   return <>{String(value)}</>
 }
 
-type Target = { objectType: 'resource' | 'folder' | 'app'; objectId: string | null }
+type Target = { objectType: 'resource' | 'folder' | 'app' | 'library_query'; objectId: string | null }
 
 /**
  * Group grants on one target (a resource, a folder, an app, or all of a type), per environment or for all of them.
@@ -256,7 +256,7 @@ type Target = { objectType: 'resource' | 'folder' | 'app'; objectId: string | nu
 export function AccessEditor({
   target,
   help = 'Use runs queries · Edit also changes settings · Own also deletes and manages access. The highest grant wins.',
-  perEnvironment = target.objectType !== 'app',
+  perEnvironment = target.objectType === 'resource' || target.objectType === 'folder',
 }: {
   target: Target
   help?: string

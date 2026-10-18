@@ -18,7 +18,7 @@ export interface QueryRunDeps {
 
 export type QueryOutcome =
   | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }
-  | { ok: false; error: { code: string; message: string; details: unknown }; durationMs: number }
+  | { ok: false; error: ReturnType<typeof errorView>; durationMs: number }
 
 /**
  * Runs a stored resource query (an app's or a library query's) for a person in one environment. `evaluate` gives

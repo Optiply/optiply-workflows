@@ -7,12 +7,17 @@ import { useTRPC } from '@/lib/trpc'
 import { AccessEditor } from '@/pages/resources/shared'
 
 /**
- * Folders for resources, workflows and apps: each kind has folders of its own (a folder's grants reach what's in
+ * Folders for resources, workflows, apps and library queries: each kind has folders of its own (a folder's grants reach what's in
  * it, so it holds one kind only). Whoever can create a kind manages its folders; admins grant access to them.
  */
-export type FolderType = 'resource' | 'workflow' | 'app'
+export type FolderType = 'resource' | 'workflow' | 'app' | 'library_query'
 
-const PLURAL: Record<FolderType, string> = { resource: 'resources', workflow: 'workflows', app: 'apps' }
+const PLURAL: Record<FolderType, string> = {
+  resource: 'resources',
+  workflow: 'workflows',
+  app: 'apps',
+  library_query: 'library queries',
+}
 const appRoute = getRouteApi('/app')
 
 /** A kind's folders and whether the person may manage them. */
