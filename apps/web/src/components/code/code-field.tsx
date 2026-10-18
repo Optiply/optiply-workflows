@@ -1,5 +1,6 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useEffect, useRef } from 'react'
+import { useTheme } from '@/lib/theme'
 import { monaco, setScope } from './monaco'
 
 export interface FieldProblem {
@@ -44,6 +45,7 @@ export default function CodeField({
   scope,
 }: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const { theme } = useTheme()
   // Without a scope, the page installs one itself (the app editor keeps a single scope for all its fields).
   useEffect(() => {
     if (scope) setScope(scope.dts, scope.sample)
@@ -80,8 +82,12 @@ export default function CodeField({
   })
 
   return (
-    <div className="overflow-hidden rounded-md border border-border" data-testid={`code-${path}`}>
+    <div
+      className="overflow-hidden rounded-md border border-border bg-field transition-shadow focus-within:border-transparent focus-within:shadow-focus"
+      data-testid={`code-${path}`}
+    >
       <Editor
+        theme={theme === 'dark' ? 'optiply-dark' : 'optiply-light'}
         path={path}
         language={language}
         value={value}

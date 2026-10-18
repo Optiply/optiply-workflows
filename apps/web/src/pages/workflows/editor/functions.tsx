@@ -74,7 +74,7 @@ export function FunctionsTab({ canEdit }: { canEdit: boolean }) {
               onClick={() => useEditor.getState().openGraph(fn.name)}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-canvas"
             >
-              <SquareFunction className="size-4 text-indigo-600" />
+              <SquareFunction className="size-4 text-accent" />
               <span className="font-mono text-sm">
                 {fn.name}({(fn.params ?? []).map((p) => p.name).join(', ')})
               </span>
@@ -122,7 +122,7 @@ export function FunctionSettings({ name, canEdit }: { name: string; canEdit: boo
   return (
     <div className="flex flex-col gap-5 p-4" data-testid="function-settings">
       <div className="flex items-start gap-2">
-        <span className="mt-1 rounded-md bg-indigo-100 p-1.5 text-indigo-700">
+        <span className="mt-1 rounded-md bg-op-blue-1 p-1.5 text-op-blue-4">
           <SquareFunction className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
@@ -287,10 +287,10 @@ export function FunctionBanner() {
   if (fn === null) return null
   return (
     <div
-      className="absolute top-3 right-3 z-10 flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50/95 px-3 py-1.5 text-sm shadow-sm"
+      className="absolute top-3 right-3 z-10 flex items-center gap-2 rounded-lg border border-op-blue-2 bg-op-blue-1/95 px-3 py-1.5 text-sm shadow-card"
       data-testid="function-banner"
     >
-      <SquareFunction className="size-4 text-indigo-600" />
+      <SquareFunction className="size-4 text-accent" />
       <span>
         Editing function <span className="font-mono font-medium">{fn}</span>
       </span>

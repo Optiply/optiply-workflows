@@ -19,6 +19,79 @@ self.MonacoEnvironment = {
 
 loader.config({ monaco })
 
+/**
+ * Optiply's colours for code, light and dark (see styles.css): the input fill, ink, a blue selection, and syntax
+ * from Optiply's scales. Monaco takes hex here, not CSS variables, so these repeat the tokens' values.
+ */
+monaco.editor.defineTheme('optiply-light', {
+  base: 'vs',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '98a6b7', fontStyle: 'italic' },
+    { token: 'keyword', foreground: '5652cb' },
+    { token: 'string', foreground: '067d5e' },
+    { token: 'number', foreground: 'ae4a05' },
+    { token: 'regexp', foreground: 'c62525' },
+    { token: 'type', foreground: '1860c4' },
+    { token: 'delimiter', foreground: '50657f' },
+  ],
+  colors: {
+    'editor.background': '#f9fbfc',
+    'editor.foreground': '#222b36',
+    'editorLineNumber.foreground': '#98a6b7',
+    'editorLineNumber.activeForeground': '#50657f',
+    'editor.lineHighlightBackground': '#f1f5f9',
+    'editor.lineHighlightBorder': '#00000000',
+    'editor.selectionBackground': '#dbe7f9',
+    'editor.inactiveSelectionBackground': '#e6ecf4',
+    'editorCursor.foreground': '#1860c4',
+    'editorIndentGuide.background1': '#e6ecf4',
+    'editorWidget.background': '#ffffff',
+    'editorWidget.border': '#d7dfec',
+    'editorSuggestWidget.background': '#ffffff',
+    'editorSuggestWidget.border': '#d7dfec',
+    'editorSuggestWidget.selectedBackground': '#dbe7f9',
+    'editorHoverWidget.background': '#ffffff',
+    'editorHoverWidget.border': '#d7dfec',
+    'scrollbarSlider.background': '#ccd8eb99',
+    'scrollbarSlider.hoverBackground': '#98a6b799',
+  },
+})
+monaco.editor.defineTheme('optiply-dark', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [
+    { token: 'comment', foreground: '717e8e', fontStyle: 'italic' },
+    { token: 'keyword', foreground: 'a7a5ef' },
+    { token: 'string', foreground: '30cd84' },
+    { token: 'number', foreground: 'fbae79' },
+    { token: 'regexp', foreground: 'fe7777' },
+    { token: 'type', foreground: '75b0ff' },
+    { token: 'delimiter', foreground: '9fb0c3' },
+  ],
+  colors: {
+    'editor.background': '#1c212f',
+    'editor.foreground': '#ebebeb',
+    'editorLineNumber.foreground': '#717e8e',
+    'editorLineNumber.activeForeground': '#9fb0c3',
+    'editor.lineHighlightBackground': '#212736',
+    'editor.lineHighlightBorder': '#00000000',
+    'editor.selectionBackground': '#32466d',
+    'editor.inactiveSelectionBackground': '#2b323f',
+    'editorCursor.foreground': '#75b0ff',
+    'editorIndentGuide.background1': '#2b323f',
+    'editorWidget.background': '#212736',
+    'editorWidget.border': '#303546',
+    'editorSuggestWidget.background': '#212736',
+    'editorSuggestWidget.border': '#303546',
+    'editorSuggestWidget.selectedBackground': '#203658',
+    'editorHoverWidget.background': '#212736',
+    'editorHoverWidget.border': '#303546',
+    'scrollbarSlider.background': '#30354699',
+    'scrollbarSlider.hoverBackground': '#717e8e99',
+  },
+})
+
 const js = monaco.typescript.javascriptDefaults
 js.setCompilerOptions({
   target: monaco.typescript.ScriptTarget.ESNext,

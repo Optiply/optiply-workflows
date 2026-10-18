@@ -218,7 +218,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       style={{ width: NODE_WIDTH }}
       data-testid={`block-${block.name}`}
       className={cn(
-        'rounded-lg border bg-surface shadow-sm transition-shadow',
+        'rounded-lg border bg-surface shadow-card transition-shadow',
         errors ? 'border-danger/60' : 'border-border',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
@@ -237,7 +237,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
             title={problems.map((p) => p.message).join('\n')}
             className={cn(
               'inline-flex items-center gap-0.5 rounded-full px-1.5 text-xs font-medium',
-              errors ? 'bg-danger/10 text-danger' : 'bg-warning-soft text-warning-strong',
+              errors ? 'bg-danger-soft text-danger' : 'bg-warning-soft text-warning-strong',
             )}
           >
             <AlertCircle className="size-3" />

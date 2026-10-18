@@ -85,14 +85,14 @@ export function ComponentInspector({ name }: { name: string }) {
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-semibold tracking-wide text-muted uppercase">Properties</h3>
+        <h3 className="text-xs font-semibold tracking-[1.8px] text-muted uppercase">Properties</h3>
         {Object.entries(spec.props).map(([prop, propSpec]) => (
           <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
         ))}
       </section>
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-semibold tracking-wide text-muted uppercase">Event handlers</h3>
+        <h3 className="text-xs font-semibold tracking-[1.8px] text-muted uppercase">Event handlers</h3>
         <HandlersEditor
           handlers={component.events ?? []}
           events={spec.events}

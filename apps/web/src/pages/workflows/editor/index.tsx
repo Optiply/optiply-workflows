@@ -198,12 +198,12 @@ function EditorLayout({
 
   return (
     <ReactFlowProvider>
-      <div className="flex h-full flex-col">
+      <div className="flex h-full flex-col gap-2">
         <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
         {git}
         <ConflictBanner onReload={onReload} />
-        <div className="flex min-h-0 flex-1">
-          <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 gap-2">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
               {editable && <Toolbar />}
@@ -232,7 +232,7 @@ function Header({
 }) {
   const { name, slug } = workflow
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
+    <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
       <Link
         to="/workflows"
         className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
@@ -241,7 +241,7 @@ function Header({
         <ArrowLeft className="size-4" />
       </Link>
       <div className="min-w-0">
-        <div className="truncate font-semibold">{name}</div>
+        <div className="truncate text-lg leading-6 font-bold">{name}</div>
         <div className="truncate font-mono text-xs text-muted">{slug}</div>
       </div>
       <SaveIndicator />
@@ -486,7 +486,7 @@ function ConflictBanner({ onReload }: { onReload: () => void }) {
   const status = useEditor((s) => s.status)
   if (status !== 'conflict') return null
   return (
-    <div className="flex items-center gap-3 border-b border-danger/30 bg-danger/5 px-4 py-2 text-sm text-danger">
+    <div className="flex items-center gap-3 rounded-lg bg-danger-soft px-4 py-2 text-sm text-danger">
       <AlertCircle className="size-4" />
       Someone else saved this workflow while you were editing. Reload to get their version; your unsaved
       changes will be lost.
@@ -551,7 +551,7 @@ function SidePanel({
     // `nokey`: React Flow listens for Space (pan) and Backspace/Delete (delete the selection) on the whole document
     // and doesn't recognise Monaco's input element as a text field; it ignores keys from inside `.nokey`.
     <aside
-      className="nokey flex w-[26rem] shrink-0 flex-col overflow-y-auto border-l border-border bg-surface"
+      className="nokey flex w-[26rem] shrink-0 flex-col overflow-y-auto rounded-lg bg-surface"
       data-testid="side-panel"
     >
       {block ? (

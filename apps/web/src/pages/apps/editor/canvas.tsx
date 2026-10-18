@@ -209,7 +209,7 @@ export function EditCanvas() {
 
 function GridCaption({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn('mb-6 text-[11px] font-semibold tracking-wide text-muted uppercase', className)}>
+    <div className={cn('mb-6 text-[11px] font-semibold tracking-[1.8px] text-muted uppercase', className)}>
       {children}
     </div>
   )

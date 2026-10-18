@@ -326,7 +326,7 @@ export function Grid({
                     onClick={() => cycleSort(column.name)}
                   >
                     <span className="truncate text-xs font-semibold text-ink">{column.name}</span>
-                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">
+                    <span className="shrink-0 text-[10px] uppercase tracking-[1.8px] text-muted">
                       {column.primaryKey ? 'key' : TYPE_LABELS[column.type]}
                     </span>
                     {sort && (sort.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}

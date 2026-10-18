@@ -32,7 +32,7 @@ export function PagesPanel() {
   return (
     <section aria-label="Pages">
       <div className="mb-2 flex items-center gap-1">
-        <h2 className="flex-1 text-xs font-semibold tracking-wide text-muted uppercase">Pages</h2>
+        <h2 className="flex-1 text-xs font-semibold tracking-[1.8px] text-muted uppercase">Pages</h2>
         <Button size="icon" variant="ghost" title="Add a page" onClick={add}>
           <Plus className="size-3.5" />
         </Button>

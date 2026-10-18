@@ -223,6 +223,37 @@
 }
 
 /* Workflow editor canvas (React Flow). */
+/* React Flow reads these before its own defaults: Optiply's tokens, so the canvas follows light and dark. */
+.react-flow {
+  --xy-background-color: var(--shade-3);
+  --xy-background-pattern-dots-color: var(--shade-8);
+  --xy-edge-stroke: var(--ink-3);
+  --xy-edge-stroke-selected: var(--blue-3);
+  --xy-connectionline-stroke: var(--blue-3);
+  --xy-edge-label-background-color: var(--shade-1);
+  --xy-edge-label-color: var(--ink-2);
+  --xy-controls-button-background-color: var(--shade-1);
+  --xy-controls-button-background-color-hover: var(--shade-4);
+  --xy-controls-button-color: var(--ink-2);
+  --xy-controls-button-color-hover: var(--ink-1);
+  --xy-controls-button-border-color: var(--shade-7);
+  --xy-controls-box-shadow: var(--shadow-1);
+  --xy-minimap-background-color: var(--shade-1);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--shade-5) 60%, transparent);
+  --xy-minimap-mask-stroke-color: var(--shade-8);
+  --xy-minimap-node-background-color: var(--shade-7);
+  --xy-minimap-node-stroke-color: transparent;
+  --xy-attribution-background-color: transparent;
+}
+.react-flow .react-flow__controls {
+  overflow: hidden;
+  border-radius: 6px;
+}
+.react-flow .react-flow__minimap {
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: var(--shadow-1);
+}
 .react-flow .ow-handle {
   width: 10px;
   height: 10px;
