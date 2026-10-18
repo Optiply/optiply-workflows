@@ -41,7 +41,7 @@ export function LoginPage() {
     <div className="flex min-h-full items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 rounded-xl bg-accent p-2.5 text-white shadow-sm">
+          <div className="mb-4 rounded-xl bg-accent p-2.5 text-on-accent shadow-sm">
             <Workflow className="size-6" />
           </div>
           <h1 className="text-xl font-semibold tracking-tight">Optiply Workflows</h1>

@@ -92,7 +92,7 @@ export default function CodeField({
           readOnly,
           minimap: { enabled: false },
           fontSize: 12.5,
-          fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
+          fontFamily: '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace',
           lineNumbers: singleLine ? 'off' : 'on',
           glyphMargin: false,
           folding: !singleLine,

@@ -8,9 +8,9 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: 'bg-accent text-white hover:bg-accent/90 shadow-sm',
+        primary: 'bg-accent text-on-accent hover:bg-accent/90 shadow-sm',
         secondary: 'bg-surface text-ink border border-border hover:bg-canvas shadow-xs',
-        ghost: 'text-muted hover:bg-black/5 hover:text-ink',
+        ghost: 'text-muted hover:bg-subtle hover:text-ink',
         danger: 'bg-surface text-danger border border-border hover:bg-danger/5',
       },
       size: { sm: 'h-8 px-3', md: 'h-9 px-4', icon: 'h-8 w-8' },
@@ -68,7 +68,7 @@ export function Badge({
   ...props
 }: ComponentProps<'span'> & { tone?: 'neutral' | 'accent' | 'success' | 'danger' }) {
   const tones = {
-    neutral: 'bg-black/5 text-muted',
+    neutral: 'bg-subtle text-muted',
     accent: 'bg-accent-soft text-accent',
     success: 'bg-success/10 text-success',
     danger: 'bg-danger/10 text-danger',
@@ -281,7 +281,7 @@ export function Dialog({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-4 pt-[12vh]">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-app/80 p-4 pt-[12vh]">
       <button
         type="button"
         aria-label="Close"

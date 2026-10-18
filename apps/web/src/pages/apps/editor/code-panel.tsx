@@ -700,7 +700,7 @@ function ProblemsTab() {
             <span
               className={cn(
                 'mt-1 size-1.5 shrink-0 rounded-full',
-                d.severity === 'error' ? 'bg-danger' : 'bg-amber-400',
+                d.severity === 'error' ? 'bg-danger' : 'bg-warning',
               )}
             />
             <span className="font-mono text-muted">{d.entity ?? d.path.join('.')}</span>
@@ -724,7 +724,7 @@ function ConsoleTab() {
           className={cn(
             'border-b border-border/60 px-1 py-0.5',
             l.level === 'error' && 'text-danger',
-            l.level === 'warn' && 'text-amber-700',
+            l.level === 'warn' && 'text-warning-strong',
           )}
         >
           <span className="mr-2 text-muted">{new Date(l.at).toLocaleTimeString()}</span>

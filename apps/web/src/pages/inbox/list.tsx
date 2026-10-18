@@ -127,7 +127,7 @@ export function DueText({ dueAt, status }: { dueAt: string | Date | null; status
             ? 'text-danger'
             : 'text-muted'
           : ms < 3_600_000
-            ? 'text-amber-700'
+            ? 'text-warning-strong'
             : undefined
       }
       title={new Date(dueAt).toLocaleString()}

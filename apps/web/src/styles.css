@@ -1,18 +1,211 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+/* Dark mode follows a `dark` class on <html> (set before first paint by index.html, then by lib/theme.ts). */
+@custom-variant dark (&:where(.dark, .dark *));
 
-  --color-canvas: oklch(0.985 0.002 260);
-  --color-surface: oklch(1 0 0);
-  --color-border: oklch(0.91 0.006 260);
-  --color-muted: oklch(0.55 0.015 260);
-  --color-ink: oklch(0.22 0.02 260);
-  --color-accent: oklch(0.51 0.21 277);
-  --color-accent-soft: oklch(0.95 0.03 277);
-  --color-danger: oklch(0.58 0.2 25);
-  --color-success: oklch(0.6 0.15 150);
+/*
+ * Optiply's design tokens, copied from app.optiply.com's stylesheets (light in :root, dark in .dark), so this looks
+ * like part of Optiply. Components don't use these directly: they use the Tailwind tokens below, which map onto them.
+ */
+:root {
+  color-scheme: light;
+
+  --ink-1: #222b36;
+  --ink-2: #50657f;
+  --ink-3: #98a6b7;
+
+  --shade-1: #fff;
+  --shade-2: #f9fbfc;
+  --shade-3: #f5f8fb;
+  --shade-4: #f1f5f9;
+  --shade-5: #dee6f2;
+  --shade-6: #e6ecf4;
+  --shade-7: #d7dfec;
+  --shade-8: #ccd8eb;
+
+  --blue-1: #dbe7f9;
+  --blue-1h: #d1e0f6;
+  --blue-2: #8cb3e9;
+  --blue-3: #1860c4;
+  --blue-4: #134d9e;
+  --blue-5: #0c3369;
+  --green-1: #e8f4ef;
+  --green-1h: #d4eae1;
+  --green-2: #bbe0cf;
+  --green-3: #067d5e;
+  --green-4: #1e6245;
+  --green-5: #0d3524;
+  --orange-1: #fcefe6;
+  --orange-1h: #f9dfcd;
+  --orange-2: #edc9b0;
+  --orange-3: #e05f06;
+  --orange-4: #ae4a05;
+  --orange-5: #773303;
+  --red-1: #f7e3e3;
+  --red-1h: #eeced1;
+  --red-2: #edbfbf;
+  --red-3: #c62525;
+  --red-4: #9e1d1d;
+  --red-5: #4a0e0e;
+  --yellow-1: #fdeecd;
+  --yellow-1h: #fadd9b;
+  --yellow-2: #f7cc69;
+  --yellow-3: #f5bb37;
+  --yellow-4: #ab8327;
+  --yellow-5: #624b16;
+  --purple-1: #ececf9;
+  --purple-1h: #d8d8f3;
+  --purple-2: #b9b7f3;
+  --purple-3: #5652cb;
+  --purple-4: #2c28a7;
+  --purple-5: #141164;
+
+  --optiblue-1: #009ee3;
+
+  --shadow-1: 0 1px 4px rgb(50 55 60 / 10%);
+  --shadow-7:
+    0 8px 32px -8px rgb(80 101 127 / 8%), 0 6px 8px -6px rgb(80 101 127 / 10%),
+    0 8px 16px 0 rgb(80 101 127 / 20%);
+  --btn-shadow-1: 0 1px 3px 0 rgb(80 101 127 / 6%), 0 1px 2px 0 rgb(47 53 69 / 6%);
+  --focus-ring: 0 0 0 4px rgb(25 102 210 / 20%), 0 0 0 2px var(--blue-3);
+  --invalid-ring: 0 0 0 4px #c625251a, 0 0 0 2px var(--red-3);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --ink-1: #ebebeb;
+  --ink-2: #9fb0c3;
+  --ink-3: #717e8e;
+
+  --shade-1: #212736;
+  --shade-2: #1c212f;
+  --shade-3: #181d2a;
+  --shade-4: #2d3549;
+  --shade-5: #121721;
+  --shade-6: #2b323f;
+  --shade-7: #303546;
+  --shade-8: #282f41;
+
+  --blue-1: #203658;
+  --blue-1h: #32466d;
+  --blue-2: #3a6195;
+  --blue-3: #75b0ff;
+  --blue-4: #8ebeff;
+  --blue-5: #bdd3f4;
+  --green-1: #203a3d;
+  --green-1h: #2c5358;
+  --green-2: #195f48;
+  --green-3: #30cd84;
+  --green-4: #75caa6;
+  --green-5: #bcfadf;
+  --orange-1: #472e27;
+  --orange-1h: #56382f;
+  --orange-2: #6b452c;
+  --orange-3: #fe9853;
+  --orange-4: #fbae79;
+  --orange-5: #fddcc6;
+  --red-1: #452c31;
+  --red-1h: #633a42;
+  --red-2: #6f3f47;
+  --red-3: #fe7777;
+  --red-4: #fb9f9f;
+  --red-5: #ffbfbf;
+  --yellow-1: #564c36;
+  --yellow-1h: #8b7137;
+  --yellow-2: #c09637;
+  --yellow-3: #ffd26b;
+  --yellow-4: #fadd9d;
+  --yellow-5: #fdeecd;
+  --purple-1: #29285c;
+  --purple-1h: #424166;
+  --purple-2: #484682;
+  --purple-3: #a7a5ef;
+  --purple-4: #b7b6f5;
+  --purple-5: #cecdf8;
+
+  --optiblue-1: #49b9ee;
+
+  /* Dark shadows add a 1px outline so surfaces stay visible. */
+  --shadow-1: 0 0 0 1px rgb(47 53 69 / 100%);
+  --shadow-7: 0 12px 24px 0 rgb(17 18 23 / 80%), 0 0 0 1px rgb(59 66 84);
+  --btn-shadow-1: 0 1px 0 0 rgb(80 101 127 / 16%), 0 0 0 1px rgb(47 53 69 / 100%);
+}
+
+/* What the components use: Optiply's tokens by role. `inline`, so dark mode is only the class switch above. */
+@theme inline {
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Page background (Optiply's blue-grey), surfaces, and the subtle fills inside them. */
+  --color-app: var(--shade-5);
+  --color-surface: var(--shade-1);
+  --color-field: var(--shade-2);
+  --color-canvas: var(--shade-3);
+  --color-subtle: var(--shade-4);
+  --color-border: var(--shade-7);
+  --color-divider: var(--shade-8);
+
+  /* Text: main, secondary, and placeholders or disabled. */
+  --color-ink: var(--ink-1);
+  --color-muted: var(--ink-2);
+  --color-faint: var(--ink-3);
+
+  --color-accent: var(--blue-3);
+  --color-accent-strong: var(--blue-4);
+  --color-accent-soft: var(--blue-1);
+  --color-accent-soft-hover: var(--blue-1h);
+  /* Text on accent, danger and success fills: white in light mode, dark in dark mode (the fills are light there). */
+  --color-on-accent: var(--shade-1);
+  --color-logo: var(--optiblue-1);
+
+  --color-danger: var(--red-3);
+  --color-danger-strong: var(--red-4);
+  --color-danger-soft: var(--red-1);
+  --color-danger-soft-hover: var(--red-1h);
+  --color-success: var(--green-3);
+  --color-success-strong: var(--green-4);
+  --color-success-soft: var(--green-1);
+  --color-warning: var(--orange-3);
+  --color-warning-strong: var(--orange-4);
+  --color-warning-soft: var(--orange-1);
+
+  /* Optiply's tag colours: `-1` the tint, `-2` the outline, `-3` the base, `-4` the text on the tint. */
+  --color-op-blue-1: var(--blue-1);
+  --color-op-blue-2: var(--blue-2);
+  --color-op-blue-3: var(--blue-3);
+  --color-op-blue-4: var(--blue-4);
+  --color-op-green-1: var(--green-1);
+  --color-op-green-2: var(--green-2);
+  --color-op-green-3: var(--green-3);
+  --color-op-green-4: var(--green-4);
+  --color-op-orange-1: var(--orange-1);
+  --color-op-orange-2: var(--orange-2);
+  --color-op-orange-3: var(--orange-3);
+  --color-op-orange-4: var(--orange-4);
+  --color-op-red-1: var(--red-1);
+  --color-op-red-2: var(--red-2);
+  --color-op-red-3: var(--red-3);
+  --color-op-red-4: var(--red-4);
+  --color-op-yellow-1: var(--yellow-1);
+  --color-op-yellow-2: var(--yellow-2);
+  --color-op-yellow-3: var(--yellow-3);
+  --color-op-yellow-4: var(--yellow-4);
+  --color-op-purple-1: var(--purple-1);
+  --color-op-purple-2: var(--purple-2);
+  --color-op-purple-3: var(--purple-3);
+  --color-op-purple-4: var(--purple-4);
+
+  /* Buttons and inputs are rounded-md (6px), cards rounded-lg (8px), page containers rounded-panel. */
+  --radius-panel: 10px;
+
+  --shadow-card: var(--shadow-1);
+  --shadow-menu: var(--shadow-7);
+  --shadow-button: var(--btn-shadow-1);
+  --shadow-focus: var(--focus-ring);
+  --shadow-invalid: var(--invalid-ring);
 }
 
 @layer base {
@@ -22,8 +215,10 @@
     height: 100%;
   }
   body {
-    @apply bg-canvas text-ink antialiased;
-    font-feature-settings: "cv11", "ss01";
+    @apply bg-app text-ink antialiased;
+  }
+  ::placeholder {
+    color: var(--color-faint);
   }
 }
 

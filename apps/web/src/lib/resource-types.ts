@@ -13,5 +13,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   postgres: { label: 'PG', className: 'bg-sky-100 text-sky-700' },
   mysql: { label: 'MY', className: 'bg-teal-100 text-teal-700' },
   bigquery: { label: 'BQ', className: 'bg-indigo-100 text-indigo-700' },
-  rest: { label: 'API', className: 'bg-amber-100 text-amber-700' },
+  rest: { label: 'API', className: 'bg-warning-soft text-warning-strong' },
 }

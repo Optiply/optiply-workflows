@@ -39,7 +39,8 @@ Chart.register(
   Legend,
   Tooltip,
 )
-Chart.defaults.font.family = 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+Chart.defaults.font.family =
+  '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
 Chart.defaults.font.size = 12
 Chart.defaults.color = CHART_INK.secondary
 

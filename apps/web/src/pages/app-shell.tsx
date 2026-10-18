@@ -33,7 +33,7 @@ export function AppShell() {
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-surface">
         <div className="flex h-14 items-center gap-2.5 px-4">
-          <div className="rounded-lg bg-accent p-1.5 text-white">
+          <div className="rounded-lg bg-accent p-1.5 text-on-accent">
             <Workflow className="size-4" />
           </div>
           <span className="font-semibold tracking-tight">Optiply Workflows</span>
@@ -58,7 +58,7 @@ export function AppShell() {
               type="button"
               onClick={logout}
               title="Sign out"
-              className="rounded-md p-1.5 text-muted hover:bg-black/5 hover:text-ink"
+              className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
             >
               <LogOut className="size-4" />
             </button>
@@ -83,14 +83,14 @@ function NavLink({ to, icon, label, count }: { to: string; icon: ReactNode; labe
   return (
     <Link
       to={to}
-      className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-black/5 hover:text-ink"
+      className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-subtle hover:text-ink"
       activeProps={{ className: 'bg-accent-soft! text-accent! font-medium' }}
     >
       {icon}
       {label}
       {!!count && (
         <span
-          className="ml-auto rounded-full bg-accent px-1.5 text-xs font-medium text-white"
+          className="ml-auto rounded-full bg-accent px-1.5 text-xs font-medium text-on-accent"
           data-testid="inbox-count"
         >
           {count}

@@ -159,7 +159,7 @@ function AuditTable() {
                 <Td>
                   <button
                     type="button"
-                    className="cursor-pointer rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs hover:bg-accent-soft"
+                    className="cursor-pointer rounded bg-subtle px-1.5 py-0.5 font-mono text-xs hover:bg-accent-soft"
                     title="Show only this action"
                     onClick={() => set({ action: e.action })}
                   >

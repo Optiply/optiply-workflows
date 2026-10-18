@@ -45,7 +45,7 @@ export function FormRenderer({ component, definition }: RendererProps) {
         <button
           type="submit"
           disabled={disabled}
-          className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-white shadow-sm hover:bg-accent/90 disabled:opacity-50"
+          className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-on-accent shadow-sm hover:bg-accent/90 disabled:opacity-50"
         >
           {submitText || 'Submit'}
         </button>
@@ -69,7 +69,7 @@ export function ModalRenderer({ component, definition }: RendererProps) {
   if (editing ? shown.name !== name : !isOpen) return null
   const close = () => (editing ? shown.close() : host.call(name, 'close'))
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/30 p-4 pt-[8vh]">
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-app/80 p-4 pt-[8vh]">
       <button
         type="button"
         aria-label="Close"

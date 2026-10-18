@@ -333,7 +333,7 @@ export function TableRenderer({ component }: RendererProps) {
                           className={cn(
                             'relative flex min-w-0 items-center px-3',
                             col.type === 'number' && 'justify-end tabular-nums',
-                            isChanged(row, col) && 'bg-amber-50',
+                            isChanged(row, col) && 'bg-warning-soft',
                             active?.r === v.index &&
                               active.c === c &&
                               'outline-2 -outline-offset-2 outline-accent',
@@ -428,7 +428,7 @@ export function TableRenderer({ component }: RendererProps) {
             </button>
             <button
               type="button"
-              className="rounded bg-accent px-2.5 py-1 font-medium text-white hover:bg-accent/90"
+              className="rounded bg-accent px-2.5 py-1 font-medium text-on-accent hover:bg-accent/90"
               onClick={() => host.call(name, 'saveChanges')}
             >
               Save changes
@@ -507,7 +507,7 @@ function CellEditor({
       {error && (
         <span
           role="alert"
-          className="absolute top-full left-0 z-20 mt-0.5 rounded bg-danger px-1.5 py-0.5 text-xs whitespace-nowrap text-white"
+          className="absolute top-full left-0 z-20 mt-0.5 rounded bg-danger px-1.5 py-0.5 text-xs whitespace-nowrap text-on-accent"
         >
           {error}
         </span>

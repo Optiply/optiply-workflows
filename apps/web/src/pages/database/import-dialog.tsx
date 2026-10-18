@@ -427,7 +427,7 @@ export function ImportDialog({
               </table>
             </div>
             {problems.length > 0 && (
-              <ul className="list-disc space-y-0.5 pl-5 text-sm text-amber-800">
+              <ul className="list-disc space-y-0.5 pl-5 text-sm text-warning-strong">
                 {problems.map((p) => (
                   <li key={p}>{p}</li>
                 ))}

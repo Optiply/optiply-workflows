@@ -22,9 +22,9 @@ export function TextRenderer({ component }: RendererProps) {
 }
 
 const VARIANTS = {
-  primary: 'bg-accent text-white hover:bg-accent/90 shadow-sm',
+  primary: 'bg-accent text-on-accent hover:bg-accent/90 shadow-sm',
   secondary: 'bg-surface text-ink border border-border hover:bg-canvas shadow-xs',
-  danger: 'bg-danger text-white hover:bg-danger/90 shadow-sm',
+  danger: 'bg-danger text-on-accent hover:bg-danger/90 shadow-sm',
 } as const
 
 /** A button firing `click`. Inside a form it doesn't submit it (the form has its own button). */

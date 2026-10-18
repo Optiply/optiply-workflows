@@ -130,7 +130,7 @@ export function EditGrid({
               <div
                 className={cn(
                   handle,
-                  'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-white',
+                  'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-on-accent',
                   selected === component.name ? 'flex' : 'hidden group-hover:flex',
                 )}
                 title="Drag to move"

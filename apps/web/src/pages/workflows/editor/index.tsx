@@ -235,7 +235,7 @@ function Header({
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
       <Link
         to="/workflows"
-        className="rounded-md p-1.5 text-muted hover:bg-black/5 hover:text-ink"
+        className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
         title="Back"
       >
         <ArrowLeft className="size-4" />
@@ -384,7 +384,7 @@ function PasteNotice() {
       data-testid="paste-notice"
       className="absolute bottom-3 left-1/2 z-10 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm shadow-md"
     >
-      <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+      <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" />
       <span className="min-w-0">{notice}</span>
       <Button size="sm" variant="ghost" onClick={() => useEditor.getState().notify(null)}>
         Dismiss
@@ -611,7 +611,7 @@ function ProblemList({ diagnostics, empty }: { diagnostics: Diagnostic[]; empty:
             <AlertCircle
               className={cn(
                 'mt-0.5 size-4 shrink-0',
-                d.severity === 'error' ? 'text-danger' : 'text-amber-600',
+                d.severity === 'error' ? 'text-danger' : 'text-warning',
               )}
             />
             <span className="min-w-0">

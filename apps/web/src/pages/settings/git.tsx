@@ -170,7 +170,7 @@ function RepoForm({ settings }: { settings: Settings }) {
             </div>
           )}
           {secret && (
-            <span className="text-xs text-amber-800">
+            <span className="text-xs text-warning-strong">
               Copy it into GitHub’s webhook settings now, then save: it isn’t shown again.
             </span>
           )}

@@ -237,7 +237,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
             title={problems.map((p) => p.message).join('\n')}
             className={cn(
               'inline-flex items-center gap-0.5 rounded-full px-1.5 text-xs font-medium',
-              errors ? 'bg-danger/10 text-danger' : 'bg-amber-100 text-amber-700',
+              errors ? 'bg-danger/10 text-danger' : 'bg-warning-soft text-warning-strong',
             )}
           >
             <AlertCircle className="size-3" />
@@ -275,7 +275,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
 /** How the open run left each block: a coloured outline. */
 const RUN_RING: Record<string, string> = {
   running: 'ow-block-running',
-  waiting: 'ring-2 ring-amber-400',
+  waiting: 'ring-2 ring-warning',
   succeeded: 'ring-2 ring-success/70',
   errored: 'ring-2 ring-danger/70',
   failed: 'ring-2 ring-danger',
@@ -291,7 +291,7 @@ function RunStatusDot({ status }: { status: string }) {
       : status === 'running'
         ? 'animate-pulse bg-accent'
         : status === 'waiting'
-          ? 'bg-amber-400'
+          ? 'bg-warning'
           : status === 'failed' || status === 'errored'
             ? 'bg-danger'
             : 'bg-muted/50'

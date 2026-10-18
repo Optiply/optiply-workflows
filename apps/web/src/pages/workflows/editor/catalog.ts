@@ -39,7 +39,7 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
     tone: 'bg-accent-soft text-accent',
     prefix: 'query',
   },
-  code: { label: 'Code', icon: Code2, tone: 'bg-amber-100 text-amber-700', prefix: 'code' },
+  code: { label: 'Code', icon: Code2, tone: 'bg-warning-soft text-warning-strong', prefix: 'code' },
   branch: { label: 'Branch', icon: GitBranch, tone: 'bg-sky-100 text-sky-700', prefix: 'branch' },
   filter: { label: 'Filter', icon: Filter, tone: 'bg-teal-100 text-teal-700', prefix: 'filter' },
   response: { label: 'Response', icon: Reply, tone: 'bg-rose-100 text-rose-700', prefix: 'response' },

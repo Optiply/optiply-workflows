@@ -109,7 +109,7 @@ export function DatabasePage() {
               search={{ env: environment!.slug, table: t.name }}
               replace
               className={cn(
-                'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm hover:bg-black/5',
+                'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm hover:bg-subtle',
                 t.name === table?.name && 'bg-accent-soft font-medium text-accent hover:bg-accent-soft',
               )}
             >
