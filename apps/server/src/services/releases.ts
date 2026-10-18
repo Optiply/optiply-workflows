@@ -9,14 +9,11 @@ import {
   workflowTriggers,
 } from '@ow/db'
 import {
-  bumpVersion,
   canonicalize,
   canonicalJson,
-  compareVersions,
   DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   definitionHash,
   nextScheduleFire,
-  parseSemver,
   parseWebhookAlias,
   type ScheduleTrigger,
   type VersionBump,
@@ -27,6 +24,7 @@ import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
+import { nextReleaseVersion } from './release-versions'
 import { checkDefinition } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -161,21 +159,10 @@ async function insertRelease(
     .where(eq(workflowReleases.workflowId, locked.id))
   const live = existing.find((r) => r.id === locked.liveReleaseId)
   if (live?.hash === hash) return { unchanged: live.version }
-  const highest =
-    existing
-      .map((r) => r.version)
-      .sort(compareVersions)
-      .at(-1) ?? null
-  const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
-  if (!parseSemver(version)) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
-  }
-  if (highest && compareVersions(version, highest) <= 0) {
-    throw new TRPCError({
-      code: 'CONFLICT',
-      message: `The version must be higher than v${highest}, the latest release`,
-    })
-  }
+  const version = nextReleaseVersion(
+    existing.map((r) => r.version),
+    opts,
+  )
   const [release] = await tx
     .insert(workflowReleases)
     .values({

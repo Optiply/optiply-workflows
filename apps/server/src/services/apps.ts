@@ -6,8 +6,7 @@ import {
   expressionSide,
   validateApp,
 } from '@ow/app-definition'
-import { ConnectorError, getConnector, type PoolManager, runQuery } from '@ow/connectors'
-import type { Keyring } from '@ow/crypto'
+import { getConnector } from '@ow/connectors'
 import {
   type App,
   type AppRelease,
@@ -17,17 +16,14 @@ import {
   environments,
   gitBranchDrafts,
   type Resource,
-  resourceConfigs,
   resources,
 } from '@ow/db'
-import { bumpVersion, canonicalJson, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
-import type { CodeRuntime } from '@ow/sandbox'
+import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
-import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
-import { errorView, toJson } from './query-results'
-import { toResolved } from './resources'
+import { nextReleaseVersion } from './release-versions'
+import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -198,19 +194,10 @@ async function insertAppRelease(
     .where(eq(appReleases.appId, locked.id))
   const live = existing.find((r) => r.id === locked.liveReleaseId)
   if (live?.hash === hash) return { unchanged: live.version }
-  const highest =
-    existing
-      .map((r) => r.version)
-      .sort(compareVersions)
-      .at(-1) ?? null
-  const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
-  if (!parseSemver(version)) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
-  if (highest && compareVersions(version, highest) <= 0) {
-    throw new TRPCError({
-      code: 'CONFLICT',
-      message: `The version must be higher than v${highest}, the latest release`,
-    })
-  }
+  const version = nextReleaseVersion(
+    existing.map((r) => r.version),
+    opts,
+  )
   const [release] = await tx
     .insert(appReleases)
     .values({
@@ -242,16 +229,8 @@ export async function setLiveAppRelease(
   return release
 }
 
-export interface AppQueryDeps {
-  db: Db
-  keyring: Keyring
-  pool: PoolManager
-  sandbox: CodeRuntime
-}
-
-export type AppQueryOutcome =
-  | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }
-  | { ok: false; error: { code: string; message: string; details: unknown }; durationMs: number }
+export type AppQueryDeps = QueryRunDeps
+export type AppQueryOutcome = QueryOutcome
 
 /**
  * Runs one of an app's resource queries, as stored in the draft (`releaseId` null) or the live release, in one
@@ -323,32 +302,6 @@ export async function runAppQuery(
       message: `"${query.name}" is a JS query; it runs in the browser`,
     })
   }
-  const [resource] = await db.select().from(resources).where(eq(resources.slug, query.resource))
-  if (!resource) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `No resource has the slug "${query.resource}"` })
-  }
-  if (opts.releaseId === null && !atLeast(access.level(resource, opts.environmentId), 'use')) {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: `You need use access to resource "${resource.slug}" in this environment to run the draft's queries`,
-    })
-  }
-  const connector = getConnector(resource.type)
-  if (!connector)
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `Unknown resource type "${resource.type}"` })
-  const [row] = await db
-    .select()
-    .from(resourceConfigs)
-    .where(
-      and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, opts.environmentId)),
-    )
-  if (!row) {
-    throw new TRPCError({
-      code: 'BAD_REQUEST',
-      message: `Resource "${resource.slug}" isn't configured in this environment`,
-    })
-  }
-
   const currentUser = { id: user.id, email: user.email, name: user.name }
   const evaluate = (code: string): unknown => {
     switch (expressionSide(code)) {
@@ -368,38 +321,15 @@ export async function runAppQuery(
     }
   }
 
-  const started = performance.now()
-  let outcome: AppQueryOutcome
-  try {
-    const resolved = toResolved(deps.keyring, row)
-    // Apps always have a person behind them: per-user resources use the viewer's own account.
-    const credentials = credentialsFor(
-      { db, keyring: deps.keyring, sandbox: deps.sandbox },
-      resolved,
-      user.id,
-    )
-    const result = await runQuery(deps.pool, connector, resolved, query.query, {
-      evaluate,
-      ...(credentials && { credentials }),
-      ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
-      ...(opts.signal && { signal: opts.signal }),
-      labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
-      // The values came from the browser: a REST path gets each as one encoded segment.
-      untrustedValues: true,
-    })
-    outcome = {
-      ok: true,
-      data: toJson(result.data),
-      metadata: toJson(result.metadata) as Record<string, unknown>,
-      durationMs: Math.round(performance.now() - started),
-    }
-  } catch (err) {
-    if (!(err instanceof ConnectorError)) throw err
-    outcome = {
-      ok: false,
-      error: errorView(err),
-      durationMs: Math.round(performance.now() - started),
-    }
-  }
+  const outcome = await runStoredQuery(deps, access, user, {
+    resource: query.resource,
+    query: query.query,
+    environmentId: opts.environmentId,
+    evaluate,
+    draft: opts.releaseId === null ? "the draft's queries" : null,
+    ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
+    ...(opts.signal && { signal: opts.signal }),
+    labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
+  })
   return { outcome, manual: query.run === 'manual', version }
 }

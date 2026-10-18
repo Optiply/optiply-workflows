@@ -10,6 +10,7 @@ import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
 import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
+import { libraryQueriesRouter } from './routers/library-queries'
 import { permissionsRouter } from './routers/permissions'
 import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
@@ -50,6 +51,7 @@ export const appRouter = router({
   releases: releasesRouter,
   apiKeys: apiKeysRouter,
   apps: appsRouter,
+  libraryQueries: libraryQueriesRouter,
   git: gitRouter,
   branchDrafts: branchDraftsRouter,
 })
