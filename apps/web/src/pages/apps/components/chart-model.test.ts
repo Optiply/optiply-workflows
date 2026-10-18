@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { chartModel, compactNumber, SERIES_COLORS, sliceColors, toNumber, withAlpha } from './chart-model'
+import {
+  chartModel,
+  chartPalette,
+  compactNumber,
+  OTHER_COLOR,
+  SERIES_COLORS,
+  SERIES_COLORS_DARK,
+  sliceColors,
+  toNumber,
+  withAlpha,
+} from './chart-model'
 
 const sales = [
   { month: 'Jan', revenue: '1200.50', orders: 30, region: 'NL' },
@@ -28,6 +38,15 @@ describe('chart model', () => {
     expect(chosen.series.map((s) => [s.key, s.color])).toEqual([['orders', SERIES_COLORS[0]]])
   })
 
+  it('colors series with the dark palette in dark mode, the same slots', () => {
+    const m = chartModel({ kind: 'bar', data: sales, xKey: '', series: [], theme: 'dark' })
+    expect(m.theme).toBe('dark')
+    expect(m.series.map((s) => s.color)).toEqual([SERIES_COLORS_DARK[0], SERIES_COLORS_DARK[1]])
+    expect(SERIES_COLORS_DARK).toHaveLength(SERIES_COLORS.length)
+    expect(sliceColors(8, 3, 'dark').at(-1)).toBe(chartPalette('dark').other)
+    expect(chartPalette('dark').ink.surface).not.toBe(chartPalette('light').ink.surface)
+  })
+
   it('makes a pie of one series, folding slices past the seventh into Other', () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({ name: `p${i}`, n: i + 1 }))
     const m = chartModel({ kind: 'pie', data: rows, xKey: 'name', series: ['n', 'other'] })
@@ -35,7 +54,7 @@ describe('chart model', () => {
     expect(m.labels).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'Other'])
     expect(m.series[0]!.values).toEqual([1, 2, 3, 4, 5, 6, 7, 8 + 9 + 10])
     expect(m.folded).toBe(3)
-    expect(sliceColors(8, 3).at(-1)).toBe('#898781')
+    expect(sliceColors(8, 3).at(-1)).toBe(OTHER_COLOR)
   })
 
   it('copes with no data, and with values that aren’t numbers', () => {
@@ -46,6 +65,7 @@ describe('chart model', () => {
       series: [],
       omitted: [],
       folded: 0,
+      theme: 'light',
     })
     expect([toNumber('12'), toNumber('a'), toNumber(''), toNumber(Number.NaN), toNumber(true)]).toEqual([
       12,

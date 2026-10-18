@@ -41,9 +41,9 @@ export function NavigationRenderer({ component, definition }: RendererProps) {
                 aria-current={here ? 'page' : undefined}
                 onClick={() => host.openPage(link.page, {})}
                 className={cn(
-                  'rounded-md px-3 py-1.5 text-sm',
+                  'h-8 cursor-pointer rounded-md px-4 text-sm font-medium transition-colors',
                   vertical && 'w-full text-left',
-                  here ? 'bg-accent-soft font-medium text-ink' : 'text-muted hover:bg-canvas hover:text-ink',
+                  here ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-accent-soft hover:text-accent',
                 )}
               >
                 {link.label}

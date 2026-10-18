@@ -4,6 +4,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
@@ -23,7 +24,8 @@ import {
   tableView,
 } from './table-model'
 
-const ROW_HEIGHT = 32
+/** Optiply's table rows (its dashboard tables are 40px; data grids 48px). */
+const ROW_HEIGHT = 40
 
 /**
  * The Table: rows from `data` (virtualized, so thousands are fine), sorted by clicking a header (`sort`), searched
@@ -226,7 +228,7 @@ export function TableRenderer({ component }: RendererProps) {
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-surface text-sm">
       {showSearch && (
-        <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search className="size-3.5 shrink-0 text-muted" aria-hidden />
           <input
             type="search"
@@ -258,7 +260,7 @@ export function TableRenderer({ component }: RendererProps) {
           <div
             role="row"
             aria-rowindex={1}
-            className="sticky top-0 z-10 grid border-b border-border bg-canvas"
+            className="sticky top-0 z-10 grid border-b border-border bg-surface"
             style={{ gridTemplateColumns: template, minWidth: 'max-content' }}
           >
             {columns.map((col) => {
@@ -273,7 +275,7 @@ export function TableRenderer({ component }: RendererProps) {
                   <button
                     type="button"
                     tabIndex={-1}
-                    className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs font-semibold text-muted hover:text-ink"
+                    className="flex h-12 w-full cursor-pointer items-center gap-1 px-3 text-left text-xs font-medium text-muted hover:text-ink"
                     onClick={() => {
                       setActive(null)
                       // Ascending, then descending, then unsorted.
@@ -311,7 +313,7 @@ export function TableRenderer({ component }: RendererProps) {
                     aria-selected={selection === 'none' ? undefined : selected}
                     data-row={index}
                     className={cn(
-                      'absolute inset-x-0 grid border-b border-border/70',
+                      'absolute inset-x-0 grid border-b border-border',
                       selected ? 'bg-accent-soft' : 'hover:bg-canvas',
                       selection !== 'none' && 'cursor-pointer',
                     )}
@@ -356,7 +358,7 @@ export function TableRenderer({ component }: RendererProps) {
                               type="checkbox"
                               tabIndex={-1}
                               aria-label={col.label}
-                              className="size-4 accent-accent"
+                              className="size-4 rounded accent-accent"
                               checked={value === true}
                               disabled={!canEdit(row, col)}
                               onClick={(e) => e.stopPropagation()}
@@ -382,7 +384,7 @@ export function TableRenderer({ component }: RendererProps) {
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2 border-t border-border bg-canvas px-3 py-1.5 text-xs text-muted">
+      <div className="flex min-h-11 items-center gap-2 border-t border-border bg-canvas px-3 py-1.5 text-xs text-muted">
         <RowCount
           view={view}
           rows={rows.length}
@@ -421,14 +423,14 @@ export function TableRenderer({ component }: RendererProps) {
             </span>
             <button
               type="button"
-              className="rounded px-2 py-1 hover:bg-surface hover:text-ink"
+              className={buttonVariants({ size: 'sm' })}
               onClick={() => host.call(name, 'clearChangeset')}
             >
               Discard
             </button>
             <button
               type="button"
-              className="rounded bg-accent px-2.5 py-1 font-medium text-on-accent hover:bg-accent/90"
+              className={buttonVariants({ variant: 'primary', size: 'sm' })}
               onClick={() => host.call(name, 'saveChanges')}
             >
               Save changes

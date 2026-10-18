@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
+import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppValue } from '../runtime/react'
@@ -22,17 +23,21 @@ export function ChartRenderer({ component }: RendererProps) {
   const stacked = useAppValue<boolean>(`${name}.stacked`)
   const showLegend = useAppValue<boolean>(`${name}.showLegend`)
   const [asTable, setAsTable] = useState(false)
-  const model = useMemo(() => chartModel({ kind, data, xKey, series }), [kind, data, xKey, series])
+  const { theme } = useTheme()
+  const model = useMemo(
+    () => chartModel({ kind, data, xKey, series, theme }),
+    [kind, data, xKey, series, theme],
+  )
   const empty = !model.series.length || !model.labels.length
   const label = `${title || name}: ${model.kind} chart of ${model.series.map((s) => s.label).join(', ') || 'no data'}${model.xKey ? ` by ${model.xKey}` : ''}`
 
   return (
     <figure
-      className="flex h-full flex-col rounded-lg border border-border bg-surface p-3"
+      className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
       aria-label={title || name}
     >
       <figcaption className="mb-2 flex items-center gap-2">
-        <span className="truncate text-sm font-semibold">{title}</span>
+        <span className="truncate text-base font-bold">{title}</span>
         {!empty && (
           <button
             type="button"

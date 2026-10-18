@@ -1,4 +1,5 @@
 import { Loader2 } from 'lucide-react'
+import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
@@ -21,11 +22,8 @@ export function TextRenderer({ component }: RendererProps) {
   )
 }
 
-const VARIANTS = {
-  primary: 'bg-accent text-on-accent hover:bg-accent/90 shadow-sm',
-  secondary: 'bg-surface text-ink border border-border hover:bg-canvas shadow-xs',
-  danger: 'bg-danger text-on-accent hover:bg-danger/90 shadow-sm',
-} as const
+/** The app's button styles are Optiply's: primary blue, secondary a blue tint, danger a red tint. */
+const VARIANTS = { primary: 'primary', secondary: 'secondary', danger: 'danger' } as const
 
 /** A button firing `click`. Inside a form it doesn't submit it (the form has its own button). */
 export function ButtonRenderer({ component }: RendererProps) {
@@ -40,10 +38,7 @@ export function ButtonRenderer({ component }: RendererProps) {
       type="button"
       disabled={disabled || loading}
       onClick={() => host.fire(name, 'click')}
-      className={cn(
-        'inline-flex h-8 w-full items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:opacity-50',
-        VARIANTS[variant] ?? VARIANTS.primary,
-      )}
+      className={cn(buttonVariants({ variant: VARIANTS[variant] ?? 'primary' }), 'w-full px-3')}
     >
       {loading && <Loader2 className="size-3.5 animate-spin" />}
       <span className="truncate">{text}</span>

@@ -1,10 +1,10 @@
 import { type ReactNode, useId } from 'react'
+import { FIELD } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
 
-const CONTROL =
-  'h-8 w-full rounded-md border border-border bg-surface px-2.5 text-sm shadow-xs outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:bg-canvas disabled:text-muted'
+const CONTROL = cn('h-8 w-full rounded-md px-2.5', FIELD)
 
 /** What every input shares: its label (with a mark when required) and the control. */
 function Labelled({ name, id, children }: { name: string; id: string; children: ReactNode }) {
@@ -178,7 +178,7 @@ export function CheckboxRenderer({ component }: RendererProps) {
       <input
         id={id}
         type="checkbox"
-        className="size-4 accent-accent"
+        className="size-4 cursor-pointer rounded accent-accent"
         checked={value === true}
         disabled={disabled}
         onChange={(e) => change(e.target.checked)}

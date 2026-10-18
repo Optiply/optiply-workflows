@@ -61,8 +61,8 @@ export function Button({
   )
 }
 
-/** Optiply's input look, shared by inputs, selects and text areas. */
-const FIELD =
+/** Optiply's input look, shared by inputs, selects and text areas (and the app builder's inputs). */
+export const FIELD =
   'border border-border bg-field text-sm text-ink outline-none transition-shadow enabled:hover:not-focus:ring-1 enabled:hover:not-focus:ring-border focus:border-transparent focus:shadow-focus aria-invalid:shadow-invalid disabled:text-faint'
 
 export function Input({ className, ...props }: ComponentProps<'input'>) {

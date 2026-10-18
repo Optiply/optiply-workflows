@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { useContext } from 'react'
+import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ChildGrid, EditingContext, ShownModalContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
@@ -10,8 +11,8 @@ export function ContainerRenderer({ component, definition }: RendererProps) {
   const title = useAppValue<string>(`${component.name}.title`)
   const border = useAppValue<boolean>(`${component.name}.showBorder`)
   return (
-    <div className={cn('flex h-full flex-col rounded-lg p-3', border && 'border border-border bg-surface')}>
-      {title && <h2 className="mb-2 text-sm font-semibold">{title}</h2>}
+    <div className={cn('flex h-full flex-col rounded-lg p-4', border && 'border border-border bg-surface')}>
+      {title && <h2 className="mb-2 text-base font-bold">{title}</h2>}
       <div className="min-h-0 flex-1">
         <ChildGrid definition={definition} parent={component.name} />
       </div>
@@ -30,23 +31,19 @@ export function FormRenderer({ component, definition }: RendererProps) {
     // The runtime checks required inputs (and says which); the browser's own checks would stop it hearing about it.
     <form
       noValidate
-      className="flex h-full flex-col rounded-lg border border-border bg-surface p-3"
+      className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
       aria-label={title || name}
       onSubmit={(e) => {
         e.preventDefault()
         host.call(name, 'submit')
       }}
     >
-      {title && <h2 className="mb-2 text-sm font-semibold">{title}</h2>}
+      {title && <h2 className="mb-2 text-base font-bold">{title}</h2>}
       <div className="min-h-0 flex-1">
         <ChildGrid definition={definition} parent={name} />
       </div>
       <div className="flex justify-end pt-2">
-        <button
-          type="submit"
-          disabled={disabled}
-          className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-on-accent shadow-sm hover:bg-accent/90 disabled:opacity-50"
-        >
+        <button type="submit" disabled={disabled} className={buttonVariants({ variant: 'primary' })}>
           {submitText || 'Submit'}
         </button>
       </div>
@@ -82,22 +79,22 @@ export function ModalRenderer({ component, definition }: RendererProps) {
         data-canvas-modal={editing || undefined}
         aria-label={title || name}
         className={cn(
-          'relative w-full rounded-xl border border-border bg-surface shadow-lg',
+          'relative w-full rounded-lg bg-surface p-6 text-ink shadow-menu',
           MODAL_WIDTHS[size] ?? MODAL_WIDTHS.medium,
         )}
       >
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h2 className="font-semibold">{title || name}</h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-medium">{title || name}</h2>
           <button
             type="button"
             title="Close"
             onClick={close}
-            className="rounded p-1 text-muted hover:bg-canvas hover:text-ink"
+            className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), '-my-1 -mr-2')}
           >
             <X className="size-4" />
           </button>
         </div>
-        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+        <div className="mt-4 max-h-[70vh] overflow-y-auto">
           <ChildGrid definition={definition} parent={name} />
         </div>
       </div>

@@ -23,7 +23,7 @@ import {
   Tooltip,
 } from 'chart.js'
 import { useEffect, useRef } from 'react'
-import { CHART_INK, type ChartModel, compactNumber, sliceColors, withAlpha } from './chart-model'
+import { type ChartModel, chartPalette, compactNumber, sliceColors, withAlpha } from './chart-model'
 
 Chart.register(
   BarController,
@@ -42,10 +42,9 @@ Chart.register(
 Chart.defaults.font.family =
   '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
 Chart.defaults.font.size = 12
-Chart.defaults.color = CHART_INK.secondary
 
 /** A vertical hairline at the hovered x, so lines are read by position rather than by hitting a 2 px stroke. */
-const crosshair: Plugin = {
+const crosshair = (color: string): Plugin => ({
   id: 'owCrosshair',
   afterDatasetsDraw(chart) {
     const active = chart.tooltip?.getActiveElements() ?? []
@@ -54,7 +53,7 @@ const crosshair: Plugin = {
     const { top, bottom } = chart.chartArea
     const ctx = chart.ctx
     ctx.save()
-    ctx.strokeStyle = CHART_INK.axis
+    ctx.strokeStyle = color
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(Math.round(x) + 0.5, top)
@@ -62,10 +61,11 @@ const crosshair: Plugin = {
     ctx.stroke()
     ctx.restore()
   },
-}
+})
 
 function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean }): ChartConfiguration {
   const { kind } = model
+  const { ink } = chartPalette(model.theme)
   const lines = kind === 'line' || kind === 'area'
   // Legend keys mirror the mark: a short line for lines and areas, a square for bars and slices.
   const legend = {
@@ -77,7 +77,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       ...(lines && { pointStyleWidth: 16 }),
       boxWidth: 10,
       boxHeight: 10,
-      color: CHART_INK.secondary,
+      color: ink.secondary,
       // A line's default key takes the hover dots' white ring as its stroke: color it with the series instead.
       // (Only for lines: bars and pies keep their own keys; a pie's are its slices.)
       ...(lines && {
@@ -93,10 +93,10 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
     },
   }
   const tooltip = {
-    backgroundColor: CHART_INK.surface,
-    titleColor: CHART_INK.secondary,
-    bodyColor: CHART_INK.text,
-    borderColor: CHART_INK.grid,
+    backgroundColor: ink.surface,
+    titleColor: ink.secondary,
+    bodyColor: ink.text,
+    borderColor: ink.grid,
     borderWidth: 1,
     padding: 8,
     usePointStyle: true,
@@ -108,8 +108,8 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       labelColor: (item: { datasetIndex: number; dataIndex: number }) => {
         const color =
           kind === 'pie'
-            ? sliceColors(model.labels.length, model.folded)[item.dataIndex]!
-            : (model.series[item.datasetIndex]?.color ?? CHART_INK.muted)
+            ? sliceColors(model.labels.length, model.folded, model.theme)[item.dataIndex]!
+            : (model.series[item.datasetIndex]?.color ?? ink.muted)
         return { borderColor: color, backgroundColor: color, borderWidth: 2 }
       },
       // Values lead, labels follow.
@@ -131,8 +131,8 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
           {
             label: s?.label ?? '',
             data: s?.values ?? [],
-            backgroundColor: sliceColors(model.labels.length, model.folded),
-            borderColor: CHART_INK.surface,
+            backgroundColor: sliceColors(model.labels.length, model.folded, model.theme),
+            borderColor: ink.surface,
             borderWidth: 2,
             hoverOffset: 4,
           },
@@ -141,6 +141,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        color: ink.secondary,
         animation: false,
         plugins: { legend, tooltip },
       },
@@ -157,7 +158,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
           backgroundColor: s.color,
           hoverBackgroundColor: withAlpha(s.color, 0.8),
           // The surface-colored edge is the 2 px gap between touching bars and stacked segments.
-          borderColor: CHART_INK.surface,
+          borderColor: ink.surface,
           borderWidth: 2,
           borderRadius: 4,
           borderSkipped: 'start' as const,
@@ -175,7 +176,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
           pointRadius: 0,
           pointHoverRadius: 4,
           pointBackgroundColor: s.color,
-          pointBorderColor: CHART_INK.surface,
+          pointBorderColor: ink.surface,
           pointHoverBorderWidth: 2,
           pointHitRadius: 12,
           fill: area ? (opts.stacked && i > 0 ? '-1' : 'origin') : false,
@@ -187,6 +188,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      color: ink.secondary,
       animation: false,
       interaction: { mode: 'index', intersect: kind === 'bar' },
       plugins: { legend, tooltip },
@@ -194,19 +196,19 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
         x: {
           stacked: opts.stacked,
           grid: { display: false },
-          border: { color: CHART_INK.axis },
-          ticks: { color: CHART_INK.muted, maxRotation: 0, autoSkip: true },
+          border: { color: ink.axis },
+          ticks: { color: ink.muted, maxRotation: 0, autoSkip: true },
         },
         y: {
           stacked: opts.stacked,
           beginAtZero: true,
-          grid: { color: CHART_INK.grid, lineWidth: 1 },
+          grid: { color: ink.grid, lineWidth: 1 },
           border: { display: false },
-          ticks: { color: CHART_INK.muted, callback: (v) => compactNumber(Number(v)), maxTicksLimit: 6 },
+          ticks: { color: ink.muted, callback: (v) => compactNumber(Number(v)), maxTicksLimit: 6 },
         },
       },
     },
-    plugins: kind === 'bar' ? [] : [crosshair],
+    plugins: kind === 'bar' ? [] : [crosshair(ink.axis)],
   }
 }
 

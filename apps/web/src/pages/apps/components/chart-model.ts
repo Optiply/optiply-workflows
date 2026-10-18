@@ -1,33 +1,62 @@
 /**
  * The Chart component's data, apart from Chart.js: which key is the x axis, which are the series, their values as
- * numbers, and their colors. Colors follow the reference categorical palette (the dataviz skill's, validated on
- * our white surface): assigned in a fixed order by series position, never cycled; past eight series the rest
- * aren't drawn (and the chart says so).
+ * numbers, and their colors. Colors are Optiply's (the base of each of its scales, light and dark, see styles.css):
+ * assigned in a fixed order by series position, never cycled; past eight series the rest aren't drawn (and the
+ * chart says so).
  */
 
 export type ChartKind = 'bar' | 'line' | 'area' | 'pie'
+export type ChartTheme = 'light' | 'dark'
 
-/** Categorical slots, in their validated order. */
+/** Categorical slots, in order: Optiply's blue, orange, green, purple, logo blue, red, yellow and navy. */
 export const SERIES_COLORS = [
-  '#2a78d6',
-  '#eb6834',
-  '#1baf7a',
-  '#eda100',
-  '#e87ba4',
-  '#008300',
-  '#6250d6',
-  '#e34948',
+  '#1860c4',
+  '#e05f06',
+  '#067d5e',
+  '#5652cb',
+  '#009ee3',
+  '#c62525',
+  '#ab8327',
+  '#0c3369',
+]
+/** The same slots in dark mode (Optiply's lighter dark-mode bases). */
+export const SERIES_COLORS_DARK = [
+  '#75b0ff',
+  '#fe9853',
+  '#30cd84',
+  '#a7a5ef',
+  '#49b9ee',
+  '#fe7777',
+  '#ffd26b',
+  '#bdd3f4',
 ]
 /** Pie slices past the seventh fold into this. */
-export const OTHER_COLOR = '#898781'
+export const OTHER_COLOR = '#98a6b7'
+const OTHER_COLOR_DARK = '#717e8e'
 
+/** Text, grid and axis colors: Optiply's ink and shades. */
 export const CHART_INK = {
   surface: '#ffffff',
-  text: '#0b0b0b',
-  secondary: '#52514e',
-  muted: '#898781',
-  grid: '#e1e0d9',
-  axis: '#c3c2b7',
+  text: '#222b36',
+  secondary: '#50657f',
+  muted: '#50657f',
+  grid: '#e6ecf4',
+  axis: '#ccd8eb',
+}
+const CHART_INK_DARK: typeof CHART_INK = {
+  surface: '#212736',
+  text: '#ebebeb',
+  secondary: '#9fb0c3',
+  muted: '#9fb0c3',
+  grid: '#2b323f',
+  axis: '#303546',
+}
+
+/** A theme's series colors, "Other" color and ink. */
+export function chartPalette(theme: ChartTheme = 'light') {
+  return theme === 'dark'
+    ? { series: SERIES_COLORS_DARK, other: OTHER_COLOR_DARK, ink: CHART_INK_DARK }
+    : { series: SERIES_COLORS, other: OTHER_COLOR, ink: CHART_INK }
 }
 
 export interface ChartSeries {
@@ -46,6 +75,8 @@ export interface ChartModel {
   omitted: string[]
   /** Pie slices folded into "Other". */
   folded: number
+  /** The theme the colors are for. */
+  theme: ChartTheme
 }
 
 type Row = Record<string, unknown>
@@ -83,7 +114,10 @@ export function chartModel(input: {
   data: unknown
   xKey: unknown
   series: unknown
+  theme?: ChartTheme
 }): ChartModel {
+  const theme = input.theme ?? 'light'
+  const palette = chartPalette(theme).series
   const kind: ChartKind =
     input.kind === 'line' || input.kind === 'area' || input.kind === 'pie' ? input.kind : 'bar'
   const rows = (Array.isArray(input.data) ? input.data : []).filter(
@@ -105,7 +139,7 @@ export function chartModel(input: {
   let series: ChartSeries[] = drawn.map((key, i) => ({
     key,
     label: key,
-    color: SERIES_COLORS[i]!,
+    color: palette[i]!,
     values: rows.map((r) => toNumber(r[key])),
   }))
 
@@ -120,13 +154,14 @@ export function chartModel(input: {
       series = [{ ...series[0], values: [...values.slice(0, SERIES_COLORS.length - 1), other] }]
     }
   }
-  return { kind, xKey, labels, series, omitted, folded }
+  return { kind, xKey, labels, series, omitted, folded, theme }
 }
 
 /** The color of each pie slice. */
-export function sliceColors(count: number, folded: number): string[] {
+export function sliceColors(count: number, folded: number, theme: ChartTheme = 'light'): string[] {
+  const palette = chartPalette(theme)
   return Array.from({ length: count }, (_, i) =>
-    folded && i === count - 1 ? OTHER_COLOR : SERIES_COLORS[i]!,
+    folded && i === count - 1 ? palette.other : palette.series[i]!,
   )
 }
 

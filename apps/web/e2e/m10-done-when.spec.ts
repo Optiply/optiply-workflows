@@ -93,7 +93,7 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
     ],
     layout: {
       nav: { x: 0, y: 0, w: 12, h: 3 },
-      items: { x: 0, y: 0, w: 12, h: 40 },
+      items: { x: 0, y: 0, w: 12, h: 60 },
       detail: { x: 0, y: 0, w: 9, h: 3 },
       recalculate: { x: 9, y: 0, w: 3, h: 3 },
     },
