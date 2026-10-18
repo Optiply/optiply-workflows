@@ -9,7 +9,7 @@ import { authedProcedure, type Context, router } from '../init'
 const Id = z.string().uuid()
 const Name = z.string().trim().min(1).max(80)
 /** What a folder holds: resources, workflows, apps or library queries (never a mix: a folder's grants mean one kind of access). */
-const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query'])
+const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query', 'module'])
 type FolderType = z.infer<typeof FolderType>
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
@@ -19,6 +19,7 @@ const PLURAL: Record<FolderType, string> = {
   workflow: 'workflows',
   app: 'apps',
   library_query: 'library queries',
+  module: 'modules',
 }
 
 /** Whether the person may manage folders of a type: whoever may create that type. */

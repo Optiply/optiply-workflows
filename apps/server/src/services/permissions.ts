@@ -15,13 +15,14 @@ function higher(a: PermissionLevel | null, b: PermissionLevel | null): Permissio
 }
 
 /** Objects with grants, folders, drafts and releases but no environments (resources have those). */
-export type ObjectKind = 'workflow' | 'app' | 'library_query'
+export type ObjectKind = 'workflow' | 'app' | 'library_query' | 'module'
 
 /** How messages name each kind. */
 export const KIND_LABEL: Record<ObjectKind, string> = {
   workflow: 'workflow',
   app: 'app',
   library_query: 'library query',
+  module: 'module',
 }
 
 interface Grant {
@@ -125,6 +126,20 @@ export class Access {
   /** Creating library queries needs Edit on all library queries. */
   get canCreateLibraryQueries(): boolean {
     return this.canCreate('library_query')
+  }
+
+  /**
+   * The user's level on a module (M14), or null for no access. Use = place it in an app (whoever publishes or runs
+   * the draft of an app placing it needs it), Edit = change the draft, run it and publish, Own = delete and manage
+   * access.
+   */
+  moduleLevel(module: { id: string; folderId: string | null }): PermissionLevel | null {
+    return this.objectLevel('module', module)
+  }
+
+  /** Creating modules needs Edit on all modules. */
+  get canCreateModules(): boolean {
+    return this.canCreate('module')
   }
 
   /** Creating objects of a kind needs Edit on all of them. */

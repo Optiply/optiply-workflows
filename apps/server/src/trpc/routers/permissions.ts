@@ -5,6 +5,7 @@ import {
   folders,
   groups,
   libraryQueries,
+  modules,
   PERMISSION_LEVELS,
   permissions,
   resources,
@@ -20,7 +21,7 @@ const Id = z.string().uuid()
 
 /** Grants on one resource, workflow, app or library query, on one folder, or (`objectId` null) on all objects of a type. */
 const Target = z.object({
-  objectType: z.enum(['resource', 'workflow', 'app', 'library_query', 'folder']),
+  objectType: z.enum(['resource', 'workflow', 'app', 'library_query', 'module', 'folder']),
   objectId: Id.nullable(),
 })
 
@@ -44,8 +45,12 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
     return
   }
-  if (target.objectType === 'app' || target.objectType === 'library_query') {
-    const table = target.objectType === 'app' ? apps : libraryQueries
+  if (
+    target.objectType === 'app' ||
+    target.objectType === 'library_query' ||
+    target.objectType === 'module'
+  ) {
+    const table = { app: apps, library_query: libraryQueries, module: modules }[target.objectType]
     const [object] = await ctx.db.select().from(table).where(eq(table.id, target.objectId)).limit(1)
     const access = await loadAccess(ctx.db, ctx.user)
     const label = KIND_LABEL[target.objectType]

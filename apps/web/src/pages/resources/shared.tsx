@@ -247,7 +247,10 @@ function Cell({ value }: { value: unknown }) {
   return <>{String(value)}</>
 }
 
-type Target = { objectType: 'resource' | 'folder' | 'app' | 'library_query'; objectId: string | null }
+type Target = {
+  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module'
+  objectId: string | null
+}
 
 /**
  * Group grants on one target (a resource, a folder, an app, or all of a type), per environment or for all of them.
