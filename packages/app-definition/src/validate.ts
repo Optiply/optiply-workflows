@@ -1,12 +1,31 @@
 import type { QueryValidator } from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
-import { componentSpec, constantFits, QUERY_EVENTS } from './components'
-import { buildAppGraph, type Entity, entityMethods, entityProperties } from './graph'
+import {
+  constantFits,
+  MODULE_PROPS,
+  type ModuleInterface,
+  moduleComponentSpec,
+  QUERY_EVENTS,
+} from './components'
+import {
+  buildAppGraph,
+  defaultSpecFor,
+  type Entity,
+  entityMethods,
+  entityProperties,
+  type SpecFor,
+} from './graph'
 import { appNameReason, isAppGlobalName } from './names'
 import { entityPages, pageVisible, RESERVED_PAGES } from './pages'
 import { expressionSide } from './query-values'
-import { type AppDefinition, appDefinitionSchema, type EventHandler, type LibraryAppQuery } from './schema'
+import {
+  type AppComponent,
+  type AppDefinition,
+  appDefinitionSchema,
+  type EventHandler,
+  type LibraryAppQuery,
+} from './schema'
 
 export type AppDiagnosticCode =
   | 'schema'
@@ -41,6 +60,11 @@ export type AppDiagnosticCode =
   | 'unknown_version'
   | 'unknown_param'
   | 'missing_param'
+  | 'module_pages'
+  | 'nested_module'
+  | 'not_in_module'
+  | 'unknown_module'
+  | 'unpublished_module'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -72,6 +96,32 @@ export interface AppValidateOptions {
    * Without it, library queries aren't checked against the library.
    */
   resolveLibrary?: (slug: string) => LibraryInfo | undefined
+  /**
+   * The modules the app may place (M14), by slug; undefined for none with that slug. Without it, module instances
+   * take any props and events (their module isn't known).
+   */
+  resolveModule?: (slug: string) => ModuleInfo | undefined
+}
+
+/** What the validator needs to know about a module an app places (M14). */
+export interface ModuleInfo {
+  /** The live release's version, or null when it has none. */
+  liveVersion: string | null
+  /** Each release's inputs, outputs and events, by version. */
+  versions: Record<string, ModuleInterface>
+}
+
+/** The release a module instance names, from its `module` and `version` props; null when it can't be told. */
+export function instanceInterface(
+  component: AppComponent,
+  resolve: (slug: string) => ModuleInfo | undefined,
+): ModuleInterface | null {
+  const slug = component.props?.module
+  const version = component.props?.version ?? 'latest'
+  if (typeof slug !== 'string' || typeof version !== 'string') return null
+  const info = resolve(slug)
+  const at = version === 'latest' ? info?.liveVersion : version
+  return (at && info && Object.hasOwn(info.versions, at) ? info.versions[at] : null) ?? null
 }
 
 export interface AppValidationResult {
@@ -89,6 +139,7 @@ const LIST = {
   transformer: 'transformers',
   variable: 'variables',
   url: 'url',
+  inputs: 'module',
 }
 
 /**
@@ -105,7 +156,12 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   const report: Report = (d) => diagnostics.push({ severity: 'error', ...d })
 
   checkNames(def, report)
-  const graph = buildAppGraph(def)
+  const resolveModule = options.resolveModule
+  const specFor: SpecFor = (c) =>
+    c.type === 'module' && resolveModule
+      ? moduleComponentSpec(instanceInterface(c, resolveModule))
+      : defaultSpecFor(c)
+  const graph = buildAppGraph(def, { specFor })
   const { entities } = graph
   const pages = entityPages(def)
   checkPages(def, report)
@@ -113,7 +169,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   // Components: type, props, parent, events.
   def.components.forEach((c, i) => {
     const at = { entity: c.name }
-    const spec = componentSpec(c.type)
+    const spec = specFor(c)
+    if (c.type === 'module') checkModuleInstance(def, c, ['components', i], resolveModule, report)
     if (!spec) {
       report({
         code: 'unknown_type',
@@ -127,6 +184,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
       const path = ['components', i, 'props', prop]
       const propSpec = Object.hasOwn(spec.props, prop) ? spec.props[prop] : undefined
       if (!propSpec) {
+        if (spec.openProps) continue
         report({ code: 'unknown_prop', message: `${spec.label} has no property "${prop}"`, path, ...at })
       } else if (!constantFits(propSpec, value)) {
         report({ code: 'invalid_prop', message: `"${prop}" has the wrong type`, path, ...at })
@@ -159,7 +217,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         report({ code: 'invalid_parent', message: `"${c.name}" would end up inside itself`, path, ...at })
       }
     }
-    checkHandlers(c.events, ['components', i, 'events'], spec.events, at.entity, entities, pages, report)
+    const events = spec.openProps ? null : spec.events
+    checkHandlers(def, c.events, ['components', i, 'events'], events, at.entity, entities, pages, report)
     if (c.type === 'navigation' && Array.isArray(c.props?.items)) {
       c.props.items.forEach((item, n) => {
         const page = item && typeof item === 'object' && !Array.isArray(item) ? item.page : undefined
@@ -174,6 +233,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
       })
     }
   })
+
+  if (def.module) checkModule(def, entities, report)
 
   // Layout entries name components on a grid.
   for (const name of Object.keys(def.layout ?? {})) {
@@ -199,7 +260,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   // Queries: events and, server side, their connector.
   def.queries.forEach((q, i) => {
-    checkHandlers(q.events, ['queries', i, 'events'], QUERY_EVENTS, q.name, entities, pages, report)
+    checkHandlers(def, q.events, ['queries', i, 'events'], QUERY_EVENTS, q.name, entities, pages, report)
     if (q.kind === 'resource' && options.resolveResource) {
       checkQuery(q, ['queries', i], options.resolveResource, report)
     }
@@ -248,7 +309,12 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
             ...where,
           })
         }
-      } else if (!entityProperties(entity).includes(ref.property) && !isObjectMember(ref.property)) {
+      } else if (
+        !entityProperties(entity).includes(ref.property) &&
+        !isObjectMember(ref.property) &&
+        // A module instance whose module isn't known yet (M14): its outputs aren't either.
+        !(entity.kind === 'component' && entity.spec?.openProps)
+      ) {
         report({
           severity: 'warning',
           code: 'unknown_property',
@@ -371,9 +437,11 @@ function checkNames(def: AppDefinition, report: Report) {
 }
 
 function checkHandlers(
+  def: AppDefinition,
   handlers: EventHandler[] | undefined,
   base: (string | number)[],
-  events: readonly string[],
+  /** The owner's events; null when they aren't known (a module instance before its module is). */
+  events: readonly string[] | null,
   owner: string,
   entities: ReadonlyMap<string, Entity>,
   pages: ReadonlyMap<string, string | null>,
@@ -395,7 +463,20 @@ function checkHandlers(
         ...at,
       })
     }
-    if (!events.includes(h.event)) {
+    if (a.type === 'moduleEvent') {
+      const declared = def.module?.events.some((e) => e.name === a.event)
+      if (!def.module || !declared) {
+        report({
+          code: def.module ? 'unknown_event' : 'not_in_module',
+          message: def.module
+            ? `The module has no event "${a.event}"`
+            : 'Only a module fires module events; add the event to a module',
+          path: [...path, 'action', 'event'],
+          ...at,
+        })
+      }
+    }
+    if (events && !events.includes(h.event)) {
       report({
         code: 'unknown_event',
         message: events.length
@@ -558,6 +639,123 @@ function checkLibraryUse(
         ...at,
       })
     }
+  }
+}
+
+/**
+ * A module's own rules (M14): no pages; inputs, outputs and events uniquely named (an input and an output can't
+ * share a name, both being the instance's); inputs aren't named like the instance's own props; `inputs` is built in.
+ */
+function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, report: Report) {
+  const module = def.module!
+  if (def.pages?.length) {
+    report({
+      code: 'module_pages',
+      message: 'A module has no pages; it sits on a page of the app',
+      path: ['pages'],
+    })
+  }
+  const owned = entities.get('inputs')
+  if (owned && owned.kind !== 'inputs') {
+    report({
+      code: 'invalid_name',
+      message: '"inputs" is built into modules (the inputs the app passes)',
+      path: [LIST[owned.kind], owned.index, 'name'],
+      entity: 'inputs',
+    })
+  }
+  const instanceProps = new Set([...MODULE_PROPS, 'hidden'])
+  const seen = new Set<string>()
+  const lists = [
+    ['inputs', module.inputs],
+    ['outputs', module.outputs],
+  ] as const
+  for (const [list, items] of lists) {
+    items.forEach((item: { name: string }, i: number) => {
+      const path = ['module', list, i, 'name']
+      if (list === 'inputs' && instanceProps.has(item.name)) {
+        report({ code: 'invalid_name', message: `"${item.name}" is a prop every module instance has`, path })
+      } else if (seen.has(item.name)) {
+        report({
+          code: 'duplicate_name',
+          message: `Another input or output is already named "${item.name}"`,
+          path,
+        })
+      }
+      seen.add(item.name)
+    })
+  }
+  const events = new Set<string>()
+  module.events.forEach((e, i) => {
+    if (events.has(e.name)) {
+      report({
+        code: 'duplicate_name',
+        message: `Another event is already named "${e.name}"`,
+        path: ['module', 'events', i, 'name'],
+      })
+    }
+    events.add(e.name)
+  })
+}
+
+/**
+ * A module instance (M14): it names a module by slug (not a template), isn't inside another module, and with
+ * `resolve`, names a module and release that exist.
+ */
+function checkModuleInstance(
+  def: AppDefinition,
+  c: AppComponent,
+  base: (string | number)[],
+  resolve: AppValidateOptions['resolveModule'],
+  report: Report,
+) {
+  const at = { entity: c.name }
+  if (def.module) {
+    report({
+      code: 'nested_module',
+      message: 'A module can’t hold another module',
+      path: [...base, 'type'],
+      ...at,
+    })
+    return
+  }
+  const slug = c.props?.module
+  if (typeof slug !== 'string' || !slug || slug.includes('{{')) {
+    report({
+      code: 'unknown_module',
+      message: 'Pick a module: its slug, not a {{ }} template',
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+    return
+  }
+  if (!resolve) return
+  const info = resolve(slug)
+  const version = c.props?.version ?? 'latest'
+  if (!info) {
+    report({
+      code: 'unknown_module',
+      message: `No module has the slug "${slug}"`,
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+  } else if (version === 'latest' && info.liveVersion === null) {
+    report({
+      code: 'unpublished_module',
+      message: `Module "${slug}" has no live release yet`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
+  } else if (
+    typeof version !== 'string' ||
+    (version !== 'latest' && !Object.hasOwn(info.versions, version))
+  ) {
+    report({
+      code: 'unknown_version',
+      message: `Module "${slug}" has no release ${String(version)}`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
   }
 }
 

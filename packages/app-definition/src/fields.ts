@@ -83,6 +83,17 @@ export function appFields(def: AppDefinition): AppField[] {
       fields.push({ path, kind: 'template', source, owner: v.name, node: nodeKey(v.name, '$initial') })
     })
   })
+
+  // A module's outputs (M14), owned by `$outputs` (no entity: code can't read them inside the module).
+  def.module?.outputs.forEach((o, i) => {
+    fields.push({
+      path: ['module', 'outputs', i, 'value'],
+      kind: 'template',
+      source: o.value,
+      owner: '$outputs',
+      node: nodeKey('$outputs', o.name),
+    })
+  })
   return fields
 }
 
@@ -118,6 +129,7 @@ function handlerFields(
         push(['action', 'url'], 'template', a.url)
         break
       case 'controlQuery':
+      case 'moduleEvent':
         break
     }
   })

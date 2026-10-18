@@ -34,6 +34,8 @@ function defaultAction(
       return { type, message: '' } as const
     case 'openUrl':
       return { type, url: '' } as const
+    case 'moduleEvent':
+      return { type, event: 'event1' } as const
   }
 }
 
@@ -52,6 +54,8 @@ function describe(h: EventHandler): string {
       return 'notify'
     case 'openUrl':
       return 'open URL'
+    case 'moduleEvent':
+      return `fire ${a.event}`
   }
 }
 

@@ -76,6 +76,11 @@ export const handlerActionSchema = z.discriminatedUnion('type', [
     url: z.string(),
     newTab: z.boolean().optional(),
   }),
+  z.strictObject({
+    /** In a module (M14): fires one of the module's events in the app it's placed in. */
+    type: z.literal('moduleEvent'),
+    event: appNameSchema,
+  }),
 ])
 
 export const eventHandlerSchema = z.strictObject({
@@ -203,6 +208,39 @@ export const pageSchema = z.strictObject({
   title: z.string().max(80).optional(),
 })
 
+/** An input of a module (M14): the app placing it passes a value; the module reads `inputs.<name>`. */
+export const moduleInputSchema = z.strictObject({
+  name: appNameSchema,
+  description: z.string().max(2000).optional(),
+  /** When the app passes nothing (or null). */
+  default: z.json().optional(),
+  /** What the module's editor passes. Never used by apps. */
+  testValue: z.json().optional(),
+})
+
+/** An output of a module: a template evaluated in the module; the app reads it as `<instance>.<name>`. */
+export const moduleOutputSchema = z.strictObject({
+  name: appNameSchema,
+  description: z.string().max(2000).optional(),
+  value: z.string(),
+})
+
+/** An event of a module: the module fires it (`moduleEvent`), the app handles it on the instance. */
+export const moduleEventSchema = z.strictObject({
+  name: appNameSchema,
+  description: z.string().max(2000).optional(),
+})
+
+/**
+ * What makes an app definition a module (M14): a reusable piece of app with typed inputs, outputs and events,
+ * placed in apps as a `module` component that runs as an isolated instance.
+ */
+export const moduleSpecSchema = z.strictObject({
+  inputs: z.array(moduleInputSchema).max(50),
+  outputs: z.array(moduleOutputSchema).max(50),
+  events: z.array(moduleEventSchema).max(20),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
   /** In order; the first opens by default. An app without pages is one page, holding everything. */
@@ -213,6 +251,8 @@ export const appDefinitionSchema = z.strictObject({
   variables: z.array(variableSchema).max(MAX_ENTITIES).optional(),
   /** Grid positions by component name. Modals have none: they open over the page. */
   layout: z.record(appNameSchema, positionSchema).optional(),
+  /** Present on a module's definition (M14), never on an app's. */
+  module: moduleSpecSchema.optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>
@@ -229,6 +269,16 @@ export type AppQuery = z.infer<typeof appQuerySchema>
 export type Transformer = z.infer<typeof transformerSchema>
 export type Variable = z.infer<typeof variableSchema>
 export type AppDefinition = z.infer<typeof appDefinitionSchema>
+export type ModuleInput = z.infer<typeof moduleInputSchema>
+export type ModuleOutput = z.infer<typeof moduleOutputSchema>
+export type ModuleSpec = z.infer<typeof moduleSpecSchema>
+/** A module's definition: an app definition with its `module` part (and no pages). */
+export type ModuleDefinition = AppDefinition & { module: ModuleSpec }
+
+/** A new, empty module. */
+export function emptyModule(): ModuleDefinition {
+  return { ...emptyApp(), module: { inputs: [], outputs: [], events: [] } }
+}
 
 /** Whether the server runs the query (resource and library queries); JS queries run in the browser. */
 export const isServerQuery = (q: AppQuery): q is ServerAppQuery => q.kind !== 'js'
