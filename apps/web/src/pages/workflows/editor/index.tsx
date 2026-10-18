@@ -6,10 +6,13 @@ import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Pla
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { UndoButtons } from '@/components/undo-buttons'
+import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { addableIn, BLOCK_KINDS, newBlock, nextName, PYTHON_KIND } from './catalog'
+import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
@@ -76,11 +79,13 @@ export function WorkflowEditorPage() {
     const stale =
       state.workflowId !== data.id ||
       state.branchDraftId !== wantDraftId ||
-      (wantDraftId === null && state.readOnly !== data.gitProtected)
+      (wantDraftId === null && state.readOnly !== mainReadOnly(data))
     if (!stale) return
     if (wantDraftId && branchDraft) loadDraft(branchDraft)
     else
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: mainReadOnly(data),
+      })
   }, [workflow.data, wantDraftId, branchDraft, load, loadDraft])
   // Coming back to the editor later loads the workflow afresh.
   useEffect(() => () => useEditor.setState({ workflowId: null, branchDraftId: null }), [])
@@ -89,7 +94,9 @@ export function WorkflowEditorPage() {
     if (draftId) return loadDraft(await trpcClient.branchDrafts.get.query({ id: draftId }))
     const { data } = await workflow.refetch()
     if (data)
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, { readOnly: data.gitProtected })
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: mainReadOnly(data),
+      })
   }
   const switchBranch = async (next: string | null) => {
     try {
@@ -146,6 +153,14 @@ export function WorkflowEditorPage() {
   )
 }
 
+/**
+ * The main draft can't be edited by people with Use (they see it, and its releases), nor on a protected workflow
+ * (it changes on Git branches).
+ */
+function mainReadOnly(workflow: Workflow): boolean {
+  return workflow.gitProtected || workflow.level === 'use'
+}
+
 function EditorLayout({
   workflow,
   canEdit,
@@ -193,6 +208,7 @@ function EditorLayout({
               <Canvas />
               {editable && <Toolbar />}
               <FunctionBanner />
+              <PasteNotice />
             </div>
             {panelOpen && <RunPanel />}
           </div>
@@ -200,6 +216,7 @@ function EditorLayout({
         </div>
       </div>
       {editable && <Autosave />}
+      <EditorShortcuts editable={editable} />
     </ReactFlowProvider>
   )
 }
@@ -311,6 +328,8 @@ function Toolbar() {
           )
         })}
       <div className="mx-1 h-5 w-px bg-border" />
+      <WorkflowUndoButtons />
+      <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
         variant="ghost"
@@ -318,6 +337,57 @@ function Toolbar() {
         onClick={() => updateGraph((g) => ({ ...g, layout: { ...g.layout, blocks: autoLayout(g) } }))}
       >
         <LayoutGrid className="size-4" /> Arrange
+      </Button>
+    </div>
+  )
+}
+
+/** Undo and Redo. Off while the draft conflicts (its edits can't be saved). */
+function WorkflowUndoButtons() {
+  const canUndo = useEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
+  const canRedo = useEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  return (
+    <UndoButtons
+      canUndo={canUndo}
+      canRedo={canRedo}
+      onUndo={() => useEditor.getState().undo()}
+      onRedo={() => useEditor.getState().redo()}
+    />
+  )
+}
+
+/** The editor's keys: undo, redo, ⌘D, copy and paste (copy works on a read-only draft too). */
+function EditorShortcuts({ editable }: { editable: boolean }) {
+  useEditorKeys({
+    editable,
+    undo: () => useEditor.getState().undo(),
+    redo: () => useEditor.getState().redo(),
+    duplicate: duplicateChosen,
+    copy: copyText,
+    paste: pasteText,
+  })
+  return null
+}
+
+/** What the last paste renamed, skipped or brought along; it goes after a while, or when dismissed. */
+function PasteNotice() {
+  const notice = useEditor((s) => s.notice)
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => useEditor.getState().notify(null), 15_000)
+    return () => clearTimeout(timer)
+  }, [notice])
+  if (!notice) return null
+  return (
+    <div
+      role="status"
+      data-testid="paste-notice"
+      className="absolute bottom-3 left-1/2 z-10 flex max-w-xl -translate-x-1/2 items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-sm shadow-md"
+    >
+      <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+      <span className="min-w-0">{notice}</span>
+      <Button size="sm" variant="ghost" onClick={() => useEditor.getState().notify(null)}>
+        Dismiss
       </Button>
     </div>
   )
@@ -474,6 +544,7 @@ function SidePanel({
   const diagnostics = useEditor((s) => s.diagnostics)
   const tab = useEditor((s) => s.sideTab)
   const fn = useEditor((s) => s.graph)
+  const epoch = useEditor((s) => s.epoch)
   const block = graphOf(definition, fn).blocks.find((b) => b.name === selected)
 
   return (
@@ -484,11 +555,12 @@ function SidePanel({
       data-testid="side-panel"
     >
       {block ? (
-        <Inspector key={`${fn ?? ''}/${block.name}`} name={block.name} />
+        // `epoch`: after an undo or redo, fields start again from the definition (some read it only when mounted).
+        <Inspector key={`${epoch}/${fn ?? ''}/${block.name}`} name={block.name} />
       ) : fn !== null ? (
-        <FunctionSettings key={fn} name={fn} canEdit={canEdit} />
+        <FunctionSettings key={`${epoch}/${fn}`} name={fn} canEdit={canEdit} />
       ) : (
-        <div className="flex min-h-0 flex-col p-4">
+        <div key={epoch} className="flex min-h-0 flex-col p-4">
           <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
           {tab === 'problems' && <Problems diagnostics={diagnostics} />}
           {tab === 'functions' && <FunctionsTab canEdit={canEdit} />}
