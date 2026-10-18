@@ -1,4 +1,4 @@
-import type { AppDefinition } from '@ow/app-definition'
+import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -118,7 +118,7 @@ export const environments = pgTable(
 
 // ── Organisation ────────────────────────────────────────────────────────────
 
-export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app'] as const
+export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app', 'library_query'] as const
 
 export const folders = pgTable(
   'folders',
@@ -134,11 +134,11 @@ export const folders = pgTable(
   },
   (t) => [
     unique('folders_name_uq').on(t.objectType, t.parentId, t.name).nullsNotDistinct(),
-    check('folders_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app')`),
+    check('folders_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query')`),
   ],
 )
 
-export const PERMISSION_OBJECT_TYPES = ['resource', 'workflow', 'app', 'folder'] as const
+export const PERMISSION_OBJECT_TYPES = ['resource', 'workflow', 'app', 'library_query', 'folder'] as const
 /** Ordered lowest to highest: each level includes the ones before it. */
 export const PERMISSION_LEVELS = ['use', 'edit', 'own'] as const
 
@@ -165,7 +165,10 @@ export const permissions = pgTable(
       .on(t.groupId, t.objectType, t.objectId, t.environmentId)
       .nullsNotDistinct(),
     index('permissions_object_idx').on(t.objectType, t.objectId),
-    check('permissions_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app', 'folder')`),
+    check(
+      'permissions_object_type_ck',
+      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'folder')`,
+    ),
     check('permissions_level_ck', sql`${t.level} in ('use', 'edit', 'own')`),
   ],
 )
@@ -808,6 +811,64 @@ export const appReleases = pgTable(
   ],
 )
 
+// ── Query Library (M14) ─────────────────────────────────────────────────────
+
+/** Library queries: one resource query used by many apps, built like apps (a draft, releases, the live one). */
+export const libraryQueries = pgTable(
+  'library_queries',
+  {
+    id: id(),
+    /** How apps reference it (with a version or `latest`); renaming keeps it. */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** What the editor autosaves; it must match the schema but may otherwise be invalid. */
+    draftDefinition: jsonb().$type<LibraryQueryDefinition>().notNull(),
+    draftRevision: integer().notNull().default(1),
+    /** The release apps following `latest` run. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => libraryQueryReleases.id, { onDelete: 'set null' }),
+    /** Protected in Git (M14 step 7), like apps. */
+    gitProtected: boolean().notNull().default(false),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('library_queries_slug_uq').on(t.slug),
+    index('library_queries_folder_idx').on(t.folderId),
+  ],
+)
+
+/** Published, immutable versions of a library query; apps pin one or follow the live one. */
+export const libraryQueryReleases = pgTable(
+  'library_query_releases',
+  {
+    id: id(),
+    libraryQueryId: uuid()
+      .notNull()
+      .references(() => libraryQueries.id, { onDelete: 'cascade' }),
+    version: text().notNull(),
+    definition: jsonb().$type<LibraryQueryDefinition>().notNull(),
+    /** `libraryQueryHash`. */
+    definitionHash: text().notNull(),
+    notes: text(),
+    gitCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('library_query_releases_version_uq').on(t.libraryQueryId, t.version),
+    index('library_query_releases_query_idx').on(t.libraryQueryId, t.createdAt.desc()),
+    check(
+      'library_query_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('library_query_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Audit ───────────────────────────────────────────────────────────────────
 
 export const auditEvents = pgTable(
@@ -843,6 +904,8 @@ export type PermissionObjectType = (typeof PERMISSION_OBJECT_TYPES)[number]
 export type Resource = typeof resources.$inferSelect
 export type ResourceConfig = typeof resourceConfigs.$inferSelect
 export type ManagedDatabase = typeof managedDatabases.$inferSelect
+export type LibraryQuery = typeof libraryQueries.$inferSelect
+export type LibraryQueryRelease = typeof libraryQueryReleases.$inferSelect
 export type OAuthToken = typeof oauthTokens.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect

@@ -14,6 +14,16 @@ function higher(a: PermissionLevel | null, b: PermissionLevel | null): Permissio
   return RANK[a] >= RANK[b] ? a : b
 }
 
+/** Objects with grants, folders, drafts and releases but no environments (resources have those). */
+export type ObjectKind = 'workflow' | 'app' | 'library_query'
+
+/** How messages name each kind. */
+export const KIND_LABEL: Record<ObjectKind, string> = {
+  workflow: 'workflow',
+  app: 'app',
+  library_query: 'library query',
+}
+
 interface Grant {
   objectType: string
   objectId: string | null
@@ -103,11 +113,36 @@ export class Access {
     return this.canCreate('app')
   }
 
-  /** Workflows and apps: grants on the object, on all objects of the type, or on a folder containing it. */
-  private objectLevel(
-    type: 'workflow' | 'app',
-    object: { id: string; folderId: string | null },
-  ): PermissionLevel | null {
+  /**
+   * The user's level on a library query (M14), or null for no access. Use = use it in an app (whoever publishes or
+   * runs the draft of an app using it needs it), Edit = change the draft, run it and publish, Own = delete and
+   * manage access.
+   */
+  libraryQueryLevel(query: { id: string; folderId: string | null }): PermissionLevel | null {
+    return this.objectLevel('library_query', query)
+  }
+
+  /** Creating library queries needs Edit on all library queries. */
+  get canCreateLibraryQueries(): boolean {
+    return this.canCreate('library_query')
+  }
+
+  /** Creating objects of a kind needs Edit on all of them. */
+  canCreate(type: ObjectKind): boolean {
+    return (
+      this.isAdmin ||
+      this.grants.some(
+        (g) =>
+          g.objectType === type &&
+          g.objectId === null &&
+          g.environmentId === null &&
+          atLeast(g.level, 'edit'),
+      )
+    )
+  }
+
+  /** The level on an object of any kind but resources: grants on it, on all of its kind, or on a folder holding it. */
+  objectLevel(type: ObjectKind, object: { id: string; folderId: string | null }): PermissionLevel | null {
     if (this.isAdmin) return 'own'
     const folderIds = this.ancestors(object.folderId)
     let best: PermissionLevel | null = null
@@ -119,19 +154,6 @@ export class Access {
       if (matches) best = higher(best, g.level)
     }
     return best
-  }
-
-  private canCreate(type: 'workflow' | 'app'): boolean {
-    return (
-      this.isAdmin ||
-      this.grants.some(
-        (g) =>
-          g.objectType === type &&
-          g.objectId === null &&
-          g.environmentId === null &&
-          atLeast(g.level, 'edit'),
-      )
-    )
   }
 
   /** A grant on one of the object's folders, a folder of the object's own type. */
@@ -187,15 +209,15 @@ export function requireLevel(level: PermissionLevel | null, required: Permission
 
 export { PERMISSION_LEVELS }
 
-/** A folder that can hold a workflow or app: one of its own type (a resource folder's grants mean something else). */
-export async function checkFolderType(db: Db, type: 'workflow' | 'app', folderId: string | null | undefined) {
+/** A folder that can hold a workflow, app or library query: one of its own type (a resource folder's grants mean something else). */
+export async function checkFolderType(db: Db, type: ObjectKind, folderId: string | null | undefined) {
   if (folderId === null || folderId === undefined) return
   const [folder] = await db
     .select({ objectType: folders.objectType })
     .from(folders)
     .where(eq(folders.id, folderId))
   if (!folder || folder.objectType !== type) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `No ${type} folder has that id` })
+    throw new TRPCError({ code: 'BAD_REQUEST', message: `No ${KIND_LABEL[type]} folder has that id` })
   }
 }
 
@@ -206,13 +228,13 @@ export async function checkFolderType(db: Db, type: 'workflow' | 'app', folderId
 export async function checkFolderMove(
   db: Db,
   opts: {
-    type: 'workflow' | 'app'
+    type: ObjectKind
     level: PermissionLevel | null
     from: string | null
     to: string | null | undefined
   },
 ) {
   if (opts.to === undefined || opts.to === opts.from) return
-  requireLevel(opts.level, 'own', `this ${opts.type} to move it between folders`)
+  requireLevel(opts.level, 'own', `this ${KIND_LABEL[opts.type]} to move it between folders`)
   await checkFolderType(db, opts.type, opts.to)
 }

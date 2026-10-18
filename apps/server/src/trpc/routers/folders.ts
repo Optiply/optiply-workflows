@@ -8,22 +8,23 @@ import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 const Name = z.string().trim().min(1).max(80)
-/** What a folder holds: resources, workflows or apps (never a mix: a folder's grants mean one kind of access). */
-const FolderType = z.enum(['resource', 'workflow', 'app'])
+/** What a folder holds: resources, workflows, apps or library queries (never a mix: a folder's grants mean one kind of access). */
+const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query'])
 type FolderType = z.infer<typeof FolderType>
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
-const PLURAL: Record<FolderType, string> = { resource: 'resources', workflow: 'workflows', app: 'apps' }
+const PLURAL: Record<FolderType, string> = {
+  resource: 'resources',
+  workflow: 'workflows',
+  app: 'apps',
+  library_query: 'library queries',
+}
 
 /** Whether the person may manage folders of a type: whoever may create that type. */
 async function canManage(ctx: AuthedContext, type: FolderType): Promise<boolean> {
   const access = await loadAccess(ctx.db, ctx.user)
-  return type === 'resource'
-    ? access.canCreateResources
-    : type === 'workflow'
-      ? access.canCreateWorkflows
-      : access.canCreateApps
+  return type === 'resource' ? access.canCreateResources : access.canCreate(type)
 }
 
 async function assertCanManage(ctx: AuthedContext, type: FolderType) {

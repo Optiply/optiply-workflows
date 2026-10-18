@@ -4,6 +4,7 @@ import {
   environments,
   folders,
   groups,
+  libraryQueries,
   PERMISSION_LEVELS,
   permissions,
   resources,
@@ -12,14 +13,14 @@ import {
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import { z } from 'zod'
-import { loadAccess, requireLevel } from '../../services/permissions'
+import { KIND_LABEL, loadAccess, type ObjectKind, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 
-/** Grants on one resource, workflow or app, on one folder, or (`objectId` null) on all objects of a type. */
+/** Grants on one resource, workflow, app or library query, on one folder, or (`objectId` null) on all objects of a type. */
 const Target = z.object({
-  objectType: z.enum(['resource', 'workflow', 'app', 'folder']),
+  objectType: z.enum(['resource', 'workflow', 'app', 'library_query', 'folder']),
   objectId: Id.nullable(),
 })
 
@@ -43,12 +44,15 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
     return
   }
-  if (target.objectType === 'app') {
-    const [app] = await ctx.db.select().from(apps).where(eq(apps.id, target.objectId)).limit(1)
+  if (target.objectType === 'app' || target.objectType === 'library_query') {
+    const table = target.objectType === 'app' ? apps : libraryQueries
+    const [object] = await ctx.db.select().from(table).where(eq(table.id, target.objectId)).limit(1)
     const access = await loadAccess(ctx.db, ctx.user)
-    if (!app || access.appLevel(app) === null)
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'App not found' })
-    requireLevel(access.appLevel(app), 'own', 'this app')
+    const label = KIND_LABEL[target.objectType]
+    if (!object || access.objectLevel(target.objectType, object) === null) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `${capitalize(label)} not found` })
+    }
+    requireLevel(access.objectLevel(target.objectType, object), 'own', `this ${label}`)
     return
   }
   const [resource] = await ctx.db.select().from(resources).where(eq(resources.id, target.objectId)).limit(1)
@@ -58,6 +62,8 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
   requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
 }
 
+const capitalize = (s: string) => s[0]!.toUpperCase() + s.slice(1)
+
 function targetWhere(target: z.infer<typeof Target>) {
   return and(
     eq(permissions.objectType, target.objectType),
@@ -66,7 +72,9 @@ function targetWhere(target: z.infer<typeof Target>) {
 }
 
 async function describeTarget(db: Db, target: z.infer<typeof Target>): Promise<string> {
-  if (target.objectId === null) return `all ${target.objectType}s`
+  if (target.objectId === null) {
+    return target.objectType === 'library_query' ? 'all library queries' : `all ${target.objectType}s`
+  }
   if (target.objectType === 'folder') {
     const [folder] = await db
       .select({ name: folders.name })
@@ -105,8 +113,8 @@ export const permissionsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
-      if ((input.objectType === 'workflow' || input.objectType === 'app') && input.environmentId !== null) {
-        const what = input.objectType === 'app' ? 'App' : 'Workflow'
+      if (input.objectType !== 'resource' && input.objectType !== 'folder' && input.environmentId !== null) {
+        const what = capitalize(KIND_LABEL[input.objectType])
         throw new TRPCError({ code: 'BAD_REQUEST', message: `${what} access applies to every environment` })
       }
       // Likewise for their folders: a grant for one environment would never count.
@@ -116,7 +124,7 @@ export const permissionsRouter = router({
           .from(folders)
           .where(eq(folders.id, input.objectId))
         if (folder && folder.objectType !== 'resource') {
-          const what = folder.objectType === 'app' ? 'App' : 'Workflow'
+          const what = capitalize(KIND_LABEL[folder.objectType as ObjectKind])
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: `${what} folder access applies to every environment`,
