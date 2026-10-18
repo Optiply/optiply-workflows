@@ -1221,13 +1221,15 @@ type TaskConfig = BlockOf<'userTask'>['config']
 type TaskFieldDef = NonNullable<TaskConfig['fields']>[number]
 
 /** Problems under a plain input (Monaco fields show theirs as markers). */
+const TONE = { error: 'text-danger', warning: 'text-warning-strong' } as const
+
 function Problems({ list }: { list: FieldProblem[] }) {
   if (!list.length) return null
   return (
     <div className="flex flex-col gap-0.5">
       {list.map((p, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: messages have no identity
-        <span key={i} className={cn('text-xs', p.severity === 'error' ? 'text-danger' : 'text-warning')}>
+        <span key={i} className={cn('text-xs', TONE[p.severity])}>
           {p.message}
         </span>
       ))}
@@ -1646,7 +1648,7 @@ function BlockProblems({ diagnostics }: { diagnostics: Diagnostic[] }) {
             <AlertCircle
               className={cn(
                 'mt-0.5 size-4 shrink-0',
-                d.severity === 'error' ? 'text-danger' : 'text-warning',
+                d.severity === 'error' ? 'text-danger' : 'text-warning-strong',
               )}
             />
             <button type="button" className="text-left" onClick={() => d.block && select(d.block)}>

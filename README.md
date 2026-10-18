@@ -12,7 +12,7 @@ TypeScript monorepo (pnpm + Turborepo):
 | Path | What |
 |---|---|
 | `apps/server` | Fastify v5 + tRPC v11 API, with Google OIDC and local break-glass login, plus the REST runs API. The workflow worker runs queued runs. One entrypoint; `ROLE=api\|worker\|migrate\|all` picks what it runs. |
-| `apps/web` | Vite + React 19, TanStack Router and Query, Tailwind v4. The workflow editor (@xyflow/react canvas, dagre layout, Monaco, zustand), the Database page (TanStack Table + Virtual) and the app builder (react-grid-layout, Chart.js, a sandboxed iframe for app code). Unit tests next to pure modules; Playwright e2e in `e2e/`. |
+| `apps/web` | Vite + React 19, TanStack Router and Query, Tailwind v4 on Optiply's design tokens (light and dark). The workflow editor (@xyflow/react canvas, dagre layout, Monaco, zustand), the Database page (TanStack Table + Virtual) and the app builder (react-grid-layout, Chart.js, a sandboxed iframe for app code). Unit tests next to pure modules; Playwright e2e in `e2e/`. |
 | `packages/db` | Drizzle ORM schema and migrations (Postgres). Embedded Postgres for dev and tests. |
 | `packages/sandbox` | isolated-vm runtime that runs user JavaScript (code blocks, `{{ }}` expressions) with no Node APIs and with time and memory limits |
 | `packages/crypto` | AES-256-GCM for stored secrets (versioned keys, each value bound to its row and environment), API-key hashing, secret redaction |
@@ -97,7 +97,7 @@ curl -b jar -X POST localhost:3000/api/v1/runs/<runId>/cancel
 
 A **User task** block asks people for a decision or some data. It has a title and a description (both can use `{{ }}`), assignees (users by email and groups by name; an entry can be a `{{ }}` that gives one or a list), form fields (text, long text, number, checkbox, choice; each optionally required, with a `{{ }}` starting value), buttons (outcomes, e.g. Approve and Reject; one Submit button when there are none), and an optional due time.
 
-When the block runs, the task appears in its assignees' **Inbox** (in the sidebar, with a count), and the run waits without holding a worker. Anyone assigned (directly or through a group) can complete it, and admins can complete any task. People with access to the workflow can see it but not complete it. The answer is checked against the fields in the browser and again on the server. Then the run carries on with `{{ task1.data }}` = `{ outcome, values, completedBy: { id, email, name }, completedAt }`; use a Branch on `task1.data.outcome` to go different ways. A field's starting value only fills the form in: a field submitted empty is `null`.
+When the block runs, the task appears in its assignees' **Inbox** (in the top bar, with a count), and the run waits without holding a worker. Anyone assigned (directly or through a group) can complete it, and admins can complete any task. People with access to the workflow can see it but not complete it. The answer is checked against the fields in the browser and again on the server. Then the run carries on with `{{ task1.data }}` = `{ outcome, values, completedBy: { id, email, name }, completedAt }`; use a Branch on `task1.data.outcome` to go different ways. A field's starting value only fills the form in: a field submitted empty is `null`.
 
 Past its due time the task expires and the block fails (`task_expired`; with "continue on failure", the run takes the error path). Cancelling the run, or the run failing elsewhere, closes the task. Assignees written out in full are checked before a run starts or a release is published; `{{ }}` ones when the task opens. User tasks can't be used in functions or the error handler.
 
@@ -188,6 +188,10 @@ Both editors (workflows and apps) undo and redo every change to the draft, and c
 - **Workflows:** select blocks (click, ⌘/Ctrl-click or drag a box) and copy them; paste in another workflow (or tab) puts them to the right of the selected block, connected to it. Names that are taken get new ones, references between the pasted blocks follow, and the functions they call come along (a workflow that already has a different function of that name keeps its own). A note says what wasn't pasted and which references point at blocks that weren't copied.
 - **Apps:** copy the selected component (with everything inside it), or the query, transformer or variable open in the code panel. Components paste where the palette would add one: into the selected container, else next to the selected component, on the page being edited. Queries that run by themselves start running as soon as they're pasted.
 - **What's pasted is checked:** only content copied from an editor is read, and pasting something this browser didn't copy (another site can put anything on the clipboard) asks first, naming any queries that would run straight away.
+
+## Look and dark mode
+
+The platform, and the apps built with it, use Optiply's look: its colours, the top bar, its buttons, tables and dialogs. **Light or dark** is chosen in the account menu (your avatar, top right): System (follows your computer), Light or Dark. The choice is kept in this browser.
 
 ## Checks
 

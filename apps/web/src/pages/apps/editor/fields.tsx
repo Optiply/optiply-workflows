@@ -92,7 +92,7 @@ export function ProblemList({ path }: { path: (string | number)[] }) {
       {problems.map((p) => (
         <li
           key={`${p.start ?? ''}:${p.message}`}
-          className={cn('text-xs', p.severity === 'error' ? 'text-danger' : 'text-warning')}
+          className={cn('text-xs', p.severity === 'error' ? 'text-danger' : 'text-warning-strong')}
         >
           {p.message}
         </li>
