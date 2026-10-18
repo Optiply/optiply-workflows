@@ -63,13 +63,6 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener)
 }
 
-/** Subscribes to theme changes outside React (Monaco, charts): the theme now, then on every change. */
-export function onThemeChange(listener: (theme: Theme) => void): () => void {
-  const notify = () => listener(currentTheme())
-  notify()
-  return subscribe(notify)
-}
-
 /** The preference and the theme in effect, kept current. */
 export function useTheme(): { preference: ThemePreference; theme: Theme } {
   const theme = useSyncExternalStore(subscribe, currentTheme, () => 'light' as const)

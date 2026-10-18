@@ -14,7 +14,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { Braces, Code2, Database, Loader2, Play, Trash2, Variable as VariableIcon } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
-import { Button, Checkbox, Input, Select } from '@/components/ui'
+import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -180,7 +180,7 @@ function ListSection({
   return (
     <section>
       <div className="flex items-center gap-1 px-1">
-        <h3 className="flex-1 text-xs font-semibold tracking-[1.8px] text-muted uppercase">{title}</h3>
+        <h3 className={cn('flex-1', sectionLabelClass)}>{title}</h3>
         {actions}
       </div>
       <ul className="mt-1 flex flex-col">{children}</ul>
@@ -420,7 +420,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
       </details>
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-semibold tracking-[1.8px] text-muted uppercase">Event handlers</h3>
+        <h3 className={sectionLabelClass}>Event handlers</h3>
         <HandlersEditor
           handlers={query.events ?? []}
           events={['success', 'failure']}

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
 import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react'
-import { Avatar, Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui'
+import { Avatar, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
 import { setThemePreference, type ThemePreference, useTheme } from '@/lib/theme'
 import { useTRPC } from '@/lib/trpc'
@@ -68,6 +68,7 @@ export function AppShell() {
           </Link>
           <span className="h-6 w-px bg-border" />
           <Menu
+            label={`Account: ${me.name}, ${me.email}`}
             trigger={(props) => (
               <button
                 type="button"
@@ -80,22 +81,23 @@ export function AppShell() {
               </button>
             )}
           >
-            <div className="px-2 pt-1 pb-2">
+            <div aria-hidden="true" className="px-2 pt-1 pb-2">
               <div className="truncate text-sm font-semibold">{me.name}</div>
               <div className="truncate text-xs text-muted">{me.email}</div>
             </div>
             <MenuSeparator />
-            <MenuLabel>Theme</MenuLabel>
-            {THEMES.map((t) => (
-              <MenuItem
-                key={t.value}
-                icon={t.icon}
-                checked={preference === t.value}
-                onClick={() => setThemePreference(t.value)}
-              >
-                {t.label}
-              </MenuItem>
-            ))}
+            <MenuGroup label="Theme">
+              {THEMES.map((t) => (
+                <MenuItem
+                  key={t.value}
+                  icon={t.icon}
+                  checked={preference === t.value}
+                  onClick={() => setThemePreference(t.value)}
+                >
+                  {t.label}
+                </MenuItem>
+              ))}
+            </MenuGroup>
             <MenuSeparator />
             <MenuItem icon={<LogOut />} onClick={logout}>
               Sign out

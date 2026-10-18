@@ -7,6 +7,7 @@ import * as monaco from 'monaco-editor'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
+import { token } from '@/lib/tokens'
 
 // Monaco asks for its workers through MonacoEnvironment; Vite bundles each `?worker` import as its own file.
 self.MonacoEnvironment = {
@@ -20,77 +21,51 @@ self.MonacoEnvironment = {
 loader.config({ monaco })
 
 /**
- * Optiply's colours for code, light and dark (see styles.css): the input fill, ink, a blue selection, and syntax
- * from Optiply's scales. Monaco takes hex here, not CSS variables, so these repeat the tokens' values.
+ * Defines `optiply-<theme>`, Optiply's colours for code, from the tokens of the theme in effect (styles.css): the
+ * input fill, ink, a blue selection, syntax from Optiply's scales. Returns the theme's name.
  */
-monaco.editor.defineTheme('optiply-light', {
-  base: 'vs',
-  inherit: true,
-  rules: [
-    { token: 'comment', foreground: '98a6b7', fontStyle: 'italic' },
-    { token: 'keyword', foreground: '5652cb' },
-    { token: 'string', foreground: '067d5e' },
-    { token: 'number', foreground: 'ae4a05' },
-    { token: 'regexp', foreground: 'c62525' },
-    { token: 'type', foreground: '1860c4' },
-    { token: 'delimiter', foreground: '50657f' },
-  ],
-  colors: {
-    'editor.background': '#f9fbfc',
-    'editor.foreground': '#222b36',
-    'editorLineNumber.foreground': '#98a6b7',
-    'editorLineNumber.activeForeground': '#50657f',
-    'editor.lineHighlightBackground': '#f1f5f9',
-    'editor.lineHighlightBorder': '#00000000',
-    'editor.selectionBackground': '#dbe7f9',
-    'editor.inactiveSelectionBackground': '#e6ecf4',
-    'editorCursor.foreground': '#1860c4',
-    'editorIndentGuide.background1': '#e6ecf4',
-    'editorWidget.background': '#ffffff',
-    'editorWidget.border': '#d7dfec',
-    'editorSuggestWidget.background': '#ffffff',
-    'editorSuggestWidget.border': '#d7dfec',
-    'editorSuggestWidget.selectedBackground': '#dbe7f9',
-    'editorHoverWidget.background': '#ffffff',
-    'editorHoverWidget.border': '#d7dfec',
-    'scrollbarSlider.background': '#ccd8eb99',
-    'scrollbarSlider.hoverBackground': '#98a6b799',
-  },
-})
-monaco.editor.defineTheme('optiply-dark', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: 'comment', foreground: '717e8e', fontStyle: 'italic' },
-    { token: 'keyword', foreground: 'a7a5ef' },
-    { token: 'string', foreground: '30cd84' },
-    { token: 'number', foreground: 'fbae79' },
-    { token: 'regexp', foreground: 'fe7777' },
-    { token: 'type', foreground: '75b0ff' },
-    { token: 'delimiter', foreground: '9fb0c3' },
-  ],
-  colors: {
-    'editor.background': '#1c212f',
-    'editor.foreground': '#ebebeb',
-    'editorLineNumber.foreground': '#717e8e',
-    'editorLineNumber.activeForeground': '#9fb0c3',
-    'editor.lineHighlightBackground': '#212736',
-    'editor.lineHighlightBorder': '#00000000',
-    'editor.selectionBackground': '#32466d',
-    'editor.inactiveSelectionBackground': '#2b323f',
-    'editorCursor.foreground': '#75b0ff',
-    'editorIndentGuide.background1': '#2b323f',
-    'editorWidget.background': '#212736',
-    'editorWidget.border': '#303546',
-    'editorSuggestWidget.background': '#212736',
-    'editorSuggestWidget.border': '#303546',
-    'editorSuggestWidget.selectedBackground': '#203658',
-    'editorHoverWidget.background': '#212736',
-    'editorHoverWidget.border': '#303546',
-    'scrollbarSlider.background': '#30354699',
-    'scrollbarSlider.hoverBackground': '#717e8e99',
-  },
-})
+export function optiplyTheme(theme: 'light' | 'dark'): string {
+  const hex = (name: string) => token(name).slice(1)
+  monaco.editor.defineTheme(`optiply-${theme}`, {
+    base: theme === 'dark' ? 'vs-dark' : 'vs',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: hex('--ink-3'), fontStyle: 'italic' },
+      { token: 'keyword', foreground: hex('--purple-3') },
+      { token: 'string', foreground: hex('--green-3') },
+      { token: 'number', foreground: hex('--orange-4') },
+      { token: 'regexp', foreground: hex('--red-3') },
+      { token: 'type', foreground: hex('--blue-3') },
+      { token: 'delimiter', foreground: hex('--ink-2') },
+    ],
+    colors: {
+      'editor.background': token('--shade-2'),
+      'editor.foreground': token('--ink-1'),
+      'editorLineNumber.foreground': token('--ink-3'),
+      'editorLineNumber.activeForeground': token('--ink-2'),
+      // A line lighter than the field in dark mode, darker in light mode.
+      'editor.lineHighlightBackground': token(theme === 'dark' ? '--shade-1' : '--shade-4'),
+      'editor.lineHighlightBorder': '#00000000',
+      'editor.selectionBackground': token('--blue-1h'),
+      'editor.inactiveSelectionBackground': token('--shade-6'),
+      'editorCursor.foreground': token('--blue-3'),
+      'editorIndentGuide.background1': token('--shade-6'),
+      'editorWidget.background': token('--shade-1'),
+      'editorWidget.border': token('--shade-7'),
+      'editorSuggestWidget.background': token('--shade-1'),
+      'editorSuggestWidget.border': token('--shade-7'),
+      'editorSuggestWidget.selectedBackground': token('--blue-1'),
+      'editorHoverWidget.background': token('--shade-1'),
+      'editorHoverWidget.border': token('--shade-7'),
+      'scrollbarSlider.background': `${token('--shade-8')}99`,
+      'scrollbarSlider.hoverBackground': `${token('--ink-3')}99`,
+    },
+  })
+  return `optiply-${theme}`
+}
+
+// Monaco measures its font when an editor is created; if JetBrains Mono (a web font) arrives later, measure again.
+document.fonts?.addEventListener('loadingdone', () => monaco.editor.remeasureFonts())
 
 const js = monaco.typescript.javascriptDefaults
 js.setCompilerOptions({

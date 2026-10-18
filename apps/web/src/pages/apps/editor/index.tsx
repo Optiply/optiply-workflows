@@ -4,7 +4,7 @@ import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
-import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -334,14 +334,12 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
                 <PagesPanel key={epoch} />
                 {!readOnly && (
                   <section>
-                    <h2 className="mb-2 text-xs font-semibold tracking-[1.8px] text-muted uppercase">Add</h2>
+                    <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
                     <Palette />
                   </section>
                 )}
                 <section>
-                  <h2 className="mb-2 text-xs font-semibold tracking-[1.8px] text-muted uppercase">
-                    Components
-                  </h2>
+                  <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
                   <ComponentTree />
                 </section>
               </aside>

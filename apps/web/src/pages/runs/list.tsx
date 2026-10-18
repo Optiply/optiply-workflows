@@ -4,16 +4,15 @@ import { History } from 'lucide-react'
 import { useState } from 'react'
 import { StatusBadge } from '@/components/status-badge'
 import {
-  Button,
   EmptyState,
   ErrorNote,
+  LoadMoreFooter,
   linkClass,
   PageContainer,
   PageHeader,
   Select,
   Spinner,
   Table,
-  TableFooter,
   Td,
   Th,
 } from '@/components/ui'
@@ -61,18 +60,13 @@ export function RunsPage() {
         <PageContainer>
           <Table
             footer={
-              <TableFooter>
-                <span>
-                  <strong className="font-semibold text-ink">{rows.length}</strong>{' '}
-                  {rows.length === 1 ? 'run' : 'runs'}
-                  {runs.hasNextPage && ' so far'}
-                </span>
-                {runs.hasNextPage && (
-                  <Button size="sm" loading={runs.isFetchingNextPage} onClick={() => runs.fetchNextPage()}>
-                    Load more
-                  </Button>
-                )}
-              </TableFooter>
+              <LoadMoreFooter
+                count={rows.length}
+                noun={['run', 'runs']}
+                more={!!runs.hasNextPage}
+                loading={runs.isFetchingNextPage}
+                onMore={() => runs.fetchNextPage()}
+              />
             }
           >
             <thead>

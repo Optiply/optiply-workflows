@@ -68,7 +68,6 @@
   --shadow-7:
     0 8px 32px -8px rgb(80 101 127 / 8%), 0 6px 8px -6px rgb(80 101 127 / 10%),
     0 8px 16px 0 rgb(80 101 127 / 20%);
-  --btn-shadow-1: 0 1px 3px 0 rgb(80 101 127 / 6%), 0 1px 2px 0 rgb(47 53 69 / 6%);
   --focus-ring: 0 0 0 4px rgb(25 102 210 / 20%), 0 0 0 2px var(--blue-3);
   --invalid-ring: 0 0 0 4px #c625251a, 0 0 0 2px var(--red-3);
 }
@@ -131,7 +130,6 @@
   /* Dark shadows add a 1px outline so surfaces stay visible. */
   --shadow-1: 0 0 0 1px rgb(47 53 69 / 100%);
   --shadow-7: 0 12px 24px 0 rgb(17 18 23 / 80%), 0 0 0 1px rgb(59 66 84);
-  --btn-shadow-1: 0 1px 0 0 rgb(80 101 127 / 16%), 0 0 0 1px rgb(47 53 69 / 100%);
 }
 
 /* What the components use: Optiply's tokens by role. `inline`, so dark mode is only the class switch above. */
@@ -203,7 +201,6 @@
 
   --shadow-card: var(--shadow-1);
   --shadow-menu: var(--shadow-7);
-  --shadow-button: var(--btn-shadow-1);
   --shadow-focus: var(--focus-ring);
   --shadow-invalid: var(--invalid-ring);
 }

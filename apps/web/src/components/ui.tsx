@@ -84,29 +84,25 @@ export function PageContainer({ className, ...props }: ComponentProps<'div'>) {
 }
 
 const BADGE_TONES = {
-  neutral: 'bg-subtle text-muted ring-divider',
-  accent: 'bg-op-blue-1 text-op-blue-4 ring-op-blue-2',
-  success: 'bg-op-green-1 text-op-green-4 ring-op-green-2',
-  warning: 'bg-op-orange-1 text-op-orange-4 ring-op-orange-2',
-  danger: 'bg-op-red-1 text-op-red-4 ring-op-red-2',
-  yellow: 'bg-op-yellow-1 text-op-yellow-4 ring-op-yellow-2',
-  purple: 'bg-op-purple-1 text-op-purple-4 ring-op-purple-2',
+  neutral: 'bg-subtle text-muted',
+  accent: 'bg-op-blue-1 text-op-blue-4',
+  success: 'bg-op-green-1 text-op-green-4',
+  warning: 'bg-op-orange-1 text-op-orange-4',
+  danger: 'bg-op-red-1 text-op-red-4',
 } as const
 export type BadgeTone = keyof typeof BADGE_TONES
 
-/** Optiply's tags: a tint with darker text, outlined with `outline`. */
+/** Optiply's tags: a tint with darker text. */
 export function Badge({
   className,
   tone = 'neutral',
-  outline = false,
   ...props
-}: ComponentProps<'span'> & { tone?: BadgeTone; outline?: boolean }) {
+}: ComponentProps<'span'> & { tone?: BadgeTone }) {
   return (
     <span
       className={cn(
         'inline-flex items-center gap-1 rounded px-2 py-1 text-xs leading-4 font-medium whitespace-nowrap',
         BADGE_TONES[tone],
-        outline && 'ring-1',
         className,
       )}
       {...props}
@@ -156,14 +152,12 @@ export function PageHeader({
   )
 }
 
-/** A small uppercase heading over a group of cards ("PURCHASING" in Optiply). */
+/** Optiply's small uppercase heading ("PURCHASING"), for headings of any level. */
+export const sectionLabelClass = 'text-xs leading-4 font-semibold tracking-[1.8px] text-muted uppercase'
+
+/** A small uppercase heading over a group of cards or a panel's section. */
 export function SectionLabel({ className, ...props }: ComponentProps<'h2'>) {
-  return (
-    <h2
-      className={cn('mb-2 text-xs leading-4 font-semibold tracking-[1.8px] text-muted uppercase', className)}
-      {...props}
-    />
-  )
+  return <h2 className={cn('mb-2', sectionLabelClass, className)} {...props} />
 }
 
 export function EmptyState({
@@ -241,6 +235,36 @@ export function ActionBar({ className, ...props }: ComponentProps<'div'>) {
       )}
       {...props}
     />
+  )
+}
+
+/** A table's footer for a list loaded page by page: how many show ("so far" while there are more), and Load more. */
+export function LoadMoreFooter({
+  count,
+  noun,
+  more,
+  loading,
+  onMore,
+}: {
+  count: number
+  /** Singular and plural: `['run', 'runs']`. */
+  noun: [string, string]
+  more: boolean
+  loading: boolean
+  onMore: () => void
+}) {
+  return (
+    <TableFooter>
+      <span>
+        <strong className="font-semibold text-ink">{count}</strong> {count === 1 ? noun[0] : noun[1]}
+        {more && ' so far'}
+      </span>
+      {more && (
+        <Button size="sm" loading={loading} onClick={onMore}>
+          Load more
+        </Button>
+      )}
+    </TableFooter>
   )
 }
 
@@ -332,15 +356,12 @@ export function Tabs<T extends string>({
 /** A modal dialog, as Optiply's: a card over the faded page. Escape or a click outside closes it. */
 export function Dialog({
   title,
-  icon,
   onClose,
   children,
   footer,
   className,
 }: {
   title: ReactNode
-  /** Before the title, e.g. a question mark for a confirmation. */
-  icon?: ReactNode
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
@@ -366,18 +387,13 @@ export function Dialog({
         className={cn('relative w-full max-w-lg rounded-lg bg-surface p-6 text-ink shadow-menu', className)}
       >
         <div className="flex items-center justify-between gap-3">
-          <h2 className="flex min-w-0 items-center gap-3 text-base font-medium">
-            {icon && <span className="shrink-0 text-muted [&_svg]:size-5">{icon}</span>}
-            {title}
-          </h2>
+          <h2 className="min-w-0 text-base font-medium">{title}</h2>
           <Button size="icon" variant="ghost" title="Close" className="-my-1 -mr-2" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
         {/* Room for the focus rings of fields at the edges. */}
-        <div className={cn('-mx-1 mt-4 max-h-[65vh] overflow-y-auto px-1 py-1 text-sm', icon && 'pl-9')}>
-          {children}
-        </div>
+        <div className="-mx-1 mt-4 max-h-[65vh] overflow-y-auto px-1 py-1 text-sm">{children}</div>
         {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
@@ -429,11 +445,13 @@ export function Checkbox({
 }
 
 /**
- * A dropdown menu, as Optiply's: `trigger` gets the props that open it. Escape, a click outside or choosing an
- * item closes it; arrow keys move between items.
+ * A dropdown menu, as Optiply's: `trigger` gets the props that open it. Escape, a click outside, focus moving out
+ * (Tab) or choosing an item closes it; arrow keys move between items. Children are items, groups and separators;
+ * anything else inside should be `aria-hidden` (say it in `label` instead).
  */
 export function Menu({
   trigger,
+  label,
   children,
   align = 'end',
   className,
@@ -441,9 +459,11 @@ export function Menu({
   trigger: (props: {
     'aria-haspopup': 'menu'
     'aria-expanded': boolean
-    'aria-controls': string
+    'aria-controls': string | undefined
     onClick: () => void
   }) => ReactNode
+  /** What screen readers call the menu. */
+  label: string
   children: ReactNode
   align?: 'start' | 'end'
   className?: string
@@ -464,11 +484,18 @@ export function Menu({
       setOpen(false)
       root.current?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus()
     }
+    // Tabbing out of the menu closes it, like a click outside.
+    const onFocusOut = (e: FocusEvent) => {
+      if (e.relatedTarget && !root.current?.contains(e.relatedTarget as Node)) setOpen(false)
+    }
+    const at = root.current
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
+    at?.addEventListener('focusout', onFocusOut)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
+      at?.removeEventListener('focusout', onFocusOut)
     }
   }, [open])
 
@@ -486,7 +513,7 @@ export function Menu({
       {trigger({
         'aria-haspopup': 'menu',
         'aria-expanded': open,
-        'aria-controls': id,
+        'aria-controls': open ? id : undefined,
         onClick: () => setOpen((o) => !o),
       })}
       {open && (
@@ -494,6 +521,7 @@ export function Menu({
           ref={list}
           id={id}
           role="menu"
+          aria-label={label}
           tabIndex={-1}
           onKeyDown={move}
           onClick={(e) => {
@@ -542,9 +570,16 @@ export function MenuItem({
   )
 }
 
-/** A heading inside a `Menu`. */
-export function MenuLabel({ className, ...props }: ComponentProps<'div'>) {
-  return <div className={cn('px-2 pt-1 pb-1 text-xs font-medium text-muted', className)} {...props} />
+/** Items of a `Menu` under a heading (the theme's choices). */
+export function MenuGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <fieldset aria-label={label} className="m-0 min-w-0 border-0 p-0">
+      <div aria-hidden="true" className="px-2 pt-1 pb-1 text-xs font-medium text-muted">
+        {label}
+      </div>
+      {children}
+    </fieldset>
+  )
 }
 
 export function MenuSeparator() {

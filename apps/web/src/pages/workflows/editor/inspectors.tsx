@@ -1220,9 +1220,9 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
 type TaskConfig = BlockOf<'userTask'>['config']
 type TaskFieldDef = NonNullable<TaskConfig['fields']>[number]
 
-/** Problems under a plain input (Monaco fields show theirs as markers). */
 const TONE = { error: 'text-danger', warning: 'text-warning-strong' } as const
 
+/** Problems under a plain input (Monaco fields show theirs as markers). */
 function Problems({ list }: { list: FieldProblem[] }) {
   if (!list.length) return null
   return (

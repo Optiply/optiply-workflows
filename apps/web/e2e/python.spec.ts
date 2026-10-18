@@ -54,15 +54,12 @@ test('a Python code block in the editor', async ({ page }) => {
   })
 
   await test.step('renaming the query rewrites the Python', async () => {
-    // With the run panel open the canvas is shorter, and a block can sit under the minimap (bottom right), which then
-    // takes a real click (it did, in full local runs). Dispatched on the block, the click still goes through React
-    // Flow's own handler: it selects the block and shows its inspector.
-    await block(page, 'query1').dispatchEvent('click')
+    await block(page, 'query1').click()
     const name = page.getByTestId('block-name')
     await name.fill('customers')
     await name.press('Enter')
     await expect(block(page, 'customers')).toBeVisible()
-    await block(page, 'python1').dispatchEvent('click')
+    await block(page, 'python1').click()
     await expect
       .poll(() => editorText(python()))
       .toBe('return [r["email"].upper() for r in customers.data if r.plan == "pro"]')

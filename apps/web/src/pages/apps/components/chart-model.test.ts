@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
-  chartModel,
-  chartPalette,
+  type ChartPalette,
   compactNumber,
-  OTHER_COLOR,
-  SERIES_COLORS,
-  SERIES_COLORS_DARK,
+  chartModel as model,
+  SERIES_SLOTS,
   sliceColors,
   toNumber,
   withAlpha,
 } from './chart-model'
+
+/** Distinct colors per slot, so tests see which slot each series got. */
+const PALETTE: ChartPalette = {
+  series: Array.from({ length: SERIES_SLOTS }, (_, i) => `#00000${i}`),
+  other: '#999999',
+  ink: { surface: '#fff', text: '#000', secondary: '#333', muted: '#666', grid: '#eee', axis: '#ccc' },
+}
+const SERIES_COLORS = PALETTE.series
+const chartModel = (input: Omit<Parameters<typeof model>[0], 'palette'>) =>
+  model({ ...input, palette: PALETTE })
 
 const sales = [
   { month: 'Jan', revenue: '1200.50', orders: 30, region: 'NL' },
@@ -38,13 +46,11 @@ describe('chart model', () => {
     expect(chosen.series.map((s) => [s.key, s.color])).toEqual([['orders', SERIES_COLORS[0]]])
   })
 
-  it('colors series with the dark palette in dark mode, the same slots', () => {
-    const m = chartModel({ kind: 'bar', data: sales, xKey: '', series: [], theme: 'dark' })
-    expect(m.theme).toBe('dark')
-    expect(m.series.map((s) => s.color)).toEqual([SERIES_COLORS_DARK[0], SERIES_COLORS_DARK[1]])
-    expect(SERIES_COLORS_DARK).toHaveLength(SERIES_COLORS.length)
-    expect(sliceColors(8, 3, 'dark').at(-1)).toBe(chartPalette('dark').other)
-    expect(chartPalette('dark').ink.surface).not.toBe(chartPalette('light').ink.surface)
+  it('colors series from the palette it is given', () => {
+    const dark: ChartPalette = { ...PALETTE, series: PALETTE.series.map((c) => `${c}aa`) }
+    const m = model({ kind: 'bar', data: sales, xKey: '', series: [], palette: dark })
+    expect(m.palette).toBe(dark)
+    expect(m.series.map((s) => s.color)).toEqual([dark.series[0], dark.series[1]])
   })
 
   it('makes a pie of one series, folding slices past the seventh into Other', () => {
@@ -54,7 +60,7 @@ describe('chart model', () => {
     expect(m.labels).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'Other'])
     expect(m.series[0]!.values).toEqual([1, 2, 3, 4, 5, 6, 7, 8 + 9 + 10])
     expect(m.folded).toBe(3)
-    expect(sliceColors(8, 3).at(-1)).toBe(OTHER_COLOR)
+    expect(sliceColors(8, 3, PALETTE).at(-1)).toBe(PALETTE.other)
   })
 
   it('copes with no data, and with values that aren’t numbers', () => {
@@ -65,7 +71,7 @@ describe('chart model', () => {
       series: [],
       omitted: [],
       folded: 0,
-      theme: 'light',
+      palette: PALETTE,
     })
     expect([toNumber('12'), toNumber('a'), toNumber(''), toNumber(Number.NaN), toNumber(true)]).toEqual([
       12,

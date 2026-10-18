@@ -1,9 +1,38 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
 import { useTheme } from '@/lib/theme'
+import { token } from '@/lib/tokens'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppValue } from '../runtime/react'
-import { type ChartModel, chartModel } from './chart-model'
+import { type ChartModel, type ChartPalette, chartModel } from './chart-model'
+
+/**
+ * Optiply's colors for charts, from the tokens of the theme in effect: the base of each scale (blue, orange, green,
+ * purple, the logo's blue, red, yellow and navy), its greys for text, grid and axes.
+ */
+function chartPalette(): ChartPalette {
+  return {
+    series: [
+      '--blue-3',
+      '--orange-3',
+      '--green-3',
+      '--purple-3',
+      '--optiblue-1',
+      '--red-3',
+      '--yellow-4',
+      '--blue-5',
+    ].map(token),
+    other: token('--ink-3'),
+    ink: {
+      surface: token('--shade-1'),
+      text: token('--ink-1'),
+      secondary: token('--ink-2'),
+      muted: token('--ink-2'),
+      grid: token('--shade-6'),
+      axis: token('--shade-8'),
+    },
+  }
+}
 
 // Chart.js loads with the first chart.
 const ChartCanvas = lazy(() => import('./chart-canvas'))
@@ -24,9 +53,11 @@ export function ChartRenderer({ component }: RendererProps) {
   const showLegend = useAppValue<boolean>(`${name}.showLegend`)
   const [asTable, setAsTable] = useState(false)
   const { theme } = useTheme()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the tokens' values change with the theme
+  const palette = useMemo(chartPalette, [theme])
   const model = useMemo(
-    () => chartModel({ kind, data, xKey, series, theme }),
-    [kind, data, xKey, series, theme],
+    () => chartModel({ kind, data, xKey, series, palette }),
+    [kind, data, xKey, series, palette],
   )
   const empty = !model.series.length || !model.labels.length
   const label = `${title || name}: ${model.kind} chart of ${model.series.map((s) => s.label).join(', ') || 'no data'}${model.xKey ? ` by ${model.xKey}` : ''}`

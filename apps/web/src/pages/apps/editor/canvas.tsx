@@ -10,6 +10,7 @@ import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
 import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
+import { sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ComponentView, placedChildren, ROW_HEIGHT } from '../canvas'
 import { ChildGridContext, EditingContext, ShownModalContext } from '../grid-context'
@@ -208,11 +209,7 @@ export function EditCanvas() {
 }
 
 function GridCaption({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={cn('mb-6 text-[11px] font-semibold tracking-[1.8px] text-muted uppercase', className)}>
-      {children}
-    </div>
-  )
+  return <div className={cn('mb-6', sectionLabelClass, className)}>{children}</div>
 }
 
 /**

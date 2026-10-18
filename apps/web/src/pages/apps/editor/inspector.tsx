@@ -11,7 +11,7 @@ import {
   withDescendants,
 } from '@ow/app-definition'
 import { Trash2 } from 'lucide-react'
-import { Button, Checkbox, Select } from '@/components/ui'
+import { Button, Checkbox, Select, sectionLabelClass } from '@/components/ui'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
@@ -85,14 +85,14 @@ export function ComponentInspector({ name }: { name: string }) {
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-semibold tracking-[1.8px] text-muted uppercase">Properties</h3>
+        <h3 className={sectionLabelClass}>Properties</h3>
         {Object.entries(spec.props).map(([prop, propSpec]) => (
           <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
         ))}
       </section>
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-semibold tracking-[1.8px] text-muted uppercase">Event handlers</h3>
+        <h3 className={sectionLabelClass}>Event handlers</h3>
         <HandlersEditor
           handlers={component.events ?? []}
           events={spec.events}

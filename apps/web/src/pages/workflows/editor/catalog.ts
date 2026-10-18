@@ -20,8 +20,10 @@ import { isSqlType } from '@/lib/resource-types'
 export interface BlockKind {
   label: string
   icon: LucideIcon
-  /** Tailwind classes for the icon chip. */
-  /** Optiply's tag colours: what kind of step it is (triggers green or red, data blue, logic purple, code orange). */
+  /**
+   * The icon chip's classes, Optiply's tag colours by what the step does: triggers green (the error handler red),
+   * data and calls blue, logic purple, JavaScript orange, Python and user tasks yellow, waiting grey.
+   */
   tone: string
   /** New blocks are named `<prefix><n>`, like Retool. */
   prefix: string

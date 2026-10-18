@@ -1,9 +1,9 @@
-import { Badge } from './ui'
+import { Badge, type BadgeTone } from './ui'
 
-const TONE: Record<string, 'neutral' | 'accent' | 'success' | 'danger'> = {
+const TONE: Record<string, BadgeTone> = {
   queued: 'neutral',
   running: 'accent',
-  waiting: 'accent',
+  waiting: 'warning',
   succeeded: 'success',
   errored: 'danger',
   failed: 'danger',

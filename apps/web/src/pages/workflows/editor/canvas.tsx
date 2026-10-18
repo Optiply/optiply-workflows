@@ -3,6 +3,7 @@ import {
   applyNodeChanges,
   Background,
   type Connection,
+  ControlButton,
   Controls,
   type Edge as FlowEdge,
   Handle,
@@ -14,7 +15,7 @@ import {
   ReactFlow,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, Map as MapIcon } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { kindOf, summary } from './catalog'
@@ -33,7 +34,32 @@ const NO_LIVE: Record<string, LiveBlock> = {}
  * The open graph: the workflow's, or a function's. Blocks and edges come from the store; every edit goes back
  * through `updateGraph`. Run statuses only show on the workflow's own graph (function calls aren't recorded per block).
  */
+/** Whether the minimap shows, per browser: it can cover blocks in a short canvas, so it can be hidden. */
+const MINIMAP_KEY = 'ow.minimap'
+
+function useMinimap(): [boolean, () => void] {
+  const [shown, setShown] = useState(() => {
+    try {
+      return localStorage.getItem(MINIMAP_KEY) !== 'hidden'
+    } catch {
+      return true
+    }
+  })
+  const toggle = () =>
+    setShown((was) => {
+      try {
+        if (was) localStorage.setItem(MINIMAP_KEY, 'hidden')
+        else localStorage.removeItem(MINIMAP_KEY)
+      } catch {
+        // Storage blocked: the choice lasts until the page reloads.
+      }
+      return !was
+    })
+  return [shown, toggle]
+}
+
 export function Canvas() {
+  const [minimap, toggleMinimap] = useMinimap()
   const definition = useEditor((s) => s.definition)
   const fn = useEditor((s) => s.graph)
   const allDiagnostics = useEditor((s) => s.diagnostics)
@@ -130,8 +156,25 @@ export function Canvas() {
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} size={1} />
-      <Controls showInteractive={false} />
-      <MiniMap pannable zoomable className="!bg-surface" nodeStrokeWidth={3} />
+      <Controls showInteractive={false}>
+        <ControlButton
+          onClick={toggleMinimap}
+          title={minimap ? 'Hide the minimap' : 'Show the minimap'}
+          aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
+          aria-pressed={minimap}
+        >
+          <MapIcon />
+        </ControlButton>
+      </Controls>
+      {minimap && (
+        <MiniMap
+          pannable
+          zoomable
+          className="!bg-surface"
+          style={{ width: 140, height: 96 }}
+          nodeStrokeWidth={3}
+        />
+      )}
     </ReactFlow>
   )
 }

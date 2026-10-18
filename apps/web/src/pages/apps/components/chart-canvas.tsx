@@ -12,6 +12,7 @@ import {
   CategoryScale,
   Chart,
   type ChartConfiguration,
+  type ChartType,
   Filler,
   Legend,
   LinearScale,
@@ -23,7 +24,7 @@ import {
   Tooltip,
 } from 'chart.js'
 import { useEffect, useRef } from 'react'
-import { type ChartModel, chartPalette, compactNumber, sliceColors, withAlpha } from './chart-model'
+import { type ChartModel, compactNumber, sliceColors, withAlpha } from './chart-model'
 
 Chart.register(
   BarController,
@@ -43,17 +44,26 @@ Chart.defaults.font.family =
   '"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
 Chart.defaults.font.size = 12
 
-/** A vertical hairline at the hovered x, so lines are read by position rather than by hitting a 2 px stroke. */
-const crosshair = (color: string): Plugin => ({
+declare module 'chart.js' {
+  interface PluginOptionsByType<TType extends ChartType> {
+    owCrosshair?: { color?: string }
+  }
+}
+
+/**
+ * A vertical hairline at the hovered x, so lines are read by position rather than by hitting a 2 px stroke. Its color
+ * is an option (`plugins.owCrosshair.color`), so an update in place (a new theme) recolors it.
+ */
+const crosshair: Plugin = {
   id: 'owCrosshair',
-  afterDatasetsDraw(chart) {
+  afterDatasetsDraw(chart, _args, options: { color?: string }) {
     const active = chart.tooltip?.getActiveElements() ?? []
     if (!active.length) return
     const x = active[0]!.element.x
     const { top, bottom } = chart.chartArea
     const ctx = chart.ctx
     ctx.save()
-    ctx.strokeStyle = color
+    ctx.strokeStyle = options.color ?? '#999'
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(Math.round(x) + 0.5, top)
@@ -61,11 +71,11 @@ const crosshair = (color: string): Plugin => ({
     ctx.stroke()
     ctx.restore()
   },
-})
+}
 
 function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean }): ChartConfiguration {
   const { kind } = model
-  const { ink } = chartPalette(model.theme)
+  const { ink } = model.palette
   const lines = kind === 'line' || kind === 'area'
   // Legend keys mirror the mark: a short line for lines and areas, a square for bars and slices.
   const legend = {
@@ -108,7 +118,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       labelColor: (item: { datasetIndex: number; dataIndex: number }) => {
         const color =
           kind === 'pie'
-            ? sliceColors(model.labels.length, model.folded, model.theme)[item.dataIndex]!
+            ? sliceColors(model.labels.length, model.folded, model.palette)[item.dataIndex]!
             : (model.series[item.datasetIndex]?.color ?? ink.muted)
         return { borderColor: color, backgroundColor: color, borderWidth: 2 }
       },
@@ -131,7 +141,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
           {
             label: s?.label ?? '',
             data: s?.values ?? [],
-            backgroundColor: sliceColors(model.labels.length, model.folded, model.theme),
+            backgroundColor: sliceColors(model.labels.length, model.folded, model.palette),
             borderColor: ink.surface,
             borderWidth: 2,
             hoverOffset: 4,
@@ -191,7 +201,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       color: ink.secondary,
       animation: false,
       interaction: { mode: 'index', intersect: kind === 'bar' },
-      plugins: { legend, tooltip },
+      plugins: { legend, tooltip, owCrosshair: { color: ink.axis } },
       scales: {
         x: {
           stacked: opts.stacked,
@@ -208,7 +218,7 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
         },
       },
     },
-    plugins: kind === 'bar' ? [] : [crosshair(ink.axis)],
+    plugins: kind === 'bar' ? [] : [crosshair],
   }
 }
 
@@ -239,6 +249,13 @@ export default function ChartCanvas({
     current?.destroy()
     chartRef.current = new Chart(canvasRef.current!, next)
   }, [model, stacked, showLegend])
+
+  // Drawn before the web font arrived (there's no animation to redraw it): draw again once fonts have loaded.
+  useEffect(() => {
+    const redraw = () => chartRef.current?.update('none')
+    document.fonts?.addEventListener('loadingdone', redraw)
+    return () => document.fonts?.removeEventListener('loadingdone', redraw)
+  }, [])
 
   useEffect(
     () => () => {

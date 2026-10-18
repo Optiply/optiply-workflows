@@ -7,11 +7,11 @@ import {
   buttonVariants,
   ErrorNote,
   Input,
+  LoadMoreFooter,
   PageContainer,
   Select,
   Spinner,
   Table,
-  TableFooter,
   Td,
   Th,
 } from '@/components/ui'
@@ -145,18 +145,13 @@ function AuditTable() {
       ) : (
         <Table
           footer={
-            <TableFooter>
-              <span>
-                <strong className="font-semibold text-ink">{rows.length}</strong>{' '}
-                {rows.length === 1 ? 'event' : 'events'}
-                {events.hasNextPage && ' so far'}
-              </span>
-              {events.hasNextPage && (
-                <Button size="sm" onClick={() => events.fetchNextPage()} loading={events.isFetchingNextPage}>
-                  Load more
-                </Button>
-              )}
-            </TableFooter>
+            <LoadMoreFooter
+              count={rows.length}
+              noun={['event', 'events']}
+              more={!!events.hasNextPage}
+              loading={events.isFetchingNextPage}
+              onMore={() => events.fetchNextPage()}
+            />
           }
         >
           <thead>

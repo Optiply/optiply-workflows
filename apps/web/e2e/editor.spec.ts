@@ -66,21 +66,18 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
   })
 
   await test.step('rename query1 → customer: every reference follows', async () => {
-    // With the run panel open the canvas is shorter, and a block can sit under the minimap (bottom right), which then
-    // takes a real click (it did, in full local runs). Dispatched on the block, the click still goes through React
-    // Flow's own handler: it selects the block and shows its inspector.
-    await block(page, 'query1').dispatchEvent('click')
+    await block(page, 'query1').click()
     const name = page.getByTestId('block-name')
     await name.fill('customer')
     await name.press('Enter')
     await expect(block(page, 'customer')).toBeVisible()
     await expect(block(page, 'query1')).toHaveCount(0)
 
-    await block(page, 'branch1').dispatchEvent('click')
+    await block(page, 'branch1').click()
     await expect
       .poll(() => editorText(field(page, 'branch1', 'condition-c1.js')))
       .toBe("customer.data[0].plan === 'pro'")
-    await block(page, 'code1').dispatchEvent('click')
+    await block(page, 'code1').click()
     await expect
       .poll(() => editorText(field(page, 'code1', 'code.js')))
       .toBe('return customer.data[0].email.toUpperCase()')
