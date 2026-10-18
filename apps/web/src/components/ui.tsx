@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
  * Optiply's buttons: `primary` (blue) for the main action, `secondary` (blue tint), `tertiary` (grey, the default),
  * `ghost` for icons and quiet actions, `danger` (red tint). 32px high; `sm` in dense toolbars and rows.
  */
-const buttonVariants = cva(
+export const buttonVariants = cva(
   'inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md font-medium whitespace-nowrap transition-colors outline-none focus-visible:shadow-focus disabled:pointer-events-none',
   {
     variants: {

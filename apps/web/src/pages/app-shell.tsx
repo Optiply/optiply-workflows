@@ -1,20 +1,29 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
-import { Database, History, Inbox, LayoutGrid, LogOut, Plug, Settings, Workflow } from 'lucide-react'
-import type { ReactNode } from 'react'
-import { Avatar } from '@/components/ui'
+import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react'
+import { Avatar, Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui'
+import { Wordmark } from '@/components/wordmark'
+import { setThemePreference, type ThemePreference, useTheme } from '@/lib/theme'
 import { useTRPC } from '@/lib/trpc'
+import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/app')
 
-const NAV: { to: string; label: string; icon: ReactNode }[] = [
-  { to: '/workflows', label: 'Workflows', icon: <Workflow className="size-4" /> },
-  { to: '/apps', label: 'Apps', icon: <LayoutGrid className="size-4" /> },
-  { to: '/resources', label: 'Resources', icon: <Plug className="size-4" /> },
-  { to: '/database', label: 'Database', icon: <Database className="size-4" /> },
-  { to: '/runs', label: 'Runs', icon: <History className="size-4" /> },
+const NAV: { to: string; label: string }[] = [
+  { to: '/workflows', label: 'Workflows' },
+  { to: '/apps', label: 'Apps' },
+  { to: '/resources', label: 'Resources' },
+  { to: '/database', label: 'Database' },
+  { to: '/runs', label: 'Runs' },
 ]
 
+const THEMES: { value: ThemePreference; label: string; icon: React.ReactNode }[] = [
+  { value: 'system', label: 'System', icon: <Monitor /> },
+  { value: 'light', label: 'Light', icon: <Sun /> },
+  { value: 'dark', label: 'Dark', icon: <Moon /> },
+]
+
+/** Optiply's frame: a white bar on the blue-grey page, with the page (or a full-bleed editor) under it. */
 export function AppShell() {
   const { me } = route.useRouteContext()
   const navigate = useNavigate()
@@ -22,6 +31,7 @@ export function AppShell() {
   const fullBleed = useMatches({ select: (matches) => matches.some((m) => m.staticData.fullBleed) })
   const trpc = useTRPC()
   const openTasks = useQuery({ ...trpc.tasks.openCount.queryOptions(), refetchInterval: 30_000 })
+  const { preference } = useTheme()
 
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' })
@@ -30,47 +40,75 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-surface">
-        <div className="flex h-14 items-center gap-2.5 px-4">
-          <div className="rounded-lg bg-accent p-1.5 text-on-accent">
-            <Workflow className="size-4" />
-          </div>
-          <span className="font-semibold tracking-tight">Optiply Workflows</span>
+    <div className="flex h-full flex-col gap-2 p-2">
+      <nav aria-label="Main" className="flex h-14 shrink-0 items-center gap-4 rounded-lg bg-surface px-4">
+        <Link
+          to="/"
+          aria-label="Home"
+          className="mr-2 shrink-0 rounded-md outline-none focus-visible:shadow-focus"
+        >
+          <Wordmark />
+        </Link>
+        <div className="flex min-w-0 items-center overflow-x-auto">
+          {NAV.map((item) => (
+            <NavLink key={item.to} to={item.to} label={item.label} />
+          ))}
+          <NavLink to="/inbox" label="Inbox" count={openTasks.data} />
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV.map((item) => (
-            <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
-          ))}
-          <NavLink to="/inbox" icon={<Inbox className="size-4" />} label="Inbox" count={openTasks.data} />
-        </nav>
-
-        <div className="border-t border-border p-2">
-          <NavLink to="/settings" icon={<Settings className="size-4" />} label="Settings" />
-          <div className="mt-2 flex items-center gap-2.5 rounded-md px-2 py-2">
-            <Avatar name={me.name} src={me.avatarUrl} />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium">{me.name}</div>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Link
+            to="/settings"
+            aria-label="Settings"
+            title="Settings"
+            activeProps={{ className: navClass(true, 'size-8 justify-center px-0') }}
+            inactiveProps={{ className: navClass(false, 'size-8 justify-center px-0') }}
+          >
+            <Settings className="size-5" />
+          </Link>
+          <span className="h-6 w-px bg-border" />
+          <Menu
+            trigger={(props) => (
+              <button
+                type="button"
+                aria-label="Account"
+                title={me.email}
+                className="flex cursor-pointer items-center rounded-full outline-none focus-visible:shadow-focus"
+                {...props}
+              >
+                <Avatar name={me.name} src={me.avatarUrl} className="size-8" />
+              </button>
+            )}
+          >
+            <div className="px-2 pt-1 pb-2">
+              <div className="truncate text-sm font-semibold">{me.name}</div>
               <div className="truncate text-xs text-muted">{me.email}</div>
             </div>
-            <button
-              type="button"
-              onClick={logout}
-              title="Sign out"
-              className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
-            >
-              <LogOut className="size-4" />
-            </button>
-          </div>
+            <MenuSeparator />
+            <MenuLabel>Theme</MenuLabel>
+            {THEMES.map((t) => (
+              <MenuItem
+                key={t.value}
+                icon={t.icon}
+                checked={preference === t.value}
+                onClick={() => setThemePreference(t.value)}
+              >
+                {t.label}
+              </MenuItem>
+            ))}
+            <MenuSeparator />
+            <MenuItem icon={<LogOut />} onClick={logout}>
+              Sign out
+            </MenuItem>
+          </Menu>
         </div>
-      </aside>
+      </nav>
 
-      <main className={fullBleed ? 'min-w-0 flex-1 overflow-hidden' : 'min-w-0 flex-1 overflow-y-auto'}>
+      <main className={cn('min-h-0 flex-1', fullBleed ? 'overflow-hidden rounded-lg' : 'overflow-y-auto')}>
         {fullBleed ? (
           <Outlet />
         ) : (
-          <div className="mx-auto max-w-6xl px-8 py-8">
+          <div className="px-2 pb-2">
             <Outlet />
           </div>
         )}
@@ -79,18 +117,21 @@ export function AppShell() {
   )
 }
 
-function NavLink({ to, icon, label, count }: { to: string; icon: ReactNode; label: string; count?: number }) {
+function navClass(active: boolean, extra?: string) {
+  return cn(
+    'flex h-8 shrink-0 items-center gap-2 rounded-md px-4 text-sm font-medium text-muted outline-none transition-colors hover:bg-accent-soft hover:text-accent focus-visible:shadow-focus',
+    active && 'bg-accent-soft text-accent',
+    extra,
+  )
+}
+
+function NavLink({ to, label, count }: { to: string; label: string; count?: number }) {
   return (
-    <Link
-      to={to}
-      className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-subtle hover:text-ink"
-      activeProps={{ className: 'bg-accent-soft! text-accent! font-medium' }}
-    >
-      {icon}
+    <Link to={to} activeProps={{ className: navClass(true) }} inactiveProps={{ className: navClass(false) }}>
       {label}
       {!!count && (
         <span
-          className="ml-auto rounded-full bg-accent px-1.5 text-xs font-medium text-on-accent"
+          className="flex h-4 min-w-4 items-center justify-center rounded bg-accent px-1 text-[10px] font-semibold text-on-accent"
           data-testid="inbox-count"
         >
           {count}
