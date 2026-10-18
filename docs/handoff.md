@@ -1,14 +1,14 @@
 # Session handoff
 
-What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M15+; M13 in progress).
+What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M15+; M14 in progress).
 
-Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `feat/m13-editor-polish`, PR #17, not yet reviewed or merged; Docker Desktop reset to factory, so the Compose stack was rebuilt on `main` with an empty database (§11); Google SSO turned on and checked against real Google (§12, item 1). Before that, session 12: the CI timeouts fixed as an engine race, PR #13 reviewed and merged, M12 (Python) planned, built, reviewed (10 fixes) and merged as PR #14).
+Last updated: 2026-10-18 (session 15: M14 (Modules & Query Library) planned with the user on `feat/m14-modules-library`. Before that, session 14: PR #17 (M13) reviewed and merged, the Optiply UI built, reviewed and merged as PR #18, the handoff merged as PR #19).
 
 | | |
 |---|---|
-| **Branch** | `feat/m13-editor-polish` (M13, from `main` at `c2cf787`). M12 was built on `feat/m12-python` (from `main` at `ee42bc7`); M11 on `feat/m11-git-sync` (the plan, 6 steps of which 4 and 5 in two commits each, an engine fix and the review fixes) |
-| **PR** | [#17 M13](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/17), draft, all five steps pushed plus three test fixes; **review it before merging**. [#16](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/16): the CI timeout on `main` after #15's merge (a 30 s test timeout in every package; the runner was overloaded, not the test slow) and a quadratic in the app graph, merged as `c2cf787`. [#15](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/15) (session 13's docs: Google SSO, the Docker reset), merged as `7d2b7df`. [#14 M12](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/14), reviewed before merging (10 fixes, `bca9e7f`), merged by the user as `13ea53e`. Before: [#13 M11](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/13), reviewed before merging (10 fixes, `a492ed0`), merged by the user as `ee42bc7`; CI green on `main` |
-| **`main`** | `c2cf787`, the merge of PR #16 (the CI fix); before it `7d2b7df` (PR #15, docs; its CI failed on a test timeout, which #16 fixed) and `13ea53e` (PR #14, M12 with its review fixes). Milestones are merged with merge commits so the step commits stay in history. **The user merges PRs** (Claude Code's permission check refuses `gh pr merge` from a session). |
+| **Branch** | `feat/m14-modules-library` (M14, from `main` at `c071dd9`). M13 was built on `feat/m13-editor-polish`, the Optiply UI on `feat/optiply-ui` |
+| **PR** | M14's draft PR opens with the plan commit. Before: [#19](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/19) (session 14's handoff), [#18 Optiply UI](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/18) (review fixes `837eefd`, merged as `bb7df0f`), [#17 M13](https://github.com/FabioAlexandreCeriaco/optiply-workflows/pull/17) (review fixes `936c343`, merged as `a7cddda`); CI green on `main` |
+| **`main`** | `c071dd9`, the merge of PR #19; before it `bb7df0f` (PR #18) and `a7cddda` (PR #17). Milestones are merged with merge commits so the step commits stay in history. The user usually merges PRs (`gh pr merge` from a session was refused by the permission check in session 11, allowed in session 14). |
 | **Remote** | `origin` = github.com/FabioAlexandreCeriaco/optiply-workflows (**private**), pushed with the authenticated `gh` CLI |
 
 ---
@@ -34,9 +34,9 @@ Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `
 | **M12 Python** | ✅ On `main` (§9f): PR #14, reviewed before merging (10 fixes, `bca9e7f`). Python code blocks and loop runners run by an nsjail code executor (pandas, numpy; no network), Python's references found by a tokenizer checked against `symtable`, syntax checked by the executor, the editor's Python mode, Compose and CI. The done-when proven in Playwright and on Docker Compose (p50 35 ms). |
 | **M13 Editor polish** | ✅ On `main` (§9g): PR #17, undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. Reviewed before merging in session 14 (7 fixes plus one bug the new e2e found, `936c343`), merged as `a7cddda`. The done-when proven in Playwright and on Docker Compose. |
 | **Optiply UI** | ✅ On `main` (§9h): PR #18, the platform and built apps look like Optiply (its tokens, top bar, components), in light and dark (a switch in the account menu). Reviewed before merging (fixes `837eefd`), merged as `bb7df0f` in session 14. Proven in Playwright, screenshots and on Docker Compose. |
-| **M14 Modules & Query Library** | Next, after M13. AI actions go last (the user's choice). |
+| **M14 Modules & Query Library** | 🔨 Planned in session 15 (`architecture.md` §2.17, §14 below) on `feat/m14-modules-library`: library queries first, then modules. AI actions go last (the user's choice). |
 
-**Start the next session with:** planning M14 with the user (§14). Optionally first rebuild the Compose stack from `main` (§11: it runs the Optiply UI branch before its review fixes).
+**Start the next session with:** the next M14 step on `feat/m14-modules-library` (§14). Optionally first rebuild the Compose stack from `main` (§11: it runs the Optiply UI branch before its review fixes).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -271,6 +271,10 @@ Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `
 - **Snapshots, not patches**, for the history; **undo is a forward edit** to the server (autosave unchanged); the history is cleared on `load()`.
 - **The browser's copy and paste events**, not `navigator.clipboard` (no permission prompts), with **pasted JSON treated as untrusted** (schemas, a size cap, a confirmation when it isn't what this browser copied).
 - **Pasted blocks bring the functions they call**; references to blocks that weren't copied are listed, not dropped.
+
+### Taken in M14 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M14 (session 15)**, all four as recommended: apps **reference** modules and library queries (slug plus pinned version or `latest`, resolved by the server on every run), and **whoever publishes a module or library query vouches for its resources** (the Workflow block's model), not a snapshot into the app's release; library queries in **apps only** (workflows later); a module runs as an **isolated instance** (own runtime and namespace; the app sees inputs, outputs and events), not flattened into the app; **one milestone, library queries first**, then modules.
+- Defaults chosen while planning (`architecture.md` §2.17; change if the user disagrees): library queries read only their parameters, `current_user` and the stdlib; inputs read as `inputs.<name>` in a module; no modules inside modules; deleting something an app uses is refused (Used by); a `latest` module instance whose module got a new live release while the page was open gets "reload" (CONFLICT).
 
 ### Taken in the Optiply UI work (session 14; keep these unless there's a reason to change)
 - **Before M14, the platform should look like part of Optiply** (the user shared Optiply's theme CSS, copied from app.optiply.com, and light and dark screenshots).
@@ -1060,10 +1064,21 @@ The design is `architecture.md` §2.16. Seven steps, each a commit; screenshots 
   - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. Two people editing one draft still conflict as before.
   - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
 
-## 14. Next: M14
+## 14. Next: M14 steps
 
-1. (Done in session 14: PR #17 and PR #18 reviewed and merged.)
-2. **Plan M14 Modules & Query Library** with the user (`architecture.md` §2.7): app modules (reusable sub-apps with typed inputs and outputs) and the Query Library (org-wide versioned queries, pinned or following the latest). Each is a new object kind (tables, permissions, folders, releases, Git format), and the server only runs queries stored in the app's own release today (`runAppQuery`), so how a release vouches for a module's or a library query is the first decision. AI actions stay last (the user's choice).
+M14 is planned (`architecture.md` §2.7 row, §2.8 item 13, §2.17). One draft PR on `feat/m14-modules-library`; each step is one commit (big ones split into a/b, as in M10), reported before the next one starts.
+
+0. **Plan** (this commit): the docs.
+1. **Library queries, server:** the definition (`library.ts`: resource, query, params; its `{{ }}`s read only params, `current_user`, the stdlib), tables and migration (`library_queries`, `library_query_releases`), `library_query` in grants and folders (with the kinds gathered in one place where it's cheap), `libraryQueries.*` (list, get, create, update, saveDraft, delete with Used by, publish, releases, setLive, run a draft with test values), audit.
+2. **Library queries in apps:** the `library` app query (schema, validator through `resolveLibrary`, graph, rename, paste, canonical), `runAppQuery` resolving it (pinned or live; the library release's resource; parameters evaluated, then the library query's `{{ }}`s in the sandbox), the app's publish checks (Use on each, live or pinned release exists), Used by.
+3. **Library queries, UI:** a Library page in the top bar (folders, grants, create), the library editor (resource, query, parameters with test values, Run, releases, Used by), and in the app editor Add query → From library with the version and the parameter fields.
+4. **Modules, definition and server:** `module.ts` (an app without pages plus inputs, outputs, events; `inputs` entity; `moduleEvent` action), the `module` component (spec built from the resolved module), tables, grants, folders, `modules.*` (like `apps.*`, plus `resolve`), publish checks (Use on each module, references resolve), Used by.
+5. **Modules at run time:** one `AppRuntime` per instance in the Worker (inputs in, outputs and events out, values under the instance's prefix), the protocol carrying the instance path, `apps.open` returning the resolved modules, `apps.runQuery` with `{ module, query }` (and CONFLICT for a stale `latest`).
+6. **Modules, UI:** the module editor (the app editor in module mode: Inputs/Outputs/Events, test inputs), Modules in the app editor's palette, the instance's inspector (version, inputs with `fx`), the instance on the canvas, the Modules list.
+7. **Git:** `library/<slug>/` and `modules/<slug>/` in `@ow/git-format` (round-trip property test), protection, branch drafts, Commit/Open PR, deploy in the order library queries, modules, workflows, apps.
+8. **Done-when:** `apps/web/e2e/m14-done-when.spec.ts`, the Compose check, docs (§9i, §10, §13).
+
+The step most likely to grow is 5 (the runtime); 7 is the most mechanical (every place that lists `workflow | app`).
 
 M13 as built (for the record): the plan's six commits (plan and five steps) plus three test fixes (`4926474`, `6426961`); the design is `architecture.md` §2.15.
 
@@ -1071,7 +1086,7 @@ M13 as built (for the record): the plan's six commits (plan and five steps) plus
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch main && git pull
+git switch feat/m14-modules-library && git pull   # M14 in progress; main once it is merged
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
