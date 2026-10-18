@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { signIn, typeInto } from './helpers'
+import { signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
@@ -53,4 +53,48 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await expect(page.getByTestId('library-used-by')).toContainText('No app uses it yet')
   await page.getByRole('link', { name: 'Library', exact: true }).first().click()
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
+})
+
+/** In the app editor (M14 step 3b): a library query added from the picker, its parameter filled, run and pinned. */
+test('use a library query in an app', async ({ page }) => {
+  await signIn(page)
+  const stamp = Date.now()
+  const lib = await trpcMutate<{ id: string; slug: string }>(page, 'libraryQueries.create', {
+    slug: `double_${stamp}`,
+    name: `Double ${stamp}`,
+  })
+  const save = (revision: number, sql: string) =>
+    trpcMutate<{ revision: number }>(page, 'libraryQueries.saveDraft', {
+      id: lib.id,
+      revision,
+      definition: {
+        schemaVersion: 1,
+        resource: 'optiply_db',
+        query: { sql },
+        params: [{ name: 'n', description: 'A number' }],
+      },
+    })
+  let { revision } = await save(1, 'select {{ n }}::int * 2 as x')
+  await trpcMutate(page, 'libraryQueries.publish', { libraryQueryId: lib.id, draftRevision: revision })
+  ;({ revision } = await save(revision, 'select {{ n }}::int * 3 as x'))
+  await trpcMutate(page, 'libraryQueries.publish', { libraryQueryId: lib.id, draftRevision: revision })
+  const app = await trpcMutate<{ slug: string }>(page, 'apps.create', {
+    slug: `uses-lib-${stamp}`,
+    name: 'Uses lib',
+  })
+
+  await page.goto(`/apps/${app.slug}/edit`)
+  await page.getByTitle('Add a query from the library').click()
+  await page.getByTestId('library-picker').getByText(`Double ${stamp}`).click()
+  const body = page.getByTestId('library-query-query1')
+  await expect(body).toContainText('A number')
+  await typeInto(page, body.locator('[data-testid$="/queries/0/params/n"]'), '{{ 7 }}')
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.getByTestId('query-query1')).toContainText('21')
+
+  // Pinned to v1.0.0: the first release runs.
+  await page.getByLabel('Version').selectOption('1.0.0')
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.getByTestId('query-query1')).toContainText('14')
+  await expect(body).toContainText('v1.0.0, on optiply_db')
 })

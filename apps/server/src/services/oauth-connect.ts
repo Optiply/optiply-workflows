@@ -11,6 +11,7 @@ import {
 } from '@ow/db'
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../config'
+import { resolveLibraryRelease } from './library-queries'
 import { type Access, atLeast, loadAccess } from './permissions'
 import { decryptConfigSecrets } from './resources'
 
@@ -106,12 +107,22 @@ export async function connectTarget(
   }
 }
 
-/** Whether the user may use the app and its live release queries the resource (by slug). */
+/**
+ * Whether the user may use the app and its live release queries the resource (by slug): in a resource query, or
+ * through a library query whose release (pinned, or live now) runs on it (M14).
+ */
 async function liveAppQueries(db: Db, access: Access, appId: string, resourceSlug: string): Promise<boolean> {
   const [app] = await db.select().from(apps).where(eq(apps.id, appId))
   if (!app?.liveReleaseId || !access.appLevel(app)) return false
   const [release] = await db.select().from(appReleases).where(eq(appReleases.id, app.liveReleaseId))
-  return !!release?.definition.queries.some((q) => q.kind === 'resource' && q.resource === resourceSlug)
+  const queries = release?.definition.queries ?? []
+  if (queries.some((q) => q.kind === 'resource' && q.resource === resourceSlug)) return true
+  for (const q of queries) {
+    if (q.kind !== 'library') continue
+    const used = await resolveLibraryRelease(db, q.library, q.version).catch(() => null)
+    if (used?.release.definition.resource === resourceSlug) return true
+  }
+  return false
 }
 
 /** What the start route keeps (signed, in a cookie of its own) for the callback. */

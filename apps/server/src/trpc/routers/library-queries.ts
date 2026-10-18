@@ -11,6 +11,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   checkLibraryQuery,
+  libraryInfos,
   libraryUsers,
   publishLibraryRelease,
   runLibraryDraft,
@@ -221,6 +222,22 @@ export const libraryQueriesRouter = router({
     }
   }),
 
+  /**
+   * What the app editor's validator needs for the library queries an app uses (`LibraryInfo` by slug: the live
+   * version and each release's parameters), plus their names; the ones the caller can't see are left out.
+   */
+  resolve: authedProcedure
+    .input(z.object({ slugs: z.array(Slug).max(200) }))
+    .query(async ({ ctx, input }) => {
+      const access = await loadAccess(ctx.db, ctx.user)
+      const infos = await libraryInfos(ctx.db, [...new Set(input.slugs)])
+      return Object.fromEntries(
+        [...infos]
+          .filter(([, { query }]) => access.libraryQueryLevel(query) !== null)
+          .map(([slug, { query, info }]) => [slug, { id: query.id, name: query.name, ...info }]),
+      )
+    }),
+
   /** Deletes the library query with its releases and grants; refused while apps use it. */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, query } = await visibleQuery(ctx, input)
@@ -257,8 +274,8 @@ export const libraryQueriesRouter = router({
   }),
 
   /**
-   * Releases, newest first, with their parameters (what an app pinning one passes) but without the query. Use is
-   * enough: picking a version in an app needs it.
+   * Releases, newest first, with their resource, query and parameters (what an app using one passes and shows).
+   * Use is enough: picking a version in an app needs it.
    */
   releases: authedProcedure.input(z.object({ libraryQueryId: Id })).query(async ({ ctx, input }) => {
     const { query } = await visibleQuery(ctx, { id: input.libraryQueryId })
@@ -275,6 +292,8 @@ export const libraryQueriesRouter = router({
       id: release.id,
       version: release.version,
       notes: release.notes,
+      resource: release.definition.resource,
+      query: release.definition.query,
       params: release.definition.params.map(({ name, description }) => ({
         name,
         ...(description !== undefined && { description }),

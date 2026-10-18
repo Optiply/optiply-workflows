@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  addLibraryQuery,
   appFields,
   browserExpressions,
   buildAppGraph,
@@ -104,5 +105,22 @@ describe('library queries in apps', () => {
     expect(renamed.ok && renamed.definition.queries[0]).toMatchObject({
       params: { customerId: '{{ customers.selectedRow.id }}' },
     })
+  })
+})
+
+describe('addLibraryQuery', () => {
+  it('adds an automatic query following the latest release, on the page given', () => {
+    const { definition, name } = addLibraryQuery(app({ queries: [] }), 'orders_by_customer', { page: 'home' })
+    expect(name).toBe('query1')
+    expect(definition.queries).toEqual([
+      {
+        name: 'query1',
+        page: 'home',
+        kind: 'library',
+        library: 'orders_by_customer',
+        version: 'latest',
+        run: 'auto',
+      },
+    ])
   })
 })

@@ -19,6 +19,7 @@ import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
+import { useLibrarySync } from './library'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
@@ -48,6 +49,7 @@ export function AppEditorPage() {
     refetchOnWindowFocus: false,
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
+  useLibrarySync()
   const navigate = useNavigate()
   const load = useAppEditor((s) => s.load)
   const [loadedFor, setLoadedFor] = useState<string | null>(null)

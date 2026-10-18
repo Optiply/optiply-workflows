@@ -209,6 +209,27 @@ export function addQuery(
   return { definition: { ...def, queries: [...def.queries, query] }, name }
 }
 
+/**
+ * Adds a query from the Query Library (M14), following its latest release and running automatically (most library
+ * queries read); its parameters are filled in afterwards.
+ */
+export function addLibraryQuery(
+  def: AppDefinition,
+  library: string,
+  opts: { version?: string; run?: 'auto' | 'manual'; page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const name = nextName(def, 'query')
+  const query: AppQuery = {
+    name,
+    ...(opts.page ? { page: opts.page } : {}),
+    kind: 'library',
+    library,
+    version: opts.version ?? 'latest',
+    run: opts.run ?? 'auto',
+  }
+  return { definition: { ...def, queries: [...def.queries, query] }, name }
+}
+
 export function updateQuery(
   def: AppDefinition,
   name: string,

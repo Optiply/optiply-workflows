@@ -1,4 +1,10 @@
-import { type AppDefinition, type AppDiagnostic, resolvePage, validateApp } from '@ow/app-definition'
+import {
+  type AppDefinition,
+  type AppDiagnostic,
+  type LibraryInfo,
+  resolvePage,
+  validateApp,
+} from '@ow/app-definition'
 import type { AppUrl } from '@ow/app-runtime'
 import { create } from 'zustand'
 import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
@@ -14,6 +20,9 @@ export interface AppEditorView {
   openCode: string | null
   page: string | null
 }
+
+/** A library query the app uses, as the server described it (`libraryQueries.resolve`). */
+export type LibraryRef = LibraryInfo & { id: string; name: string }
 
 interface AppEditorState {
   appId: string | null
@@ -48,6 +57,11 @@ interface AppEditorState {
   history: History<AppDefinition, AppEditorView>
   /** Raised by undo and redo: the panels remount, so what they read once starts afresh. */
   epoch: number
+  /**
+   * What the server said about the library queries the app uses (M14), by slug; null for one that doesn't exist
+   * or the person can't see. The validator checks library queries once every one used is known.
+   */
+  libraries: Record<string, LibraryRef | null>
 
   load(
     appId: string,
@@ -67,6 +81,8 @@ interface AppEditorState {
   setPanelTab(tab: PanelTab): void
   /** Edits another page (without parameters), or follows `utils.openPage` (with them). */
   setUrl(page: string | null, params?: Record<string, string>): void
+  /** Adds what the server said about library queries, and validates again. */
+  setLibraries(libraries: Record<string, LibraryRef | null>): void
   saving(): void
   saved(revision: number, json: string, draftHash: string): void
   conflict(): void
@@ -91,6 +107,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   url: { page: null, params: {} },
   history: emptyHistory(),
   epoch: 0,
+  libraries: {},
 
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
@@ -103,13 +120,18 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       savedJson: JSON.stringify(definition),
       status: 'saved',
       saveError: null,
-      diagnostics: validateApp(definition).diagnostics,
+      diagnostics: validate(definition, get().libraries),
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
       history: emptyHistory(),
     }),
+
+  setLibraries: (found) => {
+    const libraries = { ...get().libraries, ...found }
+    set({ libraries, diagnostics: validate(get().definition, libraries) })
+  },
 
   update: (edit) => {
     const state = get()
@@ -184,6 +206,18 @@ function viewOf(state: AppEditorState): AppEditorView {
  * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
  * still there.
  */
+/** The library queries an app uses, by slug, sorted. */
+export function usedLibrarySlugs(definition: AppDefinition): string[] {
+  return [...new Set(definition.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
+}
+
+/** The browser's checks, library queries included once the server said about each one the app uses. */
+function validate(definition: AppDefinition, libraries: Record<string, LibraryRef | null>): AppDiagnostic[] {
+  const known = usedLibrarySlugs(definition).every((slug) => Object.hasOwn(libraries, slug))
+  return validateApp(definition, known ? { resolveLibrary: (slug) => libraries[slug] ?? undefined } : {})
+    .diagnostics
+}
+
 function applied(
   state: AppEditorState,
   definition: AppDefinition,
@@ -201,7 +235,7 @@ function applied(
   return {
     definition,
     ...(page !== url.page && { url: { page, params: {} } }),
-    diagnostics: validateApp(definition).diagnostics,
+    diagnostics: validate(definition, state.libraries),
     status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
     ...(status === 'error' && unchanged && { saveError: null }),
     ...(view && {
