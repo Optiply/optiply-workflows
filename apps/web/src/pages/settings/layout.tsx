@@ -1,6 +1,6 @@
 import { getRouteApi, Link, Outlet } from '@tanstack/react-router'
 import { ShieldAlert } from 'lucide-react'
-import { EmptyState, PageHeader } from '@/components/ui'
+import { EmptyState, PageHeader, tabClass } from '@/components/ui'
 
 const appRoute = getRouteApi('/app')
 
@@ -19,13 +19,13 @@ export function SettingsLayout() {
   return (
     <>
       <PageHeader title="Settings" description="Manage who has access and how the platform is configured." />
-      <div className="mb-6 flex gap-1 border-b border-border">
+      <div className="mb-4 flex flex-wrap gap-2">
         {TABS.filter((t) => me.isAdmin || !t.adminOnly).map((tab) => (
           <Link
             key={tab.to}
             to={tab.to}
-            className="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted hover:text-ink"
-            activeProps={{ className: 'border-accent! text-ink! font-medium' }}
+            activeProps={{ className: tabClass(true) }}
+            inactiveProps={{ className: tabClass(false) }}
           >
             {tab.label}
           </Link>

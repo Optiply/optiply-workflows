@@ -97,9 +97,7 @@ export function useConfirmations(): { confirm: (message: string) => Promise<bool
       onClose={() => answer(false)}
       footer={
         <>
-          <Button variant="secondary" onClick={() => answer(false)}>
-            Cancel
-          </Button>
+          <Button onClick={() => answer(false)}>Cancel</Button>
           <Button variant="primary" onClick={() => answer(true)}>
             Continue
           </Button>

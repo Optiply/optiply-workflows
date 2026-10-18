@@ -1,21 +1,41 @@
 import { cva, type VariantProps } from 'class-variance-authority'
 import { Check, Copy, Loader2, X } from 'lucide-react'
-import { type ComponentProps, type ReactNode, useEffect, useState } from 'react'
+import {
+  type ComponentProps,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
 import { cn } from '@/lib/utils'
 
+/**
+ * Optiply's buttons: `primary` (blue) for the main action, `secondary` (blue tint), `tertiary` (grey, the default),
+ * `ghost` for icons and quiet actions, `danger` (red tint). 32px high; `sm` in dense toolbars and rows.
+ */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-50 cursor-pointer',
+  'inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md font-medium whitespace-nowrap transition-colors outline-none focus-visible:shadow-focus disabled:pointer-events-none',
   {
     variants: {
       variant: {
-        primary: 'bg-accent text-on-accent hover:bg-accent/90 shadow-sm',
-        secondary: 'bg-surface text-ink border border-border hover:bg-canvas shadow-xs',
-        ghost: 'text-muted hover:bg-subtle hover:text-ink',
-        danger: 'bg-surface text-danger border border-border hover:bg-danger/5',
+        primary: 'bg-accent text-on-accent hover:bg-accent-strong disabled:bg-subtle disabled:text-faint',
+        secondary:
+          'bg-accent-soft text-accent hover:bg-accent-soft-hover hover:text-accent-strong disabled:bg-subtle disabled:text-faint',
+        tertiary: 'bg-subtle text-muted hover:bg-app hover:text-ink disabled:text-faint',
+        ghost: 'text-muted hover:bg-subtle hover:text-ink disabled:opacity-50',
+        danger:
+          'bg-danger-soft text-danger hover:bg-danger-soft-hover hover:text-danger-strong disabled:bg-subtle disabled:text-faint',
       },
-      size: { sm: 'h-8 px-3', md: 'h-9 px-4', icon: 'h-8 w-8' },
+      size: {
+        sm: 'h-7 px-2.5 text-[13px]',
+        md: 'h-8 px-4 text-sm',
+        lg: 'h-10 px-4 text-sm',
+        icon: 'size-8 text-sm',
+      },
     },
-    defaultVariants: { variant: 'secondary', size: 'md' },
+    defaultVariants: { variant: 'tertiary', size: 'md' },
   },
 )
 
@@ -41,16 +61,12 @@ export function Button({
   )
 }
 
+/** Optiply's input look, shared by inputs, selects and text areas. */
+const FIELD =
+  'border border-border bg-field text-sm text-ink outline-none transition-shadow enabled:hover:not-focus:ring-1 enabled:hover:not-focus:ring-border focus:border-transparent focus:shadow-focus aria-invalid:shadow-invalid disabled:text-faint'
+
 export function Input({ className, ...props }: ComponentProps<'input'>) {
-  return (
-    <input
-      className={cn(
-        'h-9 w-full rounded-md border border-border bg-surface px-3 text-sm shadow-xs outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/20',
-        className,
-      )}
-      {...props}
-    />
-  )
+  return <input className={cn('h-8 w-full rounded-md px-2.5', FIELD, className)} {...props} />
 }
 
 export function Label({ className, ...props }: ComponentProps<'label'>) {
@@ -59,25 +75,38 @@ export function Label({ className, ...props }: ComponentProps<'label'>) {
 }
 
 export function Card({ className, ...props }: ComponentProps<'div'>) {
-  return <div className={cn('rounded-xl border border-border bg-surface shadow-xs', className)} {...props} />
+  return <div className={cn('rounded-lg border border-border bg-surface', className)} {...props} />
 }
 
+/** A white container for a page's main content (a table with its tabs and filters), as Optiply's. */
+export function PageContainer({ className, ...props }: ComponentProps<'div'>) {
+  return <div className={cn('rounded-panel bg-surface p-2 shadow-card', className)} {...props} />
+}
+
+const BADGE_TONES = {
+  neutral: 'bg-subtle text-muted ring-divider',
+  accent: 'bg-op-blue-1 text-op-blue-4 ring-op-blue-2',
+  success: 'bg-op-green-1 text-op-green-4 ring-op-green-2',
+  warning: 'bg-op-orange-1 text-op-orange-4 ring-op-orange-2',
+  danger: 'bg-op-red-1 text-op-red-4 ring-op-red-2',
+  yellow: 'bg-op-yellow-1 text-op-yellow-4 ring-op-yellow-2',
+  purple: 'bg-op-purple-1 text-op-purple-4 ring-op-purple-2',
+} as const
+export type BadgeTone = keyof typeof BADGE_TONES
+
+/** Optiply's tags: a tint with darker text, outlined with `outline`. */
 export function Badge({
   className,
   tone = 'neutral',
+  outline = false,
   ...props
-}: ComponentProps<'span'> & { tone?: 'neutral' | 'accent' | 'success' | 'danger' }) {
-  const tones = {
-    neutral: 'bg-subtle text-muted',
-    accent: 'bg-accent-soft text-accent',
-    success: 'bg-success/10 text-success',
-    danger: 'bg-danger/10 text-danger',
-  }
+}: ComponentProps<'span'> & { tone?: BadgeTone; outline?: boolean }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-        tones[tone],
+        'inline-flex items-center gap-1 rounded px-2 py-1 text-xs leading-4 font-medium whitespace-nowrap',
+        BADGE_TONES[tone],
+        outline && 'ring-1',
         className,
       )}
       {...props}
@@ -106,23 +135,34 @@ export function Avatar({ name, src, className }: { name: string; src?: string | 
   )
 }
 
+/** A page's title with its actions on the right, over Optiply's divider. */
 export function PageHeader({
   title,
   description,
   actions,
 }: {
-  title: string
-  description?: string
+  title: ReactNode
+  description?: ReactNode
   actions?: ReactNode
 }) {
   return (
-    <div className="mb-6 flex items-start justify-between gap-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {description && <p className="mt-1 text-sm text-muted">{description}</p>}
+    <div className="mb-4 flex min-h-14 items-center justify-between gap-4 border-b-2 border-divider py-2">
+      <div className="min-w-0">
+        <h1 className="text-2xl leading-8 font-bold">{title}</h1>
+        {description && <p className="text-sm text-muted">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </div>
+  )
+}
+
+/** A small uppercase heading over a group of cards ("PURCHASING" in Optiply). */
+export function SectionLabel({ className, ...props }: ComponentProps<'h2'>) {
+  return (
+    <h2
+      className={cn('mb-2 text-xs leading-4 font-semibold tracking-[1.8px] text-muted uppercase', className)}
+      {...props}
+    />
   )
 }
 
@@ -137,7 +177,7 @@ export function EmptyState({
 }) {
   return (
     <Card className="flex flex-col items-center px-6 py-16 text-center">
-      <div className="mb-4 rounded-xl bg-accent-soft p-3 text-accent">{icon}</div>
+      <div className="mb-4 rounded-lg bg-accent-soft p-3 text-accent">{icon}</div>
       <h2 className="font-semibold">{title}</h2>
       {children && <div className="mt-1 max-w-md text-sm text-muted">{children}</div>}
     </Card>
@@ -147,7 +187,7 @@ export function EmptyState({
 export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null
   return (
-    <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
+    <p className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">
       {error instanceof Error ? error.message : String(error)}
     </p>
   )
@@ -161,36 +201,36 @@ export function Spinner() {
   )
 }
 
-export function Table({ children }: { children: ReactNode }) {
+/** Optiply's data grid: 48px rows between lines, a quiet header, and an optional footer (`TableFooter`). */
+export function Table({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
   return (
-    <Card className="overflow-hidden">
-      <table className="w-full text-left text-sm">{children}</table>
-    </Card>
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm [&_tbody_tr:last-child_td]:border-b-0">{children}</table>
+      </div>
+      {footer}
+    </div>
   )
 }
 
 export function Th({ children, className }: { children?: ReactNode; className?: string }) {
   return (
-    <th
-      className={cn(
-        'border-b border-border bg-canvas px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted',
-        className,
-      )}
-    >
+    <th className={cn('h-12 border-b border-border px-3 text-xs font-medium text-muted', className)}>
       {children}
     </th>
   )
 }
 
 export function Td({ className, ...props }: ComponentProps<'td'>) {
-  return <td className={cn('border-b border-border px-4 py-3 align-middle', className)} {...props} />
+  return <td className={cn('h-12 border-b border-border px-3 py-2 align-middle', className)} {...props} />
 }
 
-export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
+/** Under a table: counts on the left, paging or "load more" on the right. */
+export function TableFooter({ className, ...props }: ComponentProps<'div'>) {
   return (
-    <textarea
+    <div
       className={cn(
-        'w-full rounded-md border border-border bg-surface px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-60',
+        'flex min-h-12 items-center justify-between gap-2 border-t border-border bg-canvas px-3 py-2 text-xs text-muted',
         className,
       )}
       {...props}
@@ -198,13 +238,14 @@ export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
   )
 }
 
+export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
+  return <textarea className={cn('w-full rounded-md px-2.5 py-1.5', FIELD, className)} {...props} />
+}
+
 export function Select({ className, ...props }: ComponentProps<'select'>) {
   return (
     <select
-      className={cn(
-        'h-9 rounded-md border border-border bg-surface px-2 text-sm shadow-xs outline-none focus:border-accent disabled:opacity-60',
-        className,
-      )}
+      className={cn('h-8 cursor-pointer rounded-md px-2 disabled:cursor-default', FIELD, className)}
       {...props}
     />
   )
@@ -232,27 +273,35 @@ export function Field({
   )
 }
 
+/** Optiply's tab look, for tabs that are links (settings) as well as buttons. */
+export function tabClass(active: boolean): string {
+  return cn(
+    'inline-flex h-8 cursor-pointer items-center rounded-md px-2 text-sm whitespace-nowrap text-muted transition-colors outline-none hover:text-ink focus-visible:shadow-focus',
+    active && 'bg-canvas font-semibold text-accent hover:text-accent',
+  )
+}
+
 /** A row of tabs driven by local state. */
 export function Tabs<T extends string>({
   value,
   onChange,
   tabs,
+  className,
 }: {
   value: T
   onChange: (value: T) => void
   tabs: { value: T; label: ReactNode }[]
+  className?: string
 }) {
   return (
-    <div className="mb-4 flex gap-1 border-b border-border">
+    <div className={cn('mb-4 flex flex-wrap gap-2', className)}>
       {tabs.map((tab) => (
         <button
           key={tab.value}
           type="button"
+          aria-pressed={value === tab.value}
           onClick={() => onChange(tab.value)}
-          className={cn(
-            '-mb-px cursor-pointer border-b-2 border-transparent px-3 py-2 text-sm text-muted hover:text-ink',
-            value === tab.value && 'border-accent font-medium text-ink',
-          )}
+          className={tabClass(value === tab.value)}
         >
           {tab.label}
         </button>
@@ -261,15 +310,18 @@ export function Tabs<T extends string>({
   )
 }
 
-/** A modal dialog: a centred card over a dimmed page. Escape or a click outside closes it. */
+/** A modal dialog, as Optiply's: a card over the faded page. Escape or a click outside closes it. */
 export function Dialog({
   title,
+  icon,
   onClose,
   children,
   footer,
   className,
 }: {
   title: ReactNode
+  /** Before the title, e.g. a question mark for a confirmation. */
+  icon?: ReactNode
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
@@ -292,19 +344,22 @@ export function Dialog({
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : undefined}
-        className={cn(
-          'relative w-full max-w-lg rounded-xl border border-border bg-surface shadow-lg',
-          className,
-        )}
+        className={cn('relative w-full max-w-lg rounded-lg bg-surface p-6 text-ink shadow-menu', className)}
       >
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h2 className="font-semibold">{title}</h2>
-          <Button size="icon" variant="ghost" title="Close" onClick={onClose}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="flex min-w-0 items-center gap-3 text-base font-medium">
+            {icon && <span className="shrink-0 text-muted [&_svg]:size-5">{icon}</span>}
+            {title}
+          </h2>
+          <Button size="icon" variant="ghost" title="Close" className="-my-1 -mr-2" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
-        <div className="max-h-[65vh] overflow-y-auto px-5 py-4">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-border px-5 py-3">{footer}</div>}
+        {/* Room for the focus rings of fields at the edges. */}
+        <div className={cn('-mx-1 mt-4 max-h-[65vh] overflow-y-auto px-1 py-1 text-sm', icon && 'pl-9')}>
+          {children}
+        </div>
+        {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   )
@@ -348,8 +403,131 @@ export function Checkbox({
 }: Omit<ComponentProps<'input'>, 'type'> & { label: ReactNode }) {
   return (
     <label className={cn('inline-flex cursor-pointer items-center gap-2 text-sm', className)}>
-      <input type="checkbox" className="size-4 accent-accent" {...props} />
+      <input type="checkbox" className="size-4 cursor-pointer rounded accent-accent" {...props} />
       {label}
     </label>
   )
+}
+
+/**
+ * A dropdown menu, as Optiply's: `trigger` gets the props that open it. Escape, a click outside or choosing an
+ * item closes it; arrow keys move between items.
+ */
+export function Menu({
+  trigger,
+  children,
+  align = 'end',
+  className,
+}: {
+  trigger: (props: {
+    'aria-haspopup': 'menu'
+    'aria-expanded': boolean
+    'aria-controls': string
+    onClick: () => void
+  }) => ReactNode
+  children: ReactNode
+  align?: 'start' | 'end'
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const root = useRef<HTMLDivElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    list.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus()
+    const onDown = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      root.current?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const move = (e: ReactKeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    e.preventDefault()
+    const items = [...(list.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])]
+    const at = items.indexOf(document.activeElement as HTMLElement)
+    const next = (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    items[next]?.focus()
+  }
+
+  return (
+    <div ref={root} className="relative">
+      {trigger({
+        'aria-haspopup': 'menu',
+        'aria-expanded': open,
+        'aria-controls': id,
+        onClick: () => setOpen((o) => !o),
+      })}
+      {open && (
+        <div
+          ref={list}
+          id={id}
+          role="menu"
+          tabIndex={-1}
+          onKeyDown={move}
+          onClick={(e) => {
+            // Choosing an item closes the menu (a label or separator doesn't).
+            if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false)
+          }}
+          className={cn(
+            'absolute top-full z-50 mt-2 min-w-52 rounded-lg bg-surface p-2 text-ink shadow-menu',
+            align === 'end' ? 'right-0' : 'left-0',
+            className,
+          )}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** An item of a `Menu`; `checked` makes it one of a choice (a radio item with a tick). */
+export function MenuItem({
+  className,
+  danger,
+  icon,
+  checked,
+  children,
+  ...props
+}: ComponentProps<'button'> & { danger?: boolean; icon?: ReactNode; checked?: boolean }) {
+  return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-checked goes with the menuitemradio role, set with it
+    <button
+      type="button"
+      role={checked === undefined ? 'menuitem' : 'menuitemradio'}
+      aria-checked={checked}
+      className={cn(
+        'flex h-10 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-sm font-medium outline-none hover:bg-canvas focus-visible:bg-canvas disabled:cursor-default disabled:text-faint',
+        danger && 'text-danger',
+        className,
+      )}
+      {...props}
+    >
+      {icon && <span className="shrink-0 text-muted [&_svg]:size-4">{icon}</span>}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {checked && <Check className="size-4 shrink-0 text-accent" />}
+    </button>
+  )
+}
+
+/** A heading inside a `Menu`. */
+export function MenuLabel({ className, ...props }: ComponentProps<'div'>) {
+  return <div className={cn('px-2 pt-1 pb-1 text-xs font-medium text-muted', className)} {...props} />
+}
+
+export function MenuSeparator() {
+  return <hr className="-mx-2 my-2 border-border" />
 }
