@@ -170,13 +170,15 @@ export function EmptyState({
   icon,
   title,
   children,
+  className,
 }: {
   icon: ReactNode
   title: string
   children?: ReactNode
+  className?: string
 }) {
   return (
-    <Card className="flex flex-col items-center px-6 py-16 text-center">
+    <Card className={cn('flex flex-col items-center px-6 py-16 text-center', className)}>
       <div className="mb-4 rounded-lg bg-accent-soft p-3 text-accent">{icon}</div>
       <h2 className="font-semibold">{title}</h2>
       {children && <div className="mt-1 max-w-md text-sm text-muted">{children}</div>}
@@ -223,6 +225,23 @@ export function Th({ children, className }: { children?: ReactNode; className?: 
 
 export function Td({ className, ...props }: ComponentProps<'td'>) {
   return <td className={cn('h-12 border-b border-border px-3 py-2 align-middle', className)} {...props} />
+}
+
+/** Optiply's link in a table: blue and underlined. */
+export const linkClass =
+  'font-medium text-accent underline decoration-accent/40 underline-offset-2 hover:text-accent-strong hover:decoration-current'
+
+/** The bar of filters over a table (Optiply's action bar). */
+export function ActionBar({ className, ...props }: ComponentProps<'div'>) {
+  return (
+    <div
+      className={cn(
+        'flex min-h-[50px] flex-wrap items-center gap-2 rounded-lg border border-border bg-canvas p-2',
+        className,
+      )}
+      {...props}
+    />
+  )
 }
 
 /** Under a table: counts on the left, paging or "load more" on the right. */

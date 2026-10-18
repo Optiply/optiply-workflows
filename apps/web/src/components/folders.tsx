@@ -109,8 +109,11 @@ export function FolderSections<T extends { id: string; folderId: string | null }
       {groups.map(({ folder, items: inside }) => (
         <section key={folder?.id ?? 'none'} aria-label={folder ? `Folder ${folder.name}` : undefined}>
           {(folder || folders.length > 0) && (
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium text-muted">
-              <Folder className="size-4" /> {folder?.name ?? 'Not in a folder'}
+            <div className="mb-2 flex min-h-7 items-center gap-2 text-muted">
+              <Folder className="size-4" />
+              <span className="text-xs font-semibold tracking-[1.8px] uppercase">
+                {folder?.name ?? 'Not in a folder'}
+              </span>
               {folder && me.isAdmin && (
                 <Button
                   size="sm"

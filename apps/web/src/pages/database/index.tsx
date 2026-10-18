@@ -14,7 +14,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Button, buttonVariants, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
 import { trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import type { TableInfo } from './cells'
@@ -69,8 +69,8 @@ export function DatabasePage() {
   }
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-surface">
+    <div className="flex h-full gap-2">
+      <aside className="flex w-60 shrink-0 flex-col overflow-hidden rounded-lg bg-surface">
         <div className="space-y-2 border-b border-border p-3">
           <div className="flex items-center gap-2 font-semibold">
             <Database className="size-4 text-accent" /> Database
@@ -138,7 +138,7 @@ export function DatabasePage() {
         )}
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
         {!environment?.ready ? (
           <Notice title="The database isn't set up yet">
             It's created when the server starts. If it stays like this, the server log says why (usually: the
@@ -191,7 +191,7 @@ export function DatabasePage() {
 function Notice({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="p-8">
-      <EmptyState icon={<Database className="size-5" />} title={title}>
+      <EmptyState className="border-0" icon={<Database className="size-5" />} title={title}>
         {children}
       </EmptyState>
     </div>
@@ -308,7 +308,7 @@ function TableView({
             <Columns3 className="size-4" /> Columns{hidden ? ` (${hidden} hidden)` : ''}
           </Button>
           {showColumns && (
-            <div className="absolute top-full left-0 z-30 mt-1 w-60 space-y-1 rounded-lg border border-border bg-surface p-2 shadow-lg">
+            <div className="absolute top-full left-0 z-30 mt-1 w-60 space-y-1 rounded-lg bg-surface p-2 shadow-menu">
               {table.columns.map((c) => (
                 <Checkbox
                   key={c.name}
@@ -351,11 +351,7 @@ function TableView({
         <Button size="icon" variant="ghost" title="Refresh" onClick={() => void refresh()}>
           <RefreshCw className="size-4" />
         </Button>
-        <a
-          href={exportHref}
-          download
-          className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-surface px-3 text-sm font-medium shadow-xs hover:bg-canvas"
-        >
+        <a href={exportHref} download className={buttonVariants({ size: 'sm' })}>
           <Download className="size-4" /> Export CSV
         </a>
         <Button size="sm" variant="primary" onClick={() => setAdding(true)}>

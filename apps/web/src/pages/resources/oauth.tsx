@@ -181,7 +181,7 @@ export function OAuthCodeFields({
           </Select>
         </Field>
         <Checkbox
-          className="h-9"
+          className="h-8"
           checked={auth.pkce !== false}
           disabled={disabled}
           onChange={(e) => setAuth({ pkce: e.target.checked })}

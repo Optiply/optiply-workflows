@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, X } from 'lucide-react'
 import { useState } from 'react'
-import { Avatar, Badge, Button, Card, ErrorNote, Spinner } from '@/components/ui'
+import { Avatar, Badge, Button, Card, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AdminOnly } from './layout'
 
@@ -89,18 +89,14 @@ function GroupDetail() {
 
       {editable ? (
         <div className="flex max-w-md gap-2">
-          <select
-            className="h-9 flex-1 rounded-md border border-border bg-surface px-2 text-sm"
-            value={selectedUser}
-            onChange={(e) => setSelectedUser(e.target.value)}
-          >
+          <Select className="flex-1" value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
             <option value="">Add a member…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.name} ({u.email})
               </option>
             ))}
-          </select>
+          </Select>
           <Button
             variant="primary"
             disabled={!selectedUser}

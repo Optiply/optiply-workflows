@@ -1,9 +1,22 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Download, X } from 'lucide-react'
 import { useState } from 'react'
-import { Button, ErrorNote, Input, Select, Spinner, Table, Td, Th } from '@/components/ui'
+import {
+  ActionBar,
+  Button,
+  buttonVariants,
+  ErrorNote,
+  Input,
+  PageContainer,
+  Select,
+  Spinner,
+  Table,
+  TableFooter,
+  Td,
+  Th,
+} from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
-import { formatDateTime } from '@/lib/utils'
+import { cn, formatDateTime } from '@/lib/utils'
 import { AdminOnly } from './layout'
 
 export function AuditPage() {
@@ -56,8 +69,8 @@ function AuditTable() {
   const filtered = Object.keys(query).length > 0
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2" data-testid="audit-filters">
+    <PageContainer className="space-y-2">
+      <ActionBar data-testid="audit-filters">
         <Select aria-label="Action" value={filters.action} onChange={(e) => set({ action: e.target.value })}>
           <option value="">All actions</option>
           {facets.data?.actions.map((a) => (
@@ -122,19 +135,30 @@ function AuditTable() {
             <X className="size-4" /> Clear
           </Button>
         )}
-        <a
-          href={exportUrl}
-          download
-          className="ml-auto inline-flex h-9 items-center gap-2 rounded-md border border-border bg-surface px-4 text-sm font-medium shadow-xs hover:bg-canvas"
-        >
+        <a href={exportUrl} download className={cn(buttonVariants(), 'ml-auto')}>
           <Download className="size-4" /> Export CSV
         </a>
-      </div>
+      </ActionBar>
       <ErrorNote error={events.error} />
       {events.isLoading ? (
         <Spinner />
       ) : (
-        <Table>
+        <Table
+          footer={
+            <TableFooter>
+              <span>
+                <strong className="font-semibold text-ink">{rows.length}</strong>{' '}
+                {rows.length === 1 ? 'event' : 'events'}
+                {events.hasNextPage && ' so far'}
+              </span>
+              {events.hasNextPage && (
+                <Button size="sm" onClick={() => events.fetchNextPage()} loading={events.isFetchingNextPage}>
+                  Load more
+                </Button>
+              )}
+            </TableFooter>
+          }
+        >
           <thead>
             <tr>
               <Th className="w-44">When</Th>
@@ -188,11 +212,6 @@ function AuditTable() {
           </tbody>
         </Table>
       )}
-      {events.hasNextPage && (
-        <Button onClick={() => events.fetchNextPage()} loading={events.isFetchingNextPage}>
-          Load more
-        </Button>
-      )}
-    </div>
+    </PageContainer>
   )
 }

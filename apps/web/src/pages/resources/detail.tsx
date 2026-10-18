@@ -38,10 +38,10 @@ export function ResourceDetailPage() {
       <Link to="/resources" className="inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
         <ArrowLeft className="size-4" /> All resources
       </Link>
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 border-b-2 border-divider pb-4">
         <TypeIcon type={resource.type} className="size-10" />
         <div className="flex-1">
-          <h1 className="text-xl font-semibold tracking-tight">{resource.name}</h1>
+          <h1 className="text-2xl leading-8 font-bold">{resource.name}</h1>
           <p className="font-mono text-xs text-muted">{resource.slug}</p>
           {resource.description && <p className="mt-1 text-sm text-muted">{resource.description}</p>}
         </div>
@@ -56,9 +56,9 @@ export function ResourceDetailPage() {
               type="button"
               onClick={() => setEnvId(e.environmentId)}
               className={cn(
-                'flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm',
+                'flex h-8 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm',
                 e.environmentId === current.environmentId
-                  ? 'border-accent bg-accent-soft font-medium text-accent'
+                  ? 'border-transparent bg-accent-soft font-medium text-accent'
                   : 'border-border bg-surface text-muted hover:text-ink',
               )}
             >
