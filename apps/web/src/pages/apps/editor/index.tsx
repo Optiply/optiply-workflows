@@ -4,7 +4,7 @@ import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
-import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -268,9 +268,9 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
   }, [])
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-border bg-surface px-4 py-2">
-        <h1 className="font-semibold">{app.name}</h1>
+    <div className="flex h-full flex-col gap-2">
+      <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
+        <h1 className="truncate text-lg leading-6 font-bold">{app.name}</h1>
         <SaveBadge status={status} />
         {!readOnly && !preview && (
           <div className="flex items-center">
@@ -316,10 +316,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
       </header>
       {git}
       {status === 'conflict' && (
-        <div
-          role="alert"
-          className="flex items-center gap-3 border-b border-border bg-accent-soft px-4 py-2 text-sm"
-        >
+        <div role="alert" className="flex items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm">
           Someone else saved this app since you opened it. Your edits here can't be saved.
           <Button size="sm" onClick={() => window.location.reload()}>
             Reload
@@ -330,37 +327,36 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
       {host ? (
         <AppHostProvider host={host}>
           <ScopeSync />
-          <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 gap-2">
             {!preview && (
-              <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface p-3">
+              <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
                 {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
                 <PagesPanel key={epoch} />
                 {!readOnly && (
                   <section>
-                    <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Add</h2>
+                    <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
                     <Palette />
                   </section>
                 )}
                 <section>
-                  <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">
-                    Components
-                  </h2>
+                  <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
                   <ComponentTree />
                 </section>
               </aside>
             )}
-            <div className="flex min-w-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto bg-canvas px-6 py-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              {/* On the page background, as people see the app. */}
+              <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
                 <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
               </div>
               {!preview && (
-                <div className="h-[38%] min-h-48 shrink-0 border-t border-border">
+                <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
                   <CodePanel key={epoch} />
                 </div>
               )}
             </div>
             {!preview && selected && (
-              <aside className="w-80 shrink-0 overflow-y-auto border-l border-border bg-surface">
+              <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
                 <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
               </aside>
             )}

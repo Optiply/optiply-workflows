@@ -175,7 +175,7 @@ function NameField({ name }: { name: string }) {
       />
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       {skipped.length > 0 && (
-        <p className="mt-1 text-xs text-amber-700">
+        <p className="mt-1 text-xs text-warning-strong">
           Not updated in {[...new Set(skipped)].join(', ')}: fix the syntax errors there, then rename again.
         </p>
       )}
@@ -365,7 +365,10 @@ function LanguageCode({
           onChange={(next) => onChange({ code: next })}
         />
         {check.unavailable && (
-          <span className="flex items-center gap-1 text-xs text-amber-700" data-testid="python-unavailable">
+          <span
+            className="flex items-center gap-1 text-xs text-warning-strong"
+            data-testid="python-unavailable"
+          >
             <AlertCircle className="size-3.5" /> {check.unavailable}: this code can't run here.
           </span>
         )}
@@ -1217,6 +1220,8 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
 type TaskConfig = BlockOf<'userTask'>['config']
 type TaskFieldDef = NonNullable<TaskConfig['fields']>[number]
 
+const TONE = { error: 'text-danger', warning: 'text-warning-strong' } as const
+
 /** Problems under a plain input (Monaco fields show theirs as markers). */
 function Problems({ list }: { list: FieldProblem[] }) {
   if (!list.length) return null
@@ -1224,7 +1229,7 @@ function Problems({ list }: { list: FieldProblem[] }) {
     <div className="flex flex-col gap-0.5">
       {list.map((p, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: messages have no identity
-        <span key={i} className={cn('text-xs', p.severity === 'error' ? 'text-danger' : 'text-amber-700')}>
+        <span key={i} className={cn('text-xs', TONE[p.severity])}>
           {p.message}
         </span>
       ))}
@@ -1643,7 +1648,7 @@ function BlockProblems({ diagnostics }: { diagnostics: Diagnostic[] }) {
             <AlertCircle
               className={cn(
                 'mt-0.5 size-4 shrink-0',
-                d.severity === 'error' ? 'text-danger' : 'text-amber-600',
+                d.severity === 'error' ? 'text-danger' : 'text-warning-strong',
               )}
             />
             <button type="button" className="text-left" onClick={() => d.block && select(d.block)}>

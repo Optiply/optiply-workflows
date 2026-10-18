@@ -3,6 +3,7 @@ import {
   applyNodeChanges,
   Background,
   type Connection,
+  ControlButton,
   Controls,
   type Edge as FlowEdge,
   Handle,
@@ -14,7 +15,7 @@ import {
   ReactFlow,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, Map as MapIcon } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { kindOf, summary } from './catalog'
@@ -33,7 +34,32 @@ const NO_LIVE: Record<string, LiveBlock> = {}
  * The open graph: the workflow's, or a function's. Blocks and edges come from the store; every edit goes back
  * through `updateGraph`. Run statuses only show on the workflow's own graph (function calls aren't recorded per block).
  */
+/** Whether the minimap shows, per browser: it can cover blocks in a short canvas, so it can be hidden. */
+const MINIMAP_KEY = 'ow.minimap'
+
+function useMinimap(): [boolean, () => void] {
+  const [shown, setShown] = useState(() => {
+    try {
+      return localStorage.getItem(MINIMAP_KEY) !== 'hidden'
+    } catch {
+      return true
+    }
+  })
+  const toggle = () =>
+    setShown((was) => {
+      try {
+        if (was) localStorage.setItem(MINIMAP_KEY, 'hidden')
+        else localStorage.removeItem(MINIMAP_KEY)
+      } catch {
+        // Storage blocked: the choice lasts until the page reloads.
+      }
+      return !was
+    })
+  return [shown, toggle]
+}
+
 export function Canvas() {
+  const [minimap, toggleMinimap] = useMinimap()
   const definition = useEditor((s) => s.definition)
   const fn = useEditor((s) => s.graph)
   const allDiagnostics = useEditor((s) => s.diagnostics)
@@ -130,8 +156,25 @@ export function Canvas() {
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} size={1} />
-      <Controls showInteractive={false} />
-      <MiniMap pannable zoomable className="!bg-surface" nodeStrokeWidth={3} />
+      <Controls showInteractive={false}>
+        <ControlButton
+          onClick={toggleMinimap}
+          title={minimap ? 'Hide the minimap' : 'Show the minimap'}
+          aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
+          aria-pressed={minimap}
+        >
+          <MapIcon />
+        </ControlButton>
+      </Controls>
+      {minimap && (
+        <MiniMap
+          pannable
+          zoomable
+          className="!bg-surface"
+          style={{ width: 140, height: 96 }}
+          nodeStrokeWidth={3}
+        />
+      )}
     </ReactFlow>
   )
 }
@@ -218,7 +261,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       style={{ width: NODE_WIDTH }}
       data-testid={`block-${block.name}`}
       className={cn(
-        'rounded-lg border bg-surface shadow-sm transition-shadow',
+        'rounded-lg border bg-surface shadow-card transition-shadow',
         errors ? 'border-danger/60' : 'border-border',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
@@ -237,7 +280,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
             title={problems.map((p) => p.message).join('\n')}
             className={cn(
               'inline-flex items-center gap-0.5 rounded-full px-1.5 text-xs font-medium',
-              errors ? 'bg-danger/10 text-danger' : 'bg-amber-100 text-amber-700',
+              errors ? 'bg-danger-soft text-danger' : 'bg-warning-soft text-warning-strong',
             )}
           >
             <AlertCircle className="size-3" />
@@ -275,7 +318,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
 /** How the open run left each block: a coloured outline. */
 const RUN_RING: Record<string, string> = {
   running: 'ow-block-running',
-  waiting: 'ring-2 ring-amber-400',
+  waiting: 'ring-2 ring-warning',
   succeeded: 'ring-2 ring-success/70',
   errored: 'ring-2 ring-danger/70',
   failed: 'ring-2 ring-danger',
@@ -291,7 +334,7 @@ function RunStatusDot({ status }: { status: string }) {
       : status === 'running'
         ? 'animate-pulse bg-accent'
         : status === 'waiting'
-          ? 'bg-amber-400'
+          ? 'bg-warning'
           : status === 'failed' || status === 'errored'
             ? 'bg-danger'
             : 'bg-muted/50'

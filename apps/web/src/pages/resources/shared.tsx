@@ -42,7 +42,7 @@ export function SecretField({
 }) {
   if (edit === undefined && isSet) {
     return (
-      <div className="flex h-9 items-center gap-2">
+      <div className="flex h-8 items-center gap-2">
         <span className="inline-flex items-center gap-1.5 text-sm text-muted">
           <KeyRound className="size-4" /> Stored securely
         </span>
@@ -61,7 +61,7 @@ export function SecretField({
   }
   if (edit === null) {
     return (
-      <div className="flex h-9 items-center gap-2 text-sm text-danger">
+      <div className="flex h-8 items-center gap-2 text-sm text-danger">
         Will be removed when you save
         <Button size="sm" variant="ghost" onClick={() => onChange(undefined)}>
           Undo

@@ -57,11 +57,11 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
         data-testid="release-status"
         title="Releases"
         onClick={() => setOpen('releases')}
-        className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-black/5"
+        className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-subtle"
       >
         {live ? <Badge tone="success">Live v{live.version}</Badge> : <Badge>Not published</Badge>}
         {live && unpublished && (
-          <span className="text-xs whitespace-nowrap text-amber-700">Unpublished changes</span>
+          <span className="text-xs whitespace-nowrap text-warning-strong">Unpublished changes</span>
         )}
       </button>
       {/* A protected app is published by merging on Git. */}

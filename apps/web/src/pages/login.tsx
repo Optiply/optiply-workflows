@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Workflow } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
-import { Button, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
+import { Button, buttonVariants, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
+import { Wordmark } from '@/components/wordmark'
 import { useTRPC } from '@/lib/trpc'
+import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/login')
 
@@ -40,22 +41,22 @@ export function LoginPage() {
   return (
     <div className="flex min-h-full items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 rounded-xl bg-accent p-2.5 text-white shadow-sm">
-            <Workflow className="size-6" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">Optiply Workflows</h1>
-          <p className="mt-1 text-sm text-muted">Sign in to continue</p>
+        <div className="mb-6 flex justify-center">
+          <Wordmark size="lg" />
         </div>
 
-        <Card className="space-y-4 p-6">
+        <Card className="space-y-4 p-6 shadow-card">
+          <div>
+            <h1 className="text-lg font-bold">Sign in</h1>
+            <p className="text-sm text-muted">to Optiply Workflows</p>
+          </div>
           {isLoading && <Spinner />}
           <ErrorNote error={ssoError} />
 
           {config?.oidcEnabled && (
             <a
               href="/api/auth/oidc/start"
-              className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border bg-surface text-sm font-medium shadow-xs hover:bg-canvas"
+              className={cn(buttonVariants({ variant: 'tertiary', size: 'lg' }), 'w-full text-ink')}
             >
               <GoogleMark />
               Continue with Google
@@ -95,7 +96,13 @@ export function LoginPage() {
                 />
               </div>
               <ErrorNote error={localLogin.error} />
-              <Button type="submit" variant="primary" className="w-full" loading={localLogin.isPending}>
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                className="w-full"
+                loading={localLogin.isPending}
+              >
                 Sign in
               </Button>
             </form>

@@ -32,10 +32,11 @@ Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `
 | **M10 Finishing apps** | ✅ On `main` (§9d): the sandbox in a Worker, Table paging/sorting/search (server-side through `sql.column`/`sql.direction`), multipage apps, folders for workflows and apps. PR #12, reviewed before merging (10 fixes, `6c95f5a`). The done-when proven in Playwright and on Docker Compose. |
 | **M11 Git sync** | ✅ On `main` (§9e): workflows and apps in a GitHub repo (code and SQL as files), protection, branch drafts in the editors, Commit and pull requests, deploy on merge (webhook and polling). PR #13, reviewed before merging (10 fixes, `a492ed0`), plus an engine race found through its CI (`25218f0`). The done-when proven in Playwright and on Docker Compose. |
 | **M12 Python** | ✅ On `main` (§9f): PR #14, reviewed before merging (10 fixes, `bca9e7f`). Python code blocks and loop runners run by an nsjail code executor (pandas, numpy; no network), Python's references found by a tokenizer checked against `symtable`, syntax checked by the executor, the editor's Python mode, Compose and CI. The done-when proven in Playwright and on Docker Compose (p50 35 ms). |
-| **M13 Editor polish** | ✅ Built on `feat/m13-editor-polish` (§9g), PR #17: undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors (snapshots grouped automatically, the clipboard through the browser's events and read as untrusted, functions brought along with pasted blocks). The done-when proven in Playwright and on Docker Compose. **Not reviewed or merged yet.** |
+| **M13 Editor polish** | ✅ On `main` (§9g): PR #17, undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. Reviewed before merging in session 14 (7 fixes plus one bug the new e2e found, `936c343`), merged as `a7cddda`. The done-when proven in Playwright and on Docker Compose. |
+| **Optiply UI** | ✅ Built on `feat/optiply-ui` (§9h), PR #18: the platform and built apps look like Optiply (its tokens, top bar, components), in light and dark (a switch in the account menu). Proven in Playwright, screenshots and on Docker Compose. **Not reviewed or merged yet.** |
 | **M14 Modules & Query Library** | Next, after M13. AI actions go last (the user's choice). |
 
-**Start the next session with:** reviewing PR #17 (the `code-review` skill), committing the fixes **before** it's merged; the user merges it. Then planning M14 (§14).
+**Start the next session with:** reviewing PR #18 (the `code-review` skill), committing the fixes **before** it's merged. Then planning M14 (§14).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -270,6 +271,11 @@ Last updated: 2026-10-17 (session 13: M13 (Editor polish) planned and built on `
 - **Snapshots, not patches**, for the history; **undo is a forward edit** to the server (autosave unchanged); the history is cleared on `load()`.
 - **The browser's copy and paste events**, not `navigator.clipboard` (no permission prompts), with **pasted JSON treated as untrusted** (schemas, a size cap, a confirmation when it isn't what this browser copied).
 - **Pasted blocks bring the functions they call**; references to blocks that weren't copied are listed, not dropped.
+
+### Taken in the Optiply UI work (session 14; keep these unless there's a reason to change)
+- **Before M14, the platform should look like part of Optiply** (the user shared Optiply's theme CSS, copied from app.optiply.com, and light and dark screenshots).
+- **Optiply's top navigation bar** replaces the left sidebar; **dark mode** with a switch (System / Light / Dark, per browser); **built apps get the same style** (no per-app themes yet).
+- Optiply's variables are copied **verbatim**; components use role tokens mapped onto them (`architecture.md` §2.16). Fonts self-hosted, no Google Fonts.
 
 ## 3. What M0 built (on `main`)
 
@@ -819,6 +825,34 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 - **On Docker Compose (§10):** the same spec, passed.
 - README: "Undo, copy and paste" (the keys and what each editor does).
 
+## 9h. What the Optiply UI built (on `feat/optiply-ui`, PR #18)
+
+The design is `architecture.md` §2.16. Seven steps, each a commit; screenshots of every main screen in light and dark after each step (a Playwright script against the e2e setup, kept in the session's scratchpad).
+
+### Step 1, `76f6a3d`: tokens, fonts, dark mode
+- Optiply's variables in `styles.css` (`:root`, `.dark`), Tailwind's tokens mapped onto them (`@theme inline`), `lib/theme.ts` and the pre-paint script in `index.html`, self-hosted Inter and JetBrains Mono (they were named but never loaded before), hard-coded colours to tokens in about 25 files.
+
+### Step 2, `487af67`: components
+- `ui.tsx` in Optiply's style: buttons (new `tertiary` default, `secondary` is now the blue tint), one input look, cards, `PageContainer`, the table and `TableFooter`, pill tabs, tags, the dialog, a new `Menu`, `PageHeader`, `SectionLabel`.
+
+### Step 3, `a2d7ca4`: top bar, account menu, sign-in
+- `app-shell.tsx`: the top bar; the account menu holds the theme switch and Sign out. `components/wordmark.tsx`. Sign-in restyled. New `e2e/theme.spec.ts`.
+
+### Step 4, `67a3eb6`: pages
+- Runs, Inbox and the audit log in page containers with footers and Optiply links; `ActionBar` for filters; folder headings as section labels; the Database page as two panels; titles on the resource and task pages.
+
+### Step 5, `24aeced`: editors
+- Monaco themes, React Flow's variables, block and resource-type colours from Optiply's tag scales; both editors as panels; the running app's page header.
+
+### Step 6, `c00c6d8`: built apps and charts
+- The app builder's renderers on the shared components (buttons, inputs, table with 40px rows, cards, dialog, pills), Optiply's chart palette in light and dark.
+- **Tests adjusted to the new layout:** `m10-done-when`'s table is taller (40px rows; the virtualizer draws what's visible plus 10, and the test reads a whole page of 25); `editor.spec`'s rename step dispatches its block clicks (the minimap can cover a block when the run panel is open; seen in a trace, as `6426961` for the Python spec).
+
+### Step 7 (this commit): check and docs
+- **Contrast** in both themes (§2.16): warnings as text use `warning-strong`.
+- **On Docker Compose (§10):** the app image rebuilt from step 6 and `api`/`worker` recreated (`--no-deps`; Postgres and its data untouched, no migrations in this work). Sign-in renders in light and dark with Inter loaded and no console or network errors.
+- `architecture.md` §2.16, this handoff.
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
@@ -897,6 +931,7 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
+- **Compose stack, end of session 14:** the image of `feat/optiply-ui` at `c00c6d8` (step 6; `api` and `worker` recreated with `--no-deps`, Postgres and its data untouched). The same database as below.
 - **Compose stack, end of session 13:** the image of `feat/m13-editor-polish` at `767222b` (M13 steps 1–4; rebuilt for the Compose check, §10). The user's `test` workflow and a resource of theirs on it; `m13-check@optiply.nl` disabled.
 - **Compose stack: Docker Desktop was reset to factory in session 13** (after an error the user couldn't capture). That deleted every image and the `optiply-workflows_pgdata` volume, and there was no backup, so everything the history below describes is gone (the `admin@optiply.nl` and `m7-check` admins, the user's `test` workflow, API key and `cancel-me` schedule, the managed database's contents). It was rebuilt from `main` at `13ea53e` with `PUBLIC_URL=http://localhost:3000 docker compose up --build -d`: migrations from scratch, the managed database re-provisioned (`owdb_production`, `owdb_staging`), the code executor, Google SSO on. Its only user is **`fabioceriaco@optiply.nl`** (admin as the first user, signed in with Google; also has a local password). **Always start or recreate it with `PUBLIC_URL=http://localhost:3000`**: Compose reads `.env`, whose `PUBLIC_URL` is Vite's `:5173`, and the Google callback is built from it. Docker Desktop's memory is the factory 4 GB.
 - **The Compose stack before the reset** (volume `optiply-workflows_pgdata`): it ran the image of **`feat/m12-python`** at `ec7280b` (rebuilt in session 12 with the user's OK), **with the `code-executor` service** and **`PYTHON_EXECUTOR_TOKEN` in `.env`** (added in session 12; every `docker compose` command, even `ps`, refuses to run without it). Python works on it. Session 12's check left nothing behind (§10); `m7-check`'s password is in session 12's scratchpad. Before that: the image of **`feat/m11-git-sync`** (step 6, uncommitted at build time but the same code as the step 6 commit; rebuilt in session 11 with the user's OK; **migrations 0014–0016 applied**, so going back to `main`'s image runs it on a newer schema: additive tables and columns only). Git sync isn't set up on it. Session 11's check left nothing behind (§10); `m7-check`'s password is in session 11's scratchpad. Before that: the image of `main` at `bb7f6b7` (M10 with its review fixes; migration `0013`). Session 10's check left nothing behind (§10); `m7-check`'s password is in session 10's scratchpad. Before that: the image of `main` at `a04c68e` (M9 with the PR #11 review fixes; no OAuth connections stored). Before that: the M9 step 7 image (session 9's Compose check). Before that: the image of `main` at `fe0c65d` (M8 with the PR #9 review fixes; migration `0012`). It holds no apps (the user made and deleted a `test` app in session 8). Before that: the M7 step 7 image (session 7), with the managed database provisioned (`owdb_production`, `owdb_staging`; no tables). Also holds an admin `m7-check@optiply.nl` used by the session 7 and 8 checks (its password was reset again in session 9, kept in that session's scratchpad at `compose/m7-check-password`; reset it again with `create-admin` and `ADMIN_PASSWORD`). Before that: the M6 step 7 image. Holds session 5's `shop` database and resource, the draft workflows `loop-10k`, `wait-restart` and `cancel-me`, and **the user's own work from session 6** (a `test` workflow, an API key, and a schedule on `cancel-me` that fires: check with the user before changing them). Admin `admin@optiply.nl`: the password was reset in session 6 to a random one kept in that session's scratchpad (`compose/admin-password`); set your own with `docker compose exec api node --no-node-snapshot dist/cli/create-admin.js --email admin@optiply.nl --name Admin`. Compose reads `.env`, whose `PUBLIC_URL` points at Vite (`:5173`): run it with `PUBLIC_URL=http://localhost:3000` (or change `.env`). It holds port 3000, like `pnpm dev`. Postgres isn't published to the host: use `docker compose exec postgres psql -U ow -d optiply_workflows`.
@@ -1017,9 +1052,9 @@ CI failed on step 1 in `@ow/sandbox` (a package it didn't touch): `python-client
   - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. Two people editing one draft still conflict as before.
   - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
 
-## 14. Next: review PR #17, then M14
+## 14. Next: review PR #18, then M14
 
-1. **Review PR #17** before merging (the `code-review` skill, as for #12–#14), commit the fixes on `feat/m13-editor-polish`, watch CI; **the user merges it** (with a merge commit).
+1. **Review PR #18** (the Optiply UI) before merging (the `code-review` skill, as for #12–#17), commit the fixes on `feat/optiply-ui`, watch CI, merge with a merge commit. A possible follow-up: a smaller or hideable canvas minimap (it can cover blocks).
 2. **Plan M14 Modules & Query Library** with the user (`architecture.md` §2.7): app modules (reusable sub-apps with typed inputs and outputs) and the Query Library (org-wide versioned queries, pinned or following the latest). Each is a new object kind (tables, permissions, folders, releases, Git format), and the server only runs queries stored in the app's own release today (`runAppQuery`), so how a release vouches for a module's or a library query is the first decision. AI actions stay last (the user's choice).
 
 M13 as built (for the record): the plan's six commits (plan and five steps) plus three test fixes (`4926474`, `6426961`); the design is `architecture.md` §2.15.
@@ -1028,7 +1063,7 @@ M13 as built (for the record): the plan's six commits (plan and five steps) plus
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m13-editor-polish && git pull
+git switch feat/optiply-ui && git pull
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433

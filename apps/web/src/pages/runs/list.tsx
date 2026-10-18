@@ -3,7 +3,19 @@ import { Link } from '@tanstack/react-router'
 import { History } from 'lucide-react'
 import { useState } from 'react'
 import { StatusBadge } from '@/components/status-badge'
-import { Button, EmptyState, ErrorNote, PageHeader, Select, Spinner, Table, Td, Th } from '@/components/ui'
+import {
+  EmptyState,
+  ErrorNote,
+  LoadMoreFooter,
+  linkClass,
+  PageContainer,
+  PageHeader,
+  Select,
+  Spinner,
+  Table,
+  Td,
+  Th,
+} from '@/components/ui'
 import { duration, runsApi } from '@/lib/runs-api'
 
 const STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
@@ -45,8 +57,18 @@ export function RunsPage() {
           {status ? `No ${status} runs.` : 'Runs appear here once a workflow has run.'}
         </EmptyState>
       ) : (
-        <>
-          <Table>
+        <PageContainer>
+          <Table
+            footer={
+              <LoadMoreFooter
+                count={rows.length}
+                noun={['run', 'runs']}
+                more={!!runs.hasNextPage}
+                loading={runs.isFetchingNextPage}
+                onMore={() => runs.fetchNextPage()}
+              />
+            }
+          >
             <thead>
               <tr>
                 <Th>Workflow</Th>
@@ -65,7 +87,7 @@ export function RunsPage() {
                       to="/workflows/$workflowId"
                       params={{ workflowId: run.workflow.id }}
                       search={{ run: run.id }}
-                      className="font-medium hover:text-accent"
+                      className={linkClass}
                     >
                       {run.workflow.name}
                     </Link>
@@ -88,14 +110,7 @@ export function RunsPage() {
               ))}
             </tbody>
           </Table>
-          {runs.hasNextPage && (
-            <div className="mt-4 flex justify-center">
-              <Button loading={runs.isFetchingNextPage} onClick={() => runs.fetchNextPage()}>
-                Load more
-              </Button>
-            </div>
-          )}
-        </>
+        </PageContainer>
       )}
     </>
   )

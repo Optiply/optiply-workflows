@@ -190,7 +190,7 @@ export function ImportDialog({
           <Field label="File" className="min-w-72 flex-1">
             <label
               className={cn(
-                'flex h-9 cursor-pointer items-center gap-2 rounded-md border border-dashed border-border px-3 text-sm hover:bg-canvas',
+                'flex h-8 cursor-pointer items-center gap-2 rounded-md border border-dashed border-border px-3 text-sm hover:bg-canvas',
                 file && 'border-solid',
               )}
             >
@@ -427,7 +427,7 @@ export function ImportDialog({
               </table>
             </div>
             {problems.length > 0 && (
-              <ul className="list-disc space-y-0.5 pl-5 text-sm text-amber-800">
+              <ul className="list-disc space-y-0.5 pl-5 text-sm text-warning-strong">
                 {problems.map((p) => (
                   <li key={p}>{p}</li>
                 ))}

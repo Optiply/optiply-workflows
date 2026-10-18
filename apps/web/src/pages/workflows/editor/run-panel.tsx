@@ -230,7 +230,7 @@ function WaitingNote({ metadata }: { metadata: Record<string, unknown> | null })
   const until = typeof metadata?.until === 'string' ? new Date(metadata.until) : null
   if (typeof metadata?.taskId === 'string') {
     return (
-      <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
+      <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
         Waiting for someone to complete its task.{' '}
         <Link to="/inbox/$taskId" params={{ taskId: metadata.taskId }} className="font-medium underline">
           Open the task
@@ -239,7 +239,7 @@ function WaitingNote({ metadata }: { metadata: Record<string, unknown> | null })
     )
   }
   return (
-    <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
+    <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
       {metadata?.childRunId ? 'Waiting for its child run to finish' : 'Waiting'}
       {until && !metadata?.childRunId ? ` until ${until.toLocaleString()}` : ''}.
     </p>
@@ -417,7 +417,10 @@ function LogsTab({ run }: { run: RunView }) {
           <span className="shrink-0 text-muted">{new Date(log.at).toLocaleTimeString()}</span>
           <span className="w-24 shrink-0 truncate text-muted">{log.blockKey ?? 'run'}</span>
           <span
-            className={cn(log.level === 'error' && 'text-danger', log.level === 'warn' && 'text-amber-700')}
+            className={cn(
+              log.level === 'error' && 'text-danger',
+              log.level === 'warn' && 'text-warning-strong',
+            )}
           >
             {log.message}
           </span>

@@ -40,7 +40,7 @@ function TaskView({ task }: { task: Task }) {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight" data-testid="task-title">
+          <h1 className="text-2xl leading-8 font-bold" data-testid="task-title">
             {task.title}
           </h1>
           {task.description && (

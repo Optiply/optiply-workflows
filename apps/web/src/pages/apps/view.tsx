@@ -147,8 +147,9 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-2.5">
-        <h1 className="font-semibold">{app.name}</h1>
+      {/* Optiply's page header: the app is a page of the platform. */}
+      <header className="mx-2 flex min-h-14 shrink-0 items-center gap-3 border-b-2 border-divider py-2">
+        <h1 className="truncate text-2xl leading-8 font-bold">{app.name}</h1>
         <span className="text-xs text-muted">v{release.version}</span>
         {app.canEdit && (
           <Link
@@ -183,7 +184,7 @@ function RunningApp({ app, release, environment, environments }: RunningAppProps
         </div>
       </header>
       <div ref={ref} className="hidden" />
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-4">
         {host && (
           <AppHostProvider host={host}>
             <AppBody definition={release.definition} appName={app.name} />

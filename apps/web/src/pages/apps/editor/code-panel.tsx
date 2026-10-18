@@ -14,7 +14,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { Braces, Code2, Database, Loader2, Play, Trash2, Variable as VariableIcon } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
-import { Button, Checkbox, Input, Select } from '@/components/ui'
+import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -180,7 +180,7 @@ function ListSection({
   return (
     <section>
       <div className="flex items-center gap-1 px-1">
-        <h3 className="flex-1 text-xs font-semibold tracking-wide text-muted uppercase">{title}</h3>
+        <h3 className={cn('flex-1', sectionLabelClass)}>{title}</h3>
         {actions}
       </div>
       <ul className="mt-1 flex flex-col">{children}</ul>
@@ -420,7 +420,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
       </details>
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-xs font-semibold tracking-wide text-muted uppercase">Event handlers</h3>
+        <h3 className={sectionLabelClass}>Event handlers</h3>
         <HandlersEditor
           handlers={query.events ?? []}
           events={['success', 'failure']}
@@ -700,7 +700,7 @@ function ProblemsTab() {
             <span
               className={cn(
                 'mt-1 size-1.5 shrink-0 rounded-full',
-                d.severity === 'error' ? 'bg-danger' : 'bg-amber-400',
+                d.severity === 'error' ? 'bg-danger' : 'bg-warning',
               )}
             />
             <span className="font-mono text-muted">{d.entity ?? d.path.join('.')}</span>
@@ -724,7 +724,7 @@ function ConsoleTab() {
           className={cn(
             'border-b border-border/60 px-1 py-0.5',
             l.level === 'error' && 'text-danger',
-            l.level === 'warn' && 'text-amber-700',
+            l.level === 'warn' && 'text-warning-strong',
           )}
         >
           <span className="mr-2 text-muted">{new Date(l.at).toLocaleTimeString()}</span>

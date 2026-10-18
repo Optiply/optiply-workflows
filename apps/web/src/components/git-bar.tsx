@@ -65,7 +65,7 @@ export function GitBar(props: GitBarProps) {
 
   return (
     <div
-      className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-accent-soft/40 px-4 py-2 text-sm"
+      className="flex shrink-0 flex-wrap items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm"
       data-testid="git-bar"
     >
       <GitBranch className="size-4 text-accent" />
@@ -178,7 +178,7 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           committing
         </span>
       ) : (
-        c?.behind && <span className="text-amber-800">{branch} has new commits</span>
+        c?.behind && <span className="text-warning-strong">{branch} has new commits</span>
       )}
       <span className="flex-1" />
       {c?.behind && (
@@ -313,7 +313,7 @@ function CommitDialog(
                 <GitPullRequest className="size-4" /> Open pull request
               </Button>
               {openPr.data?.pullRequestError && (
-                <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-900">
+                <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
                   {openPr.data.pullRequestError}
                 </p>
               )}

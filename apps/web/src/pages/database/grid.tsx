@@ -272,7 +272,7 @@ export function Grid({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {!key && (
-        <p className="border-b border-border bg-amber-50 px-4 py-2 text-xs text-amber-800">
+        <p className="border-b border-border bg-warning-soft px-4 py-2 text-xs text-warning-strong">
           {table.name} has {table.primaryKey.length ? 'a primary key of several columns' : 'no primary key'},
           so its rows can only be read and added here. Use a query to change them.
         </p>
@@ -326,7 +326,7 @@ export function Grid({
                     onClick={() => cycleSort(column.name)}
                   >
                     <span className="truncate text-xs font-semibold text-ink">{column.name}</span>
-                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">
+                    <span className="shrink-0 text-[10px] uppercase tracking-[1.8px] text-muted">
                       {column.primaryKey ? 'key' : TYPE_LABELS[column.type]}
                     </span>
                     {sort && (sort.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
@@ -419,7 +419,7 @@ export function Grid({
                               <div
                                 className={cn(
                                   'absolute top-full left-0 z-30 mt-1 w-max max-w-sm rounded-md px-2 py-1 text-xs shadow-md',
-                                  editError ? 'bg-danger text-white' : 'bg-ink text-white',
+                                  editError ? 'bg-danger text-on-accent' : 'bg-ink text-on-accent',
                                 )}
                                 role={editError ? 'alert' : 'status'}
                               >

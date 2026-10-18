@@ -139,7 +139,7 @@ function AppRow({ app, hasFolders }: { app: AppSummary; hasFolders: boolean }) {
           to="/apps/$slug/edit"
           params={{ slug: app.slug }}
           title={`Edit ${app.name}`}
-          className="rounded-md p-1.5 text-muted hover:bg-black/5 hover:text-ink"
+          className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
         >
           <Pencil className="size-4" />
         </Link>

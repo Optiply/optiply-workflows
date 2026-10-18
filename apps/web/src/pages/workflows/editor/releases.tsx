@@ -48,11 +48,11 @@ export function ReleaseControls({ workflow, canEdit }: { workflow: Workflow; can
         data-testid="release-status"
         title="Releases"
         onClick={() => useEditor.getState().showTab('releases')}
-        className="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-black/5"
+        className="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-subtle"
       >
         {live ? <Badge tone="success">Live v{live.version}</Badge> : <Badge>Not published</Badge>}
         {live && unpublished && (
-          <span className="text-xs whitespace-nowrap text-amber-700">Unpublished changes</span>
+          <span className="text-xs whitespace-nowrap text-warning-strong">Unpublished changes</span>
         )}
       </button>
       {canEdit && (

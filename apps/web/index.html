@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f46e5'/><path d='M9 16h6l3-6 4 12 2-6h0' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23009ee3'/><path d='M9 16h6l3-6 4 12 2-6h0' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+    <script>
+      // Dark mode before the first paint (lib/theme.ts keeps it current; same storage key).
+      var t = null
+      try {
+        t = localStorage.getItem('ow.theme')
+      } catch {}
+      if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches))
+        document.documentElement.classList.add('dark')
+    </script>
     <title>Optiply Workflows</title>
   </head>
   <body>

@@ -10,6 +10,7 @@ import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
 import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
+import { sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ComponentView, placedChildren, ROW_HEIGHT } from '../canvas'
 import { ChildGridContext, EditingContext, ShownModalContext } from '../grid-context'
@@ -130,7 +131,7 @@ export function EditGrid({
               <div
                 className={cn(
                   handle,
-                  'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-white',
+                  'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-on-accent',
                   selected === component.name ? 'flex' : 'hidden group-hover:flex',
                 )}
                 title="Drag to move"
@@ -208,11 +209,7 @@ export function EditCanvas() {
 }
 
 function GridCaption({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={cn('mb-6 text-[11px] font-semibold tracking-wide text-muted uppercase', className)}>
-      {children}
-    </div>
-  )
+  return <div className={cn('mb-6', sectionLabelClass, className)}>{children}</div>
 }
 
 /**

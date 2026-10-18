@@ -44,8 +44,8 @@ export function Notifications({ notices, dismiss }: { notices: Notice[]; dismiss
           key={n.id}
           role={n.tone === 'error' ? 'alert' : 'status'}
           className={cn(
-            'pointer-events-auto flex items-start gap-2 rounded-lg border bg-surface px-3 py-2 text-sm shadow-lg',
-            n.tone === 'error' ? 'border-danger/40' : 'border-border',
+            'pointer-events-auto flex items-start gap-2 rounded-lg bg-surface px-3 py-2 text-sm shadow-menu',
+            n.tone === 'error' && 'ring-1 ring-danger/40',
           )}
         >
           <span className="mt-0.5">{ICONS[n.tone]}</span>
@@ -97,9 +97,7 @@ export function useConfirmations(): { confirm: (message: string) => Promise<bool
       onClose={() => answer(false)}
       footer={
         <>
-          <Button variant="secondary" onClick={() => answer(false)}>
-            Cancel
-          </Button>
+          <Button onClick={() => answer(false)}>Cancel</Button>
           <Button variant="primary" onClick={() => answer(true)}>
             Continue
           </Button>

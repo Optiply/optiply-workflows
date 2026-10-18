@@ -160,8 +160,8 @@ test('a CRUD app: search, edit cells and save, add with a form, delete', async (
   await page.getByLabel('Cell value').press('Escape') // cancelled
   await grid.locator('[data-row="2"] [data-column="vip"] input').check()
   await expect(page.getByText('2 changed rows')).toBeVisible()
-  await expect(grid.locator('[data-row="0"] [data-column="id"]')).not.toHaveClass(/bg-amber/)
-  await expect(grid.locator('[data-row="0"] [data-column="name"]')).toHaveClass(/bg-amber/)
+  await expect(grid.locator('[data-row="0"] [data-column="id"]')).not.toHaveClass(/bg-warning-soft/)
+  await expect(grid.locator('[data-row="0"] [data-column="name"]')).toHaveClass(/bg-warning-soft/)
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText('2 changed rows')).toBeHidden()
   await expect(grid.locator('[data-row="0"] [data-column="name"]')).toHaveText('Ada Lovelace')

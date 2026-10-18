@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { chartModel, compactNumber, SERIES_COLORS, sliceColors, toNumber, withAlpha } from './chart-model'
+import {
+  type ChartPalette,
+  compactNumber,
+  chartModel as model,
+  SERIES_SLOTS,
+  sliceColors,
+  toNumber,
+  withAlpha,
+} from './chart-model'
+
+/** Distinct colors per slot, so tests see which slot each series got. */
+const PALETTE: ChartPalette = {
+  series: Array.from({ length: SERIES_SLOTS }, (_, i) => `#00000${i}`),
+  other: '#999999',
+  ink: { surface: '#fff', text: '#000', secondary: '#333', muted: '#666', grid: '#eee', axis: '#ccc' },
+}
+const SERIES_COLORS = PALETTE.series
+const chartModel = (input: Omit<Parameters<typeof model>[0], 'palette'>) =>
+  model({ ...input, palette: PALETTE })
 
 const sales = [
   { month: 'Jan', revenue: '1200.50', orders: 30, region: 'NL' },
@@ -28,6 +46,13 @@ describe('chart model', () => {
     expect(chosen.series.map((s) => [s.key, s.color])).toEqual([['orders', SERIES_COLORS[0]]])
   })
 
+  it('colors series from the palette it is given', () => {
+    const dark: ChartPalette = { ...PALETTE, series: PALETTE.series.map((c) => `${c}aa`) }
+    const m = model({ kind: 'bar', data: sales, xKey: '', series: [], palette: dark })
+    expect(m.palette).toBe(dark)
+    expect(m.series.map((s) => s.color)).toEqual([dark.series[0], dark.series[1]])
+  })
+
   it('makes a pie of one series, folding slices past the seventh into Other', () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({ name: `p${i}`, n: i + 1 }))
     const m = chartModel({ kind: 'pie', data: rows, xKey: 'name', series: ['n', 'other'] })
@@ -35,7 +60,7 @@ describe('chart model', () => {
     expect(m.labels).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'Other'])
     expect(m.series[0]!.values).toEqual([1, 2, 3, 4, 5, 6, 7, 8 + 9 + 10])
     expect(m.folded).toBe(3)
-    expect(sliceColors(8, 3).at(-1)).toBe('#898781')
+    expect(sliceColors(8, 3, PALETTE).at(-1)).toBe(PALETTE.other)
   })
 
   it('copes with no data, and with values that aren’t numbers', () => {
@@ -46,6 +71,7 @@ describe('chart model', () => {
       series: [],
       omitted: [],
       folded: 0,
+      palette: PALETTE,
     })
     expect([toNumber('12'), toNumber('a'), toNumber(''), toNumber(Number.NaN), toNumber(true)]).toEqual([
       12,

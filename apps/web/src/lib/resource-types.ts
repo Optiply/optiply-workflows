@@ -10,8 +10,8 @@ export const PLACEHOLDERS: Record<string, string> = { postgres: '$1, $2…', mys
 
 /** The short badge and colours for each type, in the resources list and pages. */
 export const TYPE_BADGES: Record<string, { label: string; className: string }> = {
-  postgres: { label: 'PG', className: 'bg-sky-100 text-sky-700' },
-  mysql: { label: 'MY', className: 'bg-teal-100 text-teal-700' },
-  bigquery: { label: 'BQ', className: 'bg-indigo-100 text-indigo-700' },
-  rest: { label: 'API', className: 'bg-amber-100 text-amber-700' },
+  postgres: { label: 'PG', className: 'bg-op-blue-1 text-op-blue-4' },
+  mysql: { label: 'MY', className: 'bg-op-green-1 text-op-green-4' },
+  bigquery: { label: 'BQ', className: 'bg-op-purple-1 text-op-purple-4' },
+  rest: { label: 'API', className: 'bg-op-orange-1 text-op-orange-4' },
 }

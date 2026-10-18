@@ -20,7 +20,10 @@ import { isSqlType } from '@/lib/resource-types'
 export interface BlockKind {
   label: string
   icon: LucideIcon
-  /** Tailwind classes for the icon chip. */
+  /**
+   * The icon chip's classes, Optiply's tag colours by what the step does: triggers green (the error handler red),
+   * data and calls blue, logic purple, JavaScript orange, Python and user tasks yellow, waiting grey.
+   */
   tone: string
   /** New blocks are named `<prefix><n>`, like Retool. */
   prefix: string
@@ -30,33 +33,33 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   startTrigger: {
     label: 'Start trigger',
     icon: Play,
-    tone: 'bg-success/10 text-success',
+    tone: 'bg-op-green-1 text-op-green-4',
     prefix: 'startTrigger',
   },
   resourceQuery: {
     label: 'Resource query',
     icon: Database,
-    tone: 'bg-accent-soft text-accent',
+    tone: 'bg-op-blue-1 text-op-blue-4',
     prefix: 'query',
   },
-  code: { label: 'Code', icon: Code2, tone: 'bg-amber-100 text-amber-700', prefix: 'code' },
-  branch: { label: 'Branch', icon: GitBranch, tone: 'bg-sky-100 text-sky-700', prefix: 'branch' },
-  filter: { label: 'Filter', icon: Filter, tone: 'bg-teal-100 text-teal-700', prefix: 'filter' },
-  response: { label: 'Response', icon: Reply, tone: 'bg-rose-100 text-rose-700', prefix: 'response' },
-  loop: { label: 'Loop', icon: Repeat, tone: 'bg-violet-100 text-violet-700', prefix: 'loop' },
+  code: { label: 'Code', icon: Code2, tone: 'bg-op-orange-1 text-op-orange-4', prefix: 'code' },
+  branch: { label: 'Branch', icon: GitBranch, tone: 'bg-op-purple-1 text-op-purple-4', prefix: 'branch' },
+  filter: { label: 'Filter', icon: Filter, tone: 'bg-op-purple-1 text-op-purple-4', prefix: 'filter' },
+  response: { label: 'Response', icon: Reply, tone: 'bg-op-green-1 text-op-green-4', prefix: 'response' },
+  loop: { label: 'Loop', icon: Repeat, tone: 'bg-op-purple-1 text-op-purple-4', prefix: 'loop' },
   function: {
     label: 'Function',
     icon: SquareFunction,
-    tone: 'bg-indigo-100 text-indigo-700',
+    tone: 'bg-op-blue-1 text-op-blue-4',
     prefix: 'function',
   },
-  workflow: { label: 'Workflow', icon: Workflow, tone: 'bg-cyan-100 text-cyan-700', prefix: 'workflow' },
-  wait: { label: 'Wait', icon: Hourglass, tone: 'bg-stone-100 text-stone-700', prefix: 'wait' },
-  userTask: { label: 'User task', icon: UserCheck, tone: 'bg-fuchsia-100 text-fuchsia-700', prefix: 'task' },
+  workflow: { label: 'Workflow', icon: Workflow, tone: 'bg-op-blue-1 text-op-blue-4', prefix: 'workflow' },
+  wait: { label: 'Wait', icon: Hourglass, tone: 'bg-subtle text-muted', prefix: 'wait' },
+  userTask: { label: 'User task', icon: UserCheck, tone: 'bg-op-yellow-1 text-op-yellow-4', prefix: 'task' },
   errorTrigger: {
     label: 'Error handler',
     icon: TriangleAlert,
-    tone: 'bg-danger/10 text-danger',
+    tone: 'bg-op-red-1 text-op-red-4',
     prefix: 'errorHandler',
   },
 }
@@ -65,7 +68,7 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
 export const PYTHON_KIND: BlockKind = {
   label: 'Python',
   icon: FileCode2,
-  tone: 'bg-blue-100 text-blue-700',
+  tone: 'bg-op-yellow-1 text-op-yellow-4',
   prefix: 'python',
 }
 

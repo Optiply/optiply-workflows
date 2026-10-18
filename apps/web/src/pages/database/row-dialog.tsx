@@ -112,7 +112,7 @@ function RowField({
         {column.name}
         <span className="text-xs font-normal text-muted">{TYPE_LABELS[column.type]}</span>
       </label>
-      <div className="h-9 overflow-hidden rounded-md border border-border focus-within:border-accent">
+      <div className="h-8 overflow-hidden rounded-md border border-border bg-field focus-within:border-transparent focus-within:shadow-focus">
         <ValueInput id={id} column={column} value={value} onChange={onChange} />
       </div>
       {error ? (

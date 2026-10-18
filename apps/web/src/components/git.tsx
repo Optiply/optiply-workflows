@@ -161,7 +161,7 @@ export function ProtectDialog({
               Review and merge the pull request: <PullRequestLink pullRequest={result.pullRequest} />
             </div>
           ) : (
-            <div className="rounded-md bg-amber-50 px-3 py-2 text-amber-900">
+            <div className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
               No pull request was opened: {result.pullRequestError}
               {git?.webUrl && (
                 <>
@@ -180,7 +180,7 @@ export function ProtectDialog({
             </div>
           )}
           {result.warnings.length > 0 && (
-            <ul className="list-disc pl-5 text-amber-800">
+            <ul className="list-disc pl-5 text-warning-strong">
               {result.warnings.map((w) => (
                 <li key={w.path}>{w.message}</li>
               ))}

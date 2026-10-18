@@ -1,6 +1,7 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { useEffect, useRef } from 'react'
-import { monaco, setScope } from './monaco'
+import { useEffect, useMemo, useRef } from 'react'
+import { useTheme } from '@/lib/theme'
+import { monaco, optiplyTheme, setScope } from './monaco'
 
 export interface FieldProblem {
   start?: number
@@ -44,6 +45,8 @@ export default function CodeField({
   scope,
 }: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const { theme } = useTheme()
+  const themeName = useMemo(() => optiplyTheme(theme), [theme])
   // Without a scope, the page installs one itself (the app editor keeps a single scope for all its fields).
   useEffect(() => {
     if (scope) setScope(scope.dts, scope.sample)
@@ -80,8 +83,12 @@ export default function CodeField({
   })
 
   return (
-    <div className="overflow-hidden rounded-md border border-border" data-testid={`code-${path}`}>
+    <div
+      className="overflow-hidden rounded-md border border-border bg-field transition-shadow focus-within:border-transparent focus-within:shadow-focus"
+      data-testid={`code-${path}`}
+    >
       <Editor
+        theme={themeName}
         path={path}
         language={language}
         value={value}
@@ -92,7 +99,7 @@ export default function CodeField({
           readOnly,
           minimap: { enabled: false },
           fontSize: 12.5,
-          fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
+          fontFamily: '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace',
           lineNumbers: singleLine ? 'off' : 'on',
           glyphMargin: false,
           folding: !singleLine,
