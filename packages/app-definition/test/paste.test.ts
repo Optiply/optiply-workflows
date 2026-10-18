@@ -113,6 +113,20 @@ describe('pasteComponents', () => {
     })
   })
 
+  it('pastes into a target container named like the pasted one', () => {
+    const target = def(
+      app({ components: [comp('container1', 'container')], layout: { container1: at(0, 0, 12, 6) } }),
+    )
+    const result = pasteComponents(target, copyComponents(source, ['container1'])!, {
+      parent: 'container1',
+      page: null,
+    })
+    const d = result.definition
+    expect(d.components.find((c) => c.name === 'container2')!.parent).toBe('container1')
+    expect(d.components.find((c) => c.name === 'textInput1')!.parent).toBe('container2')
+    expect(validateApp(d).diagnostics.filter((x) => x.code === 'invalid_parent')).toEqual([])
+  })
+
   it('follows event handlers between pasted components, and duplicates in place', () => {
     const withHandler = def(
       app({
@@ -179,6 +193,27 @@ describe('copyCode and pasteCode', () => {
     })
     expect(result.runsByItself).toEqual(['orders1', 'report1'])
     expect(result.outside).toEqual([])
+  })
+
+  it('cuts a long name short for its fresh one, and lists code that doesn’t parse', () => {
+    const long = `a${'b'.repeat(63)}`
+    const d = def(
+      app({
+        queries: [
+          { name: long, kind: 'js', code: 'return 1' },
+          { name: 'broken', kind: 'js', code: `return ${long}.data +` },
+        ],
+      }),
+    )
+    const result = pasteCode(d, copyCode(d, [long, 'broken'])!, null)
+    expect(result.added).toEqual([`a${'b'.repeat(62)}1`, 'broken1'])
+    expect(result.unparsed).toEqual(['broken1'])
+    // Only the broken code (the original and its copy) is wrong: the fresh name is valid.
+    const errors = validateApp(result.definition).diagnostics.filter((x) => x.severity === 'error')
+    expect(errors.map((x) => [x.entity, x.code])).toEqual([
+      ['broken', 'syntax'],
+      ['broken1', 'syntax'],
+    ])
   })
 
   it('rejects clipboard text that isn’t app content', () => {

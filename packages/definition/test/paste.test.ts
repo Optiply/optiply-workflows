@@ -213,6 +213,40 @@ describe('pasteBlocks', () => {
     ).toEqual([])
   })
 
+  it('cuts a long name short for its fresh one', () => {
+    const long = `a${'b'.repeat(63)}`
+    const d = def(wf([start, code(long)]))
+    const result = pasteBlocks(d, null, copyBlocks(d, null, [long])!)
+    expect(result.added).toEqual([`a${'b'.repeat(62)}1`])
+    expect(validateDefinition(result.definition).ok).toBe(true)
+  })
+
+  it('lists pasted blocks whose code doesn’t parse when a renamed block is named in it', () => {
+    const source = def(wf([start, code('code1'), code('code2', 'return code1.data +')]))
+    const target = def(wf([start, code('code1'), code('code2')]))
+    const result = pasteBlocks(target, null, copyBlocks(source, null, ['code1', 'code2'])!)
+    expect(result.renamed).toEqual({ code1: 'code3', code2: 'code4' })
+    expect(result.unparsed).toEqual(['code4'])
+    expect(codeOf(result.definition, 'code4')).toBe('return code1.data +')
+    // Pasted without renames, nothing needed updating.
+    expect(
+      pasteBlocks(def(wf([start])), null, copyBlocks(source, null, ['code1', 'code2'])!).unparsed,
+    ).toEqual([])
+  })
+
+  it('adds no function when nothing is pasted', () => {
+    const source = def({
+      ...wf([start, { name: 'reply', type: 'response', config: { status: '200', body: '{}' } }]),
+      functions: [{ name: 'helper', blocks: [code('r')], edges: [] }],
+    })
+    const clip = { ...copyBlocks(source, null, ['reply'])!, functions: source.functions! }
+    const target = def({ ...wf([start]), functions: [{ name: 'fn', blocks: [code('r')], edges: [] }] })
+    const result = pasteBlocks(target, 'fn', clip)
+    expect(result.added).toEqual([])
+    expect(result.definition).toBe(target)
+    expect(result.functions.added).toEqual([])
+  })
+
   it('rejects clipboard text that isn’t blocks', () => {
     expect(blockClipSchema.safeParse({ ow: 'workflow-blocks', v: 1, blocks: [] }).success).toBe(false)
     expect(blockClipSchema.safeParse({ ow: 'app-components', v: 1 }).success).toBe(false)

@@ -76,6 +76,14 @@ describe('history', () => {
     expect(redo(r1.history)!.entry.after).toBe(d2)
   })
 
+  it('keeps what was showing when an entry was undone, for redoing it', () => {
+    const d1: Def = { blocks: [...d0.blocks, { name: 'r' }] }
+    const h = step(emptyHistory(), d0, d1, 0)
+    expect(undo(h)!.history.future[0]!.redoView).toBeUndefined()
+    const back = undo(h, 'after')!.history
+    expect(redo(back)!.entry).toMatchObject({ after: d1, redoView: 'after' })
+  })
+
   it('merges typing in one field into one step while the keys come quickly', () => {
     let h = step(emptyHistory(), d0, typed('a'), 0)
     h = step(h, typed('a'), typed('ab'), 300)

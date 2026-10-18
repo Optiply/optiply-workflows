@@ -1,4 +1,4 @@
-import { fieldRefs } from '@ow/definition'
+import { fieldRefs, freshName } from '@ow/definition'
 import { z } from 'zod'
 import { componentSpec } from './components'
 import { bottomOf, usedNames, withDescendants } from './edits'
@@ -82,6 +82,11 @@ export interface AppPasteResult {
   /** Copied names that had to change: copied name → pasted name. */
   renamed: Record<string, string>
   /**
+   * Pasted items (by their pasted names) with code that doesn't parse and mentions a pasted item that was renamed:
+   * that code couldn't be updated, so it may still name the old item.
+   */
+  unparsed: string[]
+  /**
    * Names the pasted items read that are neither pasted nor globals: things that weren't copied. `inTarget` when
    * the app has something of that name, which the reference now reads.
    */
@@ -115,22 +120,24 @@ export function pasteComponents(
   const roots = new Set(
     clip.components.filter((c) => c.parent === undefined || !copied.has(c.parent)).map((c) => c.name),
   )
-  const placedRoots = clip.components.map((c): AppComponent => {
+  // Roots lose their parent and page before renaming, and get the target's after: the target container may have a
+  // pasted component's name, and renaming that one mustn't rewrite the reference to the target's.
+  const loose = clip.components.map((c): AppComponent => {
     if (!roots.has(c.name)) return c
     const { parent: _p, page: _g, ...rest } = c
-    const overlay = componentSpec(c.type)?.overlay
-    const into = overlay ? undefined : parent
-    const page = into === undefined ? target.page : null
-    return { ...rest, ...(into !== undefined && { parent: into }), ...(page !== null && { page }) }
+    return rest
   })
-  const scratch = renamedApart(def, {
-    schemaVersion: 1,
-    components: placedRoots,
-    queries: [],
-    layout: clip.layout,
-  })
+  const scratch = renamedApart(def, { schemaVersion: 1, components: loose, queries: [], layout: clip.layout })
   const renamed = scratch.renamed
-  const pasted = scratch.definition
+  const pasted: AppDefinition = {
+    ...scratch.definition,
+    components: scratch.definition.components.map((c): AppComponent => {
+      if (!roots.has(originalOf(c.name, renamed))) return c
+      const into = componentSpec(c.type)?.overlay ? undefined : parent
+      const page = into === undefined ? target.page : null
+      return { ...c, ...(into !== undefined && { parent: into }), ...(page !== null && { page }) }
+    }),
+  }
 
   // Positions: the roots below what the target grid holds, offsets between them kept; children as they were.
   const layout: Record<string, Position> = {}
@@ -154,6 +161,7 @@ export function pasteComponents(
     definition,
     added: pasted.components.map((c) => c.name),
     renamed,
+    unparsed: scratch.unparsed,
     outside: outsideNames(def, pasted),
     runsByItself: [],
   }
@@ -193,6 +201,7 @@ export function pasteCode(def: AppDefinition, clip: CodeClip, page: string | nul
       (x) => x.name,
     ),
     renamed: scratch.renamed,
+    unparsed: scratch.unparsed,
     outside: outsideNames(def, pasted),
     runsByItself: pasted.queries.filter(runsByItself).map((q) => q.name),
   }
@@ -211,10 +220,11 @@ export function runsByItself(query: AppQuery): boolean {
 function renamedApart(
   def: AppDefinition,
   pasted: AppDefinition,
-): { definition: AppDefinition; renamed: Record<string, string> } {
+): { definition: AppDefinition; renamed: Record<string, string>; unparsed: string[] } {
   const taken = usedNames(def)
   let scratch = pasted
   const renamed: Record<string, string> = {}
+  const unparsedAt = new Set<string>()
   for (const name of usedNames(pasted)) {
     if (!taken.has(name) && !appNameReason(name)) {
       taken.add(name)
@@ -222,18 +232,28 @@ function renamedApart(
     }
     const inScratch = usedNames(scratch)
     for (let n = 1; ; n++) {
-      if (n > 9999) throw new Error(`No free name for "${name}"`)
-      const candidate = `${name.replace(/\d+$/, '') || name}${n}`
+      const candidate = freshName(name, n)
+      if (candidate === null) throw new Error(`No free name for "${name}"`)
       if (taken.has(candidate) || inScratch.has(candidate) || appNameReason(candidate)) continue
       const result = renameAppEntity(scratch, name, candidate)
       if (!result.ok) continue
+      for (const path of result.skipped) unparsedAt.add(ownerAt(result.definition, path))
       scratch = result.definition
       renamed[name] = candidate
       taken.add(candidate)
       break
     }
   }
-  return { definition: scratch, renamed }
+  // Owners are named as they were then: their own names may have changed since (never to a pasted name).
+  const unparsed = [...new Set([...unparsedAt].map((name) => renamed[name] ?? name))]
+  return { definition: scratch, renamed, unparsed }
+}
+
+/** The name of the component, query, transformer or variable a field's path (`['queries', 2, …]`) is in. */
+function ownerAt(def: AppDefinition, path: (string | number)[]): string {
+  const [list, index] = path
+  const items = (def as unknown as Record<string, { name: string }[] | undefined>)[list as string]
+  return items?.[index as number]?.name ?? String(list)
 }
 
 function originalOf(name: string, renamed: Record<string, string>): string {

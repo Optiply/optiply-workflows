@@ -42,7 +42,13 @@ export function isTextTarget(target: EventTarget | null): boolean {
   return typeof closest === 'function' && closest.call(target, TEXT_TARGETS) !== null
 }
 
-/** Whether a dialog is open: shortcuts would act on the editor behind it. */
+/**
+ * Whether a dialog is open: shortcuts would act on the editor behind it. A modal component the app editor shows
+ * because it's selected (`data-canvas-modal`) is part of the canvas being edited, not a dialog over it.
+ */
 export function dialogOpen(): boolean {
-  return typeof document !== 'undefined' && document.querySelector('[role="dialog"]') !== null
+  return (
+    typeof document !== 'undefined' &&
+    document.querySelector('[role="dialog"]:not([data-canvas-modal])') !== null
+  )
 }

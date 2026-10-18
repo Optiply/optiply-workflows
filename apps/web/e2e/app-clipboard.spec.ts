@@ -133,3 +133,51 @@ test('copy, paste and duplicate components and code between apps', async ({ page
     expect((await draftOf(page, target)).queries.map((q) => q.name)).toEqual(['greet'])
   })
 })
+
+/** PR #17 review: shortcuts on a modal being edited, and pasting into a container named like the copied one. */
+test('shortcuts work inside a modal being edited; a copy from another app goes into a same-named container', async ({
+  page,
+}) => {
+  await signIn(page)
+  const source = await appWith(page, 'clip-c', {
+    components: [
+      { name: 'container1', type: 'container' },
+      { name: 'textInput1', type: 'textInput', parent: 'container1' },
+    ],
+    queries: [],
+    layout: { container1: at(0, 0, 12, 4), textInput1: at(0, 0) },
+  })
+  const target = await appWith(page, 'clip-d', {
+    components: [
+      { name: 'container1', type: 'container' },
+      { name: 'modal1', type: 'modal' },
+      { name: 'text1', type: 'text', parent: 'modal1', props: { value: 'In the modal' } },
+    ],
+    queries: [],
+    layout: { container1: at(0, 0, 12, 6), text1: at(0, 0) },
+  })
+
+  await test.step("paste another app's container1 with the target's container1 selected: it goes inside", async () => {
+    await page.goto(`/apps/${source}/edit`)
+    await inTree(page, 'container1').click()
+    await page.keyboard.press('ControlOrMeta+C')
+    await page.goto(`/apps/${target}/edit`)
+    await inTree(page, 'container1').click()
+    await page.keyboard.press('ControlOrMeta+V')
+    await expect(inTree(page, 'container2')).toBeVisible()
+    await saved(page)
+    const pasted = (await draftOf(page, target)).components.find((c) => c.name === 'container2')
+    expect(pasted?.parent).toBe('container1')
+  })
+
+  await test.step('duplicate and undo inside the modal the editor shows', async () => {
+    await inTree(page, 'text1').click()
+    await expect(page.getByRole('dialog', { name: 'modal1' })).toBeVisible()
+    await page.keyboard.press('ControlOrMeta+D')
+    await expect(inTree(page, 'text2')).toBeVisible()
+    await saved(page)
+    expect((await draftOf(page, target)).components.find((c) => c.name === 'text2')?.parent).toBe('modal1')
+    await page.keyboard.press('ControlOrMeta+Z')
+    await expect(inTree(page, 'text2')).toHaveCount(0)
+  })
+})

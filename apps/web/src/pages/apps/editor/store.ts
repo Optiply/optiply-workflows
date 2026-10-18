@@ -127,7 +127,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   undo: () => {
     const state = get()
     if (state.readOnly || state.status === 'conflict') return
-    const step = undo(state.history)
+    const step = undo(state.history, viewOf(state))
     if (step)
       set({
         ...applied(state, step.entry.before, step.entry.view),
@@ -142,7 +142,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     const step = redo(state.history)
     if (step)
       set({
-        ...applied(state, step.entry.after, step.entry.view),
+        ...applied(state, step.entry.after, step.entry.redoView ?? step.entry.view),
         history: step.history,
         epoch: state.epoch + 1,
       })

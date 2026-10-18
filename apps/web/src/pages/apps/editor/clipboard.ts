@@ -12,6 +12,7 @@ import {
   pasteComponents,
   runsByItself,
 } from '@ow/app-definition'
+import { canonicalJson } from '@ow/definition'
 import { copiedHere, readClip, rememberCopy } from '@/lib/clipboard'
 import type { Tone } from '../notifications'
 import { useAppEditor } from './store'
@@ -90,7 +91,9 @@ function paste(clip: ComponentClip | CodeClip, notify: Notify, opts: { duplicate
 function targetFor(def: AppDefinition, clip: ComponentClip, opts: { duplicate?: boolean }) {
   const { selected, url } = useAppEditor.getState()
   const chosen = def.components.find((c) => c.name === selected)
-  const isCopyOfIt = clip.components.some((c) => c.name === selected)
+  // A copy of the selected component as it is now (not just something with the same name, from another app).
+  const isCopyOfIt =
+    chosen !== undefined && canonicalJson(copyComponents(def, [chosen.name])) === canonicalJson(clip)
   const into = chosen && componentSpec(chosen.type)?.container && !opts.duplicate && !isCopyOfIt
   const parent = into ? chosen.name : chosen?.parent
   const page = def.pages?.length ? (chosen && parent === undefined ? (chosen.page ?? null) : url.page) : null
@@ -116,6 +119,10 @@ export function pasteSummary(result: AppPasteResult): string | null {
   const missing = result.outside.filter((o) => !o.inTarget).map((o) => o.name)
   if (here.length) lines.push(`It reads what wasn't copied and now reads this app's: ${here.join(', ')}.`)
   if (missing.length) lines.push(`It reads what wasn't copied: ${missing.join(', ')}.`)
+  if (result.unparsed.length)
+    lines.push(
+      `Check ${result.unparsed.join(', ')}: their code doesn't parse, so names in it weren't updated to the pasted items' new ones.`,
+    )
   if (result.runsByItself.length) lines.push(`Running by itself: ${result.runsByItself.join(', ')}.`)
   return lines.length ? lines.join(' ') : null
 }

@@ -79,6 +79,7 @@ export function ModalRenderer({ component, definition }: RendererProps) {
       <div
         role="dialog"
         aria-modal="true"
+        data-canvas-modal={editing || undefined}
         aria-label={title || name}
         className={cn(
           'relative w-full rounded-xl border border-border bg-surface shadow-lg',

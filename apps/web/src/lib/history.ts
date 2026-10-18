@@ -11,6 +11,8 @@ export interface HistoryEntry<D, V> {
   before: D
   after: D
   view: V
+  /** What was showing when the edit was undone (after it, as near as is known): redoing it shows that again. */
+  redoView?: V
   /** What the edit changed, when it only changed values in place (see `changeKey`); merged edits share it. */
   key: string | null
   at: number
@@ -54,19 +56,27 @@ export function record<D, V>(
   }
 }
 
-/** The entry to undo (put back its `before`), and the history after it; null when there's nothing to undo. */
+/**
+ * The entry to undo (put back its `before`), and the history after it; null when there's nothing to undo. `view` is
+ * what's showing now, which redoing the entry shows again.
+ */
 export function undo<D, V>(
   history: History<D, V>,
+  view?: V,
 ): { entry: HistoryEntry<D, V>; history: History<D, V> } | null {
   const entry = history.past.at(-1)
   if (!entry) return null
+  const undone = view === undefined ? entry : { ...entry, redoView: view }
   return {
     entry,
-    history: { past: history.past.slice(0, -1), future: [entry, ...history.future], open: false },
+    history: { past: history.past.slice(0, -1), future: [undone, ...history.future], open: false },
   }
 }
 
-/** The entry to redo (put back its `after`), and the history after it; null when there's nothing to redo. */
+/**
+ * The entry to redo (put back its `after`, and show its `redoView` if it has one), and the history after it; null
+ * when there's nothing to redo.
+ */
 export function redo<D, V>(
   history: History<D, V>,
 ): { entry: HistoryEntry<D, V>; history: History<D, V> } | null {

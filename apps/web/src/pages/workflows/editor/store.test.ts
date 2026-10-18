@@ -88,6 +88,20 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor()).toMatchObject({ graph: null, selected: null })
   })
 
+  it('redoes to what was showing after the edit: a renamed block stays selected', () => {
+    editor().select('code1')
+    editor().update((def) => ({
+      ...def,
+      blocks: def.blocks.map((b) => (b.name === 'code1' ? { ...b, name: 'fetch' } : b)),
+      edges: def.edges.map((e) => (e.to === 'code1' ? { ...e, to: 'fetch' } : e)),
+    }))
+    editor().select('fetch')
+    editor().undo()
+    expect(editor().selected).toBe('code1')
+    editor().redo()
+    expect(editor()).toMatchObject({ selected: 'fetch', selection: ['fetch'] })
+  })
+
   it('ignores an edit that rebuilds the definition without changing it', () => {
     typeCode('return 1')
     updateBlock('code1', (b) => ({ ...b }))

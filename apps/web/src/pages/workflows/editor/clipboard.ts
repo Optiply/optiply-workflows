@@ -33,7 +33,7 @@ export function copyText(): string | null {
 }
 
 /**
- * Pastes clipboard text into the open graph, to the right of the selected block (connected to it, like Add) or of
+ * Pastes clipboard text into the open graph, to the right of the chosen block (connected to it, like Add) or of
  * the rightmost one. Returns false when the text isn't blocks, so the browser can paste it elsewhere. Blocks this
  * browser didn't copy are only pasted once confirmed.
  */
@@ -47,13 +47,16 @@ export function pasteText(text: string): boolean {
   }
   const clip = read.clip
   if (!copiedHere(text) && !confirm(untrustedQuestion(clip))) return true
-  const { definition, graph: fn, selected, selection } = useEditor.getState()
+  const { definition, graph: fn } = useEditor.getState()
   const positions = positionsFor(graphOf(definition, fn))
-  const anchor = selection.length <= 1 && selected ? positions[selected] : undefined
+  // The one block copy would act on (highlighted, or inspected with nothing highlighted); none with several.
+  const picked = chosen()
+  const from = picked.length === 1 ? picked[0]! : null
+  const anchor = from ? positions[from] : undefined
   const at = anchor
     ? { x: anchor.x + NODE_WIDTH + 80, y: anchor.y }
     : { x: Math.max(0, ...Object.values(positions).map((p) => p.x)) + NODE_WIDTH + 80, y: 0 }
-  paste(clip, { at, connectFrom: selection.length <= 1 ? selected : null })
+  paste(clip, { at, connectFrom: from })
   return true
 }
 
@@ -96,6 +99,10 @@ export function pasteSummary(result: PasteResult): string | null {
   if (kept.length)
     lines.push(`Kept this workflow's own ${kept.join(', ')}: the pasted blocks call it, not the copy.`)
   if (conflicts.length) lines.push(`Not added: ${conflicts.join(', ')} (a block here has that name).`)
+  if (result.unparsed.length)
+    lines.push(
+      `Check ${result.unparsed.join(', ')}: their code doesn't parse, so names in it weren't updated to the pasted blocks' new ones.`,
+    )
   const here = result.outside.filter((o) => o.inTarget).map((o) => o.name)
   const missing = result.outside.filter((o) => !o.inTarget).map((o) => o.name)
   if (here.length)

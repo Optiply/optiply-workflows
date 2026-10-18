@@ -126,6 +126,11 @@ export interface PasteResult {
     conflicts: string[]
   }
   /**
+   * Pasted blocks (by their pasted names) with code that doesn't parse and mentions a pasted block that was renamed:
+   * that code couldn't be updated, so it may still name the old block.
+   */
+  unparsed: string[]
+  /**
    * Names the pasted blocks read that are neither pasted blocks nor functions: blocks that weren't copied.
    * `inTarget` when the target has a block of that name, which the reference now reads.
    */
@@ -167,7 +172,7 @@ export function pasteBlocks(
   }
 
   const graph = graphIn(target, fn)
-  if (!graph) return { definition: def, added: [], renamed: {}, skipped, functions, outside: [] }
+  if (!graph) return nothingPasted(def, skipped)
   const inFunction = fn !== null
   let hasErrorTrigger = !inFunction && graph.blocks.some((b) => b.type === 'errorTrigger')
   const pasted: Block[] = []
@@ -187,7 +192,7 @@ export function pasteBlocks(
     if (block.type === 'errorTrigger') hasErrorTrigger = true
     pasted.push(block)
   }
-  if (!pasted.length) return { definition: def, added: [], renamed: {}, skipped, functions, outside: [] }
+  if (!pasted.length) return nothingPasted(def, skipped)
 
   // Rename on a definition holding only the pasted blocks, so references between them follow and nothing else does.
   const pastedNames = new Set(pasted.map((b) => b.name))
@@ -201,6 +206,7 @@ export function pasteBlocks(
     functions: target.functions,
   }
   const renamed: Record<string, string> = {}
+  const unparsedAt = new Set<string>()
   for (const block of pasted) {
     const name = block.name
     if (!taken.has(name) && !reservedNameReason(name)) {
@@ -214,6 +220,7 @@ export function pasteBlocks(
       if (taken.has(candidate) || inScratch.has(candidate)) continue
       const result = renameBlock(scratch, name, candidate)
       if (!result.ok) continue // A local in a pasted block uses the name: try the next one.
+      for (const s of result.skipped) unparsedAt.add(s.block)
       scratch = result.definition
       renamed[name] = candidate
       taken.add(candidate)
@@ -249,14 +256,29 @@ export function pasteBlocks(
     edges: [...graph.edges, ...scratch.edges, ...connect],
     layout: { ...graph.layout, blocks: { ...graph.layout?.blocks, ...positions } },
   }
-  return { definition: withGraph(target, fn, next), added, renamed, skipped, functions, outside }
+  // Skipped blocks are named as they were then: their own names may have changed since (never to a pasted name).
+  const unparsed = [...new Set([...unparsedAt].map((name) => renamed[name] ?? name))]
+  return { definition: withGraph(target, fn, next), added, renamed, skipped, functions, unparsed, outside }
 }
 
-/** `name`'s stem (without its trailing digits) and `n`: `query3` → `query1`, `query2`, … Null past 9,999. */
-function freshName(name: string, n: number): string | null {
+/** Nothing pasted: the definition as it was, with no function added either. */
+function nothingPasted(def: WorkflowDefinition, skipped: PasteResult['skipped']): PasteResult {
+  const functions = { added: [], reused: [], kept: [], conflicts: [] }
+  return { definition: def, added: [], renamed: {}, skipped, functions, unparsed: [], outside: [] }
+}
+
+/** The longest a name can be (blocks, functions, and the app's components and code). */
+const MAX_NAME_LENGTH = 64
+
+/**
+ * `name`'s stem (without its trailing digits) and `n`: `query3` → `query1`, `query2`, …; the stem is cut short when
+ * the name would be too long. Null past 9,999.
+ */
+export function freshName(name: string, n: number): string | null {
   if (n > 9999) return null
-  const stem = name.replace(/\d+$/, '') || name
-  return `${stem}${n}`
+  const suffix = String(n)
+  const stem = (name.replace(/\d+$/, '') || name).slice(0, MAX_NAME_LENGTH - suffix.length)
+  return `${stem}${suffix}`
 }
 
 /** Where the pasted blocks go: their copied positions moved to `at` (or by `offset`), else stacked below. */

@@ -67,6 +67,17 @@ describe('undo and redo in the app editor', () => {
     expect(editor()).toMatchObject({ selected: 'body', openCode: 'orders', url: { page: 'detail' } })
   })
 
+  it('redoes to what was showing after the edit: an added component is selected again', () => {
+    editor().select('title')
+    editor().update((d) => addComponent(d, 'text', { page: 'home' }).definition)
+    const added = editor().definition.components.at(-1)!.name
+    editor().select(added)
+    editor().undo()
+    expect(editor().selected).toBe('title')
+    editor().redo()
+    expect(editor().selected).toBe(added)
+  })
+
   it('drops what no longer exists: an undone component isn’t selected, an undone query isn’t open', () => {
     editor().update((d) => ({ ...d, queries: [...d.queries, { name: 'extra', kind: 'js', code: '' }] }))
     editor().openCodeItem('extra')
