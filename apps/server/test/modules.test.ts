@@ -55,7 +55,9 @@ async function moduleWith(slug: string, def: object, client = admin) {
   const created = data(await client.mutate('modules.create', { slug, name: slug }))
   let revision = 1
   const save = async (next: object) => {
-    revision = data(await client.mutate('modules.saveDraft', { id: created.id, revision, definition: next })).revision
+    revision = data(
+      await client.mutate('modules.saveDraft', { id: created.id, revision, definition: next }),
+    ).revision
     return revision
   }
   await save(def)
@@ -63,7 +65,13 @@ async function moduleWith(slug: string, def: object, client = admin) {
 }
 
 const grant = (objectType: string, objectId: string | null, level: 'use' | 'edit' | 'own' | null) =>
-  admin.mutate('permissions.set', { objectType, objectId, groupId: memberGroupId, environmentId: null, level })
+  admin.mutate('permissions.set', {
+    objectType,
+    objectId,
+    groupId: memberGroupId,
+    environmentId: null,
+    level,
+  })
 
 beforeAll(async () => {
   env = await startTestApp()
@@ -94,7 +102,9 @@ describe('modules', () => {
       failure(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() })).message,
     ).toBe('Nothing changed since the live release, v1.0.0')
     await m.save(picker('v2'))
-    data(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision(), bump: 'minor' }))
+    data(
+      await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision(), bump: 'minor' }),
+    )
     const releases = data(await admin.query('modules.releases', { moduleId: m.id }))
     expect(releases.map((r: { version: string; live: boolean }) => [r.version, r.live])).toEqual([
       ['1.1.0', true],
@@ -121,12 +131,16 @@ describe('modules', () => {
     const m = await moduleWith('broken_module', picker())
     const { module: _, ...plainApp } = picker()
     expect(
-      failure(await admin.mutate('modules.saveDraft', { id: m.id, revision: m.revision(), definition: plainApp })),
+      failure(
+        await admin.mutate('modules.saveDraft', { id: m.id, revision: m.revision(), definition: plainApp }),
+      ),
     ).toEqual({ code: 'BAD_REQUEST', message: 'A module definition needs its module part' })
     const bad = picker()
     bad.components[1]!.events![0]!.action = { type: 'moduleEvent', event: 'nope' }
     await m.save(bad)
-    expect(failure(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() }))).toEqual({
+    expect(
+      failure(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() })),
+    ).toEqual({
       code: 'BAD_REQUEST',
       message: `The module isn't valid: The module has no event "nope"`,
     })
@@ -155,7 +169,8 @@ describe('modules', () => {
     })
     // Publishing vouches for the resource everywhere.
     expect(
-      failure(await member.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() })).message,
+      failure(await member.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() }))
+        .message,
     ).toBe('You need use access to resource "optiply_db" in every environment to release this module')
     await grant('module', m.id, null)
   })
@@ -183,9 +198,9 @@ describe('apps placing modules', () => {
     const m = await moduleWith('placed_picker', picker())
     const a = await saveApp('placing_app', appPlacing({ region: 'US' }))
     // Not published yet.
-    expect(data(await admin.query('apps.get', { id: a.id })).diagnostics.map((d: { code: string }) => d.code)).toEqual([
-      'unpublished_module',
-    ])
+    expect(
+      data(await admin.query('apps.get', { id: a.id })).diagnostics.map((d: { code: string }) => d.code),
+    ).toEqual(['unpublished_module'])
     await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() })
     expect(data(await admin.query('apps.get', { id: a.id })).diagnostics).toEqual([])
     const wrong = await saveApp('wrong_props_app', appPlacing({ colour: 'red', version: '9.9.9' }))
@@ -236,11 +251,18 @@ describe('apps placing modules', () => {
   it('has folders of its own and grants without environments', async () => {
     await grant('module', null, 'edit')
     const folder = data(await member.mutate('folders.create', { type: 'module', name: 'Pickers' }))
-    const [appFolder] = await env.db.insert(folders).values({ objectType: 'app', name: 'Apps here' }).returning()
+    const [appFolder] = await env.db
+      .insert(folders)
+      .values({ objectType: 'app', name: 'Apps here' })
+      .returning()
     expect(
-      failure(await member.mutate('modules.create', { slug: 'misplaced', name: 'x', folderId: appFolder!.id })),
+      failure(
+        await member.mutate('modules.create', { slug: 'misplaced', name: 'x', folderId: appFolder!.id }),
+      ),
     ).toEqual({ code: 'BAD_REQUEST', message: 'No module folder has that id' })
-    const created = data(await member.mutate('modules.create', { slug: 'in_folder', name: 'x', folderId: folder.id }))
+    const created = data(
+      await member.mutate('modules.create', { slug: 'in_folder', name: 'x', folderId: folder.id }),
+    )
     expect(created).toMatchObject({ folderId: folder.id, level: 'edit' })
     expect(
       failure(

@@ -403,7 +403,8 @@ export async function runDefinitionQuery(
   const { db } = deps
   const { definition } = opts
   const query = definition.queries.find((q) => q.name === opts.query)
-  if (!query) throw new TRPCError({ code: 'NOT_FOUND', message: `The ${opts.what} has no query named "${opts.query}"` })
+  if (!query)
+    throw new TRPCError({ code: 'NOT_FOUND', message: `The ${opts.what} has no query named "${opts.query}"` })
   if (query.kind === 'js') {
     throw new TRPCError({
       code: 'BAD_REQUEST',
