@@ -1,5 +1,6 @@
 import {
   type LibraryDiagnostic,
+  type LibraryInfo,
   type LibraryQueryDefinition,
   libraryQueryHash,
   libraryScope,
@@ -7,8 +8,12 @@ import {
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
 import {
+  type App,
+  appReleases,
+  apps,
   type Db,
   environments,
+  gitBranchDrafts,
   type LibraryQuery,
   type LibraryQueryRelease,
   libraryQueries,
@@ -17,9 +22,10 @@ import {
   resources,
 } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
+import { renderTemplate } from '@ow/expressions'
 import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, eq } from 'drizzle-orm'
+import { type AnyColumn, and, asc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -251,4 +257,141 @@ export async function runLibraryDraft(
     ...(opts.signal && { signal: opts.signal }),
     labels: { ow_source: 'library', ow_library: opts.query.slug, ow_user: user.id },
   })
+}
+
+/**
+ * The release a library query of an app runs: the pinned version, or the live one for `latest` (whichever is live
+ * when the query runs). The release, not the app, says which resource and query run.
+ */
+export async function resolveLibraryRelease(
+  db: Db,
+  slug: string,
+  version: string,
+): Promise<{ query: LibraryQuery; release: LibraryQueryRelease }> {
+  const [query] = await db.select().from(libraryQueries).where(eq(libraryQueries.slug, slug))
+  if (!query) throw new TRPCError({ code: 'BAD_REQUEST', message: `No library query has the slug "${slug}"` })
+  const where =
+    version === 'latest'
+      ? query.liveReleaseId
+        ? eq(libraryQueryReleases.id, query.liveReleaseId)
+        : undefined
+      : and(eq(libraryQueryReleases.libraryQueryId, query.id), eq(libraryQueryReleases.version, version))
+  const [release] = where ? await db.select().from(libraryQueryReleases).where(where) : []
+  if (!release) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        version === 'latest'
+          ? `Library query "${slug}" has no live release`
+          : `Library query "${slug}" has no release ${version}`,
+    })
+  }
+  return { query, release }
+}
+
+/** An app's parameter values: every string rendered as a template (a lone `{{ x }}` keeps x's type). */
+export async function renderParams(
+  params: Record<string, unknown>,
+  evaluate: (code: string) => unknown,
+): Promise<Record<string, unknown>> {
+  const render = async (value: unknown): Promise<unknown> => {
+    if (typeof value === 'string') return (await renderTemplate(value, evaluate)) ?? null
+    if (Array.isArray(value)) return Promise.all(value.map(render))
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value)) out[k] = await render(v)
+      return out
+    }
+    return value
+  }
+  const out: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(params)) {
+    try {
+      out[name] = await render(value)
+    } catch (err) {
+      throw new Error(`parameter ${name}: ${(err as Error).message}`)
+    }
+  }
+  return out
+}
+
+/**
+ * The library queries an app references, by slug, with what the validator needs (`LibraryInfo`: the live version
+ * and each release's parameters).
+ */
+export async function libraryInfos(
+  db: Db,
+  slugs: string[],
+): Promise<Map<string, { query: LibraryQuery; info: LibraryInfo }>> {
+  if (!slugs.length) return new Map()
+  const rows = await db.select().from(libraryQueries).where(inArray(libraryQueries.slug, slugs))
+  const releases = rows.length
+    ? await db
+        .select({
+          libraryQueryId: libraryQueryReleases.libraryQueryId,
+          id: libraryQueryReleases.id,
+          version: libraryQueryReleases.version,
+          definition: libraryQueryReleases.definition,
+        })
+        .from(libraryQueryReleases)
+        .where(
+          inArray(
+            libraryQueryReleases.libraryQueryId,
+            rows.map((r) => r.id),
+          ),
+        )
+    : []
+  return new Map(
+    rows.map((query) => {
+      const own = releases.filter((r) => r.libraryQueryId === query.id)
+      const info: LibraryInfo = {
+        liveVersion: own.find((r) => r.id === query.liveReleaseId)?.version ?? null,
+        versions: Object.fromEntries(own.map((r) => [r.version, r.definition.params.map((p) => p.name)])),
+      }
+      return [query.slug, { query, info }]
+    }),
+  )
+}
+
+/** Where an app definition's queries use a library query: `[{ "kind": "library", "library": slug }]`. */
+const usesLibrary = (column: SQL | AnyColumn, slug: string) =>
+  sql`${column} -> 'queries' @> ${JSON.stringify([{ kind: 'library', library: slug }])}::jsonb`
+
+/**
+ * The apps using a library query: in their draft, their live release or an open Git branch draft. Deleting it is
+ * refused while any does.
+ */
+export async function libraryUsers(
+  db: Db,
+  slug: string,
+): Promise<{ app: App; where: ('draft' | 'live' | 'branch')[] }[]> {
+  const [drafts, live, branches] = await Promise.all([
+    db.select({ id: apps.id }).from(apps).where(usesLibrary(apps.draftDefinition, slug)),
+    db
+      .select({ id: apps.id })
+      .from(apps)
+      .innerJoin(appReleases, eq(appReleases.id, apps.liveReleaseId))
+      .where(usesLibrary(appReleases.definition, slug)),
+    db
+      .select({ id: gitBranchDrafts.appId })
+      .from(gitBranchDrafts)
+      .where(and(isNotNull(gitBranchDrafts.appId), usesLibrary(gitBranchDrafts.definition, slug))),
+  ])
+  const where = new Map<string, ('draft' | 'live' | 'branch')[]>()
+  const add = (id: string | null, kind: 'draft' | 'live' | 'branch') => {
+    if (!id) return
+    const list = where.get(id) ?? []
+    if (!list.includes(kind)) list.push(kind)
+    where.set(id, list)
+  }
+  for (const r of drafts) add(r.id, 'draft')
+  for (const r of live) add(r.id, 'live')
+  for (const r of branches) add(r.id, 'branch')
+  if (!where.size) return []
+  const rows = await db
+    .select()
+    .from(apps)
+    .where(inArray(apps.id, [...where.keys()]))
+    .orderBy(asc(apps.name))
+  return rows.map((app) => ({ app, where: where.get(app.id)! }))
 }

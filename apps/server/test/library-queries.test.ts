@@ -300,3 +300,169 @@ describe('library queries', () => {
     await grant('library_query', null, null)
   })
 })
+
+describe('library queries in apps', () => {
+  /** An app whose `orders` query uses the library query `slug` at `version`, its parameter from an input. */
+  const appUsing = (
+    slug: string,
+    version: string,
+    params: object = { customerId: '{{ customer.value }}' },
+  ) => ({
+    schemaVersion: 1,
+    components: [{ name: 'customer', type: 'numberInput', props: { defaultValue: 5 } }],
+    queries: [{ name: 'orders', kind: 'library', library: slug, version, params, run: 'auto' }],
+    layout: { customer: { x: 0, y: 0, w: 4, h: 3 } },
+  })
+  const saveApp = async (client: ReturnType<typeof trpc>, slug: string, def: object) => {
+    const created = data(await admin.mutate('apps.create', { slug, name: slug }))
+    const revision = data(
+      await client.mutate('apps.saveDraft', { id: created.id, revision: 1, definition: def }),
+    ).revision
+    return { id: created.id as string, revision: revision as number }
+  }
+  const publishApp = (client: ReturnType<typeof trpc>, a: { id: string; revision: number }) =>
+    client.mutate('apps.publish', { appId: a.id, draftRevision: a.revision })
+  const runOrders = (
+    client: ReturnType<typeof trpc>,
+    appId: string,
+    releaseId: string | null,
+    values: Record<string, unknown> = { ' customer.value ': 5 },
+  ) => client.mutate('apps.runQuery', { appId, releaseId, query: 'orders', environmentId: prodId, values })
+  const libSql = (tag: string) =>
+    `select {{ customerId }}::int as id, '${tag}' as v, {{ current_user.email }}::text as email`
+
+  it('runs the pinned release or the live one, with the parameters the browser evaluated', async () => {
+    const q = await libraryQuery('orders_lib', definition(libSql('v1'), [{ name: 'customerId' }]))
+    const v1 = data(
+      await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() }),
+    )
+    await q.save(definition(libSql('v2'), [{ name: 'customerId' }]))
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+
+    const pinned = await saveApp(admin, 'pinned_app', appUsing('orders_lib', '1.0.0'))
+    const latest = await saveApp(admin, 'latest_app', appUsing('orders_lib', 'latest'))
+    const pinnedRelease = data(await publishApp(admin, pinned))
+    const latestRelease = data(await publishApp(admin, latest))
+    await grant('app', pinned.id, 'use')
+    await grant('app', latest.id, 'use')
+
+    // A viewer with Use on the apps only; current_user is the session's.
+    expect(data(await runOrders(member, pinned.id, pinnedRelease.id))).toMatchObject({
+      ok: true,
+      data: [{ id: 5, v: 'v1', email: 'member@optiply.nl' }],
+    })
+    expect(data(await runOrders(member, latest.id, latestRelease.id))).toMatchObject({
+      ok: true,
+      data: [{ v: 'v2' }],
+    })
+
+    await q.save(definition(libSql('v3'), [{ name: 'customerId' }]))
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+    expect(data(await runOrders(member, latest.id, latestRelease.id))).toMatchObject({ data: [{ v: 'v3' }] })
+    expect(data(await runOrders(member, pinned.id, pinnedRelease.id))).toMatchObject({ data: [{ v: 'v1' }] })
+    // Rolling the library back is what `latest` runs next.
+    await admin.mutate('libraryQueries.setLive', { libraryQueryId: q.id, releaseId: v1.id })
+    expect(data(await runOrders(member, latest.id, latestRelease.id))).toMatchObject({ data: [{ v: 'v1' }] })
+
+    // The browser's values are data: an injection string is bound as a value (and isn't an int).
+    expect(
+      data(
+        await runOrders(member, pinned.id, pinnedRelease.id, { ' customer.value ': '1; drop table users' }),
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'query' } })
+
+    // Who uses it; deleting it is refused meanwhile.
+    expect(data(await admin.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
+      apps: [
+        expect.objectContaining({ slug: 'latest_app', where: ['draft', 'live'] }),
+        expect.objectContaining({ slug: 'pinned_app', where: ['draft', 'live'] }),
+      ],
+      hidden: 0,
+    })
+    expect(failure(await admin.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
+      code: 'CONFLICT',
+      message: 'Apps use this library query: "latest_app", "pinned_app". Remove it from them first',
+    })
+    await grant('app', pinned.id, null)
+    await grant('app', latest.id, null)
+  })
+
+  it('renders parameters: constants, current_user on the server, errors as the query’s outcome', async () => {
+    const q = await libraryQuery(
+      'params_lib',
+      definition('select {{ a }}::int as a, {{ b }}::text as b', [{ name: 'a' }, { name: 'b' }]),
+    )
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+    const a = await saveApp(
+      admin,
+      'params_app',
+      appUsing('params_lib', 'latest', { a: 41, b: 'Hi {{ current_user.email }}' }),
+    )
+    expect(data(await runOrders(admin, a.id, null, {}))).toMatchObject({
+      ok: true,
+      data: [{ a: 41, b: 'Hi admin@optiply.nl' }],
+    })
+    const broken = await saveApp(
+      admin,
+      'broken_params',
+      appUsing('params_lib', 'latest', { a: '{{ customer.value }}' }),
+    )
+    const outcome = data(await runOrders(admin, broken.id, null, {}))
+    expect(outcome).toMatchObject({ ok: false, error: { code: 'expression' } })
+    expect(outcome.error.message).toContain('parameter a: The browser sent no value for it')
+  })
+
+  it('needs Use on the library query to publish an app using it or run its draft', async () => {
+    const q = await libraryQuery(
+      'guarded_lib',
+      definition('select {{ customerId }}::int as id', [{ name: 'customerId' }]),
+    )
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+    const a = await saveApp(admin, 'guarded_app', appUsing('guarded_lib', 'latest'))
+    await grant('app', a.id, 'edit')
+
+    expect(failure(await runOrders(member, a.id, null))).toEqual({
+      code: 'FORBIDDEN',
+      message: `You need use access to library query "guarded_lib" to run the draft's queries`,
+    })
+    expect(failure(await publishApp(member, a))).toEqual({
+      code: 'FORBIDDEN',
+      message: 'You need use access to library query "guarded_lib" to release this app, which uses it',
+    })
+
+    await grant('library_query', q.id, 'use')
+    // No grant on the resource is needed: the library query's publisher vouched for it.
+    expect(data(await runOrders(member, a.id, null))).toMatchObject({ ok: true, data: [{ id: 5 }] })
+    expect(data(await publishApp(member, a)).version).toBe('1.0.0')
+    // Someone who can't see the app isn't told its name.
+    await grant('app', a.id, null)
+    await grant('library_query', q.id, 'own')
+    expect(failure(await member.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
+      code: 'CONFLICT',
+      message: 'Apps use this library query: 1 app. Remove it from them first',
+    })
+    expect(data(await member.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
+      apps: [],
+      hidden: 1,
+    })
+    await grant('library_query', q.id, null)
+  })
+
+  it('checks the reference when publishing and in the editor', async () => {
+    const q = await libraryQuery('checked_lib', definition('select {{ x }}::int as x', [{ name: 'x' }]))
+    const a = await saveApp(admin, 'checked_app', appUsing('checked_lib', 'latest', { x: 1 }))
+    expect(failure(await publishApp(admin, a))).toEqual({
+      code: 'BAD_REQUEST',
+      message: `The app isn't valid: Library query "checked_lib" has no live release yet`,
+    })
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+    const b = await saveApp(admin, 'checked_app2', appUsing('checked_lib', '2.0.0', { x: 1, y: 2 }))
+    expect(
+      data(await admin.query('apps.get', { id: b.id })).diagnostics.map((d: { code: string }) => d.code),
+    ).toEqual(['unknown_version'])
+    expect(failure(await runOrders(admin, b.id, null, {}))).toEqual({
+      code: 'BAD_REQUEST',
+      message: 'Library query "checked_lib" has no release 2.0.0',
+    })
+  })
+})

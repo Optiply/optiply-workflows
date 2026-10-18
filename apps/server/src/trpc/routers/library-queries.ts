@@ -11,6 +11,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   checkLibraryQuery,
+  libraryUsers,
   publishLibraryRelease,
   runLibraryDraft,
   setLiveLibraryRelease,
@@ -206,10 +207,40 @@ export const libraryQueriesRouter = router({
       }
     }),
 
-  /** Deletes the library query with its releases and grants. */
+  /**
+   * The apps using it (in their draft, live release or a Git branch draft): the ones the caller can see, and how
+   * many others.
+   */
+  usedBy: authedProcedure.input(z.object({ libraryQueryId: Id })).query(async ({ ctx, input }) => {
+    const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+    const users = await libraryUsers(ctx.db, query.slug)
+    const visible = users.filter((u) => access.appLevel(u.app) !== null)
+    return {
+      apps: visible.map(({ app, where }) => ({ id: app.id, slug: app.slug, name: app.name, where })),
+      hidden: users.length - visible.length,
+    }
+  }),
+
+  /** Deletes the library query with its releases and grants; refused while apps use it. */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, query } = await visibleQuery(ctx, input)
     requireLevel(access.libraryQueryLevel(query), 'own', 'this library query')
+    const users = await libraryUsers(ctx.db, query.slug)
+    if (users.length) {
+      // Only apps the caller can see are named.
+      const names = users
+        .filter((u) => access.appLevel(u.app) !== null)
+        .slice(0, 3)
+        .map((u) => `"${u.app.name}"`)
+      const others = users.length - names.length
+      const more = others
+        ? `${names.length ? ' and ' : ''}${others} ${names.length ? 'more' : others === 1 ? 'app' : 'apps'}`
+        : ''
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: `Apps use this library query: ${names.join(', ')}${more}. Remove it from them first`,
+      })
+    }
     await ctx.db.transaction(async (tx) => {
       await tx.delete(libraryQueries).where(eq(libraryQueries.id, input.id))
       await tx
