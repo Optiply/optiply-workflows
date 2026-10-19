@@ -1,4 +1,4 @@
-import { componentSpec, type JsonValue } from './components'
+import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
 import {
@@ -72,11 +72,11 @@ export function bottomOf(def: AppDefinition, parent: string | undefined, page: s
 export function addComponent(
   def: AppDefinition,
   type: string,
-  opts: { parent?: string; position?: Partial<Position>; page?: string | null } = {},
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null; base?: string } = {},
 ): { definition: AppDefinition; name: string } {
-  const spec = componentSpec(type)
+  const spec = type === 'module' ? moduleComponentSpec(null) : componentSpec(type)
   if (!spec) throw new Error(`Unknown component type "${type}"`)
-  const name = nextName(def, type)
+  const name = nextName(def, opts.base ?? type)
   const parent = spec.overlay ? undefined : opts.parent
   const page = parent === undefined ? (opts.page ?? null) : null
   const component: AppComponent = {
@@ -488,4 +488,25 @@ export function removeModuleItem(def: AppDefinition, part: ModulePart, name: str
   const spec = def.module
   if (!spec) return def
   return { ...def, module: { ...spec, [part]: spec[part].filter((i) => i.name !== name) } }
+}
+
+/**
+ * Places a module (M14): an instance of it named after it (`customer_picker1`), following its latest release,
+ * where `addComponent` would put a component.
+ */
+export function addModuleInstance(
+  def: AppDefinition,
+  slug: string,
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const added = addComponent(def, 'module', { ...opts, base: slug.replace(/[^A-Za-z0-9_]/g, '_') })
+  return {
+    name: added.name,
+    definition: {
+      ...added.definition,
+      components: added.definition.components.map((c) =>
+        c.name === added.name ? { ...c, props: { module: slug } } : c,
+      ),
+    },
+  }
 }

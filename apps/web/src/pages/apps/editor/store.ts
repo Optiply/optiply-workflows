@@ -1,10 +1,15 @@
 import {
+  type AppComponent,
   type AppDefinition,
   type AppDiagnostic,
   type AppValidateOptions,
+  type ComponentSpec,
+  componentSpec,
+  instanceInterface,
   instanceRelease,
   type LibraryInfo,
   type ModuleInfo,
+  moduleComponentSpec,
   resolvePage,
   validateApp,
 } from '@ow/app-definition'
@@ -304,4 +309,16 @@ function applied(
         null,
     }),
   }
+}
+
+/**
+ * A component's spec; a module instance's from the interface of the release it names, once the editor knows its
+ * module (M14), open until then.
+ */
+export function specOf(
+  component: AppComponent,
+  modules: Record<string, ModuleRef | null>,
+): ComponentSpec | undefined {
+  if (component.type !== 'module') return componentSpec(component.type)
+  return moduleComponentSpec(instanceInterface(component, (slug) => modules[slug] ?? undefined))
 }

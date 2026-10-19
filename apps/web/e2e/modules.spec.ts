@@ -307,3 +307,47 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
   await page.reload()
   await expect(page.getByTestId('module-used-by')).toContainText(`Uses ${slug}`)
 })
+
+/** Placing a module in the app editor (M14 step 6c): picked, pinned, an input passed, its event handled. */
+test('place a module in an app', async ({ page }) => {
+  await signIn(page)
+  const stamp = Date.now()
+  const moduleSlug = `placed_picker_${stamp}`
+  await publishModule(page, moduleSlug)
+  const appSlug = `placing_${stamp}`
+  await trpcMutate(page, 'apps.create', { slug: appSlug, name: `Placing ${stamp}` })
+  await page.goto(`/apps/${appSlug}/edit`)
+
+  await page.getByRole('button', { name: 'Add a module' }).click()
+  await page
+    .getByTestId('module-picker')
+    .getByRole('button', { name: new RegExp(moduleSlug) })
+    .click()
+  const name = `placed_picker_${stamp}1`
+  const instance = page.locator(`[data-component="${name}"]`)
+  // Its default input: the pro plan.
+  await expect(instance.locator('[data-component="first"]')).toHaveText('First: ada@example.com')
+  await expect(page.getByRole('button', { name: new RegExp(`^${name}`) })).toContainText(moduleSlug)
+
+  // The inspector: the module, its version, its input, its event.
+  const inspector = page.getByTestId(`inspector-${name}`)
+  await expect(inspector.getByLabel('Module', { exact: true })).toHaveValue(moduleSlug)
+  await inspector.getByLabel('Version', { exact: true }).selectOption('1.0.0')
+  await typeInto(page, page.locator(`[data-testid$="/components/0/props/plan"]`), 'free')
+  await expect(instance.locator('[data-component="first"]')).toHaveText('First: grace@example.com')
+  await inspector.getByRole('button', { name: 'Add handler' }).click()
+  await expect(inspector.getByLabel('Event', { exact: true })).toHaveValue('picked')
+  // (Its default action controls a query this app doesn't have.)
+  await inspector.getByRole('button', { name: 'Remove handler' }).click()
+
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Problems', exact: true })).toBeVisible()
+  const saved = await trpcQuery<{ draftDefinition: { components: unknown[] } }>(page, 'apps.get', {
+    slug: appSlug,
+  })
+  expect(saved.draftDefinition.components[0]).toMatchObject({
+    name,
+    type: 'module',
+    props: { module: moduleSlug, version: '1.0.0', plan: 'free' },
+  })
+})

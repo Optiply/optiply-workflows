@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type AppDefinition,
   AppModel,
+  addModuleInstance,
   addModuleItem,
   buildAppGraph,
   emptyModule,
@@ -205,5 +206,19 @@ describe('editing a module’s interface', () => {
     expect(codes(input).map(([code]) => code)).toContain('unknown_property')
 
     expect(removeModuleItem(picker(), 'outputs', 'selectedId').module!.outputs).toEqual([])
+  })
+})
+
+describe('placing a module', () => {
+  it('adds an instance named after the module, at the module size, following the latest release', () => {
+    const placed = addModuleInstance(app({ components: [comp('title', 'text')] }), 'customer-picker')
+    expect(placed.name).toBe('customer_picker1')
+    expect(placed.definition.components[1]).toEqual({
+      name: 'customer_picker1',
+      type: 'module',
+      props: { module: 'customer-picker' },
+    })
+    expect(placed.definition.layout?.customer_picker1).toMatchObject({ w: 6, h: 12 })
+    expect(addModuleInstance(placed.definition, 'customer-picker').name).toBe('customer_picker2')
   })
 })

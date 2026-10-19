@@ -2,6 +2,7 @@ import {
   type AppComponent,
   type AppDefinition,
   componentSpec,
+  defaultSpecFor,
   entityPages,
   GRID_COLUMNS,
   type Position,
@@ -47,7 +48,7 @@ export function placedChildren(
   const placed = children.map((component) => {
     let position = layout[component.name]
     if (!position) {
-      const size = componentSpec(component.type)?.defaultSize ?? { w: 4, h: 4 }
+      const size = defaultSpecFor(component)?.defaultSize ?? { w: 4, h: 4 }
       position = { x: 0, y: bottom, w: Math.min(size.w, GRID_COLUMNS), h: size.h }
       bottom += size.h
     }

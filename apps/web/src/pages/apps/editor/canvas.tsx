@@ -1,8 +1,10 @@
 import {
+  type AppComponent,
   type AppDefinition,
   addComponent,
   COMPONENTS,
   componentSpec,
+  defaultSpecFor,
   entityPages,
   setPositions,
 } from '@ow/app-definition'
@@ -213,9 +215,20 @@ function GridCaption({ children, className }: { children: React.ReactNode; class
 }
 
 /**
- * Component types to drag onto the page, or click to add: into the selected container, or at the bottom of the
- * page being edited (of the frame, with a global component selected).
+ * Where a component added from the palette goes: into the selected container, or at the bottom of the page being
+ * edited (of the frame, with a global component selected).
  */
+export function placement(): { parent: string } | { page: string | null } {
+  const { definition, selected, url } = useAppEditor.getState()
+  const target = definition.components.find((c) => c.name === selected)
+  const parent = target && componentSpec(target.type)?.container ? target.name : target?.parent
+  if (parent) return { parent }
+  return {
+    page: definition.pages?.length ? (target ? (target.page ?? null) : url.page) : null,
+  }
+}
+
+/** Component types to drag onto the page, or click to add (see `placement`). */
 export function Palette() {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
@@ -223,15 +236,8 @@ export function Palette() {
   const isModule = useAppEditor((s) => s.kind === 'module')
   const types = isModule ? PALETTE.filter((type) => type !== 'navigation') : PALETTE
   const add = (type: string) => {
-    const { definition, selected, url } = useAppEditor.getState()
-    const target = definition.components.find((c) => c.name === selected)
-    const parent = target && componentSpec(target.type)?.container ? target.name : target?.parent
-    const onPage = definition.pages?.length
-      ? target && parent === undefined
-        ? (target.page ?? null)
-        : url.page
-      : null
-    const added = addComponent(definition, type, parent ? { parent } : { page: onPage })
+    const { definition } = useAppEditor.getState()
+    const added = addComponent(definition, type, placement())
     update(() => added.definition)
     select(added.name)
   }
@@ -276,18 +282,18 @@ export function ComponentTree() {
     () => new Set(diagnostics.filter((d) => d.severity === 'error').map((d) => d.entity)),
     [diagnostics],
   )
-  const rows: { name: string; type: string; depth: number; everyPage: boolean }[] = []
+  const rows: { name: string; label: string; depth: number; everyPage: boolean }[] = []
   const walk = (parent: string | undefined, depth: number) => {
     for (const { component } of placedChildren(definition, parent)) {
       if (!shown(component.name)) continue
       const everyPage = hasPages && parent === undefined && component.page === undefined
-      rows.push({ name: component.name, type: component.type, depth, everyPage })
+      rows.push({ name: component.name, label: labelOf(component), depth, everyPage })
       if (componentSpec(component.type)?.container) walk(component.name, depth + 1)
     }
   }
   walk(undefined, 0)
   for (const m of definition.components.filter((c) => componentSpec(c.type)?.overlay && shown(c.name))) {
-    rows.push({ name: m.name, type: m.type, depth: 0, everyPage: hasPages && m.page === undefined })
+    rows.push({ name: m.name, label: labelOf(m), depth: 0, everyPage: hasPages && m.page === undefined })
     walk(m.name, 1)
   }
   if (!rows.length) return <p className="px-1 text-xs text-muted">No components yet.</p>
@@ -311,10 +317,19 @@ export function ComponentTree() {
               </span>
             )}
             {problems.has(r.name) && <span className="size-1.5 rounded-full bg-danger" />}
-            <span className="text-[10px] text-muted">{COMPONENTS[r.type]?.label ?? r.type}</span>
+            <span className="max-w-[45%] truncate text-[10px] text-muted" title={r.label}>
+              {r.label}
+            </span>
           </button>
         </li>
       ))}
     </ul>
   )
+}
+
+/** A component's type as people read it; a module instance's module (M14). */
+function labelOf(component: AppComponent): string {
+  if (component.type === 'module' && typeof component.props?.module === 'string')
+    return component.props.module
+  return defaultSpecFor(component)?.label ?? component.type
 }

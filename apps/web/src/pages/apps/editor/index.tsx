@@ -21,7 +21,7 @@ import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
 import { useLibrarySync } from './library'
 import { ModulePanel } from './module-panel'
-import { useModuleSync } from './modules'
+import { AddModule, useModuleSync } from './modules'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
@@ -348,6 +348,12 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
                   <section>
                     <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
                     <Palette />
+                    {/* No modules inside modules. */}
+                    {app.kind === 'app' && (
+                      <div className="mt-1.5">
+                        <AddModule />
+                      </div>
+                    )}
                   </section>
                 )}
                 <section>
