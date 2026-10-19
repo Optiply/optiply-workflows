@@ -1,11 +1,13 @@
 import runtimeCode from 'virtual:app-runtime'
-import { type AppDefinition, runsAutomatically } from '@ow/app-definition'
+import { type AppDefinition, instanceRelease, runsAutomatically } from '@ow/app-definition'
 import {
   type AppUrl,
   CONNECT_MESSAGE,
   type Effect,
   type HostMessage,
   type LogLevel,
+  type ModuleReleases,
+  type QueryModule,
   type QueryOutcome,
   type RuntimeGlobals,
   type SandboxMessage,
@@ -35,6 +37,8 @@ export interface AppHostState {
   values: Record<string, unknown>
   /** Errors by node key. */
   errors: Record<string, string>
+  /** The module releases the app's instances run (M14), for drawing them. */
+  modules: ModuleReleases
   /** Why the app couldn't start, or that a newer version is live. */
   problem: string | null
   /** The app's console, newest last (at most 500 lines). */
@@ -52,6 +56,8 @@ export interface NeededConnection {
 
 export interface AppHostOptions {
   definition: AppDefinition
+  /** The module releases the app's instances run (M14), by `slug@version`; later changes go through `update`. */
+  modules?: ModuleReleases
   appId: string
   /** The release being shown, or null for the draft (the editor). */
   releaseId: string | null
@@ -147,8 +153,10 @@ export class AppHost {
   private pending = new Map<string, number>()
   /** The definition the sandbox should run; an update before it started goes out with `start`. */
   private definition: AppDefinition
+  /** The module releases the sandbox should run, like `definition`. */
+  private modules: ModuleReleases
   /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
-  private startedWith: AppDefinition | null = null
+  private startedWith: { definition: AppDefinition; modules: ModuleReleases } | null = null
   /** Where the app is: sent with `start` (a restart opens the same page), then as `navigate`. */
   private url: AppUrl
 
@@ -158,11 +166,13 @@ export class AppHost {
 
   constructor(private readonly options: AppHostOptions) {
     this.definition = options.definition
+    this.modules = options.modules ?? {}
     this.url = options.url ?? { page: null, params: {} }
     this.store = createStore<AppHostState>(() => ({
       status: 'loading',
       values: {},
       errors: {},
+      modules: this.modules,
       problem: null,
       logs: [],
       connections: [],
@@ -259,13 +269,16 @@ export class AppHost {
    * The editor changed the app: the sandbox switches to it, keeping what the user did. An app that stopped
    * responding starts again with the edit (likely the fix).
    */
-  update(definition: AppDefinition): void {
-    if (definition === this.definition) return
+  update(definition: AppDefinition, modules: ModuleReleases = this.modules): void {
+    if (definition === this.definition && modules === this.modules) return
+    const modulesChanged = modules !== this.modules
     this.definition = definition
+    this.modules = modules
+    if (modulesChanged) this.store.setState({ modules })
     const { status } = this.store.getState()
     if (status === 'stopped') this.restart()
     else if (status !== 'loading') {
-      this.post({ type: 'update', definition })
+      this.post({ type: 'update', definition, ...(modulesChanged && { modules }) })
       // A page added or renamed with this edit: the navigation to it may have come first, when it didn't exist yet.
       this.post({ type: 'navigate', url: this.url })
     }
@@ -326,20 +339,29 @@ export class AppHost {
     if (this.destroyed || port !== this.port) return
     switch (message.type) {
       case 'ready':
-        this.startedWith = this.definition
+        this.startedWith = { definition: this.definition, modules: this.modules }
         this.post({
           type: 'start',
           definition: this.definition,
           globals: this.options.globals,
           url: this.url,
+          modules: this.modules,
         })
         return
-      case 'started':
+      case 'started': {
         this.store.setState({ status: 'ready' })
-        if (this.definition !== this.startedWith) this.post({ type: 'update', definition: this.definition })
+        const started = this.startedWith
+        if (this.definition !== started?.definition || this.modules !== started.modules) {
+          this.post({
+            type: 'update',
+            definition: this.definition,
+            ...(this.modules !== started?.modules && { modules: this.modules }),
+          })
+        }
         // Moved on while it was starting.
         this.post({ type: 'navigate', url: this.url })
         return
+      }
       case 'fatal':
         this.stopWatchdog()
         this.store.setState({ status: 'failed', problem: message.message })
@@ -362,7 +384,7 @@ export class AppHost {
         this.reply(port, {
           type: 'queryResult',
           id: message.id,
-          outcome: await this.runQuery(message.query, message.values),
+          outcome: await this.runQuery(message.query, message.values, queryModule(message.module)),
         })
         return
       case 'confirm':
@@ -381,7 +403,13 @@ export class AppHost {
     }
   }
 
-  private async runQuery(query: string, values: Record<string, unknown>): Promise<QueryOutcome> {
+  /** Runs a server query; a module instance's with `module` (M14), known on the page as `instance/query`. */
+  private async runQuery(
+    query: string,
+    values: Record<string, unknown>,
+    module: QueryModule | undefined,
+  ): Promise<QueryOutcome> {
+    const name = module ? `${module.instance}/${query}` : String(query)
     try {
       await this.options.beforeQuery?.()
       const outcome = await trpcClient.apps.runQuery.mutate({
@@ -389,15 +417,16 @@ export class AppHost {
         releaseId: this.options.releaseId,
         ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
         query: String(query),
+        ...(module && { module }),
         environmentId: this.options.environmentId,
         values,
       })
       if (outcome.ok) {
-        this.connectionWorked(String(query))
+        this.connectionWorked(name)
         return { ok: true, data: outcome.data }
       }
       const need = authRequired(outcome.error)
-      if (need) this.connectionNeeded(need, outcome.error.message, String(query))
+      if (need) this.connectionNeeded(need, outcome.error.message, name)
       return { ok: false, error: { code: outcome.error.code, message: outcome.error.message } }
     } catch (err) {
       const code = err instanceof TRPCClientError ? (err.data?.code as string | undefined) : undefined
@@ -417,6 +446,13 @@ export class AppHost {
       connections: s.connections.filter((c) => c.need.resourceId !== resourceId),
     }))
     const auto = new Set(this.definition.queries.filter(runsAutomatically).map((q) => q.name))
+    // A module instance's automatic queries too, as `instance/query`.
+    for (const c of this.definition.components) {
+      const ref = c.type === 'module' ? instanceRelease(c) : null
+      const release = ref && Object.hasOwn(this.modules, ref.key) ? this.modules[ref.key] : undefined
+      for (const q of release?.definition.queries.filter(runsAutomatically) ?? [])
+        auto.add(`${c.name}/${q.name}`)
+    }
     for (const query of new Set(done.flatMap((c) => c.queries))) if (auto.has(query)) this.trigger(query)
   }
 
@@ -497,4 +533,11 @@ export class AppHost {
       }
     }
   }
+}
+
+/** The module a query belongs to, as the sandbox (untrusted) says; the server checks it. */
+function queryModule(module: unknown): QueryModule | undefined {
+  if (!module || typeof module !== 'object') return undefined
+  const { instance, releaseId } = module as Record<string, unknown>
+  return typeof instance === 'string' && typeof releaseId === 'string' ? { instance, releaseId } : undefined
 }

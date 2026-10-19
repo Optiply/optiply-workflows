@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
 import { ChildGridContext, EditingContext } from './grid-context'
 import type { RendererProps } from './renderer'
-import { useAppHostState, useAppValue } from './runtime/react'
+import { useAppHostState, useAppScope, useAppValue } from './runtime/react'
 
 /**
  * Renders an app's components on its 12-column grid: each parent (the page, a container, a form, a modal) is a CSS
@@ -131,7 +131,7 @@ export function AppCanvas({ definition, page = null }: { definition: AppDefiniti
 /** Shows a component's name, type and current values; used for types without a renderer yet. */
 function FallbackRenderer({ component }: RendererProps) {
   const values = useAppHostState((s) => s.values)
-  const prefix = `${component.name}.`
+  const prefix = `${useAppScope()}${component.name}.`
   const own = Object.fromEntries(
     Object.entries(values)
       .filter(([k]) => k.startsWith(prefix))

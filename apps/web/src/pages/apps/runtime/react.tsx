@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 import { AppHost, type AppHostOptions, type AppHostState } from './host'
 
@@ -9,23 +9,62 @@ import { AppHost, type AppHostOptions, type AppHostState } from './host'
 
 const HostContext = createContext<AppHost | null>(null)
 
+/**
+ * Inside a module instance (M14): its prefix (`picker1/`). Its components' values are the runtime's under that
+ * prefix, and the names they send (`set`, `fire`, `call`, `trigger`) get it too, so renderers work unchanged.
+ */
+const ScopeContext = createContext('')
+
 export function AppHostProvider({ host, children }: { host: AppHost; children: ReactNode }) {
   return <HostContext.Provider value={host}>{children}</HostContext.Provider>
 }
 
+/** Renders `children` as a module instance's components. */
+export function AppScope({ instance, children }: { instance: string; children: ReactNode }) {
+  return <ScopeContext.Provider value={`${instance}/`}>{children}</ScopeContext.Provider>
+}
+
+/** The prefix of the module instance rendering here; empty in the app itself. */
+export function useAppScope(): string {
+  return useContext(ScopeContext)
+}
+
+/** The running app's host; inside a module instance, one whose names are the instance's. */
 export function useAppHostContext(): AppHost {
   const host = useContext(HostContext)
-  if (!host) throw new Error('No app is running here')
-  return host
+  const scope = useContext(ScopeContext)
+  const scoped = useMemo(() => (host && scope ? scopedHost(host, scope) : host), [host, scope])
+  if (!scoped) throw new Error('No app is running here')
+  return scoped
+}
+
+/** `host` with the names it's given prefixed; everything else is the host's own. */
+function scopedHost(host: AppHost, prefix: string): AppHost {
+  const own = {
+    set: (updates: Record<string, unknown>) =>
+      host.set(Object.fromEntries(Object.entries(updates).map(([k, v]) => [prefix + k, v]))),
+    fire: (owner: string, event: string) => host.fire(prefix + owner, event),
+    call: (entity: string, method: string, args?: unknown[]) => host.call(prefix + entity, method, args),
+    trigger: (query: string) => host.trigger(prefix + query),
+  }
+  return new Proxy(host, {
+    get(target, property) {
+      if (Object.hasOwn(own, property)) return own[property as keyof typeof own]
+      const value = Reflect.get(target, property, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
 }
 
 /** One value of the app (`textInput1.value`), re-rendering when it changes. */
 export function useAppValue<T = unknown>(key: string): T {
-  return useStore(useAppHostContext().store, (s) => s.values[key] as T)
+  const scope = useContext(ScopeContext)
+  return useStore(useAppHostContext().store, (s) => s.values[scope + key] as T)
 }
 
 export function useAppError(key: string): string | undefined {
-  return useStore(useAppHostContext().store, (s) => s.errors[key])
+  const scope = useContext(ScopeContext)
+  return useStore(useAppHostContext().store, (s) => s.errors[scope + key])
 }
 
 export function useAppHostState<T>(select: (s: AppHostState) => T): T {
