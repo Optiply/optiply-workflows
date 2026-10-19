@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   type AppDefinition,
   AppModel,
+  addModuleItem,
   buildAppGraph,
   emptyModule,
   type ModuleInfo,
+  removeModuleItem,
   renameAppEntity,
+  updateModuleItem,
   validateApp,
 } from '../src'
 import { app, comp, sqlQuery } from './helpers'
@@ -178,5 +181,29 @@ describe('module instances in apps', () => {
       ['unknown_module', 'components.3.props.module', 'error'],
       ['unknown_identifier', 'components.3.props.module', 'error'],
     ])
+  })
+})
+
+describe('editing a module’s interface', () => {
+  it('adds items with free names, renames events with the actions firing them, removes items', () => {
+    const added = addModuleItem(picker(), 'events')
+    expect(added.name).toBe('event1')
+    expect(addModuleItem(added.definition, 'events').name).toBe('event2')
+    expect(addModuleItem(picker(), 'outputs').definition.module!.outputs[1]).toEqual({
+      name: 'output1',
+      value: '',
+    })
+
+    const renamed = updateModuleItem(picker(), 'events', 'picked', { name: 'chosen' })
+    expect(renamed.module!.events).toEqual([{ name: 'chosen' }])
+    expect(renamed.components[2]!.events![0]!.action).toEqual({ type: 'moduleEvent', event: 'chosen' })
+    expect(codes(renamed)).toEqual([])
+
+    // An input renamed: code still reading the old name is a problem to fix.
+    const input = updateModuleItem(picker(), 'inputs', 'region', { name: 'area', testValue: 'EU' })
+    expect(input.module!.inputs[1]).toEqual({ name: 'area', testValue: 'EU' })
+    expect(codes(input).map(([code]) => code)).toContain('unknown_property')
+
+    expect(removeModuleItem(picker(), 'outputs', 'selectedId').module!.outputs).toEqual([])
   })
 })

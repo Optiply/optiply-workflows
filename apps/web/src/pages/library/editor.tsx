@@ -25,6 +25,7 @@ import {
   Textarea,
 } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
+import { parseTestValue, showTestValue } from '@/lib/test-value'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor, ConnectorErrorNote, ResultView } from '../resources/shared'
@@ -280,18 +281,6 @@ function QueryCard({
     </Card>
   )
 }
-
-/** A test value is typed as JSON (`42`, `"a"`, `[1, 2]`), or taken as plain text when it isn't JSON. */
-function parseTestValue(text: string): LibraryParam['testValue'] {
-  if (text.trim() === '') return undefined
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
-  }
-}
-const showTestValue = (value: unknown) =>
-  value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value)
 
 function ParamsCard({
   definition,

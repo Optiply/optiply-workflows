@@ -219,6 +219,9 @@ function GridCaption({ children, className }: { children: React.ReactNode; class
 export function Palette() {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
+  // A module has no pages to link (M14).
+  const isModule = useAppEditor((s) => s.kind === 'module')
+  const types = isModule ? PALETTE.filter((type) => type !== 'navigation') : PALETTE
   const add = (type: string) => {
     const { definition, selected, url } = useAppEditor.getState()
     const target = definition.components.find((c) => c.name === selected)
@@ -234,7 +237,7 @@ export function Palette() {
   }
   return (
     <div className="grid grid-cols-2 gap-1.5">
-      {PALETTE.map((type) => (
+      {types.map((type) => (
         <button
           key={type}
           type="button"

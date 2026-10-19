@@ -12,15 +12,16 @@ const ACTIONS: { type: HandlerAction['type']; label: string }[] = [
   { type: 'runScript', label: 'Run script' },
   { type: 'notify', label: 'Show notification' },
   { type: 'openUrl', label: 'Open URL' },
+  // In a module only (M14).
+  { type: 'moduleEvent', label: 'Fire module event' },
 ]
+
+type Names = { queries: string[]; components: string[]; variables: string[]; events: string[] }
 
 const newId = () => Math.random().toString(36).slice(2, 10)
 
 /** A fresh action of a type, pointing at the first thing it can. */
-function defaultAction(
-  type: HandlerAction['type'],
-  names: { queries: string[]; components: string[]; variables: string[] },
-) {
+function defaultAction(type: HandlerAction['type'], names: Names) {
   switch (type) {
     case 'controlQuery':
       return { type, query: names.queries[0] ?? 'query1', method: 'trigger' } as const
@@ -35,7 +36,7 @@ function defaultAction(
     case 'openUrl':
       return { type, url: '' } as const
     case 'moduleEvent':
-      return { type, event: 'event1' } as const
+      return { type, event: names.events[0] ?? 'event1' } as const
   }
 }
 
@@ -77,11 +78,13 @@ export function HandlersEditor({
   const definition = useAppEditor((s) => s.definition)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const [open, setOpen] = useState<string | null>(null)
-  const names = {
+  const names: Names = {
     queries: definition.queries.map((q) => q.name),
     components: definition.components.map((c) => c.name),
     variables: (definition.variables ?? []).map((v) => v.name),
+    events: (definition.module?.events ?? []).map((e) => e.name),
   }
+  const actions = ACTIONS.filter((a) => a.type !== 'moduleEvent' || definition.module)
   if (!events.length) return <p className="text-xs text-muted">This component has no events.</p>
   const replace = (i: number, next: EventHandler) => onChange(handlers.map((h, j) => (j === i ? next : h)))
 
@@ -136,7 +139,7 @@ export function HandlersEditor({
                         })
                       }
                     >
-                      {ACTIONS.map((a) => (
+                      {actions.map((a) => (
                         <option key={a.type} value={a.type}>
                           {a.label}
                         </option>
@@ -215,7 +218,7 @@ function ActionFields({
 }: {
   action: HandlerAction
   at: (string | number)[]
-  names: { queries: string[]; components: string[]; variables: string[] }
+  names: Names
   onChange: (next: HandlerAction) => void
 }) {
   const definition = useAppEditor((s) => s.definition)
@@ -323,5 +326,7 @@ function ActionFields({
           />
         </>
       )
+    case 'moduleEvent':
+      return pick('Module event', action.event, names.events, (event) => onChange({ ...action, event }))
   }
 }

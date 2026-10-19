@@ -20,6 +20,7 @@ import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
 import { useLibrarySync } from './library'
+import { ModulePanel } from './module-panel'
 import { useModuleSync } from './modules'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
@@ -342,7 +343,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
                 {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                {app.kind === 'app' && <PagesPanel key={epoch} />}
+                {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
                 {!readOnly && (
                   <section>
                     <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>

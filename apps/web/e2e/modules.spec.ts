@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * Modules at run time (M14 step 5c): two instances of one module in a published app, each with its own state and
@@ -224,4 +224,86 @@ test('create, run and publish a module', async ({ page }) => {
   await expect(page.getByTestId('release-status')).toContainText('Live v1.0.0')
   await page.getByRole('link', { name: 'Modules' }).click()
   await expect(page.getByTestId(`module-${slug}`)).toContainText('Live v1.0.0')
+})
+
+/** A module's interface in its editor (M14 step 6b): inputs, outputs and events, a handler firing one, Used by. */
+test('edit a module’s inputs, outputs and events', async ({ page }) => {
+  await signIn(page)
+  const slug = `counter_${Date.now()}`
+  const created = await trpcMutate<{ id: string }>(page, 'modules.create', { slug, name: slug })
+  await trpcMutate(page, 'modules.saveDraft', {
+    id: created.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      components: [
+        { name: 'badge', type: 'text', props: { value: 'Plan {{ inputs.plan }}: {{ count.data?.[0]?.n }}' } },
+        { name: 'done', type: 'button', props: { text: 'Done' } },
+      ],
+      queries: [
+        {
+          name: 'count',
+          kind: 'resource',
+          resource: 'shop_db',
+          query: { sql: 'select count(*)::int as n from customers where plan = {{ inputs.plan }}' },
+          run: 'auto',
+        },
+      ],
+      layout: { badge: { x: 0, y: 0, w: 6, h: 2 }, done: { x: 0, y: 2, w: 3, h: 3 } },
+      module: { inputs: [], outputs: [], events: [] },
+    },
+  })
+  await page.goto(`/modules/${slug}`)
+  await expect(page.getByTestId('module-used-by')).toContainText('No app uses it yet')
+  // A module has no pages: no Navigation to add.
+  await expect(page.getByRole('button', { name: 'Navigation', exact: true })).toHaveCount(0)
+
+  // An input, named and given a test value: the draft runs with it.
+  await page.getByRole('button', { name: 'Add input' }).click()
+  await page.getByLabel('Input name').fill('plan')
+  await page.getByLabel('Input name').press('Enter')
+  await page.getByLabel('plan test value').fill('free')
+  await expect(page.locator('[data-component="badge"]')).toHaveText('Plan free: 1')
+
+  // An output and an event; the button fires the event.
+  await page.getByRole('button', { name: 'Add output' }).click()
+  await typeInto(page, page.locator('[data-testid$="/module/outputs/0/value"]'), '{{ count.data?.[0]?.n }}')
+  await page.getByRole('button', { name: 'Add event' }).click()
+  await page.getByLabel('Event name').fill('finished')
+  await page.getByLabel('Event name').press('Enter')
+  await page.getByTestId('frame-done').click()
+  const inspector = page.getByTestId('inspector-done')
+  await inspector.getByRole('button', { name: 'Add handler' }).click()
+  await inspector.getByLabel('Action', { exact: true }).selectOption('moduleEvent')
+  await expect(inspector.getByTestId('handler-click-0')).toContainText('fire finished')
+
+  // Renaming the event (its settings still open) re-points the handler.
+  await page.getByLabel('Event name').fill('closed')
+  await page.getByLabel('Event name').press('Enter')
+  await expect(inspector.getByTestId('handler-click-0')).toContainText('fire closed')
+  await expect(page.getByRole('tab', { name: 'Problems', exact: true })).toBeVisible()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  const saved = await trpcQuery<{ draftDefinition: { module: unknown } }>(page, 'modules.get', { slug })
+  expect(saved.draftDefinition.module).toEqual({
+    inputs: [{ name: 'plan', testValue: 'free' }],
+    outputs: [{ name: 'output1', value: '{{ count.data?.[0]?.n }}' }],
+    events: [{ name: 'closed' }],
+  })
+
+  // An app placing it shows up under Used by.
+  const app = await trpcMutate<{ id: string }>(page, 'apps.create', {
+    slug: `uses_${slug}`,
+    name: `Uses ${slug}`,
+  })
+  await trpcMutate(page, 'apps.saveDraft', {
+    id: app.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      components: [{ name: 'counter1', type: 'module', props: { module: slug } }],
+      queries: [],
+    },
+  })
+  await page.reload()
+  await expect(page.getByTestId('module-used-by')).toContainText(`Uses ${slug}`)
 })
