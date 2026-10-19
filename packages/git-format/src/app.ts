@@ -17,10 +17,15 @@ import { FileSlots, namedRecords } from './slots'
 
 export const APP_FILE = 'app.json'
 export const APP_LAYOUT_FILE = 'layout.json'
+/** A module's (M14) main file; the rest of its directory is laid out like an app's. */
+export const MODULE_FILE = 'module.json'
 
 export interface AppObject extends ObjectMeta {
   definition: AppDefinition
 }
+
+/** A module (M14): an app definition with its `module` part. */
+export type ModuleObject = AppObject
 
 /**
  * An app as the files of its directory:
@@ -35,6 +40,27 @@ export interface AppObject extends ObjectMeta {
  * exactly (even when empty): it counts in the app's hash.
  */
 export function encodeApp(app: AppObject): { files: Files; warnings: Warning[] } {
+  return encodeAppFiles(APP_FILE, app)
+}
+
+/** A module as the files of its directory: like an app's, with `module.json` instead of `app.json`. */
+export function encodeModule(module: ModuleObject): { files: Files; warnings: Warning[] } {
+  return encodeAppFiles(MODULE_FILE, module)
+}
+
+/** The module back from its directory's files; its definition must have its inputs, outputs and events. */
+export function decodeModule(files: Files): Decoded<ModuleObject> {
+  const decoded = decodeAppFiles(MODULE_FILE, files)
+  if (decoded.ok && !decoded.value.definition.module) {
+    return {
+      ok: false,
+      problems: [invalid(MODULE_FILE, 'module: a module needs its inputs, outputs and events')],
+    }
+  }
+  return decoded
+}
+
+function encodeAppFiles(main: string, app: AppObject): { files: Files; warnings: Warning[] } {
   const { layout, ...def } = canonicalizeApp(app.definition)
   const files: Files = {}
   const queries = def.queries.map((query) => moveQueryOut(query, files))
@@ -42,7 +68,7 @@ export function encodeApp(app: AppObject): { files: Files; warnings: Warning[] }
     files[`transformers/${transformer.name}.js`] = textFile(code)
     return transformer
   })
-  files[APP_FILE] = canonicalJson(
+  files[main] = canonicalJson(
     { ...metaFields(app), ...def, queries, ...(transformers ? { transformers } : {}) },
     { pretty: true },
   )
@@ -53,19 +79,23 @@ export function encodeApp(app: AppObject): { files: Files; warnings: Warning[] }
 
 /** The app back from its directory's files, canonical. Problems name the file they're about. */
 export function decodeApp(files: Files): Decoded<AppObject> {
-  const source = files[APP_FILE]
+  return decodeAppFiles(APP_FILE, files)
+}
+
+function decodeAppFiles(main: string, files: Files): Decoded<AppObject> {
+  const source = files[main]
   if (source === undefined) {
     return {
       ok: false,
-      problems: [{ path: APP_FILE, code: 'missing_file', message: `${APP_FILE} is missing` }],
+      problems: [{ path: main, code: 'missing_file', message: `${main} is missing` }],
     }
   }
-  const parsed = parseJsonFile(APP_FILE, source)
+  const parsed = parseJsonFile(main, source)
   if (!parsed.ok) return { ok: false, problems: [parsed.problem] }
-  if (!isRecord(parsed.value)) return { ok: false, problems: [invalid(APP_FILE, 'Expected an object')] }
-  const { meta, rest: raw, problems } = splitMeta(APP_FILE, parsed.value)
+  if (!isRecord(parsed.value)) return { ok: false, problems: [invalid(main, 'Expected an object')] }
+  const { meta, rest: raw, problems } = splitMeta(main, parsed.value)
 
-  const slots = new FileSlots(files, [APP_FILE, APP_LAYOUT_FILE])
+  const slots = new FileSlots(files, [main, APP_LAYOUT_FILE])
   for (const query of namedRecords(raw.queries)) {
     const what = `query ${query.name}`
     if (query.kind === 'js') {
@@ -94,7 +124,7 @@ export function decodeApp(files: Files): Decoded<AppObject> {
     problems.push(
       ...result.error.issues.map((issue) =>
         invalid(
-          issue.path[0] === 'layout' ? APP_LAYOUT_FILE : APP_FILE,
+          issue.path[0] === 'layout' ? APP_LAYOUT_FILE : main,
           `${issuePath(issue.path)}: ${issue.message}`,
         ),
       ),

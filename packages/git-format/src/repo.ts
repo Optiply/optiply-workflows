@@ -1,5 +1,5 @@
 import { canonicalJson, workflowSlugSchema } from '@ow/definition'
-import { type AppObject, decodeApp, encodeApp } from './app'
+import { type AppObject, decodeApp, decodeModule, encodeApp, encodeModule, type ModuleObject } from './app'
 import {
   caseCollisions,
   type Decoded,
@@ -9,18 +9,32 @@ import {
   parseJsonFile,
   type Warning,
 } from './files'
+import { decodeLibraryQuery, encodeLibraryQuery, type LibraryQueryObject } from './library'
 import { decodeWorkflow, encodeWorkflow, type WorkflowObject } from './workflow'
 
 /** The repo's root file, naming the format its directories are in. */
 export const MANIFEST_FILE = 'ow.json'
 export const FORMAT_VERSION = 1
 
-export type ObjectKind = 'workflow' | 'app'
+export type ObjectKind = 'workflow' | 'app' | 'library_query' | 'module'
 
-/** Where each kind lives: `workflows/<slug>/`, `apps/<slug>/`. */
-export const KIND_ROOTS: Record<ObjectKind, string> = { workflow: 'workflows', app: 'apps' }
+/** Where each kind lives: `workflows/<slug>/`, `apps/<slug>/`, `library/<slug>/`, `modules/<slug>/`. */
+export const KIND_ROOTS: Record<ObjectKind, string> = {
+  workflow: 'workflows',
+  app: 'apps',
+  library_query: 'library',
+  module: 'modules',
+}
 
-/** Workflow and app slugs follow the same rule (both appear in URLs). */
+/** Each kind as people read it, for messages. */
+export const KIND_LABELS: Record<ObjectKind, string> = {
+  workflow: 'workflow',
+  app: 'app',
+  library_query: 'library query',
+  module: 'module',
+}
+
+/** Every kind's slugs follow the same rule (workflows' and apps' appear in URLs). */
 export const objectSlugSchema = workflowSlugSchema
 
 export function manifestFile(): string {
@@ -32,14 +46,37 @@ export function objectDir(kind: ObjectKind, slug: string): string {
   return `${KIND_ROOTS[kind]}/${slug}`
 }
 
-export type RepoObject =
-  | { kind: 'workflow'; slug: string; value: WorkflowObject }
-  | { kind: 'app'; slug: string; value: AppObject }
+/** What each kind's directory holds. */
+export interface KindValues {
+  workflow: WorkflowObject
+  app: AppObject
+  library_query: LibraryQueryObject
+  module: ModuleObject
+}
+
+export type RepoObject = {
+  [K in ObjectKind]: { kind: K; slug: string; value: KindValues[K] }
+}[ObjectKind]
+
+/** How each kind's directory is written and read. */
+const CODECS: {
+  [K in ObjectKind]: {
+    encode(value: KindValues[K]): { files: Files; warnings: Warning[] }
+    decode(files: Files): Decoded<KindValues[K]>
+  }
+} = {
+  workflow: { encode: encodeWorkflow, decode: decodeWorkflow },
+  app: { encode: encodeApp, decode: decodeApp },
+  library_query: { encode: encodeLibraryQuery, decode: decodeLibraryQuery },
+  module: { encode: encodeModule, decode: decodeModule },
+}
 
 /** An object's directory and its files, keyed by their path inside it (what a commit replaces the directory with). */
 export function encodeObjectDir(object: RepoObject): { dir: string; files: Files; warnings: Warning[] } {
-  const encoded = object.kind === 'workflow' ? encodeWorkflow(object.value) : encodeApp(object.value)
-  return { dir: objectDir(object.kind, object.slug), ...encoded }
+  const codec = CODECS[object.kind] as {
+    encode(value: RepoObject['value']): { files: Files; warnings: Warning[] }
+  }
+  return { dir: objectDir(object.kind, object.slug), ...codec.encode(object.value) }
 }
 
 /** An object's files, keyed by their path from the repo root. */
@@ -59,8 +96,8 @@ export interface ObjectFiles {
 }
 
 /**
- * Groups a repo's files into objects. Files outside `workflows/` and `apps/` (a README, CI) are ignored; a file
- * right under `workflows/` or `apps/`, or a directory that isn't a slug, is a problem.
+ * Groups a repo's files into objects. Files outside the kinds' roots (a README, CI) are ignored; a file right under
+ * a root (`workflows/`, `apps/`, `library/`, `modules/`), or a directory that isn't a slug, is a problem.
  */
 export function splitRepo(files: Files): { objects: ObjectFiles[]; problems: Problem[] } {
   const problems: Problem[] = []
@@ -73,7 +110,7 @@ export function splitRepo(files: Files): { objects: ObjectFiles[]; problems: Pro
       problems.push({
         path,
         code: 'unexpected_file',
-        message: `${path} isn't in a ${kind}'s directory (${KIND_ROOTS[kind]}/<slug>/)`,
+        message: `${path} isn't in a ${KIND_LABELS[kind]}'s directory (${KIND_ROOTS[kind]}/<slug>/)`,
       })
       continue
     }
@@ -83,7 +120,7 @@ export function splitRepo(files: Files): { objects: ObjectFiles[]; problems: Pro
         problems.push({
           path: dir,
           code: 'invalid_slug',
-          message: `${dir}: "${slug}" isn't a valid ${kind} slug (2–63 lowercase letters, digits, - or _, starting with a letter)`,
+          message: `${dir}: "${slug}" isn't a valid ${KIND_LABELS[kind]} slug (2–63 lowercase letters, digits, - or _, starting with a letter)`,
         })
       }
       continue
@@ -109,7 +146,7 @@ export function checkManifest(files: Files): Problem[] {
       {
         path: MANIFEST_FILE,
         code: 'unsupported_format',
-        message: `${MANIFEST_FILE} is missing: it marks the repo as holding workflows and apps`,
+        message: `${MANIFEST_FILE} is missing: it marks the repo as holding workflows, apps, library queries and modules`,
       },
     ]
   }
@@ -131,7 +168,7 @@ export function checkManifest(files: Files): Problem[] {
 /** One object's files decoded; problems carry paths from the repo root. */
 export function decodeObject(object: ObjectFiles): Decoded<RepoObject> {
   const dir = `${objectDir(object.kind, object.slug)}/`
-  const decoded = object.kind === 'workflow' ? decodeWorkflow(object.files) : decodeApp(object.files)
+  const decoded = CODECS[object.kind].decode(object.files)
   if (!decoded.ok) {
     return {
       ok: false,
@@ -142,13 +179,7 @@ export function decodeObject(object: ObjectFiles): Decoded<RepoObject> {
       })),
     }
   }
-  return {
-    ok: true,
-    value:
-      object.kind === 'workflow'
-        ? { kind: 'workflow', slug: object.slug, value: decoded.value as WorkflowObject }
-        : { kind: 'app', slug: object.slug, value: decoded.value as AppObject },
-  }
+  return { ok: true, value: { kind: object.kind, slug: object.slug, value: decoded.value } as RepoObject }
 }
 
 export interface DecodedRepo {

@@ -3,6 +3,9 @@ import {
   appDefinitionHash,
   appDefinitionSchema,
   canonicalizeApp,
+  type LibraryQueryDefinition,
+  libraryQueryDefinitionSchema,
+  libraryQueryHash,
 } from '@ow/app-definition'
 import {
   type Block,
@@ -12,7 +15,17 @@ import {
   workflowDefinitionSchema,
 } from '@ow/definition'
 import { describe, expect, it } from 'vitest'
-import { decodeApp, decodeWorkflow, encodeApp, encodeWorkflow, workflowForGit } from '../src'
+import {
+  decodeApp,
+  decodeLibraryQuery,
+  decodeModule,
+  decodeWorkflow,
+  encodeApp,
+  encodeLibraryQuery,
+  encodeModule,
+  encodeWorkflow,
+  workflowForGit,
+} from '../src'
 
 /** Deterministic randomness (mulberry32), so a failing seed can be replayed. */
 function rng(seed: number) {
@@ -184,6 +197,47 @@ function appDefinition(r: Rng): AppDefinition {
   return def
 }
 
+/** An app definition with a module part: inputs (defaults, test values), outputs, events. */
+function moduleDefinition(r: Rng): AppDefinition {
+  const def = appDefinition(r)
+  const value = () => r.pick<unknown>([undefined, text(r), r.int(100), null, [1, 'a'], { a: text(r) }])
+  return {
+    ...def,
+    module: {
+      inputs: names(r, 'i', r.int(4)).map((name) => {
+        const [d, t] = [value(), value()]
+        return {
+          name,
+          ...(d !== undefined ? { default: d } : {}),
+          ...(t !== undefined ? { testValue: t } : {}),
+          ...(r.chance(0.3) ? { description: text(r) } : {}),
+        } as NonNullable<AppDefinition['module']>['inputs'][number]
+      }),
+      outputs: names(r, 'o', r.int(3)).map((name) => ({ name, value: text(r) })),
+      events: names(r, 'e', r.int(3)).map((name) => ({ name })),
+    },
+  }
+}
+
+function libraryQueryDefinition(r: Rng): LibraryQueryDefinition {
+  return {
+    schemaVersion: 1,
+    resource: 'shop',
+    query: r.pick<Record<string, string>>([
+      { sql: text(r) },
+      { sql: text(r), extra: 'x' },
+      { method: 'GET' },
+      {},
+    ]),
+    params: names(r, 'p', r.int(4)).map((name) => ({
+      name,
+      ...(r.chance(0.4) ? { description: text(r) } : {}),
+      ...(r.chance(0.5) ? { testValue: r.pick<unknown>([text(r), 1, null, [true]]) } : {}),
+    })) as LibraryQueryDefinition['params'],
+    ...(r.chance(0.3) ? { timeoutMs: 100 + r.int(1000) } : {}),
+  }
+}
+
 const SEEDS = Array.from({ length: 400 }, (_, i) => i + 1)
 
 describe('round trip', () => {
@@ -218,5 +272,32 @@ describe('round trip', () => {
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(canonicalizeApp(definition)))
     expect(await appDefinitionHash(decoded.value.definition)).toBe(await appDefinitionHash(definition))
     expect(encodeApp(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('module, seed %i', async (seed) => {
+    const r = rng(seed)
+    const definition = moduleDefinition(r)
+    expect(appDefinitionSchema.safeParse(definition).success).toBe(true)
+    const object = { name: `Module ${seed}`, description: r.chance(0.5) ? 'Picks things' : null, definition }
+    const { files } = encodeModule(object)
+    const decoded = decodeModule(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(canonicalizeApp(definition)))
+    expect(await appDefinitionHash(decoded.value.definition)).toBe(await appDefinitionHash(definition))
+    expect(decoded.value.description).toBe(object.description)
+    expect(encodeModule(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('library query, seed %i', async (seed) => {
+    const r = rng(seed)
+    const definition = libraryQueryDefinition(r)
+    expect(libraryQueryDefinitionSchema.safeParse(definition).success).toBe(true)
+    const object = { name: `Query ${seed}`, description: null, definition }
+    const { files } = encodeLibraryQuery(object)
+    const decoded = decodeLibraryQuery(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(definition))
+    expect(await libraryQueryHash(decoded.value.definition)).toBe(await libraryQueryHash(definition))
+    expect(encodeLibraryQuery(decoded.value).files).toEqual(files)
   })
 })

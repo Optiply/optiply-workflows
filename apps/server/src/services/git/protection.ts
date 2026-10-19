@@ -1,4 +1,3 @@
-import type { AppDefinition } from '@ow/app-definition'
 import {
   type App,
   type AppRelease,
@@ -10,8 +9,14 @@ import {
   workflowReleases,
   workflows,
 } from '@ow/db'
-import type { WorkflowDefinition } from '@ow/definition'
-import { encodeObjectDir, MANIFEST_FILE, manifestFile, type ObjectKind, type Warning } from '@ow/git-format'
+import {
+  encodeObjectDir,
+  MANIFEST_FILE,
+  manifestFile,
+  type ObjectKind,
+  type RepoObject,
+  type Warning,
+} from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
@@ -22,6 +27,16 @@ import type { GitAuthor, GitRepo } from './repo'
 import { openGitRepo } from './settings'
 
 type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL'>
+
+/** An object as the repo holds it; its definition is the kind's (as stored for it). */
+export function repoObject(
+  kind: ObjectKind,
+  slug: string,
+  value: { name: string; description: string | null; definition: unknown },
+): RepoObject {
+  const { name, description, definition } = value
+  return { kind, slug, value: { name, description, definition } } as RepoObject
+}
 
 /** Refuses changing a protected object's main version on the instance: that's done on a branch and merged. */
 export function requireUnprotected(
@@ -145,11 +160,7 @@ export async function protectObject(
   if (opts.branch) requireNotDeployBranch(opts.branch, base)
   const definition = await liveOrDraft(db, kind, object)
   const meta = { name: object.name, description: object.description }
-  const { dir, files, warnings } = encodeObjectDir(
-    kind === 'workflow'
-      ? { kind, slug: object.slug, value: { ...meta, definition: definition as WorkflowDefinition } }
-      : { kind, slug: object.slug, value: { ...meta, definition: definition as AppDefinition } },
-  )
+  const { dir, files, warnings } = encodeObjectDir(repoObject(kind, object.slug, { ...meta, definition }))
   const author = { name: user.name, email: user.email }
   let branch: string
   let commit: string

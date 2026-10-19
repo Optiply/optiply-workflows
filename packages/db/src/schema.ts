@@ -1044,7 +1044,7 @@ export const gitSettings = pgTable(
 
 export type GitSettings = typeof gitSettings.$inferSelect
 
-export const GIT_OBJECT_KINDS = ['workflow', 'app'] as const
+export const GIT_OBJECT_KINDS = ['workflow', 'app', 'library_query', 'module'] as const
 export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
 
 /** A problem with an object's files or definition, by path from the repo's root (`@ow/git-format`'s shape). */
@@ -1078,7 +1078,7 @@ export const gitObjects = pgTable(
   },
   (t) => [
     unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
-    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app')`),
+    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app', 'library_query', 'module')`),
     check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
   ],
 )
@@ -1116,9 +1116,11 @@ export const gitBranchDrafts = pgTable(
     id: id(),
     workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
     appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    libraryQueryId: uuid().references(() => libraryQueries.id, { onDelete: 'cascade' }),
+    moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
     branch: text().notNull(),
-    /** A workflow or app definition, as the object's kind says. */
-    definition: jsonb().$type<WorkflowDefinition | AppDefinition>().notNull(),
+    /** A workflow, app, library query or module definition, as the object's kind says. */
+    definition: jsonb().$type<WorkflowDefinition | AppDefinition | LibraryQueryDefinition>().notNull(),
     name: text().notNull(),
     description: text(),
     /** Bumped on every save (optimistic concurrency, and draft snapshots for runs). */
@@ -1139,7 +1141,14 @@ export const gitBranchDrafts = pgTable(
       .on(t.workflowId, t.branch)
       .where(sql`${t.workflowId} is not null`),
     uniqueIndex('git_branch_drafts_app_uq').on(t.appId, t.branch).where(sql`${t.appId} is not null`),
-    check('git_branch_drafts_object_ck', sql`num_nonnulls(${t.workflowId}, ${t.appId}) = 1`),
+    uniqueIndex('git_branch_drafts_library_query_uq')
+      .on(t.libraryQueryId, t.branch)
+      .where(sql`${t.libraryQueryId} is not null`),
+    uniqueIndex('git_branch_drafts_module_uq').on(t.moduleId, t.branch).where(sql`${t.moduleId} is not null`),
+    check(
+      'git_branch_drafts_object_ck',
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.libraryQueryId}, ${t.moduleId}) = 1`,
+    ),
   ],
 )
 

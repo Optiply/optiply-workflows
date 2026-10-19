@@ -13,10 +13,12 @@ import {
   type AppObject,
   checkManifest,
   decodeRepo,
+  KIND_LABELS,
   KIND_ROOTS,
   MANIFEST_FILE,
   type ObjectKind,
   objectDir,
+  type RepoObject,
   type WorkflowObject,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
@@ -207,7 +209,7 @@ async function deployOnce(
       kind: ObjectKind
       slug: string
       treeSha: string | null
-      value: WorkflowObject | AppObject
+      value: RepoObject['value']
       created?: boolean
     }
     const pending: Pending[] = []
@@ -341,7 +343,7 @@ async function deployObject(
     kind: ObjectKind
     slug: string
     treeSha: string | null
-    value: WorkflowObject | AppObject
+    value: RepoObject['value']
     /** An earlier pass of this deploy made it. */
     created?: boolean
   },
@@ -359,6 +361,9 @@ async function deployObject(
     problems: [{ path: dir, code, message }],
     created,
   })
+  if (kind !== 'workflow' && kind !== 'app') {
+    return problem('unsupported', `${KIND_LABELS[kind]}s aren't deployed from Git yet`)
+  }
   const table = kind === 'workflow' ? workflows : apps
   const [existing] = await db.select().from(table).where(eq(table.slug, slug))
   let object = existing

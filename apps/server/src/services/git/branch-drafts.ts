@@ -21,7 +21,6 @@ import {
   type ObjectKind,
   objectDir,
   type Problem,
-  type RepoObject,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
@@ -33,6 +32,7 @@ import {
   gitTrpcError,
   liveOrDraft,
   manifestIfMissing,
+  repoObject,
   requireGitRepo,
   requireNotDeployBranch,
 } from './protection'
@@ -76,16 +76,6 @@ export async function branchDraftView(draft: GitBranchDraft) {
         ? validateDefinition(draft.definition as WorkflowDefinition).diagnostics
         : validateApp(draft.definition as AppDefinition).diagnostics,
   }
-}
-
-function repoObject(
-  kind: ObjectKind,
-  slug: string,
-  value: { name: string; description: string | null; definition: unknown },
-): RepoObject {
-  return kind === 'workflow'
-    ? { kind, slug, value: { ...value, definition: value.definition as WorkflowDefinition } }
-    : { kind, slug, value: { ...value, definition: value.definition as AppDefinition } }
 }
 
 /** The object's directory at a commit: its files (inside the directory) and, when there are any, what they decode to. */
