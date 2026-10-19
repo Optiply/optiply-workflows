@@ -4,6 +4,7 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   expressionSide,
+  instanceRelease,
   validateApp,
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
@@ -24,7 +25,7 @@ import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
-import { moduleInfos, usedModules } from './modules'
+import { moduleInfos, resolveModuleRelease, usedModules } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -305,6 +306,10 @@ export type AppQueryOutcome = QueryOutcome
  * Who may: for the draft, Edit on the app and Use on the resource in that environment (like a workflow's draft
  * run); for the live release, Use on the app (its publisher vouched for the resources). A release that is no
  * longer live is refused, so a page left open can't keep running an old version's queries.
+ *
+ * With `module` (M14), the query is a module instance's: it runs from the module release the instance names (its
+ * publisher vouched for what it reaches), which must be the one the page runs (`releaseId`), or the page is told
+ * to reload. Running the app's draft also needs Use on the module.
  */
 export async function runAppQuery(
   deps: AppQueryDeps,
@@ -316,6 +321,8 @@ export async function runAppQuery(
     /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
     branchDraftId?: string
     query: string
+    /** A module instance's query (M14): the instance's name and the module release the page runs. */
+    module?: { instance: string; releaseId: string }
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
@@ -326,6 +333,8 @@ export async function runAppQuery(
   version: string | null
   /** For a library query: the release that ran. */
   library: { slug: string; version: string } | null
+  /** For a module instance's query: the module release that ran. */
+  module: { slug: string; version: string } | null
 }> {
   const { db } = deps
   const { app } = opts
@@ -361,6 +370,43 @@ export async function runAppQuery(
     version = release.version
   }
 
+  const labels = { ow_source: 'app', ow_app: app.slug, ow_user: user.id }
+  if (opts.module) {
+    const { instance } = opts.module
+    const component = definition.components.find((c) => c.name === instance && c.type === 'module')
+    const ref = component && instanceRelease(component)
+    if (!ref) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: `The app has no module instance named "${instance}"`,
+      })
+    }
+    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
+    if (release.id !== opts.module.releaseId) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: `Module "${module.slug}" has a new version; reload to get it`,
+      })
+    }
+    if (opts.releaseId === null && !atLeast(access.moduleLevel(module), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to module "${module.slug}" to run the draft's queries`,
+      })
+    }
+    const ran = await runDefinitionQuery(deps, access, user, {
+      definition: release.definition,
+      what: 'module',
+      query: opts.query,
+      environmentId: opts.environmentId,
+      values: opts.values,
+      draft: false,
+      labels: { ...labels, ow_module: module.slug },
+      ...(opts.signal && { signal: opts.signal }),
+    })
+    return { ...ran, version, module: { slug: module.slug, version: release.version } }
+  }
+
   const ran = await runDefinitionQuery(deps, access, user, {
     definition,
     what: 'app',
@@ -368,10 +414,10 @@ export async function runAppQuery(
     environmentId: opts.environmentId,
     values: opts.values,
     draft: opts.releaseId === null,
-    labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
+    labels,
     ...(opts.signal && { signal: opts.signal }),
   })
-  return { ...ran, version }
+  return { ...ran, version, module: null }
 }
 
 /**

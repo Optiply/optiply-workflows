@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { checkApp } from '../../services/apps'
 import {
   moduleInfos,
+  moduleReleasesByKey,
   moduleUsers,
   publishModuleRelease,
   runModuleDraftQuery,
@@ -19,6 +20,7 @@ import {
 } from '../../services/modules'
 import {
   type Access,
+  atLeast,
   checkFolderMove,
   checkFolderType,
   loadAccess,
@@ -243,6 +245,17 @@ export const modulesRouter = router({
           .filter(([, { module }]) => access.moduleLevel(module) !== null)
           .map(([slug, { module, info }]) => [slug, { id: module.id, name: module.name, ...info }]),
       )
+    }),
+
+  /**
+   * The module releases named by `slug@version` keys, for running an app's draft in its editor (M14); only modules
+   * the caller may use (running the draft needs it), others are left out.
+   */
+  instanceReleases: authedProcedure
+    .input(z.object({ keys: z.array(z.string().max(200)).max(200) }))
+    .query(async ({ ctx, input }) => {
+      const access = await loadAccess(ctx.db, ctx.user)
+      return moduleReleasesByKey(ctx.db, input.keys, (m) => atLeast(access.moduleLevel(m), 'use'))
     }),
 
   /** Deletes the module with its releases and grants; refused while apps place it. */

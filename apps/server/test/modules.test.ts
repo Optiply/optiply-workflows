@@ -248,6 +248,79 @@ describe('apps placing modules', () => {
     }
   })
 
+  it('opens an app with its instances’ module releases and runs their queries from them', async () => {
+    const m = await moduleWith('run_picker', picker())
+    const v1 = data(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() }))
+    const a = await saveApp('running_app', {
+      schemaVersion: 1,
+      components: [
+        { name: 'picker1', type: 'module', props: { module: 'run_picker', region: 'US' } },
+        { name: 'picker2', type: 'module', props: { module: 'run_picker', version: '1.0.0' } },
+      ],
+      queries: [],
+      layout: { picker1: { x: 0, y: 0, w: 6, h: 12 }, picker2: { x: 6, y: 0, w: 6, h: 12 } },
+    })
+    const live = data(await admin.mutate('apps.publish', { appId: a.id, draftRevision: a.revision }))
+    const opened = data(await admin.query('apps.open', { slug: 'running_app' }))
+    expect(Object.keys(opened.modules).sort()).toEqual(['run_picker@1.0.0', 'run_picker@latest'])
+    expect(opened.modules['run_picker@latest']).toMatchObject({ releaseId: v1.id, version: '1.0.0' })
+    expect(opened.modules['run_picker@latest'].definition.module.inputs).toEqual([
+      { name: 'region', default: 'EU' },
+    ])
+
+    const run = (
+      instance: string,
+      releaseId: string,
+      opts: { client?: ReturnType<typeof trpc>; appRelease?: string | null } = {},
+    ) =>
+      (opts.client ?? admin).mutate('apps.runQuery', {
+        appId: a.id,
+        releaseId: opts.appRelease === undefined ? live.id : opts.appRelease,
+        query: 'regions',
+        module: { instance, releaseId },
+        environmentId: prodId,
+        values: { ' inputs.region ': 'US' },
+      })
+    expect(data(await run('picker1', v1.id))).toMatchObject({ ok: true, data: [{ region: 'US', tag: 'v1' }] })
+    expect(failure(await run('nobody', v1.id))).toEqual({
+      code: 'NOT_FOUND',
+      message: 'The app has no module instance named "nobody"',
+    })
+
+    // A new live release: `latest` instances on a page still running v1 are told to reload; pinned ones aren't.
+    await m.save(picker('v2'))
+    const v2 = data(await admin.mutate('modules.publish', { moduleId: m.id, draftRevision: m.revision() }))
+    expect(failure(await run('picker1', v1.id))).toEqual({
+      code: 'CONFLICT',
+      message: 'Module "run_picker" has a new version; reload to get it',
+    })
+    expect(data(await run('picker1', v2.id))).toMatchObject({ ok: true, data: [{ tag: 'v2' }] })
+    expect(data(await run('picker2', v1.id))).toMatchObject({ ok: true, data: [{ tag: 'v1' }] })
+
+    // The app's draft: Edit on the app and Use on the module; the module's publisher vouched for its resource.
+    await grant('app', a.id, 'edit')
+    expect(failure(await run('picker1', v2.id, { client: member, appRelease: null }))).toEqual({
+      code: 'FORBIDDEN',
+      message: 'You need use access to module "run_picker" to run the draft\'s queries',
+    })
+    const keys = ['run_picker@latest', 'run_picker@1.0.0', 'run_picker@9.9.9', 'nope@latest']
+    expect(data(await member.query('modules.instanceReleases', { keys }))).toEqual({})
+    await grant('module', m.id, 'use')
+    expect(data(await run('picker1', v2.id, { client: member, appRelease: null }))).toMatchObject({
+      ok: true,
+      data: [{ tag: 'v2' }],
+    })
+    const forDraft = data(await member.query('modules.instanceReleases', { keys }))
+    expect(
+      Object.fromEntries(Object.entries(forDraft).map(([k, r]) => [k, (r as { version: string }).version])),
+    ).toEqual({
+      'run_picker@latest': '1.0.1',
+      'run_picker@1.0.0': '1.0.0',
+    })
+    await grant('app', a.id, null)
+    await grant('module', m.id, null)
+  })
+
   it('has folders of its own and grants without environments', async () => {
     await grant('module', null, 'edit')
     const folder = data(await member.mutate('folders.create', { type: 'module', name: 'Pickers' }))

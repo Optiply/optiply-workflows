@@ -2,6 +2,7 @@ import {
   type AppDefinition,
   appDefinitionHash,
   canonicalizeApp,
+  instanceRelease,
   type ModuleInfo,
   moduleInterface,
 } from '@ow/app-definition'
@@ -18,7 +19,7 @@ import {
 } from '@ow/db'
 import type { VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
-import { type AnyColumn, and, asc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
+import { type AnyColumn, and, asc, eq, inArray, isNotNull, or, type SQL, sql } from 'drizzle-orm'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
@@ -66,6 +67,111 @@ export async function moduleInfos(
       return [module.slug, { module, info }]
     }),
   )
+}
+
+/** The `slug@version` keys of the module releases an app's instances run (`instanceRelease`). */
+export function instanceKeys(def: AppDefinition): string[] {
+  const keys = def.components.flatMap((c) => {
+    const ref = c.type === 'module' ? instanceRelease(c) : null
+    return ref ? [ref.key] : []
+  })
+  return [...new Set(keys)].sort()
+}
+
+/** A module release as the page runs it (M14): the runtime's `ModuleRelease` plus its version. */
+export interface InstanceRelease {
+  releaseId: string
+  version: string
+  definition: AppDefinition
+}
+
+/**
+ * The module releases named by `slug@version` keys: pinned, or the live one for `latest`. Keys naming a module
+ * that doesn't exist, isn't `visible`, or has no such release are left out (those instances don't run).
+ */
+export async function moduleReleasesByKey(
+  db: Db,
+  keys: string[],
+  visible: (module: Module) => boolean = () => true,
+): Promise<Record<string, InstanceRelease>> {
+  const refs = [...new Set(keys)].flatMap((key) => {
+    const at = key.lastIndexOf('@')
+    return at > 0 ? [{ key, slug: key.slice(0, at), version: key.slice(at + 1) }] : []
+  })
+  if (!refs.length) return {}
+  const rows = (
+    await db
+      .select()
+      .from(modules)
+      .where(inArray(modules.slug, [...new Set(refs.map((r) => r.slug))]))
+  ).filter(visible)
+  if (!rows.length) return {}
+  const liveIds = rows.flatMap((m) => (m.liveReleaseId ? [m.liveReleaseId] : []))
+  const pinned = refs.flatMap((r) => (r.version === 'latest' ? [] : [r.version]))
+  const conditions = [
+    ...(liveIds.length ? [inArray(moduleReleases.id, liveIds)] : []),
+    ...(pinned.length ? [inArray(moduleReleases.version, pinned)] : []),
+  ]
+  const releases = conditions.length
+    ? await db
+        .select({
+          id: moduleReleases.id,
+          moduleId: moduleReleases.moduleId,
+          version: moduleReleases.version,
+          definition: moduleReleases.definition,
+        })
+        .from(moduleReleases)
+        .where(
+          and(
+            inArray(
+              moduleReleases.moduleId,
+              rows.map((m) => m.id),
+            ),
+            or(...conditions),
+          ),
+        )
+    : []
+  const found: Record<string, InstanceRelease> = {}
+  for (const ref of refs) {
+    const module = rows.find((m) => m.slug === ref.slug)
+    const release =
+      module &&
+      releases.find((r) =>
+        ref.version === 'latest'
+          ? r.id === module.liveReleaseId
+          : r.moduleId === module.id && r.version === ref.version,
+      )
+    if (release)
+      found[ref.key] = { releaseId: release.id, version: release.version, definition: release.definition }
+  }
+  return found
+}
+
+/** The release a module instance names: pinned, or the live one for `latest`. */
+export async function resolveModuleRelease(
+  db: Db,
+  slug: string,
+  version: string,
+): Promise<{ module: Module; release: ModuleRelease }> {
+  const [module] = await db.select().from(modules).where(eq(modules.slug, slug))
+  if (!module) throw new TRPCError({ code: 'BAD_REQUEST', message: `No module has the slug "${slug}"` })
+  const where =
+    version === 'latest'
+      ? module.liveReleaseId
+        ? eq(moduleReleases.id, module.liveReleaseId)
+        : undefined
+      : and(eq(moduleReleases.moduleId, module.id), eq(moduleReleases.version, version))
+  const [release] = where ? await db.select().from(moduleReleases).where(where) : []
+  if (!release) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        version === 'latest'
+          ? `Module "${slug}" has no live release`
+          : `Module "${slug}" has no release ${version}`,
+    })
+  }
+  return { module, release }
 }
 
 /** Where an app definition places a module: `[{ "type": "module", "props": { "module": slug } }]`. */
