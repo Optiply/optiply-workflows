@@ -58,6 +58,12 @@ export interface AppHostOptions {
   definition: AppDefinition
   /** The module releases the app's instances run (M14), by `slug@version`; later changes go through `update`. */
   modules?: ModuleReleases
+  /**
+   * `module`: a module's draft running on its own in its editor (M14). `appId` is then the module's id, its queries
+   * run through `modules.runQuery`, and `inputs.<name>` are its inputs' test values.
+   */
+  kind?: 'app' | 'module'
+  /** The app's id (the module's, for `kind` module). */
   appId: string
   /** The release being shown, or null for the draft (the editor). */
   releaseId: string | null
@@ -160,8 +166,9 @@ export class AppHost {
   /** Where the app is: sent with `start` (a restart opens the same page), then as `navigate`. */
   private url: AppUrl
 
-  get appId(): string {
-    return this.options.appId
+  /** The app's id; undefined for a module. */
+  get appId(): string | undefined {
+    return this.options.kind === 'module' ? undefined : this.options.appId
   }
 
   constructor(private readonly options: AppHostOptions) {
@@ -278,7 +285,7 @@ export class AppHost {
     const { status } = this.store.getState()
     if (status === 'stopped') this.restart()
     else if (status !== 'loading') {
-      this.post({ type: 'update', definition, ...(modulesChanged && { modules }) })
+      this.post({ type: 'update', definition, ...(modulesChanged && { modules }), ...this.testInputs() })
       // A page added or renamed with this edit: the navigation to it may have come first, when it didn't exist yet.
       this.post({ type: 'navigate', url: this.url })
     }
@@ -346,6 +353,7 @@ export class AppHost {
           globals: this.options.globals,
           url: this.url,
           modules: this.modules,
+          ...this.testInputs(),
         })
         return
       case 'started': {
@@ -356,6 +364,7 @@ export class AppHost {
             type: 'update',
             definition: this.definition,
             ...(this.modules !== started?.modules && { modules: this.modules }),
+            ...this.testInputs(),
           })
         }
         // Moved on while it was starting.
@@ -403,6 +412,13 @@ export class AppHost {
     }
   }
 
+  /** A module's draft in its editor: its inputs' test values, as `inputs.<name>`. */
+  private testInputs(): { inputs?: Record<string, unknown> } {
+    if (this.options.kind !== 'module') return {}
+    const inputs = this.definition.module?.inputs ?? []
+    return { inputs: Object.fromEntries(inputs.map((i) => [i.name, i.testValue ?? null])) }
+  }
+
   /** Runs a server query; a module instance's with `module` (M14), known on the page as `instance/query`. */
   private async runQuery(
     query: string,
@@ -412,15 +428,23 @@ export class AppHost {
     const name = module ? `${module.instance}/${query}` : String(query)
     try {
       await this.options.beforeQuery?.()
-      const outcome = await trpcClient.apps.runQuery.mutate({
-        appId: this.options.appId,
-        releaseId: this.options.releaseId,
-        ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
-        query: String(query),
-        ...(module && { module }),
-        environmentId: this.options.environmentId,
-        values,
-      })
+      const outcome =
+        this.options.kind === 'module'
+          ? await trpcClient.modules.runQuery.mutate({
+              moduleId: this.options.appId,
+              query: String(query),
+              environmentId: this.options.environmentId,
+              values,
+            })
+          : await trpcClient.apps.runQuery.mutate({
+              appId: this.options.appId,
+              releaseId: this.options.releaseId,
+              ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
+              query: String(query),
+              ...(module && { module }),
+              environmentId: this.options.environmentId,
+              values,
+            })
       if (outcome.ok) {
         this.connectionWorked(name)
         return { ok: true, data: outcome.data }

@@ -13,6 +13,7 @@ const NAV: { to: string; label: string }[] = [
   { to: '/workflows', label: 'Workflows' },
   { to: '/apps', label: 'Apps' },
   { to: '/library', label: 'Library' },
+  { to: '/modules', label: 'Modules' },
   { to: '/resources', label: 'Resources' },
   { to: '/database', label: 'Database' },
   { to: '/runs', label: 'Runs' },

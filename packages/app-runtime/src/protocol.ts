@@ -69,12 +69,14 @@ export type HostMessage =
       globals: RuntimeGlobals
       url: AppUrl
       modules?: ModuleReleases
+      /** A module run on its own, in its editor (M14): what `inputs.<name>` are (the inputs' test values). */
+      inputs?: Record<string, unknown>
     }
   /**
    * The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). Without
-   * `modules`, its instances keep running the releases they ran.
+   * `modules`, its instances keep running the releases they ran; without `inputs`, a module keeps its inputs.
    */
-  | { type: 'update'; definition: AppDefinition; modules?: ModuleReleases }
+  | { type: 'update'; definition: AppDefinition; modules?: ModuleReleases; inputs?: Record<string, unknown> }
   /**
    * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once
    * it has them, so the page can ignore older values for those keys still on their way (no cursor jumps).

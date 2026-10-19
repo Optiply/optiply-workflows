@@ -5,7 +5,7 @@ import { GitBranch, History, Rocket, Settings, Trash2, Undo2, Users } from 'luci
 import { useState } from 'react'
 import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
-import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
+import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor } from '../../resources/shared'
 import { ensureSaved } from './save'
@@ -13,6 +13,8 @@ import { useAppEditor } from './store'
 
 type Release = RouterOutputs['apps']['releases'][number]
 export interface EditorApp {
+  /** An app, or a module (M14): the same editor, its releases and settings through `modules.*`. */
+  kind: 'app' | 'module'
   id: string
   slug: string
   name: string
@@ -31,9 +33,85 @@ const BUMPS: { bump: VersionBump; label: string; hint: string }[] = [
 ]
 
 /** The app's releases, newest first; the live one is what people using the app see. */
-function useReleases(appId: string) {
+function useReleases(app: EditorApp) {
   const trpc = useTRPC()
-  return useQuery(trpc.apps.releases.queryOptions({ appId }))
+  return useQuery<Release[]>(
+    app.kind === 'module'
+      ? {
+          queryKey: trpc.modules.releases.queryKey({ moduleId: app.id }),
+          queryFn: () => trpcClient.modules.releases.query({ moduleId: app.id }),
+        }
+      : {
+          queryKey: trpc.apps.releases.queryKey({ appId: app.id }),
+          queryFn: () => trpcClient.apps.releases.query({ appId: app.id }),
+        },
+  )
+}
+
+/** What differs between an app's releases and a module's: the API, and what a release means to people. */
+function useReleaseApi(app: EditorApp) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const id = app.id
+  const invalidate = (...keys: readonly unknown[][]) =>
+    Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
+  if (app.kind === 'module') {
+    return {
+      noun: 'module',
+      publish: (input: PublishInput) => trpcClient.modules.publish.mutate({ moduleId: id, ...input }),
+      setLive: (releaseId: string) => trpcClient.modules.setLive.mutate({ moduleId: id, releaseId }),
+      update: (input: { name: string; description: string | null }) =>
+        trpcClient.modules.update.mutate({ id, ...input }),
+      remove: () => trpcClient.modules.delete.mutate({ id }),
+      // Apps' editors resolve modules by slug: what they show follows the release.
+      released: () =>
+        invalidate(
+          trpc.modules.releases.queryKey({ moduleId: id }),
+          trpc.modules.list.queryKey(),
+          trpc.modules.resolve.pathKey(),
+          trpc.modules.instanceReleases.pathKey(),
+        ),
+      changed: () => invalidate(trpc.modules.list.queryKey(), trpc.modules.get.queryKey({ slug: app.slug })),
+      list: '/modules' as const,
+      publishHelp: (live: string | null) =>
+        `The draft becomes the module apps get when they follow its latest version${live ? `, instead of v${live}` : ''}. Its queries run with the access you have to their resources now, in every app placing it.`,
+      liveHelp: (version: string, live: string | null) =>
+        `Make v${version} live? Apps following the module's latest version get it${live ? ` instead of v${live}` : ''}.`,
+      deleteHelp: `Delete ${app.name} with all its releases? It can't be deleted while apps use it.`,
+      accessHelp:
+        'Use places the module in apps and runs it in their drafts · Edit also changes its draft and publishes · Own also deletes and manages access.',
+    }
+  }
+  return {
+    noun: 'app',
+    publish: (input: PublishInput) => trpcClient.apps.publish.mutate({ appId: id, ...input }),
+    setLive: (releaseId: string) => trpcClient.apps.setLive.mutate({ appId: id, releaseId }),
+    update: (input: { name: string; description: string | null }) =>
+      trpcClient.apps.update.mutate({ id, ...input }),
+    remove: () => trpcClient.apps.delete.mutate({ id }),
+    released: () =>
+      invalidate(
+        trpc.apps.releases.queryKey({ appId: id }),
+        trpc.apps.list.queryKey(),
+        trpc.apps.open.queryKey({ slug: app.slug }),
+      ),
+    changed: () => invalidate(trpc.apps.list.queryKey(), trpc.apps.get.queryKey({ slug: app.slug })),
+    list: '/apps' as const,
+    publishHelp: (live: string | null) =>
+      `The draft becomes what people using the app see${live ? `, instead of v${live}` : ''}. Its queries run with the access you have to their resources now, for everyone who can use the app.`,
+    liveHelp: (version: string, live: string | null) =>
+      `Make v${version} live? People using the app will see it${live ? ` instead of v${live}` : ''}.${app.gitProtected ? ' This app is protected: this stays until its next change in Git (or Deploy now).' : ''}`,
+    deleteHelp: `Delete ${app.name} with all its releases? People using it lose it straight away.`,
+    accessHelp:
+      'Use opens the live release and runs its queries (no access to the resources needed) · Edit also changes the draft and publishes · Own also deletes and manages access.',
+  }
+}
+
+interface PublishInput {
+  draftRevision: number
+  version?: string
+  bump?: VersionBump
+  notes: string | null
 }
 
 /**
@@ -41,7 +119,8 @@ function useReleases(appId: string) {
  * dialogs.
  */
 export function ReleaseControls({ app }: { app: EditorApp }) {
-  const releases = useReleases(app.id)
+  const releases = useReleases(app)
+  const api = useReleaseApi(app)
   const live = releases.data?.find((r) => r.live) ?? null
   const status = useAppEditor((s) => s.status)
   const draftHash = useAppEditor((s) => s.draftHash)
@@ -74,7 +153,9 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
             errors
               ? 'Fix the problems first'
               : unpublished
-                ? 'Release this draft to the people using the app'
+                ? app.kind === 'module'
+                  ? 'Release this draft to the apps placing the module'
+                  : 'Release this draft to the people using the app'
                 : 'Nothing changed since the live release'
           }
           onClick={() => setOpen('publish')}
@@ -85,7 +166,7 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
       <Button size="icon" variant="ghost" title="Releases" onClick={() => setOpen('releases')}>
         <History className="size-4" />
       </Button>
-      {live && (
+      {live && app.kind === 'app' && (
         <Link
           to="/apps/$slug/{-$page}"
           params={{ slug: app.slug }}
@@ -100,7 +181,12 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
           <Users className="size-4" />
         </Button>
       )}
-      <Button size="icon" variant="ghost" title="App settings" onClick={() => setOpen('settings')}>
+      <Button
+        size="icon"
+        variant="ghost"
+        title={app.kind === 'module' ? 'Module settings' : 'App settings'}
+        onClick={() => setOpen('settings')}
+      >
         <Settings className="size-4" />
       </Button>
       {open === 'publish' && releases.data && (
@@ -109,10 +195,7 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
       {open === 'releases' && <ReleasesDialog app={app} onClose={close} />}
       {open === 'access' && (
         <Dialog title={`Who can use ${app.name}`} onClose={close} className="max-w-2xl">
-          <AccessEditor
-            target={{ objectType: 'app', objectId: app.id }}
-            help="Use opens the live release and runs its queries (no access to the resources needed) · Edit also changes the draft and publishes · Own also deletes and manages access."
-          />
+          <AccessEditor target={{ objectType: app.kind, objectId: app.id }} help={api.accessHelp} />
         </Dialog>
       )}
       {open === 'settings' && <SettingsDialog app={app} onClose={close} />}
@@ -131,8 +214,7 @@ function PublishDialog({
   live: Release | null
   onClose: () => void
 }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
+  const api = useReleaseApi(app)
   const highest =
     releases
       .map((r) => r.version)
@@ -142,7 +224,7 @@ function PublishDialog({
   const [custom, setCustom] = useState('')
   const [notes, setNotes] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
-  const publish = useMutation(trpc.apps.publish.mutationOptions())
+  const publish = useMutation({ mutationFn: api.publish })
   const version = bump === 'custom' ? custom.trim() : bumpVersion(highest, bump)
   const customProblem =
     bump !== 'custom'
@@ -162,18 +244,13 @@ function PublishDialog({
     }
     publish.mutate(
       {
-        appId: app.id,
         draftRevision: useAppEditor.getState().revision,
         ...(bump === 'custom' ? { version } : { bump }),
         notes: notes.trim() || null,
       },
       {
         onSuccess: async () => {
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: trpc.apps.releases.queryKey({ appId: app.id }) }),
-            queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() }),
-            queryClient.invalidateQueries({ queryKey: trpc.apps.open.queryKey({ slug: app.slug }) }),
-          ])
+          await api.released()
           onClose()
         },
       },
@@ -200,10 +277,7 @@ function PublishDialog({
       }
     >
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-muted">
-          The draft becomes what people using the app see{live ? `, instead of v${live.version}` : ''}. Its
-          queries run with the access you have to their resources now, for everyone who can use the app.
-        </p>
+        <p className="text-sm text-muted">{api.publishHelp(live?.version ?? null)}</p>
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Version</span>
           <div className="grid grid-cols-2 gap-2">
@@ -287,23 +361,14 @@ function VersionChoice({
 
 /** Every release, newest first, with rollback. */
 function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
+  const api = useReleaseApi(app)
   const { me } = appRoute.useRouteContext()
   const { data: git } = useGitInfo()
-  const releases = useReleases(app.id)
+  const releases = useReleases(app)
   // A protected app's live release changes by merging; admins can still roll back in an emergency.
   const canSetLive = !app.gitProtected || me.isAdmin
   const live = releases.data?.find((r) => r.live)
-  const setLive = useMutation(
-    trpc.apps.setLive.mutationOptions({
-      onSuccess: () =>
-        Promise.all([
-          queryClient.invalidateQueries({ queryKey: trpc.apps.releases.queryKey({ appId: app.id }) }),
-          queryClient.invalidateQueries({ queryKey: trpc.apps.open.queryKey({ slug: app.slug }) }),
-        ]),
-    }),
-  )
+  const setLive = useMutation({ mutationFn: api.setLive, onSuccess: () => api.released() })
   return (
     <Dialog title="Releases" onClose={onClose}>
       <ErrorNote error={releases.error ?? setLive.error} />
@@ -325,20 +390,14 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
                 <Button
                   size="sm"
                   variant="ghost"
-                  loading={setLive.isPending && setLive.variables?.releaseId === r.id}
+                  loading={setLive.isPending && setLive.variables === r.id}
                   title={
                     app.gitProtected
                       ? 'Emergency rollback: it stays until the app’s next change in Git (or Deploy now)'
                       : 'Make this release live again'
                   }
                   onClick={() => {
-                    if (
-                      confirm(
-                        `Make v${r.version} live? People using the app will see it${live ? ` instead of v${live.version}` : ''}.${app.gitProtected ? ' This app is protected: this stays until its next change in Git (or Deploy now).' : ''}`,
-                      )
-                    ) {
-                      setLive.mutate({ appId: app.id, releaseId: r.id })
-                    }
+                    if (confirm(api.liveHelp(r.version, live?.version ?? null))) setLive.mutate(r.id)
                   }}
                 >
                   <Undo2 className="size-3.5" /> Make live
@@ -361,31 +420,27 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
 
 /** Name and description; owners can delete the app. */
 function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
+  const api = useReleaseApi(app)
   const navigate = useNavigate()
   const [name, setName] = useState(app.name)
   const [description, setDescription] = useState(app.description ?? '')
-  const update = useMutation(
-    trpc.apps.update.mutationOptions({
-      onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() })
-        await queryClient.invalidateQueries({ queryKey: trpc.apps.get.queryKey({ slug: app.slug }) })
-        onClose()
-      },
-    }),
-  )
-  const remove = useMutation(
-    trpc.apps.delete.mutationOptions({
-      onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() })
-        await navigate({ to: '/apps' })
-      },
-    }),
-  )
+  const update = useMutation({
+    mutationFn: api.update,
+    onSuccess: async () => {
+      await api.changed()
+      onClose()
+    },
+  })
+  const remove = useMutation({
+    mutationFn: api.remove,
+    onSuccess: async () => {
+      await api.changed()
+      await navigate({ to: api.list })
+    },
+  })
   return (
     <Dialog
-      title="App settings"
+      title={app.kind === 'module' ? 'Module settings' : 'App settings'}
       onClose={onClose}
       footer={
         <>
@@ -395,14 +450,10 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               className="mr-auto"
               loading={remove.isPending}
               onClick={() => {
-                if (
-                  confirm(`Delete ${app.name} with all its releases? People using it lose it straight away.`)
-                ) {
-                  remove.mutate({ id: app.id })
-                }
+                if (confirm(api.deleteHelp)) remove.mutate()
               }}
             >
-              <Trash2 className="size-3.5" /> Delete app
+              <Trash2 className="size-3.5" /> Delete {api.noun}
             </Button>
           )}
           <Button onClick={onClose}>{app.gitProtected ? 'Close' : 'Cancel'}</Button>
@@ -411,7 +462,7 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               variant="primary"
               loading={update.isPending}
               disabled={!name.trim()}
-              onClick={() => update.mutate({ id: app.id, name, description: description.trim() || null })}
+              onClick={() => update.mutate({ name, description: description.trim() || null })}
             >
               Save
             </Button>
@@ -434,9 +485,10 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        {app.level === 'own' && <AppGitProtection app={app} />}
+        {app.level === 'own' && app.kind === 'app' && <AppGitProtection app={app} />}
         <p className="text-xs text-muted">
-          Slug <span className="font-mono">{app.slug}</span> (the app's address) can't change.
+          Slug <span className="font-mono">{app.slug}</span>{' '}
+          {app.kind === 'module' ? '(how apps refer to it)' : "(the app's address)"} can't change.
         </p>
         <ErrorNote error={update.error ?? remove.error} />
       </div>

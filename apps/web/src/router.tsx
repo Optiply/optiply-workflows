@@ -17,6 +17,7 @@ import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
 import { LibraryPage } from './pages/library/list'
 import { LoginPage } from './pages/login'
+import { ModulesPage } from './pages/modules/list'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
@@ -136,6 +137,19 @@ const libraryEditorRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/library/editor'), 'LibraryEditorPage'),
 })
+/** Modules (M14): the list, and each one's editor (the app editor, in its chunk). */
+const modulesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/modules',
+  component: ModulesPage,
+})
+const moduleEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/modules/$slug',
+  staticData: { fullBleed: true },
+  validateSearch: z.object({ env: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -211,6 +225,8 @@ const routeTree = rootRoute.addChildren([
     appEditorRoute,
     libraryRoute,
     libraryEditorRoute,
+    modulesRoute,
+    moduleEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

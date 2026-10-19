@@ -31,6 +31,9 @@ export type LibraryRef = LibraryInfo & { id: string; name: string }
 export type ModuleRef = ModuleInfo & { id: string; name: string }
 
 interface AppEditorState {
+  /** Whose draft is edited: an app's, or a module's (M14; same editor, saved and run as the module's). */
+  kind: 'app' | 'module'
+  /** The app's id, or the module's. */
   appId: string | null
   /** The Git branch draft being edited (M11), or null for the app's own (main) draft. */
   branchDraftId: string | null
@@ -78,7 +81,7 @@ interface AppEditorState {
     definition: AppDefinition,
     revision: number,
     draftHash: string,
-    opts?: { branchDraftId?: string | null; readOnly?: boolean },
+    opts?: { branchDraftId?: string | null; readOnly?: boolean; kind?: 'app' | 'module' },
   ): void
   /** Applies an edit; the draft becomes dirty and is validated again, and the edit can be undone. */
   update(edit: (def: AppDefinition) => AppDefinition): void
@@ -103,6 +106,7 @@ interface AppEditorState {
 }
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
+  kind: 'app',
   appId: null,
   branchDraftId: null,
   readOnly: false,
@@ -127,6 +131,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
       appId,
+      kind: opts.kind ?? 'app',
       branchDraftId: opts.branchDraftId ?? null,
       readOnly: opts.readOnly ?? false,
       definition,

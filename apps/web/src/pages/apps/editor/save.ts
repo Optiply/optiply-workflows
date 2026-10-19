@@ -17,11 +17,17 @@ export async function saveDraftNow(): Promise<void> {
           revision: state.revision,
           definition: snapshot,
         })
-      : await trpcClient.apps.saveDraft.mutate({
-          id: state.appId,
-          revision: state.revision,
-          definition: snapshot,
-        })
+      : state.kind === 'module'
+        ? await trpcClient.modules.saveDraft.mutate({
+            id: state.appId,
+            revision: state.revision,
+            definition: snapshot,
+          })
+        : await trpcClient.apps.saveDraft.mutate({
+            id: state.appId,
+            revision: state.revision,
+            definition: snapshot,
+          })
     useAppEditor.getState().saved(result.revision, json, result.draftHash)
   } catch (err) {
     if (err instanceof TRPCClientError && err.data?.code === 'CONFLICT') useAppEditor.getState().conflict()
@@ -35,7 +41,9 @@ export async function ensureSaved(): Promise<void> {
     const { status, saveError } = useAppEditor.getState()
     if (status === 'saved') return
     if (status === 'conflict')
-      throw new Error('Someone else changed this app. Reload before running its queries.')
+      throw new Error(
+        `Someone else changed this ${useAppEditor.getState().kind}. Reload before running its queries.`,
+      )
     if (status === 'error' && i > 0) throw new Error(`The draft couldn't be saved: ${saveError}`)
     if (status === 'dirty' || status === 'error') await saveDraftNow()
     else await new Promise((r) => setTimeout(r, 100))

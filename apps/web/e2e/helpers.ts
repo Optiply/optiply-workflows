@@ -21,6 +21,19 @@ export async function trpcMutate<T = Record<string, unknown>>(
   return body.result.data.json
 }
 
+export async function trpcQuery<T = Record<string, unknown>>(
+  page: Page,
+  path: string,
+  input: unknown,
+): Promise<T> {
+  const res = await page.request.get(
+    `/api/trpc/${path}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`,
+  )
+  const body = await res.json()
+  if (!res.ok()) throw new Error(`${path}: ${res.status()} ${JSON.stringify(body)}`)
+  return body.result.data.json
+}
+
 export const block = (page: Page, name: string) => page.getByTestId(`block-${name}`)
 
 /** A block's Monaco field, by the end of its model path (`<workflow>/<block>/<file>`). */

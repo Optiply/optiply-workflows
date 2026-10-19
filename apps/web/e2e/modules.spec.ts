@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate } from './helpers'
+import { signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * Modules at run time (M14 step 5c): two instances of one module in a published app, each with its own state and
@@ -170,4 +170,58 @@ test('module instances in the app editor', async ({ page }) => {
     `Module nope_${stamp} (latest) isn't available`,
   )
   await expect(page.getByRole('tab', { name: 'Problems (1)' })).toBeVisible()
+})
+
+/** The module editor (M14 step 6a): made from the Modules page, its draft run with test inputs, published. */
+test('create, run and publish a module', async ({ page }) => {
+  page.on('dialog', (d) => void d.accept())
+  await signIn(page)
+  const name = `Plan badge ${Date.now()}`
+  await page.getByRole('link', { name: 'Modules' }).click()
+  await expect(page.getByRole('heading', { name: 'Modules', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'New module' }).click()
+  await page.getByLabel('Name', { exact: true }).fill(name)
+  await page.getByRole('button', { name: 'Create module' }).click()
+  await expect(page).toHaveURL(/\/modules\/plan_badge_\d+$/)
+  const slug = page.url().split('/modules/')[1]!
+
+  // A component from the palette, saved as the module's draft.
+  await page.getByRole('button', { name: 'Text', exact: true }).click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  // No pages in a module.
+  await expect(page.getByRole('heading', { name: 'Pages' })).toHaveCount(0)
+
+  // Its draft runs on its own: `inputs.*` are the test values, its queries run through the module.
+  const saved = await trpcQuery<{ id: string; draftRevision: number }>(page, 'modules.get', { slug })
+  await trpcMutate(page, 'modules.saveDraft', {
+    id: saved.id,
+    revision: saved.draftRevision,
+    definition: {
+      schemaVersion: 1,
+      components: [
+        { name: 'badge', type: 'text', props: { value: 'Plan {{ inputs.plan }}: {{ count.data[0].n }}' } },
+      ],
+      queries: [
+        {
+          name: 'count',
+          kind: 'resource',
+          resource: 'shop_db',
+          query: { sql: 'select count(*)::int as n from customers where plan = {{ inputs.plan }}' },
+          run: 'auto',
+        },
+      ],
+      layout: { badge: { x: 0, y: 0, w: 6, h: 2 } },
+      module: { inputs: [{ name: 'plan', default: 'pro', testValue: 'free' }], outputs: [], events: [] },
+    },
+  })
+  await page.reload()
+  await expect(page.locator('[data-component="badge"]')).toHaveText('Plan free: 1')
+
+  // Published from its editor; the list shows it live.
+  await page.getByRole('button', { name: 'Publish', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('apps get when they follow its latest version')
+  await page.getByTestId('publish-confirm').click()
+  await expect(page.getByTestId('release-status')).toContainText('Live v1.0.0')
+  await page.getByRole('link', { name: 'Modules' }).click()
+  await expect(page.getByTestId(`module-${slug}`)).toContainText('Live v1.0.0')
 })

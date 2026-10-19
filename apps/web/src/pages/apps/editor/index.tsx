@@ -141,6 +141,7 @@ export function AppEditorPage() {
     <Editor
       key={`${app.data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
       app={{
+        kind: 'app',
         id: app.data.id,
         slug: app.data.slug,
         name: app.data.name,
@@ -175,11 +176,12 @@ export function AppEditorPage() {
   )
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+export function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center p-8">{children}</div>
 }
 
 interface EditorProps {
+  /** The app, or the module (M14: the same editor, without pages, with its inputs, outputs and events). */
   app: EditorApp
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
@@ -189,7 +191,7 @@ interface EditorProps {
   git: React.ReactNode
 }
 
-function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
+export function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
@@ -216,6 +218,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     modules: useAppEditor.getState().moduleReleases,
+    kind: app.kind,
     appId: app.id,
     releaseId: null,
     branchDraftId,
@@ -299,7 +302,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
             value={environment.slug}
             onChange={(e) =>
               navigate({
-                to: '/apps/$slug/edit',
+                to: app.kind === 'module' ? '/modules/$slug' : '/apps/$slug/edit',
                 params: { slug: app.slug },
                 search: (prev) => ({ ...prev, env: e.target.value }),
               })
@@ -314,7 +317,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
           <Button
             size="sm"
             onClick={() => setPreview(!preview)}
-            title={preview ? 'Back to editing' : 'Use the app as people will'}
+            title={preview ? 'Back to editing' : `Use the ${app.kind} as people will`}
           >
             {preview ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
             {preview ? 'Edit' : 'Preview'}
@@ -325,7 +328,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
       {git}
       {status === 'conflict' && (
         <div role="alert" className="flex items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm">
-          Someone else saved this app since you opened it. Your edits here can't be saved.
+          Someone else saved this {app.kind} since you opened it. Your edits here can't be saved.
           <Button size="sm" onClick={() => window.location.reload()}>
             Reload
           </Button>
@@ -339,7 +342,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
                 {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                <PagesPanel key={epoch} />
+                {app.kind === 'app' && <PagesPanel key={epoch} />}
                 {!readOnly && (
                   <section>
                     <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
