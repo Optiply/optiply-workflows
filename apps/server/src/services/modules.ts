@@ -3,7 +3,7 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   type ModuleInfo,
-  type ModuleInterface,
+  moduleInterface,
 } from '@ow/app-definition'
 import {
   type App,
@@ -31,15 +31,6 @@ export function usedModules(def: AppDefinition): string[] {
     c.type === 'module' && typeof c.props?.module === 'string' ? [c.props.module] : [],
   )
   return [...new Set(slugs)].sort()
-}
-
-/** What an app sees of a module release: its inputs, outputs and events. */
-export function moduleInterface(def: AppDefinition): ModuleInterface {
-  return {
-    inputs: def.module?.inputs.map((i) => i.name) ?? [],
-    outputs: def.module?.outputs.map((o) => o.name) ?? [],
-    events: def.module?.events.map((e) => e.name) ?? [],
-  }
 }
 
 /** The modules an app places, by slug, with what the validator needs (the live version, each release's interface). */

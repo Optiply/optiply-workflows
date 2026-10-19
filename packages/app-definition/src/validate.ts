@@ -111,17 +111,39 @@ export interface ModuleInfo {
   versions: Record<string, ModuleInterface>
 }
 
-/** The release a module instance names, from its `module` and `version` props; null when it can't be told. */
+/**
+ * The release a module instance names, from its `module` and `version` props (`latest` when missing), and the
+ * `slug@version` key the app's module releases are looked up by; null when they aren't plain strings.
+ */
+export function instanceRelease(
+  component: AppComponent,
+): { slug: string; version: string; key: string } | null {
+  const slug = component.props?.module
+  const version = component.props?.version ?? 'latest'
+  if (typeof slug !== 'string' || typeof version !== 'string' || !slug) return null
+  return { slug, version, key: `${slug}@${version}` }
+}
+
+/** The interface of the release a module instance names; null when it can't be told. */
 export function instanceInterface(
   component: AppComponent,
   resolve: (slug: string) => ModuleInfo | undefined,
 ): ModuleInterface | null {
-  const slug = component.props?.module
-  const version = component.props?.version ?? 'latest'
-  if (typeof slug !== 'string' || typeof version !== 'string') return null
+  const ref = instanceRelease(component)
+  if (!ref) return null
+  const { slug, version } = ref
   const info = resolve(slug)
   const at = version === 'latest' ? info?.liveVersion : version
   return (at && info && Object.hasOwn(info.versions, at) ? info.versions[at] : null) ?? null
+}
+
+/** What an app sees of a module release: its inputs, outputs and events. */
+export function moduleInterface(def: AppDefinition): ModuleInterface {
+  return {
+    inputs: def.module?.inputs.map((i) => i.name) ?? [],
+    outputs: def.module?.outputs.map((o) => o.name) ?? [],
+    events: def.module?.events.map((e) => e.name) ?? [],
+  }
 }
 
 export interface AppValidationResult {

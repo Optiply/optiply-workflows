@@ -46,10 +46,35 @@ export interface AppUrl {
   params: Record<string, string>
 }
 
+/** A module release an app's instances run (M14). */
+export interface ModuleRelease {
+  definition: AppDefinition
+  /** Sent back with the instance's queries, so the server runs them from the release the page runs. */
+  releaseId: string
+}
+
+/** The module releases an app's instances run, by `slug@version` with the version as the instance names it (`latest` or a version). */
+export type ModuleReleases = Record<string, ModuleRelease>
+
+/** Which module instance a query belongs to, and the release it runs (M14). */
+export interface QueryModule {
+  instance: string
+  releaseId: string
+}
+
 export type HostMessage =
-  | { type: 'start'; definition: AppDefinition; globals: RuntimeGlobals; url: AppUrl }
-  /** The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). */
-  | { type: 'update'; definition: AppDefinition }
+  | {
+      type: 'start'
+      definition: AppDefinition
+      globals: RuntimeGlobals
+      url: AppUrl
+      modules?: ModuleReleases
+    }
+  /**
+   * The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). Without
+   * `modules`, its instances keep running the releases they ran.
+   */
+  | { type: 'update'; definition: AppDefinition; modules?: ModuleReleases }
   /**
    * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once
    * it has them, so the page can ignore older values for those keys still on their way (no cursor jumps).
@@ -76,7 +101,8 @@ export type SandboxMessage =
   | { type: 'patch'; patch: StatePatch }
   /** The `set` with this `seq` (and every earlier one) is applied; its patch came before this. */
   | { type: 'ack'; seq: number }
-  | { type: 'runQuery'; id: number; query: string; values: Record<string, unknown> }
+  /** `module`: the query is a module instance's (M14). */
+  | { type: 'runQuery'; id: number; query: string; values: Record<string, unknown>; module?: QueryModule }
   | { type: 'confirm'; id: number; message: string }
   | { type: 'effect'; effect: Effect }
   | { type: 'log'; level: LogLevel; message: string }

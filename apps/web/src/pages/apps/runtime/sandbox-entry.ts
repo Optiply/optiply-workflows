@@ -13,6 +13,7 @@ import {
   type HostBridge,
   type HostMessage,
   type LogLevel,
+  type ModuleReleases,
   type QueryOutcome,
   type SandboxMessage,
   type StatePatch,
@@ -21,6 +22,7 @@ import {
 let port: MessagePort | null = null
 let runtime: AppRuntime | null = null
 let globals: Record<string, unknown> = {}
+let modules: ModuleReleases = {}
 let nextId = 1
 const pending = new Map<number, (value: never) => void>()
 
@@ -124,7 +126,8 @@ const appConsole = Object.fromEntries(
 )
 
 const bridge: HostBridge = {
-  runQuery: (query, values) => request<QueryOutcome>((id) => ({ type: 'runQuery', id, query, values })),
+  runQuery: (query, values, module) =>
+    request<QueryOutcome>((id) => ({ type: 'runQuery', id, query, values, ...(module && { module }) })),
   confirm: (message) => request<boolean>((id) => ({ type: 'confirm', id, message })),
   effect: (effect: Effect) => send({ type: 'effect', effect }),
   publish,
@@ -138,7 +141,8 @@ function handle(message: HostMessage) {
       try {
         const g = globalThis as unknown as { _: unknown; dayjs: unknown; sql: unknown }
         globals = { ...message.globals, _: g._, dayjs: g.dayjs, sql: g.sql, console: appConsole }
-        runtime = new AppRuntime(message.definition, bridge, { globals, url: message.url })
+        modules = message.modules ?? {}
+        runtime = new AppRuntime(message.definition, bridge, { globals, url: message.url, modules })
         const loading = runtime.start()
         send({ type: 'started' })
         void loading
@@ -151,7 +155,8 @@ function handle(message: HostMessage) {
       if (!runtime) return
       try {
         // The page shown carries over with the rest of the state (see AppRuntime.start).
-        const next = new AppRuntime(message.definition, bridge, { globals })
+        if (message.modules) modules = message.modules
+        const next = new AppRuntime(message.definition, bridge, { globals, modules })
         void next.start({ previous: runtime })
         runtime = next
       } catch (err) {
