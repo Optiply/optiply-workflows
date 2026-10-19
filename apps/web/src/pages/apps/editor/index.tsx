@@ -42,6 +42,7 @@ export function AppEditorPage() {
   const { slug } = route.useParams()
   const search = route.useSearch()
   const trpc = useTRPC()
+  const navigate = useNavigate()
   // Fetched fresh each visit (gcTime 0: nothing cached from the last one) and loaded into the editor once: a later
   // refetch (after App settings) only updates the name and description, never the draft being edited.
   const app = useQuery({
@@ -50,48 +51,90 @@ export function AppEditorPage() {
     gcTime: 0,
     refetchOnWindowFocus: false,
   })
-  const environments = useQuery(trpc.environments.list.queryOptions())
   useLibrarySync()
   useModuleSync()
-  const navigate = useNavigate()
+  return (
+    <DraftLoader
+      kind="app"
+      object={app}
+      search={search}
+      go={(next) => navigate({ to: '/apps/$slug/edit', params: { slug }, search: next })}
+    />
+  )
+}
+
+/** What the editor loads of an app or module (`apps.get`, `modules.get`). */
+interface EditedObject {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  level: 'use' | 'edit' | 'own'
+  gitProtected: boolean
+  draftDefinition: AppDefinition
+  draftRevision: number
+  draftHash: string
+}
+
+/**
+ * Loads an app's or module's draft into the editor: its main draft, or (protected, M11) its draft on the Git branch
+ * in `search.branch`, opened or made as needed; then the editor with the environment in `search.env`.
+ */
+export function DraftLoader({
+  kind,
+  object,
+  search,
+  go,
+}: {
+  kind: 'app' | 'module'
+  /** The object's query: its data once loaded. */
+  object: { data?: EditedObject; error: unknown; refetch: () => Promise<unknown> }
+  search: { env?: string; branch?: string }
+  /** Moves to the same editor with other search params. */
+  go: (search: { env?: string; branch?: string }) => Promise<void>
+}) {
+  const trpc = useTRPC()
+  const environments = useQuery(trpc.environments.list.queryOptions())
   const load = useAppEditor((s) => s.load)
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
-  const gitProtected = app.data?.gitProtected ?? false
+  const data = object.data
+  const gitProtected = data?.gitProtected ?? false
   const branch = gitProtected ? (search.branch ?? null) : null
-  // A protected app is edited in a draft on a Git branch (M11); opening one makes it if needed.
+  // A protected object is edited in a draft on a Git branch (M11); opening one makes it if needed.
   const opened = useQuery({
-    queryKey: ['branchDraft', 'app', app.data?.id, branch],
-    queryFn: () =>
-      trpcClient.branchDrafts.open.mutate({ kind: 'app', id: app.data!.id, branch: branch!, create: true }),
-    enabled: Boolean(app.data && branch),
+    queryKey: ['branchDraft', kind, data?.id, branch],
+    queryFn: () => trpcClient.branchDrafts.open.mutate({ kind, id: data!.id, branch: branch!, create: true }),
+    enabled: Boolean(data && branch),
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 0,
     retry: false,
   })
   const [draftInfo, setDraftInfo] = useState<BranchDraft | null>(null)
   const branchDraft = branch ? (draftInfo?.branch === branch ? draftInfo : opened.data) : null
-  // What's loaded: the app, which draft (main, read-only when protected, or a branch's).
-  const wanted = app.data
-    ? `${app.data.id}:${branch ? (branchDraft?.id ?? 'opening') : `main:${gitProtected}`}`
+  // What's loaded: the object, which draft (main, read-only when protected, or a branch's).
+  const wanted = data
+    ? `${data.id}:${branch ? (branchDraft?.id ?? 'opening') : `main:${gitProtected}`}`
     : null
 
   const loadDraft = useCallback(
-    (appId: string, draft: BranchDraft) =>
-      load(appId, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
+    (id: string, draft: BranchDraft) =>
+      load(id, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
+        kind,
       }),
-    [load],
+    [load, kind],
   )
   useEffect(() => {
-    if (!app.data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
-    if (branch && branchDraft) loadDraft(app.data.id, branchDraft)
+    if (!data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
+    if (branch && branchDraft) loadDraft(data.id, branchDraft)
     else {
-      load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash, {
-        readOnly: app.data.gitProtected,
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: data.gitProtected,
+        kind,
       })
     }
     setLoadedFor(wanted)
-  }, [app.data, wanted, loadedFor, branch, branchDraft, load, loadDraft])
+  }, [data, wanted, loadedFor, branch, branchDraft, load, loadDraft, kind])
 
   const switchBranch = async (next: string | null) => {
     try {
@@ -102,33 +145,23 @@ export function AppEditorPage() {
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.
     if (next === null) {
-      await app.refetch()
+      await object.refetch()
       setLoadedFor(null)
     }
-    await navigate({
-      to: '/apps/$slug/edit',
-      params: { slug },
-      search: { ...search, branch: next ?? undefined },
-    })
+    await go({ ...search, branch: next ?? undefined })
   }
 
-  const error = app.error ?? opened.error
+  const error = object.error ?? opened.error ?? environments.error
   if (error)
     return (
       <Centered>
         <ErrorNote error={error} />
       </Centered>
     )
-  if (environments.error)
-    return (
-      <Centered>
-        <ErrorNote error={environments.error} />
-      </Centered>
-    )
   // The store outlives the page: until this visit's draft is in it, it may hold the last one.
-  // The same app reloading (main turning read-only after Protect) keeps the editor and its dialogs on screen.
-  const ready = app.data && wanted && !wanted.endsWith(':opening') && loadedFor?.split(':')[0] === app.data.id
-  if (!app.data || !environments.data || !ready)
+  // The same object reloading (main turning read-only after Protect) keeps the editor and its dialogs on screen.
+  const ready = data && wanted && !wanted.endsWith(':opening') && loadedFor?.split(':')[0] === data.id
+  if (!data || !environments.data || !ready)
     return (
       <Centered>
         <Spinner />
@@ -140,15 +173,15 @@ export function AppEditorPage() {
     environments.data[0]!
   return (
     <Editor
-      key={`${app.data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
+      key={`${data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
       app={{
-        kind: 'app',
-        id: app.data.id,
-        slug: app.data.slug,
-        name: app.data.name,
-        description: app.data.description,
-        level: app.data.level,
-        gitProtected: app.data.gitProtected,
+        kind,
+        id: data.id,
+        slug: data.slug,
+        name: data.name,
+        description: data.description,
+        level: data.level,
+        gitProtected: data.gitProtected,
       }}
       environment={environment}
       environments={environments.data}
@@ -156,8 +189,8 @@ export function AppEditorPage() {
       git={
         gitProtected ? (
           <GitBar
-            kind="app"
-            object={app.data}
+            kind={kind}
+            object={data}
             branch={branch}
             draft={branchDraft ?? null}
             onSwitch={switchBranch}
@@ -165,9 +198,9 @@ export function AppEditorPage() {
             revision={() => useAppEditor.getState().revision}
             onReplaced={(draft) => {
               setDraftInfo(draft)
-              loadDraft(app.data!.id, draft)
+              loadDraft(data.id, draft)
               // The running draft follows the replaced definition.
-              setLoadedFor(`${app.data!.id}:${draft.id}`)
+              setLoadedFor(`${data.id}:${draft.id}`)
             }}
             onUpdated={setDraftInfo}
           />

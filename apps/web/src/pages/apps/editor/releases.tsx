@@ -76,7 +76,7 @@ function useReleaseApi(app: EditorApp) {
       publishHelp: (live: string | null) =>
         `The draft becomes the module apps get when they follow its latest version${live ? `, instead of v${live}` : ''}. Its queries run with the access you have to their resources now, in every app placing it.`,
       liveHelp: (version: string, live: string | null) =>
-        `Make v${version} live? Apps following the module's latest version get it${live ? ` instead of v${live}` : ''}.`,
+        `Make v${version} live? Apps following the module's latest version get it${live ? ` instead of v${live}` : ''}.${app.gitProtected ? ' This module is protected: this stays until its next change in Git (or Deploy now).' : ''}`,
       deleteHelp: `Delete ${app.name} with all its releases? It can't be deleted while apps use it.`,
       accessHelp:
         'Use places the module in apps and runs it in their drafts · Edit also changes its draft and publishes · Own also deletes and manages access.',
@@ -143,7 +143,7 @@ export function ReleaseControls({ app }: { app: EditorApp }) {
           <span className="text-xs whitespace-nowrap text-warning-strong">Unpublished changes</span>
         )}
       </button>
-      {/* A protected app is published by merging on Git. */}
+      {/* A protected app or module is published by merging on Git. */}
       {!app.gitProtected && (
         <Button
           size="sm"
@@ -393,7 +393,7 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
                   loading={setLive.isPending && setLive.variables === r.id}
                   title={
                     app.gitProtected
-                      ? 'Emergency rollback: it stays until the app’s next change in Git (or Deploy now)'
+                      ? `Emergency rollback: it stays until the ${app.kind}’s next change in Git (or Deploy now)`
                       : 'Make this release live again'
                   }
                   onClick={() => {
@@ -473,7 +473,7 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
       <div className="flex flex-col gap-4">
         <Field
           label="Name"
-          hint={app.gitProtected ? 'A protected app’s name comes from the repo.' : undefined}
+          hint={app.gitProtected ? `A protected ${app.kind}’s name comes from the repo.` : undefined}
         >
           <Input value={name} disabled={app.gitProtected} onChange={(e) => setName(e.target.value)} />
         </Field>
@@ -485,7 +485,7 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        {app.level === 'own' && app.kind === 'app' && <AppGitProtection app={app} />}
+        {app.level === 'own' && <GitProtection app={app} />}
         <p className="text-xs text-muted">
           Slug <span className="font-mono">{app.slug}</span>{' '}
           {app.kind === 'module' ? '(how apps refer to it)' : "(the app's address)"} can't change.
@@ -496,11 +496,11 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
   )
 }
 
-/** Owners protect the app in Git (M11), or unprotect it. */
-function AppGitProtection({ app }: { app: EditorApp }) {
+/** Owners protect the app or module in Git (M11, M14), or unprotect it. */
+function GitProtection({ app }: { app: EditorApp }) {
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
-  const unprotect = useUnprotect('app')
+  const unprotect = useUnprotect(app.kind)
   if (!git?.configured && !app.gitProtected) return null
   return (
     <section className="flex flex-col gap-1.5">
@@ -511,7 +511,7 @@ function AppGitProtection({ app }: { app: EditorApp }) {
             size="sm"
             variant="danger"
             loading={unprotect.isPending}
-            onClick={() => confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'app', id: app.id })}
+            onClick={() => confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: app.kind, id: app.id })}
           >
             Unprotect
           </Button>
@@ -527,7 +527,7 @@ function AppGitProtection({ app }: { app: EditorApp }) {
           : 'Protect it to have changes reviewed in pull requests before they go live.'}
       </span>
       <ErrorNote error={unprotect.error} />
-      {protecting && <ProtectDialog kind="app" object={app} onClose={() => setProtecting(false)} />}
+      {protecting && <ProtectDialog kind={app.kind} object={app} onClose={() => setProtecting(false)} />}
     </section>
   )
 }

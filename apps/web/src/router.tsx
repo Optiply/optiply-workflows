@@ -147,7 +147,8 @@ const moduleEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/modules/$slug',
   staticData: { fullBleed: true },
-  validateSearch: z.object({ env: z.string().optional() }),
+  /** `branch` edits a protected module's draft on that Git branch (M14). */
+  validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
 })
 const runsRoute = createRoute({

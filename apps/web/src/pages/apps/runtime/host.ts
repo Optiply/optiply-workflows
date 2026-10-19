@@ -432,6 +432,7 @@ export class AppHost {
         this.options.kind === 'module'
           ? await trpcClient.modules.runQuery.mutate({
               moduleId: this.options.appId,
+              ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
               query: String(query),
               environmentId: this.options.environmentId,
               values,

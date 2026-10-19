@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process'
 import { expect, type Page, test } from '@playwright/test'
+import { E2E_GITHUB_TOKEN } from './global-setup'
 import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
@@ -350,4 +352,57 @@ test('place a module in an app', async ({ page }) => {
     type: 'module',
     props: { module: moduleSlug, version: '1.0.0', plan: 'free' },
   })
+})
+
+/** Protected in Git (M14 step 7d): a module protected from its settings, edited and run on a branch, committed. */
+test('protect a module and edit it on a branch', async ({ page }) => {
+  page.on('dialog', (d) => void d.accept())
+  await signIn(page)
+  const repoUrl = process.env.E2E_GIT_REPO_URL!
+  const repoDir = process.env.E2E_GIT_REPO_DIR ?? new URL(repoUrl).pathname
+  const info = await trpcQuery<{ configured: boolean }>(page, 'git.info', {})
+  if (!info.configured) await trpcMutate(page, 'git.saveSettings', { repoUrl, token: E2E_GITHUB_TOKEN })
+  const stamp = Date.now()
+  const slug = `git_picker_${stamp}`
+  const branch = `m14/picker-${stamp}`
+  await publishModule(page, slug)
+
+  await page.goto(`/modules/${slug}`)
+  await page.getByRole('button', { name: 'Module settings' }).click()
+  await page.getByRole('button', { name: 'Protect in Git' }).click()
+  await page.getByTestId('protect-confirm').click()
+  await expect(page.getByTestId('protect-result')).toContainText('The module is protected')
+  await page.getByRole('button', { name: 'Done' }).click()
+  await page.keyboard.press('Escape')
+
+  // Main is read-only; a branch draft is edited, and runs.
+  await expect(page.getByTestId('read-only-banner')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Publish', exact: true })).toHaveCount(0)
+  await page.getByRole('combobox', { name: 'Branch' }).selectOption({ label: 'New branch…' })
+  await page.getByRole('textbox', { name: 'New branch name' }).fill(branch)
+  await page.getByRole('button', { name: 'Start branch' }).click()
+  await expect(page.getByText('New: the first commit makes it')).toBeVisible()
+  await typeInto(
+    page,
+    page.locator('[data-testid$="/queries/0/query/sql"]'),
+    'select upper(email) as email from customers where plan = {{ plan1.value }} order by id',
+  )
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('[data-component="first"]')).toHaveText('First: ADA@EXAMPLE.COM')
+
+  // Committed: the repo has the module's SQL as a file.
+  await page.getByTestId('commit-open').click()
+  await expect(page.getByTestId('commit-files')).toContainText(`modules/${slug}/queries/find.sql`)
+  await page.getByRole('textbox', { name: 'Message' }).fill('Upper-case the email')
+  await page.getByTestId('commit-confirm').click()
+  await expect(page.getByTestId('commit-result')).toContainText(branch)
+  const sql = execFileSync('git', [
+    '--git-dir',
+    repoDir,
+    'show',
+    `refs/heads/${branch}:modules/${slug}/queries/find.sql`,
+  ])
+  expect(sql.toString()).toBe(
+    'select upper(email) as email from customers where plan = {{ plan1.value }} order by id\n',
+  )
 })
