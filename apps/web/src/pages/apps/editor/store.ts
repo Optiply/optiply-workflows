@@ -1,11 +1,14 @@
 import {
   type AppDefinition,
   type AppDiagnostic,
+  type AppValidateOptions,
+  instanceRelease,
   type LibraryInfo,
+  type ModuleInfo,
   resolvePage,
   validateApp,
 } from '@ow/app-definition'
-import type { AppUrl } from '@ow/app-runtime'
+import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
 import { create } from 'zustand'
 import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
 
@@ -23,6 +26,9 @@ export interface AppEditorView {
 
 /** A library query the app uses, as the server described it (`libraryQueries.resolve`). */
 export type LibraryRef = LibraryInfo & { id: string; name: string }
+
+/** A module the app places, as the server described it (`modules.resolve`). */
+export type ModuleRef = ModuleInfo & { id: string; name: string }
 
 interface AppEditorState {
   appId: string | null
@@ -62,6 +68,10 @@ interface AppEditorState {
    * or the person can't see. The validator checks library queries once every one used is known.
    */
   libraries: Record<string, LibraryRef | null>
+  /** Likewise for the modules the app places (M14): the validator checks instances once every one is known. */
+  modules: Record<string, ModuleRef | null>
+  /** The module releases the running draft's instances run, by `slug@version` (`modules.instanceReleases`). */
+  moduleReleases: ModuleReleases
 
   load(
     appId: string,
@@ -83,6 +93,9 @@ interface AppEditorState {
   setUrl(page: string | null, params?: Record<string, string>): void
   /** Adds what the server said about library queries, and validates again. */
   setLibraries(libraries: Record<string, LibraryRef | null>): void
+  /** Adds what the server said about modules, and validates again. */
+  setModules(modules: Record<string, ModuleRef | null>): void
+  setModuleReleases(releases: ModuleReleases): void
   saving(): void
   saved(revision: number, json: string, draftHash: string): void
   conflict(): void
@@ -108,6 +121,8 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   history: emptyHistory(),
   epoch: 0,
   libraries: {},
+  modules: {},
+  moduleReleases: {},
 
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
@@ -120,7 +135,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       savedJson: JSON.stringify(definition),
       status: 'saved',
       saveError: null,
-      diagnostics: validate(definition, get().libraries),
+      diagnostics: validate(definition, get()),
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
@@ -130,7 +145,17 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
 
   setLibraries: (found) => {
     const libraries = { ...get().libraries, ...found }
-    set({ libraries, diagnostics: validate(get().definition, libraries) })
+    set({ libraries, diagnostics: validate(get().definition, { ...get(), libraries }) })
+  },
+
+  setModules: (found) => {
+    const modules = { ...get().modules, ...found }
+    set({ modules, diagnostics: validate(get().definition, { ...get(), modules }) })
+  },
+
+  setModuleReleases: (moduleReleases) => {
+    // The running draft restarts its instances on a change; the same releases again aren't one.
+    if (JSON.stringify(moduleReleases) !== JSON.stringify(get().moduleReleases)) set({ moduleReleases })
   },
 
   update: (edit) => {
@@ -211,11 +236,35 @@ export function usedLibrarySlugs(definition: AppDefinition): string[] {
   return [...new Set(definition.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
 }
 
-/** The browser's checks, library queries included once the server said about each one the app uses. */
-function validate(definition: AppDefinition, libraries: Record<string, LibraryRef | null>): AppDiagnostic[] {
-  const known = usedLibrarySlugs(definition).every((slug) => Object.hasOwn(libraries, slug))
-  return validateApp(definition, known ? { resolveLibrary: (slug) => libraries[slug] ?? undefined } : {})
-    .diagnostics
+/** The modules an app places, by slug, sorted. */
+export function usedModuleSlugs(definition: AppDefinition): string[] {
+  return [...new Set(definition.components.flatMap((c) => instanceKey(c)?.slug ?? []))].sort()
+}
+
+/** The `slug@version` keys of the module releases the app's instances run, sorted. */
+export function usedModuleKeys(definition: AppDefinition): string[] {
+  return [...new Set(definition.components.flatMap((c) => instanceKey(c)?.key ?? []))].sort()
+}
+
+const instanceKey = (c: AppDefinition['components'][number]) =>
+  c.type === 'module' ? instanceRelease(c) : null
+
+/**
+ * The browser's checks, library queries and module instances included once the server said about each one the
+ * app uses.
+ */
+function validate(
+  definition: AppDefinition,
+  { libraries, modules }: Pick<AppEditorState, 'libraries' | 'modules'>,
+): AppDiagnostic[] {
+  const options: AppValidateOptions = {}
+  if (usedLibrarySlugs(definition).every((slug) => Object.hasOwn(libraries, slug))) {
+    options.resolveLibrary = (slug) => libraries[slug] ?? undefined
+  }
+  if (usedModuleSlugs(definition).every((slug) => Object.hasOwn(modules, slug))) {
+    options.resolveModule = (slug) => modules[slug] ?? undefined
+  }
+  return validateApp(definition, options).diagnostics
 }
 
 function applied(
@@ -235,7 +284,7 @@ function applied(
   return {
     definition,
     ...(page !== url.page && { url: { page, params: {} } }),
-    diagnostics: validate(definition, state.libraries),
+    diagnostics: validate(definition, state),
     status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
     ...(status === 'error' && unchanged && { saveError: null }),
     ...(view && {

@@ -129,3 +129,45 @@ test('two instances of a module in a published app', async ({ page }) => {
   await page.reload()
   await expect(picker1.locator('[data-component="first"]')).toHaveText('First: grace@example.com')
 })
+
+/** In the app editor (M14 step 5c-2): the draft's instances run, and are checked against their releases. */
+test('module instances in the app editor', async ({ page }) => {
+  await signIn(page)
+  const stamp = Date.now()
+  const moduleSlug = `editor_picker_${stamp}`
+  await publishModule(page, moduleSlug)
+  const appSlug = `editing_${stamp}`
+  const app = await trpcMutate<{ id: string }>(page, 'apps.create', {
+    slug: appSlug,
+    name: `Editing ${stamp}`,
+  })
+  await trpcMutate(page, 'apps.saveDraft', {
+    id: app.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      components: [
+        { name: 'picker1', type: 'module', props: { module: moduleSlug, plan: 'free' } },
+        { name: 'missing1', type: 'module', props: { module: `nope_${stamp}` } },
+        { name: 'shown', type: 'text', props: { value: 'Out: {{ picker1.firstEmail }}' } },
+      ],
+      queries: [],
+      layout: {
+        picker1: { x: 0, y: 0, w: 6, h: 12 },
+        missing1: { x: 6, y: 0, w: 6, h: 4 },
+        shown: { x: 0, y: 12, w: 12, h: 2 },
+      },
+    },
+  })
+  await page.goto(`/apps/${appSlug}/edit`)
+
+  // The running draft draws the instance and runs its query; the app reads its output.
+  const picker1 = page.locator('[data-component="picker1"]')
+  await expect(picker1.locator('[data-component="first"]')).toHaveText('First: grace@example.com')
+  await expect(page.locator('[data-component="shown"]')).toHaveText('Out: grace@example.com')
+  // A module that doesn't exist: a placeholder, and one problem.
+  await expect(page.locator('[data-component="missing1"]')).toContainText(
+    `Module nope_${stamp} (latest) isn't available`,
+  )
+  await expect(page.getByRole('tab', { name: 'Problems (1)' })).toBeVisible()
+})

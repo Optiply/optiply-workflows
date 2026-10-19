@@ -20,6 +20,7 @@ import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
 import { useLibrarySync } from './library'
+import { useModuleSync } from './modules'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
@@ -50,6 +51,7 @@ export function AppEditorPage() {
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
   useLibrarySync()
+  useModuleSync()
   const navigate = useNavigate()
   const load = useAppEditor((s) => s.load)
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
@@ -213,6 +215,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
   })
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
+    modules: useAppEditor.getState().moduleReleases,
     appId: app.id,
     releaseId: null,
     branchDraftId,
@@ -237,14 +240,17 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
     })
   }, [host])
 
-  // The running draft follows the edits.
+  // The running draft follows the edits, and the module releases its instances run.
   useEffect(() => {
     if (!host) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = useAppEditor.subscribe((state, before) => {
-      if (state.definition === before.definition) return
+      if (state.definition === before.definition && state.moduleReleases === before.moduleReleases) return
       clearTimeout(timer)
-      timer = setTimeout(() => host.update(useAppEditor.getState().definition), UPDATE_DELAY_MS)
+      timer = setTimeout(() => {
+        const { definition, moduleReleases } = useAppEditor.getState()
+        host.update(definition, moduleReleases)
+      }, UPDATE_DELAY_MS)
     })
     return () => {
       clearTimeout(timer)
