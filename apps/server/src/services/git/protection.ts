@@ -134,7 +134,7 @@ export interface ProtectResult {
 }
 
 /**
- * Protects a workflow or app: its live release (or its draft, if it has none) goes onto a branch as the object's
+ * Protects an object of any kind: its live release (or its draft, if it has none) goes onto a branch as the object's
  * directory, a pull request adds it to the deploy branch, and from now on the object is edited on branches only.
  * Merging the pull request deploys it (a release made by Git sync, when it differs from what's live).
  */

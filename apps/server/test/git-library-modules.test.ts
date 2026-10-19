@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { encodeObjectDir, type Files, type RepoObject } from '@ow/git-format'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { runGitDeploy } from '../src/services/git/deploy'
 import { GitRepo } from '../src/services/git/repo'
 import { fakeGitHub } from './fake-github'
 import { bareRepo, scratch } from './git-helpers'
@@ -209,5 +211,95 @@ describe('library queries and modules in Git', () => {
   it('unprotect to be edited here again', async () => {
     data(await admin.mutate('git.unprotect', { kind: 'library_query', id: queryId }))
     data(await admin.mutate('libraryQueries.saveDraft', { id: queryId, revision: 2, definition: plusOne(2) }))
+  })
+})
+
+/** Commits to main as a reviewer merging a PR would: objects written whole, and raw directories. */
+async function pushMain(message: string, objects: RepoObject[], raw: Record<string, Files> = {}) {
+  const parent = await other.fetchBranch('main')
+  const directories: Record<string, Files> = { ...raw }
+  for (const object of objects) {
+    const { dir, files } = encodeObjectDir(object)
+    directories[dir] = files
+  }
+  const commit = await other.commit({
+    parent,
+    directories,
+    message,
+    author: { name: 'Reviewer', email: 'reviewer@optiply.nl' },
+  })
+  expect(await other.push(commit!, 'main')).toBe('ok')
+}
+
+const deploy = () => runGitDeploy(env.db, env.config, { trigger: 'poll' })
+const outcomes = (result: Awaited<ReturnType<typeof deploy>>) =>
+  result.status === 'deployed'
+    ? Object.fromEntries(result.objects.map((o) => [`${o.kind}:${o.slug}`, o.outcome]))
+    : result
+
+describe('deploying them from Git', () => {
+  it('deploys what the protect pull requests merged', async () => {
+    github.merge(1)
+    github.merge(2)
+    // The library query was unprotected meanwhile: its directory doesn't deploy.
+    expect(outcomes(await deploy())).toEqual({
+      'library_query:plus_one': 'problem',
+      'module:badge': 'unchanged',
+    })
+  })
+
+  it('creates a new module before an app placing it, in one commit, and reports broken directories', async () => {
+    const stamp: RepoObject = {
+      kind: 'module',
+      slug: 'stamp',
+      value: { name: 'Stamp', description: null, definition: badge('v3') as never },
+    }
+    const stampApp: RepoObject = {
+      kind: 'app',
+      slug: 'stamp-app',
+      value: {
+        name: 'Stamp app',
+        description: null,
+        definition: {
+          schemaVersion: 1,
+          components: [{ name: 'stamp1', type: 'module', props: { module: 'stamp', region: 'NL' } }],
+          queries: [],
+          layout: { stamp1: { x: 0, y: 0, w: 6, h: 12 } },
+        },
+      },
+    }
+    const double: RepoObject = {
+      kind: 'library_query',
+      slug: 'double',
+      value: { name: 'Double', description: null, definition: plusOne(0) as never },
+    }
+    await pushMain('Stamps', [stampApp, stamp, double], { 'library/broken': { 'query.json': '{' } })
+    const result = await deploy()
+    expect(outcomes(result)).toMatchObject({
+      'app:stamp-app': 'created',
+      'module:stamp': 'created',
+      'library_query:double': 'created',
+      'library_query:broken': 'problem',
+    })
+    const releases = data(
+      await admin.query('modules.releases', {
+        moduleId: data(await admin.query('modules.get', { slug: 'stamp' })).id,
+      }),
+    )
+    expect(releases).toEqual([
+      expect.objectContaining({
+        version: '1.0.0',
+        live: true,
+        createdBy: null,
+        gitCommit: expect.any(String),
+      }),
+    ])
+    const opened = data(await admin.query('apps.open', { slug: 'stamp-app' }))
+    expect(opened.modules['stamp@latest']).toMatchObject({ releaseId: releases[0].id })
+    expect(data(await admin.query('libraryQueries.get', { slug: 'double' }))).toMatchObject({
+      gitProtected: true,
+    })
+    // Nothing new: nothing to do.
+    expect(await deploy()).toMatchObject({ status: 'up_to_date' })
   })
 })

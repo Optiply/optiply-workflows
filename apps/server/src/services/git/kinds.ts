@@ -199,3 +199,64 @@ export function kindTitle(kind: ObjectKind): string {
   const label = KIND_LABELS[kind]
   return label[0]!.toUpperCase() + label.slice(1)
 }
+
+/** Every protected object's id, of any kind (deploy skips their unchanged directories). */
+export async function protectedObjectIds(db: Db): Promise<Set<string>> {
+  const rows = await Promise.all(
+    [workflows, apps, libraryQueries, modules].map((table) =>
+      db.select({ id: table.id }).from(table).where(eq(table.gitProtected, true)),
+    ),
+  )
+  return new Set(rows.flat().map((r) => r.id))
+}
+
+/**
+ * Makes an object of a kind from the repo, protected (a directory deploying for the first time); undefined when
+ * one with that slug was just made on the instance.
+ */
+export async function insertGitObject(
+  db: Db,
+  kind: ObjectKind,
+  values: { slug: string; name: string; description: string | null; definition: unknown },
+): Promise<GitObjectRow | undefined> {
+  const row = {
+    slug: values.slug,
+    name: values.name,
+    description: values.description,
+    gitProtected: true,
+  }
+  switch (kind) {
+    case 'workflow':
+      return (
+        await db
+          .insert(workflows)
+          .values({ ...row, draftDefinition: values.definition as WorkflowDefinition })
+          .onConflictDoNothing()
+          .returning()
+      )[0]
+    case 'app':
+      return (
+        await db
+          .insert(apps)
+          .values({ ...row, draftDefinition: values.definition as AppDefinition })
+          .onConflictDoNothing()
+          .returning()
+      )[0]
+    case 'library_query':
+      return (
+        await db
+          .insert(libraryQueries)
+          .values({ ...row, draftDefinition: values.definition as LibraryQueryDefinition })
+          .onConflictDoNothing()
+          .returning()
+      )[0]
+    case 'module':
+      return (
+        await db
+          .insert(modules)
+          .values({ ...row, draftDefinition: values.definition as AppDefinition })
+          .onConflictDoNothing()
+          .returning()
+      )[0]
+  }
+}

@@ -17,7 +17,7 @@ import {
   moduleReleases,
   modules,
 } from '@ow/db'
-import type { VersionBump } from '@ow/definition'
+import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { type AnyColumn, and, asc, eq, inArray, isNotNull, or, type SQL, sql } from 'drizzle-orm'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
@@ -281,6 +281,52 @@ export async function publishModuleRelease(
       })
     }
     await tx.update(modules).set({ liveReleaseId: release.id }).where(eq(modules.id, module.id))
+    return release
+  })
+}
+
+/**
+ * Deploys a protected module from Git (M14): the name, description and draft follow the repo, and when the
+ * definition differs from the live release's, a new release made by Git sync (`created_by` null, the commit SHA)
+ * goes live. Nobody's grants are checked; everything else publishing checks is. Returns the release, or null when
+ * the definition was already live.
+ */
+export async function deployModuleFromGit(
+  db: Db,
+  opts: {
+    module: Module
+    name: string
+    description: string | null
+    definition: AppDefinition
+    commit: string
+    notes: string | null
+  },
+): Promise<ModuleRelease | null> {
+  const definition = canonicalizeApp(opts.definition)
+  const hash = await appDefinitionHash(definition)
+  await checkReleasable(db, null, opts.module, definition)
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(modules).where(eq(modules.id, opts.module.id)).for('update')
+    if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The module was deleted meanwhile' })
+    // Compared canonically: jsonb doesn't keep key order.
+    const draftChanged = canonicalJson(canonicalizeApp(locked.draftDefinition)) !== canonicalJson(definition)
+    await tx
+      .update(modules)
+      .set({
+        name: opts.name,
+        description: opts.description,
+        ...(draftChanged
+          ? { draftDefinition: definition, draftRevision: locked.draftRevision + 1, updatedBy: null }
+          : {}),
+      })
+      .where(eq(modules.id, locked.id))
+    const release = await insertRelease(tx, locked, definition, hash, {
+      notes: opts.notes,
+      createdBy: null,
+      gitCommit: opts.commit,
+    })
+    if ('unchanged' in release) return null
+    await tx.update(modules).set({ liveReleaseId: release.id }).where(eq(modules.id, locked.id))
     return release
   })
 }

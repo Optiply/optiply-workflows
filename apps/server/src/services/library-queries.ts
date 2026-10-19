@@ -141,6 +141,55 @@ export async function publishLibraryRelease(
 }
 
 /** Inserts the next release of a locked library query, unless the live one already has this hash. */
+/**
+ * Deploys a protected library query from Git (M14), like a module: the repo's name, description and draft, and a
+ * release made by Git sync when the definition differs from the live one. Returns the release, or null when the
+ * definition was already live.
+ */
+export async function deployLibraryQueryFromGit(
+  db: Db,
+  opts: {
+    query: LibraryQuery
+    name: string
+    description: string | null
+    definition: LibraryQueryDefinition
+    commit: string
+    notes: string | null
+  },
+): Promise<LibraryQueryRelease | null> {
+  const { definition } = opts
+  const hash = await libraryQueryHash(definition)
+  await checkReleasable(db, null, opts.query, definition)
+  return db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(libraryQueries)
+      .where(eq(libraryQueries.id, opts.query.id))
+      .for('update')
+    if (!locked)
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'The library query was deleted meanwhile' })
+    const draftChanged = canonicalJson(locked.draftDefinition) !== canonicalJson(definition)
+    await tx
+      .update(libraryQueries)
+      .set({
+        name: opts.name,
+        description: opts.description,
+        ...(draftChanged
+          ? { draftDefinition: definition, draftRevision: locked.draftRevision + 1, updatedBy: null }
+          : {}),
+      })
+      .where(eq(libraryQueries.id, locked.id))
+    const release = await insertRelease(tx, locked, definition, hash, {
+      notes: opts.notes,
+      createdBy: null,
+      gitCommit: opts.commit,
+    })
+    if ('unchanged' in release) return null
+    await tx.update(libraryQueries).set({ liveReleaseId: release.id }).where(eq(libraryQueries.id, locked.id))
+    return release
+  })
+}
+
 async function insertRelease(
   tx: Tx,
   locked: LibraryQuery,
