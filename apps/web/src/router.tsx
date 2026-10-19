@@ -134,7 +134,8 @@ const libraryRoute = createRoute({
 const libraryEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/library/$slug',
-  validateSearch: z.object({ env: z.string().optional() }),
+  /** `branch` edits a protected library query's draft on that Git branch (M14). */
+  validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/library/editor'), 'LibraryEditorPage'),
 })
 /** Modules (M14): the list, and each one's editor (the app editor, in its chunk). */

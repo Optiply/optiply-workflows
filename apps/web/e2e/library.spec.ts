@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { E2E_GITHUB_TOKEN } from './global-setup'
+import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
@@ -97,4 +99,64 @@ test('use a library query in an app', async ({ page }) => {
   await page.getByRole('button', { name: 'Run', exact: true }).click()
   await expect(page.getByTestId('query-query1')).toContainText('14')
   await expect(body).toContainText('v1.0.0, on optiply_db')
+})
+
+/** In Git (M14 step 7d): a library query protected from its editor, edited and run on a branch, committed. */
+test('protect a library query and edit it on a branch', async ({ page }) => {
+  page.on('dialog', (d) => void d.accept())
+  await signIn(page)
+  const repoUrl = process.env.E2E_GIT_REPO_URL!
+  const repoDir = process.env.E2E_GIT_REPO_DIR ?? new URL(repoUrl).pathname
+  const info = await trpcQuery<{ configured: boolean }>(page, 'git.info', {})
+  if (!info.configured) await trpcMutate(page, 'git.saveSettings', { repoUrl, token: E2E_GITHUB_TOKEN })
+  const stamp = Date.now()
+  const slug = `triple_${stamp}`
+  const branch = `m14/triple-${stamp}`
+  const lib = await trpcMutate<{ id: string }>(page, 'libraryQueries.create', {
+    slug,
+    name: `Triple ${stamp}`,
+  })
+  const { revision } = await trpcMutate<{ revision: number }>(page, 'libraryQueries.saveDraft', {
+    id: lib.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      resource: 'shop_db',
+      query: { sql: 'select {{ n }}::int * 3 as x' },
+      params: [{ name: 'n', testValue: 5 }],
+    },
+  })
+  await trpcMutate(page, 'libraryQueries.publish', { libraryQueryId: lib.id, draftRevision: revision })
+
+  await page.goto(`/library/${slug}`)
+  await page.getByRole('button', { name: 'Protect in Git' }).click()
+  await page.getByTestId('protect-confirm').click()
+  await expect(page.getByTestId('protect-result')).toContainText('The library query is protected')
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // Main is read-only (no Publish); a branch draft is edited and runs.
+  await expect(page.getByTestId('read-only-banner')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Publish', exact: true })).toHaveCount(0)
+  await page.getByRole('combobox', { name: 'Branch' }).selectOption({ label: 'New branch…' })
+  await page.getByRole('textbox', { name: 'New branch name' }).fill(branch)
+  await page.getByRole('button', { name: 'Start branch' }).click()
+  await expect(page.getByText('New: the first commit makes it')).toBeVisible()
+  await typeInto(page, page.locator('[data-testid^="code-library:"]'), 'select {{ n }}::int * 4 as x')
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
+  await page.getByTestId('library-run').getByRole('button', { name: 'Run' }).click()
+  await expect(page.getByTestId('library-run')).toContainText('20')
+
+  // Committed: the repo has its SQL as query.sql.
+  await page.getByTestId('commit-open').click()
+  await expect(page.getByTestId('commit-files')).toContainText(`library/${slug}/query.sql`)
+  await page.getByRole('textbox', { name: 'Message' }).fill('Four times')
+  await page.getByTestId('commit-confirm').click()
+  await expect(page.getByTestId('commit-result')).toContainText(branch)
+  const sql = execFileSync('git', [
+    '--git-dir',
+    repoDir,
+    'show',
+    `refs/heads/${branch}:library/${slug}/query.sql`,
+  ])
+  expect(sql.toString()).toBe('select {{ n }}::int * 4 as x\n')
 })

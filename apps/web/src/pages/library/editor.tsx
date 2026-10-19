@@ -7,9 +7,11 @@ import {
 import { bumpVersion, compareVersions, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lucide-react'
+import { GitBranch, History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import CodeField, { type FieldProblem } from '@/components/code/code-field'
+import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
+import { GitBar } from '@/components/git-bar'
 import {
   Badge,
   Button,
@@ -26,7 +28,7 @@ import {
 } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { parseTestValue, showTestValue } from '@/lib/test-value'
-import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
+import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor, ConnectorErrorNote, ResultView } from '../resources/shared'
 
@@ -42,35 +44,124 @@ function problemsAt(diagnostics: LibraryDiagnostic[], path: (string | number)[])
     .map((d) => ({ message: d.message, severity: d.severity, start: d.start, end: d.end }))
 }
 
-/** A library query's editor: its resource and query, parameters with test values, Run, releases and access. */
+/**
+ * A library query's editor: its resource and query, parameters with test values, Run, releases and access. A
+ * protected one (M14) is edited in a draft on the Git branch in `?branch=`; its main draft is read-only.
+ */
 export function LibraryEditorPage() {
   const trpc = useTRPC()
   const { slug } = route.useParams()
+  const search = route.useSearch()
+  const navigate = useNavigate()
   const detail = useQuery({
     ...trpc.libraryQueries.get.queryOptions({ slug }),
     staleTime: Number.POSITIVE_INFINITY,
   })
-  if (detail.isLoading) return <Spinner />
+  const branch = detail.data?.gitProtected ? (search.branch ?? null) : null
+  const opened = useQuery({
+    queryKey: ['branchDraft', 'library_query', detail.data?.id, branch],
+    queryFn: () =>
+      trpcClient.branchDrafts.open.mutate({
+        kind: 'library_query',
+        id: detail.data!.id,
+        branch: branch!,
+        create: true,
+      }),
+    enabled: Boolean(detail.data && branch),
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    retry: false,
+  })
+  const [draftInfo, setDraftInfo] = useState<BranchDraft | null>(null)
+  /** Raised when the branch draft is replaced (updated from the branch): the editor starts again from it. */
+  const [epoch, setEpoch] = useState(0)
+  const branchDraft = branch ? (draftInfo?.branch === branch ? draftInfo : opened.data) : null
+  if (detail.isLoading || (branch && !branchDraft && !opened.error)) return <Spinner />
   if (!detail.data) return <ErrorNote error={detail.error} />
-  // Remounting on another revision from the server (a reload after a conflict) starts from it.
-  return <Editor key={`${detail.data.id}:${detail.data.draftRevision}`} initial={detail.data} />
+  if (opened.error) return <ErrorNote error={opened.error} />
+  const git = detail.data.gitProtected
+    ? {
+        branch,
+        onSwitch: (next: string | null) => {
+          setDraftInfo(null)
+          // Main may have moved while on a branch (a merge deployed it): load what's there now.
+          if (next === null) void detail.refetch()
+          void navigate({
+            to: '.',
+            search: (s: Record<string, unknown>) => ({ ...s, branch: next ?? undefined }),
+          })
+        },
+        onReplaced: (draft: BranchDraft) => {
+          setDraftInfo(draft)
+          setEpoch((e) => e + 1)
+        },
+        onUpdated: setDraftInfo,
+      }
+    : null
+  // Remounting on another revision from the server (a reload after a conflict), or another draft, starts from it.
+  return (
+    <Editor
+      key={`${detail.data.id}:${branchDraft?.id ?? 'main'}:${epoch}:${detail.data.draftRevision}`}
+      initial={detail.data}
+      draft={branchDraft ?? null}
+      git={git}
+    />
+  )
 }
 
-function Editor({ initial }: { initial: Detail }) {
+type BranchDraft = RouterOutputs['branchDrafts']['get']
+
+/** A protected library query's Git bar: the branch edited, and what to do when it switches or is replaced. */
+interface EditorGit {
+  branch: string | null
+  onSwitch(branch: string | null): void
+  onReplaced(draft: BranchDraft): void
+  onUpdated(draft: BranchDraft): void
+}
+
+function Editor({
+  initial,
+  draft,
+  git,
+}: {
+  initial: Detail
+  draft: BranchDraft | null
+  git: EditorGit | null
+}) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
-  const [definition, setDefinition] = useState<LibraryQueryDefinition>(initial.draftDefinition)
-  const [diagnostics, setDiagnostics] = useState<LibraryDiagnostic[]>(initial.diagnostics)
-  const [draftHash, setDraftHash] = useState(initial.draftHash)
+  // A branch draft (M14) instead of the main draft.
+  const start = draft
+    ? {
+        definition: draft.definition as LibraryQueryDefinition,
+        diagnostics: draft.diagnostics as LibraryDiagnostic[],
+        draftHash: draft.draftHash,
+        revision: draft.revision,
+      }
+    : {
+        definition: initial.draftDefinition,
+        diagnostics: initial.diagnostics,
+        draftHash: initial.draftHash,
+        revision: initial.draftRevision,
+      }
+  const [definition, setDefinition] = useState<LibraryQueryDefinition>(start.definition)
+  const [diagnostics, setDiagnostics] = useState<LibraryDiagnostic[]>(start.diagnostics)
+  const [draftHash, setDraftHash] = useState(start.draftHash)
   const [status, setStatus] = useState<Status>('saved')
-  const revision = useRef(initial.draftRevision)
+  const revision = useRef(start.revision)
   const latest = useRef(definition)
   /** What the server has: nothing to save while `latest` is still it. */
   const saved = useRef(definition)
   const saving = useRef<Promise<void> | null>(null)
-  const save = useMutation(trpc.libraryQueries.saveDraft.mutationOptions())
+  const save = useMutation({
+    mutationFn: (input: { id: string; revision: number; definition: LibraryQueryDefinition }) =>
+      draft
+        ? trpcClient.branchDrafts.save.mutate({ ...input, id: draft.id })
+        : trpcClient.libraryQueries.saveDraft.mutate(input),
+  })
   const saveDraft = save.mutateAsync
-  const canEdit = initial.level === 'edit' || initial.level === 'own'
+  // A protected library query's main draft is what main deployed: it changes on branches.
+  const canEdit = (initial.level === 'edit' || initial.level === 'own') && !(initial.gitProtected && !draft)
 
   const edit = (next: (d: LibraryQueryDefinition) => LibraryQueryDefinition) => {
     if (!canEdit) return
@@ -95,7 +186,7 @@ function Editor({ initial }: { initial: Detail }) {
         saved.current = sent
         setDraftHash(result.draftHash)
         if (latest.current === sent) {
-          setDiagnostics(result.diagnostics)
+          setDiagnostics(result.diagnostics as LibraryDiagnostic[])
           setStatus('saved')
         } else {
           setStatus('dirty')
@@ -147,10 +238,32 @@ function Editor({ initial }: { initial: Detail }) {
           </>
         }
       />
+      {git && (
+        <GitBar
+          kind="library_query"
+          object={initial}
+          branch={git.branch}
+          draft={draft}
+          onSwitch={async (next) => {
+            try {
+              await ensureSaved()
+            } catch (err) {
+              if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+            }
+            git.onSwitch(next)
+          }}
+          ensureSaved={async () => {
+            await ensureSaved()
+          }}
+          revision={() => revision.current}
+          onReplaced={git.onReplaced}
+          onUpdated={git.onUpdated}
+        />
+      )}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-4">
           <QueryCard definition={definition} diagnostics={diagnostics} readOnly={!canEdit} edit={edit} />
-          <RunCard detail={initial} ensureSaved={ensureSaved} />
+          <RunCard detail={initial} branchDraftId={draft?.id ?? null} ensureSaved={ensureSaved} />
         </div>
         <div className="flex flex-col gap-4">
           <ParamsCard definition={definition} diagnostics={diagnostics} readOnly={!canEdit} edit={edit} />
@@ -385,7 +498,16 @@ function ParamsCard({
 }
 
 /** Runs the saved draft with the parameters' test values, in an environment the person picks. */
-function RunCard({ detail, ensureSaved }: { detail: Detail; ensureSaved: () => Promise<number> }) {
+function RunCard({
+  detail,
+  branchDraftId,
+  ensureSaved,
+}: {
+  detail: Detail
+  /** Runs this Git branch draft (M14) instead of the main draft. */
+  branchDraftId: string | null
+  ensureSaved: () => Promise<number>
+}) {
   const trpc = useTRPC()
   const search = route.useSearch()
   const navigate = useNavigate()
@@ -405,7 +527,11 @@ function RunCard({ detail, ensureSaved }: { detail: Detail; ensureSaved: () => P
     } catch (err) {
       return setSaveError(errorMessage(err))
     }
-    run.mutate({ libraryQueryId: detail.id, environmentId: environment.id })
+    run.mutate({
+      libraryQueryId: detail.id,
+      ...(branchDraftId && { branchDraftId }),
+      environmentId: environment.id,
+    })
   }
   return (
     <Card className="flex flex-col gap-3 p-4" data-testid="library-run">
@@ -523,7 +649,8 @@ function ReleaseControls({
           <span className="text-xs whitespace-nowrap text-warning-strong">Unpublished changes</span>
         )}
       </button>
-      {canEdit && (
+      {/* A protected library query is published by merging on Git. */}
+      {canEdit && !detail.gitProtected && (
         <Button
           size="sm"
           variant="primary"
@@ -545,6 +672,7 @@ function ReleaseControls({
       </Button>
       {detail.level === 'own' && (
         <>
+          <GitProtectionButton detail={detail} />
           <Button size="icon" variant="ghost" title="Access" onClick={() => setOpen('access')}>
             <Users className="size-4" />
           </Button>
@@ -571,6 +699,39 @@ function ReleaseControls({
 }
 
 type Release = RouterOutputs['libraryQueries']['releases'][number]
+
+/** Owners protect the library query in Git (M14), or unprotect it; nothing until Git sync is set up. */
+function GitProtectionButton({ detail }: { detail: Detail }) {
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
+  const unprotect = useUnprotect('library_query')
+  if (!git?.configured && !detail.gitProtected) return null
+  return (
+    <>
+      {detail.gitProtected ? (
+        <Button
+          size="sm"
+          variant="ghost"
+          loading={unprotect.isPending}
+          title="Edit it here again; its files stay in the repo"
+          onClick={() =>
+            confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'library_query', id: detail.id })
+          }
+        >
+          Unprotect
+        </Button>
+      ) : (
+        <Button size="icon" variant="ghost" title="Protect in Git" onClick={() => setProtecting(true)}>
+          <GitBranch className="size-4" />
+        </Button>
+      )}
+      {/* Stays open once protected, to show the branch and pull request it made. */}
+      {protecting && (
+        <ProtectDialog kind="library_query" object={detail} onClose={() => setProtecting(false)} />
+      )}
+    </>
+  )
+}
 
 const BUMPS: { bump: VersionBump; label: string }[] = [
   { bump: 'patch', label: 'Patch' },
