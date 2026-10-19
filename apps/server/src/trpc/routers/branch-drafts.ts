@@ -1,4 +1,5 @@
-import { apps, gitBranchDrafts, workflows } from '@ow/db'
+import { GIT_OBJECT_KINDS, gitBranchDrafts } from '@ow/db'
+import { KIND_LABELS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -12,12 +13,13 @@ import {
   saveBranchDraft,
   updateBranchDraftFromBranch,
 } from '../../services/git/branch-drafts'
+import { draftColumn, gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import { branchNameSchema } from '../../services/git/repo'
 import { loadAccess, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
-const Kind = z.enum(['workflow', 'app'])
+const Kind = z.enum(GIT_OBJECT_KINDS)
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 
@@ -26,21 +28,19 @@ type AuthedContext = Context & { user: NonNullable<Context['user']> }
 /** Edit on the object is what working on its branch drafts takes; objects the caller can't see are NOT_FOUND. */
 async function requireEdit(ctx: AuthedContext, target: DraftObject): Promise<void> {
   const access = await loadAccess(ctx.db, ctx.user)
-  const level =
-    target.kind === 'workflow' ? access.workflowLevel(target.object) : access.appLevel(target.object)
+  const level = gitObjectLevel(access, target.kind, target.object)
   if (!level) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
-  requireLevel(level, 'edit', `this ${target.kind}`)
+  requireLevel(level, 'edit', `this ${KIND_LABELS[target.kind]}`)
 }
 
-async function objectFor(ctx: AuthedContext, kind: 'workflow' | 'app', id: string): Promise<DraftObject> {
-  if (kind === 'workflow') {
-    const [object] = await ctx.db.select().from(workflows).where(eq(workflows.id, id))
-    if (object) return { kind, object }
-  } else {
-    const [object] = await ctx.db.select().from(apps).where(eq(apps.id, id))
-    if (object) return { kind, object }
-  }
-  throw new TRPCError({ code: 'NOT_FOUND', message: `${kind === 'workflow' ? 'Workflow' : 'App'} not found` })
+async function objectFor(
+  ctx: AuthedContext,
+  kind: (typeof GIT_OBJECT_KINDS)[number],
+  id: string,
+): Promise<DraftObject> {
+  const object = await loadGitObject(ctx.db, kind, { id })
+  if (!object) throw new TRPCError({ code: 'NOT_FOUND', message: `${kindTitle(kind)} not found` })
+  return { kind, object }
 }
 
 async function editableDraft(ctx: AuthedContext, id: string) {
@@ -50,7 +50,7 @@ async function editableDraft(ctx: AuthedContext, id: string) {
 }
 
 /**
- * Protected workflows and apps are edited in drafts on Git branches (M11): one per object and branch, saved with
+ * Protected workflows, apps, library queries and modules are edited in drafts on Git branches (M11, M14): one per object and branch, saved with
  * optimistic concurrency, run like the main draft, and committed onto the branch. Edit on the object is required.
  */
 export const branchDraftsRouter = router({
@@ -58,7 +58,7 @@ export const branchDraftsRouter = router({
   list: authedProcedure.input(z.object({ kind: Kind, id: Id })).query(async ({ ctx, input }) => {
     const target = await objectFor(ctx, input.kind, input.id)
     await requireEdit(ctx, target)
-    const column = input.kind === 'workflow' ? gitBranchDrafts.workflowId : gitBranchDrafts.appId
+    const column = draftColumn(input.kind)
     const rows = await ctx.db
       .select()
       .from(gitBranchDrafts)

@@ -233,6 +233,8 @@ export async function runLibraryDraft(
   user: { id: string; email: string; name: string },
   opts: {
     query: LibraryQuery
+    /** A Git branch draft's definition (M14), instead of the main draft. */
+    definition?: LibraryQueryDefinition
     environmentId: string
     params?: Record<string, unknown>
     signal?: AbortSignal
@@ -244,7 +246,7 @@ export async function runLibraryDraft(
       message: 'You need edit access to this library query to run its draft',
     })
   }
-  const definition = opts.query.draftDefinition
+  const definition = opts.definition ?? opts.query.draftDefinition
   const params =
     opts.params ?? Object.fromEntries(definition.params.map((p) => [p.name, p.testValue ?? null]))
   return runStoredQuery(deps, access, user, {

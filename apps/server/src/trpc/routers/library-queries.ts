@@ -9,6 +9,8 @@ import { type LibraryQuery, libraryQueries, libraryQueryReleases, permissions, u
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { branchDraftDefinition } from '../../services/git/branch-drafts'
+import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   checkLibraryQuery,
   libraryInfos,
@@ -157,6 +159,10 @@ export const libraryQueriesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, input)
       requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+      // The name and description live in the repo; the folder is the instance's.
+      if (input.name !== undefined || input.description !== undefined) {
+        requireUnprotected(query, 'library_query', 'rename it or change its description')
+      }
       await checkFolderMove(ctx.db, {
         type: 'library_query',
         level: access.libraryQueryLevel(query),
@@ -187,6 +193,7 @@ export const libraryQueriesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, input)
       requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+      requireUnprotected(query, 'library_query', 'edit it')
       const parsed = libraryQueryDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('library query', parsed.error.issues)
       const definition: LibraryQueryDefinition = parsed.data
@@ -319,6 +326,7 @@ export const libraryQueriesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+      requireUnprotected(query, 'library_query', 'publish it')
       const release = await publishLibraryRelease(ctx.db, access, ctx.user, {
         query,
         draftRevision: input.draftRevision,
@@ -340,6 +348,7 @@ export const libraryQueriesRouter = router({
     .input(z.object({ libraryQueryId: Id, releaseId: Id }))
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+      requireRollbackAllowed(query, 'library_query', ctx.user)
       const release = await setLiveLibraryRelease(ctx.db, access, { query, releaseId: input.releaseId })
       await ctx.audit({
         action: 'library_query.release_live',
@@ -358,18 +367,29 @@ export const libraryQueriesRouter = router({
     .input(
       z.object({
         libraryQueryId: Id,
+        /** A Git branch draft (M14) instead of the main draft. */
+        branchDraftId: Id.optional(),
         environmentId: Id,
         params: z.record(z.string(), z.unknown()).optional(),
       }),
     )
     .mutation(async ({ ctx, input, signal }) => {
       const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+      const definition = input.branchDraftId
+        ? ((await branchDraftDefinition(
+            ctx.db,
+            'library_query',
+            query.id,
+            input.branchDraftId,
+          )) as LibraryQueryDefinition)
+        : undefined
       const outcome = await runLibraryDraft(
         { db: ctx.db, keyring: ctx.config.keyring, pool: ctx.services.pool, sandbox: ctx.services.sandbox },
         access,
         ctx.user,
         {
           query,
+          ...(definition && { definition }),
           environmentId: input.environmentId,
           ...(input.params && { params: input.params }),
           ...(signal && { signal }),

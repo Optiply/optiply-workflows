@@ -10,6 +10,8 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp } from '../../services/apps'
+import { branchDraftDefinition } from '../../services/git/branch-drafts'
+import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   moduleInfos,
   moduleReleasesByKey,
@@ -171,6 +173,10 @@ export const modulesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, input)
       requireLevel(access.moduleLevel(module), 'edit', 'this module')
+      // The name and description live in the repo; the folder is the instance's.
+      if (input.name !== undefined || input.description !== undefined) {
+        requireUnprotected(module, 'module', 'rename it or change its description')
+      }
       await checkFolderMove(ctx.db, {
         type: 'module',
         level: access.moduleLevel(module),
@@ -196,6 +202,7 @@ export const modulesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, input)
       requireLevel(access.moduleLevel(module), 'edit', 'this module')
+      requireUnprotected(module, 'module', 'edit it')
       const parsed = appDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('module definition', parsed.error.issues)
       const definition: AppDefinition = parsed.data
@@ -328,6 +335,7 @@ export const modulesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+      requireUnprotected(module, 'module', 'publish it')
       const release = await publishModuleRelease(ctx.db, access, ctx.user, {
         module,
         draftRevision: input.draftRevision,
@@ -349,6 +357,7 @@ export const modulesRouter = router({
     .input(z.object({ moduleId: Id, releaseId: Id }))
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+      requireRollbackAllowed(module, 'module', ctx.user)
       const release = await setLiveModuleRelease(ctx.db, access, { module, releaseId: input.releaseId })
       await ctx.audit({
         action: 'module.release_live',
@@ -371,6 +380,8 @@ export const modulesRouter = router({
     .input(
       z.object({
         moduleId: Id,
+        /** A Git branch draft (M14) instead of the main draft. */
+        branchDraftId: Id.optional(),
         query: QueryName,
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
@@ -378,12 +389,16 @@ export const modulesRouter = router({
     )
     .mutation(async ({ ctx, input, signal }) => {
       const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+      const definition = input.branchDraftId
+        ? ((await branchDraftDefinition(ctx.db, 'module', module.id, input.branchDraftId)) as AppDefinition)
+        : undefined
       const { outcome, manual } = await runModuleDraftQuery(
         { db: ctx.db, keyring: ctx.config.keyring, pool: ctx.services.pool, sandbox: ctx.services.sandbox },
         access,
         ctx.user,
         {
           module,
+          ...(definition && { definition }),
           query: input.query,
           environmentId: input.environmentId,
           values: input.values,

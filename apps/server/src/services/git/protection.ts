@@ -1,16 +1,7 @@
-import {
-  type App,
-  type AppRelease,
-  appReleases,
-  apps,
-  type Db,
-  type Workflow,
-  type WorkflowRelease,
-  workflowReleases,
-  workflows,
-} from '@ow/db'
+import type { Db } from '@ow/db'
 import {
   encodeObjectDir,
+  KIND_LABELS,
   MANIFEST_FILE,
   manifestFile,
   type ObjectKind,
@@ -18,11 +9,11 @@ import {
   type Warning,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import { GitError } from './cli'
 import { commitToBranch, GitConflictError } from './commit'
 import { GitHubError, openGitHub, type PullRequestView } from './github'
+import { type GitObjectRow, liveOrDraft, setGitProtected } from './kinds'
 import type { GitAuthor, GitRepo } from './repo'
 import { openGitRepo } from './settings'
 
@@ -47,7 +38,7 @@ export function requireUnprotected(
   if (object.gitProtected) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
-      message: `This ${kind} is protected: ${action} on a Git branch, and merge it to deploy`,
+      message: `This ${KIND_LABELS[kind]} is protected: ${action} on a Git branch, and merge it to deploy`,
     })
   }
 }
@@ -65,7 +56,7 @@ export function requireRollbackAllowed(
   if (object.gitProtected && !user.isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: `This ${kind} is protected: only admins can change its live release (an emergency rollback, until its next change in Git or Deploy now)`,
+      message: `This ${KIND_LABELS[kind]} is protected: only admins can change its live release (an emergency rollback, until its next change in Git or Deploy now)`,
     })
   }
 }
@@ -151,11 +142,12 @@ export async function protectObject(
   db: Db,
   config: GitConfig,
   user: { id: string; name: string; email: string },
-  opts: { kind: ObjectKind; object: Workflow | App; branch?: string },
+  opts: { kind: ObjectKind; object: GitObjectRow; branch?: string },
 ): Promise<ProtectResult> {
   const { kind, object } = opts
+  const label = KIND_LABELS[kind]
   if (object.gitProtected)
-    throw new TRPCError({ code: 'CONFLICT', message: `This ${kind} is already protected` })
+    throw new TRPCError({ code: 'CONFLICT', message: `This ${label} is already protected` })
   const { repo, branch: base } = await requireGitRepo(db, config)
   if (opts.branch) requireNotDeployBranch(opts.branch, base)
   const definition = await liveOrDraft(db, kind, object)
@@ -173,7 +165,7 @@ export async function protectObject(
       createFrom: main,
       directories: { [dir]: files },
       files: await manifestIfMissing(repo, main),
-      message: `Protect ${kind} ${object.slug}\n\nFrom Optiply Workflows: the ${kind}'s ${
+      message: `Protect ${label} ${object.slug}\n\nFrom Optiply Workflows: the ${label}'s ${
         definition === object.draftDefinition ? 'draft' : 'live release'
       }, so it's edited on branches and deployed from ${base} from now on.`,
       author,
@@ -183,28 +175,23 @@ export async function protectObject(
     throw gitTrpcError(err)
   }
 
-  const table = kind === 'workflow' ? workflows : apps
-  const [updated] = await db
-    .update(table)
-    .set({ gitProtected: true })
-    .where(and(eq(table.id, object.id), eq(table.gitProtected, false)))
-    .returning({ id: table.id })
-  if (!updated)
-    throw new TRPCError({ code: 'CONFLICT', message: `This ${kind} was just protected by someone else` })
+  if (!(await setGitProtected(db, kind, object.id, true, { from: false })))
+    throw new TRPCError({ code: 'CONFLICT', message: `This ${label} was just protected by someone else` })
 
   const { pullRequest, pullRequestError } = await openPullRequestFor(db, config, {
     branch,
-    title: `Protect ${kind} "${object.name}"`,
-    body: `Adds \`${dir}/\` so the ${kind} is deployed from this repo. Opened from Optiply Workflows by ${user.name}.`,
+    title: `Protect ${label} "${object.name}"`,
+    body: `Adds \`${dir}/\` so the ${label} is deployed from this repo. Opened from Optiply Workflows by ${user.name}.`,
   })
   return { branch, commit, pullRequest, pullRequestError, warnings }
 }
 
 /** Lets an object be edited on the instance again. Its directory stays in the repo (and stops deploying). */
-export async function unprotectObject(db: Db, kind: ObjectKind, object: Workflow | App): Promise<void> {
-  if (!object.gitProtected) throw new TRPCError({ code: 'CONFLICT', message: `This ${kind} isn't protected` })
-  const table = kind === 'workflow' ? workflows : apps
-  await db.update(table).set({ gitProtected: false }).where(eq(table.id, object.id))
+export async function unprotectObject(db: Db, kind: ObjectKind, object: GitObjectRow): Promise<void> {
+  if (!object.gitProtected) {
+    throw new TRPCError({ code: 'CONFLICT', message: `This ${KIND_LABELS[kind]} isn't protected` })
+  }
+  await setGitProtected(db, kind, object.id, false)
 }
 
 /** Opens (or finds) the branch's pull request; failures come back as a message rather than an error. */
@@ -234,14 +221,4 @@ async function freeProtectBranch(repo: GitRepo, name: string): Promise<string> {
     if ((await repo.fetchBranch(candidate)) === null) return candidate
   }
   throw new GitError('failed', `Every branch from ${name} to ${name}-100 exists: delete some`)
-}
-
-/** What the instance holds of an object: its live release's definition, or its draft when nothing is live. */
-export async function liveOrDraft(db: Db, kind: ObjectKind, object: Workflow | App) {
-  if (!object.liveReleaseId) return object.draftDefinition
-  const [release]: Array<WorkflowRelease | AppRelease> =
-    kind === 'workflow'
-      ? await db.select().from(workflowReleases).where(eq(workflowReleases.id, object.liveReleaseId))
-      : await db.select().from(appReleases).where(eq(appReleases.id, object.liveReleaseId))
-  return release?.definition ?? object.draftDefinition
 }

@@ -349,6 +349,8 @@ export async function runModuleDraftQuery(
   user: { id: string; email: string; name: string },
   opts: {
     module: Module
+    /** A Git branch draft's definition (M14), instead of the main draft. */
+    definition?: AppDefinition
     query: string
     environmentId: string
     values: Record<string, unknown>
@@ -362,7 +364,7 @@ export async function runModuleDraftQuery(
     })
   }
   const { outcome, manual } = await runDefinitionQuery(deps, access, user, {
-    definition: opts.module.draftDefinition,
+    definition: opts.definition ?? opts.module.draftDefinition,
     what: 'module',
     query: opts.query,
     environmentId: opts.environmentId,
