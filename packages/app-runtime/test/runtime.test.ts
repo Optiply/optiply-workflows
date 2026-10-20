@@ -1,5 +1,5 @@
 import type { AppDefinition } from '@ow/app-definition'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AppRuntime, type Effect, type QueryOutcome, type StatePatch, setIn, toCsv } from '../src'
 
 type Def = Partial<Omit<AppDefinition, 'schemaVersion'>>
@@ -110,6 +110,7 @@ describe('AppRuntime', () => {
 
   it('runs an automatic query once after typing settles, and keeps only the newest result', async () => {
     let n = 0
+    let answered = 0
     const t = setup(
       {
         components: [comp('search', 'textInput')],
@@ -121,19 +122,25 @@ describe('AppRuntime', () => {
         respond: async (_q, values) => {
           const mine = ++n
           await wait(mine === 2 ? 60 : 5)
+          answered++
           return values[' search.value ']
         },
       },
     )
+    const searched = () => t.calls.map((c) => c.values[' search.value '])
     await t.runtime.start()
     t.runtime.set({ 'search.value': 'a' })
     t.runtime.set({ 'search.value': 'ab' })
     t.runtime.set({ 'search.value': 'abc' })
-    await wait(40)
-    expect(t.calls.map((c) => c.values[' search.value '])).toEqual(['', 'abc'])
+    // Waits for what happened, not for a fixed time: a busy CI runner can be several times slower. Polled every
+    // millisecond so `abcd` is typed while the `abc` run (60 ms) is still out.
+    await vi.waitFor(() => expect(searched()).toHaveLength(2), { interval: 1 })
+    expect(searched()).toEqual(['', 'abc'])
     t.runtime.set({ 'search.value': 'abcd' })
-    await wait(120)
-    expect(t.calls.map((c) => c.values[' search.value '])).toEqual(['', 'abc', 'abcd'])
+    // Both answers are in (the older one last), and the newest stays.
+    await vi.waitFor(() => expect(answered).toBe(3), { timeout: 5_000, interval: 1 })
+    await wait()
+    expect(searched()).toEqual(['', 'abc', 'abcd'])
     expect(t.state['list.data']).toBe('abcd')
   })
 
