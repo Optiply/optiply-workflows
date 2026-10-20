@@ -10,6 +10,7 @@ import {
   SelectRenderer,
   TextInputRenderer,
 } from './inputs'
+import { ModuleRenderer } from './module'
 import { NavigationRenderer } from './navigation'
 import { TableRenderer } from './table'
 
@@ -28,4 +29,5 @@ export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = 
   modal: ModalRenderer,
   chart: ChartRenderer,
   navigation: NavigationRenderer,
+  module: ModuleRenderer,
 }

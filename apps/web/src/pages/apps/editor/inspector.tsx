@@ -2,6 +2,7 @@ import {
   type AppComponent,
   componentSpec,
   type JsonValue,
+  MODULE_PROPS,
   moveToParent,
   type PropSpec,
   removeComponent,
@@ -16,7 +17,8 @@ import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
-import { useAppEditor } from './store'
+import { ModuleInstanceFields } from './modules'
+import { specOf, useAppEditor } from './store'
 
 /** Everything about the selected component: name, parent, props and event handlers. */
 export function ComponentInspector({ name }: { name: string }) {
@@ -24,10 +26,12 @@ export function ComponentInspector({ name }: { name: string }) {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const page = useAppEditor((s) => s.url.page)
+  const modules = useAppEditor((s) => s.modules)
   const index = definition.components.findIndex((c) => c.name === name)
   const component = definition.components[index]
   if (!component) return null
-  const spec = componentSpec(component.type)
+  const spec = specOf(component, modules)
+  const instance = component.type === 'module'
   const base = ['components', index]
 
   if (!spec) {
@@ -85,10 +89,14 @@ export function ComponentInspector({ name }: { name: string }) {
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <h3 className={sectionLabelClass}>Properties</h3>
-        {Object.entries(spec.props).map(([prop, propSpec]) => (
-          <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
-        ))}
+        <h3 className={sectionLabelClass}>{instance ? 'Module' : 'Properties'}</h3>
+        {instance && <ModuleInstanceFields component={component} index={index} />}
+        {Object.entries(spec.props)
+          // An instance's module and version have their own fields; the rest are the module's inputs.
+          .filter(([prop]) => !instance || !(MODULE_PROPS as readonly string[]).includes(prop))
+          .map(([prop, propSpec]) => (
+            <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
+          ))}
       </section>
 
       <section className="flex flex-col gap-2">

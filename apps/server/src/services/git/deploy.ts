@@ -1,5 +1,6 @@
+import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import {
-  apps,
+  type App,
   type Db,
   type GIT_DEPLOY_TRIGGERS,
   type GitObject,
@@ -7,35 +8,44 @@ import {
   gitDeploys,
   gitObjects,
   gitSettings,
-  workflows,
+  type LibraryQuery,
+  type Module,
+  type Workflow,
 } from '@ow/db'
+import type { WorkflowDefinition } from '@ow/definition'
 import {
-  type AppObject,
   checkManifest,
   decodeRepo,
+  KIND_LABELS,
   KIND_ROOTS,
   MANIFEST_FILE,
   type ObjectKind,
   objectDir,
-  type WorkflowObject,
+  type RepoObject,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { desc, eq, sql } from 'drizzle-orm'
+import { desc, sql } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 import type { Config } from '../../config'
 import { deployAppFromGit } from '../apps'
+import { deployLibraryQueryFromGit } from '../library-queries'
+import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
+import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
 export type DeployTrigger = (typeof GIT_DEPLOY_TRIGGERS)[number]
+
+/** The order a deploy goes in: what other objects use comes first. */
+const DEPLOY_ORDER: readonly ObjectKind[] = ['library_query', 'module', 'workflow', 'app']
 
 /** What a deploy did with one object directory. */
 export interface ObjectOutcome {
   kind: ObjectKind
   slug: string
   /**
-   * `created`: a new workflow or app (and its first release, unless it has problems); `released`: a new live
+   * `created`: a new workflow, app, library query or module (and its first release, unless it has problems); `released`: a new live
    * release; `unchanged`: the directory, or at least its definition, is what's already live; `problem`: not
    * deployed (the live release stays); `missing`: the directory left the branch.
    */
@@ -182,7 +192,7 @@ async function deployOnce(
   }
 
   const startedAt = new Date()
-  const roots = [KIND_ROOTS.workflow, KIND_ROOTS.app]
+  const roots = Object.values(KIND_ROOTS)
   const files = await repo.readFiles(commit, [MANIFEST_FILE, ...roots.map((r) => `${r}/`)])
   const trees = await repo.subtrees(commit, roots)
   const info = await repo.commitInfo(commit)
@@ -191,12 +201,7 @@ async function deployOnce(
   const rows = await db.select().from(gitObjects)
   // An unchanged directory is skipped only while its object is still there and protected (one deleted on the
   // instance comes back).
-  const protectedIds = new Set(
-    [
-      ...(await db.select({ id: workflows.id }).from(workflows).where(eq(workflows.gitProtected, true))),
-      ...(await db.select({ id: apps.id }).from(apps).where(eq(apps.gitProtected, true))),
-    ].map((r) => r.id),
-  )
+  const protectedIds = await protectedObjectIds(db)
   const rowOf = (kind: ObjectKind, slug: string) => rows.find((r) => r.kind === kind && r.slug === slug)
   const outcomes: ObjectOutcome[] = []
 
@@ -207,7 +212,7 @@ async function deployOnce(
       kind: ObjectKind
       slug: string
       treeSha: string | null
-      value: WorkflowObject | AppObject
+      value: RepoObject['value']
       created?: boolean
     }
     const pending: Pending[] = []
@@ -244,8 +249,9 @@ async function deployOnce(
       pending.push({ kind: object.kind, slug: object.slug, treeSha, value: object.result.value.value })
     }
 
-    // Workflows first, then apps; in passes, so a new workflow can call another one new in the same commit.
-    pending.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'workflow' ? -1 : 1))
+    // What others use first (library queries, modules, workflows, then apps); in passes, so a new workflow can call
+    // another one new in the same commit.
+    pending.sort((a, b) => DEPLOY_ORDER.indexOf(a.kind) - DEPLOY_ORDER.indexOf(b.kind))
     let remaining = pending
     for (;;) {
       const failed: Array<{ item: Pending; outcome: ObjectOutcome }> = []
@@ -334,14 +340,14 @@ export function releaseNotes(info: { subject: string; body: string }): string {
   return merge && title ? `${title} (#${merge[1]})` : info.subject
 }
 
-/** Creates or updates one workflow or app from its decoded files. Problems come back as an outcome. */
+/** Creates or updates one object of any kind from its decoded files. Problems come back as an outcome. */
 async function deployObject(
   db: Db,
   item: {
     kind: ObjectKind
     slug: string
     treeSha: string | null
-    value: WorkflowObject | AppObject
+    value: RepoObject['value']
     /** An earlier pass of this deploy made it. */
     created?: boolean
   },
@@ -359,23 +365,11 @@ async function deployObject(
     problems: [{ path: dir, code, message }],
     created,
   })
-  const table = kind === 'workflow' ? workflows : apps
-  const [existing] = await db.select().from(table).where(eq(table.slug, slug))
-  let object = existing
+  const label = KIND_LABELS[kind]
+  let object = await loadGitObject(db, kind, { slug })
   if (!object) {
-    const [inserted] = await db
-      .insert(table)
-      .values({
-        slug,
-        name: item.value.name,
-        description: item.value.description,
-        // biome-ignore lint/suspicious/noExplicitAny: the definition matches the table's kind
-        draftDefinition: item.value.definition as any,
-        gitProtected: true,
-      })
-      .onConflictDoNothing()
-      .returning()
-    if (!inserted) return problem('slug_taken', `A ${kind} "${slug}" was just created on the instance`)
+    const inserted = await insertGitObject(db, kind, { slug, ...item.value })
+    if (!inserted) return problem('slug_taken', `A ${label} "${slug}" was just created on the instance`)
     object = inserted
     created = true
     await recordAudit(db, {
@@ -388,30 +382,47 @@ async function deployObject(
   } else if (!object.gitProtected) {
     return problem(
       'not_protected',
-      `A ${kind} "${slug}" exists on the instance and isn't protected: protect it there to deploy it from Git`,
+      `A ${label} "${slug}" exists on the instance and isn't protected: protect it there to deploy it from Git`,
       object.id,
     )
   }
 
   try {
-    const release =
-      kind === 'workflow'
-        ? await deployWorkflowFromGit(db, {
-            workflow: object as typeof workflows.$inferSelect,
-            name: item.value.name,
-            description: item.value.description,
-            definition: (item.value as WorkflowObject).definition,
-            commit: git.commit,
-            notes: git.subject,
+    const meta = {
+      name: item.value.name,
+      description: item.value.description,
+      commit: git.commit,
+      notes: git.subject,
+    }
+    const definition = item.value.definition
+    const release = await (() => {
+      switch (kind) {
+        case 'workflow':
+          return deployWorkflowFromGit(db, {
+            ...meta,
+            workflow: object as Workflow,
+            definition: definition as WorkflowDefinition,
           })
-        : await deployAppFromGit(db, {
-            app: object as typeof apps.$inferSelect,
-            name: item.value.name,
-            description: item.value.description,
-            definition: (item.value as AppObject).definition,
-            commit: git.commit,
-            notes: git.subject,
+        case 'app':
+          return deployAppFromGit(db, {
+            ...meta,
+            app: object as App,
+            definition: definition as AppDefinition,
           })
+        case 'library_query':
+          return deployLibraryQueryFromGit(db, {
+            ...meta,
+            query: object as LibraryQuery,
+            definition: definition as LibraryQueryDefinition,
+          })
+        case 'module':
+          return deployModuleFromGit(db, {
+            ...meta,
+            module: object as Module,
+            definition: definition as AppDefinition,
+          })
+      }
+    })()
     if (release) {
       await recordAudit(db, {
         actorUserId: null,

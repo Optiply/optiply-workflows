@@ -1,5 +1,5 @@
 import type { AppDefinition } from '@ow/app-definition'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AppRuntime, type Effect, type QueryOutcome, type StatePatch, setIn, toCsv } from '../src'
 
 type Def = Partial<Omit<AppDefinition, 'schemaVersion'>>
@@ -110,6 +110,7 @@ describe('AppRuntime', () => {
 
   it('runs an automatic query once after typing settles, and keeps only the newest result', async () => {
     let n = 0
+    let answered = 0
     const t = setup(
       {
         components: [comp('search', 'textInput')],
@@ -121,19 +122,25 @@ describe('AppRuntime', () => {
         respond: async (_q, values) => {
           const mine = ++n
           await wait(mine === 2 ? 60 : 5)
+          answered++
           return values[' search.value ']
         },
       },
     )
+    const searched = () => t.calls.map((c) => c.values[' search.value '])
     await t.runtime.start()
     t.runtime.set({ 'search.value': 'a' })
     t.runtime.set({ 'search.value': 'ab' })
     t.runtime.set({ 'search.value': 'abc' })
-    await wait(40)
-    expect(t.calls.map((c) => c.values[' search.value '])).toEqual(['', 'abc'])
+    // Waits for what happened, not for a fixed time: a busy CI runner can be several times slower. Polled every
+    // millisecond so `abcd` is typed while the `abc` run (60 ms) is still out.
+    await vi.waitFor(() => expect(searched()).toHaveLength(2), { interval: 1 })
+    expect(searched()).toEqual(['', 'abc'])
     t.runtime.set({ 'search.value': 'abcd' })
-    await wait(120)
-    expect(t.calls.map((c) => c.values[' search.value '])).toEqual(['', 'abc', 'abcd'])
+    // Both answers are in (the older one last), and the newest stays.
+    await vi.waitFor(() => expect(answered).toBe(3), { timeout: 5_000, interval: 1 })
+    await wait()
+    expect(searched()).toEqual(['', 'abc', 'abcd'])
     expect(t.state['list.data']).toBe('abcd')
   })
 
@@ -689,5 +696,33 @@ describe('pages', () => {
     expect(plain.state['url.page']).toBeNull()
     await plain.runtime.navigate('x', { a: '1' })
     expect(plain.state).toMatchObject({ 'url.page': null, 'url.params': { a: '1' } })
+  })
+})
+
+describe('library queries (M14)', () => {
+  it('send their parameters’ values, run automatically and re-run when a parameter changes', async () => {
+    const t = setup(
+      {
+        components: [comp('customer', 'numberInput', { defaultValue: 7 })],
+        queries: [
+          {
+            name: 'orders',
+            kind: 'library',
+            library: 'orders_by_customer',
+            version: 'latest',
+            params: { customerId: '{{ customer.value }}', owner: '{{ current_user.email }}', limit: 10 },
+            run: 'auto',
+          } as AppDefinition['queries'][number],
+        ],
+      },
+      { respond: () => [{ id: 1 }] },
+    )
+    await t.runtime.start()
+    // current_user is evaluated on the server; constants need nothing from the browser.
+    expect(t.calls).toEqual([{ query: 'orders', values: { ' customer.value ': 7 } }])
+    expect(t.state['orders.data']).toEqual([{ id: 1 }])
+    t.runtime.set({ 'customer.value': 8 })
+    await wait(20)
+    expect(t.calls.at(-1)).toEqual({ query: 'orders', values: { ' customer.value ': 8 } })
   })
 })

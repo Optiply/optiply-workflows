@@ -384,6 +384,97 @@ describe('connecting the shared account', () => {
 })
 
 describe('connecting through an app', () => {
+  it('counts a library query of the live release that runs on the resource (M14)', async () => {
+    const id = data(
+      await admin.mutate('resources.create', { type: 'rest', name: 'Tickets', slug: 'tickets' }),
+    ).id
+    await saveAuth(id, oauthAuth({ tokens: 'perUser', pkce: false }))
+    const lib = data(await admin.mutate('libraryQueries.create', { slug: 'my_tickets', name: 'My tickets' }))
+    const libDraft = data(
+      await admin.mutate('libraryQueries.saveDraft', {
+        id: lib.id,
+        revision: 1,
+        definition: { schemaVersion: 1, resource: 'tickets', query: { path: 'me' }, params: [] },
+      }),
+    )
+    data(
+      await admin.mutate('libraryQueries.publish', {
+        libraryQueryId: lib.id,
+        draftRevision: libDraft.revision,
+      }),
+    )
+    const app = data(await admin.mutate('apps.create', { slug: 'tickets-app', name: 'Tickets' }))
+    const draft = data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [],
+          queries: [{ name: 'mine', kind: 'library', library: 'my_tickets', version: 'latest', run: 'auto' }],
+          layout: {},
+        },
+      }),
+    )
+    data(await admin.mutate('apps.publish', { appId: app.id, draftRevision: draft.revision }))
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    await env.db
+      .insert(permissions)
+      .values({ groupId: all!.id, objectType: 'app', objectId: app.id, level: 'use' })
+    const res = await env.app.inject({
+      method: 'GET',
+      url: `${startUrl(id, 'mine')}&appId=${app.id}`,
+      headers: { cookie: memberCookie },
+    })
+    expect(res.statusCode).toBe(302)
+  })
+
+  it('counts a module instance of the live release whose module release runs on the resource (M14)', async () => {
+    const id = data(await admin.mutate('resources.create', { type: 'rest', name: 'Desk', slug: 'desk' })).id
+    await saveAuth(id, oauthAuth({ tokens: 'perUser', pkce: false }))
+    const mod = data(await admin.mutate('modules.create', { slug: 'desk_panel', name: 'Desk panel' }))
+    const modDraft = data(
+      await admin.mutate('modules.saveDraft', {
+        id: mod.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [],
+          queries: [{ name: 'mine', kind: 'resource', resource: 'desk', query: { path: 'me' }, run: 'auto' }],
+          layout: {},
+          module: { inputs: [], outputs: [], events: [] },
+        },
+      }),
+    )
+    data(await admin.mutate('modules.publish', { moduleId: mod.id, draftRevision: modDraft.revision }))
+    const app = data(await admin.mutate('apps.create', { slug: 'desk-app', name: 'Desk' }))
+    const draft = data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [
+            { name: 'deskPanel1', type: 'module', props: { module: 'desk_panel', version: 'latest' } },
+          ],
+          queries: [],
+          layout: { deskPanel1: { x: 0, y: 0, w: 6, h: 6 } },
+        },
+      }),
+    )
+    data(await admin.mutate('apps.publish', { appId: app.id, draftRevision: draft.revision }))
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    await env.db
+      .insert(permissions)
+      .values({ groupId: all!.id, objectType: 'app', objectId: app.id, level: 'use' })
+    const res = await env.app.inject({
+      method: 'GET',
+      url: `${startUrl(id, 'mine')}&appId=${app.id}`,
+      headers: { cookie: memberCookie },
+    })
+    expect(res.statusCode).toBe(302)
+  })
+
   it("lets an app's viewers connect their own account without access to the resource", async () => {
     // A per-user resource the member has no grant on, queried by a live app the member may use.
     const id = data(await admin.mutate('resources.create', { type: 'rest', name: 'Notes', slug: 'notes' })).id

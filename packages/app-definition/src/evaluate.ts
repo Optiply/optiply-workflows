@@ -7,7 +7,7 @@ import {
   type TemplatePart,
 } from '@ow/expressions'
 import { coerceProp, type PropSpec, pageSizeOf } from './components'
-import { type AppGraph, buildAppGraph, type Entity, type GraphNode } from './graph'
+import { type AppGraph, buildAppGraph, type Entity, type GraphNode, type SpecFor } from './graph'
 import { resolvePage } from './pages'
 import type { AppDefinition } from './schema'
 
@@ -56,6 +56,10 @@ export interface AppModelOptions {
   methods?: (entity: Entity) => Record<string, unknown> | undefined
   /** What `url` starts as: the page shown (the app's first when missing) and its query parameters. */
   url?: { page?: string | null; params?: Record<string, string> }
+  /** Module instances' specs from their releases (M14); see `buildAppGraph`. */
+  specFor?: SpecFor
+  /** In a module (M14): what `inputs.<name>` starts as; an input not given takes its default. */
+  inputs?: Record<string, unknown>
 }
 
 /** What the model holds for a node. */
@@ -63,6 +67,8 @@ export interface NodeState {
   value: unknown
   error?: string
 }
+
+const ANY_PROP: PropSpec = { type: 'any', default: null, label: '' }
 
 export class AppModel {
   readonly graph: AppGraph
@@ -80,7 +86,7 @@ export class AppModel {
     readonly definition: AppDefinition,
     private readonly options: AppModelOptions = {},
   ) {
-    this.graph = buildAppGraph(definition)
+    this.graph = buildAppGraph(definition, { specFor: options.specFor })
     this.runner = options.runner ?? functionRunner()
     this.onCycle = new Map(this.graph.cycles.flatMap((group) => group.map((key) => [key, group])))
   }
@@ -256,6 +262,7 @@ export class AppModel {
 
   /** Evaluates one node; returns whether its value changed. */
   private compute(node: GraphNode, initial: boolean): boolean {
+    if (node.kind === 'output') return this.computeOutput(node)
     const entity = this.graph.entities.get(node.entity)!
     const cycle = this.onCycle.get(node.key)
     if (cycle) {
@@ -299,6 +306,15 @@ export class AppModel {
     }
   }
 
+  /** A module's output (M14): its template's value, null when it fails. */
+  private computeOutput(node: GraphNode): boolean {
+    try {
+      return this.write(node.key, this.evaluateValue(node.fields[0]?.source ?? null))
+    } catch (err) {
+      return this.write(node.key, null, (err as Error)?.message ?? String(err))
+    }
+  }
+
   private computeProp(node: GraphNode, entity: Entity): boolean {
     const spec = this.propSpec(node, entity)
     if (!spec || entity.kind !== 'component') return this.write(node.key, undefined)
@@ -313,7 +329,9 @@ export class AppModel {
   }
 
   private propSpec(node: GraphNode, entity: Entity): PropSpec | undefined {
-    return entity.kind === 'component' ? entity.spec?.props[node.property] : undefined
+    if (entity.kind !== 'component' || !entity.spec) return undefined
+    // A module instance whose inputs aren't known yet takes any value (M14).
+    return entity.spec.props[node.property] ?? (entity.spec.openProps ? ANY_PROP : undefined)
   }
 
   /** A node's value before anything sets it. */
@@ -331,6 +349,12 @@ export class AppModel {
         return node.property === 'page'
           ? resolvePage(this.definition, this.options.url?.page)
           : { ...this.options.url?.params }
+      case 'inputs': {
+        const given = this.options.inputs
+        const value = given && Object.hasOwn(given, node.property) ? given[node.property] : null
+        const input = this.definition.module?.inputs.find((i) => i.name === node.property)
+        return structuredClone(value ?? input?.default ?? null)
+      }
     }
   }
 

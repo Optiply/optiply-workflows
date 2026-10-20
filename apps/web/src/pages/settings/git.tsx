@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, GitBranch, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
-import { CommitLink } from '@/components/git'
+import { CommitLink, GIT_KIND_ROOTS } from '@/components/git'
 import {
   Badge,
   Button,
@@ -388,19 +388,37 @@ function DeployPanel() {
 function ObjectLink({ object }: { object: Status['objects'][number] }) {
   const label = (
     <span className="font-mono text-sm">
-      {object.kind === 'workflow' ? 'workflows' : 'apps'}/{object.slug}
+      {GIT_KIND_ROOTS[object.kind]}/{object.slug}
     </span>
   )
   if (object.objectId && object.status !== 'missing') {
-    return object.kind === 'workflow' ? (
-      <Link to="/workflows/$workflowId" params={{ workflowId: object.objectId }} className="hover:underline">
-        {label}
-      </Link>
-    ) : (
-      <Link to="/apps/$slug/edit" params={{ slug: object.slug }} className="hover:underline">
-        {label}
-      </Link>
-    )
+    const className = 'hover:underline'
+    switch (object.kind) {
+      case 'workflow':
+        return (
+          <Link to="/workflows/$workflowId" params={{ workflowId: object.objectId }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'app':
+        return (
+          <Link to="/apps/$slug/edit" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'library_query':
+        return (
+          <Link to="/library/$slug" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'module':
+        return (
+          <Link to="/modules/$slug" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
+    }
   }
   return label
 }

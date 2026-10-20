@@ -3,6 +3,7 @@ import type { TemplateError } from '@ow/expressions'
 import {
   type ComponentSpec,
   componentSpec,
+  moduleComponentSpec,
   QUERY_METHODS,
   QUERY_STATE,
   URL_STATE,
@@ -10,7 +11,14 @@ import {
   VARIABLE_STATE,
 } from './components'
 import { type AppField, appFields, nodeKey } from './fields'
-import type { AppComponent, AppDefinition, AppQuery, Transformer, Variable } from './schema'
+import {
+  type AppComponent,
+  type AppDefinition,
+  type AppQuery,
+  runsAutomatically,
+  type Transformer,
+  type Variable,
+} from './schema'
 
 /**
  * The app's reactive graph, spreadsheet-style: one node per value code can read (`textInput1.value`,
@@ -26,6 +34,8 @@ export type Entity =
   | { kind: 'query'; name: string; index: number; query: AppQuery }
   | { kind: 'transformer'; name: string; index: number; transformer: Transformer }
   | { kind: 'variable'; name: string; index: number; variable: Variable }
+  /** In a module (M14): what the app passes, `inputs.<name>`. Built in, like `url`. */
+  | { kind: 'inputs'; name: 'inputs'; index: -1; names: readonly string[] }
   /** `url`, built in: the page shown and its query parameters. */
   | { kind: 'url'; name: 'url'; index: -1 }
 
@@ -42,6 +52,8 @@ export type NodeKind =
   | 'transformer'
   /** A variable's initial value, evaluated once when the app opens. */
   | 'initial'
+  /** A module's output (M14): its template, evaluated in the module and passed to the app placing it. */
+  | 'output'
   /** Set at run time only (query results, variable values, state without a `from` prop). */
   | 'source'
   /** What an automatic query reads; when it changes, the query runs again. */
@@ -89,14 +101,28 @@ export interface AppGraph {
   affected(keys: Iterable<string>): string[]
 }
 
+/**
+ * How the graph learns a component's spec. By default the registry's, and for a module instance an open spec (M14);
+ * `specFor` gives a module instance its release's interface (`moduleComponentSpec`).
+ */
+export type SpecFor = (component: AppComponent) => ComponentSpec | undefined
+
+export const defaultSpecFor: SpecFor = (c) =>
+  c.type === 'module' ? moduleComponentSpec(null) : componentSpec(c.type)
+
+/** The node key of a module's output (M14); not readable by code (`$` names aren't). */
+export const outputKey = (name: string) => nodeKey(OUTPUTS, name)
+/** The owner of a module's output fields, and the entity part of their nodes. */
+export const OUTPUTS = '$outputs'
+
 /** The entities of an app by name. The first of two entities with the same name wins (the validator reports it). */
-export function appEntities(def: AppDefinition): Map<string, Entity> {
+export function appEntities(def: AppDefinition, specFor: SpecFor = defaultSpecFor): Map<string, Entity> {
   const entities = new Map<string, Entity>()
   const add = (entity: Entity) => {
     if (!entities.has(entity.name)) entities.set(entity.name, entity)
   }
   def.components.forEach((component, index) => {
-    const spec = componentSpec(component.type)
+    const spec = specFor(component) ?? defaultSpecFor(component)
     add({ kind: 'component', name: component.name, index, component, ...(spec && { spec }) })
   })
   def.queries.forEach((query, index) => {
@@ -124,6 +150,8 @@ export function entityProperties(entity: Entity): string[] {
       return [...VARIABLE_STATE]
     case 'url':
       return [...URL_STATE]
+    case 'inputs':
+      return [...entity.names]
   }
 }
 
@@ -139,6 +167,7 @@ export function entityMethods(entity: Entity): string[] {
     case 'variable':
       return Object.keys(VARIABLE_METHODS)
     case 'url':
+    case 'inputs':
       return []
   }
 }
@@ -165,10 +194,19 @@ export function formInputs(def: AppDefinition, form: string): string[] {
   return inputs
 }
 
-export function buildAppGraph(def: AppDefinition): AppGraph {
-  const entities = appEntities(def)
+export function buildAppGraph(def: AppDefinition, opts: { specFor?: SpecFor } = {}): AppGraph {
+  const entities = appEntities(def, opts.specFor)
   // Built in; an entity of the app named `url` is invalid (and keeps the name here, for the validator to report).
   if (!entities.has('url')) entities.set('url', { kind: 'url', name: 'url', index: -1 })
+  // Likewise `inputs` in a module.
+  if (def.module && !entities.has('inputs')) {
+    entities.set('inputs', {
+      kind: 'inputs',
+      name: 'inputs',
+      index: -1,
+      names: def.module.inputs.map((i) => i.name),
+    })
+  }
   const fields: AnalysedField[] = appFields(def).map((field) => ({
     ...field,
     ...fieldRefs(field, { properties: true }),
@@ -189,6 +227,11 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
         const spec = entity.spec
         if (!spec) break
         for (const prop of Object.keys(spec.props)) add(name, prop, 'prop')
+        if (spec.openProps) {
+          for (const prop of Object.keys(entity.component.props ?? {})) {
+            if (!Object.hasOwn(spec.props, prop)) add(name, prop, 'prop')
+          }
+        }
         for (const [state, s] of Object.entries(spec.state)) {
           if (entity.component.type === 'form' && state === 'data') {
             add(name, state, 'formData', { inputs: formInputs(def, name) })
@@ -204,7 +247,7 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
       }
       case 'query':
         for (const state of QUERY_STATE) add(name, state, 'source')
-        if (entity.query.kind === 'resource' && entity.query.run === 'auto') add(name, '$deps', 'trigger')
+        if (runsAutomatically(entity.query)) add(name, '$deps', 'trigger')
         break
       case 'transformer':
         add(name, 'value', 'transformer')
@@ -216,8 +259,12 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
       case 'url':
         for (const state of URL_STATE) add(name, state, 'source')
         break
+      case 'inputs':
+        for (const input of entity.names) add(name, input, 'source')
+        break
     }
   }
+  for (const output of def.module?.outputs ?? []) add(OUTPUTS, output.name, 'output')
 
   const resolve = (ref: { name: string; property?: string }): string[] => {
     const own = byEntity.get(ref.name)
@@ -231,7 +278,10 @@ export function buildAppGraph(def: AppDefinition): AppGraph {
   for (const field of fields) {
     // Only fields of entities that won the name (a duplicate's fields would attach to the wrong nodes).
     const owner = entities.get(field.owner)
-    if (!field.node || !owner || entityPath(owner) !== field.path.slice(0, 2).join('.')) continue
+    const ownsIt =
+      field.owner === OUTPUTS ||
+      (owner !== undefined && entityPath(owner) === field.path.slice(0, 2).join('.'))
+    if (!field.node || !ownsIt) continue
     const node = nodes.get(field.node)
     if (!node) continue
     node.fields.push(field)
@@ -302,6 +352,7 @@ function entityPath(entity: Entity): string {
     transformer: 'transformers',
     variable: 'variables',
     url: 'url',
+    inputs: 'module',
   }
   return `${list[entity.kind]}.${entity.index}`
 }

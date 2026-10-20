@@ -107,3 +107,97 @@ describe('the repo', () => {
     ])
   })
 })
+
+const libraryQuery: RepoObject = {
+  kind: 'library_query',
+  slug: 'orders_by_customer',
+  value: {
+    name: 'Orders by customer',
+    description: null,
+    definition: {
+      schemaVersion: 1,
+      resource: 'shop',
+      query: { sql: 'select * from orders\nwhere customer = {{ id }}' },
+      params: [{ name: 'id', testValue: 1 }],
+    },
+  },
+}
+
+const picker: RepoObject = {
+  kind: 'module',
+  slug: 'customer-picker',
+  value: {
+    name: 'Customer picker',
+    description: null,
+    definition: {
+      schemaVersion: 1,
+      components: [{ name: 'title', type: 'text', props: { value: '{{ inputs.label }}' } }],
+      queries: [
+        { name: 'find', kind: 'resource', resource: 'shop', query: { sql: 'select 1' }, run: 'auto' },
+      ],
+      layout: { title: { x: 0, y: 0, w: 6, h: 2 } },
+      module: {
+        inputs: [{ name: 'label', default: 'Customers' }],
+        outputs: [],
+        events: [{ name: 'picked' }],
+      },
+    },
+  },
+}
+
+describe('library queries and modules (M14)', () => {
+  it('have directories of their own: library/<slug>/ and modules/<slug>/', () => {
+    expect(Object.keys(encodeObject(libraryQuery).files)).toEqual([
+      'library/orders_by_customer/query.json',
+      'library/orders_by_customer/query.sql',
+    ])
+    expect(encodeObject(libraryQuery).files['library/orders_by_customer/query.sql']).toBe(
+      'select * from orders\nwhere customer = {{ id }}\n',
+    )
+    expect(Object.keys(encodeObject(picker).files)).toEqual([
+      'modules/customer-picker/layout.json',
+      'modules/customer-picker/module.json',
+      'modules/customer-picker/queries/find.sql',
+    ])
+  })
+
+  it('decode with the rest of the repo, in kind order', () => {
+    const files = { ...repo(), ...encodeObject(libraryQuery).files, ...encodeObject(picker).files }
+    const decoded = decodeRepo(files)
+    expect(decoded.problems).toEqual([])
+    expect(decoded.objects.map((o) => [o.kind, o.slug, o.result.ok])).toEqual([
+      ['app', 'order-admin', true],
+      ['library_query', 'orders_by_customer', true],
+      ['module', 'customer-picker', true],
+      ['workflow', 'sync-orders', true],
+    ])
+    expect(decoded.objects[1]!.result).toEqual({ ok: true, value: libraryQuery })
+    expect(decoded.objects[2]!.result).toEqual({ ok: true, value: picker })
+  })
+
+  it('report their own problems: a stray file, a module without its interface, a bad slug', () => {
+    const files = { ...repo(), ...encodeObject(libraryQuery).files, ...encodeObject(picker).files }
+    files['library/orders_by_customer/notes.md'] = 'x'
+    const module = JSON.parse(files['modules/customer-picker/module.json']!)
+    delete module.module
+    files['modules/customer-picker/module.json'] = JSON.stringify(module)
+    files['library/Bad/query.json'] = '{}'
+    const decoded = decodeRepo(files)
+    expect(decoded.problems.map((p) => [p.path, p.message])).toEqual([
+      [
+        'library/Bad',
+        'library/Bad: "Bad" isn\'t a valid library query slug (2–63 lowercase letters, digits, - or _, starting with a letter)',
+      ],
+    ])
+    const problems = (slug: string) => {
+      const result = decoded.objects.find((o) => o.slug === slug)!.result
+      return result.ok ? [] : result.problems.map((p) => [p.path, p.code])
+    }
+    expect(problems('orders_by_customer')).toEqual([
+      ['library/orders_by_customer/notes.md', 'unexpected_file'],
+    ])
+    expect(problems('customer-picker')).toEqual([
+      ['modules/customer-picker/module.json', 'invalid_definition'],
+    ])
+  })
+})

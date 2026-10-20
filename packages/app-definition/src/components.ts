@@ -58,6 +58,11 @@ export interface ComponentSpec {
   events: readonly string[]
   /** Grid size when dropped on the canvas. */
   defaultSize: { w: number; h: number }
+  /**
+   * Takes props the spec doesn't list (a module whose inputs aren't known yet, M14): they aren't checked, and each
+   * one set is a value in the graph.
+   */
+  openProps?: boolean
 }
 
 const str = (label: string, def = ''): PropSpec => ({ type: 'string', default: def, label })
@@ -325,6 +330,43 @@ export function pageSizeOf(value: unknown): number {
 
 export function componentSpec(type: string): ComponentSpec | undefined {
   return Object.hasOwn(COMPONENTS, type) ? COMPONENTS[type] : undefined
+}
+
+/** What an app sees of one module release (M14): its inputs (props), outputs (state) and events. */
+export interface ModuleInterface {
+  inputs: readonly string[]
+  outputs: readonly string[]
+  events: readonly string[]
+}
+
+/** Props every module instance has: which module (slug) and which release (`latest` or a version). */
+export const MODULE_PROPS = ['module', 'version'] as const
+
+const moduleBase = {
+  type: 'module',
+  label: 'Module',
+  methods: COMMON_METHODS,
+  defaultSize: { w: 6, h: 12 },
+} as const
+
+/**
+ * A module instance's spec: from its release's interface when known (inputs as props, outputs as state, its
+ * events), otherwise open (any prop, no state or events) until it is.
+ */
+export function moduleComponentSpec(iface: ModuleInterface | null): ComponentSpec {
+  const props: Record<string, PropSpec> = {
+    module: { type: 'string', default: '', label: 'Module' },
+    version: { type: 'string', default: 'latest', label: 'Version' },
+    ...COMMON_PROPS,
+  }
+  if (!iface) return { ...moduleBase, props, state: {}, events: [], openProps: true }
+  for (const input of iface.inputs) props[input] = { type: 'any', default: null, label: input }
+  return {
+    ...moduleBase,
+    props,
+    state: Object.fromEntries(iface.outputs.map((o) => [o, { default: null }])),
+    events: [...iface.events],
+  }
 }
 
 /** What scripts and templates can read off a query, and call on it. */

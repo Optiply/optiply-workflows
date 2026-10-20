@@ -1,4 +1,4 @@
-import type { AppDefinition } from '@ow/app-definition'
+import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -118,7 +118,7 @@ export const environments = pgTable(
 
 // ── Organisation ────────────────────────────────────────────────────────────
 
-export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app'] as const
+export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app', 'library_query', 'module'] as const
 
 export const folders = pgTable(
   'folders',
@@ -134,11 +134,21 @@ export const folders = pgTable(
   },
   (t) => [
     unique('folders_name_uq').on(t.objectType, t.parentId, t.name).nullsNotDistinct(),
-    check('folders_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app')`),
+    check(
+      'folders_object_type_ck',
+      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module')`,
+    ),
   ],
 )
 
-export const PERMISSION_OBJECT_TYPES = ['resource', 'workflow', 'app', 'folder'] as const
+export const PERMISSION_OBJECT_TYPES = [
+  'resource',
+  'workflow',
+  'app',
+  'library_query',
+  'module',
+  'folder',
+] as const
 /** Ordered lowest to highest: each level includes the ones before it. */
 export const PERMISSION_LEVELS = ['use', 'edit', 'own'] as const
 
@@ -165,7 +175,10 @@ export const permissions = pgTable(
       .on(t.groupId, t.objectType, t.objectId, t.environmentId)
       .nullsNotDistinct(),
     index('permissions_object_idx').on(t.objectType, t.objectId),
-    check('permissions_object_type_ck', sql`${t.objectType} in ('resource', 'workflow', 'app', 'folder')`),
+    check(
+      'permissions_object_type_ck',
+      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'folder')`,
+    ),
     check('permissions_level_ck', sql`${t.level} in ('use', 'edit', 'own')`),
   ],
 )
@@ -808,6 +821,120 @@ export const appReleases = pgTable(
   ],
 )
 
+// ── Query Library (M14) ─────────────────────────────────────────────────────
+
+/** Library queries: one resource query used by many apps, built like apps (a draft, releases, the live one). */
+export const libraryQueries = pgTable(
+  'library_queries',
+  {
+    id: id(),
+    /** How apps reference it (with a version or `latest`); renaming keeps it. */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** What the editor autosaves; it must match the schema but may otherwise be invalid. */
+    draftDefinition: jsonb().$type<LibraryQueryDefinition>().notNull(),
+    draftRevision: integer().notNull().default(1),
+    /** The release apps following `latest` run. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => libraryQueryReleases.id, { onDelete: 'set null' }),
+    /** Protected in Git (M14 step 7), like apps. */
+    gitProtected: boolean().notNull().default(false),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('library_queries_slug_uq').on(t.slug),
+    index('library_queries_folder_idx').on(t.folderId),
+  ],
+)
+
+/** Published, immutable versions of a library query; apps pin one or follow the live one. */
+export const libraryQueryReleases = pgTable(
+  'library_query_releases',
+  {
+    id: id(),
+    libraryQueryId: uuid()
+      .notNull()
+      .references(() => libraryQueries.id, { onDelete: 'cascade' }),
+    version: text().notNull(),
+    definition: jsonb().$type<LibraryQueryDefinition>().notNull(),
+    /** `libraryQueryHash`. */
+    definitionHash: text().notNull(),
+    notes: text(),
+    gitCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('library_query_releases_version_uq').on(t.libraryQueryId, t.version),
+    index('library_query_releases_query_idx').on(t.libraryQueryId, t.createdAt.desc()),
+    check(
+      'library_query_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('library_query_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+// ── Modules (M14) ───────────────────────────────────────────────────────────
+
+/** Modules: reusable pieces of app placed in apps, built like apps (a draft, releases, the live one). */
+export const modules = pgTable(
+  'modules',
+  {
+    id: id(),
+    /** How apps place it (with a version or `latest`); renaming keeps it. */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** An app definition with its `module` part; must match the schema but may otherwise be invalid. */
+    draftDefinition: jsonb().$type<AppDefinition>().notNull(),
+    draftRevision: integer().notNull().default(1),
+    /** The release instances following `latest` run. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => moduleReleases.id, { onDelete: 'set null' }),
+    /** Protected in Git (M14 step 7), like apps. */
+    gitProtected: boolean().notNull().default(false),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('modules_slug_uq').on(t.slug), index('modules_folder_idx').on(t.folderId)],
+)
+
+/** Published, immutable versions of a module; instances pin one or follow the live one. */
+export const moduleReleases = pgTable(
+  'module_releases',
+  {
+    id: id(),
+    moduleId: uuid()
+      .notNull()
+      .references(() => modules.id, { onDelete: 'cascade' }),
+    version: text().notNull(),
+    /** Canonical form (`canonicalizeApp`). */
+    definition: jsonb().$type<AppDefinition>().notNull(),
+    /** `appDefinitionHash`. */
+    definitionHash: text().notNull(),
+    notes: text(),
+    gitCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('module_releases_version_uq').on(t.moduleId, t.version),
+    index('module_releases_module_idx').on(t.moduleId, t.createdAt.desc()),
+    check(
+      'module_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('module_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Audit ───────────────────────────────────────────────────────────────────
 
 export const auditEvents = pgTable(
@@ -843,6 +970,10 @@ export type PermissionObjectType = (typeof PERMISSION_OBJECT_TYPES)[number]
 export type Resource = typeof resources.$inferSelect
 export type ResourceConfig = typeof resourceConfigs.$inferSelect
 export type ManagedDatabase = typeof managedDatabases.$inferSelect
+export type LibraryQuery = typeof libraryQueries.$inferSelect
+export type LibraryQueryRelease = typeof libraryQueryReleases.$inferSelect
+export type Module = typeof modules.$inferSelect
+export type ModuleRelease = typeof moduleReleases.$inferSelect
 export type OAuthToken = typeof oauthTokens.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect
@@ -913,7 +1044,7 @@ export const gitSettings = pgTable(
 
 export type GitSettings = typeof gitSettings.$inferSelect
 
-export const GIT_OBJECT_KINDS = ['workflow', 'app'] as const
+export const GIT_OBJECT_KINDS = ['workflow', 'app', 'library_query', 'module'] as const
 export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
 
 /** A problem with an object's files or definition, by path from the repo's root (`@ow/git-format`'s shape). */
@@ -947,7 +1078,7 @@ export const gitObjects = pgTable(
   },
   (t) => [
     unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
-    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app')`),
+    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app', 'library_query', 'module')`),
     check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
   ],
 )
@@ -985,9 +1116,11 @@ export const gitBranchDrafts = pgTable(
     id: id(),
     workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
     appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    libraryQueryId: uuid().references(() => libraryQueries.id, { onDelete: 'cascade' }),
+    moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
     branch: text().notNull(),
-    /** A workflow or app definition, as the object's kind says. */
-    definition: jsonb().$type<WorkflowDefinition | AppDefinition>().notNull(),
+    /** A workflow, app, library query or module definition, as the object's kind says. */
+    definition: jsonb().$type<WorkflowDefinition | AppDefinition | LibraryQueryDefinition>().notNull(),
     name: text().notNull(),
     description: text(),
     /** Bumped on every save (optimistic concurrency, and draft snapshots for runs). */
@@ -1008,7 +1141,14 @@ export const gitBranchDrafts = pgTable(
       .on(t.workflowId, t.branch)
       .where(sql`${t.workflowId} is not null`),
     uniqueIndex('git_branch_drafts_app_uq').on(t.appId, t.branch).where(sql`${t.appId} is not null`),
-    check('git_branch_drafts_object_ck', sql`num_nonnulls(${t.workflowId}, ${t.appId}) = 1`),
+    uniqueIndex('git_branch_drafts_library_query_uq')
+      .on(t.libraryQueryId, t.branch)
+      .where(sql`${t.libraryQueryId} is not null`),
+    uniqueIndex('git_branch_drafts_module_uq').on(t.moduleId, t.branch).where(sql`${t.moduleId} is not null`),
+    check(
+      'git_branch_drafts_object_ck',
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.libraryQueryId}, ${t.moduleId}) = 1`,
+    ),
   ],
 )
 

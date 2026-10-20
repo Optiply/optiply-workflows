@@ -19,6 +19,9 @@ import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
+import { useLibrarySync } from './library'
+import { ModulePanel } from './module-panel'
+import { AddModule, useModuleSync } from './modules'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
 import { ensureSaved, saveDraftNow } from './save'
@@ -39,6 +42,7 @@ export function AppEditorPage() {
   const { slug } = route.useParams()
   const search = route.useSearch()
   const trpc = useTRPC()
+  const navigate = useNavigate()
   // Fetched fresh each visit (gcTime 0: nothing cached from the last one) and loaded into the editor once: a later
   // refetch (after App settings) only updates the name and description, never the draft being edited.
   const app = useQuery({
@@ -47,46 +51,90 @@ export function AppEditorPage() {
     gcTime: 0,
     refetchOnWindowFocus: false,
   })
+  useLibrarySync()
+  useModuleSync()
+  return (
+    <DraftLoader
+      kind="app"
+      object={app}
+      search={search}
+      go={(next) => navigate({ to: '/apps/$slug/edit', params: { slug }, search: next })}
+    />
+  )
+}
+
+/** What the editor loads of an app or module (`apps.get`, `modules.get`). */
+interface EditedObject {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  level: 'use' | 'edit' | 'own'
+  gitProtected: boolean
+  draftDefinition: AppDefinition
+  draftRevision: number
+  draftHash: string
+}
+
+/**
+ * Loads an app's or module's draft into the editor: its main draft, or (protected, M11) its draft on the Git branch
+ * in `search.branch`, opened or made as needed; then the editor with the environment in `search.env`.
+ */
+export function DraftLoader({
+  kind,
+  object,
+  search,
+  go,
+}: {
+  kind: 'app' | 'module'
+  /** The object's query: its data once loaded. */
+  object: { data?: EditedObject; error: unknown; refetch: () => Promise<unknown> }
+  search: { env?: string; branch?: string }
+  /** Moves to the same editor with other search params. */
+  go: (search: { env?: string; branch?: string }) => Promise<void>
+}) {
+  const trpc = useTRPC()
   const environments = useQuery(trpc.environments.list.queryOptions())
-  const navigate = useNavigate()
   const load = useAppEditor((s) => s.load)
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
-  const gitProtected = app.data?.gitProtected ?? false
+  const data = object.data
+  const gitProtected = data?.gitProtected ?? false
   const branch = gitProtected ? (search.branch ?? null) : null
-  // A protected app is edited in a draft on a Git branch (M11); opening one makes it if needed.
+  // A protected object is edited in a draft on a Git branch (M11); opening one makes it if needed.
   const opened = useQuery({
-    queryKey: ['branchDraft', 'app', app.data?.id, branch],
-    queryFn: () =>
-      trpcClient.branchDrafts.open.mutate({ kind: 'app', id: app.data!.id, branch: branch!, create: true }),
-    enabled: Boolean(app.data && branch),
+    queryKey: ['branchDraft', kind, data?.id, branch],
+    queryFn: () => trpcClient.branchDrafts.open.mutate({ kind, id: data!.id, branch: branch!, create: true }),
+    enabled: Boolean(data && branch),
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 0,
     retry: false,
   })
   const [draftInfo, setDraftInfo] = useState<BranchDraft | null>(null)
   const branchDraft = branch ? (draftInfo?.branch === branch ? draftInfo : opened.data) : null
-  // What's loaded: the app, which draft (main, read-only when protected, or a branch's).
-  const wanted = app.data
-    ? `${app.data.id}:${branch ? (branchDraft?.id ?? 'opening') : `main:${gitProtected}`}`
+  // What's loaded: the object, which draft (main, read-only when protected, or a branch's).
+  const wanted = data
+    ? `${data.id}:${branch ? (branchDraft?.id ?? 'opening') : `main:${gitProtected}`}`
     : null
 
   const loadDraft = useCallback(
-    (appId: string, draft: BranchDraft) =>
-      load(appId, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
+    (id: string, draft: BranchDraft) =>
+      load(id, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
+        kind,
       }),
-    [load],
+    [load, kind],
   )
   useEffect(() => {
-    if (!app.data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
-    if (branch && branchDraft) loadDraft(app.data.id, branchDraft)
+    if (!data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
+    if (branch && branchDraft) loadDraft(data.id, branchDraft)
     else {
-      load(app.data.id, app.data.draftDefinition, app.data.draftRevision, app.data.draftHash, {
-        readOnly: app.data.gitProtected,
+      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
+        readOnly: data.gitProtected,
+        kind,
       })
     }
     setLoadedFor(wanted)
-  }, [app.data, wanted, loadedFor, branch, branchDraft, load, loadDraft])
+  }, [data, wanted, loadedFor, branch, branchDraft, load, loadDraft, kind])
 
   const switchBranch = async (next: string | null) => {
     try {
@@ -97,33 +145,23 @@ export function AppEditorPage() {
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.
     if (next === null) {
-      await app.refetch()
+      await object.refetch()
       setLoadedFor(null)
     }
-    await navigate({
-      to: '/apps/$slug/edit',
-      params: { slug },
-      search: { ...search, branch: next ?? undefined },
-    })
+    await go({ ...search, branch: next ?? undefined })
   }
 
-  const error = app.error ?? opened.error
+  const error = object.error ?? opened.error ?? environments.error
   if (error)
     return (
       <Centered>
         <ErrorNote error={error} />
       </Centered>
     )
-  if (environments.error)
-    return (
-      <Centered>
-        <ErrorNote error={environments.error} />
-      </Centered>
-    )
   // The store outlives the page: until this visit's draft is in it, it may hold the last one.
-  // The same app reloading (main turning read-only after Protect) keeps the editor and its dialogs on screen.
-  const ready = app.data && wanted && !wanted.endsWith(':opening') && loadedFor?.split(':')[0] === app.data.id
-  if (!app.data || !environments.data || !ready)
+  // The same object reloading (main turning read-only after Protect) keeps the editor and its dialogs on screen.
+  const ready = data && wanted && !wanted.endsWith(':opening') && loadedFor?.split(':')[0] === data.id
+  if (!data || !environments.data || !ready)
     return (
       <Centered>
         <Spinner />
@@ -135,14 +173,15 @@ export function AppEditorPage() {
     environments.data[0]!
   return (
     <Editor
-      key={`${app.data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
+      key={`${data.id}:${environment.id}:${branchDraft?.id ?? 'main'}`}
       app={{
-        id: app.data.id,
-        slug: app.data.slug,
-        name: app.data.name,
-        description: app.data.description,
-        level: app.data.level,
-        gitProtected: app.data.gitProtected,
+        kind,
+        id: data.id,
+        slug: data.slug,
+        name: data.name,
+        description: data.description,
+        level: data.level,
+        gitProtected: data.gitProtected,
       }}
       environment={environment}
       environments={environments.data}
@@ -150,8 +189,8 @@ export function AppEditorPage() {
       git={
         gitProtected ? (
           <GitBar
-            kind="app"
-            object={app.data}
+            kind={kind}
+            object={data}
             branch={branch}
             draft={branchDraft ?? null}
             onSwitch={switchBranch}
@@ -159,9 +198,9 @@ export function AppEditorPage() {
             revision={() => useAppEditor.getState().revision}
             onReplaced={(draft) => {
               setDraftInfo(draft)
-              loadDraft(app.data!.id, draft)
+              loadDraft(data.id, draft)
               // The running draft follows the replaced definition.
-              setLoadedFor(`${app.data!.id}:${draft.id}`)
+              setLoadedFor(`${data.id}:${draft.id}`)
             }}
             onUpdated={setDraftInfo}
           />
@@ -171,11 +210,12 @@ export function AppEditorPage() {
   )
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+export function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center p-8">{children}</div>
 }
 
 interface EditorProps {
+  /** The app, or the module (M14: the same editor, without pages, with its inputs, outputs and events). */
   app: EditorApp
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
@@ -185,7 +225,7 @@ interface EditorProps {
   git: React.ReactNode
 }
 
-function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
+export function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
@@ -211,6 +251,8 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
   })
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
+    modules: useAppEditor.getState().moduleReleases,
+    kind: app.kind,
     appId: app.id,
     releaseId: null,
     branchDraftId,
@@ -235,14 +277,17 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
     })
   }, [host])
 
-  // The running draft follows the edits.
+  // The running draft follows the edits, and the module releases its instances run.
   useEffect(() => {
     if (!host) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = useAppEditor.subscribe((state, before) => {
-      if (state.definition === before.definition) return
+      if (state.definition === before.definition && state.moduleReleases === before.moduleReleases) return
       clearTimeout(timer)
-      timer = setTimeout(() => host.update(useAppEditor.getState().definition), UPDATE_DELAY_MS)
+      timer = setTimeout(() => {
+        const { definition, moduleReleases } = useAppEditor.getState()
+        host.update(definition, moduleReleases)
+      }, UPDATE_DELAY_MS)
     })
     return () => {
       clearTimeout(timer)
@@ -291,7 +336,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
             value={environment.slug}
             onChange={(e) =>
               navigate({
-                to: '/apps/$slug/edit',
+                to: app.kind === 'module' ? '/modules/$slug' : '/apps/$slug/edit',
                 params: { slug: app.slug },
                 search: (prev) => ({ ...prev, env: e.target.value }),
               })
@@ -306,7 +351,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
           <Button
             size="sm"
             onClick={() => setPreview(!preview)}
-            title={preview ? 'Back to editing' : 'Use the app as people will'}
+            title={preview ? 'Back to editing' : `Use the ${app.kind} as people will`}
           >
             {preview ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
             {preview ? 'Edit' : 'Preview'}
@@ -317,7 +362,7 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
       {git}
       {status === 'conflict' && (
         <div role="alert" className="flex items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm">
-          Someone else saved this app since you opened it. Your edits here can't be saved.
+          Someone else saved this {app.kind} since you opened it. Your edits here can't be saved.
           <Button size="sm" onClick={() => window.location.reload()}>
             Reload
           </Button>
@@ -331,11 +376,17 @@ function Editor({ app, environment, environments, branchDraftId, git }: EditorPr
             {!preview && (
               <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
                 {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                <PagesPanel key={epoch} />
+                {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
                 {!readOnly && (
                   <section>
                     <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
                     <Palette />
+                    {/* No modules inside modules. */}
+                    {app.kind === 'app' && (
+                      <div className="mt-1.5">
+                        <AddModule />
+                      </div>
+                    )}
                   </section>
                 )}
                 <section>

@@ -15,7 +15,9 @@ import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
 import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
+import { LibraryPage } from './pages/library/list'
 import { LoginPage } from './pages/login'
+import { ModulesPage } from './pages/modules/list'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
@@ -123,6 +125,33 @@ const appEditorRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
 })
+/** The Query Library (M14): library queries, and each one's editor in its own chunk (Monaco loads with it). */
+const libraryRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/library',
+  component: LibraryPage,
+})
+const libraryEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/library/$slug',
+  /** `branch` edits a protected library query's draft on that Git branch (M14). */
+  validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/library/editor'), 'LibraryEditorPage'),
+})
+/** Modules (M14): the list, and each one's editor (the app editor, in its chunk). */
+const modulesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/modules',
+  component: ModulesPage,
+})
+const moduleEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/modules/$slug',
+  staticData: { fullBleed: true },
+  /** `branch` edits a protected module's draft on that Git branch (M14). */
+  validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
+  component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -196,6 +225,10 @@ const routeTree = rootRoute.addChildren([
     appsRoute,
     appViewRoute,
     appEditorRoute,
+    libraryRoute,
+    libraryEditorRoute,
+    modulesRoute,
+    moduleEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

@@ -116,3 +116,49 @@ describe('undo and redo in the app editor', () => {
     expect(editor().epoch).toBeGreaterThanOrEqual(0)
   })
 })
+
+describe('modules in the app editor (M14)', () => {
+  const placing: AppDefinition = {
+    schemaVersion: 1,
+    components: [
+      { name: 'picker1', type: 'module', props: { module: 'picker', plan: 'free' } },
+      { name: 'other1', type: 'module', props: { module: 'gone', version: '1.0.0' } },
+      { name: 'shown', type: 'text', props: { value: '{{ picker1.firstEmail }}' } },
+    ],
+    queries: [],
+  }
+  const picker = {
+    id: 'm1',
+    name: 'Picker',
+    liveVersion: '1.0.0',
+    versions: { '1.0.0': { inputs: ['plan'], outputs: ['firstEmail'], events: ['picked'] } },
+  }
+  const codes = () => editor().diagnostics.map((d) => `${d.code} ${d.path.join('.')}`)
+
+  it('checks the instances once every module placed is known', () => {
+    editor().load('a2', placing, 1, 'hash')
+    expect(codes()).toEqual([])
+    editor().setModules({ picker })
+    // `gone` isn't known yet: nothing is checked against the modules.
+    expect(codes()).toEqual([])
+    editor().setModules({ gone: null })
+    expect(codes()).toEqual(['unknown_module components.1.props.module'])
+    editor().update((d) => ({
+      ...d,
+      components: d.components.map((c) =>
+        c.name === 'shown' ? { ...c, props: { value: '{{ picker1.nope }}' } } : c,
+      ),
+    }))
+    expect(codes()).toContain('unknown_property components.2.props.value')
+  })
+
+  it('keeps the module releases unless they change', () => {
+    editor().setModuleReleases({})
+    const before = editor().moduleReleases
+    editor().setModuleReleases({})
+    expect(editor().moduleReleases).toBe(before)
+    const releases = { 'picker@latest': { releaseId: 'r1', definition: placing } }
+    editor().setModuleReleases(releases)
+    expect(editor().moduleReleases).toBe(releases)
+  })
+})

@@ -1,5 +1,20 @@
-import { type AppDefinition, type AppDiagnostic, resolvePage, validateApp } from '@ow/app-definition'
-import type { AppUrl } from '@ow/app-runtime'
+import {
+  type AppComponent,
+  type AppDefinition,
+  type AppDiagnostic,
+  type AppValidateOptions,
+  type ComponentSpec,
+  componentSpec,
+  instanceInterface,
+  type LibraryInfo,
+  type ModuleInfo,
+  moduleComponentSpec,
+  resolvePage,
+  usedLibraries,
+  usedModules,
+  validateApp,
+} from '@ow/app-definition'
+import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
 import { create } from 'zustand'
 import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
 
@@ -15,7 +30,16 @@ export interface AppEditorView {
   page: string | null
 }
 
+/** A library query the app uses, as the server described it (`libraryQueries.resolve`). */
+export type LibraryRef = LibraryInfo & { id: string; name: string }
+
+/** A module the app places, as the server described it (`modules.resolve`). */
+export type ModuleRef = ModuleInfo & { id: string; name: string }
+
 interface AppEditorState {
+  /** Whose draft is edited: an app's, or a module's (M14; same editor, saved and run as the module's). */
+  kind: 'app' | 'module'
+  /** The app's id, or the module's. */
   appId: string | null
   /** The Git branch draft being edited (M11), or null for the app's own (main) draft. */
   branchDraftId: string | null
@@ -48,13 +72,22 @@ interface AppEditorState {
   history: History<AppDefinition, AppEditorView>
   /** Raised by undo and redo: the panels remount, so what they read once starts afresh. */
   epoch: number
+  /**
+   * What the server said about the library queries the app uses (M14), by slug; null for one that doesn't exist
+   * or the person can't see. The validator checks library queries once every one used is known.
+   */
+  libraries: Record<string, LibraryRef | null>
+  /** Likewise for the modules the app places (M14): the validator checks instances once every one is known. */
+  modules: Record<string, ModuleRef | null>
+  /** The module releases the running draft's instances run, by `slug@version` (`modules.instanceReleases`). */
+  moduleReleases: ModuleReleases
 
   load(
     appId: string,
     definition: AppDefinition,
     revision: number,
     draftHash: string,
-    opts?: { branchDraftId?: string | null; readOnly?: boolean },
+    opts?: { branchDraftId?: string | null; readOnly?: boolean; kind?: 'app' | 'module' },
   ): void
   /** Applies an edit; the draft becomes dirty and is validated again, and the edit can be undone. */
   update(edit: (def: AppDefinition) => AppDefinition): void
@@ -67,6 +100,11 @@ interface AppEditorState {
   setPanelTab(tab: PanelTab): void
   /** Edits another page (without parameters), or follows `utils.openPage` (with them). */
   setUrl(page: string | null, params?: Record<string, string>): void
+  /** Adds what the server said about library queries, and validates again. */
+  setLibraries(libraries: Record<string, LibraryRef | null>): void
+  /** Adds what the server said about modules, and validates again. */
+  setModules(modules: Record<string, ModuleRef | null>): void
+  setModuleReleases(releases: ModuleReleases): void
   saving(): void
   saved(revision: number, json: string, draftHash: string): void
   conflict(): void
@@ -74,6 +112,7 @@ interface AppEditorState {
 }
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
+  kind: 'app',
   appId: null,
   branchDraftId: null,
   readOnly: false,
@@ -91,10 +130,14 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   url: { page: null, params: {} },
   history: emptyHistory(),
   epoch: 0,
+  libraries: {},
+  modules: {},
+  moduleReleases: {},
 
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
       appId,
+      kind: opts.kind ?? 'app',
       branchDraftId: opts.branchDraftId ?? null,
       readOnly: opts.readOnly ?? false,
       definition,
@@ -103,13 +146,28 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       savedJson: JSON.stringify(definition),
       status: 'saved',
       saveError: null,
-      diagnostics: validateApp(definition).diagnostics,
+      diagnostics: validate(definition, get()),
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
       history: emptyHistory(),
     }),
+
+  setLibraries: (found) => {
+    const libraries = { ...get().libraries, ...found }
+    set({ libraries, diagnostics: validate(get().definition, { ...get(), libraries }) })
+  },
+
+  setModules: (found) => {
+    const modules = { ...get().modules, ...found }
+    set({ modules, diagnostics: validate(get().definition, { ...get(), modules }) })
+  },
+
+  setModuleReleases: (moduleReleases) => {
+    // The running draft restarts its instances on a change; the same releases again aren't one.
+    if (JSON.stringify(moduleReleases) !== JSON.stringify(get().moduleReleases)) set({ moduleReleases })
+  },
 
   update: (edit) => {
     const state = get()
@@ -179,6 +237,24 @@ function viewOf(state: AppEditorState): AppEditorView {
 }
 
 /**
+ * The browser's checks, library queries and module instances included once the server said about each one the
+ * app uses.
+ */
+function validate(
+  definition: AppDefinition,
+  { libraries, modules }: Pick<AppEditorState, 'libraries' | 'modules'>,
+): AppDiagnostic[] {
+  const options: AppValidateOptions = {}
+  if (usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))) {
+    options.resolveLibrary = (slug) => libraries[slug] ?? undefined
+  }
+  if (usedModules(definition).every((slug) => Object.hasOwn(modules, slug))) {
+    options.resolveModule = (slug) => modules[slug] ?? undefined
+  }
+  return validateApp(definition, options).diagnostics
+}
+
+/**
  * The state after `definition` replaces the current one: validated, on a page it has, and saved or dirty by whether
  * it differs from what the server has (undoing back to it needs no save). A save in flight finishes first: `saved`
  * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
@@ -201,7 +277,7 @@ function applied(
   return {
     definition,
     ...(page !== url.page && { url: { page, params: {} } }),
-    diagnostics: validateApp(definition).diagnostics,
+    diagnostics: validate(definition, state),
     status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
     ...(status === 'error' && unchanged && { saveError: null }),
     ...(view && {
@@ -216,4 +292,16 @@ function applied(
         null,
     }),
   }
+}
+
+/**
+ * A component's spec; a module instance's from the interface of the release it names, once the editor knows its
+ * module (M14), open until then.
+ */
+export function specOf(
+  component: AppComponent,
+  modules: Record<string, ModuleRef | null>,
+): ComponentSpec | undefined {
+  if (component.type !== 'module') return componentSpec(component.type)
+  return moduleComponentSpec(instanceInterface(component, (slug) => modules[slug] ?? undefined))
 }

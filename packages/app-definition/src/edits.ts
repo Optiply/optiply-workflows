@@ -1,4 +1,4 @@
-import { componentSpec, type JsonValue } from './components'
+import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
 import {
@@ -7,6 +7,7 @@ import {
   type AppQuery,
   appNameSchema,
   type EventHandler,
+  type ModuleSpec,
   type Position,
   type Transformer,
   type Variable,
@@ -27,11 +28,14 @@ export function usedNames(def: AppDefinition): Set<string> {
   ])
 }
 
+const MAX_NAME_LENGTH = 64
+
 /** `base1`, `base2`, …: the first free name. */
 export function nextName(def: AppDefinition, base: string): string {
   const used = usedNames(def)
   for (let n = 1; ; n++) {
-    const name = `${base}${n}`
+    // Names are up to 64 characters (`blockNameSchema`): a long base (a module's slug) gives way to the number.
+    const name = `${base.slice(0, MAX_NAME_LENGTH - String(n).length)}${n}`
     if (!used.has(name) && !appNameReason(name)) return name
   }
 }
@@ -71,11 +75,11 @@ export function bottomOf(def: AppDefinition, parent: string | undefined, page: s
 export function addComponent(
   def: AppDefinition,
   type: string,
-  opts: { parent?: string; position?: Partial<Position>; page?: string | null } = {},
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null; base?: string } = {},
 ): { definition: AppDefinition; name: string } {
-  const spec = componentSpec(type)
+  const spec = type === 'module' ? moduleComponentSpec(null) : componentSpec(type)
   if (!spec) throw new Error(`Unknown component type "${type}"`)
-  const name = nextName(def, type)
+  const name = nextName(def, opts.base ?? type)
   const parent = spec.overlay ? undefined : opts.parent
   const page = parent === undefined ? (opts.page ?? null) : null
   const component: AppComponent = {
@@ -206,6 +210,27 @@ export function addQuery(
           query: { sql: 'select 1' },
           run: opts.run ?? 'auto',
         }
+  return { definition: { ...def, queries: [...def.queries, query] }, name }
+}
+
+/**
+ * Adds a query from the Query Library (M14), following its latest release and running automatically (most library
+ * queries read); its parameters are filled in afterwards.
+ */
+export function addLibraryQuery(
+  def: AppDefinition,
+  library: string,
+  opts: { version?: string; run?: 'auto' | 'manual'; page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const name = nextName(def, 'query')
+  const query: AppQuery = {
+    name,
+    ...(opts.page ? { page: opts.page } : {}),
+    kind: 'library',
+    library,
+    version: opts.version ?? 'latest',
+    run: opts.run ?? 'auto',
+  }
   return { definition: { ...def, queries: [...def.queries, query] }, name }
 }
 
@@ -409,4 +434,82 @@ export function setEntityPage(def: AppDefinition, name: string, page: string | n
   const queries = def.queries.map(set)
   const transformers = def.transformers?.map(set)
   return { ...def, queries, ...(transformers && { transformers }) }
+}
+
+/** A part of a module's interface (M14). */
+export type ModulePart = 'inputs' | 'outputs' | 'events'
+
+const MODULE_ITEM_BASE = { inputs: 'input', outputs: 'output', events: 'event' } as const
+
+/** Adds an input, output or event to a module, with the next free name in its list (`input1`, …). */
+export function addModuleItem(
+  def: AppDefinition,
+  part: ModulePart,
+): { definition: AppDefinition; name: string } {
+  const spec = def.module ?? { inputs: [], outputs: [], events: [] }
+  const taken = new Set<string>(spec[part].map((i) => i.name))
+  let n = 1
+  while (taken.has(`${MODULE_ITEM_BASE[part]}${n}`)) n++
+  const name = `${MODULE_ITEM_BASE[part]}${n}`
+  const item = part === 'outputs' ? { name, value: '' } : { name }
+  return { definition: { ...def, module: { ...spec, [part]: [...spec[part], item] } }, name }
+}
+
+/**
+ * Replaces a module's input, output or event. Renaming an event re-points the `moduleEvent` actions firing it;
+ * code reading a renamed input (`inputs.<old>`) is left for the person to change (the problems list shows it).
+ */
+export function updateModuleItem<P extends ModulePart>(
+  def: AppDefinition,
+  part: P,
+  name: string,
+  next: ModuleSpec[P][number],
+): AppDefinition {
+  const spec = def.module
+  if (!spec) return def
+  const items = spec[part] as ModuleSpec[P][number][]
+  const updated: AppDefinition = {
+    ...def,
+    module: { ...spec, [part]: items.map((i) => (i.name === name ? next : i)) },
+  }
+  if (part !== 'events' || next.name === name) return updated
+  const repoint = (handlers: EventHandler[] | undefined) =>
+    handlers?.map((h) =>
+      h.action.type === 'moduleEvent' && h.action.event === name
+        ? { ...h, action: { ...h.action, event: next.name } }
+        : h,
+    )
+  return {
+    ...updated,
+    components: updated.components.map((c) => (c.events ? { ...c, events: repoint(c.events)! } : c)),
+    queries: updated.queries.map((q) => (q.events ? { ...q, events: repoint(q.events)! } : q)),
+  }
+}
+
+/** Removes a module's input, output or event (handlers firing a removed event show up as problems). */
+export function removeModuleItem(def: AppDefinition, part: ModulePart, name: string): AppDefinition {
+  const spec = def.module
+  if (!spec) return def
+  return { ...def, module: { ...spec, [part]: spec[part].filter((i) => i.name !== name) } }
+}
+
+/**
+ * Places a module (M14): an instance of it named after it (`customer_picker1`), following its latest release,
+ * where `addComponent` would put a component.
+ */
+export function addModuleInstance(
+  def: AppDefinition,
+  slug: string,
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const added = addComponent(def, 'module', { ...opts, base: slug.replace(/[^A-Za-z0-9_]/g, '_') })
+  return {
+    name: added.name,
+    definition: {
+      ...added.definition,
+      components: added.definition.components.map((c) =>
+        c.name === added.name ? { ...c, props: { module: slug } } : c,
+      ),
+    },
+  }
 }

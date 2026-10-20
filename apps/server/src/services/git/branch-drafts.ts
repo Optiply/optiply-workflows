@@ -1,27 +1,12 @@
-import { type AppDefinition, appDefinitionHash, appDefinitionSchema, validateApp } from '@ow/app-definition'
-import {
-  type App,
-  apps,
-  type Db,
-  type GitBranchDraft,
-  gitBranchDrafts,
-  type Workflow,
-  workflows,
-} from '@ow/db'
-import {
-  definitionHash,
-  validateDefinition,
-  type WorkflowDefinition,
-  workflowDefinitionSchema,
-} from '@ow/definition'
+import { type Db, type GitBranchDraft, gitBranchDrafts } from '@ow/db'
 import {
   decodeObject,
   encodeObjectDir,
   type Files,
+  KIND_LABELS,
   type ObjectKind,
   objectDir,
   type Problem,
-  type RepoObject,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
@@ -29,10 +14,21 @@ import type { Config } from '../../config'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch, GitConflictError } from './commit'
 import {
+  definitionSchema,
+  draftColumn,
+  draftOwner,
+  draftTarget,
+  type GitObjectRow,
+  kindDefinitionHash,
+  kindDiagnostics,
+  liveOrDraft,
+  loadGitObject,
+} from './kinds'
+import {
   ensureBaseBranch,
   gitTrpcError,
-  liveOrDraft,
   manifestIfMissing,
+  repoObject,
   requireGitRepo,
   requireNotDeployBranch,
 } from './protection'
@@ -45,19 +41,15 @@ type User = { id: string; name: string; email: string }
 const MAX_DIFF_TEXT = 200_000
 
 /** The object a branch draft belongs to. */
-export type DraftObject = { kind: 'workflow'; object: Workflow } | { kind: 'app'; object: App }
-
-export function draftKind(draft: GitBranchDraft): ObjectKind {
-  return draft.workflowId ? 'workflow' : 'app'
-}
+export type DraftObject = { kind: ObjectKind; object: GitObjectRow }
 
 /** What the editor gets: the draft, its checks, and where it stands against the branch. */
 export async function branchDraftView(draft: GitBranchDraft) {
-  const kind = draftKind(draft)
+  const { kind, id } = draftTarget(draft)
   return {
     id: draft.id,
     kind,
-    objectId: (draft.workflowId ?? draft.appId)!,
+    objectId: id,
     branch: draft.branch,
     name: draft.name,
     description: draft.description,
@@ -67,25 +59,9 @@ export async function branchDraftView(draft: GitBranchDraft) {
     branchExists: draft.branchExists,
     committedCommit: draft.committedCommit,
     updatedAt: draft.updatedAt,
-    draftHash:
-      kind === 'workflow'
-        ? await definitionHash(draft.definition as WorkflowDefinition)
-        : await appDefinitionHash(draft.definition as AppDefinition),
-    diagnostics:
-      kind === 'workflow'
-        ? validateDefinition(draft.definition as WorkflowDefinition).diagnostics
-        : validateApp(draft.definition as AppDefinition).diagnostics,
+    draftHash: await kindDefinitionHash(kind, draft.definition),
+    diagnostics: kindDiagnostics(kind, draft.definition),
   }
-}
-
-function repoObject(
-  kind: ObjectKind,
-  slug: string,
-  value: { name: string; description: string | null; definition: unknown },
-): RepoObject {
-  return kind === 'workflow'
-    ? { kind, slug, value: { ...value, definition: value.definition as WorkflowDefinition } }
-    : { kind, slug, value: { ...value, definition: value.definition as AppDefinition } }
 }
 
 /** The object's directory at a commit: its files (inside the directory) and, when there are any, what they decode to. */
@@ -124,12 +100,12 @@ export async function openBranchDraft(
   if (!object.gitProtected) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
-      message: `This ${kind} isn't protected: edit it here`,
+      message: `This ${KIND_LABELS[kind]} isn't protected: edit it here`,
     })
   }
   const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   requireNotDeployBranch(branch, deployBranch)
-  const column = kind === 'workflow' ? gitBranchDrafts.workflowId : gitBranchDrafts.appId
+  const column = draftColumn(kind)
   const [existing] = await db
     .select()
     .from(gitBranchDrafts)
@@ -165,9 +141,9 @@ export async function openBranchDraft(
   const [created] = await db
     .insert(gitBranchDrafts)
     .values({
-      ...(kind === 'workflow' ? { workflowId: object.id } : { appId: object.id }),
+      ...draftOwner(kind, object.id),
       branch,
-      definition: value.definition as WorkflowDefinition | AppDefinition,
+      definition: value.definition as GitBranchDraft['definition'],
       name: value.name,
       description: value.description,
       baseCommit: base,
@@ -198,15 +174,13 @@ export async function saveBranchDraft(
     description?: string | null
   },
 ): Promise<GitBranchDraft> {
-  const kind = draftKind(opts.draft)
-  const parsed = (kind === 'workflow' ? workflowDefinitionSchema : appDefinitionSchema).safeParse(
-    opts.definition,
-  )
-  if (!parsed.success) throw invalidInput(`${kind} definition`, parsed.error.issues)
+  const { kind } = draftTarget(opts.draft)
+  const parsed = definitionSchema(kind).safeParse(opts.definition)
+  if (!parsed.success) throw invalidInput(`${KIND_LABELS[kind]} definition`, parsed.error.issues)
   const [saved] = await db
     .update(gitBranchDrafts)
     .set({
-      definition: parsed.data as WorkflowDefinition | AppDefinition,
+      definition: parsed.data as GitBranchDraft['definition'],
       ...(opts.name !== undefined ? { name: opts.name } : {}),
       ...(opts.description !== undefined ? { description: opts.description } : {}),
       revision: opts.revision + 1,
@@ -336,7 +310,7 @@ export async function updateBranchDraftFromBranch(
   const [updated] = await db
     .update(gitBranchDrafts)
     .set({
-      definition: value.definition as WorkflowDefinition | AppDefinition,
+      definition: value.definition as GitBranchDraft['definition'],
       name: value.name,
       description: value.description,
       baseCommit: tip,
@@ -408,6 +382,26 @@ export async function commitBranchDraft(
   return { ...result, draft: updated ?? draft }
 }
 
+/**
+ * The definition of the object's draft on a branch (the editor running a protected object's branch draft);
+ * NOT_FOUND when the draft isn't that object's.
+ */
+export async function branchDraftDefinition(
+  db: Db,
+  kind: ObjectKind,
+  objectId: string,
+  branchDraftId: string,
+): Promise<GitBranchDraft['definition']> {
+  const [draft] = await db
+    .select({ definition: gitBranchDrafts.definition })
+    .from(gitBranchDrafts)
+    .where(and(eq(gitBranchDrafts.id, branchDraftId), eq(draftColumn(kind), objectId)))
+  if (!draft) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: `This ${KIND_LABELS[kind]} has no such branch draft` })
+  }
+  return draft.definition
+}
+
 /** A branch draft with its object, for someone with Edit on it; NOT_FOUND otherwise. */
 export async function loadBranchDraft(
   db: Db,
@@ -415,10 +409,7 @@ export async function loadBranchDraft(
 ): Promise<{ draft: GitBranchDraft; target: DraftObject }> {
   const [draft] = await db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, id))
   if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
-  if (draft.workflowId) {
-    const [object] = await db.select().from(workflows).where(eq(workflows.id, draft.workflowId))
-    return { draft, target: { kind: 'workflow', object: object! } }
-  }
-  const [object] = await db.select().from(apps).where(eq(apps.id, draft.appId!))
-  return { draft, target: { kind: 'app', object: object! } }
+  const { kind, id: objectId } = draftTarget(draft)
+  const object = await loadGitObject(db, kind, { id: objectId })
+  return { draft, target: { kind, object: object! } }
 }

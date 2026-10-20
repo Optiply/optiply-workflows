@@ -1,9 +1,9 @@
-import { apps, workflows } from '@ow/db'
+import { GIT_OBJECT_KINDS } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
 import { GitHubError, openGitHub } from '../../services/git/github'
+import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import {
   gitTrpcError,
   openPullRequestFor,
@@ -24,24 +24,18 @@ import { loadAccess, requireLevel } from '../../services/permissions'
 import { adminProcedure, authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
-const Kind = z.enum(['workflow', 'app'])
+const Kind = z.enum(GIT_OBJECT_KINDS)
 
-/** The workflow or app and the caller's level on it; ones they can't see are NOT_FOUND. */
+/** The workflow, app, library query or module and the caller's level on it; ones they can't see are NOT_FOUND. */
 async function gitObject(
   ctx: Context & { user: NonNullable<Context['user']> },
-  kind: 'workflow' | 'app',
+  kind: (typeof GIT_OBJECT_KINDS)[number],
   id: string,
 ) {
   const access = await loadAccess(ctx.db, ctx.user)
-  if (kind === 'workflow') {
-    const [object] = await ctx.db.select().from(workflows).where(eq(workflows.id, id))
-    const level = object ? access.workflowLevel(object) : null
-    if (!object || !level) throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow not found' })
-    return { object, level }
-  }
-  const [object] = await ctx.db.select().from(apps).where(eq(apps.id, id))
-  const level = object ? access.appLevel(object) : null
-  if (!object || !level) throw new TRPCError({ code: 'NOT_FOUND', message: 'App not found' })
+  const object = await loadGitObject(ctx.db, kind, { id })
+  const level = object ? gitObjectLevel(access, kind, object) : null
+  if (!object || !level) throw new TRPCError({ code: 'NOT_FOUND', message: `${kindTitle(kind)} not found` })
   return { object, level }
 }
 

@@ -8,21 +8,37 @@ import {
   type EventHandler,
   entityPages,
   formInputs,
+  instanceRelease,
+  isServerQuery,
+  moduleComponentSpec,
+  moduleInterface,
+  OUTPUTS,
+  queryTemplates,
   resolvePage,
+  runsAutomatically,
+  type ServerAppQuery,
   sameValue,
 } from '@ow/app-definition'
-import type { Effect, LogLevel, QueryOutcome, StatePatch } from './protocol'
+import type { Effect, LogLevel, ModuleReleases, QueryModule, QueryOutcome, StatePatch } from './protocol'
 
 /**
  * Runs an app inside its sandbox: the reactive model, queries (automatic and manual, resource and JS), component
  * and query methods, event handlers and `utils`. Everything outside the sandbox goes through a `HostBridge`, so
  * this runs the same in the browser and in tests.
+ *
+ * A module instance (M14) runs as an `AppRuntime` of its own inside the app's, isolated: the app sees it as a
+ * component whose props are the module's inputs, whose state is its outputs and whose events are its events. Its
+ * values reach the page under the instance's prefix (`picker1/table1.data`), and the page addresses its components
+ * the same way.
  */
 
 /** What the runtime needs from the page. */
 export interface HostBridge {
-  /** Runs one of the app's resource queries on the server with the values of its `{{ }}`s. */
-  runQuery(query: string, values: Record<string, unknown>): Promise<QueryOutcome>
+  /**
+   * Runs one of the app's server queries with the values of its `{{ }}`s; with `module`, one of that module
+   * instance's.
+   */
+  runQuery(query: string, values: Record<string, unknown>, module?: QueryModule): Promise<QueryOutcome>
   /** Asks the user to confirm before a query runs. */
   confirm(message: string): Promise<boolean>
   effect(effect: Effect): void
@@ -39,6 +55,26 @@ export interface AppRuntimeOptions {
   autoRunDelayMs?: number
   /** The page the app opens on (its first when missing or unknown) and the URL's query parameters. */
   url?: { page?: string | null; params?: Record<string, string> }
+  /**
+   * The module releases the app's instances run (M14), by `slug@version` (`instanceRelease`). An instance whose
+   * release isn't here doesn't run, and takes any props.
+   */
+  modules?: ModuleReleases
+  /** In a module instance (M14): what `inputs.<name>` starts as. */
+  inputs?: Record<string, unknown>
+  /** In a module instance (M14): fires one of the module's events on the instance in the app. */
+  onEvent?: (event: string) => Promise<boolean>
+}
+
+/** A module instance running in the app (M14). */
+interface Instance {
+  runtime: AppRuntime
+  slug: string
+  releaseId: string
+  /** The module's inputs: the instance's props passed on to `inputs.<name>`. */
+  inputs: ReadonlySet<string>
+  /** The instance's own errors, by its node keys (the app prefixes them). */
+  errors: Record<string, string>
 }
 
 /** A query failure, marked once the user has been told so callers up the chain don't tell them again. */
@@ -63,11 +99,15 @@ export class AppRuntime {
   private readonly stale = new Set<string>()
   private lastErrors = '{}'
   private stopped = false
+  /** Module instances by component name (M14). */
+  private readonly instances = new Map<string, Instance>()
+  /** While instances start: what they publish waits for the app's first patch. */
+  private early: Record<string, unknown> | null = null
 
   constructor(
     readonly definition: AppDefinition,
     private readonly bridge: HostBridge,
-    options: AppRuntimeOptions = {},
+    private readonly options: AppRuntimeOptions = {},
   ) {
     this.queries = new Map(definition.queries.map((q) => [q.name, q]))
     this.pages = entityPages(definition)
@@ -77,7 +117,19 @@ export class AppRuntime {
       globals: { ...options.globals, utils: this.utils() },
       methods: (entity) => this.methodsFor(entity),
       ...(options.url && { url: options.url }),
+      ...(options.inputs && { inputs: options.inputs }),
+      specFor: (c) => {
+        const release = c.type === 'module' ? this.releaseOf(c) : undefined
+        return release ? moduleComponentSpec(moduleInterface(release.definition)) : undefined
+      },
     })
+  }
+
+  /** The release a module instance runs; undefined when the page didn't send it. */
+  private releaseOf(component: AppDefinition['components'][number]) {
+    const ref = instanceRelease(component)
+    const modules = this.options.modules
+    return ref && modules && Object.hasOwn(modules, ref.key) ? { ...ref, ...modules[ref.key]! } : undefined
   }
 
   /** The page shown; null in an app without pages. */
@@ -108,8 +160,7 @@ export class AppRuntime {
     const run = opening.filter(
       (q) =>
         q.runOnLoad ||
-        (q.kind === 'resource' &&
-          q.run === 'auto' &&
+        (runsAutomatically(q) &&
           !this.autoTimers.has(q.name) &&
           (this.stale.has(q.name) || !this.runs.has(q.name))),
     )
@@ -131,18 +182,120 @@ export class AppRuntime {
       previous.stop()
       this.model.set(this.carriedOver(previous))
     }
+    const loading = this.startInstances(previous)
     const values: Record<string, unknown> = {}
     for (const key of this.model.graph.order) {
       if (!this.model.graph.nodes.get(key)!.property.startsWith('$')) values[key] = this.model.get(key)
     }
-    this.publish(values)
+    this.publish({ ...values, ...this.early })
+    this.early = null
     const onLoad = this.definition.queries.filter(
       (q) =>
-        ((q.kind === 'resource' && q.run === 'auto') || q.runOnLoad) &&
+        (runsAutomatically(q) || q.runOnLoad) &&
         this.active(q.name) &&
         (!previous || this.mustRerun(q, previous)),
     )
-    await Promise.allSettled(onLoad.map((q) => this.runQuiet(q.name)))
+    await Promise.allSettled([...loading, ...onLoad.map((q) => this.runQuiet(q.name))])
+  }
+
+  /**
+   * Starts a runtime for each module instance whose release the page sent, with its inputs from the instance's
+   * props; with `previous`, an instance of the same module there carries over (see `start`). Returns their loads.
+   * What they publish meanwhile goes into the app's first patch, and their outputs into its model, so the app's
+   * on-load queries see them (and run once).
+   */
+  private startInstances(previous?: AppRuntime): Promise<void>[] {
+    const loading: Promise<void>[] = []
+    this.early = {}
+    for (const component of this.definition.components) {
+      if (component.type !== 'module') continue
+      const release = this.releaseOf(component)
+      if (!release) continue
+      const name = component.name
+      try {
+        const iface = moduleInterface(release.definition)
+        const inputs = Object.fromEntries(iface.inputs.map((i) => [i, this.model.get(`${name}.${i}`)]))
+        const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
+          ...(this.options.globals && { globals: this.options.globals }),
+          ...(this.options.runner && { runner: this.options.runner }),
+          autoRunDelayMs: this.autoRunDelayMs,
+          inputs,
+          onEvent: (event) => this.fire(name, event),
+        })
+        this.instances.set(name, {
+          runtime,
+          slug: release.slug,
+          releaseId: release.releaseId,
+          inputs: new Set(iface.inputs),
+          errors: {},
+        })
+        const before = previous?.instances.get(name)
+        loading.push(runtime.start(before?.slug === release.slug ? { previous: before.runtime } : {}))
+      } catch (err) {
+        this.bridge.log('error', `${name}: the module could not start: ${message(err)}`)
+      }
+    }
+    return loading
+  }
+
+  /** What a module instance's runtime sees of the page: its queries tagged, its values under its prefix. */
+  private instanceBridge(name: string): HostBridge {
+    return {
+      runQuery: (query, values) =>
+        this.bridge.runQuery(query, values, {
+          instance: name,
+          releaseId: this.instances.get(name)!.releaseId,
+        }),
+      confirm: (text) => this.bridge.confirm(text),
+      effect: (effect) => this.bridge.effect(effect),
+      log: (level, text) => this.bridge.log(level, `${name}/${text}`),
+      publish: (patch) => this.fromInstance(name, patch),
+    }
+  }
+
+  /** A module instance's patch: its values for the page (prefixed), its outputs into the instance's state. */
+  private fromInstance(name: string, patch: StatePatch) {
+    const instance = this.instances.get(name)
+    if (this.stopped || !instance) return
+    if (patch.errors) instance.errors = patch.errors
+    const values: Record<string, unknown> = {}
+    const outputs: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(patch.values)) {
+      if (!key.startsWith(`${OUTPUTS}.`)) values[`${name}/${key}`] = value
+      else {
+        const state = `${name}.${key.slice(OUTPUTS.length + 1)}`
+        if (this.model.graph.nodes.get(state)?.kind === 'source') outputs[state] = value
+      }
+    }
+    if (this.early) {
+      Object.assign(this.early, values)
+      this.forwardInputs(this.model.set(outputs))
+    } else {
+      this.apply(outputs, values)
+    }
+  }
+
+  /** Passes the instances' changed input props on to their `inputs.<name>`. */
+  private forwardInputs(changed: Iterable<string>) {
+    const updates = new Map<Instance, Record<string, unknown>>()
+    for (const key of changed) {
+      const node = this.model.graph.nodes.get(key)
+      const instance = node?.kind === 'prop' ? this.instances.get(node.entity) : undefined
+      if (!instance?.inputs.has(node!.property)) continue
+      const own = updates.get(instance) ?? {}
+      own[`inputs.${node!.property}`] = this.model.get(key)
+      updates.set(instance, own)
+    }
+    for (const [instance, own] of updates) instance.runtime.set(own)
+  }
+
+  /** The runtime a page-side name belongs to: a module instance's for `instance/name`, otherwise this one. */
+  private route(name: string): [AppRuntime, string] {
+    const slash = name.indexOf('/')
+    if (slash < 0) return [this, name]
+    const instance = this.instances.get(name.slice(0, slash))
+    if (!instance) throw new Error(`No module instance is named ${name.slice(0, slash)}`)
+    return [instance.runtime, name.slice(slash + 1)]
   }
 
   /** The run-time values of `previous` that still mean the same thing in this definition. */
@@ -153,6 +306,8 @@ export class AppRuntime {
       if (node.kind !== 'source' && node.kind !== 'state') continue
       const old = before.graph.nodes.get(key)
       if (!old || old.kind !== node.kind) continue
+      // A module's inputs come from the app, as they are now.
+      if (node.entity === 'inputs' && this.model.graph.entities.get('inputs')?.kind === 'inputs') continue
       // An input whose default changed starts from the new default.
       if (node.from && !sameValue(before.get(old.from!), this.model.get(node.from))) continue
       const entity = this.model.graph.entities.get(node.entity)!
@@ -172,7 +327,7 @@ export class AppRuntime {
     const before = previous.queries.get(query.name)
     if (!before || JSON.stringify(before) !== JSON.stringify(query)) return true
     if (previous.model.get(`${query.name}.isFetching`) === true) return true
-    if (query.kind !== 'resource') return false
+    if (!isServerQuery(query)) return false
     const last = previous.sent.get(query.name)
     if (last === undefined) return true
     try {
@@ -184,10 +339,10 @@ export class AppRuntime {
     return false
   }
 
-  /** The values of a resource query's `{{ }}`s, as the browser evaluates them. */
-  private valuesFor(query: AppQuery & { kind: 'resource' }, locals: Record<string, unknown>) {
+  /** The values of a server query's `{{ }}`s (`queryTemplates`), as the browser evaluates them. */
+  private valuesFor(query: ServerAppQuery, locals: Record<string, unknown>) {
     const values: Record<string, unknown> = {}
-    for (const code of browserExpressions(query.query)) {
+    for (const code of browserExpressions(queryTemplates(query))) {
       try {
         values[code] = this.model.evaluateExpression(code, locals)
       } catch (err) {
@@ -197,15 +352,24 @@ export class AppRuntime {
     return values
   }
 
-  /** Stops timers; later results are ignored. */
+  /** Stops timers and module instances; later results are ignored. */
   stop(): void {
     this.stopped = true
     for (const timer of [...this.autoTimers.values(), ...this.debounced.values()]) clearTimeout(timer)
+    for (const instance of this.instances.values()) instance.runtime.stop()
   }
 
-  /** Values the user changed (typing, selecting, editing a cell). */
+  /** Values the user changed (typing, selecting, editing a cell); a module instance's as `instance/key`. */
   set(updates: Record<string, unknown>): void {
-    this.apply(updates)
+    const own: Record<string, unknown> = {}
+    const routed = new Map<AppRuntime, Record<string, unknown>>()
+    for (const [key, value] of Object.entries(updates)) {
+      const [runtime, inner] = this.route(key)
+      if (runtime === this) own[key] = value
+      else routed.set(runtime, { ...routed.get(runtime), [inner]: value })
+    }
+    if (Object.keys(own).length) this.apply(own)
+    for (const [runtime, inner] of routed) runtime.set(inner)
   }
 
   /**
@@ -213,6 +377,8 @@ export class AppRuntime {
    * them succeeded; a failing handler is reported to the user, not thrown.
    */
   async fire(owner: string, event: string, locals: Record<string, unknown> = {}): Promise<boolean> {
+    const [runtime, inner] = this.route(owner)
+    if (runtime !== this) return runtime.fire(inner, event, locals)
     const entity = this.model.graph.entities.get(owner)
     const handlers = entity ? handlersOf(entity).filter((h) => h.event === event) : []
     const results = await Promise.all(
@@ -235,6 +401,8 @@ export class AppRuntime {
 
   /** Calls a method the way an event handler or script would (`modal1.close()`, `table1.selectRow(3)`). */
   async call(entity: string, method: string, args: unknown[] = []): Promise<unknown> {
+    const [runtime, inner] = this.route(entity)
+    if (runtime !== this) return runtime.call(inner, method, args)
     const target = this.model.graph.entities.get(entity)
     const fn = target && (this.methodsFor(target)[method] as ((...a: unknown[]) => unknown) | undefined)
     if (!fn) throw new Error(`${entity} has no method ${method}`)
@@ -247,6 +415,8 @@ export class AppRuntime {
    * the same query wins: an older one finishing late doesn't overwrite its result.
    */
   async trigger(name: string, options: { additionalScope?: Record<string, unknown> } = {}): Promise<unknown> {
+    const [runtime, inner] = this.route(name)
+    if (runtime !== this) return runtime.trigger(inner, options)
     const query = this.queries.get(name)
     if (!query) throw new Error(`No query is named ${name}`)
     const locals = options.additionalScope ?? {}
@@ -263,7 +433,7 @@ export class AppRuntime {
 
     try {
       let data: unknown
-      if (query.kind === 'resource') {
+      if (isServerQuery(query)) {
         const values = this.valuesFor(query, locals)
         this.sent.set(name, JSON.stringify(values))
         const outcome = await this.bridge.runQuery(name, values)
@@ -314,21 +484,28 @@ export class AppRuntime {
     this.apply({ [`${name}.data`]: null, [`${name}.error`]: null, [`${name}.isFetching`]: false })
   }
 
-  /** Sets values, publishes what changed and schedules the automatic queries whose inputs changed. */
-  private apply(updates: Record<string, unknown>): void {
+  /**
+   * Sets values, publishes what changed (with `extra`: a module instance's values) and schedules the automatic
+   * queries whose inputs changed; module instances whose input props changed get them.
+   */
+  private apply(updates: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
     if (this.stopped) return
     const changed = this.model.set(updates)
-    const values: Record<string, unknown> = {}
+    const values: Record<string, unknown> = { ...extra }
     for (const key of changed) {
       const node = this.model.graph.nodes.get(key)!
       if (node.kind === 'trigger') this.scheduleAuto(node.entity)
       else values[key] = this.model.get(key)
     }
     this.publish(values)
+    this.forwardInputs(changed)
   }
 
   private publish(values: Record<string, unknown>) {
     const errors = Object.fromEntries(this.model.allErrors())
+    for (const [name, instance] of this.instances) {
+      for (const [key, error] of Object.entries(instance.errors)) errors[`${name}/${key}`] = error
+    }
     const text = JSON.stringify(errors)
     const errorsChanged = text !== this.lastErrors
     this.lastErrors = text
@@ -400,6 +577,11 @@ export class AppRuntime {
             url: String(this.model.evaluateTemplate(action.url, locals) ?? ''),
             newTab: action.newTab ?? false,
           })
+          break
+        case 'moduleEvent':
+          // Outside an app (a module run on its own) there's nobody to handle it.
+          if (this.options.onEvent) await this.options.onEvent(action.event)
+          else this.bridge.log('info', `Module event: ${action.event}`)
           break
       }
       return true

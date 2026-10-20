@@ -3,6 +3,7 @@ import {
   appDefinitionHash,
   appDefinitionSchema,
   emptyApp,
+  instanceKeys,
   validateApp,
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
@@ -11,6 +12,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
+import { moduleReleasesByKey } from '../../services/modules'
 import {
   type Access,
   checkFolderMove,
@@ -106,7 +108,11 @@ export const appsRouter = router({
       }
     }),
 
-  /** For people using the app: its live release. NOT_FOUND until the first release. */
+  /**
+   * For people using the app: its live release, and the module releases its instances run (M14) by `slug@version`
+   * (the app's publisher vouched for them; an instance whose release is gone doesn't run). NOT_FOUND until the
+   * first release.
+   */
   open: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, input)
     const live = await liveRelease(ctx, app)
@@ -116,6 +122,7 @@ export const appsRouter = router({
     return {
       ...summary(app, access),
       release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
+      modules: await moduleReleasesByKey(ctx.db, instanceKeys(live.definition)),
     }
   }),
 
@@ -323,13 +330,15 @@ export const appsRouter = router({
         /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
         branchDraftId: Id.optional(),
         query: QueryName,
+        /** A module instance's query (M14): the instance and the module release the page runs. */
+        module: z.object({ instance: QueryName, releaseId: Id }).optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),
     )
     .mutation(async ({ ctx, input, signal }) => {
       const { access, app } = await visibleApp(ctx, { id: input.appId })
-      const { outcome, manual, version } = await runAppQuery(
+      const { outcome, manual, version, library, module } = await runAppQuery(
         { db: ctx.db, keyring: ctx.config.keyring, pool: ctx.services.pool, sandbox: ctx.services.sandbox },
         access,
         ctx.user,
@@ -338,6 +347,7 @@ export const appsRouter = router({
           releaseId: input.releaseId,
           branchDraftId: input.branchDraftId,
           query: input.query,
+          ...(input.module && { module: input.module }),
           environmentId: input.environmentId,
           values: input.values,
           ...(signal && { signal }),
@@ -352,6 +362,8 @@ export const appsRouter = router({
           metadata: {
             query: input.query,
             version: version ?? 'draft',
+            ...(module && { module: `${input.module!.instance}: ${module.slug}@${module.version}` }),
+            ...(library && { library: `${library.slug}@${library.version}` }),
             ok: outcome.ok,
             errorCode: outcome.ok ? undefined : outcome.error.code,
             durationMs: outcome.durationMs,

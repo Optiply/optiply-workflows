@@ -82,7 +82,7 @@ export function PullRequestLink({
 }
 
 /**
- * Protecting a workflow or app: what it means, an optional branch name, and then the branch and pull request it
+ * Protecting a workflow, app, library query or module: what it means, an optional branch name, and then the branch and pull request it
  * made (or how to open one by hand).
  */
 export function ProtectDialog({
@@ -90,12 +90,12 @@ export function ProtectDialog({
   object,
   onClose,
 }: {
-  kind: 'workflow' | 'app'
+  kind: GitKind
   object: { id: string; slug: string; name: string }
   onClose: () => void
 }) {
   const trpc = useTRPC()
-  const queryClient = useQueryClient()
+  const refresh = useRefreshKind(kind)
   const { data: git } = useGitInfo()
   const defaultBranch = `protect/${kind}-${object.slug}`
   const [branch, setBranch] = useState(defaultBranch)
@@ -104,12 +104,7 @@ export function ProtectDialog({
     trpc.git.protect.mutationOptions({
       onSuccess: async (done) => {
         setResult(done)
-        await queryClient.invalidateQueries({
-          queryKey: kind === 'workflow' ? trpc.workflows.list.queryKey() : trpc.apps.list.queryKey(),
-        })
-        await queryClient.invalidateQueries({
-          queryKey: kind === 'workflow' ? trpc.workflows.get.queryKey() : trpc.apps.get.queryKey(),
-        })
+        await refresh()
       },
     }),
   )
@@ -148,8 +143,8 @@ export function ProtectDialog({
       {result ? (
         <div className="flex flex-col gap-3 text-sm" data-testid="protect-result">
           <p>
-            The {kind} is protected: from now on it’s edited on Git branches, and merging into{' '}
-            <span className="font-mono">{git?.branch}</span> deploys it.
+            The {GIT_KIND_LABELS[kind]} is protected: from now on it’s edited on Git branches, and merging
+            into <span className="font-mono">{git?.branch}</span> deploys it.
           </p>
           <p>
             Its files are on <span className="font-mono">{result.branch}</span> (
@@ -190,9 +185,9 @@ export function ProtectDialog({
       ) : (
         <div className="flex flex-col gap-4 text-sm">
           <p>
-            A protected {kind} is reviewed before it goes live. Its live version is committed to a branch and
-            a pull request into <span className="font-mono">{git?.branch ?? 'main'}</span> is opened. From
-            then on:
+            A protected {GIT_KIND_LABELS[kind]} is reviewed before it goes live. Its live version is committed
+            to a branch and a pull request into <span className="font-mono">{git?.branch ?? 'main'}</span> is
+            opened. From then on:
           </p>
           <ul className="list-disc space-y-1 pl-5 text-muted">
             <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
@@ -213,22 +208,42 @@ export function ProtectDialog({
 }
 
 /** Unprotecting: confirms, then lets the object be edited here again. */
-export function useUnprotect(kind: 'workflow' | 'app') {
+export function useUnprotect(kind: GitKind) {
+  const trpc = useTRPC()
+  const refresh = useRefreshKind(kind)
+  return useMutation(trpc.git.unprotect.mutationOptions({ onSuccess: () => refresh() }))
+}
+
+/** What Git sync keeps: workflows, apps, and since M14 library queries and modules. */
+export type GitKind = 'workflow' | 'app' | 'library_query' | 'module'
+
+/** Each kind as people read it. */
+export const GIT_KIND_LABELS: Record<GitKind, string> = {
+  workflow: 'workflow',
+  app: 'app',
+  library_query: 'library query',
+  module: 'module',
+}
+
+/** Where each kind's directories are in the repo. */
+export const GIT_KIND_ROOTS: Record<GitKind, string> = {
+  workflow: 'workflows',
+  app: 'apps',
+  library_query: 'library',
+  module: 'modules',
+}
+
+/** Refetches a kind's list and objects (after protecting or unprotecting one). */
+function useRefreshKind(kind: GitKind) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
-  return useMutation(
-    trpc.git.unprotect.mutationOptions({
-      onSuccess: () =>
-        Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: kind === 'workflow' ? trpc.workflows.list.queryKey() : trpc.apps.list.queryKey(),
-          }),
-          queryClient.invalidateQueries({
-            queryKey: kind === 'workflow' ? trpc.workflows.get.queryKey() : trpc.apps.get.queryKey(),
-          }),
-        ]),
-    }),
-  )
+  const keys = {
+    workflow: [trpc.workflows.list.queryKey(), trpc.workflows.get.queryKey()],
+    app: [trpc.apps.list.queryKey(), trpc.apps.get.queryKey()],
+    library_query: [trpc.libraryQueries.list.queryKey(), trpc.libraryQueries.get.queryKey()],
+    module: [trpc.modules.list.queryKey(), trpc.modules.get.queryKey()],
+  }[kind]
+  return () => Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
 }
 
 export const UNPROTECT_CONFIRM =

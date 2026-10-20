@@ -53,6 +53,7 @@ function methodSignatures(entity: Entity): string[] {
       )
     case 'transformer':
     case 'url':
+    case 'inputs':
       return []
   }
 }

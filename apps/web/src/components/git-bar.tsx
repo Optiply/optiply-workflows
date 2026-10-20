@@ -9,7 +9,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { CommitLink, PullRequestLink, useGitInfo } from '@/components/git'
+import { CommitLink, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { lineDiff, withContext } from '@/lib/diff'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -20,7 +20,7 @@ type Changes = RouterOutputs['branchDrafts']['changes']
 
 /** What the bar needs from the editor it sits in. */
 export interface GitBarProps {
-  kind: 'workflow' | 'app'
+  kind: GitKind
   object: { id: string; slug: string; name: string }
   /** The branch being edited, or null for main (read-only). */
   branch: string | null

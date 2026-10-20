@@ -4,10 +4,12 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   expressionSide,
+  instanceRelease,
+  usedLibraries,
+  usedModules,
   validateApp,
 } from '@ow/app-definition'
-import { ConnectorError, getConnector, type PoolManager, runQuery } from '@ow/connectors'
-import type { Keyring } from '@ow/crypto'
+import { getConnector } from '@ow/connectors'
 import {
   type App,
   type AppRelease,
@@ -16,18 +18,19 @@ import {
   type Db,
   environments,
   gitBranchDrafts,
+  type LibraryQuery,
+  type Module,
   type Resource,
-  resourceConfigs,
   resources,
 } from '@ow/db'
-import { bumpVersion, canonicalJson, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
-import type { CodeRuntime } from '@ow/sandbox'
+import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
-import { credentialsFor } from './oauth-tokens'
+import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
+import { moduleInfos, resolveModuleRelease } from './modules'
 import { type Access, atLeast } from './permissions'
-import { errorView, toJson } from './query-results'
-import { toResolved } from './resources'
+import { nextReleaseVersion } from './release-versions'
+import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -39,21 +42,42 @@ function queriedResources(def: AppDefinition): string[] {
   return [...new Set(def.queries.flatMap((q) => (q.kind === 'resource' ? [q.resource] : [])))].sort()
 }
 
-/** Validates an app with its resource queries checked by their connectors; also returns those resources. */
+/**
+ * Validates an app with its resource queries checked by their connectors and its library queries against the
+ * library (the version exists, the parameters are declared); also returns those resources and library queries.
+ */
 export async function checkApp(
   db: Db,
   definition: AppDefinition,
-): Promise<{ resources: Resource[]; errors: AppDiagnostic[]; diagnostics: AppDiagnostic[] }> {
+): Promise<{
+  resources: Resource[]
+  libraries: LibraryQuery[]
+  modules: Module[]
+  errors: AppDiagnostic[]
+  diagnostics: AppDiagnostic[]
+}> {
   const slugs = queriedResources(definition)
-  const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
+  const [rows, libraries, placed] = await Promise.all([
+    slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
+    libraryInfos(db, usedLibraries(definition)),
+    moduleInfos(db, usedModules(definition)),
+  ])
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const { diagnostics } = validateApp(definition, {
+    resolveModule: (slug) => placed.get(slug)?.info,
     resolveResource: (slug) => {
       const resource = bySlug.get(slug)
       return resource ? getConnector(resource.type) : undefined
     },
+    resolveLibrary: (slug) => libraries.get(slug)?.info,
   })
-  return { resources: rows, errors: diagnostics.filter((d) => d.severity === 'error'), diagnostics }
+  return {
+    resources: rows,
+    libraries: [...libraries.values()].map((l) => l.query),
+    modules: [...placed.values()].map((m) => m.module),
+    errors: diagnostics.filter((d) => d.severity === 'error'),
+    diagnostics,
+  }
 }
 
 /**
@@ -71,17 +95,51 @@ async function checkReleasable(
   if (access && !atLeast(access.appLevel(app), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to release it' })
   }
-  const { resources: used, errors } = await checkApp(db, definition)
+  await checkVouched(db, access, definition, 'app')
+}
+
+/**
+ * What vouching for a definition's queries takes (an app's or a module's, M14): it's valid, and the publisher has
+ * Use on every resource it queries in every environment, and on every library query and module it uses (whose
+ * own publishers vouched for theirs). `access` null is Git sync: grants aren't checked.
+ */
+export async function checkVouched(
+  db: Db,
+  access: Access | null,
+  definition: AppDefinition,
+  what: 'app' | 'module',
+): Promise<void> {
+  const { resources: used, libraries, modules: placed, errors } = await checkApp(db, definition)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `The app isn't valid: ${errors[0]!.message}${more}` })
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `The ${what} isn't valid: ${errors[0]!.message}${more}`,
+    })
   }
-  const envIds = (await db.select({ id: environments.id }).from(environments)).map((e) => e.id)
-  for (const resource of access ? used : []) {
-    if (!atLeast(access!.levelEverywhere(resource, envIds), 'use')) {
+  if (!access) return
+  for (const library of libraries) {
+    if (!atLeast(access.libraryQueryLevel(library), 'use')) {
       throw new TRPCError({
         code: 'FORBIDDEN',
-        message: `You need use access to resource "${resource.slug}" in every environment to release this app`,
+        message: `You need use access to library query "${library.slug}" to release this ${what}, which uses it`,
+      })
+    }
+  }
+  for (const module of placed) {
+    if (!atLeast(access.moduleLevel(module), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to module "${module.slug}" to release this ${what}, which uses it`,
+      })
+    }
+  }
+  const envIds = (await db.select({ id: environments.id }).from(environments)).map((e) => e.id)
+  for (const resource of used) {
+    if (!atLeast(access.levelEverywhere(resource, envIds), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to resource "${resource.slug}" in every environment to release this ${what}`,
       })
     }
   }
@@ -198,19 +256,10 @@ async function insertAppRelease(
     .where(eq(appReleases.appId, locked.id))
   const live = existing.find((r) => r.id === locked.liveReleaseId)
   if (live?.hash === hash) return { unchanged: live.version }
-  const highest =
-    existing
-      .map((r) => r.version)
-      .sort(compareVersions)
-      .at(-1) ?? null
-  const version = opts.version ?? bumpVersion(highest, opts.bump ?? 'patch')
-  if (!parseSemver(version)) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Use a version like 1.2.3' })
-  if (highest && compareVersions(version, highest) <= 0) {
-    throw new TRPCError({
-      code: 'CONFLICT',
-      message: `The version must be higher than v${highest}, the latest release`,
-    })
-  }
+  const version = nextReleaseVersion(
+    existing.map((r) => r.version),
+    opts,
+  )
   const [release] = await tx
     .insert(appReleases)
     .values({
@@ -242,16 +291,8 @@ export async function setLiveAppRelease(
   return release
 }
 
-export interface AppQueryDeps {
-  db: Db
-  keyring: Keyring
-  pool: PoolManager
-  sandbox: CodeRuntime
-}
-
-export type AppQueryOutcome =
-  | { ok: true; data: unknown; metadata: Record<string, unknown>; durationMs: number }
-  | { ok: false; error: { code: string; message: string; details: unknown }; durationMs: number }
+export type AppQueryDeps = QueryRunDeps
+export type AppQueryOutcome = QueryOutcome
 
 /**
  * Runs one of an app's resource queries, as stored in the draft (`releaseId` null) or the live release, in one
@@ -264,6 +305,10 @@ export type AppQueryOutcome =
  * Who may: for the draft, Edit on the app and Use on the resource in that environment (like a workflow's draft
  * run); for the live release, Use on the app (its publisher vouched for the resources). A release that is no
  * longer live is refused, so a page left open can't keep running an old version's queries.
+ *
+ * With `module` (M14), the query is a module instance's: it runs from the module release the instance names (its
+ * publisher vouched for what it reaches), which must be the one the page runs (`releaseId`), or the page is told
+ * to reload. Running the app's draft also needs Use on the module.
  */
 export async function runAppQuery(
   deps: AppQueryDeps,
@@ -275,11 +320,21 @@ export async function runAppQuery(
     /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
     branchDraftId?: string
     query: string
+    /** A module instance's query (M14): the instance's name and the module release the page runs. */
+    module?: { instance: string; releaseId: string }
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
   },
-): Promise<{ outcome: AppQueryOutcome; manual: boolean; version: string | null }> {
+): Promise<{
+  outcome: AppQueryOutcome
+  manual: boolean
+  version: string | null
+  /** For a library query: the release that ran. */
+  library: { slug: string; version: string } | null
+  /** For a module instance's query: the module release that ran. */
+  module: { slug: string; version: string } | null
+}> {
   const { db } = deps
   const { app } = opts
   let definition: AppDefinition
@@ -314,41 +369,93 @@ export async function runAppQuery(
     version = release.version
   }
 
+  const labels = { ow_source: 'app', ow_app: app.slug, ow_user: user.id }
+  if (opts.module) {
+    const { instance } = opts.module
+    const component = definition.components.find((c) => c.name === instance && c.type === 'module')
+    const ref = component && instanceRelease(component)
+    if (!ref) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: `The app has no module instance named "${instance}"`,
+      })
+    }
+    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
+    if (release.id !== opts.module.releaseId) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: `Module "${module.slug}" has a new version; reload to get it`,
+      })
+    }
+    if (opts.releaseId === null && !atLeast(access.moduleLevel(module), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to module "${module.slug}" to run the draft's queries`,
+      })
+    }
+    const ran = await runDefinitionQuery(deps, access, user, {
+      definition: release.definition,
+      what: 'module',
+      query: opts.query,
+      environmentId: opts.environmentId,
+      values: opts.values,
+      draft: false,
+      labels: { ...labels, ow_module: module.slug },
+      ...(opts.signal && { signal: opts.signal }),
+    })
+    return { ...ran, version, module: { slug: module.slug, version: release.version } }
+  }
+
+  const ran = await runDefinitionQuery(deps, access, user, {
+    definition,
+    what: 'app',
+    query: opts.query,
+    environmentId: opts.environmentId,
+    values: opts.values,
+    draft: opts.releaseId === null,
+    labels,
+    ...(opts.signal && { signal: opts.signal }),
+  })
+  return { ...ran, version, module: null }
+}
+
+/**
+ * Runs one of a definition's server queries (an app's or a module's) by name with the values the browser sent:
+ * a resource query on its resource, a library query from its release. `draft`: nobody vouched for the definition,
+ * so the person needs Use on the resources and library queries themselves.
+ */
+export async function runDefinitionQuery(
+  deps: AppQueryDeps,
+  access: Access,
+  user: { id: string; email: string; name: string },
+  opts: {
+    definition: AppDefinition
+    /** Whose definition it is, for messages. */
+    what: 'app' | 'module'
+    query: string
+    environmentId: string
+    values: Record<string, unknown>
+    draft: boolean
+    labels: Record<string, string>
+    signal?: AbortSignal
+  },
+): Promise<{
+  outcome: AppQueryOutcome
+  manual: boolean
+  /** For a library query: the release that ran. */
+  library: { slug: string; version: string } | null
+}> {
+  const { db } = deps
+  const { definition } = opts
   const query = definition.queries.find((q) => q.name === opts.query)
   if (!query)
-    throw new TRPCError({ code: 'NOT_FOUND', message: `The app has no query named "${opts.query}"` })
-  if (query.kind !== 'resource') {
+    throw new TRPCError({ code: 'NOT_FOUND', message: `The ${opts.what} has no query named "${opts.query}"` })
+  if (query.kind === 'js') {
     throw new TRPCError({
       code: 'BAD_REQUEST',
       message: `"${query.name}" is a JS query; it runs in the browser`,
     })
   }
-  const [resource] = await db.select().from(resources).where(eq(resources.slug, query.resource))
-  if (!resource) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `No resource has the slug "${query.resource}"` })
-  }
-  if (opts.releaseId === null && !atLeast(access.level(resource, opts.environmentId), 'use')) {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: `You need use access to resource "${resource.slug}" in this environment to run the draft's queries`,
-    })
-  }
-  const connector = getConnector(resource.type)
-  if (!connector)
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `Unknown resource type "${resource.type}"` })
-  const [row] = await db
-    .select()
-    .from(resourceConfigs)
-    .where(
-      and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, opts.environmentId)),
-    )
-  if (!row) {
-    throw new TRPCError({
-      code: 'BAD_REQUEST',
-      message: `Resource "${resource.slug}" isn't configured in this environment`,
-    })
-  }
-
   const currentUser = { id: user.id, email: user.email, name: user.name }
   const evaluate = (code: string): unknown => {
     switch (expressionSide(code)) {
@@ -368,38 +475,54 @@ export async function runAppQuery(
     }
   }
 
-  const started = performance.now()
-  let outcome: AppQueryOutcome
-  try {
-    const resolved = toResolved(deps.keyring, row)
-    // Apps always have a person behind them: per-user resources use the viewer's own account.
-    const credentials = credentialsFor(
-      { db, keyring: deps.keyring, sandbox: deps.sandbox },
-      resolved,
-      user.id,
-    )
-    const result = await runQuery(deps.pool, connector, resolved, query.query, {
+  const { labels } = opts
+  if (query.kind === 'resource') {
+    const outcome = await runStoredQuery(deps, access, user, {
+      resource: query.resource,
+      query: query.query,
+      environmentId: opts.environmentId,
       evaluate,
-      ...(credentials && { credentials }),
+      draft: opts.draft ? "the draft's queries" : null,
       ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
       ...(opts.signal && { signal: opts.signal }),
-      labels: { ow_source: 'app', ow_app: app.slug, ow_user: user.id },
-      // The values came from the browser: a REST path gets each as one encoded segment.
-      untrustedValues: true,
+      labels,
     })
-    outcome = {
-      ok: true,
-      data: toJson(result.data),
-      metadata: toJson(result.metadata) as Record<string, unknown>,
-      durationMs: Math.round(performance.now() - started),
-    }
-  } catch (err) {
-    if (!(err instanceof ConnectorError)) throw err
-    outcome = {
-      ok: false,
-      error: errorView(err),
-      durationMs: Math.round(performance.now() - started),
-    }
+    return { outcome, manual: query.run === 'manual', library: null }
   }
-  return { outcome, manual: query.run === 'manual', version }
+
+  // A library query (M14): the release's resource and query run, vouched for by whoever published it. The app's
+  // publisher vouched for using it; a draft's runner needs Use on it themselves.
+  const { query: libraryQuery, release } = await resolveLibraryRelease(db, query.library, query.version)
+  if (opts.draft && !atLeast(access.libraryQueryLevel(libraryQuery), 'use')) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: `You need use access to library query "${libraryQuery.slug}" to run the draft's queries`,
+    })
+  }
+  const library = release.definition
+  // The parameters are rendered when the library query's first {{ }} needs them, so a broken one is reported as
+  // that expression's error.
+  let scoped: Promise<(code: string) => Promise<unknown>> | undefined
+  const evaluateLibrary = async (code: string) => {
+    scoped ??= renderParams(query.params ?? {}, evaluate).then((params) =>
+      libraryEvaluator(deps.sandbox, library, params, user),
+    )
+    return (await scoped)(code)
+  }
+  const timeoutMs = query.timeoutMs ?? library.timeoutMs
+  const outcome = await runStoredQuery(deps, access, user, {
+    resource: library.resource,
+    query: library.query,
+    environmentId: opts.environmentId,
+    evaluate: evaluateLibrary,
+    draft: null,
+    ...(timeoutMs !== undefined && { timeoutMs }),
+    ...(opts.signal && { signal: opts.signal }),
+    labels: { ...labels, ow_library: libraryQuery.slug },
+  })
+  return {
+    outcome,
+    manual: query.run === 'manual',
+    library: { slug: libraryQuery.slug, version: release.version },
+  }
 }

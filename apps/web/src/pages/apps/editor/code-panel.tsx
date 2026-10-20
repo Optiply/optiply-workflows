@@ -4,6 +4,7 @@ import {
   addTransformer,
   addVariable,
   type JsonValue,
+  type LibraryAppQuery,
   removeCode,
   setEntityPage,
   setHandlers,
@@ -12,7 +13,16 @@ import {
   updateVariable,
 } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
-import { Braces, Code2, Database, Loader2, Play, Trash2, Variable as VariableIcon } from 'lucide-react'
+import {
+  Braces,
+  Code2,
+  Database,
+  Library,
+  Loader2,
+  Play,
+  Trash2,
+  Variable as VariableIcon,
+} from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
@@ -22,6 +32,7 @@ import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/reac
 import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValuePreview } from './fields'
 import { HandlersEditor } from './handlers'
 import { PageSelect } from './inspector'
+import { AddLibraryQueryDialog, LibraryQueryBody, LibraryQueryHeader } from './library'
 import { type PanelTab, useAppEditor } from './store'
 
 /** The bottom panel: queries, transformers and variables; the app's state; problems; the console. */
@@ -77,6 +88,7 @@ function CodeTab() {
   }
   // New queries and transformers go on the page being edited.
   const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
+  const [picking, setPicking] = useState(false)
   const query = definition.queries.find((q) => q.name === open)
   const transformer = definition.transformers?.find((t) => t.name === open)
   const variable = definition.variables?.find((v) => v.name === open)
@@ -104,6 +116,15 @@ function CodeTab() {
               >
                 <Code2 className="size-3.5" />
               </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a query from the library"
+                onClick={() => setPicking(true)}
+              >
+                <Library className="size-3.5" />
+              </Button>
+              {picking && <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />}
             </>
           }
         >
@@ -250,6 +271,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const index = definition.queries.findIndex((q) => q.name === query.name)
   const base = ['queries', index]
   const edit = (change: (q: AppQuery) => AppQuery) => update((def) => updateQuery(def, query.name, change))
+  const editLibrary = (change: (q: LibraryAppQuery) => LibraryAppQuery) =>
+    edit((q) => (q.kind === 'library' ? change(q) : q))
   const resource =
     query.kind === 'resource' ? resources.data?.resources.find((r) => r.slug === query.resource) : undefined
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
@@ -295,6 +318,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
               <option value="manual">Run only when triggered</option>
             </Select>
           </>
+        ) : query.kind === 'library' ? (
+          <LibraryQueryHeader query={query} edit={editLibrary} />
         ) : (
           <span className="self-center text-xs text-muted">JavaScript, run in the browser</span>
         )}
@@ -335,7 +360,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
             onChange={(next) => edit((q) => (q.kind === 'resource' ? { ...q, query: next } : q))}
           />
         )
-      ) : (
+      ) : query.kind === 'js' ? (
         <AppCodeField
           path={[...base, 'code']}
           language="javascript"
@@ -344,6 +369,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
           problems={problemsAt(diagnostics, [...base, 'code'])}
           onChange={(code) => edit((q) => (q.kind === 'js' ? { ...q, code } : q))}
         />
+      ) : (
+        <LibraryQueryBody query={query} base={base} edit={editLibrary} />
       )}
 
       <QueryResult name={query.name} />
