@@ -1,3 +1,4 @@
+import { type AppQuery, instanceKeys } from '@ow/app-definition'
 import { type AuthorizationCodeSettings, restConnector } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import {
@@ -12,6 +13,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../config'
 import { resolveLibraryRelease } from './library-queries'
+import { moduleReleasesByKey } from './modules'
 import { type Access, atLeast, loadAccess } from './permissions'
 import { decryptConfigSecrets } from './resources'
 
@@ -108,14 +110,25 @@ export async function connectTarget(
 }
 
 /**
- * Whether the user may use the app and its live release queries the resource (by slug): in a resource query, or
- * through a library query whose release (pinned, or live now) runs on it (M14).
+ * Whether the user may use the app and its live release queries the resource (by slug): in a resource query, through
+ * a library query whose release (pinned, or live now) runs on it, or in a module instance's release, the same way
+ * (M14).
  */
 async function liveAppQueries(db: Db, access: Access, appId: string, resourceSlug: string): Promise<boolean> {
   const [app] = await db.select().from(apps).where(eq(apps.id, appId))
   if (!app?.liveReleaseId || !access.appLevel(app)) return false
   const [release] = await db.select().from(appReleases).where(eq(appReleases.id, app.liveReleaseId))
-  const queries = release?.definition.queries ?? []
+  if (!release) return false
+  if (await queriesResource(db, release.definition.queries, resourceSlug)) return true
+  const instances = Object.values(await moduleReleasesByKey(db, instanceKeys(release.definition)))
+  for (const instance of instances) {
+    if (await queriesResource(db, instance.definition.queries, resourceSlug)) return true
+  }
+  return false
+}
+
+/** Whether these queries run on the resource: as resource queries, or through a library query's release. */
+async function queriesResource(db: Db, queries: AppQuery[], resourceSlug: string): Promise<boolean> {
   if (queries.some((q) => q.kind === 'resource' && q.resource === resourceSlug)) return true
   for (const q of queries) {
     if (q.kind !== 'library') continue

@@ -6,10 +6,12 @@ import {
   validateApp,
 } from '@ow/app-definition'
 import { type Module, moduleReleases, modules, permissions, users } from '@ow/db'
+import { workflowSlugSchema } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp } from '../../services/apps'
+import { inUseMessage, usedByView } from '../../services/dependents'
 import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
@@ -33,12 +35,7 @@ import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 /** How apps place it, so it's a stable identifier. */
-const Slug = z
-  .string()
-  .regex(
-    /^[a-z][a-z0-9_-]{1,62}$/,
-    'Use 2–63 lowercase letters, digits, dashes or underscores, starting with a letter',
-  )
+const Slug = workflowSlugSchema
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 const QueryName = z.string().max(64)
@@ -231,11 +228,7 @@ export const modulesRouter = router({
   usedBy: authedProcedure.input(z.object({ moduleId: Id })).query(async ({ ctx, input }) => {
     const { access, module } = await visibleModule(ctx, { id: input.moduleId })
     const users = await moduleUsers(ctx.db, module.slug)
-    const visible = users.filter((u) => access.appLevel(u.app) !== null)
-    return {
-      apps: visible.map(({ app, where }) => ({ id: app.id, slug: app.slug, name: app.name, where })),
-      hidden: users.length - visible.length,
-    }
+    return usedByView(access, users)
   }),
 
   /**
@@ -243,7 +236,8 @@ export const modulesRouter = router({
    * and each release's interface), plus their names; the ones the caller can't see are left out.
    */
   resolve: authedProcedure
-    .input(z.object({ slugs: z.array(Slug).max(200) }))
+    // Whatever the draft holds: a malformed slug is just not found (the validator reports it), not a failed request.
+    .input(z.object({ slugs: z.array(z.string().max(200)).max(200) }))
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       const infos = await moduleInfos(ctx.db, [...new Set(input.slugs)])
@@ -270,21 +264,8 @@ export const modulesRouter = router({
     const { access, module } = await visibleModule(ctx, input)
     requireLevel(access.moduleLevel(module), 'own', 'this module')
     const users = await moduleUsers(ctx.db, module.slug)
-    if (users.length) {
-      // Only apps the caller can see are named.
-      const names = users
-        .filter((u) => access.appLevel(u.app) !== null)
-        .slice(0, 3)
-        .map((u) => `"${u.app.name}"`)
-      const others = users.length - names.length
-      const more = others
-        ? `${names.length ? ' and ' : ''}${others} ${names.length ? 'more' : others === 1 ? 'app' : 'apps'}`
-        : ''
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: `Apps use this module: ${names.join(', ')}${more}. Remove it from them first`,
-      })
-    }
+    if (users.length)
+      throw new TRPCError({ code: 'CONFLICT', message: inUseMessage(access, users, 'module') })
     await ctx.db.transaction(async (tx) => {
       await tx.delete(modules).where(eq(modules.id, input.id))
       await tx

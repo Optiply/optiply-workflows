@@ -5,6 +5,8 @@ import {
   canonicalizeApp,
   expressionSide,
   instanceRelease,
+  usedLibraries,
+  usedModules,
   validateApp,
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
@@ -25,7 +27,7 @@ import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
-import { moduleInfos, resolveModuleRelease, usedModules } from './modules'
+import { moduleInfos, resolveModuleRelease } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -38,11 +40,6 @@ const EXPRESSION_TIMEOUT_MS = 5_000
 /** The resources an app's resource queries name, by slug. */
 function queriedResources(def: AppDefinition): string[] {
   return [...new Set(def.queries.flatMap((q) => (q.kind === 'resource' ? [q.resource] : [])))].sort()
-}
-
-/** The library queries an app's queries use, by slug. */
-export function usedLibraries(def: AppDefinition): string[] {
-  return [...new Set(def.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
 }
 
 /**
@@ -60,10 +57,12 @@ export async function checkApp(
   diagnostics: AppDiagnostic[]
 }> {
   const slugs = queriedResources(definition)
-  const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
+  const [rows, libraries, placed] = await Promise.all([
+    slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
+    libraryInfos(db, usedLibraries(definition)),
+    moduleInfos(db, usedModules(definition)),
+  ])
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
-  const libraries = await libraryInfos(db, usedLibraries(definition))
-  const placed = await moduleInfos(db, usedModules(definition))
   const { diagnostics } = validateApp(definition, {
     resolveModule: (slug) => placed.get(slug)?.info,
     resolveResource: (slug) => {

@@ -1,4 +1,4 @@
-import { type AppComponent, addModuleInstance, setProp } from '@ow/app-definition'
+import { type AppComponent, addModuleInstance, instanceKeys, setProp, usedModules } from '@ow/app-definition'
 import { compareVersions } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -8,7 +8,7 @@ import { Button, Dialog, EmptyState, ErrorNote, Input, Select, Spinner } from '@
 import { useTRPC } from '@/lib/trpc'
 import { placement } from './canvas'
 import { EditorField, ProblemList } from './fields'
-import { useAppEditor, usedModuleKeys, usedModuleSlugs } from './store'
+import { useAppEditor } from './store'
 
 /**
  * Keeps the store's knowledge of the modules the app places current (M14): what the validator needs (each one's
@@ -17,8 +17,8 @@ import { useAppEditor, usedModuleKeys, usedModuleSlugs } from './store'
  */
 export function useModuleSync() {
   const trpc = useTRPC()
-  const slugKey = useAppEditor((s) => usedModuleSlugs(s.definition).join(','))
-  const releaseKey = useAppEditor((s) => usedModuleKeys(s.definition).join(','))
+  const slugKey = useAppEditor((s) => usedModules(s.definition).join(','))
+  const releaseKey = useAppEditor((s) => instanceKeys(s.definition).join(','))
   const setModules = useAppEditor((s) => s.setModules)
   const setModuleReleases = useAppEditor((s) => s.setModuleReleases)
   const slugs = slugKey ? slugKey.split(',') : []

@@ -8,12 +8,8 @@ import {
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
 import {
-  type App,
-  appReleases,
-  apps,
   type Db,
   environments,
-  gitBranchDrafts,
   type LibraryQuery,
   type LibraryQueryRelease,
   libraryQueries,
@@ -25,7 +21,8 @@ import { canonicalJson, type VersionBump } from '@ow/definition'
 import { renderTemplate } from '@ow/expressions'
 import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { type AnyColumn, and, asc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
+import { type AnyColumn, and, eq, inArray, type SQL, sql } from 'drizzle-orm'
+import { type Dependent, dependents } from './dependents'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -140,7 +137,6 @@ export async function publishLibraryRelease(
   })
 }
 
-/** Inserts the next release of a locked library query, unless the live one already has this hash. */
 /**
  * Deploys a protected library query from Git (M14), like a module: the repo's name, description and draft, and a
  * release made by Git sync when the definition differs from the live one. Returns the release, or null when the
@@ -190,6 +186,7 @@ export async function deployLibraryQueryFromGit(
   })
 }
 
+/** Inserts the next release of a locked library query, unless the live one already has this hash. */
 async function insertRelease(
   tx: Tx,
   locked: LibraryQuery,
@@ -382,7 +379,8 @@ export async function libraryInfos(
           libraryQueryId: libraryQueryReleases.libraryQueryId,
           id: libraryQueryReleases.id,
           version: libraryQueryReleases.version,
-          definition: libraryQueryReleases.definition,
+          // Only the parameters, not the whole definition of every release.
+          params: sql<LibraryQueryDefinition['params']>`${libraryQueryReleases.definition} -> 'params'`,
         })
         .from(libraryQueryReleases)
         .where(
@@ -397,7 +395,7 @@ export async function libraryInfos(
       const own = releases.filter((r) => r.libraryQueryId === query.id)
       const info: LibraryInfo = {
         liveVersion: own.find((r) => r.id === query.liveReleaseId)?.version ?? null,
-        versions: Object.fromEntries(own.map((r) => [r.version, r.definition.params.map((p) => p.name)])),
+        versions: Object.fromEntries(own.map((r) => [r.version, r.params.map((p) => p.name)])),
       }
       return [query.slug, { query, info }]
     }),
@@ -409,40 +407,8 @@ const usesLibrary = (column: SQL | AnyColumn, slug: string) =>
   sql`${column} -> 'queries' @> ${JSON.stringify([{ kind: 'library', library: slug }])}::jsonb`
 
 /**
- * The apps using a library query: in their draft, their live release or an open Git branch draft. Deleting it is
- * refused while any does.
+ * The apps and modules using a library query: in their draft, their live release or an open Git branch draft.
+ * Deleting it is refused while any does.
  */
-export async function libraryUsers(
-  db: Db,
-  slug: string,
-): Promise<{ app: App; where: ('draft' | 'live' | 'branch')[] }[]> {
-  const [drafts, live, branches] = await Promise.all([
-    db.select({ id: apps.id }).from(apps).where(usesLibrary(apps.draftDefinition, slug)),
-    db
-      .select({ id: apps.id })
-      .from(apps)
-      .innerJoin(appReleases, eq(appReleases.id, apps.liveReleaseId))
-      .where(usesLibrary(appReleases.definition, slug)),
-    db
-      .select({ id: gitBranchDrafts.appId })
-      .from(gitBranchDrafts)
-      .where(and(isNotNull(gitBranchDrafts.appId), usesLibrary(gitBranchDrafts.definition, slug))),
-  ])
-  const where = new Map<string, ('draft' | 'live' | 'branch')[]>()
-  const add = (id: string | null, kind: 'draft' | 'live' | 'branch') => {
-    if (!id) return
-    const list = where.get(id) ?? []
-    if (!list.includes(kind)) list.push(kind)
-    where.set(id, list)
-  }
-  for (const r of drafts) add(r.id, 'draft')
-  for (const r of live) add(r.id, 'live')
-  for (const r of branches) add(r.id, 'branch')
-  if (!where.size) return []
-  const rows = await db
-    .select()
-    .from(apps)
-    .where(inArray(apps.id, [...where.keys()]))
-    .orderBy(asc(apps.name))
-  return rows.map((app) => ({ app, where: where.get(app.id)! }))
-}
+export const libraryUsers = (db: Db, slug: string): Promise<Dependent[]> =>
+  dependents(db, (column) => usesLibrary(column, slug), { modules: true })

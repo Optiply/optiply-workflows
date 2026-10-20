@@ -124,6 +124,25 @@ export function instanceRelease(
   return { slug, version, key: `${slug}@${version}` }
 }
 
+/** The library queries an app's queries use, by slug, sorted (M14; the server and the editor both resolve these). */
+export function usedLibraries(def: AppDefinition): string[] {
+  return [...new Set(def.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
+}
+
+const placed = (def: AppDefinition) =>
+  def.components.flatMap((c) => {
+    const ref = c.type === 'module' ? instanceRelease(c) : null
+    return ref ? [ref] : []
+  })
+
+/** The modules an app's instances place, by slug, sorted (as `instanceRelease` reads them). */
+export const usedModules = (def: AppDefinition): string[] =>
+  [...new Set(placed(def).map((r) => r.slug))].sort()
+
+/** The `slug@version` keys of the module releases an app's instances run, sorted. */
+export const instanceKeys = (def: AppDefinition): string[] =>
+  [...new Set(placed(def).map((r) => r.key))].sort()
+
 /** The interface of the release a module instance names; null when it can't be told. */
 export function instanceInterface(
   component: AppComponent,
@@ -138,7 +157,7 @@ export function instanceInterface(
 }
 
 /** What an app sees of a module release: its inputs, outputs and events. */
-export function moduleInterface(def: AppDefinition): ModuleInterface {
+export function moduleInterface(def: Pick<AppDefinition, 'module'>): ModuleInterface {
   return {
     inputs: def.module?.inputs.map((i) => i.name) ?? [],
     outputs: def.module?.outputs.map((o) => o.name) ?? [],
@@ -695,7 +714,7 @@ function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, 
   for (const [list, items] of lists) {
     items.forEach((item: { name: string }, i: number) => {
       const path = ['module', list, i, 'name']
-      if (list === 'inputs' && instanceProps.has(item.name)) {
+      if (instanceProps.has(item.name)) {
         report({ code: 'invalid_name', message: `"${item.name}" is a prop every module instance has`, path })
       } else if (seen.has(item.name)) {
         report({

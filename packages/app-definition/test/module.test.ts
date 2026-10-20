@@ -52,6 +52,7 @@ describe('module definitions', () => {
     const def = picker({ pages: [{ name: 'home' }] })
     def.components.push(comp('inputs', 'text'), comp('nested', 'module', { module: 'other' }))
     def.module!.inputs.push({ name: 'version' }, { name: 'selectedId' })
+    def.module!.outputs.push({ name: 'hidden', value: '{{ true }}' })
     def.module!.events.push({ name: 'picked' })
     def.components[2]!.events!.push({
       id: 'b',
@@ -66,6 +67,8 @@ describe('module definitions', () => {
       ['invalid_name', 'components.3.name', 'error'],
       ['invalid_name', 'module.inputs.2.name', 'error'],
       ['duplicate_name', 'module.outputs.0.name', 'error'],
+      // An output can't take an instance prop's name either: it would replace the prop.
+      ['invalid_name', 'module.outputs.1.name', 'error'],
       ['duplicate_name', 'module.events.1.name', 'error'],
       ['unknown_property', 'components.1.props.value', 'warning'],
       // The text component named `inputs` takes the name from the built-in.
@@ -220,5 +223,19 @@ describe('placing a module', () => {
     })
     expect(placed.definition.layout?.customer_picker1).toMatchObject({ w: 6, h: 12 })
     expect(addModuleInstance(placed.definition, 'customer-picker').name).toBe('customer_picker2')
+  })
+
+  it('keeps instance names within 64 characters for a long slug', () => {
+    const slug = 'a'.repeat(63)
+    let def = app({ components: [] })
+    const names: string[] = []
+    for (let i = 0; i < 10; i++) {
+      const placed = addModuleInstance(def, slug)
+      def = placed.definition
+      names.push(placed.name)
+    }
+    expect(names.every((n) => n.length <= 64)).toBe(true)
+    expect(names[9]).toBe(`${'a'.repeat(62)}10`)
+    expect(new Set(names).size).toBe(10)
   })
 })

@@ -577,7 +577,7 @@ function RunCard({
   )
 }
 
-/** The apps using this library query (the ones the person can see). */
+/** The apps and modules using this library query (the ones the person can see). */
 function UsedByCard({ id }: { id: string }) {
   const trpc = useTRPC()
   const usedBy = useQuery(trpc.libraryQueries.usedBy.queryOptions({ libraryQueryId: id }))
@@ -585,9 +585,10 @@ function UsedByCard({ id }: { id: string }) {
     <Card className="flex flex-col gap-2 p-4" data-testid="library-used-by">
       <SectionLabel>Used by</SectionLabel>
       <ErrorNote error={usedBy.error} />
-      {usedBy.data && usedBy.data.apps.length === 0 && usedBy.data.hidden === 0 && (
-        <p className="text-sm text-muted">No app uses it yet.</p>
-      )}
+      {usedBy.data &&
+        usedBy.data.apps.length === 0 &&
+        usedBy.data.modules.length === 0 &&
+        usedBy.data.hidden === 0 && <p className="text-sm text-muted">No app or module uses it yet.</p>}
       <ul className="flex flex-col gap-1">
         {usedBy.data?.apps.map((a) => (
           <li key={a.id} className="flex items-center gap-2 text-sm">
@@ -601,11 +602,21 @@ function UsedByCard({ id }: { id: string }) {
             <span className="text-xs text-muted">{a.where.join(', ')}</span>
           </li>
         ))}
+        {usedBy.data?.modules.map((m) => (
+          <li key={m.id} className="flex items-center gap-2 text-sm">
+            <Link
+              to="/modules/$slug"
+              params={{ slug: m.slug }}
+              className="flex-1 truncate text-accent hover:underline"
+            >
+              {m.name}
+            </Link>
+            <span className="text-xs text-muted">module · {m.where.join(', ')}</span>
+          </li>
+        ))}
       </ul>
       {!!usedBy.data?.hidden && (
-        <p className="text-xs text-muted">
-          and {usedBy.data.hidden} app{usedBy.data.hidden === 1 ? '' : 's'} you can't see
-        </p>
+        <p className="text-xs text-muted">and {usedBy.data.hidden} more you can't see</p>
       )}
     </Card>
   )
@@ -763,7 +774,8 @@ function PublishDialog({
   const usedBy = useQuery(trpc.libraryQueries.usedBy.queryOptions({ libraryQueryId: detail.id }))
   const publish = useMutation(trpc.libraryQueries.publish.mutationOptions())
   const version = bumpVersion(highest, bump)
-  const users = (usedBy.data?.apps.length ?? 0) + (usedBy.data?.hidden ?? 0)
+  const users =
+    (usedBy.data?.apps.length ?? 0) + (usedBy.data?.modules.length ?? 0) + (usedBy.data?.hidden ?? 0)
 
   const submit = async () => {
     setSaveError(null)
@@ -810,7 +822,7 @@ function PublishDialog({
         <p className="text-sm text-muted">
           Apps following the latest release run this one from now on; apps pinned to a version keep theirs. It
           runs with the access you have to its resource now, for everyone using those apps.
-          {users > 0 && ` ${users} app${users === 1 ? ' uses' : 's use'} this query.`}
+          {users > 0 && ` ${users} app${users === 1 ? ' or module uses' : 's or modules use'} this query.`}
         </p>
         {highest ? (
           <Field label="Version">

@@ -28,11 +28,14 @@ export function usedNames(def: AppDefinition): Set<string> {
   ])
 }
 
+const MAX_NAME_LENGTH = 64
+
 /** `base1`, `base2`, …: the first free name. */
 export function nextName(def: AppDefinition, base: string): string {
   const used = usedNames(def)
   for (let n = 1; ; n++) {
-    const name = `${base}${n}`
+    // Names are up to 64 characters (`blockNameSchema`): a long base (a module's slug) gives way to the number.
+    const name = `${base.slice(0, MAX_NAME_LENGTH - String(n).length)}${n}`
     if (!used.has(name) && !appNameReason(name)) return name
   }
 }

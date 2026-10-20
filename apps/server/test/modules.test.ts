@@ -225,13 +225,18 @@ describe('apps placing modules', () => {
         expect.objectContaining({ slug: 'placing_app', where: ['draft', 'live'] }),
         expect.objectContaining({ slug: 'wrong_props_app', where: ['draft'] }),
       ],
+      modules: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('modules.delete', { id: m.id }))).toEqual({
       code: 'CONFLICT',
       message: 'Apps use this module: "placing_app", "wrong_props_app". Remove it from them first',
     })
-    expect(data(await admin.query('modules.resolve', { slugs: ['placed_picker', 'nope'] }))).toEqual({
+    expect(
+      data(
+        await admin.query('modules.resolve', { slugs: ['placed_picker', 'nope', '{{ x }}', 'My Module'] }),
+      ),
+    ).toEqual({
       placed_picker: {
         id: m.id,
         name: 'placed_picker',

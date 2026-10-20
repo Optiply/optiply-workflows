@@ -3,6 +3,7 @@ import {
   appDefinitionHash,
   appDefinitionSchema,
   emptyApp,
+  instanceKeys,
   validateApp,
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
@@ -11,7 +12,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
-import { instanceKeys, moduleReleasesByKey } from '../../services/modules'
+import { moduleReleasesByKey } from '../../services/modules'
 import {
   type Access,
   checkFolderMove,

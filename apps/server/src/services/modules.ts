@@ -2,37 +2,19 @@ import {
   type AppDefinition,
   appDefinitionHash,
   canonicalizeApp,
-  instanceRelease,
   type ModuleInfo,
   moduleInterface,
 } from '@ow/app-definition'
-import {
-  type App,
-  appReleases,
-  apps,
-  type Db,
-  gitBranchDrafts,
-  type Module,
-  type ModuleRelease,
-  moduleReleases,
-  modules,
-} from '@ow/db'
+import { type Db, type Module, type ModuleRelease, moduleReleases, modules } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
-import { type AnyColumn, and, asc, eq, inArray, isNotNull, or, type SQL, sql } from 'drizzle-orm'
+import { type AnyColumn, and, eq, inArray, or, type SQL, sql } from 'drizzle-orm'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
+import { type Dependent, dependents } from './dependents'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
-
-/** The modules an app's components place, by slug. */
-export function usedModules(def: AppDefinition): string[] {
-  const slugs = def.components.flatMap((c) =>
-    c.type === 'module' && typeof c.props?.module === 'string' ? [c.props.module] : [],
-  )
-  return [...new Set(slugs)].sort()
-}
 
 /** The modules an app places, by slug, with what the validator needs (the live version, each release's interface). */
 export async function moduleInfos(
@@ -47,7 +29,8 @@ export async function moduleInfos(
           moduleId: moduleReleases.moduleId,
           id: moduleReleases.id,
           version: moduleReleases.version,
-          definition: moduleReleases.definition,
+          // Only the interface part, not the whole definition of every release.
+          module: sql<AppDefinition['module'] | null>`${moduleReleases.definition} -> 'module'`,
         })
         .from(moduleReleases)
         .where(
@@ -62,20 +45,13 @@ export async function moduleInfos(
       const own = releases.filter((r) => r.moduleId === module.id)
       const info: ModuleInfo = {
         liveVersion: own.find((r) => r.id === module.liveReleaseId)?.version ?? null,
-        versions: Object.fromEntries(own.map((r) => [r.version, moduleInterface(r.definition)])),
+        versions: Object.fromEntries(
+          own.map((r) => [r.version, moduleInterface({ module: r.module ?? undefined })]),
+        ),
       }
       return [module.slug, { module, info }]
     }),
   )
-}
-
-/** The `slug@version` keys of the module releases an app's instances run (`instanceRelease`). */
-export function instanceKeys(def: AppDefinition): string[] {
-  const keys = def.components.flatMap((c) => {
-    const ref = c.type === 'module' ? instanceRelease(c) : null
-    return ref ? [ref.key] : []
-  })
-  return [...new Set(keys)].sort()
 }
 
 /** A module release as the page runs it (M14): the runtime's `ModuleRelease` plus its version. */
@@ -178,41 +154,9 @@ export async function resolveModuleRelease(
 const placesModule = (column: SQL | AnyColumn, slug: string) =>
   sql`${column} -> 'components' @> ${JSON.stringify([{ type: 'module', props: { module: slug } }])}::jsonb`
 
-/** The apps placing a module: in their draft, their live release or an open Git branch draft. */
-export async function moduleUsers(
-  db: Db,
-  slug: string,
-): Promise<{ app: App; where: ('draft' | 'live' | 'branch')[] }[]> {
-  const [drafts, live, branches] = await Promise.all([
-    db.select({ id: apps.id }).from(apps).where(placesModule(apps.draftDefinition, slug)),
-    db
-      .select({ id: apps.id })
-      .from(apps)
-      .innerJoin(appReleases, eq(appReleases.id, apps.liveReleaseId))
-      .where(placesModule(appReleases.definition, slug)),
-    db
-      .select({ id: gitBranchDrafts.appId })
-      .from(gitBranchDrafts)
-      .where(and(isNotNull(gitBranchDrafts.appId), placesModule(gitBranchDrafts.definition, slug))),
-  ])
-  const where = new Map<string, ('draft' | 'live' | 'branch')[]>()
-  const add = (id: string | null, kind: 'draft' | 'live' | 'branch') => {
-    if (!id) return
-    const list = where.get(id) ?? []
-    if (!list.includes(kind)) list.push(kind)
-    where.set(id, list)
-  }
-  for (const r of drafts) add(r.id, 'draft')
-  for (const r of live) add(r.id, 'live')
-  for (const r of branches) add(r.id, 'branch')
-  if (!where.size) return []
-  const rows = await db
-    .select()
-    .from(apps)
-    .where(inArray(apps.id, [...where.keys()]))
-    .orderBy(asc(apps.name))
-  return rows.map((app) => ({ app, where: where.get(app.id)! }))
-}
+/** The apps placing a module: in their draft, their live release or an open Git branch draft (no modules in modules). */
+export const moduleUsers = (db: Db, slug: string): Promise<Dependent[]> =>
+  dependents(db, (column) => placesModule(column, slug), { modules: false })
 
 /**
  * What making a module release live takes. Apps run its queries without their viewers or publishers holding any

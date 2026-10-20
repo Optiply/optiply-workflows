@@ -1,4 +1,4 @@
-import { type AppDefinition, addLibraryQuery, type LibraryAppQuery } from '@ow/app-definition'
+import { type AppDefinition, addLibraryQuery, type LibraryAppQuery, usedLibraries } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ExternalLink, Library } from 'lucide-react'
@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { Dialog, EmptyState, ErrorNote, Input, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCodeField, EditorField, problemsAt } from './fields'
-import { useAppEditor, usedLibrarySlugs } from './store'
+import { useAppEditor } from './store'
 
 /**
  * Keeps the store's knowledge of the library queries the app uses current (M14), so the validator checks their
@@ -14,7 +14,7 @@ import { useAppEditor, usedLibrarySlugs } from './store'
  */
 export function useLibrarySync() {
   const trpc = useTRPC()
-  const key = useAppEditor((s) => usedLibrarySlugs(s.definition).join(','))
+  const key = useAppEditor((s) => usedLibraries(s.definition).join(','))
   const setLibraries = useAppEditor((s) => s.setLibraries)
   const slugs = key ? key.split(',') : []
   const resolved = useQuery({

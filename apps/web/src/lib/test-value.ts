@@ -10,6 +10,12 @@ export function parseTestValue(text: string): JsonValue | undefined {
   }
 }
 
-/** A test value as it's typed back: strings as they are, everything else as JSON. */
-export const showTestValue = (value: unknown) =>
-  value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value)
+/**
+ * A test value as it's typed back: everything as JSON, except a string that wouldn't read back as JSON (`hello`),
+ * shown as it is. So the string `"42"` keeps its quotes and stays a string on the next keystroke.
+ */
+export function showTestValue(value: unknown): string {
+  if (value === undefined) return ''
+  if (typeof value !== 'string') return JSON.stringify(value)
+  return parseTestValue(value) === value ? value : JSON.stringify(value)
+}

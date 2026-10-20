@@ -6,11 +6,12 @@ import {
   type ComponentSpec,
   componentSpec,
   instanceInterface,
-  instanceRelease,
   type LibraryInfo,
   type ModuleInfo,
   moduleComponentSpec,
   resolvePage,
+  usedLibraries,
+  usedModules,
   validateApp,
 } from '@ow/app-definition'
 import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
@@ -236,30 +237,6 @@ function viewOf(state: AppEditorState): AppEditorView {
 }
 
 /**
- * The state after `definition` replaces the current one: validated, on a page it has, and saved or dirty by whether
- * it differs from what the server has (undoing back to it needs no save). A save in flight finishes first: `saved`
- * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
- * still there.
- */
-/** The library queries an app uses, by slug, sorted. */
-export function usedLibrarySlugs(definition: AppDefinition): string[] {
-  return [...new Set(definition.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
-}
-
-/** The modules an app places, by slug, sorted. */
-export function usedModuleSlugs(definition: AppDefinition): string[] {
-  return [...new Set(definition.components.flatMap((c) => instanceKey(c)?.slug ?? []))].sort()
-}
-
-/** The `slug@version` keys of the module releases the app's instances run, sorted. */
-export function usedModuleKeys(definition: AppDefinition): string[] {
-  return [...new Set(definition.components.flatMap((c) => instanceKey(c)?.key ?? []))].sort()
-}
-
-const instanceKey = (c: AppDefinition['components'][number]) =>
-  c.type === 'module' ? instanceRelease(c) : null
-
-/**
  * The browser's checks, library queries and module instances included once the server said about each one the
  * app uses.
  */
@@ -268,15 +245,21 @@ function validate(
   { libraries, modules }: Pick<AppEditorState, 'libraries' | 'modules'>,
 ): AppDiagnostic[] {
   const options: AppValidateOptions = {}
-  if (usedLibrarySlugs(definition).every((slug) => Object.hasOwn(libraries, slug))) {
+  if (usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))) {
     options.resolveLibrary = (slug) => libraries[slug] ?? undefined
   }
-  if (usedModuleSlugs(definition).every((slug) => Object.hasOwn(modules, slug))) {
+  if (usedModules(definition).every((slug) => Object.hasOwn(modules, slug))) {
     options.resolveModule = (slug) => modules[slug] ?? undefined
   }
   return validateApp(definition, options).diagnostics
 }
 
+/**
+ * The state after `definition` replaces the current one: validated, on a page it has, and saved or dirty by whether
+ * it differs from what the server has (undoing back to it needs no save). A save in flight finishes first: `saved`
+ * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
+ * still there.
+ */
 function applied(
   state: AppEditorState,
   definition: AppDefinition,

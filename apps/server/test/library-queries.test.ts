@@ -377,6 +377,7 @@ describe('library queries in apps', () => {
         expect.objectContaining({ slug: 'latest_app', where: ['draft', 'live'] }),
         expect.objectContaining({ slug: 'pinned_app', where: ['draft', 'live'] }),
       ],
+      modules: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
@@ -443,9 +444,47 @@ describe('library queries in apps', () => {
     })
     expect(data(await member.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
       apps: [],
+      modules: [],
       hidden: 1,
     })
     await grant('library_query', q.id, null)
+  })
+
+  it('counts modules using it: deleting it is refused while one does', async () => {
+    const q = await libraryQuery('module_lib', definition('select {{ x }}::int as x', [{ name: 'x' }]))
+    await admin.mutate('libraryQueries.publish', { libraryQueryId: q.id, draftRevision: q.revision() })
+    const created = data(await admin.mutate('modules.create', { slug: 'lib_module', name: 'Lib module' }))
+    await admin.mutate('modules.saveDraft', {
+      id: created.id,
+      revision: 1,
+      definition: {
+        schemaVersion: 1,
+        components: [],
+        queries: [
+          {
+            name: 'lookup',
+            kind: 'library',
+            library: 'module_lib',
+            version: 'latest',
+            params: { x: '1' },
+            run: 'auto',
+          },
+        ],
+        layout: {},
+        module: { inputs: [], outputs: [], events: [] },
+      },
+    })
+    expect(data(await admin.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
+      apps: [],
+      modules: [expect.objectContaining({ slug: 'lib_module', where: ['draft'] })],
+      hidden: 0,
+    })
+    expect(failure(await admin.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
+      code: 'CONFLICT',
+      message: 'Apps or modules use this library query: "Lib module". Remove it from them first',
+    })
+    await admin.mutate('modules.delete', { id: created.id })
+    expect(data(await admin.mutate('libraryQueries.delete', { id: q.id }))).toBeDefined()
   })
 
   it('checks the reference when publishing and in the editor', async () => {

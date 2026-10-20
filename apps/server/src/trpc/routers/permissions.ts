@@ -11,10 +11,12 @@ import {
   resources,
   workflows,
 } from '@ow/db'
+import { KIND_LABELS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import { z } from 'zod'
-import { KIND_LABEL, loadAccess, type ObjectKind, requireLevel } from '../../services/permissions'
+import { kindTitle } from '../../services/git/kinds'
+import { loadAccess, type ObjectKind, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
@@ -53,9 +55,9 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
     const table = { app: apps, library_query: libraryQueries, module: modules }[target.objectType]
     const [object] = await ctx.db.select().from(table).where(eq(table.id, target.objectId)).limit(1)
     const access = await loadAccess(ctx.db, ctx.user)
-    const label = KIND_LABEL[target.objectType]
+    const label = KIND_LABELS[target.objectType]
     if (!object || access.objectLevel(target.objectType, object) === null) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: `${capitalize(label)} not found` })
+      throw new TRPCError({ code: 'NOT_FOUND', message: `${kindTitle(target.objectType)} not found` })
     }
     requireLevel(access.objectLevel(target.objectType, object), 'own', `this ${label}`)
     return
@@ -66,8 +68,6 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
   const envIds = (await ctx.db.select({ id: environments.id }).from(environments)).map((e) => e.id)
   requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
 }
-
-const capitalize = (s: string) => s[0]!.toUpperCase() + s.slice(1)
 
 function targetWhere(target: z.infer<typeof Target>) {
   return and(
@@ -119,7 +119,7 @@ export const permissionsRouter = router({
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
       if (input.objectType !== 'resource' && input.objectType !== 'folder' && input.environmentId !== null) {
-        const what = capitalize(KIND_LABEL[input.objectType])
+        const what = kindTitle(input.objectType)
         throw new TRPCError({ code: 'BAD_REQUEST', message: `${what} access applies to every environment` })
       }
       // Likewise for their folders: a grant for one environment would never count.
@@ -129,7 +129,7 @@ export const permissionsRouter = router({
           .from(folders)
           .where(eq(folders.id, input.objectId))
         if (folder && folder.objectType !== 'resource') {
-          const what = capitalize(KIND_LABEL[folder.objectType as ObjectKind])
+          const what = kindTitle(folder.objectType as ObjectKind)
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: `${what} folder access applies to every environment`,

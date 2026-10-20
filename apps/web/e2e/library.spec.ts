@@ -52,7 +52,7 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await page.getByTestId('releases').getByRole('button', { name: 'Make live' }).click()
   await expect(page.getByTestId('releases').locator('li').filter({ hasText: 'v1.0.0' })).toContainText('Live')
   await page.keyboard.press('Escape')
-  await expect(page.getByTestId('library-used-by')).toContainText('No app uses it yet')
+  await expect(page.getByTestId('library-used-by')).toContainText('No app or module uses it yet')
   await page.getByRole('link', { name: 'Library', exact: true }).first().click()
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
 })

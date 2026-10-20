@@ -1,4 +1,5 @@
 import { type Db, folders, groupMembers, PERMISSION_LEVELS, type PermissionLevel, permissions } from '@ow/db'
+import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { eq, inArray } from 'drizzle-orm'
 
@@ -14,16 +15,8 @@ function higher(a: PermissionLevel | null, b: PermissionLevel | null): Permissio
   return RANK[a] >= RANK[b] ? a : b
 }
 
-/** Objects with grants, folders, drafts and releases but no environments (resources have those). */
-export type ObjectKind = 'workflow' | 'app' | 'library_query' | 'module'
-
-/** How messages name each kind. */
-export const KIND_LABEL: Record<ObjectKind, string> = {
-  workflow: 'workflow',
-  app: 'app',
-  library_query: 'library query',
-  module: 'module',
-}
+/** Objects with grants, folders, drafts and releases but no environments (resources have those): Git's kinds. */
+export type { ObjectKind }
 
 interface Grant {
   objectType: string
@@ -232,7 +225,7 @@ export async function checkFolderType(db: Db, type: ObjectKind, folderId: string
     .from(folders)
     .where(eq(folders.id, folderId))
   if (!folder || folder.objectType !== type) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: `No ${KIND_LABEL[type]} folder has that id` })
+    throw new TRPCError({ code: 'BAD_REQUEST', message: `No ${KIND_LABELS[type]} folder has that id` })
   }
 }
 
@@ -250,6 +243,6 @@ export async function checkFolderMove(
   },
 ) {
   if (opts.to === undefined || opts.to === opts.from) return
-  requireLevel(opts.level, 'own', `this ${KIND_LABEL[opts.type]} to move it between folders`)
+  requireLevel(opts.level, 'own', `this ${KIND_LABELS[opts.type]} to move it between folders`)
   await checkFolderType(db, opts.type, opts.to)
 }
