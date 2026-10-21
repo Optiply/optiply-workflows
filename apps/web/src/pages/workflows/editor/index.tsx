@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
-import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { Avatar, Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -29,6 +29,7 @@ import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
 import { useRunEvents } from './live'
+import { usePresence } from './presence'
 import { ReleaseControls, ReleasesTab } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
@@ -250,6 +251,7 @@ function Header({
       </div>
       <SaveIndicator />
       <div className="flex-1" />
+      <PresenceAvatars />
       {!canEdit && <Badge>Read only</Badge>}
       {/* A protected workflow is published by merging on Git. */}
       <ReleaseControls workflow={workflow} canEdit={canEdit && !workflow.gitProtected} />
@@ -454,6 +456,36 @@ function RunControls({
       >
         <History className="size-4" /> Runs
       </Button>
+    </div>
+  )
+}
+
+/** At most this many people's avatars show; the rest are counted. */
+const MAX_AVATARS = 4
+
+/** Who else has this draft open (M16), each ringed in their colour; oneself (in any tab) isn't shown. */
+function PresenceAvatars() {
+  const { me } = route.useRouteContext()
+  const peers = usePresence((s) => s.peers)
+  const people = [...new Map(peers.filter((p) => p.user.id !== me.id).map((p) => [p.user.id, p])).values()]
+  if (!people.length) return null
+  const more = people.length - MAX_AVATARS
+  return (
+    <div className="flex items-center" data-testid="presence">
+      {people.slice(0, MAX_AVATARS).map((p) => (
+        <span
+          key={p.user.id}
+          title={p.user.name}
+          data-testid={`presence-${p.user.name}`}
+          className={cn(
+            '-ml-1.5 rounded-full ring-2 ring-[var(--presence)] first:ml-0',
+            `ow-presence-${p.colour}`,
+          )}
+        >
+          <Avatar name={p.user.name} src={p.user.avatarUrl} />
+        </span>
+      ))}
+      {more > 0 && <span className="ml-1.5 text-xs text-muted">and {more} more</span>}
     </div>
   )
 }

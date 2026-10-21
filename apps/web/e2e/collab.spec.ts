@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { E2E_SECOND_EMAIL } from './global-setup'
 import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, typeInto } from './helpers'
 
 const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText('Saved')
@@ -125,4 +126,53 @@ test('two people typing in one code field merge as they type', async ({ page, br
   await saved(page)
 
   await otherContext.close()
+})
+
+/** M16 step 5: who else is here (avatars), what they have selected (outlines with names) and where their pointer is. */
+test('presence in the workflow editor: avatars, selections and pointers', async ({ page, browser }) => {
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Presence ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await block(page, 'startTrigger').click()
+  await addBlock(page, 'code')
+  await saved(page)
+  // Nobody else yet; oneself isn't shown.
+  await expect(page.getByTestId('presence')).toHaveCount(0)
+
+  const secondContext = await browser.newContext()
+  const second = await secondContext.newPage()
+  await signIn(second, E2E_SECOND_EMAIL)
+  await second.goto(page.url())
+  await saved(second)
+
+  await test.step('each sees the other in the header', async () => {
+    await expect(page.getByTestId('presence-Second')).toBeVisible()
+    await expect(second.getByTestId('presence-E2E')).toBeVisible()
+  })
+
+  await test.step("a block selected there is outlined here with their name, and this one's there", async () => {
+    await block(second, 'code1').click()
+    await expect(page.getByTestId('peers-code1')).toHaveText('Second')
+    await clickEmptyCanvas(page)
+    await block(page, 'startTrigger').click()
+    await expect(second.getByTestId('peers-startTrigger')).toHaveText('E2E')
+    await clickEmptyCanvas(second)
+    await expect(page.getByTestId('peers-code1')).toHaveCount(0)
+  })
+
+  await test.step('their pointer moves on the canvas here, and goes when it leaves', async () => {
+    const box = (await second.getByTestId('canvas').boundingBox())!
+    await second.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await second.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 30, { steps: 5 })
+    await expect(page.getByTestId('pointer-Second')).toBeVisible()
+    await second.mouse.move(box.x + box.width / 2, box.y - 40)
+    await expect(page.getByTestId('pointer-Second')).toHaveCount(0)
+  })
+
+  await test.step('closing their editor takes them away', async () => {
+    await secondContext.close()
+    await expect(page.getByTestId('presence')).toHaveCount(0)
+  })
 })

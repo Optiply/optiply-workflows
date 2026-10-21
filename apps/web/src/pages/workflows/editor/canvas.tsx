@@ -13,13 +13,17 @@ import {
   type NodeProps,
   Position,
   ReactFlow,
+  useReactFlow,
+  ViewportPortal,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { AlertCircle, Map as MapIcon } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { kindOf, summary } from './catalog'
 import { NODE_WIDTH, positionsFor } from './layout'
+import { sharePointer, usePresence } from './presence'
 import { type LiveBlock, useRun } from './run-state'
 import { type GraphPart, graphOf, problemsOf, updateGraph, useEditor } from './store'
 
@@ -74,6 +78,7 @@ export function Canvas() {
     [allDiagnostics, fn],
   )
 
+  const { screenToFlowPosition } = useReactFlow()
   const runBlocks = useRun((s) => s.blocks)
   const live = fn === null ? runBlocks : NO_LIVE
   const derived = useMemo(
@@ -154,8 +159,14 @@ export function Canvas() {
       fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
       minZoom={0.2}
       proOptions={{ hideAttribution: true }}
+      // Where this editor's pointer is, for everyone else (M16): in flow coordinates.
+      onMouseMove={(e) => sharePointer(screenToFlowPosition({ x: e.clientX, y: e.clientY }))}
+      onMouseLeave={() => sharePointer(null)}
     >
       <Background gap={20} size={1} />
+      <ViewportPortal>
+        <Pointers graph={fn} />
+      </ViewportPortal>
       <Controls showInteractive={false}>
         <ControlButton
           onClick={toggleMinimap}
@@ -248,8 +259,36 @@ function toEdges(
   }))
 }
 
+/** Everyone else's pointer on this graph: an arrow and their name in their colour, at their flow position. */
+function Pointers({ graph }: { graph: string | null }) {
+  const pointers = usePresence((s) => s.pointers)
+  return pointers
+    .filter((p) => p.graph === graph)
+    .map((p) => (
+      <div
+        key={p.clientId}
+        data-testid={`pointer-${p.user.name}`}
+        className={cn('pointer-events-none absolute', `ow-presence-${p.colour}`)}
+        style={{ transform: `translate(${p.x}px, ${p.y}px)`, zIndex: 1000 }}
+      >
+        <svg width="14" height="18" viewBox="0 0 14 18" aria-hidden className="drop-shadow-sm">
+          <path d="M1 1 L1 15 L5 11 L8 17 L10 16 L7 10 L13 10 Z" fill="var(--presence)" stroke="white" />
+        </svg>
+        <span className="ml-3 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium text-white bg-[var(--presence)]">
+          {p.user.name}
+        </span>
+      </div>
+    ))
+}
+
 function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
   const { block, problems, live } = data
+  // Who else has this block selected (M16): an outline in the first one's colour, and their names.
+  const fn = useEditor((s) => s.graph)
+  const watchers = usePresence(
+    useShallow((s) => s.peers.filter((p) => p.graph === fn && p.selection.includes(block.name))),
+  )
+  const first = watchers[0]
   const kind = kindOf(block)
   const Icon = kind.icon
   const ports = blockPorts(block)
@@ -261,13 +300,32 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       style={{ width: NODE_WIDTH }}
       data-testid={`block-${block.name}`}
       className={cn(
-        'rounded-lg border bg-surface shadow-card transition-shadow',
+        'relative rounded-lg border bg-surface shadow-card transition-shadow',
         errors ? 'border-danger/60' : 'border-border',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
+        first && `ow-peer-selected ow-presence-${first.colour}`,
       )}
       data-status={live?.status}
     >
+      {watchers.length > 0 && (
+        <div
+          className="pointer-events-none absolute -top-6 left-0 flex gap-1"
+          data-testid={`peers-${block.name}`}
+        >
+          {watchers.map((p) => (
+            <span
+              key={p.clientId}
+              className={cn(
+                'whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium text-white bg-[var(--presence)]',
+                `ow-presence-${p.colour}`,
+              )}
+            >
+              {p.user.name}
+            </span>
+          ))}
+        </div>
+      )}
       {!isTrigger(block) && <Handle type="target" position={Position.Left} className="ow-handle" />}
       <div className="flex items-center gap-2 px-3 pt-2.5">
         <span className={cn('rounded-md p-1', kind.tone)}>

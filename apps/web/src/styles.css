@@ -311,3 +311,9 @@
   border-left: 2px solid var(--presence);
   margin-left: -1px;
 }
+
+/* A block someone else has selected. */
+.react-flow .ow-peer-selected {
+  outline: 2px solid var(--presence);
+  outline-offset: 3px;
+}

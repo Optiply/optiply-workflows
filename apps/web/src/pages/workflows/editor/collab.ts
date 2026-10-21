@@ -1,6 +1,7 @@
 import { CollabProvider, collabKey, SharedDefinition, workflowSpec } from '@ow/collab'
 import { definitionHash, type WorkflowDefinition } from '@ow/definition'
 import * as Y from 'yjs'
+import { trackPresence } from './presence'
 import { LOCAL, type SaveStatus, useEditor } from './store'
 
 /**
@@ -63,6 +64,7 @@ export function openSession(workflowId: string, branchDraftId: string | null): v
     useEditor.getState().remote()
   }
   doc.on('afterTransaction', transacted)
+  const stopPresence = trackPresence(provider.awareness)
 
   const session: Session = {
     key,
@@ -71,6 +73,7 @@ export function openSession(workflowId: string, branchDraftId: string | null): v
     attached: false,
     changed,
     close: () => {
+      stopPresence()
       unsubscribe()
       doc.off('afterTransaction', transacted)
       provider.destroy()
