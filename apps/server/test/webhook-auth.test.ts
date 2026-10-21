@@ -267,3 +267,66 @@ describe('API-key webhooks', () => {
     expect(ok.json.headers['x-api-key']).toBeUndefined()
   })
 })
+
+describe('review fixes (session 18)', () => {
+  it("doesn't tell a caller without a key which URLs, methods or environments exist", async () => {
+    await published('keyed-quiet', {})
+    const without = async (url: string, method = 'POST') => (await call(url, { body: '{}', method })).json
+    const unauthorized = {
+      error: { code: 'unauthorized', message: 'Send an API key in the X-Api-Key header' },
+    }
+    expect(await without('/api/v1/workflows/no-such-workflow/webhook')).toEqual(unauthorized)
+    expect(await without('/api/v1/hooks/no/such/alias')).toEqual(unauthorized)
+    expect(await without('/api/v1/workflows/keyed-quiet/webhook', 'GET')).toEqual(unauthorized)
+    expect(await without('/api/v1/workflows/keyed-quiet/webhook?environment=nowhere')).toEqual(unauthorized)
+    // With a valid key, the real answers.
+    const withKey = (url: string, method = 'POST') =>
+      call(url, { body: '{}', method, headers: { 'x-api-key': apiKey } })
+    expect((await withKey('/api/v1/workflows/no-such-workflow/webhook')).status).toBe(404)
+    expect((await withKey('/api/v1/workflows/keyed-quiet/webhook', 'GET')).status).toBe(405)
+    expect((await withKey('/api/v1/workflows/keyed-quiet/webhook?environment=nowhere')).status).toBe(404)
+  })
+
+  it("counts only authenticated calls toward a signed webhook's limit", async () => {
+    await published('signed-limited', {
+      auth: { type: 'signature', preset: 'github', secret: 'GITHUB_SECRET' },
+      rateLimit: { requests: 2, windowSeconds: 3600 },
+    })
+    const url = '/api/v1/workflows/signed-limited/webhook'
+    for (let i = 0; i < 10; i++) expect((await call(url, { body: '{}' })).status).toBe(401)
+    const signed = []
+    for (let i = 0; i < 3; i++) {
+      signed.push(
+        (await call(url, { body: '{}', headers: { 'x-hub-signature-256': githubSign('new-secret', '{}') } }))
+          .status,
+      )
+    }
+    expect(signed).toEqual([200, 200, 429])
+  })
+
+  it("ignores idempotency keys on public webhooks: a caller can't read another's run", async () => {
+    const send = () =>
+      call('/api/v1/workflows/public-hook/webhook', {
+        body: '{}',
+        headers: { 'idempotency-key': 'order-42' },
+      })
+    const first = await send()
+    const second = await send()
+    expect(second.headers['x-run-id']).not.toBe(first.headers['x-run-id'])
+    expect(second.headers['idempotent-replayed']).toBeUndefined()
+  })
+
+  it('keeps every API key the caller sent out of the run, and other Authorization headers in', async () => {
+    const both = await call('/api/v1/workflows/public-hook/webhook', {
+      body: '{}',
+      headers: { 'x-api-key': 'ow_first', authorization: 'Bearer ow_second' },
+    })
+    expect(both.json.headers['x-api-key']).toBeUndefined()
+    expect(both.json.headers.authorization).toBeUndefined()
+    const basic = await call('/api/v1/workflows/public-hook/webhook', {
+      body: '{}',
+      headers: { authorization: 'Basic dXNlcjpwYXNz' },
+    })
+    expect(basic.json.headers.authorization).toBe('Basic dXNlcjpwYXNz')
+  })
+})

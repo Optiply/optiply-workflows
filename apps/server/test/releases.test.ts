@@ -325,7 +325,8 @@ describe('trigger projection', () => {
       kind: 'webhook',
       enabled: true,
       aliasShape: 'scheduled/:',
-      config: { enabled: true, alias: 'scheduled/:id', methods: ['POST'], syncTimeoutMs: 30_000 },
+      // Stored as written: resolveWebhookSettings applies the defaults (methods, sync timeout) per call.
+      config: { enabled: true, alias: 'scheduled/:id' },
       nextFireAt: null,
     })
     expect(byName.get('new-year')).toMatchObject({

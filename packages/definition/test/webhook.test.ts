@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   parseSignedPayload,
   resolveWebhookSettings,
+  signatureHeaderOf,
   validateDefinition,
+  webhookEnvironments,
   workflowDefinitionSchema,
 } from '../src'
 import { checkBodySchema, compileBodySchema } from '../src/body-schema'
@@ -237,6 +239,16 @@ describe('validateDefinition: webhook settings', () => {
     expect(validateDefinition(withWebhook({ bodySchema: { type: 'objekt' } })).diagnostics).toEqual([])
   })
 
+  it('refuses an idempotency header on a public webhook', () => {
+    expect(diagnostics({ auth: { type: 'public' }, idempotencyHeader: 'X-Delivery' })).toEqual([
+      {
+        code: 'invalid_webhook',
+        message: "A public webhook doesn't use an idempotency header: any caller could replay another's run",
+        path: 'webhook.idempotencyHeader',
+      },
+    ])
+  })
+
   it('checks the environments and the idempotency header', () => {
     expect(
       diagnostics({ environments: ['production', '', 'production'], idempotencyHeader: 'Bad Header' }),
@@ -290,5 +302,29 @@ describe('compileBodySchema', () => {
     expect(compileBodySchema(withId).ok).toBe(true)
     expect(compileBodySchema(withId).ok).toBe(true)
     expect(checkBodySchema(withId)).toBeNull()
+  })
+})
+
+describe('webhookEnvironments and signatureHeaderOf', () => {
+  const envs = [
+    { slug: 'production', isDefault: true },
+    { slug: 'staging', isDefault: false },
+  ]
+  it('picks all, the default, or the listed environments in their order', () => {
+    expect(webhookEnvironments({ environments: 'all' }, envs)).toEqual(envs)
+    expect(webhookEnvironments({ environments: 'default' }, envs)).toEqual([envs[0]])
+    expect(webhookEnvironments({ environments: ['staging', 'qa', 'production'] }, envs)).toEqual([
+      envs[1],
+      envs[0],
+    ])
+  })
+
+  it("names the signature's header", () => {
+    expect(signatureHeaderOf({ type: 'signature', preset: 'stripe', secret: 'S' })).toBe('stripe-signature')
+    expect(signatureHeaderOf({ type: 'signature', preset: 'custom', secret: 'S', header: 'X-Sig' })).toBe(
+      'x-sig',
+    )
+    expect(signatureHeaderOf({ type: 'signature', preset: 'custom', secret: 'S' })).toBeNull()
+    expect(signatureHeaderOf({ type: 'public' })).toBeNull()
   })
 })

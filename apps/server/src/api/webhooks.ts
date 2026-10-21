@@ -96,11 +96,39 @@ export const webhooksApi: FastifyPluginAsync<{
   })
 
   async function handle(req: FastifyRequest, reply: FastifyReply, find: () => Promise<WebhookTarget>) {
-    const { workflow, trigger, release, webhook, pathParams } = await find()
+    const presented = presentedApiKey(req.headers)
+    const noKey = () =>
+      new RunRequestError(
+        401,
+        'unauthorized',
+        presented ? 'This API key is unknown, revoked or expired' : 'Send an API key in the X-Api-Key header',
+      )
+    let target: WebhookTarget
+    try {
+      target = await find()
+    } catch (err) {
+      // No webhook here: without a valid key, the same 401 an API-key webhook gives, so a caller without one can't
+      // tell which URLs exist. (Public and signed webhooks are found first: their callers have no key.)
+      if (err instanceof RunRequestError && err.status === 404) {
+        if (!presented || !(await authenticateApiKey(db, presented.key))) throw noKey()
+      }
+      throw err
+    }
+    const { workflow, trigger, release, webhook, pathParams } = target
     reached.set(req, { triggerId: trigger.id, environmentId: null })
-    await requireUnderLimit(db, trigger.id, webhook.rateLimit, (seconds) =>
-      reply.header('retry-after', String(seconds)),
-    )
+    const limit = () =>
+      requireUnderLimit(db, trigger.id, webhook.rateLimit, (seconds) =>
+        reply.header('retry-after', String(seconds)),
+      )
+
+    // An API-key webhook says nothing else (method, environments) to a caller without a valid key.
+    const key =
+      webhook.auth.type === 'apiKey' && presented ? await authenticateApiKey(db, presented.key) : null
+    if (webhook.auth.type === 'apiKey' && !key) throw noKey()
+    // A public webhook counts every call; the others only calls that authenticated, so a flood of unsigned calls
+    // can't use up a signed webhook's limit and lock its real sender out.
+    if (webhook.auth.type === 'public') await limit()
+
     if (!webhook.methods.includes(req.method as (typeof WEBHOOK_METHODS)[number])) {
       reply.header('allow', webhook.methods.join(', '))
       throw new RunRequestError(
@@ -118,23 +146,14 @@ export const webhooksApi: FastifyPluginAsync<{
     reached.set(req, { triggerId: trigger.id, environmentId: environment.id })
     const raw = req.body instanceof RawBody ? req.body : null
 
-    const presented = presentedApiKey(req.headers)
-    let apiKeyId: string | null = null
-    if (webhook.auth.type === 'apiKey') {
-      if (!presented) {
-        throw new RunRequestError(401, 'unauthorized', 'Send an API key in the X-Api-Key header')
-      }
-      const key = await authenticateApiKey(db, presented.key)
-      if (!key) throw new RunRequestError(401, 'unauthorized', 'This API key is unknown, revoked or expired')
-      if (!apiKeyAllows(key, workflow.id, environment.id)) {
-        throw new RunRequestError(
-          403,
-          'forbidden',
-          `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
-        )
-      }
-      apiKeyId = key.id
-    } else if (webhook.auth.type === 'signature') {
+    if (key && !apiKeyAllows(key, workflow.id, environment.id)) {
+      throw new RunRequestError(
+        403,
+        'forbidden',
+        `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
+      )
+    }
+    if (webhook.auth.type === 'signature') {
       const auth = webhook.auth
       const secrets = await readSigningSecrets(db, keyring, auth.secret, environment.id)
       const check = secrets
@@ -162,6 +181,7 @@ export const webhooksApi: FastifyPluginAsync<{
         )
       }
     }
+    if (webhook.auth.type !== 'public') await limit()
 
     await requireConfiguredResources(db, release, environment)
     const data = raw ? await raw.parse() : null
@@ -188,7 +208,11 @@ export const webhooksApi: FastifyPluginAsync<{
       const value = name ? req.headers[name] : undefined
       return typeof value === 'string' && value ? value : undefined
     }
-    const idempotencyKey = header('idempotency-key') ?? header(webhook.idempotencyHeader)
+    // Not for public webhooks: any caller could send another's key and read that run's reply.
+    const idempotencyKey =
+      webhook.auth.type === 'public'
+        ? undefined
+        : (header('idempotency-key') ?? header(webhook.idempotencyHeader))
     if (idempotencyKey && idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
       throw new RunRequestError(
         400,
@@ -206,11 +230,11 @@ export const webhooksApi: FastifyPluginAsync<{
         environmentId: environment.id,
         triggerType: 'webhook',
         triggerId: trigger.id,
-        apiKeyId,
+        apiKeyId: key?.id ?? null,
         idempotencyKey: idempotencyKey ?? null,
         input: {
           data,
-          headers: runHeaders(req.headers, presented?.source),
+          headers: runHeaders(req.headers),
           pathParams,
           urlParams,
         },

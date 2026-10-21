@@ -20,6 +20,7 @@ import {
   type ResolvedWebhook,
   resolveWebhookSettings,
   type WebhookTrigger,
+  webhookEnvironments,
 } from '@ow/definition'
 import { type BodyValidator, compileBodySchema } from '@ow/definition/body-schema'
 import type { RunEvent } from '@ow/engine'
@@ -204,14 +205,12 @@ function target(
  */
 export async function webhookEnvironment(db: Db, webhook: ResolvedWebhook, slug: string | undefined) {
   const rows = await db.select().from(environments)
-  const defaultEnv = rows.find((e) => e.isDefault)
-  const allowed = webhook.environments
-  const listed = typeof allowed === 'string' ? null : allowed
-  const fallback = listed && !listed.includes(defaultEnv?.slug ?? '') ? listed[0] : defaultEnv?.slug
-  const env = rows.find((e) => e.slug === (slug ?? fallback))
-  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug ?? fallback}"`)
-  const permitted = allowed === 'all' || (allowed === 'default' ? env.isDefault : allowed.includes(env.slug))
-  if (!permitted) throw new RunRequestError(403, 'forbidden', `This webhook doesn't run in ${env.name}`)
+  const allowed = webhookEnvironments(webhook, rows)
+  const fallback = allowed.find((e) => e.isDefault) ?? allowed[0]
+  const env = slug === undefined ? fallback : rows.find((e) => e.slug === slug)
+  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug ?? 'default'}"`)
+  if (!allowed.includes(env))
+    throw new RunRequestError(403, 'forbidden', `This webhook doesn't run in ${env.name}`)
   return env
 }
 
@@ -265,15 +264,14 @@ export async function requireConfiguredResources(
   }
 }
 
-/** Headers that never reach the run: cookies and any API key the caller sent (used or not). */
-export function runHeaders(
-  headers: Record<string, string | string[] | undefined>,
-  keySource: 'x-api-key' | 'authorization' | undefined,
-): Record<string, string> {
+/** Headers that never reach the run: cookies and every API key the caller sent (used or not). */
+export function runHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {
-    if (value === undefined || name === 'cookie' || name === keySource) continue
-    out[name] = Array.isArray(value) ? value.join(', ') : value
+    if (value === undefined || name === 'cookie' || name === 'x-api-key') continue
+    const text = Array.isArray(value) ? value.join(', ') : value
+    if (name === 'authorization' && /^\s*Bearer\s+ow_/i.test(text)) continue
+    out[name] = text
   }
   return out
 }

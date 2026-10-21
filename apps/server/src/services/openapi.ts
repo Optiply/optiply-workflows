@@ -3,8 +3,10 @@ import {
   parseWebhookAlias,
   type ResolvedWebhook,
   resolveWebhookSettings,
+  signatureHeaderOf,
   WEBHOOK_PRESETS,
   type WebhookTrigger,
+  webhookEnvironments,
 } from '@ow/definition'
 import { and, eq, isNotNull } from 'drizzle-orm'
 
@@ -44,12 +46,7 @@ export async function openApiDocument(
         ...webhook.bodySchema,
       }
     }
-    const allowed =
-      webhook.environments === 'all'
-        ? envs.map((e) => e.slug)
-        : webhook.environments === 'default'
-          ? envs.filter((e) => e.isDefault).map((e) => e.slug)
-          : [...webhook.environments]
+    const allowed = webhookEnvironments(webhook, envs).map((e) => e.slug)
 
     const routes: { path: string; params: string[]; id: string }[] = [
       { path: `/workflows/${workflow.slug}/webhook`, params: [], id: workflow.slug },
@@ -155,12 +152,7 @@ function operation(
       : 'Answers 202 at once; read the run at its Location.',
   )
 
-  const signatureHeader =
-    auth.type === 'signature'
-      ? auth.preset === 'custom'
-        ? (auth.header ?? '').toLowerCase()
-        : WEBHOOK_PRESETS[auth.preset].header
-      : null
+  const signatureHeader = signatureHeaderOf(auth)
   const parameters: Record<string, unknown>[] = [
     ...route.params.map((name) => ({ name, in: 'path', required: true, schema: { type: 'string' } })),
     {
@@ -170,13 +162,18 @@ function operation(
       description: 'The environment to run in (default: the default environment, or the first one allowed)',
       schema: { type: 'string', enum: environments },
     },
-    {
-      name: 'Idempotency-Key',
-      in: 'header',
-      required: false,
-      description: 'A repeat with the same key gets the same run and its reply',
-      schema: { type: 'string', maxLength: 255 },
-    },
+    // Public webhooks ignore it: any caller could read another's run.
+    ...(auth.type === 'public'
+      ? []
+      : [
+          {
+            name: 'Idempotency-Key',
+            in: 'header',
+            required: false,
+            description: 'A repeat with the same key gets the same run and its reply',
+            schema: { type: 'string', maxLength: 255 },
+          },
+        ]),
     {
       name: 'Prefer',
       in: 'header',

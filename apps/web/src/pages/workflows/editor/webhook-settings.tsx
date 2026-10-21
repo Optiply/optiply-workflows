@@ -61,6 +61,8 @@ export function WebhookAuthFields({
   const auth: WebhookAuth = webhook.auth ?? { type: 'apiKey' }
   const setType = (type: WebhookAuth['type']) =>
     set({
+      // Public webhooks ignore idempotency headers (the validator refuses one).
+      ...(type === 'public' && { idempotencyHeader: undefined }),
       auth:
         type === 'apiKey'
           ? undefined
@@ -391,23 +393,25 @@ export function WebhookLimitFields({
         <FieldProblems problems={problemsAt('environments')} />
       </Field>
 
-      <Field
-        label="Idempotency header"
-        hint="A repeat with the same value replays the earlier run instead of starting another (Idempotency-Key always works)."
-      >
-        <Input
-          aria-label="Idempotency header"
-          className="font-mono"
-          placeholder={
-            resolved.auth.type === 'signature' && resolved.auth.preset !== 'custom'
-              ? (WEBHOOK_PRESETS[resolved.auth.preset].idempotencyHeader ?? 'none')
-              : 'none'
-          }
-          value={webhook.idempotencyHeader ?? ''}
-          onChange={(e) => set({ idempotencyHeader: e.target.value || undefined })}
-        />
-        <FieldProblems problems={problemsAt('idempotencyHeader')} />
-      </Field>
+      {!(resolved.auth.type === 'public') && (
+        <Field
+          label="Idempotency header"
+          hint="A repeat with the same value replays the earlier run instead of starting another (Idempotency-Key always works)."
+        >
+          <Input
+            aria-label="Idempotency header"
+            className="font-mono"
+            placeholder={
+              resolved.auth.type === 'signature' && resolved.auth.preset !== 'custom'
+                ? (WEBHOOK_PRESETS[resolved.auth.preset].idempotencyHeader ?? 'none')
+                : 'none'
+            }
+            value={webhook.idempotencyHeader ?? ''}
+            onChange={(e) => set({ idempotencyHeader: e.target.value || undefined })}
+          />
+          <FieldProblems problems={problemsAt('idempotencyHeader')} />
+        </Field>
+      )}
     </>
   )
 }

@@ -964,7 +964,13 @@ function checkWebhook(
     seen.add(slug)
   })
 
-  if (webhook.idempotencyHeader !== undefined && !isHeaderName(webhook.idempotencyHeader)) {
+  if (webhook.idempotencyHeader !== undefined && webhook.auth?.type === 'public') {
+    report({
+      code: 'invalid_webhook',
+      message: "A public webhook doesn't use an idempotency header: any caller could replay another's run",
+      ...at(['idempotencyHeader']),
+    })
+  } else if (webhook.idempotencyHeader !== undefined && !isHeaderName(webhook.idempotencyHeader)) {
     report({
       code: 'invalid_webhook',
       message: `"${webhook.idempotencyHeader}" isn't a header name`,

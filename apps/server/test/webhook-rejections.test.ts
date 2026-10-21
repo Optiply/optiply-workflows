@@ -136,14 +136,19 @@ describe('rejections', () => {
       rateLimit: { requests: 3, windowSeconds: 3600 },
     })
     const url = '/api/v1/workflows/signed-hook/webhook'
-    const signature = `sha256=${createHmac('sha256', 'wrong').update('{}').digest('hex')}`
-    expect((await call(url, { headers: { 'x-hub-signature-256': signature } })).status).toBe(401)
+    const sign = (secret: string) => `sha256=${createHmac('sha256', secret).update('{}').digest('hex')}`
+    expect((await call(url, { headers: { 'x-hub-signature-256': sign('wrong') } })).status).toBe(401)
     expect((await call(url, { method: 'PUT' })).status).toBe(405)
-    for (let i = 0; i < 4; i++) await call(url)
+    expect((await call(url)).status).toBe(401)
+    // Only calls that authenticated count toward a signed webhook's limit: three pass, then 429 (recorded once).
+    const signed = []
+    for (let i = 0; i < 5; i++)
+      signed.push((await call(url, { headers: { 'x-hub-signature-256': sign('secret') } })).status)
+    expect(signed).toEqual([200, 200, 200, 429, 429])
 
     const rows = await rejections(id)
     expect(rows.map((r) => [r.status, r.reason, r.environment])).toEqual([
-      [429, 'rate_limited', null],
+      [429, 'rate_limited', 'Production'],
       [401, 'missing_signature', 'Production'],
       [405, 'method_not_allowed', null],
       [401, 'signature_mismatch', 'Production'],

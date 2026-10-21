@@ -6,9 +6,9 @@ import {
   parseCron,
   resolveWebhookSettings,
   type ScheduleTrigger,
+  signatureHeaderOf,
   upcomingCronFires,
   WEBHOOK_METHODS,
-  WEBHOOK_PRESETS,
   type WebhookMethod,
   type WebhookTrigger,
   type WorkflowDefinition,
@@ -108,12 +108,7 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
     ...(webhook?.alias && !aliasProblems.length ? [`${origin}/api/v1/hooks/${webhook.alias}`] : []),
   ]
   const method = methods.includes('POST') ? 'POST' : methods[0]!
-  const signatureHeader =
-    auth.type !== 'signature'
-      ? null
-      : auth.preset === 'custom'
-        ? auth.header || 'X-Signature'
-        : WEBHOOK_PRESETS[auth.preset].header
+  const signatureHeader = auth.type === 'signature' ? (signatureHeaderOf(auth) ?? 'X-Signature') : null
   const curl = [
     `curl -X ${method} '${urls.at(-1)}'`,
     ...(auth.type === 'apiKey' ? [`  -H 'X-Api-Key: <your API key>'`] : []),

@@ -199,6 +199,26 @@ export function resolveWebhookSettings(webhook: WebhookTrigger): ResolvedWebhook
   }
 }
 
+/**
+ * The environments a webhook runs in, out of `envs`: all of them, the default one, or the listed ones in their order
+ * (slugs no environment has are left out). The runtime check, the publish check and the OpenAPI document all use it.
+ */
+export function webhookEnvironments<E extends { slug: string; isDefault: boolean }>(
+  webhook: Pick<ResolvedWebhook, 'environments'>,
+  envs: readonly E[],
+): E[] {
+  const allowed = webhook.environments
+  if (allowed === 'all') return [...envs]
+  if (allowed === 'default') return envs.filter((e) => e.isDefault)
+  return allowed.flatMap((slug) => envs.filter((e) => e.slug === slug))
+}
+
+/** The header a signed webhook's signature arrives in (lowercase); null for other auth or a custom one without it. */
+export function signatureHeaderOf(auth: WebhookAuth): string | null {
+  if (auth.type !== 'signature') return null
+  return auth.preset === 'custom' ? auth.header?.toLowerCase() || null : WEBHOOK_PRESETS[auth.preset].header
+}
+
 export type SignedPayloadPart = (typeof SIGNED_PAYLOAD_PARTS)[number]
 
 export type SignedPayloadParseResult =

@@ -9,6 +9,8 @@ export interface SampleResult {
 const MAX_DEPTH = 6
 const MAX_KEYS = 100
 const SAMPLE_ITEMS = 20
+/** How many `$ref`s one schema's type may expand. */
+const MAX_REFS = 20
 
 /** A TypeScript type for a JSON value. Array items are merged, so keys missing from some items become optional. */
 export function typeOf(value: unknown, depth = 0): string {
@@ -66,21 +68,29 @@ const isSchema = (v: unknown): v is JsonSchema => !!v && typeof v === 'object' &
  * types, `enum`/`const` as literal unions, `properties` with `required`, `items`, `anyOf`/`oneOf`/`allOf`, local
  * `$ref`s (`#/$defs/…`) and descriptions as doc comments. Anything else is `unknown`.
  */
-export function schemaType(schema: unknown, root: unknown = schema, depth = 0): string {
+export function schemaType(
+  schema: unknown,
+  root: unknown = schema,
+  depth = 0,
+  budget = { refs: MAX_REFS },
+): string {
   if (schema === false) return 'never'
   if (!isSchema(schema) || depth > MAX_DEPTH) return 'unknown'
   if (typeof schema.$ref === 'string') {
+    // Each $ref is expanded in place: a budget keeps a schema that refers to itself several times from growing
+    // exponentially (8 self-references 6 deep would be millions of types).
+    if (budget.refs-- <= 0) return 'unknown'
     const target = resolveRef(root, schema.$ref)
-    return target === undefined ? 'unknown' : schemaType(target, root, depth + 1)
+    return target === undefined ? 'unknown' : schemaType(target, root, depth + 1, budget)
   }
   if ('const' in schema) return literal(schema.const)
   if (Array.isArray(schema.enum)) return schema.enum.length ? schema.enum.map(literal).join(' | ') : 'never'
   const union = (schema.anyOf ?? schema.oneOf) as unknown[] | undefined
   if (Array.isArray(union) && union.length) {
-    return [...new Set(union.map((s) => group(schemaType(s, root, depth + 1))))].join(' | ')
+    return [...new Set(union.map((s) => group(schemaType(s, root, depth + 1, budget))))].join(' | ')
   }
   if (Array.isArray(schema.allOf) && schema.allOf.length) {
-    return schema.allOf.map((s) => group(schemaType(s, root, depth + 1))).join(' & ')
+    return schema.allOf.map((s) => group(schemaType(s, root, depth + 1, budget))).join(' & ')
   }
   const declared = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : []
   const types = declared.length
@@ -91,10 +101,16 @@ export function schemaType(schema: unknown, root: unknown = schema, depth = 0): 
         ? ['array']
         : []
   if (!types.length) return 'unknown'
-  return [...new Set(types.map((t) => typeForType(String(t), schema, root, depth)))].join(' | ')
+  return [...new Set(types.map((t) => typeForType(String(t), schema, root, depth, budget)))].join(' | ')
 }
 
-function typeForType(type: string, schema: JsonSchema, root: unknown, depth: number): string {
+function typeForType(
+  type: string,
+  schema: JsonSchema,
+  root: unknown,
+  depth: number,
+  budget: { refs: number },
+): string {
   switch (type) {
     case 'string':
     case 'boolean':
@@ -105,11 +121,11 @@ function typeForType(type: string, schema: JsonSchema, root: unknown, depth: num
       return 'number'
     case 'array': {
       if (Array.isArray(schema.prefixItems)) {
-        return `[${schema.prefixItems.map((s) => schemaType(s, root, depth + 1)).join(', ')}]`
+        return `[${schema.prefixItems.map((s) => schemaType(s, root, depth + 1, budget)).join(', ')}]`
       }
       return schema.items === undefined
         ? 'unknown[]'
-        : `${group(schemaType(schema.items, root, depth + 1))}[]`
+        : `${group(schemaType(schema.items, root, depth + 1, budget))}[]`
     }
     case 'object': {
       const properties = isSchema(schema.properties)
@@ -119,13 +135,13 @@ function typeForType(type: string, schema: JsonSchema, root: unknown, depth: num
       const extra = schema.additionalProperties
       if (!properties.length) {
         return isSchema(extra)
-          ? `Record<string, ${schemaType(extra, root, depth + 1)}>`
+          ? `Record<string, ${schemaType(extra, root, depth + 1, budget)}>`
           : 'Record<string, unknown>'
       }
       const fields = properties.map(([key, value]) => {
         const doc =
           isSchema(value) && typeof value.description === 'string' ? `${docComment(value.description)} ` : ''
-        return `${doc}${propertyName(key)}${required.has(key) ? '' : '?'}: ${schemaType(value, root, depth + 1)}`
+        return `${doc}${propertyName(key)}${required.has(key) ? '' : '?'}: ${schemaType(value, root, depth + 1, budget)}`
       })
       // Other keys are allowed unless the schema says otherwise.
       if (extra !== false) fields.push('[key: string]: unknown')
@@ -141,7 +157,12 @@ function resolveRef(root: unknown, ref: string): unknown {
   if (!ref.startsWith('#')) return undefined
   let node = root
   for (const raw of ref.slice(1).split('/').slice(1)) {
-    const key = decodeURIComponent(raw).replaceAll('~1', '/').replaceAll('~0', '~')
+    let key: string
+    try {
+      key = decodeURIComponent(raw).replaceAll('~1', '/').replaceAll('~0', '~')
+    } catch {
+      return undefined // A `%` that isn't an escape: no such pointer.
+    }
     if (!isSchema(node) && !Array.isArray(node)) return undefined
     node = (node as Record<string, unknown>)[key]
   }
@@ -154,9 +175,30 @@ function literal(value: unknown): string {
     : 'unknown'
 }
 
-/** Parenthesizes a union or intersection inside `[]`, `|` or `&`. */
+/**
+ * Parenthesizes a type with a `|` or `&` at its top level (not inside braces, brackets, parentheses, strings or doc
+ * comments).
+ */
 function group(type: string): string {
-  return /[|&]/.test(type) && !/^[{[]/.test(type) ? `(${type})` : type
+  let depth = 0
+  let quote = false
+  for (let i = 0; i < type.length; i++) {
+    const c = type[i]!
+    if (!quote && type.startsWith('/*', i)) {
+      // A property's doc comment: any quotes or bars in it aren't type syntax.
+      const end = type.indexOf('*/', i + 2)
+      i = end < 0 ? type.length : end + 1
+      continue
+    }
+    if (quote) {
+      if (c === '\\') i++
+      else if (c === '"') quote = false
+    } else if (c === '"') quote = true
+    else if ('{[(<'.includes(c)) depth++
+    else if ('}])>'.includes(c)) depth--
+    else if (depth === 0 && (c === '|' || c === '&')) return `(${type})`
+  }
+  return type
 }
 
 function docComment(text: string): string {

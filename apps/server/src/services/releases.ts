@@ -14,7 +14,6 @@ import {
 import {
   canonicalize,
   canonicalJson,
-  DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   definitionHash,
   nextScheduleFire,
   parseWebhookAlias,
@@ -23,6 +22,7 @@ import {
   type ScheduleTrigger,
   type VersionBump,
   type WorkflowDefinition,
+  webhookEnvironments,
 } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
@@ -333,21 +333,16 @@ async function checkReleasable(
  * environment the webhook runs in (its value isn't read here).
  */
 async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Environment[]) {
-  const runsIn =
-    webhook.environments === 'all'
-      ? envs
-      : webhook.environments === 'default'
-        ? envs.filter((e) => e.isDefault)
-        : webhook.environments.map((slug) => {
-            const env = envs.find((e) => e.slug === slug)
-            if (!env) {
-              throw new TRPCError({
-                code: 'BAD_REQUEST',
-                message: `The webhook runs in environment "${slug}", which doesn't exist`,
-              })
-            }
-            return env
-          })
+  if (typeof webhook.environments !== 'string') {
+    const unknown = webhook.environments.find((slug) => !envs.some((e) => e.slug === slug))
+    if (unknown) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `The webhook runs in environment "${unknown}", which doesn't exist`,
+      })
+    }
+  }
+  const runsIn = webhookEnvironments(webhook, envs)
   if (webhook.auth.type !== 'signature') return
   const name = webhook.auth.secret
   const [variable] = await db.select().from(configVars).where(eq(configVars.name, name))
@@ -415,11 +410,8 @@ async function projectTriggers(
       kind: 'webhook',
       name: 'webhook',
       enabled: triggers.webhook.enabled,
-      config: {
-        methods: ['POST'],
-        syncTimeoutMs: DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
-        ...triggers.webhook,
-      },
+      // As written: resolveWebhookSettings applies the defaults when a call comes in.
+      config: { ...triggers.webhook },
       environmentId: null,
       aliasShape: plan.aliasShape,
       nextFireAt: null,

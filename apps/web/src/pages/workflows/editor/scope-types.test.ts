@@ -80,6 +80,66 @@ describe('schemaType', () => {
   })
 })
 
+describe('schemaType: review fixes (session 18)', () => {
+  it('parenthesizes unions that start with an object or a tuple', () => {
+    const cases: [object, string][] = [
+      [
+        { type: 'array', items: { type: ['object', 'null'], properties: { a: { type: 'string' } } } },
+        '({ a?: string; [key: string]: unknown } | null)[]',
+      ],
+      [
+        {
+          type: 'array',
+          items: { anyOf: [{ type: 'object', properties: { a: { type: 'string' } } }, { type: 'number' }] },
+        },
+        '({ a?: string; [key: string]: unknown } | number)[]',
+      ],
+      [
+        {
+          allOf: [
+            { anyOf: [{ type: 'array', prefixItems: [{ type: 'string' }] }, { type: 'null' }] },
+            { type: 'object' },
+          ],
+        },
+        '([string] | null) & Record<string, unknown>',
+      ],
+      // A quote or a bar in a description is a comment, not type syntax.
+      [
+        {
+          type: 'array',
+          items: {
+            anyOf: [
+              { type: 'object', properties: { a: { type: 'string', description: 'say "hi | bye' } } },
+              { type: 'null' },
+            ],
+          },
+        },
+        '({ /** say "hi | bye */ a?: string; [key: string]: unknown } | null)[]',
+      ],
+    ]
+    for (const [schema, expected] of cases) {
+      const type = schemaType(schema)
+      expect(type, JSON.stringify(schema)).toBe(expected)
+      expect(parses(type), type).toBe(true)
+    }
+  })
+
+  it('treats a $ref with a broken escape as unknown instead of throwing', () => {
+    expect(schemaType({ type: 'object', properties: { x: { $ref: '#/$defs/50%' } } })).toBe(
+      '{ x?: unknown; [key: string]: unknown }',
+    )
+  })
+
+  it('stops expanding $refs after a budget, so self-references stay small', () => {
+    const properties = Object.fromEntries('abcdefgh'.split('').map((k) => [k, { $ref: '#' }]))
+    const started = performance.now()
+    const type = schemaType({ type: 'object', properties })
+    expect(performance.now() - started).toBeLessThan(200)
+    expect(type.length).toBeLessThan(20_000)
+    expect(parses(type)).toBe(true)
+  })
+})
+
 describe('scopeDeclarations', () => {
   it('types startTrigger.data from the body schema, over a run sample', () => {
     const blocks = [{ name: 'startTrigger', type: 'startTrigger' }] as never
