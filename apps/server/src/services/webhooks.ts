@@ -17,6 +17,8 @@ import {
   matchWebhookAlias,
   parseWebhookAlias,
   queriedResources,
+  type ResolvedWebhook,
+  resolveWebhookSettings,
   type WebhookTrigger,
 } from '@ow/definition'
 import type { RunEvent } from '@ow/engine'
@@ -50,7 +52,8 @@ export interface WebhookTarget {
   workflow: Workflow
   trigger: WorkflowTrigger
   release: WorkflowRelease
-  webhook: Required<Pick<WebhookTrigger, 'methods' | 'syncTimeoutMs'>> & WebhookTrigger
+  /** The live release's webhook with every default applied. */
+  webhook: ResolvedWebhook
   pathParams: Record<string, string>
 }
 
@@ -114,15 +117,24 @@ function target(
   release: WorkflowRelease,
   pathParams: Record<string, string>,
 ): WebhookTarget {
-  const webhook = trigger.config as WebhookTarget['webhook']
+  const webhook = resolveWebhookSettings(trigger.config as WebhookTrigger)
   return { workflow, trigger, release, webhook, pathParams }
 }
 
-/** The environment `?environment=` names, or the default one. */
-export async function webhookEnvironment(db: Db, slug: string | undefined) {
+/**
+ * The environment `?environment=` names, among those the webhook allows. Without one: the default environment, or
+ * the first listed when the webhook lists environments without the default.
+ */
+export async function webhookEnvironment(db: Db, webhook: ResolvedWebhook, slug: string | undefined) {
   const rows = await db.select().from(environments)
-  const env = slug ? rows.find((e) => e.slug === slug) : rows.find((e) => e.isDefault)
-  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug}"`)
+  const defaultEnv = rows.find((e) => e.isDefault)
+  const allowed = webhook.environments
+  const listed = typeof allowed === 'string' ? null : allowed
+  const fallback = listed && !listed.includes(defaultEnv?.slug ?? '') ? listed[0] : defaultEnv?.slug
+  const env = rows.find((e) => e.slug === (slug ?? fallback))
+  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug ?? fallback}"`)
+  const permitted = allowed === 'all' || (allowed === 'default' ? env.isDefault : allowed.includes(env.slug))
+  if (!permitted) throw new RunRequestError(403, 'forbidden', `This webhook doesn't run in ${env.name}`)
   return env
 }
 
@@ -153,10 +165,10 @@ export async function requireConfiguredResources(
   }
 }
 
-/** Headers that never reach the run: the credentials the caller authenticated with. */
+/** Headers that never reach the run: cookies and any API key the caller sent (used or not). */
 export function runHeaders(
   headers: Record<string, string | string[] | undefined>,
-  keySource: 'x-api-key' | 'authorization',
+  keySource: 'x-api-key' | 'authorization' | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {

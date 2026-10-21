@@ -101,7 +101,14 @@ export async function buildApp(deps: {
   await app.register(runsApi, { prefix: '/api/v1', db, events })
   await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
-  await app.register(webhooksApi, { prefix: '/api/v1', db, events, runner })
+  await app.register(webhooksApi, {
+    prefix: '/api/v1',
+    db,
+    keyring: config.keyring,
+    publicUrl: config.PUBLIC_URL,
+    events,
+    runner,
+  })
   // The API deploys from Git when GitHub says the branch moved; workers poll (see worker/index.ts).
   const gitDeployer = new GitDeployer({ db, config, log: app.log.child({ component: 'git' }), pollMs: 0 })
   app.addHook('onClose', () => gitDeployer.stop())

@@ -1,5 +1,8 @@
 import {
+  configVars,
+  configVarValues,
   type Db,
+  type Environment,
   environments,
   resourceConfigs,
   type Workflow,
@@ -15,6 +18,8 @@ import {
   definitionHash,
   nextScheduleFire,
   parseWebhookAlias,
+  type ResolvedWebhook,
+  resolveWebhookSettings,
   type ScheduleTrigger,
   type VersionBump,
   type WorkflowDefinition,
@@ -300,6 +305,8 @@ async function checkReleasable(
   }
 
   const webhook = definition.triggers?.webhook
+  if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)
+
   let aliasShape: string | null = null
   if (webhook?.enabled && webhook.alias !== undefined) {
     const parsed = parseWebhookAlias(webhook.alias)
@@ -319,6 +326,54 @@ async function checkReleasable(
     }
   }
   return { scheduleEnvironments, aliasShape }
+}
+
+/**
+ * A live webhook's environments exist, and a signed one's secret is a secret config var with a value in each
+ * environment the webhook runs in (its value isn't read here).
+ */
+async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Environment[]) {
+  const runsIn =
+    webhook.environments === 'all'
+      ? envs
+      : webhook.environments === 'default'
+        ? envs.filter((e) => e.isDefault)
+        : webhook.environments.map((slug) => {
+            const env = envs.find((e) => e.slug === slug)
+            if (!env) {
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message: `The webhook runs in environment "${slug}", which doesn't exist`,
+              })
+            }
+            return env
+          })
+  if (webhook.auth.type !== 'signature') return
+  const name = webhook.auth.secret
+  const [variable] = await db.select().from(configVars).where(eq(configVars.name, name))
+  if (!variable) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `The webhook's signing secret is config var "${name}", which doesn't exist`,
+    })
+  }
+  if (!variable.isSecret) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `Config var "${name}" isn't secret: make it a secret to sign webhooks with it`,
+    })
+  }
+  const values = await db
+    .select({ environmentId: configVarValues.environmentId })
+    .from(configVarValues)
+    .where(eq(configVarValues.configVarId, variable.id))
+  const missing = runsIn.filter((env) => !values.some((v) => v.environmentId === env.id))
+  if (missing.length) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `Config var "${name}" has no value in ${missing.map((e) => e.name).join(', ')}, where the webhook runs`,
+    })
+  }
 }
 
 /** Points the workflow at the release and projects its triggers. Runs in the caller's transaction. */

@@ -1,9 +1,11 @@
+import type { Keyring } from '@ow/crypto'
 import type { Db } from '@ow/db'
 import { WEBHOOK_METHODS } from '@ow/definition'
 import type { InlineRunner } from '@ow/engine'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import type { RunEventHub } from '../services/run-events'
+import { readSigningSecrets, verifyWebhookSignature } from '../services/webhook-signatures'
 import {
   RawBody,
   requireConfiguredResources,
@@ -36,10 +38,14 @@ const MAX_IDEMPOTENCY_KEY = 255
  *   the webhook's `syncTimeoutMs` for the reply (see `sendRunReply`); after that, or with `Prefer: respond-async`,
  *   the answer is `202 { runId, status }` with the run's URL in `Location`. `X-Run-Id` is on every answer.
  */
-export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; runner: InlineRunner }> = async (
-  app,
-  { db, events, runner },
-) => {
+export const webhooksApi: FastifyPluginAsync<{
+  db: Db
+  keyring: Keyring
+  /** The URL callers use (PUBLIC_URL): HubSpot and custom `{url}` signatures sign it. */
+  publicUrl: string
+  events?: RunEventHub
+  runner: InlineRunner
+}> = async (app, { db, keyring, publicUrl, events, runner }) => {
   // Bodies are kept as bytes, tagged with how to read them, and parsed only once the caller is authenticated: a
   // signature covers the exact bytes sent.
   app.removeContentTypeParser(['application/json', 'text/plain'])
@@ -64,15 +70,7 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
   })
 
   async function handle(req: FastifyRequest, reply: FastifyReply, find: () => Promise<WebhookTarget>) {
-    const presented = presentedApiKey(req.headers)
-    if (!presented) {
-      throw new RunRequestError(401, 'unauthorized', 'Send an API key in the X-Api-Key header')
-    }
-    const key = await authenticateApiKey(db, presented.key)
-    if (!key) throw new RunRequestError(401, 'unauthorized', 'This API key is unknown, revoked or expired')
-
     const { workflow, trigger, release, webhook, pathParams } = await find()
-    const raw = req.body instanceof RawBody ? req.body : null
     if (!webhook.methods.includes(req.method as (typeof WEBHOOK_METHODS)[number])) {
       reply.header('allow', webhook.methods.join(', '))
       throw new RunRequestError(
@@ -82,19 +80,67 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
       )
     }
     const { environment: envSlug, ...urlParams } = (req.query ?? {}) as Record<string, string | string[]>
-    const environment = await webhookEnvironment(db, typeof envSlug === 'string' ? envSlug : undefined)
-    if (!apiKeyAllows(key, workflow.id, environment.id)) {
-      throw new RunRequestError(
-        403,
-        'forbidden',
-        `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
-      )
+    const environment = await webhookEnvironment(
+      db,
+      webhook,
+      typeof envSlug === 'string' ? envSlug : undefined,
+    )
+    const raw = req.body instanceof RawBody ? req.body : null
+
+    const presented = presentedApiKey(req.headers)
+    let apiKeyId: string | null = null
+    if (webhook.auth.type === 'apiKey') {
+      if (!presented) {
+        throw new RunRequestError(401, 'unauthorized', 'Send an API key in the X-Api-Key header')
+      }
+      const key = await authenticateApiKey(db, presented.key)
+      if (!key) throw new RunRequestError(401, 'unauthorized', 'This API key is unknown, revoked or expired')
+      if (!apiKeyAllows(key, workflow.id, environment.id)) {
+        throw new RunRequestError(
+          403,
+          'forbidden',
+          `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
+        )
+      }
+      apiKeyId = key.id
+    } else if (webhook.auth.type === 'signature') {
+      const auth = webhook.auth
+      const secrets = await readSigningSecrets(db, keyring, auth.secret, environment.id)
+      const check = secrets
+        ? verifyWebhookSignature(auth, secrets, {
+            method: req.method,
+            url: new URL(req.url, publicUrl).toString(),
+            headers: req.headers,
+            body: raw?.bytes ?? Buffer.alloc(0),
+          })
+        : ({
+            ok: false,
+            reason: 'secret_unset',
+            message: `Config var ${auth.secret} has no secret value`,
+          } as const)
+      if (!check.ok) {
+        req.log.info(
+          { workflow: workflow.slug, reason: check.reason },
+          `webhook signature refused: ${check.message}`,
+        )
+        throw new RunRequestError(401, 'unauthorized', "The request's signature couldn't be verified")
+      }
     }
+
     await requireConfiguredResources(db, release, environment)
     const data = raw ? raw.parse() : null
 
-    const idempotencyKey = req.headers['idempotency-key']
-    if (typeof idempotencyKey === 'string' && idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
+    // Slack checks a new Events API URL with a challenge, signed like any event: answer it without a run.
+    if (webhook.auth.type === 'signature' && webhook.auth.preset === 'slack' && isSlackChallenge(data)) {
+      return reply.code(200).send({ challenge: data.challenge })
+    }
+
+    const header = (name: string | null) => {
+      const value = name ? req.headers[name] : undefined
+      return typeof value === 'string' && value ? value : undefined
+    }
+    const idempotencyKey = header('idempotency-key') ?? header(webhook.idempotencyHeader)
+    if (idempotencyKey && idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
       throw new RunRequestError(
         400,
         'invalid_request',
@@ -111,11 +157,11 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
         environmentId: environment.id,
         triggerType: 'webhook',
         triggerId: trigger.id,
-        apiKeyId: key.id,
-        idempotencyKey: typeof idempotencyKey === 'string' && idempotencyKey ? idempotencyKey : null,
+        apiKeyId,
+        idempotencyKey: idempotencyKey ?? null,
         input: {
           data,
-          headers: runHeaders(req.headers, presented.source),
+          headers: runHeaders(req.headers, presented?.source),
           pathParams,
           urlParams,
         },
@@ -154,4 +200,9 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
         return webhookByAlias(db, path)
       }),
   })
+}
+
+function isSlackChallenge(data: unknown): data is { type: 'url_verification'; challenge: string } {
+  const d = data as { type?: unknown; challenge?: unknown } | null
+  return d?.type === 'url_verification' && typeof d.challenge === 'string'
 }
