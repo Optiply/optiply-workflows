@@ -6,7 +6,7 @@ import {
   SharedDefinition,
   workflowSpec,
 } from '@ow/collab'
-import { collabDocuments, collabUpdates, createDb, workflows } from '@ow/db'
+import { collabDocuments, collabUpdates, createDb, gitBranchDrafts, workflows } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import * as decoding from 'lib0/decoding'
@@ -333,6 +333,47 @@ describe('collab documents', () => {
     const last = await connect(adminCookie, key)
     data(await admin.mutate('workflows.delete', { id }))
     expect((await last.closedWith()).code).toBe(4403)
+  })
+
+  it('edits a Git branch draft together, and folds in a pull from the branch', async () => {
+    const id = await createWorkflow('on-a-branch')
+    // A protected workflow's draft on a branch (M11), as opening one makes it.
+    await env.db.update(workflows).set({ gitProtected: true }).where(eq(workflows.id, id))
+    const [draft] = await env.db
+      .insert(gitBranchDrafts)
+      .values({
+        workflowId: id,
+        branch: 'feature',
+        definition: definition('return "branch"'),
+        name: 'on-a-branch',
+        baseCommit: 'abc123',
+        branchExists: true,
+      })
+      .returning()
+    const key = `branch:${draft!.id}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key)
+    expect(a.code()).toBe('return "branch"')
+    a.edit('return "branch" + 1')
+    await vi.waitFor(() => expect(b.code()).toBe('return "branch" + 1'))
+    await vi.waitFor(
+      async () => {
+        const [row] = await env.db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, draft!.id))
+        expect(row).toMatchObject({ revision: 2, definition: definition('return "branch" + 1') })
+      },
+      { timeout: 3000 },
+    )
+
+    // "Update from branch": the draft takes the branch's files, a revision on; both editors get it.
+    await env.db
+      .update(gitBranchDrafts)
+      .set({ definition: definition('return "pulled"'), revision: 3 })
+      .where(eq(gitBranchDrafts.id, draft!.id))
+    await vi.waitFor(() => expect(a.code()).toBe('return "pulled"'))
+    await vi.waitFor(() => expect(b.code()).toBe('return "pulled"'))
+    await vi.waitFor(() => expect(a.status()).toEqual({ revision: 3, error: null }))
+    await a.close()
+    await b.close()
   })
 
   it('drops the document with its workflow', async () => {

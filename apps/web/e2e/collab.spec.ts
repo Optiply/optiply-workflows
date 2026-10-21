@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { E2E_SECOND_EMAIL } from './global-setup'
+import { E2E_MEMBER_EMAIL, E2E_SECOND_EMAIL } from './global-setup'
 import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, trpcMutate, typeInto } from './helpers'
 
 const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText('Saved')
@@ -309,4 +309,44 @@ test('an editor whose draft goes away stops and says why', async ({ page }) => {
   await expect(status).toHaveText('Disconnected: reload')
   await expect(status).toHaveAttribute('title', 'This draft is gone, or you no longer have access to it')
   await expect(page.getByTitle('Add a code block')).toHaveCount(0)
+})
+
+/** M16 step 7: someone with Use watches the draft: read-only, and others' edits show up as they're made. */
+test('a watcher sees the draft change live, read-only', async ({ page, browser }) => {
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Watched ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await saved(page)
+  const id = page.url().split('/').at(-1)!
+  const groups = await (await page.request.get('/api/trpc/groups.list')).json()
+  const everyone = (groups.result.data.json as { id: string; systemKind: string | null }[]).find(
+    (g) => g.systemKind === 'all_users',
+  )!
+  await trpcMutate(page, 'permissions.set', {
+    objectType: 'workflow',
+    objectId: id,
+    groupId: everyone.id,
+    environmentId: null,
+    level: 'use',
+  })
+
+  const memberContext = await browser.newContext()
+  const member = await memberContext.newPage()
+  await signIn(member, E2E_MEMBER_EMAIL)
+  await member.goto(`/workflows/${id}`)
+  await expect(member.getByText('Read only', { exact: true })).toBeVisible()
+  await expect(member.getByTitle('Add a code block')).toHaveCount(0)
+
+  await block(page, 'startTrigger').click()
+  await addBlock(page, 'code')
+  await expect(block(member, 'code1')).toBeVisible()
+  await typeInto(page, field(page, 'code1', 'code.js'), 'return "watched"')
+  await saved(page)
+  await block(member, 'code1').click()
+  await expect.poll(() => editorText(field(member, 'code1', 'code.js'))).toBe('return "watched"')
+  // The watcher is there too, and has its presence.
+  await expect(page.getByTestId('presence-Member')).toBeVisible()
+  await memberContext.close()
 })
