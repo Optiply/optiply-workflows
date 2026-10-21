@@ -207,6 +207,28 @@ describe('guards', () => {
     expect(err.code).toBe('aborted')
     expect(Date.now() - started).toBeLessThan(2000)
   })
+
+  // A signal that aborts while the query waits for a connection fires before the cancel listener is attached:
+  // the query must not run anyway. Both paths: rows through a cursor, and a statement without result columns.
+  it("doesn't run a query whose signal aborted before it started", async () => {
+    for (const sql of ['select pg_sleep(2)', 'do $$ begin perform pg_sleep(2); end $$']) {
+      const started = Date.now()
+      const err = await failure(
+        runQuery(
+          pool,
+          postgresConnector,
+          pgResource(),
+          { sql },
+          {
+            evaluate: scopeEvaluator({}),
+            signal: AbortSignal.abort(),
+          },
+        ),
+      )
+      expect(err.code, sql).toBe('aborted')
+      expect(Date.now() - started, sql).toBeLessThan(1000)
+    }
+  })
 })
 
 describe('testResource', () => {

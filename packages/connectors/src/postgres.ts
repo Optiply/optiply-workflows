@@ -76,6 +76,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
     const cancel = () => void q.cancel()
     signal.addEventListener('abort', cancel, { once: true })
     try {
+      signal.throwIfAborted()
       const [row] = await q
       return { message: String(row?.version ?? '').split(',')[0] }
     } catch (err) {
@@ -126,6 +127,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         const cancel = () => void q.cancel()
         ctx.signal.addEventListener('abort', cancel, { once: true })
         try {
+          ctx.signal.throwIfAborted()
           for await (const batch of q.cursor(Math.min(CURSOR_BATCH, config.maxRows + 1))) {
             for (const row of batch) rows.push({ ...row })
             if (rows.length > config.maxRows) {
@@ -178,7 +180,10 @@ function toParam(value: unknown, typeOid: number | undefined): unknown {
   return value
 }
 
-/** Awaits a postgres.js query, cancelling it server-side if the signal aborts. */
+/**
+ * Awaits a postgres.js query, cancelling it server-side if the signal aborts. A signal that aborted before this
+ * (while the query waited for a connection, or ran its describe) never fires the listener: the query isn't run.
+ */
 async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }>(
   q: T,
   signal: AbortSignal,
@@ -186,6 +191,7 @@ async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }
   const cancel = () => void q.cancel()
   signal.addEventListener('abort', cancel, { once: true })
   try {
+    signal.throwIfAborted()
     return await q
   } finally {
     signal.removeEventListener('abort', cancel)
