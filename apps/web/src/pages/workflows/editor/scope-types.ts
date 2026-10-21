@@ -57,6 +57,112 @@ function propertyName(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+type JsonSchema = Record<string, unknown>
+
+const isSchema = (v: unknown): v is JsonSchema => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * A TypeScript type for a JSON Schema (a webhook's body schema), so completions follow the declared contract:
+ * types, `enum`/`const` as literal unions, `properties` with `required`, `items`, `anyOf`/`oneOf`/`allOf`, local
+ * `$ref`s (`#/$defs/…`) and descriptions as doc comments. Anything else is `unknown`.
+ */
+export function schemaType(schema: unknown, root: unknown = schema, depth = 0): string {
+  if (schema === false) return 'never'
+  if (!isSchema(schema) || depth > MAX_DEPTH) return 'unknown'
+  if (typeof schema.$ref === 'string') {
+    const target = resolveRef(root, schema.$ref)
+    return target === undefined ? 'unknown' : schemaType(target, root, depth + 1)
+  }
+  if ('const' in schema) return literal(schema.const)
+  if (Array.isArray(schema.enum)) return schema.enum.length ? schema.enum.map(literal).join(' | ') : 'never'
+  const union = (schema.anyOf ?? schema.oneOf) as unknown[] | undefined
+  if (Array.isArray(union) && union.length) {
+    return [...new Set(union.map((s) => group(schemaType(s, root, depth + 1))))].join(' | ')
+  }
+  if (Array.isArray(schema.allOf) && schema.allOf.length) {
+    return schema.allOf.map((s) => group(schemaType(s, root, depth + 1))).join(' & ')
+  }
+  const declared = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : []
+  const types = declared.length
+    ? declared
+    : schema.properties
+      ? ['object']
+      : schema.items || schema.prefixItems
+        ? ['array']
+        : []
+  if (!types.length) return 'unknown'
+  return [...new Set(types.map((t) => typeForType(String(t), schema, root, depth)))].join(' | ')
+}
+
+function typeForType(type: string, schema: JsonSchema, root: unknown, depth: number): string {
+  switch (type) {
+    case 'string':
+    case 'boolean':
+    case 'null':
+      return type
+    case 'number':
+    case 'integer':
+      return 'number'
+    case 'array': {
+      if (Array.isArray(schema.prefixItems)) {
+        return `[${schema.prefixItems.map((s) => schemaType(s, root, depth + 1)).join(', ')}]`
+      }
+      return schema.items === undefined
+        ? 'unknown[]'
+        : `${group(schemaType(schema.items, root, depth + 1))}[]`
+    }
+    case 'object': {
+      const properties = isSchema(schema.properties)
+        ? Object.entries(schema.properties).slice(0, MAX_KEYS)
+        : []
+      const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : [])
+      const extra = schema.additionalProperties
+      if (!properties.length) {
+        return isSchema(extra)
+          ? `Record<string, ${schemaType(extra, root, depth + 1)}>`
+          : 'Record<string, unknown>'
+      }
+      const fields = properties.map(([key, value]) => {
+        const doc =
+          isSchema(value) && typeof value.description === 'string' ? `${docComment(value.description)} ` : ''
+        return `${doc}${propertyName(key)}${required.has(key) ? '' : '?'}: ${schemaType(value, root, depth + 1)}`
+      })
+      // Other keys are allowed unless the schema says otherwise.
+      if (extra !== false) fields.push('[key: string]: unknown')
+      return `{ ${fields.join('; ')} }`
+    }
+    default:
+      return 'unknown'
+  }
+}
+
+/** A JSON Pointer inside the schema (`#/$defs/line`); remote references aren't followed. */
+function resolveRef(root: unknown, ref: string): unknown {
+  if (!ref.startsWith('#')) return undefined
+  let node = root
+  for (const raw of ref.slice(1).split('/').slice(1)) {
+    const key = decodeURIComponent(raw).replaceAll('~1', '/').replaceAll('~0', '~')
+    if (!isSchema(node) && !Array.isArray(node)) return undefined
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
+}
+
+function literal(value: unknown): string {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value)
+    ? JSON.stringify(value)
+    : 'unknown'
+}
+
+/** Parenthesizes a union or intersection inside `[]`, `|` or `&`. */
+function group(type: string): string {
+  return /[|&]/.test(type) && !/^[{[]/.test(type) ? `(${type})` : type
+}
+
+function docComment(text: string): string {
+  return `/** ${text.replaceAll('*/', '* /').replace(/\s+/g, ' ').trim()} */`
+}
+
 /** The `sql` helpers, for workflows and apps alike. */
 export const SQL_HELPERS = `
 /** For SQL queries: a sort column and direction chosen at run time, from a list written in the query. */
@@ -107,6 +213,8 @@ export function scopeDeclarations(
   samples: Record<string, SampleResult>,
   functions: readonly FunctionDefinition[] = [],
   inFunction?: FunctionDefinition,
+  /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
+  bodySchema?: Record<string, unknown>,
 ): { dts: string; sample: Record<string, unknown> } {
   const lines = [GLOBALS]
   for (const fn of functions) {
@@ -131,7 +239,12 @@ export function scopeDeclarations(
   for (const block of blocks) {
     // Function blocks have no run samples (function calls aren't recorded per block).
     const result = inFunction ? undefined : samples[block.name]
-    const data = result ? typeOf(result.data) : 'unknown'
+    const data =
+      block.type === 'startTrigger' && bodySchema
+        ? schemaType(bodySchema)
+        : result
+          ? typeOf(result.data)
+          : 'unknown'
     const extra =
       block.type === 'startTrigger'
         ? ' headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>;'

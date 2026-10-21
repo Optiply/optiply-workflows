@@ -15,12 +15,12 @@ import {
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Clock, Plus, Trash2, Webhook } from 'lucide-react'
-import { Badge, Button, Checkbox, CopyButton, Field, Input, Select } from '@/components/ui'
+import { Badge, Button, Checkbox, CopyButton, Field, Input, linkClass, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { useRun } from './run-state'
 import { useEditor } from './store'
-import { WebhookAuthFields, WebhookLimitFields, WebhookRejections } from './webhook-settings'
+import { BodySchemaField, WebhookAuthFields, WebhookLimitFields, WebhookRejections } from './webhook-settings'
 
 type Triggers = NonNullable<WorkflowDefinition['triggers']>
 
@@ -187,6 +187,7 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
           </Field>
           <WebhookAuthFields webhook={webhook!} set={set} problemsAt={problemsAt} />
           <WebhookLimitFields webhook={webhook!} resolved={resolved} set={set} problemsAt={problemsAt} />
+          <BodySchemaField webhook={webhook!} set={set} problemsAt={problemsAt} testInput={testInput} />
           <div className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">URL{urls.length > 1 ? 's' : ''}</span>
             {urls.map((url) => (
@@ -211,7 +212,11 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
                   ? `The sender signs each call with the secret; you only give it the URL. `
                   : 'Anyone with the URL can call it. '}
               Calls reach the live release once you publish. Add{' '}
-              <code className="font-mono">?environment=staging</code> to pick an environment.
+              <code className="font-mono">?environment=staging</code> to pick an environment.{' '}
+              <a className={linkClass} href="/api/v1/openapi.json" target="_blank" rel="noreferrer">
+                OpenAPI document
+              </a>{' '}
+              (your live webhooks, for whoever writes the caller).
             </span>
           </div>
           {workflowId && <WebhookRejections workflowId={workflowId} />}

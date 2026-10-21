@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { expect, type Page, test } from '@playwright/test'
-import { block, signIn, trpcMutate, trpcQuery } from './helpers'
+import { block, field, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * M15 step 6a: a webhook's authentication, rate limit and environments set in the trigger panel, and a call the
@@ -108,6 +108,90 @@ test('sign a webhook with GitHub, and see a forged call refused', async ({ page,
     await expect(refused.locator('li')).toContainText("Signature didn't match")
     await expect(refused.locator('li')).toContainText('401')
   })
+})
+
+/**
+ * M15 step 6b: a body schema drafted from the test input, half-typed JSON left unsaved, and completions for
+ * `startTrigger.data` following the schema.
+ */
+test('draft a body schema, and complete startTrigger.data from it', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  await signIn(page)
+  const workflowId = (
+    await trpcMutate<{ id: string }>(page, 'workflows.create', {
+      slug: `schema-${suffix}`,
+      name: `Schema ${suffix}`,
+    })
+  ).id
+  await trpcMutate(page, 'workflows.saveDraft', {
+    id: workflowId,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      blocks: [
+        {
+          name: 'startTrigger',
+          type: 'startTrigger',
+          config: { testInput: { orderId: 7, lines: [{ sku: 'A' }] } },
+        },
+        { name: 'code1', type: 'code', config: { code: 'return 1' } },
+      ],
+      edges: [{ from: 'startTrigger', port: 'out', to: 'code1' }],
+      triggers: { webhook: { enabled: true } },
+    },
+  })
+  const draftSchema = async () =>
+    (
+      await trpcQuery<{ draftDefinition: { triggers: { webhook: { bodySchema?: unknown } } } }>(
+        page,
+        'workflows.get',
+        {
+          id: workflowId,
+        },
+      )
+    ).draftDefinition.triggers.webhook.bodySchema
+
+  await page.goto(`/workflows/${workflowId}`)
+  await block(page, 'startTrigger').click()
+  const schemaField = page.getByTestId('body-schema')
+  await schemaField.getByRole('button', { name: 'Draft from the test input' }).click()
+  await saved(page)
+  const drafted = {
+    type: 'object',
+    properties: {
+      orderId: { type: 'integer' },
+      lines: {
+        type: 'array',
+        items: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] },
+      },
+    },
+    // The test input comes back from jsonb, which orders keys shortest first.
+    required: ['lines', 'orderId'],
+  }
+  expect(await draftSchema()).toEqual(drafted)
+
+  // A typo that breaks the JSON isn't saved: the stored schema stays the drafted one. (Emptying the field is
+  // "no schema", which is saved.)
+  const schemaEditor = field(page, 'startTrigger', 'body-schema.json').locator('.monaco-editor')
+  await schemaEditor.locator('.view-lines').click({ position: { x: 4, y: 4 } })
+  await page.keyboard.press('ControlOrMeta+End')
+  await page.keyboard.insertText(' x')
+  await expect(schemaField).toContainText('Not valid JSON yet (not saved)')
+  await saved(page)
+  expect(await draftSchema()).toEqual(drafted)
+  await typeInto(page, field(page, 'startTrigger', 'body-schema.json'), JSON.stringify(drafted))
+  await expect(schemaField).not.toContainText('Not valid JSON yet')
+
+  // Completions in a code block follow the schema.
+  await block(page, 'code1').click()
+  const code = field(page, 'code1', 'code.js').locator('.monaco-editor')
+  await typeInto(page, field(page, 'code1', 'code.js'), 'return startTrigger.data.')
+  await code.locator('.view-lines').click({ position: { x: 4, y: 4 } })
+  await page.keyboard.press('End')
+  await page.keyboard.press('Control+Space')
+  const suggestions = page.locator('.suggest-widget')
+  await expect(suggestions).toContainText('orderId')
+  await expect(suggestions).toContainText('lines')
 })
 
 const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText('Saved')

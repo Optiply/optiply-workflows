@@ -12,10 +12,15 @@ import {
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { RefreshCw, ShieldAlert } from 'lucide-react'
-import { Badge, Button, Checkbox, Field, Input, linkClass, Select } from '@/components/ui'
+import { FileJson, RefreshCw, ShieldAlert } from 'lucide-react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Badge, Button, Checkbox, Field, Input, linkClass, Select, Textarea } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
+import { draftSchema } from './schema-draft'
+import { useEditor } from './store'
+
+const LazyCodeField = lazy(() => import('./code-field'))
 
 /**
  * The webhook's M15 settings in the trigger panel: how callers authenticate, the rate limit, the environments
@@ -468,6 +473,137 @@ export function WebhookRejections({ workflowId }: { workflowId: string }) {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+const pretty = (schema: unknown) => (schema === undefined ? '' : JSON.stringify(schema, null, 2))
+
+/**
+ * The webhook's body schema as JSON in Monaco. Text that isn't a JSON object yet stays here (and isn't saved), so
+ * typing never stores half a schema; the validator's problems (a schema Ajv can't compile) show below. Drafts come
+ * from the start trigger's test input or a pasted sample, for the person to tighten.
+ */
+export function BodySchemaField({
+  webhook,
+  set,
+  problemsAt,
+  testInput,
+}: {
+  webhook: WebhookTrigger
+  set: Set
+  problemsAt: ProblemsAt
+  testInput: unknown
+}) {
+  const workflowId = useEditor((s) => s.workflowId)
+  const [text, setText] = useState(() => pretty(webhook.bodySchema))
+  const [parseError, setParseError] = useState<string | null>(null)
+  const [pasting, setPasting] = useState(false)
+  const [sample, setSample] = useState('')
+  const [sampleError, setSampleError] = useState<string | null>(null)
+  // The schema this field last saved: anything else (undo, redo, a paste) replaces the text.
+  const saved = useRef(JSON.stringify(webhook.bodySchema ?? null))
+  useEffect(() => {
+    const current = JSON.stringify(webhook.bodySchema ?? null)
+    if (current === saved.current) return
+    saved.current = current
+    setText(pretty(webhook.bodySchema))
+    setParseError(null)
+  }, [webhook.bodySchema])
+
+  const save = (schema: Record<string, unknown> | undefined) => {
+    saved.current = JSON.stringify(schema ?? null)
+    set({ bodySchema: schema })
+  }
+  const edit = (next: string) => {
+    setText(next)
+    if (!next.trim()) {
+      setParseError(null)
+      save(undefined)
+      return
+    }
+    try {
+      const value: unknown = JSON.parse(next)
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        setParseError('A schema is a JSON object: { "type": "object", … }')
+        return
+      }
+      setParseError(null)
+      save(value as Record<string, unknown>)
+    } catch (err) {
+      setParseError(`Not valid JSON yet (not saved): ${(err as Error).message}`)
+    }
+  }
+  const applyDraft = (value: unknown) => {
+    const schema = draftSchema(value)
+    setText(pretty(schema))
+    setParseError(null)
+    save(schema)
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="body-schema">
+      <span className="text-sm font-medium text-ink">Body schema</span>
+      <Suspense
+        fallback={
+          <div style={{ height: 160 }} className="animate-pulse rounded-md border border-border bg-canvas" />
+        }
+      >
+        <LazyCodeField
+          path={`file:///${workflowId}/_/startTrigger/body-schema.json`}
+          language="json"
+          height={160}
+          value={text}
+          onChange={edit}
+        />
+      </Suspense>
+      {parseError && <span className="text-xs text-danger">{parseError}</span>}
+      <FieldProblems problems={problemsAt('bodySchema')} />
+      <div className="flex flex-wrap gap-1.5">
+        {testInput !== undefined && testInput !== null && (
+          <Button size="sm" variant="ghost" onClick={() => applyDraft(testInput)}>
+            <FileJson className="size-3.5" /> Draft from the test input
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => setPasting((p) => !p)}>
+          <FileJson className="size-3.5" /> Draft from a sample…
+        </Button>
+      </div>
+      {pasting && (
+        <div className="flex flex-col gap-1.5">
+          <Textarea
+            aria-label="Sample body"
+            rows={5}
+            spellCheck={false}
+            className="font-mono text-xs"
+            placeholder='{ "orderId": 7, "lines": [{ "sku": "A", "qty": 1 }] }'
+            value={sample}
+            onChange={(e) => setSample(e.target.value)}
+          />
+          {sampleError && <span className="text-xs text-danger">{sampleError}</span>}
+          <Button
+            size="sm"
+            className="self-start"
+            onClick={() => {
+              try {
+                applyDraft(JSON.parse(sample))
+                setSampleError(null)
+                setPasting(false)
+                setSample('')
+              } catch (err) {
+                setSampleError(`Not valid JSON: ${(err as Error).message}`)
+              }
+            }}
+          >
+            Draft the schema
+          </Button>
+        </div>
+      )}
+      <span className="text-xs text-muted">
+        Optional. A body that doesn't match gets 400 with what's wrong, and no run starts; completions for{' '}
+        <code className="font-mono">startTrigger.data</code> follow it. A draft lists every key it saw;
+        tighten it before you publish.
+      </span>
     </div>
   )
 }

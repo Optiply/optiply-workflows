@@ -13,7 +13,8 @@ export default function WorkflowCodeField(props: CodeFieldProps) {
   const scope = useMemo(() => {
     const functions = definition.functions ?? []
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
-    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open)
+    const bodySchema = open ? undefined : definition.triggers?.webhook?.bodySchema
+    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open, bodySchema)
   }, [definition, samples, fn])
   return <CodeField {...props} scope={scope} />
 }

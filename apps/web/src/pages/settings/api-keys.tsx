@@ -11,6 +11,7 @@ import {
   ErrorNote,
   Field,
   Input,
+  linkClass,
   Spinner,
   Table,
   Td,
@@ -54,7 +55,11 @@ function ApiKeys() {
         <p className="max-w-2xl text-sm text-muted">
           Other systems send a key in the <code className="font-mono">X-Api-Key</code> header to call workflow
           webhooks, and can then read the runs they started. Limit a key to the workflows and environments it
-          needs.
+          needs. The{' '}
+          <a className={linkClass} href="/api/v1/openapi.json" target="_blank" rel="noreferrer">
+            OpenAPI document
+          </a>{' '}
+          describes the live webhooks (a key sees only the ones it may call).
         </p>
         <Button variant="primary" onClick={() => setCreating(!creating)}>
           <Plus className="size-4" /> New API key
