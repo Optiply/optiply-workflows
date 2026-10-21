@@ -66,7 +66,10 @@ test('two editors of one workflow see each other’s edits', async ({ page, brow
   await otherContext.close()
 })
 
-/** M16 step 4: two people typing in one code field at once: both texts kept, each cursor where it was, ⌘Z one's own. */
+/**
+ * M16 step 4: two people typing in one code field at once: both texts kept, each cursor where it was and shown to the
+ * other, ⌘Z one's own.
+ */
 test('two people typing in one code field merge as they type', async ({ page, browser }) => {
   await signIn(page)
   await page.getByRole('button', { name: 'New workflow' }).click()
@@ -100,6 +103,20 @@ test('two people typing in one code field merge as they type', async ({ page, br
   await expect.poll(() => editorText(theirs)).toBe(merged)
   await saved(page)
   await saved(other)
+
+  // Each sees the other's caret in the field, in their colour; a selection too; gone when they leave the field.
+  await expect(mine.locator('.ow-remote-caret')).toHaveCount(1)
+  await expect(theirs.locator('.ow-remote-caret')).toHaveCount(1)
+  await other.keyboard.press('Shift+End')
+  await expect(mine.locator('.ow-remote-selection')).toHaveCount(1)
+  await other.keyboard.press('End')
+  await expect(mine.locator('.ow-remote-selection')).toHaveCount(0)
+  await clickEmptyCanvas(other)
+  await expect(mine.locator('.ow-remote-caret')).toHaveCount(0)
+  // (Clicking the canvas closed their inspector: open it again.)
+  await block(other, 'code1').click()
+  await mine.click()
+  await page.keyboard.press('End')
 
   // Undo in the field takes back this side's typing only.
   await page.keyboard.press('ControlOrMeta+Z')

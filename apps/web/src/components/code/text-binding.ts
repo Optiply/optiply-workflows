@@ -1,3 +1,4 @@
+import type { Awareness } from '@ow/collab'
 import type * as Y from 'yjs'
 import { monaco } from './monaco'
 
@@ -14,6 +15,8 @@ export interface TextBinding {
   write(change: (transaction: Y.Transaction) => void): void
   undo(): void
   redo(): void
+  /** Presence: this editor's cursor is shared there, and others' are shown in the field. */
+  awareness?: Awareness | null
 }
 
 /**

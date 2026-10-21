@@ -2,6 +2,7 @@ import Editor, { type OnMount } from '@monaco-editor/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from '@/lib/theme'
 import { monaco, optiplyTheme, setScope } from './monaco'
+import { showCursors } from './remote-cursors'
 import { bindText, type TextBinding } from './text-binding'
 
 export interface FieldProblem {
@@ -108,6 +109,16 @@ export default function CodeField({
     })
     return () => disposable.dispose()
   }, [mounted, text, path])
+
+  // Others' cursors in this text, and ours shared (after the binding: their positions read the model it keeps).
+  const awareness = binding?.awareness
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `path` switches the editor's model
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!mounted || !editor || !text || !awareness) return
+    const disposable = showCursors(editor, text, awareness)
+    return () => disposable.dispose()
+  }, [mounted, text, awareness, path])
 
   useEffect(() => {
     const model = editorRef.current?.getModel()

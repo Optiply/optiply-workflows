@@ -282,3 +282,32 @@
     box-shadow: 0 0 0 5px color-mix(in oklch, var(--color-accent) 25%, transparent);
   }
 }
+
+/* Editing together (M16): each person's hue (lib/presence.ts), in either theme. */
+.ow-presence-0 {
+  --presence: var(--blue-3);
+}
+.ow-presence-1 {
+  --presence: var(--green-3);
+}
+.ow-presence-2 {
+  --presence: var(--orange-3);
+}
+.ow-presence-3 {
+  --presence: var(--purple-3);
+}
+.ow-presence-4 {
+  --presence: var(--red-3);
+}
+.ow-presence-5 {
+  --presence: var(--yellow-4);
+}
+
+/* Someone else's selection and caret in a code field. */
+.monaco-editor .ow-remote-selection {
+  background: color-mix(in oklch, var(--presence) 25%, transparent);
+}
+.monaco-editor .ow-remote-caret {
+  border-left: 2px solid var(--presence);
+  margin-left: -1px;
+}

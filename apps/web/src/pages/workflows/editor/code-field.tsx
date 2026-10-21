@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import CodeField, { type CodeFieldProps } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
+import { currentAwareness } from './collab'
 import { scopeDeclarations } from './scope-types'
 import { graphOf, useEditor } from './store'
 
@@ -39,6 +40,7 @@ export default function WorkflowCodeField({ text: at, ...props }: WorkflowCodeFi
       write: (change) => useEditor.getState().editText(at, change),
       undo: () => useEditor.getState().undo(),
       redo: () => useEditor.getState().redo(),
+      awareness: currentAwareness(),
     }
   }, [key, shared, readOnly, definition])
   return <CodeField {...props} binding={binding} scope={scope} />

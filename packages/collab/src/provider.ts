@@ -247,3 +247,5 @@ export class CollabProvider {
     for (const listener of this.listeners) listener()
   }
 }
+
+export type { Awareness } from 'y-protocols/awareness'

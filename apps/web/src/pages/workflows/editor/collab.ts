@@ -82,6 +82,11 @@ export function openSession(workflowId: string, branchDraftId: string | null): v
   changed()
 }
 
+/** Presence in the open draft's document, once there is one. */
+export function currentAwareness() {
+  return current?.provider.awareness ?? null
+}
+
 export function closeSession(): void {
   current?.close()
   current = null
