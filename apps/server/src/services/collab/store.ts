@@ -6,6 +6,16 @@ import type { CollabOwner, CollabTarget } from './target'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
+/**
+ * Where the API processes tell each other about documents, as JSON: a draft written (`{d: key, r: revision}`, by the
+ * triggers of migration 0022), an update stored (`{d, u: update id, p: process}`) or presence changed
+ * (`{d, a: base64 awareness update, p}`).
+ */
+export const COLLAB_CHANNEL = 'ow_collab'
+
+/** Presence larger than this isn't relayed: NOTIFY payloads stop at 8000 bytes. */
+const MAX_NOTIFY_BYTES = 7000
+
 /** What `write` did: wrote the draft, found it already equal, or found a newer draft to fold in first. */
 export type WriteResult = { revision: number; written: boolean } | { fold: true }
 
@@ -66,9 +76,53 @@ export class CollabStore {
     })
   }
 
-  /** Stores one update to the document. */
-  async append(key: string, update: Uint8Array): Promise<void> {
-    await this.db.insert(collabUpdates).values({ documentKey: key, update })
+  /** Stores one update to the document and tells the other processes (`source` is this one), once it's committed. */
+  async append(key: string, update: Uint8Array, source: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(collabUpdates)
+        .values({ documentKey: key, update })
+        .returning({ id: collabUpdates.id })
+      await notify(tx, { d: key, u: row!.id, p: source })
+    })
+  }
+
+  /** One stored update; null once compacted into the document's state. */
+  async fetch(id: number): Promise<Uint8Array | null> {
+    const [row] = await this.db
+      .select({ update: collabUpdates.update })
+      .from(collabUpdates)
+      .where(eq(collabUpdates.id, id))
+    return row?.update ?? null
+  }
+
+  /** The document as stored: its state and the updates since. */
+  async read(key: string): Promise<Uint8Array[]> {
+    const [document] = await this.db
+      .select({ state: collabDocuments.state })
+      .from(collabDocuments)
+      .where(eq(collabDocuments.key, key))
+    if (!document) return []
+    const updates = await this.db
+      .select({ update: collabUpdates.update })
+      .from(collabUpdates)
+      .where(eq(collabUpdates.documentKey, key))
+    return [document.state, ...updates.map((u) => u.update)]
+  }
+
+  /** Asks the other processes with the document open to announce who is there (a room just opened here). */
+  async askPresence(key: string, source: string): Promise<void> {
+    await this.db.execute(
+      sql`select pg_notify(${COLLAB_CHANNEL}, ${JSON.stringify({ d: key, q: 1, p: source })})`,
+    )
+  }
+
+  /** Tells the other processes about a change of presence here. Too large to relay: false. */
+  async announcePresence(key: string, update: Uint8Array, source: string): Promise<boolean> {
+    const payload = JSON.stringify({ d: key, a: Buffer.from(update).toString('base64'), p: source })
+    if (Buffer.byteLength(payload) > MAX_NOTIFY_BYTES) return false
+    await this.db.execute(sql`select pg_notify(${COLLAB_CHANNEL}, ${payload})`)
+    return true
   }
 
   /**
@@ -95,12 +149,14 @@ export class CollabStore {
 
   /**
    * Folds a draft written since the document last matched it into the open document: `apply` makes the document
-   * equal to it (returning the update, null if nothing changed), which is stored with the draft's revision. Null when
-   * there's nothing to fold (another process did, or the draft didn't move).
+   * equal to it (returning the update, null if nothing changed), which is stored with the draft's revision. The
+   * document's revision either way (nothing to fold: another process folded, or wrote, or the draft didn't move); null
+   * when the document is gone.
    */
   async fold(
     target: CollabTarget,
     apply: (definition: unknown) => Uint8Array | null,
+    source: string,
   ): Promise<{ revision: number } | null> {
     return this.db.transaction(async (tx) => {
       await lock(tx, target.key)
@@ -109,9 +165,16 @@ export class CollabStore {
         .select({ revision: collabDocuments.revision })
         .from(collabDocuments)
         .where(eq(collabDocuments.key, target.key))
-      if (!document || draft.revision <= document.revision) return null
+      if (!document) return null
+      if (draft.revision <= document.revision) return { revision: document.revision }
       const update = apply(draft.definition)
-      if (update) await tx.insert(collabUpdates).values({ documentKey: target.key, update })
+      if (update) {
+        const [row] = await tx
+          .insert(collabUpdates)
+          .values({ documentKey: target.key, update })
+          .returning({ id: collabUpdates.id })
+        await notify(tx, { d: target.key, u: row!.id, p: source })
+      }
       await setRevision(tx, target.key, draft.revision)
       return { revision: draft.revision }
     })
@@ -171,6 +234,9 @@ export function foldUpdate(
 /** The document's advisory lock, per document, apart from other users of `hashtext` locks. */
 const lock = (tx: Tx, key: string) =>
   tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`collab:${key}`}))`)
+
+const notify = (tx: Tx, message: { d: string; u: number; p: string }) =>
+  tx.execute(sql`select pg_notify(${COLLAB_CHANNEL}, ${JSON.stringify(message)})`)
 
 const setRevision = (tx: Tx, key: string, revision: number) =>
   tx.update(collabDocuments).set({ revision }).where(eq(collabDocuments.key, key))

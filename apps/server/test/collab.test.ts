@@ -6,7 +6,7 @@ import {
   SharedDefinition,
   workflowSpec,
 } from '@ow/collab'
-import { collabDocuments, collabUpdates, workflows } from '@ow/db'
+import { collabDocuments, collabUpdates, createDb, workflows } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import * as decoding from 'lib0/decoding'
@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as sync from 'y-protocols/sync'
 import * as Y from 'yjs'
+import { buildApp } from '../src/api/app'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 /**
@@ -55,8 +56,8 @@ async function createWorkflow(slug: string, code = 'return 1'): Promise<string> 
 }
 
 /** Opens a real WebSocket (Node's, which can send the cookie); resolves once open, rejects if refused. */
-function open(cookie: string, key: string): Promise<WebSocket> {
-  const ws = new WebSocket(`${baseUrl}/api/collab/${key}`, { headers: { cookie } } as never)
+function open(cookie: string, key: string, base = baseUrl): Promise<WebSocket> {
+  const ws = new WebSocket(`${base}/api/collab/${key}`, { headers: { cookie } } as never)
   ws.binaryType = 'arraybuffer'
   return new Promise((resolve, reject) => {
     ws.onopen = () => resolve(ws)
@@ -65,8 +66,8 @@ function open(cookie: string, key: string): Promise<WebSocket> {
 }
 
 /** A browser's side of the connection: a document kept in sync with the server's, and presence. */
-async function connect(cookie: string, key: string) {
-  const ws = await open(cookie, key)
+async function connect(cookie: string, key: string, base = baseUrl) {
+  const ws = await open(cookie, key, base)
   const doc = new Y.Doc()
   const shared = new SharedDefinition<WorkflowDefinition>(doc, workflowSpec)
   const awareness = new Awareness(doc)
@@ -252,13 +253,21 @@ describe('collab documents', () => {
     // b can't speak for a's client id.
     const forged = new Awareness(new Y.Doc())
     forged.clientID = a.shared.doc.clientID
-    forged.setLocalState({ selection: ['forged'] })
+    // A newer clock than a's, so only the ownership check stops it.
+    for (let i = 0; i < 5; i++) forged.setLocalState({ selection: ['forged'] })
     const e = encoding.createEncoder()
     encoding.writeVarUint(e, MESSAGE_AWARENESS)
     encoding.writeVarUint8Array(e, encodeAwarenessUpdate(forged, [forged.clientID]))
+    // Never shown to anyone, not even for a moment (a's browser would put its own state back at once).
+    const seen: unknown[] = []
+    const watch = (who: { awareness: Awareness }) =>
+      who.awareness.on('change', () => seen.push(who.awareness.getStates().get(a.shared.doc.clientID)))
+    watch(a)
+    watch(b)
     b.ws.send(encoding.toUint8Array(e))
     await new Promise((r) => setTimeout(r, 100))
     expect(b.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({ selection: ['code1'] })
+    expect(seen).not.toContainEqual(expect.objectContaining({ selection: ['forged'] }))
     // Leaving takes one's presence along.
     await a.close()
     await vi.waitFor(() => expect(b.awareness.getStates().has(a.shared.doc.clientID)).toBe(false))
@@ -359,5 +368,120 @@ describe('collab documents', () => {
     expect(c.code()).toBe('return "closed"')
     expect(c.status()).toEqual({ revision: 5, error: null })
     await c.close()
+  })
+})
+
+/** Another API process on the same database, as Compose runs two. */
+async function secondProcess() {
+  const { db, sql, close } = createDb(env.databaseUrl, { max: 5 })
+  const app = await buildApp({ db, config: env.config, logger: false, listener: sql })
+  const url = (await app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws')
+  return {
+    url,
+    stop: async () => {
+      await app.close()
+      await close()
+    },
+  }
+}
+
+describe('collab documents across API processes', () => {
+  let other: Awaited<ReturnType<typeof secondProcess>>
+  beforeAll(async () => {
+    other = await secondProcess()
+  })
+  afterAll(async () => {
+    await other?.stop()
+  })
+
+  it('relays edits both ways, and the draft gets them all', async () => {
+    const id = await createWorkflow('two-processes', 'abc')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key, other.url)
+    a.edit('Xabc')
+    await vi.waitFor(() => expect(b.code()).toBe('Xabc'))
+    b.edit('XabcY')
+    await vi.waitFor(() => expect(a.code()).toBe('XabcY'))
+    // Typed at the same time on both sides: merged alike.
+    a.edit('1XabcY')
+    b.edit('XabcY2')
+    await vi.waitFor(() => expect(a.code()).toBe('1XabcY2'))
+    await vi.waitFor(() => expect(b.code()).toBe('1XabcY2'))
+    await a.close()
+    await b.close()
+    await settled(key)
+    const [stored] = await env.db.select().from(workflows).where(eq(workflows.id, id))
+    expect(stored?.draftDefinition).toEqual(definition('1XabcY2'))
+  })
+
+  it('shows presence from the other process, including people there before the room opened here', async () => {
+    const id = await createWorkflow('presence-across')
+    const key = `workflow:${id}`
+    // A watcher has presence too.
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'workflow',
+        objectId: id,
+        groupId: memberGroupId,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    const a = await connect(adminCookie, key)
+    a.awareness.setLocalState({ selection: ['code1'] })
+    await new Promise((r) => setTimeout(r, 100))
+    const b = await connect(memberCookie, key, other.url)
+    await vi.waitFor(() =>
+      expect(b.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({
+        user: { name: 'admin' },
+        selection: ['code1'],
+      }),
+    )
+    b.awareness.setLocalState({ selection: ['startTrigger'] })
+    await vi.waitFor(() =>
+      expect(a.awareness.getStates().get(b.shared.doc.clientID)).toMatchObject({ user: { name: 'member' } }),
+    )
+    // b can't speak for a's client id from the other process either.
+    const forged = new Awareness(new Y.Doc())
+    forged.clientID = a.shared.doc.clientID
+    // A newer clock than a's, so only the ownership check stops it.
+    for (let i = 0; i < 5; i++) forged.setLocalState({ selection: ['forged'] })
+    const e = encoding.createEncoder()
+    encoding.writeVarUint(e, MESSAGE_AWARENESS)
+    encoding.writeVarUint8Array(e, encodeAwarenessUpdate(forged, [forged.clientID]))
+    // Never shown to anyone, not even for a moment (a's browser would put its own state back at once).
+    const seen: unknown[] = []
+    const watch = (who: { awareness: Awareness }) =>
+      who.awareness.on('change', () => seen.push(who.awareness.getStates().get(a.shared.doc.clientID)))
+    watch(a)
+    watch(b)
+    b.ws.send(encoding.toUint8Array(e))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(a.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({ selection: ['code1'] })
+    expect(b.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({ selection: ['code1'] })
+    expect(seen).not.toContainEqual(expect.objectContaining({ selection: ['forged'] }))
+    await a.close()
+    await vi.waitFor(() => expect(b.awareness.getStates().has(a.shared.doc.clientID)).toBe(false))
+    await b.close()
+  })
+
+  it('folds a REST save once, with the document open in both processes', async () => {
+    const id = await createWorkflow('fold-across', 'return 1')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key, other.url)
+    data(
+      await admin.mutate('workflows.saveDraft', { id, revision: 2, definition: definition('return "rest"') }),
+    )
+    await vi.waitFor(() => expect(a.code()).toBe('return "rest"'))
+    await vi.waitFor(() => expect(b.code()).toBe('return "rest"'))
+    await vi.waitFor(() => expect(a.status()).toEqual({ revision: 3, error: null }))
+    await vi.waitFor(() => expect(b.status()).toEqual({ revision: 3, error: null }))
+    await new Promise((r) => setTimeout(r, 300))
+    expect(a.code()).toBe('return "rest"')
+    expect(b.code()).toBe('return "rest"')
+    await a.close()
+    await b.close()
   })
 })

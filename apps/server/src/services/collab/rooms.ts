@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   type CollabStatus,
   MESSAGE_AWARENESS,
@@ -17,16 +18,13 @@ import {
 } from 'y-protocols/awareness'
 import * as sync from 'y-protocols/sync'
 import * as Y from 'yjs'
-import { type CollabStore, foldUpdate } from './store'
+import { COLLAB_CHANNEL, type CollabStore, foldUpdate } from './store'
 import type { CollabTarget } from './target'
 
 /** Updates stored since the last compaction before a room compacts its document. */
 const COMPACT_EVERY = 200
 /** While edits flow, the draft is written at most this often. */
 const WRITE_MS = 1000
-
-/** Where drafts written by anything are announced (migration 0022): `{"d": key, "r": revision}`. */
-export const COLLAB_CHANNEL = 'ow_collab'
 
 /** One open editor: a WebSocket, as the room sees it. */
 export interface CollabPeer {
@@ -41,6 +39,8 @@ export interface CollabPeer {
 const LOADED = Symbol('loaded')
 /** The origin of a draft folded in: the fold stores it. */
 const FOLDED = Symbol('folded')
+/** The origin of what another process relays: it stores its own updates, and relays its own presence. */
+const RELAYED = Symbol('relayed')
 
 /**
  * A document open in this process, with the people editing it here. Updates from one peer go to the others and to
@@ -54,6 +54,8 @@ export class CollabRoom {
   readonly shared: SharedDefinition<unknown>
   /** The peers here, with the awareness client ids each has spoken for. */
   readonly peers = new Map<CollabPeer, Set<number>>()
+  /** Awareness client ids that peers in other processes speak for. */
+  private remoteIds = new Set<number>()
   destroyed = false
   /** The draft revision the document last matched. */
   revision = 0
@@ -70,6 +72,8 @@ export class CollabRoom {
     private store: CollabStore,
     private log: FastifyBaseLogger,
     private failed: (room: CollabRoom, err: unknown) => void,
+    /** This process, as its announcements say. */
+    private source: string,
   ) {
     this.shared = new SharedDefinition(this.doc, target.spec)
     this.awareness.setLocalState(null)
@@ -132,9 +136,36 @@ export class CollabRoom {
     if (revision > this.revision) this.enqueue(() => this.fold())
   }
 
-  /** Checks for a draft written while this process might have missed the announcement. */
+  /** Another process stored update `id`: apply it (or the whole stored document, if it was compacted meanwhile). */
+  relayed(id: number): void {
+    this.enqueue(async () => {
+      const update = await this.store.fetch(id)
+      if (this.destroyed) return
+      if (update) Y.applyUpdate(this.doc, update, RELAYED)
+      else await this.resync()
+    })
+  }
+
+  /** Presence changed in another process. */
+  relayedPresence(update: Uint8Array): void {
+    applyAwarenessUpdate(this.awareness, update, RELAYED)
+  }
+
+  /** Another process opened the document: tell it who is here. */
+  announcePresence(): void {
+    const ids = [...this.peers.values()].flatMap((owned) => [...owned])
+    if (!ids.length) return
+    this.store
+      .announcePresence(this.key, encodeAwarenessUpdate(this.awareness, ids), this.source)
+      .catch((err) => this.log.warn({ err, key: this.key }, 'collab: relaying presence failed'))
+  }
+
+  /** Catches up on what this process might have missed (its LISTEN connection dropped): updates, and a draft. */
   recheck(): void {
-    this.enqueue(() => this.fold())
+    this.enqueue(async () => {
+      await this.resync()
+      await this.fold()
+    })
   }
 
   /** Writes the draft now if edits are waiting, then resolves once everything so far is stored. */
@@ -162,6 +193,19 @@ export class CollabRoom {
     this.shared.destroy()
     this.awareness.destroy()
     this.doc.destroy()
+  }
+
+  /** Applies the document as stored: whatever this process lacks (applying the rest again changes nothing). */
+  private async resync(): Promise<void> {
+    const updates = await this.store.read(this.key)
+    if (this.destroyed) return
+    Y.transact(
+      this.doc,
+      () => {
+        for (const u of updates) Y.applyUpdate(this.doc, u)
+      },
+      RELAYED,
+    )
   }
 
   private enqueue(work: () => Promise<void>): void {
@@ -192,10 +236,12 @@ export class CollabRoom {
   /** Folds a draft written by something else into the document (stored once, whichever process gets there first). */
   private async fold(): Promise<void> {
     if (this.destroyed) return
-    const folded = await this.store.fold(this.target, (definition) =>
-      foldUpdate(this.doc, this.target, definition, FOLDED),
+    const folded = await this.store.fold(
+      this.target,
+      (definition) => foldUpdate(this.doc, this.target, definition, FOLDED),
+      this.source,
     )
-    if (!folded) return
+    if (!folded || folded.revision === this.revision) return
     this.revision = folded.revision
     this.error = null
     this.broadcastStatus()
@@ -246,7 +292,9 @@ export class CollabRoom {
       const clientId = decoding.readVarUint(decoder)
       const clock = decoding.readVarUint(decoder)
       const raw = JSON.parse(decoding.readVarString(decoder)) as unknown
-      const taken = [...this.peers].some(([other, ids]) => other !== peer && ids.has(clientId))
+      const taken =
+        this.remoteIds.has(clientId) ||
+        [...this.peers].some(([other, ids]) => other !== peer && ids.has(clientId))
       if (taken) continue
       owned.add(clientId)
       const state = raw !== null && typeof raw === 'object' ? { ...raw, user: peer.user } : null
@@ -270,11 +318,11 @@ export class CollabRoom {
     sync.writeUpdate(encoder, update)
     const message = encoding.toUint8Array(encoder)
     for (const peer of this.peers.keys()) if (peer !== origin) peer.send(message)
-    // A fold is stored with its revision, and already matches the draft.
-    if (origin === FOLDED) return
+    // A fold is stored with its revision, and already matches the draft; another process stores its own updates.
+    if (origin === FOLDED || origin === RELAYED) return
     if (this.peers.has(origin as CollabPeer)) this.lastEditor = (origin as CollabPeer).user.id
     this.enqueue(async () => {
-      await this.store.append(this.key, update)
+      await this.store.append(this.key, update, this.source)
       if (++this.sinceCompaction >= COMPACT_EVERY) await this.compact()
     })
     this.scheduleWrite()
@@ -287,10 +335,22 @@ export class CollabRoom {
     if (origin && this.peers.has(origin as CollabPeer)) {
       for (const id of removed) this.peers.get(origin as CollabPeer)?.delete(id)
     }
-    const message = awarenessMessage(
-      encodeAwarenessUpdate(this.awareness, [...added, ...updated, ...removed]),
-    )
+    if (origin === RELAYED) {
+      for (const id of [...added, ...updated]) this.remoteIds.add(id)
+      for (const id of removed) this.remoteIds.delete(id)
+    }
+    const update = encodeAwarenessUpdate(this.awareness, [...added, ...updated, ...removed])
+    const message = awarenessMessage(update)
     for (const peer of this.peers.keys()) peer.send(message)
+    // Ours (a peer here, or one leaving): to the other processes too.
+    if (origin !== RELAYED) {
+      this.store.announcePresence(this.key, update, this.source).then(
+        (sent) => {
+          if (!sent) this.log.warn({ key: this.key }, 'collab: presence too large to relay')
+        },
+        (err) => this.log.warn({ err, key: this.key }, 'collab: relaying presence failed'),
+      )
+    }
   }
 }
 
@@ -311,6 +371,8 @@ export class CollabHub {
   /** The rooms opened so far, by key, for announcements. */
   private open = new Map<string, CollabRoom>()
   private listening: Promise<unknown> | undefined
+  /** This process, in its announcements, so it ignores its own. */
+  private readonly source = randomUUID()
 
   constructor(
     private store: CollabStore,
@@ -387,21 +449,33 @@ export class CollabHub {
   }
 
   private announced(payload: string): void {
-    let message: { d?: unknown; r?: unknown }
+    let message: { d?: unknown; r?: unknown; u?: unknown; a?: unknown; q?: unknown; p?: unknown }
     try {
       message = JSON.parse(payload)
     } catch {
       return
     }
-    if (typeof message.d !== 'string' || typeof message.r !== 'number') return
-    this.open.get(message.d)?.drafted(message.r)
+    const room = typeof message.d === 'string' ? this.open.get(message.d) : undefined
+    if (!room || message.p === this.source) return
+    if (typeof message.r === 'number') room.drafted(message.r)
+    else if (typeof message.u === 'number') room.relayed(message.u)
+    else if (typeof message.a === 'string')
+      room.relayedPresence(new Uint8Array(Buffer.from(message.a, 'base64')))
+    else if (message.q) room.announcePresence()
   }
 
   private async openRoom(target: CollabTarget): Promise<CollabRoom> {
     const { updates, revision } = await this.store.load(target)
-    const room = new CollabRoom(target, this.store, this.log, (r, err) => this.fail(r, err))
+    const room = new CollabRoom(target, this.store, this.log, (r, err) => this.fail(r, err), this.source)
     room.load(updates, revision)
     this.open.set(target.key, room)
+    // What other processes announced between the load and now, and who is there already.
+    room.recheck()
+    if (this.listener) {
+      this.store
+        .askPresence(target.key, this.source)
+        .catch((err) => this.log.warn({ err, key: target.key }, 'collab: asking for presence failed'))
+    }
     return room
   }
 
