@@ -2,7 +2,7 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M16+; M14 done, M15 planned).
 
-Last updated: 2026-10-21 (session 18, end: **M15 Webhooks for outside services built, reviewed and checked on Docker Compose**: the plan, steps 1–7, a local review (10 fixes), and four smaller fixes; 19 commits on the **local** branch `feat/m15-webhooks`. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2). Session 17 finished and merged M14 as `bda0dbf`.)
+Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services** built, reviewed and checked on Docker Compose on the local branch `feat/m15-webhooks` (19 commits); **M16 Multiplayer editing planned** on `feat/m16-multiplayer`, stacked on it. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2). Session 17 finished and merged M14 as `bda0dbf`.)
 
 | | |
 |---|---|
@@ -35,9 +35,10 @@ Last updated: 2026-10-21 (session 18, end: **M15 Webhooks for outside services b
 | **M13 Editor polish** | ✅ On `main` (§9g): PR #17, undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. Reviewed before merging in session 14 (7 fixes plus one bug the new e2e found, `936c343`), merged as `a7cddda`. The done-when proven in Playwright and on Docker Compose. |
 | **Optiply UI** | ✅ On `main` (§9h): PR #18, the platform and built apps look like Optiply (its tokens, top bar, components), in light and dark (a switch in the account menu). Reviewed before merging (fixes `837eefd`), merged as `bb7df0f` in session 14. Proven in Playwright, screenshots and on Docker Compose. |
 | **M15 Webhooks for outside services** | ✅ Built in session 18 on the **local** branch `feat/m15-webhooks` (§9j, `architecture.md` §2.18): API-key, signed (Stripe, GitHub, Slack, HubSpot, Shopify, custom HMAC) or public webhooks, rate limits shared by API processes, allowed environments, provider delivery ids as idempotency keys, JSON Schema bodies, a log of refused calls, multipart in and out, an OpenAPI 3.1 document, and the editor for all of it. The done-when proven in Playwright and on Docker Compose. **Not pushed, not reviewed, no PR yet** (minutes reset 2026-11-01). |
+| **M16 Multiplayer editing** | 🛠 Planned in session 18 (`architecture.md` §2.19, steps in §14), on the local branch `feat/m16-multiplayer` (stacked on `feat/m15-webhooks`). |
 | **M14 Modules & Query Library** | ✅ On `main` (§9i, `architecture.md` §2.17): PR #20, library queries (used by apps, pinned or `latest`) and modules (isolated instances with inputs, outputs and events), both with grants, folders, releases and Git sync. Reviewed before merging (10 fixes, `508d08b`), plus a CI timing flake fixed (`81aa331`); merged as `bda0dbf` in session 17. The done-when proven in Playwright and on Docker Compose. |
 
-**Start the next session with:** M15 is built on the local branch `feat/m15-webhooks` (§9j, §14). It has been reviewed locally (10 fixes, §9j). From 2026-11-01: push the branch once and open its PR (it includes PR #21's handoff commit), then plan M16 (`architecture.md` §2.7). The Compose stack runs M15 (§10).
+**Start the next session with:** M16 step 1 on `feat/m16-multiplayer` (§14). Nothing is pushed until 2026-11-01; then push `feat/m15-webhooks` and open its PR first (§2, §14). The Compose stack runs M15 at `06414c4` (§10, §11).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -1127,76 +1128,41 @@ The design is `architecture.md` §2.18 (with "As built"); the step record in §1
   - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. Two people editing one draft still conflict as before.
   - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
 
-## 14. M15 steps (done in session 18; plan M16 here)
+## 14. M16 steps (planned in session 18)
 
-M15 is planned (`architecture.md` §2.7 row, §2.8 item 14, §2.18). The user chose (session 18): no queue trigger this milestone; webhooks authenticate with an API key, a signature or not at all (public), with signed and public ones always rate limited; an optional JSON Schema per webhook body; multipart in both directions.
+M16 is planned (`architecture.md` §2.7 row, §2.19). The user chose (session 18): multiplayer for the **workflow and app editors** (modules come along), code fields that **merge as people type**, and presence with **avatars, selections and live mouse pointers**.
 
-**Local only until 2026-11-01** (§2): one branch, `feat/m15-webhooks`, from `b2e82a9` (PR #21's handoff on top of `main` `bda0dbf`). **No draft PR** until the minutes reset; then push and open it once. Each step is split into parts (a/b/c) that each end green. Every part is reported and committed on the user's word, after CI's checks pass locally (§2).
+**Local only until 2026-11-01** (§2). **Unpushed branches**, stacked: `feat/m15-webhooks` (19 commits on `b2e82a9`, M15 done and reviewed) and `feat/m16-multiplayer` on top of it (from this plan on). In November push both; open M15's PR first, then M16's (its base is `feat/m15-webhooks` until M15 merges, then `main`). Each step is split into parts that each end green, reported and committed on the user's word, after CI's checks pass locally (§2, including the server build every step).
 
-**Unpushed branches:** `feat/m15-webhooks`, 19 commits on `b2e82a9` (`886dedb` the plan … `06414c4` the review fixes, `cfc8b5b` docs, `41b7408` two small fixes, then the session-18 wrap-up), on top of `b2e82a9` (PR #21's handoff, pushed). Push it once in November, open the PR, and mark PR #21 as included.
+New dependencies (all MIT, pinned at least two weeks old): yjs 13.6.33, y-protocols 1.0.7, lib0 0.2.119, @fastify/websocket (the release before 11.3.4), ws 8.22.0, and y-monaco 0.1.6 if it works with Monaco 0.57 (step 4 checks; otherwise our own binding, about 150 lines).
 
-All steps done (commits in §9j). How each went: step 1 as planned; 2 in two parts; 3a/3b as planned (the limit is per webhook, not per environment: §2.18); 4a used busboy after undici's parser failed a valid body; 4b added a shared `MultipartParts`; 5's validator caught one invalid field; 6a/6b as planned; 7a's spec first hung 15 minutes on a keep-alive connection (fixed); 7b, the Compose check, passed (§10).
+0. **Plan:** this section, `architecture.md` §2.19 and the M16 row.
+1. **`@ow/collab`** (a new package):
+   - 1a: the JSON ↔ Yjs mapping (`toYDoc`, `fromYDoc` with structural sharing) and `applyDiff(doc, before, after, textPaths)` (objects, arrays matched by identity, `Y.Text` for listed text paths, values otherwise); the identity and text-path rules for workflow and app definitions.
+   - 1b: property tests: replicas making random editor edits (from the editors' own functions) concurrently converge, in any sync order, on a schema-valid definition; an undo helper (UndoManager with the local origin and a view per stack item).
+2. **Server:**
+   - 2a: migration (`collab_updates`, `collab_snapshots`); the document store (load from snapshot + updates, append, compact); `GET /api/collab/<key>` over `@fastify/websocket` with the session, Edit/Use/protected rules, y-protocols sync and awareness.
+   - 2b: relaying between API processes (`NOTIFY`), the draft materializer (debounced, schema-checked, revision + 1), and folding `saveDraft` and Git branch pulls into an open document; tests with two app instances on one database.
+3. **Workflow editor:**
+   - 3a: the provider (WebSocket, reconnect, sync state) and the store on Yjs: local edits through `applyDiff`, remote changes into `definition`; the save status from the connection; `ensureSaved` waits for the server.
+   - 3b: undo and redo on the UndoManager (own edits, M13's grouping and view restore); the old history kept for the read-only and single-user paths if still needed.
+4. **Code fields:** Monaco bound to `Y.Text` (y-monaco or our binding) in the workflow editor's code, SQL and template fields; others' cursors and selections in their colour.
+5. **Presence in the workflow editor:** awareness (person, colour, selection, open graph, pointer); avatars in the header; selection outlines and name tags on blocks; live pointers on the canvas in flow coordinates.
+6. **App editor** (and modules):
+   - 6a: the store on Yjs and undo (as 3), the code panel's fields on `Y.Text` (as 4).
+   - 6b: presence on the grid: outlines on components, pointers, avatars.
+7. **Read-only viewers, Git branch drafts, edge cases:** Use watches live; protected main read-only; branch drafts collaborative; reconnect with offline edits; access revoked mid-session; a large definition.
+8. **Done-when:** `apps/web/e2e/m16-done-when.spec.ts` (two browser contexts, two users), the Compose check with two API processes, docs (§9k, §10, §13, `architecture.md` §2.19 "As built").
 
-0. **Plan:** this section, `architecture.md` §2.18 and the M15 row.
-1. **Definition** (`@ow/definition`):
-   - The new `webhook` keys: `auth` (`apiKey` | `public` | `signature` with `preset`, `secret` and the custom fields), `bodySchema`, `rateLimit`, `environments`, `idempotencyHeader`.
-   - The defaults for signed and public webhooks in one helper (`resolveWebhookSettings`), used by both the server and the editor.
-   - Validator diagnostics: preset fields, a schema Ajv compiles, limits, environment slugs. Tests.
-   - Ajv and ajv-formats (MIT) are added here.
-2. **Signatures and auth, server:**
-   - 2a:
-     - The body parsers keep the raw buffer.
-     - `services/webhook-signatures.ts`: the five presets and custom. Each provider's documented example is a test vector, plus wrong-signature, expired, missing-header and multiple-`v1` cases.
-     - Secrets are read from the secret config var for the run's environment.
-   - 2b:
-     - `api/webhooks.ts` follows the order in §2.18: method, environment, then auth by type.
-     - Public webhooks, the `environments` rule, `idempotencyHeader`, Slack's `url_verification`.
-     - Publishing checks the secret config var in each allowed environment.
-     - Existing API-key webhooks don't change: the M4 tests pass untouched.
-3. **Rate limits, body schemas, rejections:**
-   - 3a:
-     - Migration: `webhook_rate_windows` and `webhook_rejections`.
-     - The Postgres counter, answering `429` with `Retry-After`.
-     - Retention for both tables and the `ow_webhook_rejected_total{reason}` metric.
-     - A test with two API processes sharing one limit.
-   - 3b:
-     - Ajv validation of the parsed body (compiled per release hash, cached): `400` with the first errors, and no run.
-     - Rejections recorded for every 4xx answer; `workflows.webhookRejections` for the editor.
-4. **Multipart:**
-   - 4a, in:
-     - busboy on the raw buffer; files as `{ filename, contentType, size, base64 }`.
-     - A 10 MB body limit for multipart (`413` over it); signatures over the raw multipart bytes.
-   - 4b, out:
-     - The REST connector's `multipart` body: `FormData`, with `file` from base64 or the webhook file shape. Its templates go in `queryTemplates`.
-     - The REST query editor's Multipart tab.
-     - A test against an echo server that compares bytes.
-5. **OpenAPI:**
-   - `GET /api/v1/openapi.json`, for an API key or a session, listing only the webhooks the caller may call.
-   - Aliases as path parameters, the body schemas, the security scheme, and `GET /api/v1/runs/{id}`.
-   - Validated against the OpenAPI 3.1 schema in tests, with a dev-only validator.
-6. **Editor:**
-   - 6a, the webhook panel:
-     - Authentication: API key; Signature, with the preset and a secret config var picker that lists only secret vars and links to Settings; Public, with its warning.
-     - The rate limit, allowed environments and the idempotency header.
-     - A copyable URL with a sample `curl`, and the latest rejections.
-   - 6b:
-     - Body schema: a Monaco JSON field, "Draft from a sample body", and errors from the validator.
-     - `startTrigger.data` typed from the schema in completions.
-     - The OpenAPI link in the panel and in Settings → API keys.
-7. **Done-when:**
-   - `apps/web/e2e/m15-done-when.spec.ts` and the server tests behind it.
-   - The Compose check: two API processes for the shared limit. A real signed delivery by hand if a tunnel is at hand, otherwise the documented test vectors.
-   - Docs: §9j, §10, §13, and `architecture.md` §2.18 "As built".
+The step most likely to grow is 1 (the diff and identity rules must keep every merge schema-valid); 3 changes the most existing code.
 
-The step most likely to grow is 2, because the presets differ in small ways. Step 6 has the most UI.
-
-M14 as built, for the record: the plan and eight steps, each split into parts and pushed once complete, then the review fixes (`508d08b`) and a flake fix (`81aa331`). The design is in `architecture.md` §2.17.
+M15 as built, for the record: the plan, seven steps (each green before its commit), a local review (10 fixes, `06414c4`), and fixes `341e019`, `b06f4ff`, `41b7408`; the design is `architecture.md` §2.18 and the record §9j.
 
 ## 15. How to start the next session
 
 ```bash
 cd /Users/optiply/optiply-workflows
-git switch feat/m15-webhooks                      # M15, local only until 2026-11-01 (not on GitHub yet)
+git switch feat/m16-multiplayer                   # M16, stacked on feat/m15-webhooks; local only until 2026-11-01
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack pnpm install                            # compiles isolated-vm (the patch)
 corepack pnpm dev:db &                           # Postgres on :5433
