@@ -293,3 +293,20 @@ test('presence in the app editor: avatars, selections and pointers', async ({ pa
   await expect(page.getByTestId('presence')).toHaveCount(0)
   await expect(page.getByTestId('peers-text1')).toHaveCount(0)
 })
+
+/** M16 step 7: a draft deleted (or access taken away) under an open editor: it stops, says why, takes no edits. */
+test('an editor whose draft goes away stops and says why', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Gone ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await saved(page)
+  await expect(page.getByTitle('Add a code block')).toBeVisible()
+  const id = page.url().split('/').at(-1)!
+  await trpcMutate(page, 'workflows.delete', { id })
+  const status = page.getByTestId('save-status')
+  await expect(status).toHaveText('Disconnected: reload')
+  await expect(status).toHaveAttribute('title', 'This draft is gone, or you no longer have access to it')
+  await expect(page.getByTitle('Add a code block')).toHaveCount(0)
+})

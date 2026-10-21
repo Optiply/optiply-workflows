@@ -7,9 +7,10 @@ export const LOCAL = Symbol('local edit')
 /**
  * Where a draft stands (M16): `connecting` until the document first syncs (edits wait), `saving` while the server
  * hasn't saved this editor's edits to the draft yet, `offline` while reconnecting (edits sync when it's back), `error`
- * when the merged draft couldn't be saved or the server ended the connection.
+ * when the merged draft couldn't be saved, `closed` when the server ended the connection for good (access lost, the
+ * draft deleted, signed out: the reason is the error) and the editor stops.
  */
-export type SaveStatus = 'connecting' | 'saved' | 'saving' | 'offline' | 'error'
+export type SaveStatus = 'connecting' | 'saved' | 'saving' | 'offline' | 'error' | 'closed'
 
 /** What an editor's store does with its draft's shared document. */
 export interface SessionHost<D> {
@@ -131,7 +132,7 @@ export class SessionSlot<D> {
 }
 
 function statusOf(provider: CollabProvider, attached: boolean): { status: SaveStatus; error: string | null } {
-  if (provider.state === 'closed') return { status: 'error', error: provider.closedReason ?? 'Disconnected' }
+  if (provider.state === 'closed') return { status: 'closed', error: provider.closedReason ?? 'Disconnected' }
   if (!attached) return { status: 'connecting', error: null }
   if (provider.state !== 'synced') return { status: 'offline', error: null }
   if (provider.status?.error) return { status: 'error', error: `Couldn't save: ${provider.status.error}` }

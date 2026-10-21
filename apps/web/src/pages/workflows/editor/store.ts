@@ -190,8 +190,14 @@ export const useEditor = create<EditorState>()((set, get) => ({
     set({ ...applied(definition), ...view, selection: state.selection.filter((n) => names.has(n)) })
   },
 
+  // Ended for good (access lost): the editor stops taking edits.
   connection: (status, saveError, revision) =>
-    set((s) => ({ status, saveError, ...(revision !== undefined && { revision }) })),
+    set({
+      status,
+      saveError,
+      ...(revision !== undefined && { revision }),
+      ...(status === 'closed' && { readOnly: true }),
+    }),
 
   setDraftHash: (definition, draftHash) => {
     if (get().definition === definition) set({ draftHash })

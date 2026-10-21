@@ -65,6 +65,14 @@ function open(cookie: string, key: string, base = baseUrl): Promise<WebSocket> {
   })
 }
 
+/** Opens a connection and waits for the server to end it: its close code and reason. */
+function endedWith(cookie: string, key: string): Promise<{ code: number; reason: string }> {
+  const ws = new WebSocket(`${baseUrl}/api/collab/${key}`, { headers: { cookie } } as never)
+  return new Promise((resolve) => {
+    ws.onclose = (event) => resolve({ code: event.code, reason: event.reason })
+  })
+}
+
 /** A browser's side of the connection: a document kept in sync with the server's, and presence. */
 async function connect(cookie: string, key: string, base = baseUrl) {
   const ws = await open(cookie, key, base)
@@ -107,9 +115,10 @@ async function connect(cookie: string, key: string, base = baseUrl) {
       encoding.writeVarUint8Array(e, encodeAwarenessUpdate(awareness, [...added, ...updated]))
     })
   })
-  const closed = new Promise<number>((resolve) =>
-    ws.addEventListener('close', (event) => resolve(event.code)),
+  const ended = new Promise<{ code: number; reason: string }>((resolve) =>
+    ws.addEventListener('close', (event) => resolve({ code: event.code, reason: event.reason })),
   )
+  const closed = ended.then((e) => e.code)
   send((e) => {
     encoding.writeVarUint(e, MESSAGE_SYNC)
     sync.writeSyncStep1(e, doc)
@@ -125,6 +134,7 @@ async function connect(cookie: string, key: string, base = baseUrl) {
       shared.set({ ...v, blocks: v.blocks.map((b) => (b.type === 'code' ? { ...b, config: { code } } : b)) })
     },
     status: () => status,
+    closedWith: () => ended,
     code: () => (shared.value.blocks[1] as { config: { code: string } } | undefined)?.config.code,
     close: async () => {
       ws.close()
@@ -140,7 +150,8 @@ const settled = (key: string) =>
   })
 
 beforeAll(async () => {
-  env = await startTestApp()
+  // Access is checked again often, so a test can see it end.
+  env = await startTestApp({ COLLAB_ACCESS_CHECK_MS: '200' })
   baseUrl = (await env.app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws')
   await createLocalUser(env.db, 'admin@example.com', { admin: true })
   const member = await createLocalUser(env.db, 'member@example.com')
@@ -274,18 +285,54 @@ describe('collab documents', () => {
     await b.close()
   })
 
-  it('refuses strangers, other sites and unknown drafts before the upgrade', async () => {
+  it('refuses other sites before the upgrade, and strangers and unknown drafts with a reason', async () => {
     const id = await createWorkflow('private')
-    const get = (key: string, headers: Record<string, string>) =>
-      env.app.inject({ method: 'GET', url: `/api/collab/${key}`, headers })
-    expect((await get(`workflow:${id}`, {})).statusCode).toBe(401)
-    expect((await get(`workflow:${id}`, { cookie: memberCookie })).statusCode).toBe(404)
-    expect(
-      (await get(`workflow:${id}`, { cookie: adminCookie, origin: 'https://evil.example' })).statusCode,
-    ).toBe(403)
-    expect((await get('workflow:not-a-uuid', { cookie: adminCookie })).statusCode).toBe(404)
-    expect((await get(`app:${id}`, { cookie: adminCookie })).statusCode).toBe(404)
-    await expect(open(memberCookie, `workflow:${id}`)).rejects.toThrow('refused')
+    const inject = await env.app.inject({
+      method: 'GET',
+      url: `/api/collab/workflow:${id}`,
+      headers: { cookie: adminCookie, origin: 'https://evil.example' },
+    })
+    expect(inject.statusCode).toBe(403)
+    expect(await endedWith('', `workflow:${id}`)).toEqual({ code: 4403, reason: 'Not signed in' })
+    const gone = { code: 4403, reason: 'This draft is gone, or you no longer have access to it' }
+    expect(await endedWith(memberCookie, `workflow:${id}`)).toEqual(gone)
+    expect(await endedWith(adminCookie, 'workflow:not-a-uuid')).toEqual(gone)
+    expect(await endedWith(adminCookie, `app:${id}`)).toEqual(gone)
+  })
+
+  it('ends the connection when access goes or changes, with why', async () => {
+    const id = await createWorkflow('revoked')
+    const key = `workflow:${id}`
+    const grant = (level: string | null) =>
+      admin.mutate('permissions.set', {
+        objectType: 'workflow',
+        objectId: id,
+        groupId: memberGroupId,
+        environmentId: null,
+        level,
+      })
+    data(await grant('use'))
+    const watcher = await connect(memberCookie, key)
+    data(await grant(null))
+    expect(await watcher.closed).toBe(4403)
+
+    // Protected: an editor's draft turns read-only.
+    const editor = await connect(adminCookie, key)
+    await env.db.update(workflows).set({ gitProtected: true }).where(eq(workflows.id, id))
+    expect(await editor.closedWith()).toEqual({
+      code: 4403,
+      reason: 'You can only view this draft now: reload',
+    })
+    await env.db.update(workflows).set({ gitProtected: false }).where(eq(workflows.id, id))
+
+    // Signed out (in another tab, say), and the workflow deleted.
+    const own = await login(env.app, 'admin@example.com')
+    const signedIn = await connect(own, key)
+    await env.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie: own } })
+    expect(await signedIn.closedWith()).toEqual({ code: 4403, reason: 'Not signed in' })
+    const last = await connect(adminCookie, key)
+    data(await admin.mutate('workflows.delete', { id }))
+    expect((await last.closedWith()).code).toBe(4403)
   })
 
   it('drops the document with its workflow', async () => {

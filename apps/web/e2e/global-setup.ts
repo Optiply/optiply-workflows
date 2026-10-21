@@ -69,6 +69,8 @@ export default async function globalSetup() {
     HOST: '127.0.0.1',
     PORT: String(E2E_PORT),
     PUBLIC_URL: base,
+    // Editors notice lost access quickly (M16).
+    COLLAB_ACCESS_CHECK_MS: '500',
     DATABASE_URL: pg.url,
     SESSION_SECRET: randomBytes(32).toString('base64url'),
     ENCRYPTION_KEYS: `v1:${randomBytes(32).toString('base64')}`,

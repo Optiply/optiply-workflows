@@ -453,6 +453,7 @@ const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {
   saving: { text: 'Saving…', className: 'text-muted' },
   offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
   error: { text: 'Not saved', className: 'text-danger' },
+  closed: { text: 'Disconnected: reload', className: 'text-danger' },
 }
 
 function SaveBadge({ status }: { status: SaveStatus }) {

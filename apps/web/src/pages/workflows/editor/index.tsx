@@ -469,6 +469,7 @@ const STATUS_TEXT: Record<SaveStatus, string> = {
   saving: 'Saving…',
   offline: 'Offline: changes will sync',
   error: 'Not saved',
+  closed: 'Disconnected: reload',
 }
 
 function SaveIndicator() {
@@ -480,13 +481,17 @@ function SaveIndicator() {
       title={error ?? undefined}
       className={cn(
         'ml-2 inline-flex items-center gap-1 whitespace-nowrap text-xs',
-        status === 'error' ? 'text-danger' : status === 'offline' ? 'text-warning-strong' : 'text-muted',
+        status === 'error' || status === 'closed'
+          ? 'text-danger'
+          : status === 'offline'
+            ? 'text-warning-strong'
+            : 'text-muted',
       )}
     >
       {(status === 'saving' || status === 'connecting') && <Loader2 className="size-3 animate-spin" />}
       {status === 'saved' && <CheckCircle2 className="size-3 text-success" />}
       {status === 'offline' && <CloudOff className="size-3" />}
-      {status === 'error' && <AlertCircle className="size-3" />}
+      {(status === 'error' || status === 'closed') && <AlertCircle className="size-3" />}
       {STATUS_TEXT[status]}
     </span>
   )

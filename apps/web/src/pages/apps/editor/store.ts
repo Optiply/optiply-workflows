@@ -188,8 +188,14 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     if (definition !== state.definition) set(applied(state, definition, viewOf(state)))
   },
 
+  // Ended for good (access lost): the editor stops taking edits.
   connection: (status, saveError, revision) =>
-    set({ status, saveError, ...(revision !== undefined && { revision }) }),
+    set({
+      status,
+      saveError,
+      ...(revision !== undefined && { revision }),
+      ...(status === 'closed' && { readOnly: true }),
+    }),
 
   setDraftHash: (definition, draftHash) => {
     if (get().definition === definition) set({ draftHash })

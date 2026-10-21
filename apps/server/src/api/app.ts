@@ -123,7 +123,12 @@ export async function buildApp(deps: {
   const collab = new CollabHub(new CollabStore(db), app.log.child({ component: 'collab' }), deps.listener)
   app.addHook('onClose', () => collab.close())
   await app.register(fastifyWebsocket, { options: { maxPayload: MAX_COLLAB_MESSAGE_BYTES } })
-  await app.register(collabApi, { db, hub: collab, publicUrl: config.PUBLIC_URL })
+  await app.register(collabApi, {
+    db,
+    hub: collab,
+    publicUrl: config.PUBLIC_URL,
+    accessCheckMs: config.COLLAB_ACCESS_CHECK_MS,
+  })
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/api/trpc',
