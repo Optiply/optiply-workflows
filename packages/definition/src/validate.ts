@@ -13,10 +13,19 @@ import {
   MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
   suspends,
+  type WebhookTrigger,
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from './schema'
-import { parseWebhookAlias } from './triggers'
+import {
+  CONFIG_VAR_NAME,
+  DEFAULT_SIGNED_PAYLOAD,
+  isHeaderName,
+  MAX_BODY_SCHEMA_BYTES,
+  parseSignedPayload,
+  parseWebhookAlias,
+  WEBHOOK_PRESETS,
+} from './triggers'
 import {
   type BlockGraphSource,
   blockGraphs,
@@ -44,6 +53,12 @@ export type DiagnosticCode =
   | 'unknown_resource'
   | 'invalid_query'
   | 'invalid_alias'
+  /** A webhook's signature settings (secret name, header names, preset-only fields, the signed payload). */
+  | 'invalid_webhook_auth'
+  /** A webhook's body schema doesn't compile, or is too large. */
+  | 'invalid_body_schema'
+  /** A webhook's other settings: allowed environments, the idempotency header. */
+  | 'invalid_webhook'
   | 'invalid_schedule'
   | 'invalid_cron'
   | 'invalid_timezone'
@@ -110,6 +125,11 @@ export interface ValidateOptions {
    * given, each one is checked; templated ones are checked when the task opens.
    */
   resolveAssignee?: (kind: 'user' | 'group', name: string) => boolean
+  /**
+   * Why a webhook's body schema doesn't compile, or null when it does: `checkBodySchema` from
+   * `@ow/definition/body-schema`. Without it only the schema's size is checked.
+   */
+  checkBodySchema?: (schema: unknown) => string | null
 }
 
 export interface ValidationResult {
@@ -142,7 +162,7 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
     if (!source.function) start = found
   }
   checkRecursion(def, functions, report)
-  checkTriggers(def, start, report)
+  checkTriggers(def, start, report, options)
 
   // User Task assignees written out in full exist.
   if (options.resolveAssignee) {
@@ -763,7 +783,12 @@ function checkRecursion(
 }
 
 /** Trigger problems are pinned to the start trigger, whose inspector edits them. */
-function checkTriggers(def: WorkflowDefinition, start: string | undefined, report: Report) {
+function checkTriggers(
+  def: WorkflowDefinition,
+  start: string | undefined,
+  report: Report,
+  options: ValidateOptions,
+) {
   const at = (path: (string | number)[]) => ({ path: ['triggers', ...path], ...(start && { block: start }) })
   const alias = def.triggers?.webhook?.alias
   if (alias !== undefined) {
@@ -777,6 +802,8 @@ function checkTriggers(def: WorkflowDefinition, start: string | undefined, repor
       })
     }
   }
+  if (def.triggers?.webhook)
+    checkWebhook(def.triggers.webhook, (path) => at(['webhook', ...path]), report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -828,6 +855,122 @@ function checkTriggers(def: WorkflowDefinition, start: string | undefined, repor
       })
     }
   })
+}
+
+const CUSTOM_SIGNATURE_FIELDS = [
+  'header',
+  'algorithm',
+  'encoding',
+  'prefix',
+  'timestampHeader',
+  'signedPayload',
+] as const
+
+/** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */
+function checkWebhook(
+  webhook: WebhookTrigger,
+  at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
+  report: Report,
+  options: ValidateOptions,
+) {
+  const auth = webhook.auth
+  if (auth?.type === 'signature') {
+    const authAt = (field: string) => at(['auth', field])
+    if (!auth.secret) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'Choose the secret config var that holds the signing secret',
+        ...authAt('secret'),
+      })
+    } else if (!CONFIG_VAR_NAME.test(auth.secret)) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: `"${auth.secret}" isn't a config var name`,
+        hint: 'Use letters, digits and underscores, not starting with a digit',
+        ...authAt('secret'),
+      })
+    }
+    let timestamped: boolean
+    if (auth.preset === 'custom') {
+      if (!auth.header) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'Name the header that carries the signature',
+          ...authAt('header'),
+        })
+      }
+      for (const field of ['header', 'timestampHeader'] as const) {
+        const name = auth[field]
+        if (name && !isHeaderName(name)) {
+          report({ code: 'invalid_webhook_auth', message: `"${name}" isn't a header name`, ...authAt(field) })
+        }
+      }
+      const payload = parseSignedPayload(auth.signedPayload ?? DEFAULT_SIGNED_PAYLOAD)
+      if (!payload.ok) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: payload.error,
+          ...authAt('signedPayload'),
+          ...(payload.hint && { hint: payload.hint }),
+        })
+      }
+      const signsTimestamp = payload.ok && payload.pieces.some((p) => 'part' in p && p.part === 'timestamp')
+      if (signsTimestamp && !auth.timestampHeader) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'The signed payload uses {timestamp}: name the header that carries it',
+          ...authAt('timestampHeader'),
+        })
+      }
+      timestamped = auth.timestampHeader !== undefined
+    } else {
+      const preset = WEBHOOK_PRESETS[auth.preset]
+      for (const field of CUSTOM_SIGNATURE_FIELDS) {
+        if (auth[field] !== undefined) {
+          report({
+            code: 'invalid_webhook_auth',
+            message: `The ${preset.label} preset sets "${field}" itself; it's for custom signatures only`,
+            ...authAt(field),
+          })
+        }
+      }
+      timestamped = preset.timestamped
+    }
+    if (auth.toleranceSeconds !== undefined && !timestamped) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'A tolerance only applies to signatures with a timestamp',
+        ...authAt('toleranceSeconds'),
+      })
+    }
+  }
+
+  if (webhook.bodySchema !== undefined) {
+    const size = new TextEncoder().encode(JSON.stringify(webhook.bodySchema)).length
+    const error =
+      size > MAX_BODY_SCHEMA_BYTES
+        ? `The body schema is larger than ${MAX_BODY_SCHEMA_BYTES / 1024} KB`
+        : options.checkBodySchema?.(webhook.bodySchema)
+    if (error) report({ code: 'invalid_body_schema', message: error, ...at(['bodySchema']) })
+  }
+
+  const seen = new Set<string>()
+  webhook.environments?.forEach((slug, i) => {
+    if (!slug) {
+      report({ code: 'invalid_webhook', message: 'Choose an environment', ...at(['environments', i]) })
+    } else if (seen.has(slug)) {
+      report({ code: 'invalid_webhook', message: `"${slug}" is listed twice`, ...at(['environments', i]) })
+    }
+    seen.add(slug)
+  })
+
+  if (webhook.idempotencyHeader !== undefined && !isHeaderName(webhook.idempotencyHeader)) {
+    report({
+      code: 'invalid_webhook',
+      message: `"${webhook.idempotencyHeader}" isn't a header name`,
+      ...at(['idempotencyHeader']),
+    })
+  }
 }
 
 function checkQuery(

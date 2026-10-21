@@ -31,6 +31,7 @@ import {
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { and, eq } from 'drizzle-orm'
 import type { z } from 'zod'
@@ -186,7 +187,7 @@ export function kindDefinitionHash(kind: ObjectKind, definition: unknown): Promi
 export function kindDiagnostics(kind: ObjectKind, definition: unknown) {
   switch (kind) {
     case 'workflow':
-      return validateDefinition(definition as WorkflowDefinition).diagnostics
+      return validateDefinition(definition as WorkflowDefinition, { checkBodySchema }).diagnostics
     case 'library_query':
       return validateLibraryQuery(definition).diagnostics
     default:

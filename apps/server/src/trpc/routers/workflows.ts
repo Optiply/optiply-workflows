@@ -12,6 +12,7 @@ import {
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
@@ -103,7 +104,7 @@ export const workflowsRouter = router({
       draftDefinition: workflow.draftDefinition,
       draftRevision: workflow.draftRevision,
       draftHash: await definitionHash(workflow.draftDefinition),
-      diagnostics: validateDefinition(workflow.draftDefinition).diagnostics,
+      diagnostics: validateDefinition(workflow.draftDefinition, { checkBodySchema }).diagnostics,
       liveRelease: live ?? null,
     }
   }),
@@ -236,7 +237,7 @@ export const workflowsRouter = router({
         revision: saved.revision,
         /** Compared with the live release's hash to show unpublished changes. */
         draftHash: await definitionHash(parsed.data),
-        diagnostics: validateDefinition(parsed.data).diagnostics,
+        diagnostics: validateDefinition(parsed.data, { checkBodySchema }).diagnostics,
       }
     }),
 

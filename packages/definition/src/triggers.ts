@@ -1,5 +1,12 @@
 import { DEFAULT_TIMEZONE, nextCronFire, nextIntervalFire, parseCron } from './cron'
-import type { ScheduleTrigger } from './schema'
+import {
+  DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
+  type ScheduleTrigger,
+  type WEBHOOK_METHODS,
+  type WEBHOOK_SIGNATURE_PRESETS,
+  type WebhookAuth,
+  type WebhookTrigger,
+} from './schema'
 
 /** One segment of a webhook alias: fixed text, or a `:name` that captures that part of the URL. */
 export type AliasSegment = { text: string; param?: undefined } | { param: string; text?: undefined }
@@ -100,3 +107,138 @@ export function nextScheduleFire(
     return null // Unknown time zone.
   }
 }
+
+export type WebhookSignaturePreset = (typeof WEBHOOK_SIGNATURE_PRESETS)[number]
+
+export interface WebhookPresetInfo {
+  label: string
+  /** The header with the signature, lowercase. */
+  header: string
+  /** The header with the signing time, when the provider sends it apart from the signature. */
+  timestampHeader?: string
+  /** Whether the signature covers a timestamp, so `toleranceSeconds` applies. */
+  timestamped: boolean
+  /** The provider's delivery id, used as the Idempotency-Key unless the webhook sets another header. */
+  idempotencyHeader?: string
+}
+
+/** What the editor shows and the server checks for each provider preset (custom is configured by hand). */
+export const WEBHOOK_PRESETS: Record<Exclude<WebhookSignaturePreset, 'custom'>, WebhookPresetInfo> = {
+  stripe: { label: 'Stripe', header: 'stripe-signature', timestamped: true },
+  github: {
+    label: 'GitHub',
+    header: 'x-hub-signature-256',
+    timestamped: false,
+    idempotencyHeader: 'x-github-delivery',
+  },
+  slack: {
+    label: 'Slack',
+    header: 'x-slack-signature',
+    timestampHeader: 'x-slack-request-timestamp',
+    timestamped: true,
+  },
+  hubspot: {
+    label: 'HubSpot',
+    header: 'x-hubspot-signature-v3',
+    timestampHeader: 'x-hubspot-request-timestamp',
+    timestamped: true,
+  },
+  shopify: {
+    label: 'Shopify',
+    header: 'x-shopify-hmac-sha256',
+    timestamped: false,
+    idempotencyHeader: 'x-shopify-webhook-id',
+  },
+}
+
+export const DEFAULT_WEBHOOK_METHODS: readonly (typeof WEBHOOK_METHODS)[number][] = ['POST']
+export const DEFAULT_WEBHOOK_RATE_LIMIT = { requests: 60, windowSeconds: 60 } as const
+export const DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 300
+/** Custom signatures sign the body alone unless `signedPayload` says otherwise. */
+export const DEFAULT_SIGNED_PAYLOAD = '{body}'
+export const SIGNED_PAYLOAD_PARTS = ['timestamp', 'body', 'method', 'url'] as const
+/** The largest body schema, as JSON. */
+export const MAX_BODY_SCHEMA_BYTES = 64 * 1024
+
+export interface ResolvedWebhook {
+  enabled: boolean
+  alias?: string
+  methods: readonly (typeof WEBHOOK_METHODS)[number][]
+  syncTimeoutMs: number
+  auth: WebhookAuth
+  bodySchema: Record<string, unknown> | null
+  /** Null: no limit (API-key webhooks without one). */
+  rateLimit: { requests: number; windowSeconds: number } | null
+  /** `all` (API-key webhooks by default), `default` (the default environment) or the listed slugs. */
+  environments: 'all' | 'default' | readonly string[]
+  /** Lowercase; null when there is none. */
+  idempotencyHeader: string | null
+}
+
+/**
+ * A webhook with every default applied, so the server and the editor agree on them: API-key auth; signed and public
+ * webhooks rate limited and limited to the default environment unless they say otherwise; a preset's delivery id as
+ * the idempotency header.
+ */
+export function resolveWebhookSettings(webhook: WebhookTrigger): ResolvedWebhook {
+  const auth: WebhookAuth = webhook.auth ?? { type: 'apiKey' }
+  const keyed = auth.type === 'apiKey'
+  const preset =
+    auth.type === 'signature' && auth.preset !== 'custom' ? WEBHOOK_PRESETS[auth.preset] : undefined
+  const idempotencyHeader = webhook.idempotencyHeader ?? preset?.idempotencyHeader
+  return {
+    enabled: webhook.enabled,
+    ...(webhook.alias !== undefined && { alias: webhook.alias }),
+    methods: webhook.methods ?? DEFAULT_WEBHOOK_METHODS,
+    syncTimeoutMs: webhook.syncTimeoutMs ?? DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
+    auth,
+    bodySchema: webhook.bodySchema ?? null,
+    rateLimit: webhook.rateLimit ?? (keyed ? null : DEFAULT_WEBHOOK_RATE_LIMIT),
+    environments: webhook.environments ?? (keyed ? 'all' : 'default'),
+    idempotencyHeader: idempotencyHeader ? idempotencyHeader.toLowerCase() : null,
+  }
+}
+
+export type SignedPayloadPart = (typeof SIGNED_PAYLOAD_PARTS)[number]
+
+export type SignedPayloadParseResult =
+  | { ok: true; pieces: ({ text: string } | { part: SignedPayloadPart })[] }
+  | { ok: false; error: string; hint?: string }
+
+/**
+ * Splits a custom signature's `signedPayload` (e.g. `{timestamp}.{body}`) into text and parts. Only the four parts
+ * are placeholders; it must contain `{body}`.
+ */
+export function parseSignedPayload(template: string): SignedPayloadParseResult {
+  const pieces: ({ text: string } | { part: SignedPayloadPart })[] = []
+  const placeholder = /\{([A-Za-z_]+)\}/g
+  let last = 0
+  for (const match of template.matchAll(placeholder)) {
+    const name = match[1]!
+    if (!(SIGNED_PAYLOAD_PARTS as readonly string[]).includes(name)) {
+      return {
+        ok: false,
+        error: `Unknown part {${name}}`,
+        hint: `Use ${SIGNED_PAYLOAD_PARTS.map((p) => `{${p}}`).join(', ')}`,
+      }
+    }
+    if (match.index > last) pieces.push({ text: template.slice(last, match.index) })
+    pieces.push({ part: name as SignedPayloadPart })
+    last = match.index + match[0].length
+  }
+  if (last < template.length) pieces.push({ text: template.slice(last) })
+  if (!pieces.some((p) => 'part' in p && p.part === 'body')) {
+    return { ok: false, error: 'The signed payload must include {body}' }
+  }
+  return { ok: true, pieces }
+}
+
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/
+
+/** Whether a string is a valid HTTP header name. */
+export function isHeaderName(name: string): boolean {
+  return HEADER_NAME.test(name)
+}
+
+/** The rule for config var names (the config vars API uses the same). */
+export const CONFIG_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/

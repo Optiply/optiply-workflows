@@ -5,6 +5,7 @@ import {
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
 import { create } from 'zustand'
 import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
 import type { SampleResult } from './scope-types'
@@ -146,7 +147,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
       selection: [],
       notice: null,
       graph: null,
-      diagnostics: validateDefinition(definition).diagnostics,
+      diagnostics: validateDefinition(definition, { checkBodySchema }).diagnostics,
       history: emptyHistory(),
     }),
 
@@ -224,7 +225,7 @@ function applied(
   const unchanged = JSON.stringify(definition) === state.savedJson
   return {
     definition,
-    diagnostics: validateDefinition(definition).diagnostics,
+    diagnostics: validateDefinition(definition, { checkBodySchema }).diagnostics,
     status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
     ...(status === 'error' && unchanged && { saveError: null }),
     ...(view && restoredView(definition, view)),

@@ -367,6 +367,49 @@ export const MIN_SCHEDULE_INTERVAL_MS = 60_000
  * set. Values people type (the alias) are checked by the validator rather than the schema, so a draft with a
  * half-typed one still saves.
  */
+export const WEBHOOK_SIGNATURE_PRESETS = [
+  'stripe',
+  'github',
+  'slack',
+  'hubspot',
+  'shopify',
+  'custom',
+] as const
+export const WEBHOOK_HMAC_ALGORITHMS = ['sha256', 'sha1', 'sha512'] as const
+export const WEBHOOK_SIGNATURE_ENCODINGS = ['hex', 'base64'] as const
+
+/**
+ * How a webhook authenticates its callers (M15): one of our API keys (the default when `auth` is left out), an HMAC
+ * signature, or not at all. Header names and the secret's name are checked by the validator.
+ */
+export const webhookAuthSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('apiKey') }),
+  z.strictObject({ type: z.literal('public') }),
+  z.strictObject({
+    type: z.literal('signature'),
+    preset: z.enum(WEBHOOK_SIGNATURE_PRESETS),
+    /** The name of a secret config var holding the signing secret, so it's set per environment. */
+    secret: z.string().max(64),
+    /** `custom` only: the header with the signature. */
+    header: z.string().max(100).optional(),
+    /** `custom` only; default sha256. */
+    algorithm: z.enum(WEBHOOK_HMAC_ALGORITHMS).optional(),
+    /** `custom` only; default hex. */
+    encoding: z.enum(WEBHOOK_SIGNATURE_ENCODINGS).optional(),
+    /** `custom` only: text before the signature in the header, e.g. `sha256=`. */
+    prefix: z.string().max(50).optional(),
+    /** `custom` only: the header with the time the request was signed (Unix seconds). */
+    timestampHeader: z.string().max(100).optional(),
+    /** `custom` only: what is signed, over `{timestamp}`, `{body}`, `{method}` and `{url}`. Default `{body}`. */
+    signedPayload: z.string().max(200).optional(),
+    /** How old a signed timestamp may be, for presets with one and custom with `timestampHeader`. Default 300. */
+    toleranceSeconds: z.number().int().min(1).max(86_400).optional(),
+  }),
+])
+
+export const MAX_WEBHOOK_RATE_LIMIT_REQUESTS = 100_000
+export const MAX_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS = 86_400
+
 export const webhookTriggerSchema = z.strictObject({
   enabled: z.boolean(),
   /** Path segments separated by `/`; a segment `:name` captures `startTrigger.pathParams.name`. */
@@ -375,6 +418,24 @@ export const webhookTriggerSchema = z.strictObject({
   methods: z.array(z.enum(WEBHOOK_METHODS)).min(1).max(WEBHOOK_METHODS.length).optional(),
   /** How long a call waits for the Response block before answering `202 { runId }`. Default 30 s. */
   syncTimeoutMs: z.number().int().min(0).max(MAX_WEBHOOK_SYNC_TIMEOUT_MS).optional(),
+  /** Default `{ type: 'apiKey' }`. */
+  auth: webhookAuthSchema.optional(),
+  /** A JSON Schema (2020-12) the body must match; checked before a run starts. */
+  bodySchema: z.record(z.string(), z.unknown()).optional(),
+  /** At most `requests` calls per `windowSeconds`. Signed and public webhooks default to 60 per 60 s. */
+  rateLimit: z
+    .strictObject({
+      requests: z.number().int().min(1).max(MAX_WEBHOOK_RATE_LIMIT_REQUESTS),
+      windowSeconds: z.number().int().min(1).max(MAX_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS),
+    })
+    .optional(),
+  /**
+   * Environment slugs `?environment=` may pick. API-key webhooks default to all (the key's own limits apply);
+   * signed and public ones to the default environment only.
+   */
+  environments: z.array(z.string().max(63)).min(1).max(20).optional(),
+  /** A request header used as the Idempotency-Key when the caller sends none (presets fill in the provider's). */
+  idempotencyHeader: z.string().max(100).optional(),
 })
 
 /**
@@ -451,6 +512,8 @@ export type Edge = z.output<typeof edgeSchema>
 export type BlockSettings = z.output<typeof blockSettingsSchema>
 export type RetrySettings = z.output<typeof retrySettingsSchema>
 export type WebhookTrigger = z.output<typeof webhookTriggerSchema>
+export type WebhookAuth = z.output<typeof webhookAuthSchema>
+export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>

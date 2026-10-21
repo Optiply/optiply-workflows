@@ -27,6 +27,7 @@ import {
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
 import {
   BlockFailure,
   enqueueRun,
@@ -288,6 +289,7 @@ export async function checkDefinition(
       : [],
   )
   const validation = validateDefinition(definition, {
+    checkBodySchema,
     resolveAssignee: (kind, name) =>
       kind === 'user' ? knownEmails.has(name.toLowerCase()) : knownGroups.has(name),
     resolveResource: (slug) => {
