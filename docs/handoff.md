@@ -2,7 +2,7 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M16+; M14 done, M15 planned).
 
-Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services planned** with the user, on the local branch `feat/m15-webhooks`. **The GitHub Actions minutes ran out on 2026-10-20; until they reset on 2026-11-01 nothing is pushed** (see §2 Git workflow). Session 17 finished and merged M14 as `bda0dbf`.)
+Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services built**: the plan and steps 1–7 plus two fixes, 15 commits on the local branch `feat/m15-webhooks`, done-when proven in Playwright and on Docker Compose. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2). Session 17 finished and merged M14 as `bda0dbf`.)
 
 | | |
 |---|---|
@@ -34,10 +34,10 @@ Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services planne
 | **M12 Python** | ✅ On `main` (§9f): PR #14, reviewed before merging (10 fixes, `bca9e7f`). Python code blocks and loop runners run by an nsjail code executor (pandas, numpy; no network), Python's references found by a tokenizer checked against `symtable`, syntax checked by the executor, the editor's Python mode, Compose and CI. The done-when proven in Playwright and on Docker Compose (p50 35 ms). |
 | **M13 Editor polish** | ✅ On `main` (§9g): PR #17, undo/redo, copy/paste, duplicate and shortcuts in the workflow and app editors. Reviewed before merging in session 14 (7 fixes plus one bug the new e2e found, `936c343`), merged as `a7cddda`. The done-when proven in Playwright and on Docker Compose. |
 | **Optiply UI** | ✅ On `main` (§9h): PR #18, the platform and built apps look like Optiply (its tokens, top bar, components), in light and dark (a switch in the account menu). Reviewed before merging (fixes `837eefd`), merged as `bb7df0f` in session 14. Proven in Playwright, screenshots and on Docker Compose. |
-| **M15 Webhooks for outside services** | 🛠 Planned in session 18 (`architecture.md` §2.18, steps in §14), on the local branch `feat/m15-webhooks`. |
+| **M15 Webhooks for outside services** | ✅ Built in session 18 on the **local** branch `feat/m15-webhooks` (§9j, `architecture.md` §2.18): API-key, signed (Stripe, GitHub, Slack, HubSpot, Shopify, custom HMAC) or public webhooks, rate limits shared by API processes, allowed environments, provider delivery ids as idempotency keys, JSON Schema bodies, a log of refused calls, multipart in and out, an OpenAPI 3.1 document, and the editor for all of it. The done-when proven in Playwright and on Docker Compose. **Not pushed, not reviewed, no PR yet** (minutes reset 2026-11-01). |
 | **M14 Modules & Query Library** | ✅ On `main` (§9i, `architecture.md` §2.17): PR #20, library queries (used by apps, pinned or `latest`) and modules (isolated instances with inputs, outputs and events), both with grants, folders, releases and Git sync. Reviewed before merging (10 fixes, `508d08b`), plus a CI timing flake fixed (`81aa331`); merged as `bda0dbf` in session 17. The done-when proven in Playwright and on Docker Compose. |
 
-**Start the next session with:** M15 step 1 on `feat/m15-webhooks` (§14). Nothing is pushed until 2026-11-01 (§2). The Compose stack runs M14 (§10).
+**Start the next session with:** M15 is built on the local branch `feat/m15-webhooks` (§9j, §14). Before 2026-11-01: review it locally (the `code-review` skill on `main...feat/m15-webhooks`) and fix what it finds, still without pushing. From 2026-11-01: push the branch once and open its PR (it includes PR #21's handoff commit), then plan M16 (`architecture.md` §2.7). The Compose stack runs M15 (§10).
 
 ## 2. Decisions made with the user (don't re-ask)
 
@@ -279,6 +279,11 @@ Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services planne
 - **Taken while building (session 15):** a module is stored as an **app definition with a `module` part** (not a separate schema), so the validator, graph, rename and paste work on modules unchanged; outputs are `$outputs.<name>` nodes (not readable by code); a module instance whose release isn't known yet has an **open spec** (any prop, event and output read, nothing flagged) so nothing flashes while the editor resolves it; library query parameters are rendered lazily so a broken one is that query's expression error; `checkVouched` and `runDefinitionQuery` are shared by apps and modules; per-user OAuth Connect also counts resources reached through a library query.
 - **Working agreements from the user (session 15):** split steps so each part ends green and report after each (usage); commit locally and **push once per step** (GitHub Actions minutes, ~20 per push); run `corepack pnpm biome ci .` before committing.
 - Defaults chosen while planning (`architecture.md` §2.17; change if the user disagrees): library queries read only their parameters, `current_user` and the stdlib; inputs read as `inputs.<name>` in a module; no modules inside modules; deleting something an app uses is refused (Used by); a `latest` module instance whose module got a new live release while the page was open gets "reload" (CONFLICT).
+
+### Taken in M15 (keep these unless there's a reason to change)
+- **Agreed with the user at the start of M15 (session 18):** M15 = webhooks for outside services (not queues: SQS/Pub/Sub/Kafka later); auth per webhook is an API key (default), a signature or public, with signed and public ones always rate limited; an optional JSON Schema per body; multipart both ways.
+- **Taken while building:** the signing secret is a secret config var's *name* (per environment, never in the definition or Git), one secret per line for rotation; signatures over the raw bytes, timestamps checked both ways; the route finds the webhook first, then limit, method, environment, auth, body; limits per webhook in fixed windows on the database clock; signed and public webhooks default to 60/60 s and the default environment only; a preset's delivery id is the idempotency header; only a window's first 429 and at most 60 refusals a minute are recorded; refused calls are listed to Edit (they hold IPs); Ajv stays out of `@ow/definition`'s main entry (a subpath); busboy for multipart (undici's parser refuses valid bodies); a file part takes base64 or a webhook's file object; `startTrigger.data` is typed from the schema when there is one; the OpenAPI document lives in the runs API (session or API key).
+- **Working agreements (session 18):** until 2026-11-01 nothing is pushed (§2's rule); fixes to earlier commits and pre-existing bugs found on the way get their own commits.
 
 ### Taken in the Optiply UI work (session 14; keep these unless there's a reason to change)
 - **Before M14, the platform should look like part of Optiply** (the user shared Optiply's theme CSS, copied from app.optiply.com, and light and dark screenshots).
@@ -878,13 +883,34 @@ The design is `architecture.md` §2.17; decisions in §2 "Taken in M14"; the ste
 - **Git** (step 7, `fc237c9`…`e8c31cc`): `library/<slug>/` and `modules/<slug>/` in `@ow/git-format` (round-trip property tests), migration 0019, `services/git/kinds.ts` (one table of per-kind behaviour), protection and branch drafts for all four kinds with guards in the library and module routers, deploy in the order library queries, modules, workflows, apps; the web's Git bar, protection and `?branch=` in the module and library editors.
 - **Done-when** (step 8): `apps/web/e2e/m14-done-when.spec.ts` (`44d6358`): the three parts in one test; passed in the e2e suite (48) and on Docker Compose (§10).
 
+## 9j. What M15 built (on the local branch `feat/m15-webhooks`, not pushed)
+
+The design is `architecture.md` §2.18 (with "As built"); the step record in §14. The plan and seven steps, the larger ones split into parts that each ended green, plus two fixes, 15 commits on top of `b2e82a9` (PR #21's handoff). Checked locally before every commit: CI's GitHub Actions minutes had run out.
+
+- **Definition** (step 1, `8f839e8`): `triggers.webhook` gets `auth` (apiKey, public, signature with a preset and a secret config var's name), `bodySchema`, `rateLimit`, `environments`, `idempotencyHeader`, all optional (no schema bump); `resolveWebhookSettings` holds every default; `WEBHOOK_PRESETS`; validator codes `invalid_webhook_auth`, `invalid_body_schema`, `invalid_webhook`; Ajv in the subpath `@ow/definition/body-schema`, passed to the validator as `checkBodySchema`.
+- **Signatures and auth** (steps 2a `7f6b444`, 2b `761b857`): `services/webhook-signatures.ts` (five presets and custom over the raw bytes, timing-safe, timestamps both ways; secrets one per line for rotation); the body parsers keep bytes and parse after auth; the route's order (find, limit, method, environment, auth, body, run); public and signed webhooks; allowed environments; idempotency from a provider's delivery id; Slack's URL check; publish refuses a missing, non-secret or unset secret config var.
+- **Limits, schemas, refused calls** (steps 3a `730538d`, 3b `26a6483`): migration 0020 (`webhook_rate_windows`, `webhook_rejections`); a fixed-window counter in Postgres (429 + Retry-After); retention for both; `ow_webhook_rejected_total{reason}`; `WebhookRejection` with reason codes; body schemas compiled per release (400 `invalid_body` with JSON Pointers, no run); every 4xx of a found webhook recorded (first 429 of a window only; 60 a minute per webhook at most); `workflows.webhookRejections` (Edit).
+- **Multipart** (steps 4a `6c1d474`, 4b `792f84b`): webhooks parse `multipart/form-data` with busboy (files as base64 objects); REST queries send a `multipart` body (text parts, files from base64 or a webhook's file object) with the editor's Multipart option in the workflow inspector and the playground.
+- **OpenAPI** (step 5, `18829a4`): `GET /api/v1/openapi.json` for a session or an API key, the webhooks the caller may call plus `GET /runs/{id}`, validated against OpenAPI 3.1 in tests.
+- **Editor** (steps 6a `8d59e5f`, 6b `dd13e45`): the webhook panel's authentication, rate limit, environments, idempotency header, example call per auth and refused calls; the body schema in Monaco with drafts from the test input or a sample; `startTrigger.data` typed from the schema (`schemaType`); OpenAPI links.
+- **Done-when** (step 7a, `823f071`): `apps/web/e2e/m15-done-when.spec.ts`; passed in the e2e suite (51) and on Docker Compose (§10).
+- **Fixes on the way:** `341e019` (the server's bundler needs Ajv declared in apps/server: the server build had failed since step 1, unnoticed because only tests ran; the server build now runs every step) and `b06f4ff` (a Postgres query whose signal aborted while it waited for a connection ran anyway; found by a load-flaky test, a pre-existing bug from M1/M6).
+- **New dependencies:** ajv 8.20.0 and ajv-formats 3.0.1 (MIT; already in the lockfile through Fastify), busboy 1.6.0 (MIT, with streamsearch), and dev-only @types/busboy and @seriousme/openapi-schema-validator 2.9.1 (MIT).
+- **Totals:** server tests 368 (330 at the end of M14), connectors 147, definition 163, web unit 71, e2e 51 (48).
+
 ## 10. How things were verified (and how to repeat it)
 
 - **Unit and integration tests:** `pnpm test`. Each server, db, connector and engine Postgres test file boots its own embedded Postgres. The engine suite was run three times in a row after step 3 with no flakes.
 - **Webhook latency:** `pnpm --filter @ow/server bench:webhooks` (prints p50/p90/p99).
 - **Sandbox context speed:** `pnpm --filter @ow/sandbox bench` (0.66 ms locally).
+- **Load:** at load averages of 10–30 (all 13 suites at once while macOS indexes, Chrome, VS Code and Slack run) timing tests fail that pass alone: sandbox timers, code-executor speed and limits, an engine loop batch, m9's scheduled run, app-sandbox's restart. Rerun the package alone (`pnpm turbo run test --filter <pkg> --concurrency=1`) before suspecting code; one such failure was a real bug (`b06f4ff`). Turbo stopping a suite midway can leave `mysql:8.4` and `ow-code-executor-test-*` containers running: remove them by name.
 - **Playwright e2e (committed):** `pnpm --filter @ow/web build && pnpm --filter @ow/server build && pnpm --filter @ow/web e2e`. Locally it uses the installed Chrome (`channel: 'chrome'`); CI uses Playwright's Chromium. The server runs on port 4387 (`E2E_PORT`). Fifteen specs at the end of M8 (nine after M7); 27 tests in 20 files with M12's Python spec (it needs the executor container: Docker). For repeats, pass `--repeat-each=3` to `pnpm exec playwright test` in `apps/web` (through `pnpm … e2e -- …` the flag doesn't reach Playwright). The `typeInto` helper clicks a Monaco field near its top-left corner: with more lines than fit, the middle of `.view-lines` is over the next field.
 - **MySQL tests** start a `mysql:8.4` container (Docker) or use `MYSQL_TEST_URL`; skipped locally without Docker, required in CI (~46 s for the connector file, including the container start).
+- **Docker Compose, session 18** (the M15 done-when; a temporary `apps/web/.compose-check/` (a Playwright config for `localhost:3000`, the spec copy with the check account, `check-` names, the fake file service on 0.0.0.0 reached as `host.docker.internal`, and an extra step through a second API; `zz-cleanup.spec.ts`), deleted afterwards; the check account's password in the session scratchpad):
+  - The user said go ahead. The M14 image tagged `optiply-workflows:m14-backup`, then `PUBLIC_URL=http://localhost:3000 docker compose up --build -d` on `823f071` (8 min, nearly all build; migration 0020 applied, both tables there). A local admin `m15-check@optiply.nl` (`create-admin`, random password).
+  - A second API process: `docker compose run -d --no-deps --name ow-m15-api-2 -p 3001:3000 api` (same image and Postgres).
+  - The spec against the stack: **passed in 3.4 s**. A webhook limited to 4, called alternately on :3000 and :3001: `200 ×4, 429 ×6`, so the processes share the limit. No error lines in either API or the workers.
+  - Afterwards (through the API as `m15-check`, after a dry run listing them): the check's 5 workflows, 2 config vars and 1 resource deleted (their rate windows and refused calls went with them: 0 left); `ow-m15-api-2` removed; the temporary folder deleted. Left: the `m15-check` account (users can't be deleted; disable it if wanted) and the `m14-backup` image (to roll back: retag it as `optiply-workflows:local` and `docker compose up -d`; the extra tables don't bother M14). The stack stays on the M15 image.
 - **Docker Compose, sessions 16–17** (the M14 done-when; a temporary `apps/web/.compose-check/` (the spec copy with its own accounts and an `m14_shop` resource, `servers.mts`, `zz-cleanup.spec.ts`), deleted afterwards):
   - Session 16 rebuilt the stack with M14 (migrations 0017–0019 applied, 2026-10-19), made `m14-check@optiply.nl` (admin) and `m14-member@optiply.nl`, a throwaway database `m14_check` (`customers`) behind the `m14_shop` resource, and started a run of the spec, then ran out of usage; its git servers lived in the session scratchpad, which was gone by session 17.
   - Session 17 (2026-10-20; the user's last activity was the day before, they said go ahead): on the Mac a git server (`gitHttpServer` from `apps/server/test/git-helpers.ts`) and the fake GitHub on 0.0.0.0 (ports 52053/52054); the stack rebuilt on `44d6358` with `GIT_ALLOW_INSECURE_URLS=true GITHUB_API_URL=http://host.docker.internal:52054 GIT_POLL_SECONDS=5` (3 min, nearly all build). The spec copy always saves the Git settings (the stack still pointed at session 16's dead server). **Passed in 9.9 s**; the merge's deploy `ok` (the library query released as 1.1.1, the module and the app with it). Errors in the logs: only the workers polling the dead address before the test re-pointed it.
@@ -1010,7 +1036,7 @@ The design is `architecture.md` §2.17; decisions in §2 "Taken in M14"; the ste
   - **A loop's sync workflow runner holds the worker** while its children run (it waits within the iteration timeout, default 10 s: raise it for slow children); a Workflow block pauses instead.
   - **Renaming a function parameter doesn't rewrite `params.x`** in its blocks (renaming functions and blocks does).
   - A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails. That's expected; noted for ops docs.
-- **Webhooks:** API key only (no public or HMAC-signed webhooks, no `?api_key=` query parameter); no rate limiting; no OpenAPI document for the public REST routes yet. API keys can read single runs, not list them.
+- **Webhooks:** no `?api_key=` query parameter (signatures cover callers that can't send headers); API keys can read single runs, not list them. M15's gaps are under "From M15".
 - **Scheduler:** fires up to 5 s late (tick interval); a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
 - **Pool invalidation across processes:** there's still no `NOTIFY resource_changed`. Pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load.
 - **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
@@ -1074,8 +1100,17 @@ The design is `architecture.md` §2.17; decisions in §2 "Taken in M14"; the ste
   - Logs come back when the code ends, not as it prints; output is cut at 1 MB.
   - The editor's syntax markers need the executor (a second after typing stops); the validator's own problems are instant. The typing helper in e2e compares single-line text, so the specs type Python on one line.
   - dict methods win over keys in attribute access (`row.items` is the method): use `row["items"]`.
-- **Not built yet:** multipart REST bodies.
 
+- **From M15:**
+  - Not pushed, not reviewed: `feat/m15-webhooks` is local (§2). Its first CI run will be in November.
+  - A body schema's `pattern` runs as a JavaScript regex on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
+  - Rate limits are fixed windows (up to twice the limit around a boundary) and per webhook, not per caller IP.
+  - Unknown webhook URLs answer 404 even without a key (they were 401 before M15, when the key was checked first): someone without a key can tell which URLs exist.
+  - Refused calls that fail before a webhook is found (404, Fastify's body too large) are only counted in the metric, not listed.
+  - Undici's own multipart parser (`Response.formData`) refuses valid bodies whose boundary text appears inside a part; webhooks use busboy, but REST query tests and the e2e read multipart back with undici (safe: fetch picks random boundaries).
+  - Custom auth flow steps don't offer the Multipart body in their editor (the connector accepts it).
+  - No asymmetric signatures (ed25519, JWT-signed webhooks); no per-webhook secret rotation UI beyond one secret per line in the config var.
+  - The `m15-check` account is left on the Compose stack.
 - **From M14:**
   - Renaming a module's input doesn't rewrite `inputs.<old>` in its code (property reads; the rename tooling handles identifiers): the problems list shows them.
   - A module instance on a page not shown still starts and runs its on-load queries.
@@ -1088,13 +1123,15 @@ The design is `architecture.md` §2.17; decisions in §2 "Taken in M14"; the ste
   - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. Two people editing one draft still conflict as before.
   - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
 
-## 14. M15 steps (planned in session 18)
+## 14. M15 steps (done in session 18; plan M16 here)
 
 M15 is planned (`architecture.md` §2.7 row, §2.8 item 14, §2.18). The user chose (session 18): no queue trigger this milestone; webhooks authenticate with an API key, a signature or not at all (public), with signed and public ones always rate limited; an optional JSON Schema per webhook body; multipart in both directions.
 
 **Local only until 2026-11-01** (§2): one branch, `feat/m15-webhooks`, from `b2e82a9` (PR #21's handoff on top of `main` `bda0dbf`). **No draft PR** until the minutes reset; then push and open it once. Each step is split into parts (a/b/c) that each end green. Every part is reported and committed on the user's word, after CI's checks pass locally (§2).
 
-**Unpushed branches:** `feat/m15-webhooks` (from step 0 on).
+**Unpushed branches:** `feat/m15-webhooks`, 15 commits (`886dedb`…`823f071`, then the docs commit), on top of `b2e82a9` (PR #21's handoff, pushed). Push it once in November, open the PR, and mark PR #21 as included.
+
+All steps done (commits in §9j). How each went: step 1 as planned; 2 in two parts; 3a/3b as planned (the limit is per webhook, not per environment: §2.18); 4a used busboy after undici's parser failed a valid body; 4b added a shared `MultipartParts`; 5's validator caught one invalid field; 6a/6b as planned; 7a's spec first hung 15 minutes on a keep-alive connection (fixed); 7b, the Compose check, passed (§10).
 
 0. **Plan:** this section, `architecture.md` §2.18 and the M15 row.
 1. **Definition** (`@ow/definition`):
