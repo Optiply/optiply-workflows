@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
+import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType, PLACEHOLDERS } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -11,6 +12,7 @@ type RestBody =
   | { type: 'json'; json: string }
   | { type: 'form'; fields: KeyValue[] }
   | { type: 'raw'; raw: string; contentType: string }
+  | { type: 'multipart'; parts: MultipartPart[] }
 
 interface Draft {
   sql: string
@@ -220,13 +222,16 @@ function RestQueryEditor({
                         ? { type, fields: [] }
                         : type === 'raw'
                           ? { type, raw: '', contentType: 'text/plain' }
-                          : { type: 'none' },
+                          : type === 'multipart'
+                            ? { type, parts: [] }
+                            : { type: 'none' },
                 })
               }}
             >
               <option value="none">None</option>
               <option value="json">JSON</option>
               <option value="form">Form (urlencoded)</option>
+              <option value="multipart">Multipart (form-data)</option>
               <option value="raw">Raw</option>
             </Select>
             {body.type === 'json' && (
@@ -243,6 +248,12 @@ function RestQueryEditor({
               <KeyValueEditor
                 rows={body.fields}
                 onChange={(fields) => setRest({ body: { type: 'form', fields } })}
+              />
+            )}
+            {body.type === 'multipart' && (
+              <MultipartParts
+                parts={body.parts}
+                onChange={(parts) => setRest({ body: { type: 'multipart', parts } })}
               />
             )}
             {body.type === 'raw' && (

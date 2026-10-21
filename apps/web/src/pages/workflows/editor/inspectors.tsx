@@ -17,6 +17,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
+import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -497,6 +498,7 @@ function RestQueryForm({
     json?: string
     raw?: string
     fields?: KeyValue[]
+    parts?: MultipartPart[]
   }
   return (
     <div className="flex flex-col gap-4">
@@ -537,13 +539,16 @@ function RestQueryForm({
                     ? { type, fields: [] }
                     : type === 'raw'
                       ? { type, raw: '', contentType: 'text/plain' }
-                      : { type: 'none' },
+                      : type === 'multipart'
+                        ? { type, parts: [] }
+                        : { type: 'none' },
             })
           }}
         >
           <option value="none">No body</option>
           <option value="json">JSON</option>
           <option value="form">Form</option>
+          <option value="multipart">Multipart</option>
           <option value="raw">Raw</option>
         </Select>
       </Field>
@@ -562,6 +567,13 @@ function RestQueryForm({
           label="Form fields"
           rows={body.fields ?? []}
           onChange={(fields) => setQuery({ body: { type: 'form', fields } })}
+        />
+      )}
+      {body.type === 'multipart' && (
+        <MultipartParts
+          compact
+          parts={body.parts ?? []}
+          onChange={(parts) => setQuery({ body: { type: 'multipart', parts } })}
         />
       )}
       {body.type === 'raw' && (

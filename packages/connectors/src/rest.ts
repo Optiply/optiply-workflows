@@ -1,5 +1,5 @@
-import { parseTemplate, renderJson, renderText, TemplateError } from '@ow/expressions'
-import { Agent, fetch, Headers, type Response } from 'undici'
+import { parseTemplate, renderJson, renderTemplate, renderText, TemplateError } from '@ow/expressions'
+import { Agent, FormData, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
@@ -15,6 +15,22 @@ import {
 
 const keyValues = z.array(z.object({ key: z.string(), value: z.string() })).default([])
 
+/**
+ * One part of a multipart body. A text part's `value` is a template; a file part's `file` is a lone `{{ }}` that
+ * evaluates to base64 text or to `{ base64, filename?, contentType? }` (what a webhook delivers), and `filename` and
+ * `contentType` (templates) override what the value says.
+ */
+const multipartPartSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('text'), key: z.string(), value: z.string().default('') }),
+  z.object({
+    kind: z.literal('file'),
+    key: z.string(),
+    file: z.string().default(''),
+    filename: z.string().default(''),
+    contentType: z.string().default(''),
+  }),
+])
+
 const bodySchema = z
   .discriminatedUnion('type', [
     z.object({ type: z.literal('none') }),
@@ -22,6 +38,8 @@ const bodySchema = z
     z.object({ type: z.literal('json'), json: z.string() }),
     z.object({ type: z.literal('form'), fields: keyValues }),
     z.object({ type: z.literal('raw'), raw: z.string(), contentType: z.string().default('text/plain') }),
+    /** `multipart/form-data` (M15): text fields, and files from base64 or a webhook's file object. */
+    z.object({ type: z.literal('multipart'), parts: z.array(multipartPartSchema).default([]) }),
   ])
   .default({ type: 'none' })
 
@@ -43,6 +61,9 @@ function queryTemplates(query: z.output<typeof querySchema>): string[] {
     ...(query.body.type === 'json' ? [query.body.json] : []),
     ...(query.body.type === 'form' ? query.body.fields.map((f) => f.value) : []),
     ...(query.body.type === 'raw' ? [query.body.raw] : []),
+    ...(query.body.type === 'multipart'
+      ? query.body.parts.flatMap((p) => (p.kind === 'text' ? [p.value] : [p.file, p.filename, p.contentType]))
+      : []),
   ]
 }
 
@@ -268,6 +289,8 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
     const { url, params } = await buildUrl(client, query, ctx)
     const queryHeaders: [string, string][] = []
     for (const { key, value } of query.headers) {
+      // A multipart body's Content-Type carries its boundary: fetch sets it.
+      if (query.body.type === 'multipart' && key.toLowerCase() === 'content-type') continue
       if (key) queryHeaders.push([key, await renderText(value, ctx.evaluate)])
     }
     const { body, contentType } = await buildBody(query, ctx)
@@ -352,7 +375,10 @@ async function buildUrl(
 }
 
 /** The body and the content type it implies (used unless a header sets one). */
-async function buildBody(query: Query, ctx: QueryContext): Promise<{ body?: string; contentType?: string }> {
+async function buildBody(
+  query: Query,
+  ctx: QueryContext,
+): Promise<{ body?: string | FormData; contentType?: string }> {
   const body = query.body
   switch (body.type) {
     case 'none':
@@ -370,6 +396,46 @@ async function buildBody(query: Query, ctx: QueryContext): Promise<{ body?: stri
     }
     case 'raw':
       return { body: await renderText(body.raw, ctx.evaluate), contentType: body.contentType }
+    case 'multipart': {
+      // No content type here: fetch sets it, with the boundary.
+      const form = new FormData()
+      for (const part of body.parts) {
+        if (!part.key) continue
+        if (part.kind === 'text') {
+          form.append(part.key, await renderText(part.value, ctx.evaluate))
+          continue
+        }
+        const file = multipartFile(part.key, await renderTemplate(part.file, ctx.evaluate))
+        const filename = (await renderText(part.filename, ctx.evaluate)) || file.filename || part.key
+        const type =
+          (await renderText(part.contentType, ctx.evaluate)) || file.contentType || 'application/octet-stream'
+        form.append(part.key, new Blob([new Uint8Array(file.bytes)], { type }), filename)
+      }
+      return { body: form }
+    }
+  }
+}
+
+const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
+
+/** A file part's value: base64 text, or a webhook's file object (`{ base64, filename?, contentType? }`). */
+function multipartFile(
+  key: string,
+  value: unknown,
+): { bytes: Buffer; filename?: string; contentType?: string } {
+  const object = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
+  const base64 = typeof value === 'string' ? value : object?.base64
+  const text = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : null
+  if (text === null || !BASE64.test(text)) {
+    throw new ConnectorError(
+      'query',
+      `File part "${key}" needs base64 text or a file object ({ base64, filename, contentType }), like a webhook's upload`,
+    )
+  }
+  return {
+    bytes: Buffer.from(text, 'base64'),
+    ...(typeof object?.filename === 'string' && { filename: object.filename }),
+    ...(typeof object?.contentType === 'string' && { contentType: object.contentType }),
   }
 }
 
@@ -399,7 +465,7 @@ function checkHost(config: Config, url: URL): void {
 async function send(
   client: Client,
   url: URL,
-  init: { method: string; headers: Headers; body?: string },
+  init: { method: string; headers: Headers; body?: string | FormData },
   signal: AbortSignal,
   /** Headers carrying credentials besides the usual ones (a custom auth flow's), dropped like them. */
   sensitive: string[] = [],
