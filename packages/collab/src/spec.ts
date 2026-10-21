@@ -14,6 +14,11 @@ export interface CollabSpec {
   identity(path: Path): Identity | undefined
   /** Whether a string at `path` is text (a `Y.Text`, merged character by character) rather than a value. */
   isText(path: Path): boolean
+  /**
+   * Whether the object at `path` is one value (last writer wins on the whole) rather than a `Y.Map` merged key by key:
+   * for objects whose fields must agree with each other, like a grid position's `x + w`.
+   */
+  isAtomic(path: Path): boolean
 }
 
 /**
@@ -22,12 +27,15 @@ export interface CollabSpec {
 export function defineSpec(rules: {
   identity: readonly (readonly [pattern: string, identity: Identity])[]
   text: readonly string[]
+  atomic?: readonly string[]
 }): CollabSpec {
   const identity = rules.identity.map(([pattern, id]) => [pattern.split('.'), id] as const)
   const text = rules.text.map((pattern) => pattern.split('.'))
+  const atomic = (rules.atomic ?? []).map((pattern) => pattern.split('.'))
   return {
     identity: (path) => identity.find(([pattern]) => matches(pattern, path))?.[1],
     isText: (path) => text.some((pattern) => matches(pattern, path)),
+    isAtomic: (path) => atomic.some((pattern) => matches(pattern, path)),
   }
 }
 
@@ -67,7 +75,7 @@ const queryText = ['query.sql', 'query.body.json']
 /**
  * Workflows: blocks and functions by name, edges by their ends, conditions and task outcomes by id. Text is every
  * string the inspectors show in a code field (code, SQL, templates and expressions); names, types, slugs, modes and
- * the rest are values.
+ * the rest are values, and so are canvas positions, whole.
  */
 export const workflowSpec: CollabSpec = defineSpec({
   identity: [
@@ -99,6 +107,7 @@ export const workflowSpec: CollabSpec = defineSpec({
     'config.runner.input',
     'config.runner.params.*',
   ]),
+  atomic: ['layout.blocks.*', 'functions.*.layout.blocks.*'],
 })
 
 /** An event handler's templates and script, for components' handlers and queries'. */
@@ -106,7 +115,8 @@ const handlerText = ['onlyIf', 'action.code', 'action.value', 'action.message', 
 
 /**
  * Apps (and modules): pages, components, queries, transformers, variables and a module's parts by name, event
- * handlers by id. Text is every string the editor shows in a code field: props, templates, SQL and code.
+ * handlers by id. Text is every string the editor shows in a code field: props, templates, SQL and code. Grid
+ * positions are values, whole (`x + w` must fit the grid).
  */
 export const appSpec: CollabSpec = defineSpec({
   identity: [
@@ -134,4 +144,5 @@ export const appSpec: CollabSpec = defineSpec({
     'variables.*.initialValue',
     'module.outputs.*.value',
   ],
+  atomic: ['layout.*'],
 })

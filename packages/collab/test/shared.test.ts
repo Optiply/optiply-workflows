@@ -77,8 +77,9 @@ describe('SharedDefinition', () => {
     const fn = (a.root.get('functions') as Y.Array<Y.Map<unknown>>).get(0)
     const calc = (fn.get('blocks') as Y.Array<Y.Map<unknown>>).get(0)
     expect((calc.get('config') as Y.Map<unknown>).get('code')).toBeInstanceOf(Y.Text)
-    const layout = (a.root.get('layout') as Y.Map<Y.Map<Y.Map<unknown>>>).get('blocks')?.get('code2')
-    expect(layout?.get('y')).toBe(100)
+    // A position is one value: x and y from different people never mix.
+    const layout = (a.root.get('layout') as Y.Map<Y.Map<unknown>>).get('blocks')?.get('code2')
+    expect(layout).toEqual({ x: 0, y: 100 })
   })
 
   it('shares unchanged parts after a remote change', () => {
@@ -237,6 +238,49 @@ describe('SharedDefinition', () => {
       a.set(app(v))
       expect(replica<AppDefinition>(appSpec, a).value).toEqual(app(v))
     }
+  })
+
+  it('replaces an object whose variant changes, so a field set meanwhile in the old one goes with it', () => {
+    const wait = (config: Extract<Block, { type: 'wait' }>['config']): Block => ({
+      name: 'wait1',
+      type: 'wait',
+      config,
+    })
+    const a = replica<WorkflowDefinition>(workflowSpec)
+    a.set(workflow([wait({ kind: 'duration', amount: '1', unit: 'minutes' })]))
+    const b = replica<WorkflowDefinition>(workflowSpec, a)
+    a.set(workflow([wait({ kind: 'until', until: '2030-01-01' })]))
+    b.set(workflow([wait({ kind: 'duration', amount: '1', unit: 'hours' })]))
+    sync(a, b)
+    expect(a.value).toEqual(b.value)
+    expect(() => workflowDefinitionSchema.parse(a.value)).not.toThrow()
+  })
+
+  it('keeps a grid position whole, so x and w from two people never mix', () => {
+    const app = (position: { x: number; w: number }): AppDefinition =>
+      appDefinitionSchema.parse({
+        ...emptyApp(),
+        components: [{ name: 'button1', type: 'button' }],
+        layout: { button1: { y: 0, h: 1, ...position } },
+      })
+    const a = replica<AppDefinition>(appSpec)
+    a.set(app({ x: 0, w: 4 }))
+    const b = replica<AppDefinition>(appSpec, a)
+    a.set(app({ x: 8, w: 4 }))
+    b.set(app({ x: 0, w: 10 }))
+    sync(a, b)
+    expect(a.value).toEqual(b.value)
+    expect([app({ x: 8, w: 4 }), app({ x: 0, w: 10 })]).toContainEqual(a.value)
+  })
+
+  it('stores half an emoji as U+FFFD, as every other replica will read it', () => {
+    const a = replica<WorkflowDefinition>(workflowSpec)
+    const split = workflow([code('code1', 'return "\ud83d"')])
+    a.set(split)
+    const b = replica<WorkflowDefinition>(workflowSpec, a)
+    expect(a.value).not.toBe(split)
+    expect(a.value).toEqual(workflow([code('code1', 'return "�"')]))
+    expect(b.value).toEqual(a.value)
   })
 
   it('maps app props, handler templates and query code to text', () => {

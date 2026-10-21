@@ -11,8 +11,9 @@ const MAX_LCS_CELLS = 1_000_000
 type YType = Y.AbstractType<any>
 
 /**
- * A definition (plain JSON) held in a Yjs document, as architecture §2.19 maps it: objects as `Y.Map`, arrays as
- * `Y.Array`, the spec's text fields as `Y.Text`, everything else as values.
+ * A definition (plain JSON) held in a Yjs document, as architecture §2.19 maps it: objects as `Y.Map` (or as one
+ * value where the spec says they're atomic), arrays as `Y.Array`, the spec's text fields as `Y.Text`, everything else
+ * as values.
  *
  * `value` turns the document back into the definition, rebuilding only what changed since the last read: every
  * unchanged part is the same object as before, so React and the canvas redraw only what changed. `set` makes the
@@ -181,20 +182,46 @@ class Writer {
   private update(current: unknown, next: unknown, path: Path): unknown {
     if (current instanceof Y.AbstractType) {
       if (this.shared.read(current, path) === next) return KEEP
-      if (current instanceof Y.Map && isRecord(next)) this.map(current, next, path)
+      if (current instanceof Y.Map && isRecord(next) && sameVariant(current, next))
+        this.map(current, next, path)
       else if (current instanceof Y.Array && Array.isArray(next)) this.array(current, next, path)
       else if (current instanceof Y.Text && typeof next === 'string' && this.shared.spec.isText(path))
-        text(current, next)
+        text(current, this.wellFormed(next))
       else return this.create(next, path)
       this.seeds.push([current, next])
       return KEEP
     }
     // A value: kept when equal (a string that became a text field turns into `Y.Text` on its next change).
-    return current === next ? KEEP : this.create(next, path)
+    const value = typeof next === 'string' ? this.wellFormed(next) : next
+    return equal(current, value) ? KEEP : this.create(value, path)
+  }
+
+  /**
+   * The string as the document stores it: Yjs encodes a lone surrogate (half an emoji) as U+FFFD, so writing one as
+   * is would leave this replica with a string no other replica has. Changing one makes `value` read the document.
+   */
+  private wellFormed(s: string): string {
+    if (!LONE_SURROGATE.test(s)) return s
+    this.inexact()
+    return s.replace(LONE_SURROGATE_ALL, '\uFFFD')
+  }
+
+  /** A copy without the keys holding `undefined`, to store as one value. */
+  private json(v: unknown): unknown {
+    if (typeof v === 'string') return this.wellFormed(v)
+    if (Array.isArray(v)) return v.map((item) => this.json(item ?? null))
+    if (!isRecord(v)) return v
+    return Object.fromEntries(
+      Object.entries(v).flatMap(([k, item]) => (item === undefined ? [] : [[k, this.json(item)]])),
+    )
   }
 
   create(v: unknown, path: Path): unknown {
-    if (typeof v === 'string') return this.shared.spec.isText(path) ? new Y.Text(v) : v
+    if (isRecord(v) && this.shared.spec.isAtomic(path)) return this.json(v)
+    if (typeof v === 'string') {
+      const s = this.wellFormed(v)
+      return this.shared.spec.isText(path) ? new Y.Text(s) : s
+    }
     if (Array.isArray(v)) {
       const yarr = new Y.Array<unknown>()
       yarr.push(v.map((item, i) => this.create(item ?? null, [...path, i])))
@@ -231,6 +258,20 @@ function text(ytext: Y.Text, next: string): void {
   const inserted = next.slice(start, next.length - end)
   if (inserted) ytext.insert(start, inserted)
 }
+
+/** The keys that pick a variant of a discriminated union (a block's or handler action's `type`, a runner's `kind`). */
+const DISCRIMINATORS = ['type', 'kind']
+
+/**
+ * Whether `next` is the same variant as the object in the document. Another variant replaces the object whole:
+ * updated in place, a field someone sets meanwhile in the old variant (a wait's `unit` while another switches it to
+ * `until`) would survive the merge into a shape no variant accepts.
+ */
+const sameVariant = (current: Y.Map<unknown>, next: Record<string, unknown>) =>
+  DISCRIMINATORS.every((key) => current.get(key) === next[key])
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+const LONE_SURROGATE_ALL = new RegExp(LONE_SURROGATE.source, 'g')
 
 const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff
 const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff
