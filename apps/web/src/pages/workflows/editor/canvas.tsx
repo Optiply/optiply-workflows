@@ -263,7 +263,7 @@ function toEdges(
 function Pointers({ graph }: { graph: string | null }) {
   const pointers = usePresence((s) => s.pointers)
   return pointers
-    .filter((p) => p.graph === graph)
+    .filter((p) => p.area === graph)
     .map((p) => (
       <div
         key={p.clientId}
@@ -286,7 +286,7 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
   // Who else has this block selected (M16): an outline in the first one's colour, and their names.
   const fn = useEditor((s) => s.graph)
   const watchers = usePresence(
-    useShallow((s) => s.peers.filter((p) => p.graph === fn && p.selection.includes(block.name))),
+    useShallow((s) => s.peers.filter((p) => p.area === fn && p.selection.includes(block.name))),
   )
   const first = watchers[0]
   const kind = kindOf(block)

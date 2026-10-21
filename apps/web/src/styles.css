@@ -317,3 +317,8 @@
   outline: 2px solid var(--presence);
   outline-offset: 3px;
 }
+
+/* An app component someone else has selected (its frame's outline is one's own selection). */
+.ow-peer-ring {
+  box-shadow: 0 0 0 2px var(--presence);
+}

@@ -4,6 +4,7 @@ import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
+import { PresenceAvatars } from '@/components/presence-avatars'
 import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
@@ -24,6 +25,7 @@ import { useLibrarySync } from './library'
 import { ModulePanel } from './module-panel'
 import { AddModule, useModuleSync } from './modules'
 import { PagesPanel } from './pages'
+import { usePresence } from './presence'
 import { type EditorApp, ReleaseControls } from './releases'
 import { type SaveStatus, useAppEditor } from './store'
 
@@ -244,6 +246,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
   const { confirm, dialog: confirmation } = useConfirmations()
   const [preview, setPreview] = useState(false)
   const status = useAppEditor((s) => s.status)
+  const peers = usePresence((s) => s.peers)
   const selected = useAppEditor((s) => s.selected)
   const definition = useAppEditor((s) => s.definition)
 
@@ -323,6 +326,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
       <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
         <h1 className="truncate text-lg leading-6 font-bold">{app.name}</h1>
         <SaveBadge status={status} />
+        <PresenceAvatars peers={peers} me={me.id} />
         {!readOnly && !preview && (
           <div className="flex items-center">
             <UndoButtons

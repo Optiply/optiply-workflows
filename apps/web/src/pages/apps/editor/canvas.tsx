@@ -16,6 +16,7 @@ import { sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ComponentView, placedChildren, ROW_HEIGHT } from '../canvas'
 import { ChildGridContext, EditingContext, ShownModalContext } from '../grid-context'
+import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
 /** What the palette is dragging (DataTransfer can't be read until the drop). */
@@ -62,6 +63,8 @@ export function EditGrid({
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const selected = useAppEditor((s) => s.selected)
+  // Who else has a component selected (M16), by name: names are the app's, whatever page anyone is on.
+  const peers = usePresence((s) => s.peers)
   const children = useMemo(() => placedChildren(definition, parent, page), [definition, parent, page])
   const layout = useMemo(
     () => children.map(({ component, position }) => ({ i: component.name, ...position })),
@@ -118,32 +121,54 @@ export function EditGrid({
             select(added.name)
           }}
         >
-          {children.map(({ component }) => (
-            <div
-              key={component.name}
-              data-testid={`frame-${component.name}`}
-              className={cn(
-                'group rounded-md',
-                selected === component.name
-                  ? 'outline-2 outline-accent'
-                  : 'hover:outline hover:outline-accent/40',
-              )}
-              onMouseDownCapture={() => select(component.name)}
-            >
+          {children.map(({ component }) => {
+            const watchers = peers.filter((p) => p.selection.includes(component.name))
+            return (
               <div
+                key={component.name}
+                data-testid={`frame-${component.name}`}
                 className={cn(
-                  handle,
-                  'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-on-accent',
-                  selected === component.name ? 'flex' : 'hidden group-hover:flex',
+                  'group rounded-md',
+                  selected === component.name
+                    ? 'outline-2 outline-accent'
+                    : 'hover:outline hover:outline-accent/40',
+                  watchers[0] && `ow-peer-ring ow-presence-${watchers[0].colour}`,
                 )}
-                title="Drag to move"
+                onMouseDownCapture={() => select(component.name)}
               >
-                <GripVertical className="size-3" />
-                {component.name}
+                {watchers.length > 0 && (
+                  <div
+                    className="pointer-events-none absolute -top-5 right-0 z-10 flex gap-1"
+                    data-testid={`peers-${component.name}`}
+                  >
+                    {watchers.map((p) => (
+                      <span
+                        key={p.clientId}
+                        className={cn(
+                          'h-5 whitespace-nowrap rounded-t px-1.5 text-[11px] leading-5 font-medium text-white bg-[var(--presence)]',
+                          `ow-presence-${p.colour}`,
+                        )}
+                      >
+                        {p.user.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div
+                  className={cn(
+                    handle,
+                    'absolute -top-5 left-0 z-10 flex h-5 cursor-move items-center gap-1 rounded-t bg-accent px-1.5 font-mono text-[11px] text-on-accent',
+                    selected === component.name ? 'flex' : 'hidden group-hover:flex',
+                  )}
+                  title="Drag to move"
+                >
+                  <GripVertical className="size-3" />
+                  {component.name}
+                </div>
+                <ComponentView component={component} definition={definition} />
               </div>
-              <ComponentView component={component} definition={definition} />
-            </div>
-          ))}
+            )
+          })}
         </ReactGridLayout>
       )}
     </div>
@@ -181,7 +206,13 @@ export function EditCanvas() {
           {/* Clicking the empty canvas clears the selection. */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer convenience; components are selected from the tree too */}
           <div
-            className="pt-5"
+            className="relative pt-5"
+            // Where this editor's pointer is, for everyone else (M16): a fraction of the width, pixels down.
+            onMouseMove={(e) => {
+              const box = e.currentTarget.getBoundingClientRect()
+              sharePointer({ x: (e.clientX - box.left) / box.width, y: e.clientY - box.top })
+            }}
+            onMouseLeave={() => sharePointer(null)}
             onMouseDown={(e) => {
               if (
                 e.target === e.currentTarget ||
@@ -202,12 +233,35 @@ export function EditCanvas() {
             ) : (
               <EditGrid definition={definition} />
             )}
+            <Pointers page={page} />
           </div>
           {modal && <ComponentView component={modal} definition={definition} />}
         </ShownModalContext.Provider>
       </EditingContext.Provider>
     </ChildGridContext.Provider>
   )
+}
+
+/** Everyone else's pointer on this page: an arrow and their name in their colour. */
+function Pointers({ page }: { page: string | null }) {
+  const pointers = usePresence((s) => s.pointers)
+  return pointers
+    .filter((p) => p.area === page)
+    .map((p) => (
+      <div
+        key={p.clientId}
+        data-testid={`pointer-${p.user.name}`}
+        className={cn('pointer-events-none absolute z-20', `ow-presence-${p.colour}`)}
+        style={{ left: `${p.x * 100}%`, top: p.y }}
+      >
+        <svg width="14" height="18" viewBox="0 0 14 18" aria-hidden className="drop-shadow-sm">
+          <path d="M1 1 L1 15 L5 11 L8 17 L10 16 L7 10 L13 10 Z" fill="var(--presence)" stroke="white" />
+        </svg>
+        <span className="ml-3 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium text-white bg-[var(--presence)]">
+          {p.user.name}
+        </span>
+      </div>
+    ))
 }
 
 function GridCaption({ children, className }: { children: React.ReactNode; className?: string }) {

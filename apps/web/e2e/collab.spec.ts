@@ -260,3 +260,36 @@ test('two people typing in one app query merge as they type', async ({ page, bro
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
   await otherContext.close()
 })
+
+/** M16 step 6: presence in the app editor: avatars, components selected elsewhere outlined, pointers on the page. */
+test('presence in the app editor: avatars, selections and pointers', async ({ page, browser }) => {
+  await signIn(page)
+  const slug = `presence-${Date.now()}`
+  await trpcMutate(page, 'apps.create', { slug, name: 'Presence' })
+  await page.goto(`/apps/${slug}/edit`)
+  await page.getByRole('button', { name: 'Text', exact: true }).click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('presence')).toHaveCount(0)
+
+  const secondContext = await browser.newContext()
+  const second = await secondContext.newPage()
+  await signIn(second, E2E_SECOND_EMAIL)
+  await second.goto(`/apps/${slug}/edit`)
+  await expect(page.getByTestId('presence-Second')).toBeVisible()
+  await expect(second.getByTestId('presence-E2E')).toBeVisible()
+
+  // text1 is selected here (just added): outlined there with this one's name, and the other way round.
+  await expect(second.getByTestId('peers-text1')).toHaveText('E2E')
+  await second.getByTestId('frame-text1').click()
+  await expect(page.getByTestId('peers-text1')).toHaveText('Second')
+
+  const box = (await second.getByTestId('grid-page').boundingBox())!
+  await second.mouse.move(box.x + 200, box.y + 200, { steps: 5 })
+  await expect(page.getByTestId('pointer-Second')).toBeVisible()
+  await second.mouse.move(box.x + 200, 5)
+  await expect(page.getByTestId('pointer-Second')).toHaveCount(0)
+
+  await secondContext.close()
+  await expect(page.getByTestId('presence')).toHaveCount(0)
+  await expect(page.getByTestId('peers-text1')).toHaveCount(0)
+})
