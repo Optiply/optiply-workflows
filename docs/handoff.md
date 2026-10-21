@@ -2,7 +2,7 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M16+; M14 done, M15 planned).
 
-Last updated: 2026-10-21 (session 19: **M16 Multiplayer editing steps 1–7 built** on the local branch `feat/m16-multiplayer` (19 commits on top of the plan, last `d2b614c`): only step 8 (the done-when spec, the Compose check, the docs) is left. Session 18 built M15 on `feat/m15-webhooks` (19 commits), which M16 is stacked on. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2).)
+Last updated: 2026-10-21 (session 19: **M16 Multiplayer editing steps 1–7 built** on the local branch `feat/m16-multiplayer` (16 commits after the plan, last `d2b614c`): only step 8 (the done-when spec, the Compose check, the docs) is left. Session 18 built M15 on `feat/m15-webhooks` (19 commits), which M16 is stacked on. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2).)
 
 | | |
 |---|---|
@@ -1132,7 +1132,7 @@ The design is `architecture.md` §2.18 (with "As built"); the step record in §1
 
 M16 is planned (`architecture.md` §2.7 row, §2.19). The user chose (session 18): multiplayer for the **workflow and app editors** (modules come along), code fields that **merge as people type**, and presence with **avatars, selections and live mouse pointers**.
 
-**Local only until 2026-11-01** (§2). **Unpushed branches**, stacked: `feat/m15-webhooks` (19 commits on `b2e82a9`, M15 done and reviewed) and `feat/m16-multiplayer` on top of it (the plan `e0abdf1`, M17 on the roadmap `0b3ee9b`, then steps 1–7: 20 commits up to `d2b614c` at the end of session 19). In November push both; open M15's PR first, then M16's (its base is `feat/m15-webhooks` until M15 merges, then `main`). Each step is split into parts that each end green, reported and committed on the user's word, after CI's checks pass locally (§2, including the server build every step).
+**Local only until 2026-11-01** (§2). **Unpushed branches**, stacked: `feat/m15-webhooks` (19 commits on `b2e82a9`, M15 done and reviewed) and `feat/m16-multiplayer` on top of it (the plan `e0abdf1`, M17 on the roadmap `0b3ee9b`, then 16 commits for steps 1–7: 18 in all, up to `d2b614c` at the end of session 19). In November push both; open M15's PR first, then M16's (its base is `feat/m15-webhooks` until M15 merges, then `main`). Each step is split into parts that each end green, reported and committed on the user's word, after CI's checks pass locally (§2, including the server build every step).
 
 New dependencies (all MIT, pinned at least two weeks old): yjs 13.6.33, y-protocols 1.0.7, lib0 0.2.119, @fastify/websocket (the release before 11.3.4), ws 8.22.0, and y-monaco 0.1.6 if it works with Monaco 0.57 (step 4 checks; otherwise our own binding, about 150 lines).
 
