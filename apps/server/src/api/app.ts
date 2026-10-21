@@ -120,7 +120,7 @@ export async function buildApp(deps: {
   await app.register(gitWebhookApi, { db, config, deployer: gitDeployer })
 
   // Editing drafts together (M16): rooms of open documents in this process.
-  const collab = new CollabHub(new CollabStore(db), app.log.child({ component: 'collab' }))
+  const collab = new CollabHub(new CollabStore(db), app.log.child({ component: 'collab' }), deps.listener)
   app.addHook('onClose', () => collab.close())
   await app.register(fastifyWebsocket, { options: { maxPayload: MAX_COLLAB_MESSAGE_BYTES } })
   await app.register(collabApi, { db, hub: collab, publicUrl: config.PUBLIC_URL })

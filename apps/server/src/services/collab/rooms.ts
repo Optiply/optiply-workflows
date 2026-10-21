@@ -1,7 +1,14 @@
-import { MESSAGE_AWARENESS, MESSAGE_SYNC } from '@ow/collab'
+import {
+  type CollabStatus,
+  MESSAGE_AWARENESS,
+  MESSAGE_STATUS,
+  MESSAGE_SYNC,
+  SharedDefinition,
+} from '@ow/collab'
 import type { FastifyBaseLogger } from 'fastify'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
+import type postgres from 'postgres'
 import {
   Awareness,
   applyAwarenessUpdate,
@@ -10,11 +17,16 @@ import {
 } from 'y-protocols/awareness'
 import * as sync from 'y-protocols/sync'
 import * as Y from 'yjs'
-import type { CollabStore } from './store'
+import { type CollabStore, foldUpdate } from './store'
 import type { CollabTarget } from './target'
 
 /** Updates stored since the last compaction before a room compacts its document. */
 const COMPACT_EVERY = 200
+/** While edits flow, the draft is written at most this often. */
+const WRITE_MS = 1000
+
+/** Where drafts written by anything are announced (migration 0022): `{"d": key, "r": revision}`. */
+export const COLLAB_CHANNEL = 'ow_collab'
 
 /** One open editor: a WebSocket, as the room sees it. */
 export interface CollabPeer {
@@ -27,33 +39,51 @@ export interface CollabPeer {
 
 /** The origin of the updates a room loads from the store: they're stored already. */
 const LOADED = Symbol('loaded')
+/** The origin of a draft folded in: the fold stores it. */
+const FOLDED = Symbol('folded')
 
 /**
  * A document open in this process, with the people editing it here. Updates from one peer go to the others and to
- * the store, in order; presence (awareness) goes to everyone.
+ * the store, in order; presence (awareness) goes to everyone. The document is written to its draft (schema-checked)
+ * at most once a second while edits flow and when the last peer leaves, and a draft written by anything else is
+ * folded into it. Everything that touches Postgres runs one at a time, in order.
  */
 export class CollabRoom {
   readonly doc = new Y.Doc()
   readonly awareness = new Awareness(this.doc)
+  readonly shared: SharedDefinition<unknown>
   /** The peers here, with the awareness client ids each has spoken for. */
   readonly peers = new Map<CollabPeer, Set<number>>()
   destroyed = false
-  private stored: Promise<void> = Promise.resolve()
+  /** The draft revision the document last matched. */
+  revision = 0
+  /** Why the document's latest state couldn't be written to the draft; null when it could. */
+  error: string | null = null
+  private queue: Promise<void> = Promise.resolve()
   private sinceCompaction = 0
+  private writeTimer: NodeJS.Timeout | null = null
+  /** Who last edited here: the draft's `updatedBy` when it's written. */
+  private lastEditor: string | null = null
 
   constructor(
-    readonly key: string,
+    readonly target: CollabTarget,
     private store: CollabStore,
     private log: FastifyBaseLogger,
     private failed: (room: CollabRoom, err: unknown) => void,
   ) {
+    this.shared = new SharedDefinition(this.doc, target.spec)
     this.awareness.setLocalState(null)
     this.doc.on('update', this.updated)
     this.awareness.on('update', this.awarenessUpdated)
   }
 
+  get key(): string {
+    return this.target.key
+  }
+
   /** Applies what the store holds. */
-  load(updates: Uint8Array[]): void {
+  load(updates: Uint8Array[], revision: number): void {
+    this.revision = revision
     Y.transact(
       this.doc,
       () => {
@@ -65,13 +95,14 @@ export class CollabRoom {
 
   add(peer: CollabPeer): void {
     this.peers.set(peer, new Set())
-    // Our state vector (the peer answers with what we lack: edits made offline), then who's here.
+    // Our state vector (the peer answers with what we lack: edits made offline), who's here, how the draft stands.
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_SYNC)
     sync.writeSyncStep1(encoder, this.doc)
     peer.send(encoding.toUint8Array(encoder))
     const states = [...this.awareness.getStates().keys()]
     if (states.length) peer.send(awarenessMessage(encodeAwarenessUpdate(this.awareness, states)))
+    peer.send(this.statusMessage())
   }
 
   /** Removes a peer and its presence. Returns whether the room is now empty. */
@@ -96,9 +127,24 @@ export class CollabRoom {
     }
   }
 
-  /** Resolves when every update so far is stored. */
-  flush(): Promise<void> {
-    return this.stored
+  /** The draft was written at `revision` (by anyone): fold it in if the document hasn't matched it yet. */
+  drafted(revision: number): void {
+    if (revision > this.revision) this.enqueue(() => this.fold())
+  }
+
+  /** Checks for a draft written while this process might have missed the announcement. */
+  recheck(): void {
+    this.enqueue(() => this.fold())
+  }
+
+  /** Writes the draft now if edits are waiting, then resolves once everything so far is stored. */
+  settle(): Promise<void> {
+    if (this.writeTimer) {
+      clearTimeout(this.writeTimer)
+      this.writeTimer = null
+      this.enqueue(() => this.write())
+    }
+    return this.queue
   }
 
   /** Compacts the document if updates were stored since it was last compacted. */
@@ -110,10 +156,69 @@ export class CollabRoom {
 
   destroy(): void {
     this.destroyed = true
+    if (this.writeTimer) clearTimeout(this.writeTimer)
     this.doc.off('update', this.updated)
     this.awareness.off('update', this.awarenessUpdated)
+    this.shared.destroy()
     this.awareness.destroy()
     this.doc.destroy()
+  }
+
+  private enqueue(work: () => Promise<void>): void {
+    this.queue = this.queue.then(work).catch((err) => this.failed(this, err))
+  }
+
+  /** Writes the document to its draft, if the schema accepts it; a newer draft is folded in instead. */
+  private async write(): Promise<void> {
+    if (this.destroyed) return
+    const definition = this.shared.value
+    const problem = this.target.check(definition)
+    if (problem) {
+      if (problem !== this.error) {
+        this.log.warn({ key: this.key, problem }, "collab: the merged document doesn't fit the schema")
+        this.error = problem
+        this.broadcastStatus()
+      }
+      return
+    }
+    const result = await this.store.write(this.target, definition, this.lastEditor)
+    if ('fold' in result) return this.fold()
+    const changed = result.revision !== this.revision || this.error !== null
+    this.revision = result.revision
+    this.error = null
+    if (changed) this.broadcastStatus()
+  }
+
+  /** Folds a draft written by something else into the document (stored once, whichever process gets there first). */
+  private async fold(): Promise<void> {
+    if (this.destroyed) return
+    const folded = await this.store.fold(this.target, (definition) =>
+      foldUpdate(this.doc, this.target, definition, FOLDED),
+    )
+    if (!folded) return
+    this.revision = folded.revision
+    this.error = null
+    this.broadcastStatus()
+  }
+
+  private scheduleWrite(): void {
+    this.writeTimer ??= setTimeout(() => {
+      this.writeTimer = null
+      this.enqueue(() => this.write())
+    }, WRITE_MS)
+  }
+
+  private statusMessage(): Uint8Array {
+    const status: CollabStatus = { revision: this.revision, error: this.error }
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_STATUS)
+    encoding.writeVarString(encoder, JSON.stringify(status))
+    return encoding.toUint8Array(encoder)
+  }
+
+  private broadcastStatus(): void {
+    const message = this.statusMessage()
+    for (const peer of this.peers.keys()) peer.send(message)
   }
 
   private receiveSync(peer: CollabPeer, decoder: decoding.Decoder): void {
@@ -165,12 +270,14 @@ export class CollabRoom {
     sync.writeUpdate(encoder, update)
     const message = encoding.toUint8Array(encoder)
     for (const peer of this.peers.keys()) if (peer !== origin) peer.send(message)
-    this.stored = this.stored
-      .then(async () => {
-        await this.store.append(this.key, update)
-        if (++this.sinceCompaction >= COMPACT_EVERY) await this.compact()
-      })
-      .catch((err) => this.failed(this, err))
+    // A fold is stored with its revision, and already matches the draft.
+    if (origin === FOLDED) return
+    if (this.peers.has(origin as CollabPeer)) this.lastEditor = (origin as CollabPeer).user.id
+    this.enqueue(async () => {
+      await this.store.append(this.key, update)
+      if (++this.sinceCompaction >= COMPACT_EVERY) await this.compact()
+    })
+    this.scheduleWrite()
   }
 
   private awarenessUpdated = (
@@ -196,22 +303,28 @@ function awarenessMessage(update: Uint8Array): Uint8Array {
 
 /**
  * The rooms of this process: one per open document, made when the first peer arrives (loading the document from the
- * store) and, once the last one leaves and its updates are stored, compacted and closed.
+ * store) and, once the last one leaves and the draft is written, compacted and closed. With a LISTEN connection, a
+ * draft written by anything is folded into its open document.
  */
 export class CollabHub {
   private rooms = new Map<string, Promise<CollabRoom>>()
+  /** The rooms opened so far, by key, for announcements. */
+  private open = new Map<string, CollabRoom>()
+  private listening: Promise<unknown> | undefined
 
   constructor(
     private store: CollabStore,
     private log: FastifyBaseLogger,
+    private listener?: postgres.Sql,
   ) {}
 
   /** Puts a peer in the target's room, opening it if needed. */
   async join(target: CollabTarget, peer: CollabPeer): Promise<CollabRoom> {
+    await this.listen()
     for (;;) {
       let opening = this.rooms.get(target.key)
       if (!opening) {
-        opening = this.open(target)
+        opening = this.openRoom(target)
         this.rooms.set(target.key, opening)
         opening.catch(() => this.rooms.delete(target.key))
       }
@@ -223,11 +336,11 @@ export class CollabHub {
     }
   }
 
-  /** Takes a peer out; the last one out closes the room once its updates are stored. */
+  /** Takes a peer out; the last one out writes the draft, then the room closes and its document is compacted. */
   async leave(room: CollabRoom, peer: CollabPeer): Promise<void> {
     if (!room.remove(peer)) return
     try {
-      await room.flush()
+      await room.settle()
       if (room.peers.size || room.destroyed) return
       this.forget(room)
       await room.compact()
@@ -236,41 +349,78 @@ export class CollabHub {
     }
   }
 
-  /** Closes every room (shutting down): peers are told to reconnect, and what they sent is stored first. */
+  /** Closes every room (shutting down): peers are told to reconnect, and the drafts are written first. */
   async close(): Promise<void> {
     const rooms = await Promise.all([...this.rooms.values()].map((p) => p.catch(() => null)))
     await Promise.all(
       rooms.map(async (room) => {
         if (!room) return
         for (const peer of room.peers.keys()) peer.close(1012, 'Server restarting')
-        await room.flush()
+        await room.settle()
         this.forget(room)
       }),
     )
+    const listening = this.listening
+    this.listening = undefined
+    const subscription = (await listening?.catch(() => undefined)) as
+      | { unlisten(): Promise<void> }
+      | undefined
+    await subscription?.unlisten()
   }
 
-  private async open(target: CollabTarget): Promise<CollabRoom> {
-    const updates = await this.store.load(target)
-    const room = new CollabRoom(target.key, this.store, this.log, (r, err) => this.fail(r, err))
-    room.load(updates)
+  /** Listens for drafts written by anything; after a reconnect, every open room checks what it may have missed. */
+  private async listen(): Promise<void> {
+    if (!this.listener) return
+    this.listening ??= this.listener.listen(
+      COLLAB_CHANNEL,
+      (payload) => this.announced(payload),
+      () => {
+        for (const room of this.open.values()) room.recheck()
+      },
+    )
+    try {
+      await this.listening
+    } catch (err) {
+      this.listening = undefined
+      throw err
+    }
+  }
+
+  private announced(payload: string): void {
+    let message: { d?: unknown; r?: unknown }
+    try {
+      message = JSON.parse(payload)
+    } catch {
+      return
+    }
+    if (typeof message.d !== 'string' || typeof message.r !== 'number') return
+    this.open.get(message.d)?.drafted(message.r)
+  }
+
+  private async openRoom(target: CollabTarget): Promise<CollabRoom> {
+    const { updates, revision } = await this.store.load(target)
+    const room = new CollabRoom(target, this.store, this.log, (r, err) => this.fail(r, err))
+    room.load(updates, revision)
+    this.open.set(target.key, room)
     return room
   }
 
   /**
-   * Storing an update failed: the room closes and its peers reconnect, sending again whatever the store lacks (a
-   * sync exchange recovers any difference).
+   * Storing failed: the room closes and its peers reconnect, sending again whatever the store lacks (a sync exchange
+   * recovers any difference).
    */
   private fail(room: CollabRoom, err: unknown): void {
     if (room.destroyed) return
-    this.log.error({ err, key: room.key }, 'collab: storing an update failed')
+    this.log.error({ err, key: room.key }, 'collab: storing failed')
     for (const peer of room.peers.keys()) peer.close(1011, 'Could not save; reconnecting')
     this.forget(room)
   }
 
   private forget(room: CollabRoom): void {
-    void this.rooms.get(room.key)?.then((current) => {
-      if (current === room) this.rooms.delete(room.key)
-    })
+    if (this.open.get(room.key) === room) {
+      this.open.delete(room.key)
+      this.rooms.delete(room.key)
+    }
     room.destroy()
   }
 }

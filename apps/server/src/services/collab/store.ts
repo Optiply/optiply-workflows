@@ -1,45 +1,68 @@
-import { SharedDefinition } from '@ow/collab'
-import { collabDocuments, collabUpdates, type Db } from '@ow/db'
+import { equal, SharedDefinition } from '@ow/collab'
+import { apps, collabDocuments, collabUpdates, type Db, gitBranchDrafts, modules, workflows } from '@ow/db'
 import { asc, eq, inArray, sql } from 'drizzle-orm'
 import * as Y from 'yjs'
-import type { CollabTarget } from './target'
+import type { CollabOwner, CollabTarget } from './target'
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+/** What `write` did: wrote the draft, found it already equal, or found a newer draft to fold in first. */
+export type WriteResult = { revision: number; written: boolean } | { fold: true }
 
 /**
  * The documents of drafts being edited together, in Postgres (architecture §2.19): each document's compacted state
  * in `collab_documents`, and the updates since in `collab_updates`. Yjs updates commute and apply idempotently, so
  * loading is the state plus whatever updates are there, in any order; compacting folds in exactly the updates it read
- * (never "up to an id": a bigserial commits out of order), under a lock per document.
+ * (never "up to an id": a bigserial commits out of order).
+ *
+ * A document's `revision` is the draft revision it last matched. Writing the document to its draft bumps both; a
+ * draft written by anything else (a REST save, a release restored, a Git pull) has a higher revision, and is folded
+ * into the document as an edit. Everything touching a document holds its advisory lock, and the draft's row, so a
+ * fold happens once whichever process sees it first.
  */
 export class CollabStore {
   constructor(private db: Db) {}
 
   /**
-   * The document as updates to apply, oldest first. A draft opened for the first time gets a document made from the
-   * draft as stored.
+   * The document as updates to apply, oldest first, and its revision. A draft opened for the first time gets a
+   * document made from it; a draft written since the document last matched it is folded in.
    */
-  async load(target: CollabTarget): Promise<Uint8Array[]> {
+  async load(target: CollabTarget): Promise<{ updates: Uint8Array[]; revision: number }> {
     return this.db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockName(target.key)}))`)
+      await lock(tx, target.key)
+      const draft = await lockedDraft(tx, target.owner)
       let [document] = await tx
-        .select({ state: collabDocuments.state })
+        .select({ state: collabDocuments.state, revision: collabDocuments.revision })
         .from(collabDocuments)
         .where(eq(collabDocuments.key, target.key))
       if (!document) {
         const doc = new Y.Doc()
-        new SharedDefinition(doc, target.spec).set(target.draft.definition)
+        new SharedDefinition(doc, target.spec).set(draft.definition)
         const state = Y.encodeStateAsUpdate(doc)
         doc.destroy()
         await tx
           .insert(collabDocuments)
-          .values({ key: target.key, ...target.owner, state, revision: target.draft.revision })
-        document = { state }
+          .values({ key: target.key, ...target.owner, state, revision: draft.revision })
+        document = { state, revision: draft.revision }
       }
-      const updates = await tx
-        .select({ update: collabUpdates.update })
-        .from(collabUpdates)
-        .where(eq(collabUpdates.documentKey, target.key))
-        .orderBy(asc(collabUpdates.id))
-      return [document.state, ...updates.map((u) => u.update)]
+      const updates = [
+        document.state,
+        ...(
+          await tx
+            .select({ update: collabUpdates.update })
+            .from(collabUpdates)
+            .where(eq(collabUpdates.documentKey, target.key))
+            .orderBy(asc(collabUpdates.id))
+        ).map((u) => u.update),
+      ]
+      if (draft.revision <= document.revision) return { updates, revision: document.revision }
+      const doc = new Y.Doc()
+      for (const u of updates) Y.applyUpdate(doc, u)
+      const folded = foldUpdate(doc, target, draft.definition)
+      doc.destroy()
+      if (folded) await tx.insert(collabUpdates).values({ documentKey: target.key, update: folded })
+      await setRevision(tx, target.key, draft.revision)
+      return { updates: folded ? [...updates, folded] : updates, revision: draft.revision }
     })
   }
 
@@ -48,10 +71,56 @@ export class CollabStore {
     await this.db.insert(collabUpdates).values({ documentKey: key, update })
   }
 
+  /**
+   * Writes the document's definition (schema-checked by the caller) to its draft, with the draft's revision + 1,
+   * unless the draft already equals it; `fold` when the draft has moved past the document (fold it in first).
+   */
+  async write(target: CollabTarget, definition: unknown, userId: string | null): Promise<WriteResult> {
+    return this.db.transaction(async (tx) => {
+      await lock(tx, target.key)
+      const draft = await lockedDraft(tx, target.owner)
+      const [document] = await tx
+        .select({ revision: collabDocuments.revision })
+        .from(collabDocuments)
+        .where(eq(collabDocuments.key, target.key))
+      if (!document) throw new Error(`No collab document ${target.key}`)
+      if (draft.revision !== document.revision) return { fold: true }
+      if (equal(draft.definition, definition)) return { revision: draft.revision, written: false }
+      const revision = draft.revision + 1
+      await writeDraft(tx, target.owner, definition, revision, userId)
+      await setRevision(tx, target.key, revision)
+      return { revision, written: true }
+    })
+  }
+
+  /**
+   * Folds a draft written since the document last matched it into the open document: `apply` makes the document
+   * equal to it (returning the update, null if nothing changed), which is stored with the draft's revision. Null when
+   * there's nothing to fold (another process did, or the draft didn't move).
+   */
+  async fold(
+    target: CollabTarget,
+    apply: (definition: unknown) => Uint8Array | null,
+  ): Promise<{ revision: number } | null> {
+    return this.db.transaction(async (tx) => {
+      await lock(tx, target.key)
+      const draft = await lockedDraft(tx, target.owner)
+      const [document] = await tx
+        .select({ revision: collabDocuments.revision })
+        .from(collabDocuments)
+        .where(eq(collabDocuments.key, target.key))
+      if (!document || draft.revision <= document.revision) return null
+      const update = apply(draft.definition)
+      if (update) await tx.insert(collabUpdates).values({ documentKey: target.key, update })
+      await setRevision(tx, target.key, draft.revision)
+      return { revision: draft.revision }
+    })
+  }
+
   /** Folds the document's updates into its state. Returns how many it folded. */
   async compact(key: string): Promise<number> {
     return this.db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockName(key)}))`)
+      await lock(tx, key)
       const [document] = await tx
         .select({ state: collabDocuments.state })
         .from(collabDocuments)
@@ -79,5 +148,79 @@ export class CollabStore {
   }
 }
 
-/** The advisory lock's name: per document, apart from other users of `hashtext` locks. */
-const lockName = (key: string) => `collab:${key}`
+/** The update that makes `doc` equal to `definition`, applied to it; null when it already was. */
+export function foldUpdate(
+  doc: Y.Doc,
+  target: CollabTarget,
+  definition: unknown,
+  origin?: unknown,
+): Uint8Array | null {
+  const updates: Uint8Array[] = []
+  const capture = (update: Uint8Array) => updates.push(update)
+  const shared = new SharedDefinition(doc, target.spec)
+  doc.on('update', capture)
+  try {
+    shared.set(definition, origin)
+  } finally {
+    doc.off('update', capture)
+    shared.destroy()
+  }
+  return updates.length ? Y.mergeUpdates(updates) : null
+}
+
+/** The document's advisory lock, per document, apart from other users of `hashtext` locks. */
+const lock = (tx: Tx, key: string) =>
+  tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`collab:${key}`}))`)
+
+const setRevision = (tx: Tx, key: string, revision: number) =>
+  tx.update(collabDocuments).set({ revision }).where(eq(collabDocuments.key, key))
+
+/** The draft a document edits, its row locked until the transaction ends. */
+async function lockedDraft(tx: Tx, owner: CollabOwner): Promise<{ definition: unknown; revision: number }> {
+  const row = await (async () => {
+    if ('branchDraftId' in owner) {
+      return (
+        await tx
+          .select({ definition: gitBranchDrafts.definition, revision: gitBranchDrafts.revision })
+          .from(gitBranchDrafts)
+          .where(eq(gitBranchDrafts.id, owner.branchDraftId))
+          .for('update')
+      )[0]
+    }
+    const [table, id] =
+      'workflowId' in owner
+        ? [workflows, owner.workflowId]
+        : 'appId' in owner
+          ? [apps, owner.appId]
+          : [modules, owner.moduleId]
+    return (
+      await tx
+        .select({ definition: table.draftDefinition, revision: table.draftRevision })
+        .from(table)
+        .where(eq(table.id, id))
+        .for('update')
+    )[0]
+  })()
+  if (!row) throw new Error('The draft is gone')
+  return row
+}
+
+async function writeDraft(
+  tx: Tx,
+  owner: CollabOwner,
+  definition: unknown,
+  revision: number,
+  userId: string | null,
+): Promise<void> {
+  if ('branchDraftId' in owner) {
+    await tx
+      .update(gitBranchDrafts)
+      .set({ definition: definition as never, revision, updatedBy: userId })
+      .where(eq(gitBranchDrafts.id, owner.branchDraftId))
+    return
+  }
+  const values = { draftDefinition: definition as never, draftRevision: revision, updatedBy: userId }
+  if ('workflowId' in owner) await tx.update(workflows).set(values).where(eq(workflows.id, owner.workflowId))
+  else if ('appId' in owner) await tx.update(apps).set(values).where(eq(apps.id, owner.appId))
+  else await tx.update(modules).set(values).where(eq(modules.id, owner.moduleId))
+}

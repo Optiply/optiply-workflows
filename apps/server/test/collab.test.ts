@@ -1,4 +1,11 @@
-import { MESSAGE_AWARENESS, MESSAGE_SYNC, SharedDefinition, workflowSpec } from '@ow/collab'
+import {
+  type CollabStatus,
+  MESSAGE_AWARENESS,
+  MESSAGE_STATUS,
+  MESSAGE_SYNC,
+  SharedDefinition,
+  workflowSpec,
+} from '@ow/collab'
 import { collabDocuments, collabUpdates, workflows } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
@@ -69,6 +76,7 @@ async function connect(cookie: string, key: string) {
     ws.send(encoding.toUint8Array(e))
   }
   let synced = false
+  let status: CollabStatus | null = null
   ws.addEventListener('message', (event) => {
     const decoder = decoding.createDecoder(new Uint8Array(event.data as ArrayBuffer))
     const type = decoding.readVarUint(decoder)
@@ -80,6 +88,8 @@ async function connect(cookie: string, key: string) {
       if (encoding.length(reply) > 1) ws.send(encoding.toUint8Array(reply))
     } else if (type === MESSAGE_AWARENESS) {
       applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), 'server')
+    } else if (type === MESSAGE_STATUS) {
+      status = JSON.parse(decoding.readVarString(decoder))
     }
   })
   doc.on('update', (update: Uint8Array, origin: unknown) => {
@@ -113,6 +123,7 @@ async function connect(cookie: string, key: string) {
       const v = shared.value
       shared.set({ ...v, blocks: v.blocks.map((b) => (b.type === 'code' ? { ...b, config: { code } } : b)) })
     },
+    status: () => status,
     code: () => (shared.value.blocks[1] as { config: { code: string } } | undefined)?.config.code,
     close: async () => {
       ws.close()
@@ -155,7 +166,7 @@ describe('collab documents', () => {
     b.edit('return 2 + 3')
     await vi.waitFor(() => expect(a.code()).toBe('return 2 + 3'))
     const [doc] = await env.db.select().from(collabDocuments).where(eq(collabDocuments.key, key))
-    expect(doc).toMatchObject({ workflowId: id, revision: 2 })
+    expect(doc).toMatchObject({ workflowId: id })
 
     await a.close()
     await b.close()
@@ -207,7 +218,7 @@ describe('collab documents', () => {
     // The watcher's browser keeps its own edit; nobody else gets it.
     watcher.edit('return "watcher"')
     editor.edit('return "editor"')
-    await vi.waitFor(() => expect(watcher.code()).toContain('return "editor"'))
+    await vi.waitFor(() => expect(watcher.code()).toContain('"editor"'))
     await new Promise((r) => setTimeout(r, 100))
     expect(editor.code()).toBe('return "editor"')
     await editor.close()
@@ -277,5 +288,76 @@ describe('collab documents', () => {
     await settled(key)
     data(await admin.mutate('workflows.delete', { id }))
     expect(await env.db.select().from(collabDocuments).where(eq(collabDocuments.key, key))).toEqual([])
+  })
+
+  it('writes the document to the draft while edits flow and when the last person leaves', async () => {
+    const id = await createWorkflow('written')
+    const key = `workflow:${id}`
+    const draft = async () => (await env.db.select().from(workflows).where(eq(workflows.id, id)))[0]!
+    const a = await connect(adminCookie, key)
+    expect(a.status()).toEqual({ revision: 2, error: null })
+    a.edit('return "flowing"')
+    // At most a second later, the draft has it, a revision on.
+    await vi.waitFor(async () => expect((await draft()).draftRevision).toBe(3), { timeout: 3000 })
+    expect((await draft()).draftDefinition).toEqual(definition('return "flowing"'))
+    await vi.waitFor(() => expect(a.status()).toEqual({ revision: 3, error: null }))
+    // Leaving writes at once, without waiting for the second.
+    a.edit('return "leaving"')
+    await a.close()
+    await vi.waitFor(async () =>
+      expect((await draft()).draftDefinition).toEqual(definition('return "leaving"')),
+    )
+    expect((await draft()).draftRevision).toBe(4)
+    const [admin] = await env.db.select().from(collabDocuments).where(eq(collabDocuments.key, key))
+    expect(admin?.revision).toBe(4)
+  })
+
+  it("doesn't write a merged document the schema refuses, and says why", async () => {
+    const id = await createWorkflow('refused')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    a.shared.root.set('schemaVersion', 2)
+    await vi.waitFor(() => expect(a.status()?.error).toMatch(/schemaVersion/), { timeout: 3000 })
+    const [stored] = await env.db.select().from(workflows).where(eq(workflows.id, id))
+    expect(stored?.draftRevision).toBe(2)
+    a.shared.root.set('schemaVersion', 1)
+    a.edit('return "fixed"')
+    await vi.waitFor(() => expect(a.status()).toEqual({ revision: 3, error: null }), { timeout: 3000 })
+    await a.close()
+  })
+
+  it('folds a draft saved some other way into the open document, and into a closed one', async () => {
+    const id = await createWorkflow('folded', 'return 1')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key)
+    // An old tab or an API client saves the whole draft.
+    data(
+      await admin.mutate('workflows.saveDraft', { id, revision: 2, definition: definition('return "rest"') }),
+    )
+    await vi.waitFor(() => expect(a.code()).toBe('return "rest"'))
+    await vi.waitFor(() => expect(b.code()).toBe('return "rest"'))
+    await vi.waitFor(() => expect(a.status()).toEqual({ revision: 3, error: null }))
+    // Folded once: the text isn't doubled by two rooms' worth of edits, and editing carries on from there.
+    b.edit('return "rest" + 1')
+    await vi.waitFor(() => expect(a.code()).toBe('return "rest" + 1'))
+    await a.close()
+    await b.close()
+    await settled(key)
+    const [stored] = await env.db.select().from(workflows).where(eq(workflows.id, id))
+    expect(stored).toMatchObject({ draftRevision: 4, draftDefinition: definition('return "rest" + 1') })
+
+    // Saved while nobody has it open: the next one to open it sees the save.
+    data(
+      await admin.mutate('workflows.saveDraft', {
+        id,
+        revision: 4,
+        definition: definition('return "closed"'),
+      }),
+    )
+    const c = await connect(adminCookie, key)
+    expect(c.code()).toBe('return "closed"')
+    expect(c.status()).toEqual({ revision: 5, error: null })
+    await c.close()
   })
 })

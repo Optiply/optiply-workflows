@@ -7,6 +7,17 @@
 export const MESSAGE_SYNC = 0
 /** A y-protocols awareness update: who is here, what they have selected, where their pointer is. */
 export const MESSAGE_AWARENESS = 1
+/** The draft's state, from the server: a JSON `CollabStatus` as a varstring. */
+export const MESSAGE_STATUS = 2
+
+/**
+ * Where the draft stands: the revision the document was last saved to the draft as (what runs, publishing and Git
+ * see), and why the document's latest state couldn't be saved (null when it was).
+ */
+export interface CollabStatus {
+  revision: number
+  error: string | null
+}
 
 /** Close codes besides the standard ones. */
 export const CLOSE_ACCESS_LOST = 4403

@@ -1,5 +1,7 @@
+import { appDefinitionSchema } from '@ow/app-definition'
 import { appSpec, type CollabSpec, parseCollabKey, workflowSpec } from '@ow/collab'
 import type { Db } from '@ow/db'
+import { workflowDefinitionSchema } from '@ow/definition'
 import type { SessionUser } from '../../auth/sessions'
 import { loadBranchDraft } from '../git/branch-drafts'
 import { gitObjectLevel, loadGitObject } from '../git/kinds'
@@ -16,6 +18,8 @@ export type CollabOwner =
 export interface CollabTarget {
   key: string
   spec: CollabSpec
+  /** Why a definition can't be saved as this draft (the schema's first complaint), or null when it can. */
+  check(definition: unknown): string | null
   owner: CollabOwner
   /** Watching only: Use on the object, or its main draft is protected by Git (edited on branches, M11). */
   readOnly: boolean
@@ -40,7 +44,7 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
     const { draft } = loaded
     return {
       key,
-      spec: loaded.target.kind === 'workflow' ? workflowSpec : appSpec,
+      ...rules(loaded.target.kind === 'workflow'),
       owner: { branchDraftId: draft.id },
       readOnly: false,
       draft: { definition: draft.definition, revision: draft.revision },
@@ -51,7 +55,7 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
   if (!object || !level) return null
   return {
     key,
-    spec: parsed.kind === 'workflow' ? workflowSpec : appSpec,
+    ...rules(parsed.kind === 'workflow'),
     owner:
       parsed.kind === 'workflow'
         ? { workflowId: object.id }
@@ -60,5 +64,19 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
           : { moduleId: object.id },
     readOnly: !atLeast(level, 'edit') || object.gitProtected,
     draft: { definition: object.draftDefinition, revision: object.draftRevision },
+  }
+}
+
+/** A workflow's mapping and schema, or an app's (a module's definition is an app's). */
+function rules(workflow: boolean): Pick<CollabTarget, 'spec' | 'check'> {
+  const schema = workflow ? workflowDefinitionSchema : appDefinitionSchema
+  return {
+    spec: workflow ? workflowSpec : appSpec,
+    check: (definition) => {
+      const parsed = schema.safeParse(definition)
+      if (parsed.success) return null
+      const issue = parsed.error.issues[0]
+      return issue ? `${issue.path.join('.') || 'definition'}: ${issue.message}` : 'Invalid definition'
+    },
   }
 }
