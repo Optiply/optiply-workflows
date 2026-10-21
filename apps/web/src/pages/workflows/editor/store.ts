@@ -1,4 +1,4 @@
-import type { SharedDefinition } from '@ow/collab'
+import { type SharedDefinition, SharedHistory } from '@ow/collab'
 import {
   type Block,
   type Diagnostic,
@@ -8,7 +8,7 @@ import {
 } from '@ow/definition'
 import { checkBodySchema } from '@ow/definition/body-schema'
 import { create } from 'zustand'
-import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
+import { changeKey, sameValue } from '@/lib/history'
 import type { SampleResult } from './scope-types'
 
 /**
@@ -84,8 +84,14 @@ interface EditorState {
   /** Results of the latest finished run, by block, for autocompletion. */
   samples: Record<string, SampleResult>
   sideTab: SideTab
-  /** The edits that can be undone and redone (M13); cleared when a draft is loaded. */
-  history: History<WorkflowDefinition, EditorView>
+  /**
+   * This editor's own edits to undo and redo (M13's steps, on the shared document's undo manager since M16: undoing
+   * never reverts someone else's edit); made afresh when a draft is loaded and synced.
+   */
+  history: SharedHistory<WorkflowDefinition, EditorView> | null
+  /** Whether this editor has edits of its own to undo, or undone ones to redo. */
+  canUndo: boolean
+  canRedo: boolean
   /** Raised by undo and redo: the side panel remounts, so what it read once (and Monaco's models) starts afresh. */
   epoch: number
 
@@ -144,7 +150,9 @@ export const useEditor = create<EditorState>()((set, get) => ({
   diagnostics: [],
   samples: {},
   sideTab: 'problems',
-  history: emptyHistory(),
+  history: null,
+  canUndo: false,
+  canRedo: false,
   epoch: 0,
 
   load: (workflowId, definition, revision, draftHash, opts = {}) =>
@@ -163,10 +171,10 @@ export const useEditor = create<EditorState>()((set, get) => ({
       notice: null,
       graph: null,
       diagnostics: validateDefinition(definition, { checkBodySchema }).diagnostics,
-      history: emptyHistory(),
+      ...newHistory(get().history, null),
     }),
 
-  attach: (shared) => set({ shared, ...applied(shared.value) }),
+  attach: (shared) => set({ shared, ...applied(shared.value), ...newHistory(get().history, shared) }),
 
   remote: () => {
     const state = get()
@@ -188,55 +196,61 @@ export const useEditor = create<EditorState>()((set, get) => ({
 
   update: (edit) => {
     const { readOnly, shared, definition: before, selected, graph, history } = get()
-    if (readOnly || !shared) return
+    if (readOnly || !shared || !history) return
     const definition = edit(before)
     // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
     if (definition === before || sameValue(before, definition)) return
-    shared.set(definition, LOCAL)
-    set({
-      ...applied(shared.value),
-      history: record(history, { before, after: definition, view: { selected, graph }, at: Date.now() }),
-    })
+    history.edit(definition, { selected, graph }, changeKey(before, definition), Date.now())
+    set({ ...applied(shared.value), ...undoable(history) })
   },
 
+  // Undo and redo are one's own (M16): what others changed meanwhile stays.
   undo: () => {
-    const state = get()
-    if (state.readOnly || !state.shared) return
-    const step = undo(state.history, { selected: state.selected, graph: state.graph })
+    const { readOnly, shared, history, selected, graph, epoch } = get()
+    if (readOnly || !shared || !history) return
+    const step = history.undo({ selected, graph })
     if (step) {
-      state.shared.set(step.entry.before, LOCAL)
       set({
-        ...applied(state.shared.value, step.entry.view),
-        history: step.history,
-        epoch: state.epoch + 1,
+        ...applied(shared.value, step.view ?? { selected, graph }),
+        ...undoable(history),
+        epoch: epoch + 1,
       })
     }
   },
 
   redo: () => {
-    const state = get()
-    if (state.readOnly || !state.shared) return
-    const step = redo(state.history)
+    const { readOnly, shared, history, selected, graph, epoch } = get()
+    if (readOnly || !shared || !history) return
+    const step = history.redo()
     if (step) {
-      state.shared.set(step.entry.after, LOCAL)
       set({
-        ...applied(state.shared.value, step.entry.redoView ?? step.entry.view),
-        history: step.history,
-        epoch: state.epoch + 1,
+        ...applied(shared.value, step.view ?? { selected, graph }),
+        ...undoable(history),
+        epoch: epoch + 1,
       })
     }
   },
 
   // A new selection ends the step being typed: the next edit is undone on its own.
-  select: (selected) =>
-    set((s) => ({ selected, selection: selected ? [selected] : [], history: seal(s.history) })),
-  inspect: (selected) => set((s) => ({ selected, history: seal(s.history) })),
-  setSelection: (names) =>
-    // The same selection returns the state itself, so nothing is notified.
-    set((s) => (sameNames(s.selection, names) ? s : { selection: names, history: seal(s.history) })),
+  select: (selected) => {
+    get().history?.seal()
+    set({ selected, selection: selected ? [selected] : [] })
+  },
+  inspect: (selected) => {
+    get().history?.seal()
+    set({ selected })
+  },
+  setSelection: (names) => {
+    // The same selection changes nothing (no one is notified).
+    if (sameNames(get().selection, names)) return
+    get().history?.seal()
+    set({ selection: names })
+  },
   notify: (notice) => set({ notice }),
-  openGraph: (graph, block = null) =>
-    set((s) => ({ graph, selected: block, selection: block ? [block] : [], history: seal(s.history) })),
+  openGraph: (graph, block = null) => {
+    get().history?.seal()
+    set({ graph, selected: block, selection: block ? [block] : [] })
+  },
   setSamples: (samples) => set({ samples }),
   showTab: (sideTab) => set({ sideTab, selected: null }),
 }))
@@ -262,6 +276,20 @@ function restoredView(def: WorkflowDefinition, view: EditorView): EditorView & {
       : null
   return { graph, selected, selection: selected ? [selected] : [] }
 }
+
+/** A fresh undo history for `shared` (none before it syncs), the old one let go. */
+function newHistory(
+  old: SharedHistory<WorkflowDefinition, EditorView> | null,
+  shared: SharedDefinition<WorkflowDefinition> | null,
+): Pick<EditorState, 'history' | 'canUndo' | 'canRedo'> {
+  old?.destroy()
+  return { history: shared ? new SharedHistory(shared, LOCAL) : null, canUndo: false, canRedo: false }
+}
+
+const undoable = (history: SharedHistory<WorkflowDefinition, EditorView>) => ({
+  canUndo: history.canUndo,
+  canRedo: history.canRedo,
+})
 
 function sameNames(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((name, i) => name === b[i])

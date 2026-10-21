@@ -22,6 +22,9 @@ const START: WorkflowDefinition = {
 }
 
 const editor = () => useEditor.getState()
+/** Steps this editor can undo, and redo. */
+const past = () => editor().history?.undoManager.undoStack.length ?? 0
+const future = () => editor().history?.undoManager.redoStack.length ?? 0
 const json = (def: WorkflowDefinition) => JSON.stringify(def)
 const typeCode = (code: string) =>
   updateBlock<Extract<WorkflowDefinition['blocks'][number], { type: 'code' }>>('code1', (b) => ({
@@ -60,8 +63,7 @@ describe('undo and redo in the workflow editor', () => {
     expect(json(editor().definition)).toBe(json(START))
 
     for (let i = 0; i < 3; i++) editor().redo()
-    expect(editor().definition).toBe(end)
-    expect(editor().shared?.value).toBe(end)
+    expect(editor().definition).toEqual(end)
   })
 
   it('undoes a burst of typing in one step, and a pause or a new selection starts another', () => {
@@ -72,7 +74,7 @@ describe('undo and redo in the workflow editor', () => {
     typeCode('return 1 + 23')
     editor().select('code1')
     typeCode('return 1 + 234')
-    expect(editor().history.past).toHaveLength(3)
+    expect(past()).toBe(3)
     editor().undo()
     editor().undo()
     expect(json(editor().definition)).toContain('"return 1 + 2"')
@@ -115,7 +117,7 @@ describe('undo and redo in the workflow editor', () => {
   it('ignores an edit that rebuilds the definition without changing it', () => {
     typeCode('return 1')
     updateBlock('code1', (b) => ({ ...b }))
-    expect(editor().history.past).toEqual([])
+    expect(past()).toBe(0)
   })
 
   it('keeps the canvas selection: one block when selected in code, several from the canvas', () => {
@@ -131,15 +133,15 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor().selection).toEqual([])
   })
 
-  it('raises the epoch on undo and redo, and clears the history when a draft is loaded', () => {
+  it('raises the epoch on undo and redo, and starts a new history when a draft is loaded', () => {
     typeCode('x')
     const epoch = editor().epoch
     editor().undo()
     editor().redo()
     expect(editor().epoch).toBe(epoch + 2)
     editor().load('w1', START, 4, 'hash')
-    expect(editor().history.past).toEqual([])
-    expect(editor().history.future).toEqual([])
+    expect(past()).toBe(0)
+    expect(future()).toBe(0)
   })
 
   it('ignores edits until the shared document has synced, and on a read-only draft', () => {
@@ -147,14 +149,14 @@ describe('undo and redo in the workflow editor', () => {
     typeCode('x')
     editor().undo()
     expect(editor().definition).toBe(START)
-    expect(editor().history.past).toEqual([])
+    expect(past()).toBe(0)
 
     editor().load('w1', START, 4, 'hash', { readOnly: true })
     editor().attach(synced(START))
     typeCode('y')
     editor().undo()
     expect(json(editor().definition)).toBe(json(START))
-    expect(editor().history.past).toEqual([])
+    expect(past()).toBe(0)
   })
 
   it("writes edits into the shared document, and shows others' edits from it", () => {
@@ -180,5 +182,23 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor().definition.blocks.map((b) => b.name)).toEqual(['startTrigger', 'other'])
     expect(editor()).toMatchObject({ selected: null, selection: ['startTrigger'] })
     expect(editor().diagnostics).toEqual(expect.any(Array))
+  })
+
+  it("undoes this editor's own edits only: someone else's stay", () => {
+    const shared = editor().shared!
+    typeCode('return "mine"')
+    const theirs = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+    Y.applyUpdate(theirs.doc, Y.encodeStateAsUpdate(shared.doc))
+    theirs.set({ ...theirs.value, edges: [] })
+    Y.applyUpdate(shared.doc, Y.encodeStateAsUpdate(theirs.doc))
+    editor().remote()
+    expect(editor().definition.edges).toEqual([])
+    editor().undo()
+    expect(json(editor().definition)).toContain('"return 1"')
+    expect(editor().definition.edges).toEqual([])
+    expect(editor().canUndo).toBe(false)
+    editor().redo()
+    expect(json(editor().definition)).toContain('"return \\"mine\\""')
+    expect(editor().definition.edges).toEqual([])
   })
 })

@@ -5,7 +5,8 @@ const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText
 
 /**
  * M16 step 3a: two people in one workflow's editor see each other's edits as they're made, and everything is saved to
- * the draft (reloading shows it). Code fields merging as people type, presence and undo come in later steps.
+ * the draft (reloading shows it), and undo takes back only one's own edits. Code fields merging as people type and
+ * presence come in later steps.
  */
 test('two editors of one workflow see each other’s edits', async ({ page, browser }) => {
   await signIn(page)
@@ -42,6 +43,24 @@ test('two editors of one workflow see each other’s edits', async ({ page, brow
     await page.reload()
     await block(page, 'code1').click()
     await expect.poll(() => editorText(field(page, 'code1', 'code.js'))).toBe('return "together"')
+  })
+
+  await test.step("undo takes back one's own edit, not the other's made after it", async () => {
+    await clickEmptyCanvas(page)
+    await block(page, 'startTrigger').click()
+    await addBlock(page, 'filter')
+    await expect(block(other, 'filter1')).toBeVisible()
+    await clickEmptyCanvas(other)
+    await block(other, 'startTrigger').click()
+    await addBlock(other, 'response')
+    await expect(block(page, 'response1')).toBeVisible()
+    await clickEmptyCanvas(page)
+    await page.keyboard.press('ControlOrMeta+Z')
+    await expect(block(page, 'filter1')).toHaveCount(0)
+    await expect(block(other, 'filter1')).toHaveCount(0)
+    await expect(block(page, 'response1')).toBeVisible()
+    await expect(block(other, 'response1')).toBeVisible()
+    await saved(page)
   })
 
   await otherContext.close()

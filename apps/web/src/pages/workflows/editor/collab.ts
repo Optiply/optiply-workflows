@@ -55,9 +55,12 @@ export function openSession(workflowId: string, branchDraftId: string | null): v
     }
   }
   const unsubscribe = provider.subscribe(changed)
-  // Someone else's edit (or a reconnect's sync): the store shows the document as it is now.
+  // Someone else's edit (or a reconnect's sync): the store shows the document as it is now. Its own edits, undos and
+  // redos it shows itself.
   const transacted = (tr: Y.Transaction) => {
-    if (session.attached && tr.origin !== LOCAL && tr.changed.size) useEditor.getState().remote()
+    if (!session.attached || !tr.changed.size || tr.origin === LOCAL || tr.origin instanceof Y.UndoManager)
+      return
+    useEditor.getState().remote()
   }
   doc.on('afterTransaction', transacted)
 

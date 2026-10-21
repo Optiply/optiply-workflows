@@ -348,8 +348,8 @@ function Toolbar() {
 
 /** Undo and Redo. Off until the shared document has synced. */
 function WorkflowUndoButtons() {
-  const canUndo = useEditor((s) => s.history.past.length > 0 && s.shared !== null)
-  const canRedo = useEditor((s) => s.history.future.length > 0 && s.shared !== null)
+  const canUndo = useEditor((s) => s.canUndo)
+  const canRedo = useEditor((s) => s.canRedo)
   return (
     <UndoButtons
       canUndo={canUndo}
