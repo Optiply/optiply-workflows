@@ -471,10 +471,21 @@ async function send(
   sensitive: string[] = [],
 ): Promise<Response> {
   let current = url
+  let previous: URL | undefined
   let { method, body } = init
   const headers = new Headers(init.headers)
   for (let hop = 0; ; hop++) {
-    checkHost(client.config, current)
+    try {
+      checkHost(client.config, current)
+    } catch (err) {
+      // Say that the server sent us there: a refused redirect otherwise reads like a mistyped base URL. The target
+      // is shown without its query string, which may carry tokens.
+      if (!previous || !(err instanceof ConnectorError)) throw err
+      throw new ConnectorError(
+        err.code,
+        `${previous.host} redirected to ${current.origin}${current.pathname}. ${err.message}`,
+      )
+    }
     let res: Response
     try {
       res = await fetch(current, {
@@ -513,6 +524,7 @@ async function send(
       body = undefined
       headers.delete('content-type')
     }
+    previous = current
     current = next
   }
 }

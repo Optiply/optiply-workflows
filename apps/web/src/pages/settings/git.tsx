@@ -11,6 +11,7 @@ import {
   ErrorNote,
   Field,
   Input,
+  SecretInput,
   Spinner,
   Table,
   Td,
@@ -121,9 +122,7 @@ function RepoForm({ settings }: { settings: Settings }) {
           hint="A fine-grained token for this one repo, with Contents and Pull requests (read and write)."
         >
           <div className="flex items-center gap-2">
-            <Input
-              type="password"
-              autoComplete="off"
+            <SecretInput
               value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder={settings.token.set ? 'Set: leave empty to keep it' : 'github_pat_…'}

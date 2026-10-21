@@ -48,6 +48,9 @@ beforeAll(async () => {
       case '/api/redirect-same':
         res.writeHead(302, { location: '/api/echo?from=redirect' })
         return res.end()
+      case '/api/redirect-with-token':
+        res.writeHead(302, { location: `http://localhost:${port}/api/echo?token=s3cr3t` })
+        return res.end()
       case '/api/redirect-localhost':
         res.writeHead(307, { location: `http://localhost:${port}/api/echo` })
         return res.end()
@@ -474,6 +477,14 @@ describe('network guard', () => {
 
     const blocked = await failure(run(restResource(auth, secrets), { path: 'redirect-localhost' }))
     expect(blocked.code).toBe('blocked')
+    // The message says the server redirected there (not that the base URL is wrong).
+    expect(blocked.message).toBe(
+      `127.0.0.1:${port} redirected to http://localhost:${port}/api/echo. localhost isn't allowed for this resource. Add it to the resource's allowed hosts.`,
+    )
+
+    const withToken = await failure(run(restResource(), { path: 'redirect-with-token' }))
+    expect(withToken.message).toContain(`redirected to http://localhost:${port}/api/echo.`)
+    expect(withToken.message).not.toContain('s3cr3t')
 
     const allowed = await run(restResource({ ...auth, allowedHosts: ['localhost'] }, secrets), {
       path: 'redirect-localhost',
