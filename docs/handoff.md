@@ -38,7 +38,7 @@ Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services** buil
 | **M16 Multiplayer editing** | 🛠 Planned in session 18 (`architecture.md` §2.19, steps in §14), on the local branch `feat/m16-multiplayer` (stacked on `feat/m15-webhooks`). |
 | **M14 Modules & Query Library** | ✅ On `main` (§9i, `architecture.md` §2.17): PR #20, library queries (used by apps, pinned or `latest`) and modules (isolated instances with inputs, outputs and events), both with grants, folders, releases and Git sync. Reviewed before merging (10 fixes, `508d08b`), plus a CI timing flake fixed (`81aa331`); merged as `bda0dbf` in session 17. The done-when proven in Playwright and on Docker Compose. |
 
-**Start the next session with:** M16 step 1 on `feat/m16-multiplayer` (§14). Nothing is pushed until 2026-11-01; then push `feat/m15-webhooks` and open its PR first (§2, §14). The Compose stack runs M15 at `06414c4` (§10, §11).
+**Start the next session with:** M16 step 1 on `feat/m16-multiplayer` (§14). After M16 comes M17, SSH tunnels for resources (the user's request, session 18; `architecture.md` §2.7). Nothing is pushed until 2026-11-01; then push `feat/m15-webhooks` and open its PR first (§2, §14). The Compose stack runs M15 at `06414c4` (§10, §11).
 
 ## 2. Decisions made with the user (don't re-ask)
 
