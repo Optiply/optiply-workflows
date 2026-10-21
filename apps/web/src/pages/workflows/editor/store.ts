@@ -7,6 +7,7 @@ import {
   type WorkflowDefinition,
 } from '@ow/definition'
 import { checkBodySchema } from '@ow/definition/body-schema'
+import type * as Y from 'yjs'
 import { create } from 'zustand'
 import { changeKey, sameValue } from '@/lib/history'
 import type { SampleResult } from './scope-types'
@@ -112,6 +113,8 @@ interface EditorState {
   setDraftHash(definition: WorkflowDefinition, draftHash: string): void
   /** Applies an edit to the shared document; it's re-validated, and can be undone. */
   update(edit: (def: WorkflowDefinition) => WorkflowDefinition): void
+  /** A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. */
+  editText(path: (string | number)[], write: (transaction: Y.Transaction) => void): void
   /** Puts back the definition before the last edit, and what was selected then. */
   undo(): void
   /** Makes the last undone edit again. */
@@ -201,6 +204,14 @@ export const useEditor = create<EditorState>()((set, get) => ({
     // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
     if (definition === before || sameValue(before, definition)) return
     history.edit(definition, { selected, graph }, changeKey(before, definition), Date.now())
+    set({ ...applied(shared.value), ...undoable(history) })
+  },
+
+  editText: (path, write) => {
+    const { readOnly, shared, history, selected, graph } = get()
+    if (readOnly || !shared || !history) return
+    // The same key M13's changeKey gives an edit of this one value, so typing groups either way.
+    history.change({ selected, graph }, `.${path.join('.')}`, Date.now(), write)
     set({ ...applied(shared.value), ...undoable(history) })
   },
 

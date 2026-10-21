@@ -55,12 +55,24 @@ export class SharedHistory<D, V> {
    * moment ago. `view` is what the editor showed as it was made; `at` when it was made (ms).
    */
   edit(next: D, view: V, key: string | null, at = Date.now()): void {
+    this.step(view, key, at, () => this.shared.set(next, this.origin))
+  }
+
+  /**
+   * Like `edit`, for a change made to the document directly: `write` runs in one transaction with this history's
+   * origin (a code field typing into its `Y.Text`), which it's given.
+   */
+  change(view: V, key: string | null, at: number, write: (transaction: Y.Transaction) => void): void {
+    this.step(view, key, at, () => this.shared.doc.transact(write, this.origin))
+  }
+
+  private step(view: V, key: string | null, at: number, write: () => void): void {
     if (!(this.open && key !== null && key === this.lastKey && at - this.lastAt < MERGE_MS)) {
       this.undoManager.stopCapturing()
     }
     this.pendingView = view
     try {
-      this.shared.set(next, this.origin)
+      write()
     } finally {
       this.pendingView = undefined
     }

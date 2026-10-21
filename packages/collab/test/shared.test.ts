@@ -283,6 +283,16 @@ describe('SharedDefinition', () => {
     expect(b.value).toEqual(a.value)
   })
 
+  it('finds a text field by its path in the definition', () => {
+    const a = replica<WorkflowDefinition>(workflowSpec)
+    a.set(def)
+    expect(a.textAt(['blocks', 2, 'config', 'code'])?.toString()).toBe('return 2')
+    expect(a.textAt(['functions', 0, 'blocks', 0, 'config', 'code'])?.toString()).toBe('return params.n * 2')
+    expect(a.textAt(['blocks', 2, 'name'])).toBeNull()
+    expect(a.textAt(['blocks', 9, 'config', 'code'])).toBeNull()
+    expect(a.textAt(['blocks', 'x', 'config'])).toBeNull()
+  })
+
   it('maps app props, handler templates and query code to text', () => {
     const a = replica<AppDefinition>(appSpec)
     a.set(

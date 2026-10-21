@@ -24,7 +24,7 @@ import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
 import { kindOf } from './catalog'
-import type { CodeFieldProps, FieldProblem } from './code-field'
+import type { FieldProblem, WorkflowCodeFieldProps } from './code-field'
 import { usePythonCheck } from './python-check'
 import { runBlock, useRun } from './run-state'
 import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
@@ -33,7 +33,7 @@ import { TriggersForm } from './triggers'
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('./code-field'))
 
-function Code(props: CodeFieldProps) {
+function Code(props: WorkflowCodeFieldProps) {
   return (
     <Suspense
       fallback={
@@ -86,7 +86,7 @@ export function Inspector({ name }: { name: string }) {
       .map((d) => ({ start: d.start, end: d.end, message: d.message, severity: d.severity }))
   // Block names repeat across functions, so the function is part of each field's model.
   const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
-  const ctx: FormContext = { problemsAt, modelPath }
+  const ctx: FormContext = { problemsAt, modelPath, text: (...path) => [...base, ...path] }
   const kind = kindOf(block)
   const Icon = kind.icon
 
@@ -130,6 +130,8 @@ export function Inspector({ name }: { name: string }) {
 interface FormContext {
   problemsAt: (...path: (string | number)[]) => FieldProblem[]
   modelPath: (field: string) => string
+  /** A field of this block's place in the definition: where its text is in the shared document (M16). */
+  text: (...path: (string | number)[]) => (string | number)[]
 }
 
 function startsWith(path: (string | number)[], prefix: (string | number)[]) {
@@ -302,6 +304,7 @@ function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) 
           'A function body: read other blocks as variables (query1.data) and return the data. pandas and numpy are available; no network.',
       }}
       problems={ctx.problemsAt('config', 'code')}
+      text={ctx.text('config', 'code')}
       ctx={ctx}
       onChange={(next) =>
         updateBlock<BlockOf<'code'>>(block.name, (b) => ({
@@ -330,11 +333,14 @@ function LanguageCode({
   height,
   hints,
   problems,
+  text,
   ctx,
   onChange,
 }: {
   language: 'python' | undefined
   code: string
+  /** The code's place in the definition (shared editing). */
+  text: (string | number)[]
   /** The Monaco model's name: `<model>.js` or `<model>.py`. */
   model: string
   height: number
@@ -363,6 +369,7 @@ function LanguageCode({
           height={height}
           value={code}
           problems={[...problems, ...check.problems]}
+          text={text}
           onChange={(next) => onChange({ code: next })}
         />
         {check.unavailable && (
@@ -470,6 +477,7 @@ function QueryEditor({
             height={200}
             value={String(query.sql ?? '')}
             problems={ctx.problemsAt(...at, 'query', 'sql')}
+            text={ctx.text(...at, 'query', 'sql')}
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
@@ -559,6 +567,7 @@ function RestQueryForm({
           height={140}
           value={body.json ?? ''}
           problems={ctx.problemsAt(...at, 'query', 'body', 'json')}
+          text={ctx.text(...at, 'query', 'body', 'json')}
           onChange={(json) => setQuery({ body: { type: 'json', json } })}
         />
       )}
@@ -668,6 +677,7 @@ function BranchForm({ block, ctx }: { block: BlockOf<'branch'>; ctx: FormContext
               height={30}
               value={c.expression}
               problems={ctx.problemsAt('config', 'conditions', i, 'expression')}
+              text={ctx.text('config', 'conditions', i, 'expression')}
               onChange={(expression) =>
                 setConditions(conditions.map((x) => (x.id === c.id ? { ...x, expression } : x)))
               }
@@ -737,6 +747,7 @@ function FilterForm({ block, ctx }: { block: BlockOf<'filter'>; ctx: FormContext
           height={30}
           value={block.config.input}
           problems={ctx.problemsAt('config', 'input')}
+          text={ctx.text('config', 'input')}
           onChange={(input) => set({ input })}
         />
       </EditorField>
@@ -748,6 +759,7 @@ function FilterForm({ block, ctx }: { block: BlockOf<'filter'>; ctx: FormContext
           height={30}
           value={block.config.condition}
           problems={ctx.problemsAt('config', 'condition')}
+          text={ctx.text('config', 'condition')}
           onChange={(condition) => set({ condition })}
         />
       </EditorField>
@@ -775,6 +787,7 @@ function ResponseForm({ block, ctx }: { block: BlockOf<'response'>; ctx: FormCon
           height={140}
           value={block.config.body ?? ''}
           problems={ctx.problemsAt('config', 'body')}
+          text={ctx.text('config', 'body')}
           onChange={(body) => set({ body })}
         />
       </EditorField>
@@ -788,12 +801,15 @@ function TemplateLine({
   value,
   onChange,
   problems,
+  text,
   placeholder,
 }: {
   path: string
   value: string
   onChange: (value: string) => void
   problems?: FieldProblem[]
+  /** The template's place in the definition (shared editing). */
+  text?: (string | number)[]
   placeholder?: string
 }) {
   return (
@@ -805,6 +821,7 @@ function TemplateLine({
         height={30}
         value={value}
         problems={problems}
+        text={text}
         onChange={onChange}
       />
     </div>
@@ -844,6 +861,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
           path={ctx.modelPath('input.txt')}
           value={config.input}
           problems={ctx.problemsAt('config', 'input')}
+          text={ctx.text('config', 'input')}
           onChange={(input) => set({ input })}
         />
       </EditorField>
@@ -932,6 +950,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
             python: "value is the item and index its position; return the item's result (no network).",
           }}
           problems={ctx.problemsAt('config', 'runner', 'code')}
+          text={ctx.text('config', 'runner', 'code')}
           ctx={ctx}
           onChange={(next) => setRunner(withLanguage({ ...runner, ...next }))}
         />
@@ -1055,6 +1074,7 @@ function FunctionArgs({
             path={ctx.modelPath(`${at.join('.')}.params.${param.name}.txt`)}
             value={params?.[param.name] ?? ''}
             problems={ctx.problemsAt(...at, 'params', param.name)}
+            text={ctx.text(...at, 'params', param.name)}
             onChange={(value) => {
               const next = { ...params }
               if (value) next[param.name] = value
@@ -1131,6 +1151,7 @@ function ChildWorkflow({
           height={90}
           value={input ?? ''}
           problems={ctx.problemsAt(...at, 'input')}
+          text={ctx.text(...at, 'input')}
           onChange={(next) => onChange({ input: next })}
         />
       </EditorField>
@@ -1195,6 +1216,7 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
               path={ctx.modelPath('amount.txt')}
               value={config.amount}
               problems={ctx.problemsAt('config', 'amount')}
+              text={ctx.text('config', 'amount')}
               onChange={(amount) => set({ ...config, amount })}
             />
           </EditorField>
@@ -1217,6 +1239,7 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
             path={ctx.modelPath('until.txt')}
             value={config.until}
             problems={ctx.problemsAt('config', 'until')}
+            text={ctx.text('config', 'until')}
             onChange={(until) => set({ kind: 'until', until })}
           />
         </EditorField>
@@ -1272,6 +1295,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
           path={ctx.modelPath('title.txt')}
           value={config.title}
           problems={ctx.problemsAt('config', 'title')}
+          text={ctx.text('config', 'title')}
           onChange={(title) => set({ title })}
         />
       </EditorField>
@@ -1282,6 +1306,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
           height={80}
           value={config.description ?? ''}
           problems={ctx.problemsAt('config', 'description')}
+          text={ctx.text('config', 'description')}
           onChange={(description) => set({ description: description || undefined })}
         />
       </EditorField>
@@ -1299,6 +1324,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
                 path={ctx.modelPath(`assignee-${i}.txt`)}
                 value={u}
                 problems={ctx.problemsAt('config', 'assignees', 'users', i)}
+                text={ctx.text('config', 'assignees', 'users', i)}
                 onChange={(v) => setAssignees({ users: users.map((x, j) => (j === i ? v : x)) })}
               />
             </div>
@@ -1515,6 +1541,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
               path={ctx.modelPath('due.txt')}
               value={config.due.amount}
               problems={ctx.problemsAt('config', 'due', 'amount')}
+              text={ctx.text('config', 'due', 'amount')}
               onChange={(amount) => set({ due: { ...config.due!, amount } })}
             />
             <Select

@@ -65,3 +65,47 @@ test('two editors of one workflow see each other’s edits', async ({ page, brow
 
   await otherContext.close()
 })
+
+/** M16 step 4: two people typing in one code field at once: both texts kept, each cursor where it was, ⌘Z one's own. */
+test('two people typing in one code field merge as they type', async ({ page, browser }) => {
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Typing ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await block(page, 'startTrigger').click()
+  await addBlock(page, 'code')
+  await saved(page)
+
+  const otherContext = await browser.newContext()
+  const other = await otherContext.newPage()
+  await signIn(other)
+  await other.goto(page.url())
+  await block(other, 'code1').click()
+  const mine = field(page, 'code1', 'code.js')
+  const theirs = field(other, 'code1', 'code.js')
+  await expect.poll(() => editorText(theirs)).toBe('return null')
+
+  // One types at the end of the line, the other at its start, keystrokes interleaved.
+  await mine.click()
+  await page.keyboard.press('End')
+  await theirs.click()
+  await other.keyboard.press('Home')
+  await Promise.all([
+    page.keyboard.type('// mine', { delay: 60 }),
+    other.keyboard.type('/*theirs*/', { delay: 60 }),
+  ])
+  const merged = '/*theirs*/return null// mine'
+  await expect.poll(() => editorText(mine)).toBe(merged)
+  await expect.poll(() => editorText(theirs)).toBe(merged)
+  await saved(page)
+  await saved(other)
+
+  // Undo in the field takes back this side's typing only.
+  await page.keyboard.press('ControlOrMeta+Z')
+  await expect.poll(() => editorText(mine)).toBe('/*theirs*/return null')
+  await expect.poll(() => editorText(theirs)).toBe('/*theirs*/return null')
+  await saved(page)
+
+  await otherContext.close()
+})

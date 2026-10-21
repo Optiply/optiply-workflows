@@ -61,6 +61,32 @@ export class SharedDefinition<T> {
     if (exact) for (const [type, json] of seeds) this.cache.set(type, json)
   }
 
+  /**
+   * The text field at `path` (keys and array indexes, as in `value`), or null when there's none there (not a text
+   * field, or not set yet). Indexes count what `value` shows: an identity repeated in the document is skipped.
+   */
+  textAt(path: Path): Y.Text | null {
+    let current: unknown = this.root
+    const at: (string | number)[] = []
+    for (const segment of path) {
+      if (current instanceof Y.Map) current = current.get(String(segment))
+      else if (current instanceof Y.Array && typeof segment === 'number') {
+        const identity = this.spec.identity(at)
+        const seen = new Set<string>()
+        const shown = current.toArray().filter((item, i) => {
+          const key = identity?.(this.read(item, [...at, i]))
+          if (key === undefined) return true
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        current = shown[segment]
+      } else return null
+      at.push(segment)
+    }
+    return current instanceof Y.Text ? current : null
+  }
+
   /** The JSON of a type (cached) or a value as it is. */
   read(content: unknown, path: Path): unknown {
     if (!(content instanceof Y.AbstractType)) return content

@@ -137,6 +137,19 @@ describe('SharedHistory', () => {
     expect(codeOf(me.shared.value, 'b')).toBe('return 2')
   })
 
+  it('groups a direct change to a text with edits of the same field', () => {
+    const me = editor()
+    me.shared.set(start)
+    const key = '.blocks.1.config.code'
+    me.history.edit(withCode(me.shared.value, 'a', 'return 1x'), view('a'), key)
+    const text = me.shared.textAt(['blocks', 1, 'config', 'code'])!
+    me.history.change(view('a'), key, Date.now(), () => text.insert(text.length, 'y'))
+    expect(codeOf(me.shared.value, 'a')).toBe('return 1xy')
+    me.history.undo()
+    expect(codeOf(me.shared.value, 'a')).toBe('return 1')
+    expect(me.history.canUndo).toBe(false)
+  })
+
   it(`keeps at most ${HISTORY_LIMIT} steps`, () => {
     const me = editor()
     me.shared.set(start)
