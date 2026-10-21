@@ -21,6 +21,7 @@ import {
   resolveWebhookSettings,
   type WebhookTrigger,
 } from '@ow/definition'
+import { type BodyValidator, compileBodySchema } from '@ow/definition/body-schema'
 import type { RunEvent } from '@ow/engine'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { FastifyReply } from 'fastify'
@@ -136,6 +137,29 @@ export async function webhookEnvironment(db: Db, webhook: ResolvedWebhook, slug:
   const permitted = allowed === 'all' || (allowed === 'default' ? env.isDefault : allowed.includes(env.slug))
   if (!permitted) throw new RunRequestError(403, 'forbidden', `This webhook doesn't run in ${env.name}`)
   return env
+}
+
+const validators = new Map<string, BodyValidator | null>()
+const VALIDATOR_CACHE_SIZE = 100
+
+/**
+ * The webhook's body validator for a release, compiled once and kept (the latest 100 releases). Null without a
+ * schema, or for one that doesn't compile (the validator refuses those before a release; logged here).
+ */
+export function bodyValidator(
+  release: WorkflowRelease,
+  webhook: ResolvedWebhook,
+  log: { warn(obj: object, msg: string): void },
+): BodyValidator | null {
+  if (!webhook.bodySchema) return null
+  if (validators.has(release.id)) return validators.get(release.id)!
+  const compiled = compileBodySchema(webhook.bodySchema)
+  if (!compiled.ok)
+    log.warn({ releaseId: release.id, error: compiled.error }, "webhook body schema doesn't compile")
+  const validate = compiled.ok ? compiled.validate : null
+  if (validators.size >= VALIDATOR_CACHE_SIZE) validators.delete(validators.keys().next().value!)
+  validators.set(release.id, validate)
+  return validate
 }
 
 /** Refuses up front when a resource the release queries isn't configured in the environment. */

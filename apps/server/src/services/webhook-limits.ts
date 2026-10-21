@@ -1,5 +1,6 @@
 import type { Db } from '@ow/db'
 import { sql } from 'drizzle-orm'
+import { v7 as uuidv7 } from 'uuid'
 import { RunRequestError } from './workflow-runs'
 
 /**
@@ -13,9 +14,38 @@ export class WebhookRejection extends RunRequestError {
     message: string,
     /** A finer code than `code`, e.g. `signature_mismatch` for a 401 `unauthorized`. */
     readonly reason: string,
+    opts: { details?: Record<string, unknown>; record?: boolean } = {},
   ) {
-    super(status, code, message)
+    super(status, code, message, opts.details)
+    this.record = opts.record ?? true
   }
+  /** Whether it goes in `webhook_rejections` (only a window's first 429 does). */
+  readonly record: boolean
+}
+
+/** At most this many rejections are recorded per webhook per minute, so a flood can't fill the table. */
+export const MAX_REJECTIONS_PER_MINUTE = 60
+
+/** Records a refused call for the editor's webhook panel (never its body or signature). */
+export async function recordRejection(
+  db: Db,
+  rejection: {
+    triggerId: string
+    environmentId: string | null
+    status: number
+    reason: string
+    message: string
+    ip: string | null
+    userAgent: string | null
+  },
+) {
+  await db.execute(sql`
+    insert into webhook_rejections (id, trigger_id, environment_id, status, reason, message, ip, user_agent)
+    select ${uuidv7()}, ${rejection.triggerId}, ${rejection.environmentId}, ${rejection.status}, ${rejection.reason},
+           ${rejection.message.slice(0, 500)}, ${rejection.ip}, ${rejection.userAgent?.slice(0, 300) ?? null}
+    where (select count(*) from webhook_rejections
+           where trigger_id = ${rejection.triggerId} and created_at > now() - interval '1 minute')
+          < ${MAX_REJECTIONS_PER_MINUTE}`)
 }
 
 /**
@@ -27,7 +57,7 @@ export async function countWebhookCall(
   db: Db,
   triggerId: string,
   limit: { requests: number; windowSeconds: number },
-): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+): Promise<{ allowed: boolean; count: number; retryAfterSeconds: number }> {
   const [row] = await db.execute<{ count: number; left: number }>(sql`
     with w as (select to_timestamp(floor(extract(epoch from now()) / ${limit.windowSeconds}) * ${limit.windowSeconds}) as start)
     insert into webhook_rate_windows (trigger_id, window_start, expires_at, count)
@@ -36,6 +66,7 @@ export async function countWebhookCall(
     returning count, extract(epoch from expires_at - now())::float8 as left`)
   return {
     allowed: row!.count <= limit.requests,
+    count: row!.count,
     retryAfterSeconds: Math.max(1, Math.ceil(row!.left)),
   }
 }
@@ -48,7 +79,7 @@ export async function requireUnderLimit(
   setRetryAfter: (seconds: number) => void,
 ) {
   if (!limit) return
-  const { allowed, retryAfterSeconds } = await countWebhookCall(db, triggerId, limit)
+  const { allowed, count, retryAfterSeconds } = await countWebhookCall(db, triggerId, limit)
   if (allowed) return
   setRetryAfter(retryAfterSeconds)
   throw new WebhookRejection(
@@ -56,5 +87,6 @@ export async function requireUnderLimit(
     'rate_limited',
     `This webhook accepts ${limit.requests} calls per ${limit.windowSeconds} s; try again in ${retryAfterSeconds} s`,
     'rate_limited',
+    { record: count === limit.requests + 1 },
   )
 }

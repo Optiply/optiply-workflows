@@ -6,9 +6,10 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { Metrics } from '../metrics'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import type { RunEventHub } from '../services/run-events'
-import { requireUnderLimit, WebhookRejection } from '../services/webhook-limits'
+import { recordRejection, requireUnderLimit, WebhookRejection } from '../services/webhook-limits'
 import { readSigningSecrets, verifyWebhookSignature } from '../services/webhook-signatures'
 import {
+  bodyValidator,
   RawBody,
   requireConfiguredResources,
   runHeaders,
@@ -60,10 +61,29 @@ export const webhooksApi: FastifyPluginAsync<{
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, keep('form'))
   app.addContentTypeParser('*', { parseAs: 'buffer' }, keep('text'))
 
-  app.setErrorHandler((err, _req, reply) => {
+  /** The webhook (and, once known, the environment) a request reached, for recording a rejection. */
+  const reached = new WeakMap<FastifyRequest, { triggerId: string; environmentId: string | null }>()
+
+  app.setErrorHandler(async (err, req, reply) => {
     if (err instanceof RunRequestError) {
-      if (err.status < 500) metrics?.webhookRejected(err instanceof WebhookRejection ? err.reason : err.code)
-      return reply.code(err.status).send({ error: { code: err.code, message: err.message } })
+      if (err.status < 500) {
+        const reason = err instanceof WebhookRejection ? err.reason : err.code
+        metrics?.webhookRejected(reason)
+        const target = reached.get(req)
+        if (target && (!(err instanceof WebhookRejection) || err.record)) {
+          await recordRejection(db, {
+            ...target,
+            status: err.status,
+            reason,
+            message: err.message,
+            ip: req.ip ?? null,
+            userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+          }).catch((e) => req.log.error({ err: e }, 'recording a webhook rejection failed'))
+        }
+      }
+      return reply.code(err.status).send({
+        error: { code: err.code, message: err.message, ...(err.details && { details: err.details }) },
+      })
     }
     const status = (err as { statusCode?: number }).statusCode
     if (status && status >= 400 && status < 500) {
@@ -76,6 +96,7 @@ export const webhooksApi: FastifyPluginAsync<{
 
   async function handle(req: FastifyRequest, reply: FastifyReply, find: () => Promise<WebhookTarget>) {
     const { workflow, trigger, release, webhook, pathParams } = await find()
+    reached.set(req, { triggerId: trigger.id, environmentId: null })
     await requireUnderLimit(db, trigger.id, webhook.rateLimit, (seconds) =>
       reply.header('retry-after', String(seconds)),
     )
@@ -93,6 +114,7 @@ export const webhooksApi: FastifyPluginAsync<{
       webhook,
       typeof envSlug === 'string' ? envSlug : undefined,
     )
+    reached.set(req, { triggerId: trigger.id, environmentId: environment.id })
     const raw = req.body instanceof RawBody ? req.body : null
 
     const presented = presentedApiKey(req.headers)
@@ -146,6 +168,19 @@ export const webhooksApi: FastifyPluginAsync<{
     // Slack checks a new Events API URL with a challenge, signed like any event: answer it without a run.
     if (webhook.auth.type === 'signature' && webhook.auth.preset === 'slack' && isSlackChallenge(data)) {
       return reply.code(200).send({ challenge: data.challenge })
+    }
+
+    const errors = bodyValidator(release, webhook, req.log)?.(data)
+    if (errors) {
+      throw new WebhookRejection(
+        400,
+        'invalid_body',
+        "The body doesn't match the webhook's schema",
+        'invalid_body',
+        {
+          details: { errors },
+        },
+      )
     }
 
     const header = (name: string | null) => {

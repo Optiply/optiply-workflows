@@ -2,6 +2,7 @@ import {
   environments,
   permissions,
   type Workflow,
+  webhookRejections,
   workflowReleases,
   workflows,
   workflowTriggers,
@@ -15,7 +16,7 @@ import {
 import { checkBodySchema } from '@ow/definition/body-schema'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
@@ -129,6 +130,32 @@ export const workflowsRouter = router({
       nextFireAt: trigger.nextFireAt,
       lastFiredAt: trigger.lastFiredAt,
     }))
+  }),
+
+  /**
+   * The latest calls the live webhook refused (4xx), newest first, for the webhook panel. Edit access: they hold
+   * callers' IP addresses.
+   */
+  webhookRejections: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
+    const { access, workflow } = await visibleWorkflow(ctx, input.id)
+    requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+    return ctx.db
+      .select({
+        id: webhookRejections.id,
+        at: webhookRejections.createdAt,
+        status: webhookRejections.status,
+        reason: webhookRejections.reason,
+        message: webhookRejections.message,
+        environment: environments.name,
+        ip: webhookRejections.ip,
+        userAgent: webhookRejections.userAgent,
+      })
+      .from(webhookRejections)
+      .innerJoin(workflowTriggers, eq(workflowTriggers.id, webhookRejections.triggerId))
+      .leftJoin(environments, eq(environments.id, webhookRejections.environmentId))
+      .where(and(eq(workflowTriggers.workflowId, workflow.id), eq(workflowTriggers.kind, 'webhook')))
+      .orderBy(desc(webhookRejections.createdAt), desc(webhookRejections.id))
+      .limit(50)
   }),
 
   /** `protected`: made in Git from the start (edited on branches; the first merge deploys it). */
