@@ -2,7 +2,7 @@
 
 What has been built, how, and where to pick up. **Read this first in a new session**, then the matching milestone in [architecture.md](architecture.md), which holds the full Retool analysis, the design decisions and the roadmap (M0–M16+; M14 done, M15 planned).
 
-Last updated: 2026-10-21 (session 18: **M15 Webhooks for outside services built**: the plan and steps 1–7 plus two fixes, 15 commits on the local branch `feat/m15-webhooks`, done-when proven in Playwright and on Docker Compose. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2). Session 17 finished and merged M14 as `bda0dbf`.)
+Last updated: 2026-10-21 (session 18, end: **M15 Webhooks for outside services built, reviewed and checked on Docker Compose**: the plan, steps 1–7, a local review (10 fixes), and four smaller fixes; 19 commits on the **local** branch `feat/m15-webhooks`. **Nothing is pushed: the GitHub Actions minutes ran out on 2026-10-20 and reset on 2026-11-01** (§2). Session 17 finished and merged M14 as `bda0dbf`.)
 
 | | |
 |---|---|
@@ -896,6 +896,7 @@ The design is `architecture.md` §2.18 (with "As built"); the step record in §1
 - **Done-when** (step 7a, `823f071`): `apps/web/e2e/m15-done-when.spec.ts`; passed in the e2e suite (51) and on Docker Compose (§10).
 - **Fixes on the way:** `341e019` (the server's bundler needs Ajv declared in apps/server: the server build had failed since step 1, unnoticed because only tests ran; the server build now runs every step) and `b06f4ff` (a Postgres query whose signal aborted while it waited for a connection ran anyway; found by a load-flaky test, a pre-existing bug from M1/M6).
 - **Review fixes** (session 18, the `code-review` skill on `main...feat/m15-webhooks`: 10 found, all fixed in one commit): unknown URLs and API-key webhooks answer 401 before revealing anything to a caller without a valid key; signed and API-key webhooks count only authenticated calls toward their limit; public webhooks ignore idempotency keys (validator, editor and OpenAPI agree); every API key header is kept out of the run; the editor's schema types survive a broken `$ref` escape, self-references (an expansion budget) and unions starting with an object or tuple; `webhookEnvironments`/`signatureHeaderOf` in `@ow/definition` replace three copies; trigger rows store the webhook as written. Tests: server 372, definition 166, web unit 74, e2e 51. The Compose stack was rebuilt on the review fixes afterwards (§10).
+- **After the review** (`41b7408`, from the user trying a REST resource on the stack): secret fields (resource secrets, the Git token) are text inputs masked with CSS (`SecretInput`), so Chrome stops offering to save them as passwords (it did for `type="password"` even with `autocomplete="new-password"`); a refused redirect says which host redirected where (without the target's query string). e2e 52.
 - **New dependencies:** ajv 8.20.0 and ajv-formats 3.0.1 (MIT; already in the lockfile through Fastify), busboy 1.6.0 (MIT, with streamsearch), and dev-only @types/busboy and @seriousme/openapi-schema-validator 2.9.1 (MIT).
 - **Totals:** server tests 368 (330 at the end of M14), connectors 147, definition 163, web unit 71, e2e 51 (48).
 
@@ -984,6 +985,8 @@ The design is `architecture.md` §2.18 (with "As built"); the step record in §1
 
 ## 11. Local environment quirks (this Mac)
 
+- **Optiply's own API as a REST resource** (tried by the user in session 18): use the base URL **`https://api.optiply.com/v1/`** with the trailing slash. Without it, `GET /v1` answers 302 to an internal hostname (`http://public-api-node-2.public-api.svc.cluster.local/v1/`, from its Istio gateway), which the resource rightly refuses (Test connection fails `blocked`). Queries with a path aren't affected. Worth reporting to Optiply's API team. The API is JSON:API: send `Accept: application/vnd.api+json`; a 404 "Resource not found." is a record the token can't see.
+- **The Compose stack** runs `06414c4` (M15 with the review fixes), not `41b7408`'s secret-field and redirect-message fixes; rebuild when convenient (`PUBLIC_URL=http://localhost:3000 docker compose up --build -d`, about 8 minutes). `optiply-workflows:m14-backup` is the M14 image.
 - Node v24.15.0 (arm64). **Docker Desktop 29.8 with Compose v5.6 is installed** (since session 4; 8 CPUs, about 4 GB for Docker). No global pnpm, no system Postgres.
 - Run pnpm as **`COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`**. **Turbo needs a `pnpm` binary on PATH.** In a Claude session, run `corepack enable --install-directory <scratchpad>/bin pnpm` and prepend that directory to PATH. The user can simply run `corepack enable`.
 - **Dev database:** `pnpm dev:db` stores its data in `.data/pg` (gitignored), with `DATABASE_URL=postgres://ow:ow@127.0.0.1:5433/optiply_workflows`. It has a `demo_customers` table, a "Demo DB" resource (`demo_db`), and test workflows from session 3, all safe to delete; it's still at migration `0003` and migrates on the next `pnpm dev`.
@@ -1130,7 +1133,7 @@ M15 is planned (`architecture.md` §2.7 row, §2.8 item 14, §2.18). The user ch
 
 **Local only until 2026-11-01** (§2): one branch, `feat/m15-webhooks`, from `b2e82a9` (PR #21's handoff on top of `main` `bda0dbf`). **No draft PR** until the minutes reset; then push and open it once. Each step is split into parts (a/b/c) that each end green. Every part is reported and committed on the user's word, after CI's checks pass locally (§2).
 
-**Unpushed branches:** `feat/m15-webhooks`, 16 commits (`886dedb`…`823f071`, the docs commit `5f05e6d`, then the review fixes), on top of `b2e82a9` (PR #21's handoff, pushed). Push it once in November, open the PR, and mark PR #21 as included.
+**Unpushed branches:** `feat/m15-webhooks`, 19 commits on `b2e82a9` (`886dedb` the plan … `06414c4` the review fixes, `cfc8b5b` docs, `41b7408` two small fixes, then the session-18 wrap-up), on top of `b2e82a9` (PR #21's handoff, pushed). Push it once in November, open the PR, and mark PR #21 as included.
 
 All steps done (commits in §9j). How each went: step 1 as planned; 2 in two parts; 3a/3b as planned (the limit is per webhook, not per environment: §2.18); 4a used busboy after undici's parser failed a valid body; 4b added a shared `MultipartParts`; 5's validator caught one invalid field; 6a/6b as planned; 7a's spec first hung 15 minutes on a keep-alive connection (fixed); 7b, the Compose check, passed (§10).
 
