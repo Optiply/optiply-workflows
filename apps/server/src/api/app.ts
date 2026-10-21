@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import fastifyCookie from '@fastify/cookie'
 import fastifyStatic from '@fastify/static'
+import fastifyWebsocket from '@fastify/websocket'
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { InlineRunner } from '@ow/engine'
@@ -13,6 +14,8 @@ import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
+import { CollabHub } from '../services/collab/rooms'
+import { CollabStore } from '../services/collab/store'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configurePython, pythonConfigWarning } from '../services/python'
@@ -21,6 +24,7 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
+import { collabApi, MAX_COLLAB_MESSAGE_BYTES } from './collab'
 import { databaseApi } from './database'
 import { gitWebhookApi } from './git-webhook'
 import { oauthApi } from './oauth'
@@ -114,6 +118,12 @@ export async function buildApp(deps: {
   const gitDeployer = new GitDeployer({ db, config, log: app.log.child({ component: 'git' }), pollMs: 0 })
   app.addHook('onClose', () => gitDeployer.stop())
   await app.register(gitWebhookApi, { db, config, deployer: gitDeployer })
+
+  // Editing drafts together (M16): rooms of open documents in this process.
+  const collab = new CollabHub(new CollabStore(db), app.log.child({ component: 'collab' }))
+  app.addHook('onClose', () => collab.close())
+  await app.register(fastifyWebsocket, { options: { maxPayload: MAX_COLLAB_MESSAGE_BYTES } })
+  await app.register(collabApi, { db, hub: collab, publicUrl: config.PUBLIC_URL })
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/api/trpc',

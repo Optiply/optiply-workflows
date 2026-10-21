@@ -148,6 +148,13 @@
       "when": 1792571360934,
       "tag": "0020_webhook_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792600439127,
+      "tag": "0021_collab",
+      "breakpoints": true
     }
   ]
 }

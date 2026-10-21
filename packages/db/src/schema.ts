@@ -6,6 +6,7 @@ import {
   bigserial,
   boolean,
   check,
+  customType,
   index,
   inet,
   integer,
@@ -32,6 +33,11 @@ const updatedAt = () =>
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date())
+/** Binary data: postgres.js reads a Buffer and sends one as bytea. */
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType: () => 'bytea',
+  toDriver: (v) => Buffer.from(v.buffer, v.byteOffset, v.byteLength),
+})
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
@@ -1198,3 +1204,48 @@ export const gitBranchDrafts = pgTable(
 )
 
 export type GitBranchDraft = typeof gitBranchDrafts.$inferSelect
+
+// ── Multiplayer editing (M16) ───────────────────────────────────────────────
+
+/**
+ * A draft open for editing together: its Yjs document (architecture §2.19). The key names what it edits:
+ * `workflow:<id>`, `app:<id>`, `module:<id>` or `branch:<git branch draft id>`, and the row goes with that object.
+ */
+export const collabDocuments = pgTable(
+  'collab_documents',
+  {
+    key: text().primaryKey(),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
+    branchDraftId: uuid().references(() => gitBranchDrafts.id, { onDelete: 'cascade' }),
+    /** The document as one Yjs update, with `collab_updates` folded in so far. */
+    state: bytea().notNull(),
+    /** The draft revision the document last matched (it was made from it, or written to it). */
+    revision: integer().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check(
+      'collab_documents_object_ck',
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.moduleId}, ${t.branchDraftId}) = 1`,
+    ),
+  ],
+)
+
+/** Yjs updates to a document since its state was last compacted; applied in any order, any number of times. */
+export const collabUpdates = pgTable(
+  'collab_updates',
+  {
+    id: bigserial({ mode: 'number' }).primaryKey(),
+    documentKey: text()
+      .notNull()
+      .references(() => collabDocuments.key, { onDelete: 'cascade' }),
+    update: bytea().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('collab_updates_document_idx').on(t.documentKey, t.id)],
+)
+
+export type CollabDocument = typeof collabDocuments.$inferSelect

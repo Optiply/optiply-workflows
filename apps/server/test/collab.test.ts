@@ -1,0 +1,281 @@
+import { MESSAGE_AWARENESS, MESSAGE_SYNC, SharedDefinition, workflowSpec } from '@ow/collab'
+import { collabDocuments, collabUpdates, workflows } from '@ow/db'
+import type { WorkflowDefinition } from '@ow/definition'
+import { eq } from 'drizzle-orm'
+import * as decoding from 'lib0/decoding'
+import * as encoding from 'lib0/encoding'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import * as sync from 'y-protocols/sync'
+import * as Y from 'yjs'
+import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
+
+/**
+ * Editing drafts together (M16 step 2a): `GET /api/collab/<key>` opens a draft's Yjs document, made from the draft
+ * the first time; edits go to the others in the room and into Postgres; presence carries who people really are;
+ * watchers can't write; strangers get nothing.
+ */
+
+let env: TestEnv
+let adminCookie: string
+let memberCookie: string
+let admin: ReturnType<typeof trpc>
+let memberGroupId: string
+let baseUrl: string
+
+// biome-ignore lint/suspicious/noExplicitAny: untyped test JSON
+const data = (res: {
+  status: number
+  body: { result?: { data: any }; error?: { message: string } }
+}): any => {
+  if (!res.body.result) throw new Error(`tRPC call failed (${res.status}): ${res.body.error?.message}`)
+  return res.body.result.data
+}
+
+const definition = (code: string): WorkflowDefinition => ({
+  schemaVersion: 1,
+  blocks: [
+    { name: 'startTrigger', type: 'startTrigger' },
+    { name: 'code1', type: 'code', config: { code } },
+  ],
+  edges: [{ from: 'startTrigger', port: 'out', to: 'code1' }],
+})
+
+async function createWorkflow(slug: string, code = 'return 1'): Promise<string> {
+  const { id } = data(await admin.mutate('workflows.create', { slug, name: slug }))
+  data(await admin.mutate('workflows.saveDraft', { id, revision: 1, definition: definition(code) }))
+  return id
+}
+
+/** Opens a real WebSocket (Node's, which can send the cookie); resolves once open, rejects if refused. */
+function open(cookie: string, key: string): Promise<WebSocket> {
+  const ws = new WebSocket(`${baseUrl}/api/collab/${key}`, { headers: { cookie } } as never)
+  ws.binaryType = 'arraybuffer'
+  return new Promise((resolve, reject) => {
+    ws.onopen = () => resolve(ws)
+    ws.onerror = () => reject(new Error('refused'))
+  })
+}
+
+/** A browser's side of the connection: a document kept in sync with the server's, and presence. */
+async function connect(cookie: string, key: string) {
+  const ws = await open(cookie, key)
+  const doc = new Y.Doc()
+  const shared = new SharedDefinition<WorkflowDefinition>(doc, workflowSpec)
+  const awareness = new Awareness(doc)
+  const send = (write: (e: encoding.Encoder) => void) => {
+    const e = encoding.createEncoder()
+    write(e)
+    ws.send(encoding.toUint8Array(e))
+  }
+  let synced = false
+  ws.addEventListener('message', (event) => {
+    const decoder = decoding.createDecoder(new Uint8Array(event.data as ArrayBuffer))
+    const type = decoding.readVarUint(decoder)
+    if (type === MESSAGE_SYNC) {
+      const reply = encoding.createEncoder()
+      encoding.writeVarUint(reply, MESSAGE_SYNC)
+      const kind = sync.readSyncMessage(decoder, reply, doc, 'server')
+      if (kind === sync.messageYjsSyncStep2) synced = true
+      if (encoding.length(reply) > 1) ws.send(encoding.toUint8Array(reply))
+    } else if (type === MESSAGE_AWARENESS) {
+      applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), 'server')
+    }
+  })
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    if (origin === 'server') return
+    send((e) => {
+      encoding.writeVarUint(e, MESSAGE_SYNC)
+      sync.writeUpdate(e, update)
+    })
+  })
+  awareness.on('update', ({ added, updated }: { added: number[]; updated: number[] }, origin: unknown) => {
+    if (origin === 'server') return
+    send((e) => {
+      encoding.writeVarUint(e, MESSAGE_AWARENESS)
+      encoding.writeVarUint8Array(e, encodeAwarenessUpdate(awareness, [...added, ...updated]))
+    })
+  })
+  const closed = new Promise<number>((resolve) =>
+    ws.addEventListener('close', (event) => resolve(event.code)),
+  )
+  send((e) => {
+    encoding.writeVarUint(e, MESSAGE_SYNC)
+    sync.writeSyncStep1(e, doc)
+  })
+  await vi.waitFor(() => expect(synced).toBe(true))
+  return {
+    ws,
+    shared,
+    awareness,
+    closed,
+    edit: (code: string) => {
+      const v = shared.value
+      shared.set({ ...v, blocks: v.blocks.map((b) => (b.type === 'code' ? { ...b, config: { code } } : b)) })
+    },
+    code: () => (shared.value.blocks[1] as { config: { code: string } } | undefined)?.config.code,
+    close: async () => {
+      ws.close()
+      await closed
+    },
+  }
+}
+
+/** Waits until the server has closed the document's room (stored and compacted). */
+const settled = (key: string) =>
+  vi.waitFor(async () => {
+    expect(await env.db.select().from(collabUpdates).where(eq(collabUpdates.documentKey, key))).toEqual([])
+  })
+
+beforeAll(async () => {
+  env = await startTestApp()
+  baseUrl = (await env.app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws')
+  await createLocalUser(env.db, 'admin@example.com', { admin: true })
+  const member = await createLocalUser(env.db, 'member@example.com')
+  adminCookie = await login(env.app, 'admin@example.com')
+  memberCookie = await login(env.app, 'member@example.com')
+  admin = trpc(env.app, adminCookie)
+  memberGroupId = data(await admin.mutate('groups.create', { name: 'Ops' })).id
+  await admin.mutate('groups.addMember', { groupId: memberGroupId, userId: member.id })
+}, 120_000)
+
+afterAll(async () => {
+  await env?.stop()
+})
+
+describe('collab documents', () => {
+  it('makes a document from the draft and relays edits between two editors', async () => {
+    const id = await createWorkflow('together')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    expect(a.shared.value).toEqual(definition('return 1'))
+    const b = await connect(adminCookie, key)
+    a.edit('return 2')
+    await vi.waitFor(() => expect(b.code()).toBe('return 2'))
+    b.edit('return 2 + 3')
+    await vi.waitFor(() => expect(a.code()).toBe('return 2 + 3'))
+    const [doc] = await env.db.select().from(collabDocuments).where(eq(collabDocuments.key, key))
+    expect(doc).toMatchObject({ workflowId: id, revision: 2 })
+
+    await a.close()
+    await b.close()
+    await settled(key)
+    // Reopened from Postgres alone: the edits are there.
+    const c = await connect(adminCookie, key)
+    expect(c.code()).toBe('return 2 + 3')
+    await c.close()
+  })
+
+  it('merges edits made offline when a peer reconnects', async () => {
+    const key = `workflow:${await createWorkflow('offline', 'abc')}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key)
+    // a goes offline, keeps typing; b types meanwhile.
+    const kept = new Y.Doc()
+    Y.applyUpdate(kept, Y.encodeStateAsUpdate(a.shared.doc))
+    await a.close()
+    const offline = new SharedDefinition<WorkflowDefinition>(kept, workflowSpec)
+    const v = offline.value
+    offline.set({
+      ...v,
+      blocks: v.blocks.map((x) => (x.type === 'code' ? { ...x, config: { code: 'abcX' } } : x)),
+    })
+    b.edit('Yabc')
+    // a's new connection starts from what it kept.
+    const again = await connect(adminCookie, key)
+    Y.applyUpdate(again.shared.doc, Y.encodeStateAsUpdate(kept))
+    await vi.waitFor(() => expect(b.code()).toBe('YabcX'))
+    expect(again.code()).toBe('YabcX')
+    await b.close()
+    await again.close()
+  })
+
+  it('lets watchers read but not write, and keeps a protected draft read-only for everyone', async () => {
+    const id = await createWorkflow('watched')
+    const key = `workflow:${id}`
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'workflow',
+        objectId: id,
+        groupId: memberGroupId,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    const editor = await connect(adminCookie, key)
+    const watcher = await connect(memberCookie, key)
+    // The watcher's browser keeps its own edit; nobody else gets it.
+    watcher.edit('return "watcher"')
+    editor.edit('return "editor"')
+    await vi.waitFor(() => expect(watcher.code()).toContain('return "editor"'))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(editor.code()).toBe('return "editor"')
+    await editor.close()
+    await watcher.close()
+    await settled(key)
+    const fresh = await connect(adminCookie, key)
+    expect(fresh.code()).toBe('return "editor"')
+    await fresh.close()
+
+    await env.db.update(workflows).set({ gitProtected: true }).where(eq(workflows.id, id))
+    const protectedEditor = await connect(adminCookie, key)
+    const other = await connect(adminCookie, key)
+    protectedEditor.edit('return "protected"')
+    await new Promise((r) => setTimeout(r, 100))
+    expect(other.code()).toBe('return "editor"')
+    await protectedEditor.close()
+    await other.close()
+  })
+
+  it('shows presence with who people are, whatever their browser claims', async () => {
+    const key = `workflow:${await createWorkflow('presence')}`
+    const a = await connect(adminCookie, key)
+    const b = await connect(adminCookie, key)
+    a.awareness.setLocalState({ user: { id: 'someone-else', name: 'Mallory' }, selection: ['code1'] })
+    await vi.waitFor(() =>
+      expect(b.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({
+        user: { name: 'admin' },
+        selection: ['code1'],
+      }),
+    )
+    // b can't speak for a's client id.
+    const forged = new Awareness(new Y.Doc())
+    forged.clientID = a.shared.doc.clientID
+    forged.setLocalState({ selection: ['forged'] })
+    const e = encoding.createEncoder()
+    encoding.writeVarUint(e, MESSAGE_AWARENESS)
+    encoding.writeVarUint8Array(e, encodeAwarenessUpdate(forged, [forged.clientID]))
+    b.ws.send(encoding.toUint8Array(e))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(b.awareness.getStates().get(a.shared.doc.clientID)).toMatchObject({ selection: ['code1'] })
+    // Leaving takes one's presence along.
+    await a.close()
+    await vi.waitFor(() => expect(b.awareness.getStates().has(a.shared.doc.clientID)).toBe(false))
+    await b.close()
+  })
+
+  it('refuses strangers, other sites and unknown drafts before the upgrade', async () => {
+    const id = await createWorkflow('private')
+    const get = (key: string, headers: Record<string, string>) =>
+      env.app.inject({ method: 'GET', url: `/api/collab/${key}`, headers })
+    expect((await get(`workflow:${id}`, {})).statusCode).toBe(401)
+    expect((await get(`workflow:${id}`, { cookie: memberCookie })).statusCode).toBe(404)
+    expect(
+      (await get(`workflow:${id}`, { cookie: adminCookie, origin: 'https://evil.example' })).statusCode,
+    ).toBe(403)
+    expect((await get('workflow:not-a-uuid', { cookie: adminCookie })).statusCode).toBe(404)
+    expect((await get(`app:${id}`, { cookie: adminCookie })).statusCode).toBe(404)
+    await expect(open(memberCookie, `workflow:${id}`)).rejects.toThrow('refused')
+  })
+
+  it('drops the document with its workflow', async () => {
+    const id = await createWorkflow('deleted')
+    const key = `workflow:${id}`
+    const a = await connect(adminCookie, key)
+    a.edit('return 9')
+    await a.close()
+    await settled(key)
+    data(await admin.mutate('workflows.delete', { id }))
+    expect(await env.db.select().from(collabDocuments).where(eq(collabDocuments.key, key))).toEqual([])
+  })
+})
