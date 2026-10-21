@@ -13,6 +13,7 @@ export default defineConfig({
   worker: { format: 'es' },
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:3000' },
+    // `ws`: the editors' documents (M16) are WebSockets under /api/collab.
+    proxy: { '/api': { target: 'http://localhost:3000', ws: true } },
   },
 })

@@ -1,5 +1,7 @@
+import { SharedDefinition, workflowSpec } from '@ow/collab'
 import type { WorkflowDefinition } from '@ow/definition'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
 import { updateBlock, updateGraph, useEditor } from './store'
 
 const START: WorkflowDefinition = {
@@ -29,9 +31,17 @@ const typeCode = (code: string) =>
 const addBlock = (name: string) =>
   updateGraph((g) => ({ ...g, blocks: [...g.blocks, { name, type: 'code', config: { code: '' } }] }))
 
+/** A shared document holding `def`, as one synced from the server. */
+function synced(def: WorkflowDefinition): SharedDefinition<WorkflowDefinition> {
+  const shared = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+  shared.set(def)
+  return shared
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ now: 0 })
   editor().load('w1', START, 3, 'hash')
+  editor().attach(synced(START))
 })
 
 describe('undo and redo in the workflow editor', () => {
@@ -45,13 +55,13 @@ describe('undo and redo in the workflow editor', () => {
 
     for (let i = 0; i < 3; i++) editor().undo()
     expect(json(editor().definition)).toBe(json(START))
-    expect(editor().status).toBe('saved') // what the server has: nothing to save
+    expect(editor().shared?.value).toEqual(START)
     editor().undo() // nothing left
     expect(json(editor().definition)).toBe(json(START))
 
     for (let i = 0; i < 3; i++) editor().redo()
     expect(editor().definition).toBe(end)
-    expect(editor().status).toBe('dirty')
+    expect(editor().shared?.value).toBe(end)
   })
 
   it('undoes a burst of typing in one step, and a pause or a new selection starts another', () => {
@@ -106,7 +116,6 @@ describe('undo and redo in the workflow editor', () => {
     typeCode('return 1')
     updateBlock('code1', (b) => ({ ...b }))
     expect(editor().history.past).toEqual([])
-    expect(editor().status).toBe('saved')
   })
 
   it('keeps the canvas selection: one block when selected in code, several from the canvas', () => {
@@ -133,26 +142,43 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor().history.future).toEqual([])
   })
 
-  it('ignores edits and undo on a read-only draft, and undo while it conflicts', () => {
+  it('ignores edits until the shared document has synced, and on a read-only draft', () => {
+    editor().load('w1', START, 4, 'hash')
     typeCode('x')
-    editor().conflict()
-    editor().undo()
-    expect(json(editor().definition)).toContain('"x"')
-
-    editor().load('w1', START, 4, 'hash', { readOnly: true })
-    typeCode('y')
     editor().undo()
     expect(editor().definition).toBe(START)
     expect(editor().history.past).toEqual([])
+
+    editor().load('w1', START, 4, 'hash', { readOnly: true })
+    editor().attach(synced(START))
+    typeCode('y')
+    editor().undo()
+    expect(json(editor().definition)).toBe(json(START))
+    expect(editor().history.past).toEqual([])
   })
 
-  it('keeps a save in flight: `saved` decides whether the undone draft still needs saving', () => {
-    typeCode('x')
-    const sent = json(editor().definition)
-    editor().saving()
-    editor().undo()
-    expect(editor().status).toBe('saving')
-    editor().saved(4, sent, 'hash2')
-    expect(editor().status).toBe('dirty') // the server now has "x"; the draft is back to the start
+  it("writes edits into the shared document, and shows others' edits from it", () => {
+    const shared = editor().shared!
+    typeCode('return 2')
+    expect(shared.value).toBe(editor().definition)
+    editor().setSelection(['startTrigger', 'code1'])
+    editor().inspect('code1')
+    // Someone else adds a block and deletes the selected one.
+    const theirs = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+    Y.applyUpdate(theirs.doc, Y.encodeStateAsUpdate(shared.doc))
+    const v = theirs.value
+    theirs.set({
+      ...v,
+      blocks: [
+        ...v.blocks.filter((b) => b.name !== 'code1'),
+        { name: 'other', type: 'code', config: { code: '' } },
+      ],
+      edges: [],
+    })
+    Y.applyUpdate(shared.doc, Y.encodeStateAsUpdate(theirs.doc))
+    editor().remote()
+    expect(editor().definition.blocks.map((b) => b.name)).toEqual(['startTrigger', 'other'])
+    expect(editor()).toMatchObject({ selected: null, selection: ['startTrigger'] })
+    expect(editor().diagnostics).toEqual(expect.any(Array))
   })
 })

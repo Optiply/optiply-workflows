@@ -7,7 +7,7 @@ import { ReleaseAuthor, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
-import { ensureSaved } from './save'
+import { ensureSaved } from './collab'
 import { useEditor } from './store'
 
 type Workflow = RouterOutputs['workflows']['get']

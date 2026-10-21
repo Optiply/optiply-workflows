@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { type BlockStatus, FINAL_RUN_STATUSES, type RunView, runsApi } from '@/lib/runs-api'
-import { ensureSaved } from './save'
+import { ensureSaved } from './collab'
 import { useEditor } from './store'
 
 export interface LiveBlock {
