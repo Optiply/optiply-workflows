@@ -9,18 +9,11 @@ import {
 import { checkBodySchema } from '@ow/definition/body-schema'
 import type * as Y from 'yjs'
 import { create } from 'zustand'
+import { LOCAL, type SaveStatus } from '@/lib/collab-session'
 import { changeKey, sameValue } from '@/lib/history'
 import type { SampleResult } from './scope-types'
 
-/**
- * Where the draft stands (M16): `connecting` until the document first syncs (edits wait), `saving` while the server
- * hasn't saved this editor's edits to the draft yet, `offline` while reconnecting (edits sync when it's back), `error`
- * when the merged draft couldn't be saved or the server ended the connection.
- */
-export type SaveStatus = 'connecting' | 'saved' | 'saving' | 'offline' | 'error'
-
-/** The origin of this editor's own edits to the shared document. */
-export const LOCAL = Symbol('local edit')
+export { LOCAL, type SaveStatus }
 
 /** What the side panel shows when no block is selected. */
 export type SideTab = 'problems' | 'functions' | 'releases' | 'settings'

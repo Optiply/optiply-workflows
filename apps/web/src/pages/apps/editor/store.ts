@@ -15,10 +15,13 @@ import {
   validateApp,
 } from '@ow/app-definition'
 import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
+import { type SharedDefinition, SharedHistory } from '@ow/collab'
+import type * as Y from 'yjs'
 import { create } from 'zustand'
-import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
+import { LOCAL, type SaveStatus } from '@/lib/collab-session'
+import { changeKey, sameValue } from '@/lib/history'
 
-export type SaveStatus = 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
+export type { SaveStatus }
 
 /** What the bottom panel shows. */
 export type PanelTab = 'code' | 'state' | 'problems' | 'console'
@@ -43,15 +46,18 @@ interface AppEditorState {
   appId: string | null
   /** The Git branch draft being edited (M11), or null for the app's own (main) draft. */
   branchDraftId: string | null
-  /** A protected app's main draft: shown and run, but edits are ignored (they're made on a branch). */
+  /** A protected app's main draft: shown, run and updated live, but edits are ignored (they're made on a branch). */
   readOnly: boolean
   definition: AppDefinition
-  /** The draft revision the server has; saves send it for optimistic concurrency. */
+  /**
+   * The document everyone edits (M16), once it has synced: edits go through it, and others' come back from it. Until
+   * then, `definition` is the draft as loaded and edits are ignored.
+   */
+  shared: SharedDefinition<AppDefinition> | null
+  /** The draft revision the server last saved the document as. */
   revision: number
-  /** The server's hash of the saved draft; equal to the live release's when nothing is unpublished. */
+  /** The hash of the saved draft; equal to the live release's when nothing is unpublished. */
   draftHash: string | null
-  /** JSON of the definition the server has, to tell whether an edit changed anything. */
-  savedJson: string
   status: SaveStatus
   saveError: string | null
   /** From the browser's validator (connector checks come with publishing). */
@@ -68,8 +74,13 @@ interface AppEditorState {
    * The running draft follows it; it stays a page the app has (a deleted page gives way to the first).
    */
   url: AppUrl
-  /** The edits that can be undone and redone (M13); cleared when a draft is loaded. */
-  history: History<AppDefinition, AppEditorView>
+  /**
+   * This editor's own edits to undo and redo (M13's steps, on the shared document's undo manager since M16: undoing
+   * never reverts someone else's edit); made afresh when a draft is loaded and synced.
+   */
+  history: SharedHistory<AppDefinition, AppEditorView> | null
+  canUndo: boolean
+  canRedo: boolean
   /** Raised by undo and redo: the panels remount, so what they read once starts afresh. */
   epoch: number
   /**
@@ -89,8 +100,16 @@ interface AppEditorState {
     draftHash: string,
     opts?: { branchDraftId?: string | null; readOnly?: boolean; kind?: 'app' | 'module' },
   ): void
-  /** Applies an edit; the draft becomes dirty and is validated again, and the edit can be undone. */
+  /** The shared document synced: it's the definition from now on, and edits go into it. */
+  attach(shared: SharedDefinition<AppDefinition>): void
+  /** Someone else changed the shared document (or it synced again): shows it as it is now. */
+  remote(): void
+  connection(status: SaveStatus, saveError: string | null, revision?: number): void
+  setDraftHash(definition: AppDefinition, draftHash: string): void
+  /** Applies an edit to the shared document; it's validated again, and can be undone. */
   update(edit: (def: AppDefinition) => AppDefinition): void
+  /** A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. */
+  editText(path: (string | number)[], write: (transaction: Y.Transaction) => void): void
   /** Puts back the definition before the last edit, and what was showing then. */
   undo(): void
   /** Makes the last undone edit again. */
@@ -105,10 +124,6 @@ interface AppEditorState {
   /** Adds what the server said about modules, and validates again. */
   setModules(modules: Record<string, ModuleRef | null>): void
   setModuleReleases(releases: ModuleReleases): void
-  saving(): void
-  saved(revision: number, json: string, draftHash: string): void
-  conflict(): void
-  failed(message: string): void
 }
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
@@ -117,10 +132,10 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   branchDraftId: null,
   readOnly: false,
   definition: { schemaVersion: 1, components: [], queries: [] },
+  shared: null,
   revision: 0,
   draftHash: null,
-  savedJson: '',
-  status: 'saved',
+  status: 'connecting',
   saveError: null,
   diagnostics: [],
   selected: null,
@@ -128,7 +143,9 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   focus: 'component',
   panelTab: 'code',
   url: { page: null, params: {} },
-  history: emptyHistory(),
+  history: null,
+  canUndo: false,
+  canRedo: false,
   epoch: 0,
   libraries: {},
   modules: {},
@@ -141,18 +158,44 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       branchDraftId: opts.branchDraftId ?? null,
       readOnly: opts.readOnly ?? false,
       definition,
+      shared: null,
       revision,
       draftHash,
-      savedJson: JSON.stringify(definition),
-      status: 'saved',
+      status: 'connecting',
       saveError: null,
       diagnostics: validate(definition, get()),
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
-      history: emptyHistory(),
+      ...newHistory(get().history, null),
     }),
+
+  attach: (shared) => set({ shared, ...applied(get(), shared.value), ...newHistory(get().history, shared) }),
+
+  remote: () => {
+    const state = get()
+    if (!state.shared) return
+    const definition = state.shared.value
+    // What's showing stays, unless someone else deleted it.
+    if (definition !== state.definition) set(applied(state, definition, viewOf(state)))
+  },
+
+  connection: (status, saveError, revision) =>
+    set({ status, saveError, ...(revision !== undefined && { revision }) }),
+
+  setDraftHash: (definition, draftHash) => {
+    if (get().definition === definition) set({ draftHash })
+  },
+
+  editText: (path, write) => {
+    const state = get()
+    const { shared, history } = state
+    if (state.readOnly || !shared || !history) return
+    // The same key M13's changeKey gives an edit of this one value, so typing groups either way.
+    history.change(viewOf(state), `.${path.join('.')}`, Date.now(), write)
+    set({ ...applied(state, shared.value), ...undoable(history) })
+  },
 
   setLibraries: (found) => {
     const libraries = { ...get().libraries, ...found }
@@ -171,66 +214,74 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
 
   update: (edit) => {
     const state = get()
-    if (state.readOnly) return
+    const { shared, history } = state
+    if (state.readOnly || !shared || !history) return
     const before = state.definition
     const next = edit(before)
     // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
     if (next === before || sameValue(before, next)) return
-    set({
-      ...applied(state, next),
-      history: record(state.history, { before, after: next, view: viewOf(state), at: Date.now() }),
-    })
+    history.edit(next, viewOf(state), changeKey(before, next), Date.now())
+    set({ ...applied(state, shared.value), ...undoable(history) })
   },
 
+  // Undo and redo are one's own (M16): what others changed meanwhile stays.
   undo: () => {
     const state = get()
-    if (state.readOnly || state.status === 'conflict') return
-    const step = undo(state.history, viewOf(state))
-    if (step)
+    const { shared, history } = state
+    if (state.readOnly || !shared || !history) return
+    const step = history.undo(viewOf(state))
+    if (step) {
       set({
-        ...applied(state, step.entry.before, step.entry.view),
-        history: step.history,
+        ...applied(state, shared.value, step.view ?? viewOf(state)),
+        ...undoable(history),
         epoch: state.epoch + 1,
       })
+    }
   },
 
   redo: () => {
     const state = get()
-    if (state.readOnly || state.status === 'conflict') return
-    const step = redo(state.history)
-    if (step)
+    const { shared, history } = state
+    if (state.readOnly || !shared || !history) return
+    const step = history.redo()
+    if (step) {
       set({
-        ...applied(state, step.entry.after, step.entry.redoView ?? step.entry.view),
-        history: step.history,
+        ...applied(state, shared.value, step.view ?? viewOf(state)),
+        ...undoable(history),
         epoch: state.epoch + 1,
       })
+    }
   },
 
   // A new selection, code item or page ends the step being typed: the next edit is undone on its own.
-  select: (selected) =>
-    set((s) => ({
-      selected,
-      ...(selected !== null && { focus: 'component' as const }),
-      history: seal(s.history),
-    })),
-  openCodeItem: (openCode) =>
-    set((s) => ({ openCode, panelTab: 'code', focus: 'code' as const, history: seal(s.history) })),
+  select: (selected) => {
+    get().history?.seal()
+    set({ selected, ...(selected !== null && { focus: 'component' as const }) })
+  },
+  openCodeItem: (openCode) => {
+    get().history?.seal()
+    set({ openCode, panelTab: 'code', focus: 'code' as const })
+  },
   setPanelTab: (panelTab) => set({ panelTab }),
-  setUrl: (page, params = {}) =>
-    set((s) => ({ url: { page: resolvePage(s.definition, page), params }, history: seal(s.history) })),
-  saving: () => set({ status: 'saving' }),
-  saved: (revision, json, draftHash) =>
-    set((s) => ({
-      revision,
-      draftHash,
-      savedJson: json,
-      saveError: null,
-      // Edited while saving: still dirty.
-      status: JSON.stringify(s.definition) === json ? 'saved' : 'dirty',
-    })),
-  conflict: () => set({ status: 'conflict' }),
-  failed: (saveError) => set({ status: 'error', saveError }),
+  setUrl: (page, params = {}) => {
+    get().history?.seal()
+    set((s) => ({ url: { page: resolvePage(s.definition, page), params } }))
+  },
 }))
+
+/** A fresh undo history for `shared` (none before it syncs), the old one let go. */
+function newHistory(
+  old: SharedHistory<AppDefinition, AppEditorView> | null,
+  shared: SharedDefinition<AppDefinition> | null,
+): Pick<AppEditorState, 'history' | 'canUndo' | 'canRedo'> {
+  old?.destroy()
+  return { history: shared ? new SharedHistory(shared, LOCAL) : null, canUndo: false, canRedo: false }
+}
+
+const undoable = (history: SharedHistory<AppDefinition, AppEditorView>) => ({
+  canUndo: history.canUndo,
+  canRedo: history.canRedo,
+})
 
 function viewOf(state: AppEditorState): AppEditorView {
   return { selected: state.selected, openCode: state.openCode, page: state.url.page }
@@ -255,18 +306,15 @@ function validate(
 }
 
 /**
- * The state after `definition` replaces the current one: validated, on a page it has, and saved or dirty by whether
- * it differs from what the server has (undoing back to it needs no save). A save in flight finishes first: `saved`
- * then sees whether the definition still differs. With a `view` (undo, redo), what was showing comes back if it's
- * still there.
+ * The state after `definition` replaces the current one: validated, on a page it has. With a `view` (undo, redo,
+ * someone else's edit), what was showing comes back if it's still there.
  */
 function applied(
   state: AppEditorState,
   definition: AppDefinition,
   view?: AppEditorView,
 ): Partial<AppEditorState> {
-  const { status, url } = state
-  const unchanged = JSON.stringify(definition) === state.savedJson
+  const { url } = state
   const page = resolvePage(definition, view ? view.page : url.page)
   const names = new Set([
     ...definition.components.map((c) => c.name),
@@ -278,8 +326,6 @@ function applied(
     definition,
     ...(page !== url.page && { url: { page, params: {} } }),
     diagnostics: validate(definition, state),
-    status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
-    ...(status === 'error' && unchanged && { saveError: null }),
     ...(view && {
       selected:
         view.selected !== null && definition.components.some((c) => c.name === view.selected)

@@ -2,7 +2,7 @@ import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { GitBar } from '@/components/git-bar'
 import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
@@ -17,6 +17,7 @@ import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
+import { closeSession, ensureSaved, openSession } from './collab'
 import { ScopeSync } from './fields'
 import { ComponentInspector } from './inspector'
 import { useLibrarySync } from './library'
@@ -24,7 +25,6 @@ import { ModulePanel } from './module-panel'
 import { AddModule, useModuleSync } from './modules'
 import { PagesPanel } from './pages'
 import { type EditorApp, ReleaseControls } from './releases'
-import { ensureSaved, saveDraftNow } from './save'
 import { type SaveStatus, useAppEditor } from './store'
 
 type BranchDraft = RouterOutputs['branchDrafts']['get']
@@ -32,8 +32,6 @@ type BranchDraft = RouterOutputs['branchDrafts']['get']
 const route = getRouteApi('/app/apps/$slug/edit')
 const appRoute = getRouteApi('/app')
 
-/** Autosave this long after the last edit. */
-const SAVE_DELAY_MS = 800
 /** The running draft follows edits this long after the last one. */
 const UPDATE_DELAY_MS = 300
 
@@ -117,11 +115,13 @@ export function DraftLoader({
     : null
 
   const loadDraft = useCallback(
-    (id: string, draft: BranchDraft) =>
+    (id: string, draft: BranchDraft) => {
       load(id, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
         kind,
-      }),
+      })
+      openSession(kind, id, draft.id)
+    },
     [load, kind],
   )
   useEffect(() => {
@@ -132,9 +132,21 @@ export function DraftLoader({
         readOnly: data.gitProtected,
         kind,
       })
+      openSession(kind, data.id, null)
     }
     setLoadedFor(wanted)
   }, [data, wanted, loadedFor, branch, branchDraft, load, loadDraft, kind])
+  // The draft's document closes with the editor. Mounted again with the draft still loaded (React's StrictMode does
+  // it in development), it opens again.
+  const mountedBefore = useRef(false)
+  useEffect(() => {
+    if (mountedBefore.current) {
+      const { kind: loadedKind, appId, branchDraftId } = useAppEditor.getState()
+      if (appId) openSession(loadedKind, appId, branchDraftId)
+    }
+    mountedBefore.current = true
+    return closeSession
+  }, [])
 
   const switchBranch = async (next: string | null) => {
     try {
@@ -237,8 +249,8 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
 
   const readOnly = useAppEditor((s) => s.readOnly)
   const epoch = useAppEditor((s) => s.epoch)
-  const canUndo = useAppEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
-  const canRedo = useAppEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  const canUndo = useAppEditor((s) => s.canUndo)
+  const canRedo = useAppEditor((s) => s.canRedo)
   // Undo and redo while editing (not in Preview, where the keys are the app's).
   useEditorKeys({
     editable: !readOnly && !preview,
@@ -295,18 +307,12 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     }
   }, [host])
 
-  // Autosave.
-  useEffect(() => {
-    if (status !== 'dirty') return
-    const timer = setTimeout(() => void saveDraftNow(), SAVE_DELAY_MS)
-    return () => clearTimeout(timer)
-  })
-
-  // Leaving with unsaved edits asks first.
+  // Leaving with edits the server hasn't saved asks first.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       const s = useAppEditor.getState().status
-      if (s === 'dirty' || s === 'saving' || s === 'error') e.preventDefault()
+      if (!useAppEditor.getState().readOnly && (s === 'saving' || s === 'offline' || s === 'error'))
+        e.preventDefault()
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
@@ -360,14 +366,6 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
         </div>
       </header>
       {git}
-      {status === 'conflict' && (
-        <div role="alert" className="flex items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm">
-          Someone else saved this {app.kind} since you opened it. Your edits here can't be saved.
-          <Button size="sm" onClick={() => window.location.reload()}>
-            Reload
-          </Button>
-        </div>
-      )}
       <div ref={ref} className="hidden" />
       {host ? (
         <AppHostProvider host={host}>
@@ -446,10 +444,10 @@ function Running({ children }: { children: React.ReactNode }) {
 }
 
 const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {
+  connecting: { text: 'Connecting…', className: 'text-muted' },
   saved: { text: 'Saved', className: 'text-muted' },
-  dirty: { text: 'Unsaved changes', className: 'text-muted' },
   saving: { text: 'Saving…', className: 'text-muted' },
-  conflict: { text: 'Not saved: conflict', className: 'text-danger' },
+  offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
   error: { text: 'Not saved', className: 'text-danger' },
 }
 

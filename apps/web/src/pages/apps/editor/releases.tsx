@@ -8,7 +8,7 @@ import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/comp
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor } from '../../resources/shared'
-import { ensureSaved } from './save'
+import { ensureSaved } from './collab'
 import { useAppEditor } from './store'
 
 type Release = RouterOutputs['apps']['releases'][number]

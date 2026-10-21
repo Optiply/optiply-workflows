@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_SECOND_EMAIL } from './global-setup'
-import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, trpcMutate, typeInto } from './helpers'
 
 const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText('Saved')
 
@@ -175,4 +175,45 @@ test('presence in the workflow editor: avatars, selections and pointers', async 
     await secondContext.close()
     await expect(page.getByTestId('presence')).toHaveCount(0)
   })
+})
+
+/** M16 step 6: the app editor on the shared document: edits both ways, live in the running draft, undo one's own. */
+test('two editors of one app see each other’s edits', async ({ page, browser }) => {
+  await signIn(page)
+  const slug = `together-${Date.now()}`
+  await trpcMutate(page, 'apps.create', { slug, name: 'Together' })
+  await page.goto(`/apps/${slug}/edit`)
+  const appSaved = (p: Page) => expect(p.getByText('Saved', { exact: true })).toBeVisible()
+  await appSaved(page)
+
+  const otherContext = await browser.newContext()
+  const other = await otherContext.newPage()
+  await signIn(other)
+  await other.goto(`/apps/${slug}/edit`)
+  await appSaved(other)
+
+  await test.step('a component added here appears there, and a prop typed there shows here', async () => {
+    await page.getByRole('button', { name: 'Text', exact: true }).click()
+    await expect(other.getByTestId('frame-text1')).toBeVisible()
+    await other.getByTestId('frame-text1').click()
+    await typeInto(other, other.locator('[data-testid$="/components/0/props/value"]'), 'From the other side')
+    await expect(page.getByTestId('frame-text1')).toContainText('From the other side')
+    await appSaved(page)
+    await appSaved(other)
+  })
+
+  await test.step("undo takes back one's own edit, not the other's made after it", async () => {
+    await page.getByRole('button', { name: 'Button', exact: true }).click()
+    await expect(other.getByTestId('frame-button1')).toBeVisible()
+    await other.getByRole('button', { name: 'Text input', exact: true }).click()
+    await expect(page.getByTestId('frame-textInput1')).toBeVisible()
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(page.getByTestId('frame-button1')).toHaveCount(0)
+    await expect(other.getByTestId('frame-button1')).toHaveCount(0)
+    await expect(page.getByTestId('frame-textInput1')).toBeVisible()
+    await expect(page.getByTestId('frame-text1')).toContainText('From the other side')
+    await appSaved(page)
+  })
+
+  await otherContext.close()
 })
