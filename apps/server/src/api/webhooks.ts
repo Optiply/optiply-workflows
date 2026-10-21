@@ -5,6 +5,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import type { RunEventHub } from '../services/run-events'
 import {
+  RawBody,
   requireConfiguredResources,
   runHeaders,
   Signal,
@@ -39,21 +40,16 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
   app,
   { db, events, runner },
 ) => {
-  // Bodies: JSON (an empty one is null), forms as objects, anything else as text.
+  // Bodies are kept as bytes, tagged with how to read them, and parsed only once the caller is authenticated: a
+  // signature covers the exact bytes sent.
   app.removeContentTypeParser(['application/json', 'text/plain'])
-  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
-    const text = String(body)
-    if (!text.trim()) return done(null, null)
-    try {
-      done(null, JSON.parse(text))
-    } catch {
-      done(new RunRequestError(400, 'invalid_request', 'The body is not valid JSON'), undefined)
-    }
-  })
-  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) =>
-    done(null, Object.fromEntries(new URLSearchParams(String(body)))),
-  )
-  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, String(body)))
+  const keep =
+    (kind: RawBody['kind']) =>
+    (_req: FastifyRequest, body: Buffer, done: (err: Error | null, body?: RawBody) => void) =>
+      done(null, new RawBody(kind, body))
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, keep('json'))
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, keep('form'))
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, keep('text'))
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof RunRequestError) {
@@ -76,6 +72,7 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
     if (!key) throw new RunRequestError(401, 'unauthorized', 'This API key is unknown, revoked or expired')
 
     const { workflow, trigger, release, webhook, pathParams } = await find()
+    const raw = req.body instanceof RawBody ? req.body : null
     if (!webhook.methods.includes(req.method as (typeof WEBHOOK_METHODS)[number])) {
       reply.header('allow', webhook.methods.join(', '))
       throw new RunRequestError(
@@ -94,6 +91,7 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
       )
     }
     await requireConfiguredResources(db, release, environment)
+    const data = raw ? raw.parse() : null
 
     const idempotencyKey = req.headers['idempotency-key']
     if (typeof idempotencyKey === 'string' && idempotencyKey.length > MAX_IDEMPOTENCY_KEY) {
@@ -116,7 +114,7 @@ export const webhooksApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; run
         apiKeyId: key.id,
         idempotencyKey: typeof idempotencyKey === 'string' && idempotencyKey ? idempotencyKey : null,
         input: {
-          data: req.body ?? null,
+          data,
           headers: runHeaders(req.headers, presented.source),
           pathParams,
           urlParams,

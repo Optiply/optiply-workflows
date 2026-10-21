@@ -25,6 +25,27 @@ import type { FastifyReply } from 'fastify'
 import type { RunEventHub } from './run-events'
 import { RunRequestError } from './workflow-runs'
 
+/** A webhook's body as sent, with the parser that matched its content type. */
+export class RawBody {
+  constructor(
+    readonly kind: 'json' | 'form' | 'text',
+    readonly bytes: Buffer,
+  ) {}
+
+  /** JSON (an empty body is null), a form as an object, anything else as text. */
+  parse(): unknown {
+    const text = this.bytes.toString('utf8')
+    if (this.kind === 'form') return Object.fromEntries(new URLSearchParams(text))
+    if (this.kind === 'text') return text
+    if (!text.trim()) return null
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new RunRequestError(400, 'invalid_request', 'The body is not valid JSON')
+    }
+  }
+}
+
 export interface WebhookTarget {
   workflow: Workflow
   trigger: WorkflowTrigger
