@@ -106,8 +106,15 @@ interface EditorState {
   setDraftHash(definition: WorkflowDefinition, draftHash: string): void
   /** Applies an edit to the shared document; it's re-validated, and can be undone. */
   update(edit: (def: WorkflowDefinition) => WorkflowDefinition): void
-  /** A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. */
-  editText(path: (string | number)[], write: (transaction: Y.Transaction) => void): void
+  /**
+   * A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. With
+   * `removeEmpty`, a text left empty is removed (the field is optional, and absent means something else).
+   */
+  editText(
+    path: (string | number)[],
+    write: (transaction: Y.Transaction) => void,
+    opts?: { removeEmpty?: boolean },
+  ): void
   /** Puts back the definition before the last edit, and what was selected then. */
   undo(): void
   /** Makes the last undone edit again. */
@@ -200,11 +207,14 @@ export const useEditor = create<EditorState>()((set, get) => ({
     set({ ...applied(shared.value), ...undoable(history) })
   },
 
-  editText: (path, write) => {
+  editText: (path, write, opts = {}) => {
     const { readOnly, shared, history, selected, graph } = get()
     if (readOnly || !shared || !history) return
     // The same key M13's changeKey gives an edit of this one value, so typing groups either way.
-    history.change({ selected, graph }, `.${path.join('.')}`, Date.now(), write)
+    history.change({ selected, graph }, `.${path.join('.')}`, Date.now(), (transaction) => {
+      write(transaction)
+      if (opts.removeEmpty && shared.textAt(path)?.toString().trim() === '') shared.delete(path)
+    })
     set({ ...applied(shared.value), ...undoable(history) })
   },
 

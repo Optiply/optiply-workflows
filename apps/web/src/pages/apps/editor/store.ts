@@ -108,8 +108,15 @@ interface AppEditorState {
   setDraftHash(definition: AppDefinition, draftHash: string): void
   /** Applies an edit to the shared document; it's validated again, and can be undone. */
   update(edit: (def: AppDefinition) => AppDefinition): void
-  /** A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. */
-  editText(path: (string | number)[], write: (transaction: Y.Transaction) => void): void
+  /**
+   * A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. With
+   * `removeEmpty`, a text left empty is removed (the field is optional, and absent means something else).
+   */
+  editText(
+    path: (string | number)[],
+    write: (transaction: Y.Transaction) => void,
+    opts?: { removeEmpty?: boolean },
+  ): void
   /** Puts back the definition before the last edit, and what was showing then. */
   undo(): void
   /** Makes the last undone edit again. */
@@ -188,12 +195,15 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     if (get().definition === definition) set({ draftHash })
   },
 
-  editText: (path, write) => {
+  editText: (path, write, opts = {}) => {
     const state = get()
     const { shared, history } = state
     if (state.readOnly || !shared || !history) return
     // The same key M13's changeKey gives an edit of this one value, so typing groups either way.
-    history.change(viewOf(state), `.${path.join('.')}`, Date.now(), write)
+    history.change(viewOf(state), `.${path.join('.')}`, Date.now(), (transaction) => {
+      write(transaction)
+      if (opts.removeEmpty && shared.textAt(path)?.toString().trim() === '') shared.delete(path)
+    })
     set({ ...applied(state, shared.value), ...undoable(history) })
   },
 

@@ -207,6 +207,8 @@ export function LibraryQueryBody({
         >
           <AppCodeField
             path={[...base, 'params', p.name]}
+            // Parsed into the parameter's value: not bound to a shared text.
+            bind={false}
             language="plaintext"
             singleLine
             height={30}

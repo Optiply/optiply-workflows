@@ -217,3 +217,46 @@ test('two editors of one app see each other’s edits', async ({ page, browser }
 
   await otherContext.close()
 })
+
+/** M16 step 6: an app query's code typed in by two people at once: merged, each cursor kept, ⌘Z one's own. */
+test('two people typing in one app query merge as they type', async ({ page, browser }) => {
+  await signIn(page)
+  const slug = `typing-${Date.now()}`
+  const { id } = await trpcMutate<{ id: string }>(page, 'apps.create', { slug, name: 'Typing' })
+  await trpcMutate(page, 'apps.saveDraft', {
+    id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      components: [],
+      queries: [{ name: 'query1', kind: 'js', code: 'return 1' }],
+    },
+  })
+  await page.goto(`/apps/${slug}/edit`)
+  const otherContext = await browser.newContext()
+  const other = await otherContext.newPage()
+  await signIn(other)
+  await other.goto(`/apps/${slug}/edit`)
+  const mine = page.locator('[data-testid$="/queries/0/code"]')
+  const theirs = other.locator('[data-testid$="/queries/0/code"]')
+  await expect.poll(() => editorText(mine)).toBe('return 1')
+  await expect.poll(() => editorText(theirs)).toBe('return 1')
+
+  await mine.click()
+  await page.keyboard.press('End')
+  await theirs.click()
+  await other.keyboard.press('Home')
+  await Promise.all([
+    page.keyboard.type(' + 2', { delay: 60 }),
+    other.keyboard.type('/* x */ ', { delay: 60 }),
+  ])
+  const merged = '/* x */ return 1 + 2'
+  await expect.poll(() => editorText(mine)).toBe(merged)
+  await expect.poll(() => editorText(theirs)).toBe(merged)
+  await expect(mine.locator('.ow-remote-caret')).toHaveCount(1)
+
+  await page.keyboard.press('ControlOrMeta+Z')
+  await expect.poll(() => editorText(theirs)).toBe('/* x */ return 1')
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  await otherContext.close()
+})

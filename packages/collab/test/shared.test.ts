@@ -293,6 +293,14 @@ describe('SharedDefinition', () => {
     expect(a.textAt(['blocks', 'x', 'config'])).toBeNull()
   })
 
+  it('deletes a field by its path', () => {
+    const a = replica<WorkflowDefinition>(workflowSpec)
+    a.set(workflow([{ ...code('code1'), description: 'hi' }]))
+    a.delete(['blocks', 1, 'description'])
+    a.delete(['blocks', 7, 'description'])
+    expect(a.value.blocks[1]).toEqual(code('code1'))
+  })
+
   it('maps app props, handler templates and query code to text', () => {
     const a = replica<AppDefinition>(appSpec)
     a.set(

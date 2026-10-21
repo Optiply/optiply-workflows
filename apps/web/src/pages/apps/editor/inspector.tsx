@@ -273,6 +273,8 @@ function ParsedField({
   return (
     <AppCodeField
       path={path}
+      // Parsed into the prop's value (a number, JSON or a template): not bound to a shared text.
+      bind={false}
       language="plaintext"
       singleLine={!multiLine}
       height={multiLine ? 96 : 30}

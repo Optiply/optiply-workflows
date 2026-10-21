@@ -131,6 +131,18 @@ describe('undo and redo in the app editor', () => {
     expect(past()).toBe(0)
   })
 
+  it('removes an optional field cleared in its code field, as one step with the typing', () => {
+    open('a1', { ...START, queries: [{ name: 'orders', kind: 'js', code: 'return 1', transform: 'ab' }] })
+    const path = ['queries', 0, 'transform']
+    const text = () => editor().shared!.textAt(path)!
+    editor().editText(path, () => text().delete(1, 1), { removeEmpty: true })
+    expect(editor().definition.queries[0]).toMatchObject({ transform: 'a' })
+    editor().editText(path, () => text().delete(0, 1), { removeEmpty: true })
+    expect(editor().definition.queries[0]).not.toHaveProperty('transform')
+    editor().undo()
+    expect(editor().definition.queries[0]).toMatchObject({ transform: 'ab' })
+  })
+
   it("undoes this editor's own edits only, and shows others' keeping what's showing", () => {
     const shared = editor().shared!
     editor().select('title')

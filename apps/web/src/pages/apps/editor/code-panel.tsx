@@ -399,6 +399,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
               value={query.confirm ?? ''}
               problems={problemsAt(diagnostics, [...base, 'confirm'])}
               onChange={(v) => optional('confirm', v)}
+              removeEmpty
             />
           </EditorField>
           <EditorField label="Disabled when" hint="A {{ }} template; while truthy, the query doesn't run">
@@ -410,6 +411,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
               value={query.disabled ?? ''}
               problems={problemsAt(diagnostics, [...base, 'disabled'])}
               onChange={(v) => optional('disabled', v)}
+              removeEmpty
             />
           </EditorField>
           <EditorField
@@ -423,6 +425,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
               value={query.transform ?? ''}
               problems={problemsAt(diagnostics, [...base, 'transform'])}
               onChange={(v) => optional('transform', v)}
+              removeEmpty
             />
           </EditorField>
           <EditorField label="Timeout (ms)">
@@ -479,6 +482,8 @@ function JsonQueryField({
     >
       <AppCodeField
         path={path}
+        // The query as JSON, parsed into it: not bound to a shared text.
+        bind={false}
         language="json"
         height={140}
         value={text}
@@ -659,6 +664,8 @@ function InitialValueField({
   return (
     <AppCodeField
       path={['variables', index, 'initialValue']}
+      // Parsed into the initial value: not bound to a shared text.
+      bind={false}
       language="plaintext"
       singleLine
       height={30}

@@ -156,6 +156,7 @@ export function HandlersEditor({
                 <EditorField label="Only run when" hint="A {{ }} template; the handler runs when it's truthy">
                   <AppCodeField
                     path={[...at, 'onlyIf']}
+                    removeEmpty
                     language="plaintext"
                     singleLine
                     height={30}

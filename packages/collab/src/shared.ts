@@ -66,6 +66,19 @@ export class SharedDefinition<T> {
    * field, or not set yet). Indexes count what `value` shows: an identity repeated in the document is skipped.
    */
   textAt(path: Path): Y.Text | null {
+    const found = this.at(path)
+    return found instanceof Y.Text ? found : null
+  }
+
+  /** Removes the key at `path` from its object, if it's there (a field cleared back to absent). */
+  delete(path: Path): void {
+    const parent = this.at(path.slice(0, -1))
+    const key = path.at(-1)
+    if (parent instanceof Y.Map && key !== undefined) parent.delete(String(key))
+  }
+
+  /** What the document holds at `path`, as `textAt` walks it. */
+  private at(path: Path): unknown {
     let current: unknown = this.root
     const at: (string | number)[] = []
     for (const segment of path) {
@@ -81,10 +94,10 @@ export class SharedDefinition<T> {
           return true
         })
         current = shown[segment]
-      } else return null
+      } else return undefined
       at.push(segment)
     }
-    return current instanceof Y.Text ? current : null
+    return current
   }
 
   /** The JSON of a type (cached) or a value as it is. */

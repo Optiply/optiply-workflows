@@ -802,6 +802,7 @@ function TemplateLine({
   onChange,
   problems,
   text,
+  removeEmpty,
   placeholder,
 }: {
   path: string
@@ -810,6 +811,8 @@ function TemplateLine({
   problems?: FieldProblem[]
   /** The template's place in the definition (shared editing). */
   text?: (string | number)[]
+  /** Cleared, the template is removed from the definition. */
+  removeEmpty?: boolean
   placeholder?: string
 }) {
   return (
@@ -822,6 +825,7 @@ function TemplateLine({
         value={value}
         problems={problems}
         text={text}
+        removeEmpty={removeEmpty}
         onChange={onChange}
       />
     </div>
@@ -1081,6 +1085,7 @@ function FunctionArgs({
               else delete next[param.name]
               onChange(fn, Object.keys(next).length ? next : undefined)
             }}
+            removeEmpty
           />
         </EditorField>
       ))}
@@ -1308,6 +1313,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
           problems={ctx.problemsAt('config', 'description')}
           text={ctx.text('config', 'description')}
           onChange={(description) => set({ description: description || undefined })}
+          removeEmpty
         />
       </EditorField>
 
