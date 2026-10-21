@@ -46,7 +46,7 @@ import { decryptForRow } from './secrets'
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 429 | 503,
     readonly code: string,
     message: string,
     readonly details?: Record<string, unknown>,

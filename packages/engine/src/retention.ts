@@ -2,6 +2,10 @@ import { type Db, maintenanceJobs } from '@ow/db'
 import { sql } from 'drizzle-orm'
 import { sleep } from './retry'
 
+/** How long webhook rejections are kept, and how many per webhook at most. */
+export const REJECTION_DAYS = 7
+export const MAX_REJECTIONS_PER_WEBHOOK = 200
+
 export interface RetentionOptions {
   /** Runs that finished longer ago than this many days are deleted. */
   days: number
@@ -25,6 +29,10 @@ export interface RetentionResult {
   payloads: number
   logs: number
   snapshots: number
+  /** Webhook rate-limit windows that had ended. */
+  rateWindows: number
+  /** Webhook rejections older than 7 days, or beyond the latest 200 of their webhook. */
+  rejections: number
   /** The longest single statement, in ms: each one is its own short transaction. */
   longestStatementMs: number
   durationMs: number
@@ -55,6 +63,8 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
     payloads: 0,
     logs: 0,
     snapshots: 0,
+    rateWindows: 0,
+    rejections: 0,
     longestStatementMs: 0,
     durationMs: 0,
     stopped: false,
@@ -148,6 +158,32 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
               where s.branch_draft_id is null and w.id = s.workflow_id and w.draft_revision = s.revision)
             and not exists (
               select 1 from git_branch_drafts d where d.id = s.branch_draft_id and d.revision = s.revision)
+          limit ${chunk})
+        returning 1`,
+    )
+  }
+
+  // Webhook bookkeeping (M15) has its own horizon, whatever `days` says.
+  if (!result.stopped) {
+    const now = (opts.now ?? new Date()).toISOString()
+    result.rateWindows = await drain(
+      'webhook_rate_windows',
+      () => sql`
+        delete from webhook_rate_windows where (trigger_id, window_start) in (
+          select trigger_id, window_start from webhook_rate_windows where expires_at < ${now}::timestamptz
+          limit ${chunk})
+        returning 1`,
+    )
+    result.rejections = await drain(
+      'webhook_rejections',
+      () => sql`
+        delete from webhook_rejections where id in (
+          select id from (
+            select id, created_at,
+              row_number() over (partition by trigger_id order by created_at desc, id desc) as n
+            from webhook_rejections) r
+          where r.created_at < ${now}::timestamptz - interval '${sql.raw(String(REJECTION_DAYS))} days'
+             or r.n > ${MAX_REJECTIONS_PER_WEBHOOK}
           limit ${chunk})
         returning 1`,
     )

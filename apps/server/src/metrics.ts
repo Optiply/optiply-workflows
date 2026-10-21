@@ -21,6 +21,7 @@ export class Metrics {
   private readonly blocksFinished: client.Counter<'type' | 'status'>
   private readonly blockDuration: client.Histogram<'type'>
   private readonly scheduleFires: client.Counter<'result'>
+  private readonly webhookRejections: client.Counter<'reason'>
 
   constructor(db: Db) {
     const registers = [this.registry]
@@ -68,6 +69,13 @@ export class Metrics {
       name: 'ow_schedule_fires_total',
       help: 'Schedule fires this process handled: a run started, or skipped because one was still going',
       labelNames: ['result'],
+      registers,
+    })
+
+    this.webhookRejections = new client.Counter({
+      name: 'ow_webhook_rejected_total',
+      help: 'Webhook calls this process refused with a 4xx, by reason (signature_mismatch, rate_limited, …)',
+      labelNames: ['reason'],
       registers,
     })
 
@@ -143,6 +151,10 @@ export class Metrics {
 
   scheduleFired(fire: ScheduleFire) {
     this.scheduleFires.inc({ result: fire.runId ? 'started' : 'skipped' })
+  }
+
+  webhookRejected(reason: string) {
+    this.webhookRejections.inc({ reason })
   }
 
   /** Counts every request by its route pattern (`/api/v1/runs/:id`), never the raw URL. */

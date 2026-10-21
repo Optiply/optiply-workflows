@@ -516,6 +516,50 @@ export const workflowTriggers = pgTable(
   ],
 )
 
+/**
+ * Webhook rate limits (M15): one row per webhook and fixed window, counted on the database clock so every API
+ * process shares the limit. Windows past `expires_at` are deleted by retention.
+ */
+export const webhookRateWindows = pgTable(
+  'webhook_rate_windows',
+  {
+    triggerId: uuid()
+      .notNull()
+      .references(() => workflowTriggers.id, { onDelete: 'cascade' }),
+    windowStart: timestamp({ withTimezone: true }).notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    count: integer().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.triggerId, t.windowStart] }),
+    index('webhook_rate_windows_expires_idx').on(t.expiresAt),
+  ],
+)
+
+/**
+ * Calls a live webhook refused (M15): 4xx answers, for the editor's webhook panel. Never the body or a signature.
+ * Retention keeps 7 days and the latest 200 per webhook.
+ */
+export const webhookRejections = pgTable(
+  'webhook_rejections',
+  {
+    id: id(),
+    triggerId: uuid()
+      .notNull()
+      .references(() => workflowTriggers.id, { onDelete: 'cascade' }),
+    /** Null when the call was refused before its environment was known. */
+    environmentId: uuid().references(() => environments.id, { onDelete: 'set null' }),
+    status: integer().notNull(),
+    /** A code such as `signature_mismatch` or `rate_limited`. */
+    reason: text().notNull(),
+    message: text().notNull(),
+    ip: text(),
+    userAgent: text(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('webhook_rejections_trigger_idx').on(t.triggerId, t.createdAt)],
+)
+
 // ── Runs ────────────────────────────────────────────────────────────────────
 
 /** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
@@ -981,6 +1025,7 @@ export type Workflow = typeof workflows.$inferSelect
 export type WorkflowDraftSnapshot = typeof workflowDraftSnapshots.$inferSelect
 export type WorkflowRelease = typeof workflowReleases.$inferSelect
 export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
+export type WebhookRejection = typeof webhookRejections.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type ApiKey = typeof apiKeys.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]

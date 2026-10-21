@@ -108,6 +108,7 @@ export async function buildApp(deps: {
     publicUrl: config.PUBLIC_URL,
     events,
     runner,
+    metrics,
   })
   // The API deploys from Git when GitHub says the branch moved; workers poll (see worker/index.ts).
   const gitDeployer = new GitDeployer({ db, config, log: app.log.child({ component: 'git' }), pollMs: 0 })

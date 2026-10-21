@@ -3,8 +3,10 @@ import type { Db } from '@ow/db'
 import { WEBHOOK_METHODS } from '@ow/definition'
 import type { InlineRunner } from '@ow/engine'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
+import type { Metrics } from '../metrics'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import type { RunEventHub } from '../services/run-events'
+import { requireUnderLimit, WebhookRejection } from '../services/webhook-limits'
 import { readSigningSecrets, verifyWebhookSignature } from '../services/webhook-signatures'
 import {
   RawBody,
@@ -45,7 +47,8 @@ export const webhooksApi: FastifyPluginAsync<{
   publicUrl: string
   events?: RunEventHub
   runner: InlineRunner
-}> = async (app, { db, keyring, publicUrl, events, runner }) => {
+  metrics?: Metrics
+}> = async (app, { db, keyring, publicUrl, events, runner, metrics }) => {
   // Bodies are kept as bytes, tagged with how to read them, and parsed only once the caller is authenticated: a
   // signature covers the exact bytes sent.
   app.removeContentTypeParser(['application/json', 'text/plain'])
@@ -59,10 +62,12 @@ export const webhooksApi: FastifyPluginAsync<{
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof RunRequestError) {
+      if (err.status < 500) metrics?.webhookRejected(err instanceof WebhookRejection ? err.reason : err.code)
       return reply.code(err.status).send({ error: { code: err.code, message: err.message } })
     }
     const status = (err as { statusCode?: number }).statusCode
     if (status && status >= 400 && status < 500) {
+      metrics?.webhookRejected(FASTIFY_REASONS[status] ?? 'invalid_request')
       return reply.code(status).send({ error: { code: 'invalid_request', message: (err as Error).message } })
     }
     app.log.error({ err }, 'webhook error')
@@ -71,6 +76,9 @@ export const webhooksApi: FastifyPluginAsync<{
 
   async function handle(req: FastifyRequest, reply: FastifyReply, find: () => Promise<WebhookTarget>) {
     const { workflow, trigger, release, webhook, pathParams } = await find()
+    await requireUnderLimit(db, trigger.id, webhook.rateLimit, (seconds) =>
+      reply.header('retry-after', String(seconds)),
+    )
     if (!webhook.methods.includes(req.method as (typeof WEBHOOK_METHODS)[number])) {
       reply.header('allow', webhook.methods.join(', '))
       throw new RunRequestError(
@@ -123,7 +131,12 @@ export const webhooksApi: FastifyPluginAsync<{
           { workflow: workflow.slug, reason: check.reason },
           `webhook signature refused: ${check.message}`,
         )
-        throw new RunRequestError(401, 'unauthorized', "The request's signature couldn't be verified")
+        throw new WebhookRejection(
+          401,
+          'unauthorized',
+          "The request's signature couldn't be verified",
+          check.reason,
+        )
       }
     }
 
@@ -206,3 +219,6 @@ function isSlackChallenge(data: unknown): data is { type: 'url_verification'; ch
   const d = data as { type?: unknown; challenge?: unknown } | null
   return d?.type === 'url_verification' && typeof d.challenge === 'string'
 }
+
+/** Reason codes for the 4xx Fastify answers before the handler (body parsing). */
+const FASTIFY_REASONS: Record<number, string> = { 413: 'body_too_large', 415: 'unsupported_media_type' }
