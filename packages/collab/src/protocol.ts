@@ -9,6 +9,12 @@ export const MESSAGE_SYNC = 0
 export const MESSAGE_AWARENESS = 1
 /** The draft's state, from the server: a JSON `CollabStatus` as a varstring. */
 export const MESSAGE_STATUS = 2
+/**
+ * A save. From the browser: a varuint token, "write the draft with everything I sent before this". The server
+ * answers with the token and the JSON `CollabStatus` once the draft has it (or why it can't): a WebSocket keeps
+ * messages in order, so the answer covers every edit sent before the request.
+ */
+export const MESSAGE_SAVE = 3
 
 /**
  * Where the draft stands: the revision the document was last saved to the draft as (what runs, publishing and Git

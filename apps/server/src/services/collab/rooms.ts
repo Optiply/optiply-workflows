@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   type CollabStatus,
   MESSAGE_AWARENESS,
+  MESSAGE_SAVE,
   MESSAGE_STATUS,
   MESSAGE_SYNC,
   SharedDefinition,
@@ -66,6 +67,8 @@ export class CollabRoom {
   private writeTimer: NodeJS.Timeout | null = null
   /** Who last edited here: the draft's `updatedBy` when it's written. */
   private lastEditor: string | null = null
+  /** Edits not written to the draft yet (or a write the schema refused). */
+  private dirty = false
 
   constructor(
     readonly target: CollabTarget,
@@ -124,6 +127,7 @@ export class CollabRoom {
       const type = decoding.readVarUint(decoder)
       if (type === MESSAGE_SYNC) this.receiveSync(peer, decoder)
       else if (type === MESSAGE_AWARENESS) this.receiveAwareness(peer, decoding.readVarUint8Array(decoder))
+      else if (type === MESSAGE_SAVE) this.receiveSave(peer, decoding.readVarUint(decoder))
       else throw new Error(`unknown message type ${type}`)
     } catch (err) {
       this.log.debug({ err, key: this.key }, 'collab: bad message')
@@ -213,11 +217,36 @@ export class CollabRoom {
   }
 
   /** Writes the document to its draft, if the schema accepts it; a newer draft is folded in instead. */
+  /**
+   * A peer asks for the draft to have everything it sent so far: those edits are in the document (messages arrive in
+   * order), so writing it now and answering after covers them. A watcher just gets the status.
+   */
+  private receiveSave(peer: CollabPeer, token: number): void {
+    if (!peer.readOnly) {
+      if (this.writeTimer) {
+        clearTimeout(this.writeTimer)
+        this.writeTimer = null
+      }
+      this.enqueue(() => this.write())
+    }
+    // The queue never rejects (enqueue catches), so this answers after the write, whatever it did.
+    void this.queue.then(() => {
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint(encoder, MESSAGE_SAVE)
+      encoding.writeVarUint(encoder, token)
+      encoding.writeVarString(encoder, JSON.stringify(this.currentStatus()))
+      peer.send(encoding.toUint8Array(encoder))
+    })
+  }
+
   private async write(): Promise<void> {
-    if (this.destroyed) return
+    if (this.destroyed || !this.dirty) return
+    this.dirty = false
     const definition = this.shared.value
     const problem = this.target.check(definition)
     if (problem) {
+      // Still to write once fixed.
+      this.dirty = true
       if (problem !== this.error) {
         this.log.warn({ key: this.key, problem }, "collab: the merged document doesn't fit the schema")
         this.error = problem
@@ -254,11 +283,14 @@ export class CollabRoom {
     }, WRITE_MS)
   }
 
+  private currentStatus(): CollabStatus {
+    return { revision: this.revision, error: this.error }
+  }
+
   private statusMessage(): Uint8Array {
-    const status: CollabStatus = { revision: this.revision, error: this.error }
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_STATUS)
-    encoding.writeVarString(encoder, JSON.stringify(status))
+    encoding.writeVarString(encoder, JSON.stringify(this.currentStatus()))
     return encoding.toUint8Array(encoder)
   }
 
@@ -325,6 +357,7 @@ export class CollabRoom {
       await this.store.append(this.key, update, this.source)
       if (++this.sinceCompaction >= COMPACT_EVERY) await this.compact()
     })
+    this.dirty = true
     this.scheduleWrite()
   }
 

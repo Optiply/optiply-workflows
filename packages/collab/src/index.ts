@@ -1,4 +1,5 @@
 export * from './history'
 export * from './protocol'
+export * from './provider'
 export * from './shared'
 export * from './spec'
