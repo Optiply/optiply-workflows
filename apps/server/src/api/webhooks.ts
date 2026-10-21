@@ -55,10 +55,11 @@ export const webhooksApi: FastifyPluginAsync<{
   app.removeContentTypeParser(['application/json', 'text/plain'])
   const keep =
     (kind: RawBody['kind']) =>
-    (_req: FastifyRequest, body: Buffer, done: (err: Error | null, body?: RawBody) => void) =>
-      done(null, new RawBody(kind, body))
+    (req: FastifyRequest, body: Buffer, done: (err: Error | null, body?: RawBody) => void) =>
+      done(null, new RawBody(kind, body, String(req.headers['content-type'] ?? '')))
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, keep('json'))
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, keep('form'))
+  app.addContentTypeParser('multipart/form-data', { parseAs: 'buffer' }, keep('multipart'))
   app.addContentTypeParser('*', { parseAs: 'buffer' }, keep('text'))
 
   /** The webhook (and, once known, the environment) a request reached, for recording a rejection. */
@@ -163,7 +164,7 @@ export const webhooksApi: FastifyPluginAsync<{
     }
 
     await requireConfiguredResources(db, release, environment)
-    const data = raw ? raw.parse() : null
+    const data = raw ? await raw.parse() : null
 
     // Slack checks a new Events API URL with a challenge, signed like any event: answer it without a run.
     if (webhook.auth.type === 'signature' && webhook.auth.preset === 'slack' && isSlackChallenge(data)) {

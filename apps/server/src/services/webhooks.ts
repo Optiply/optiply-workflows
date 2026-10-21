@@ -23,20 +23,28 @@ import {
 } from '@ow/definition'
 import { type BodyValidator, compileBodySchema } from '@ow/definition/body-schema'
 import type { RunEvent } from '@ow/engine'
+import busboy from 'busboy'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { FastifyReply } from 'fastify'
 import type { RunEventHub } from './run-events'
+import { WebhookRejection } from './webhook-limits'
 import { RunRequestError } from './workflow-runs'
 
 /** A webhook's body as sent, with the parser that matched its content type. */
 export class RawBody {
   constructor(
-    readonly kind: 'json' | 'form' | 'text',
+    readonly kind: 'json' | 'form' | 'multipart' | 'text',
     readonly bytes: Buffer,
+    /** The Content-Type header, for the multipart boundary. */
+    readonly contentType = '',
   ) {}
 
-  /** JSON (an empty body is null), a form as an object, anything else as text. */
-  parse(): unknown {
+  /**
+   * JSON (an empty body is null), a form as an object, multipart as fields and files (`parseMultipart`), anything
+   * else as text.
+   */
+  async parse(): Promise<unknown> {
+    if (this.kind === 'multipart') return parseMultipart(this.bytes, this.contentType)
     const text = this.bytes.toString('utf8')
     if (this.kind === 'form') return Object.fromEntries(new URLSearchParams(text))
     if (this.kind === 'text') return text
@@ -47,6 +55,74 @@ export class RawBody {
       throw new RunRequestError(400, 'invalid_request', 'The body is not valid JSON')
     }
   }
+}
+
+/** A file from a multipart body, as a run receives it (and a REST query's multipart part accepts it). */
+export interface WebhookFile {
+  filename: string
+  contentType: string
+  size: number
+  base64: string
+}
+
+/** More parts than this is refused (413). */
+export const MAX_MULTIPART_PARTS = 1000
+
+/**
+ * A `multipart/form-data` body as an object: each field a string, each file a `WebhookFile`; a name sent more than
+ * once becomes an array. Parsed with busboy: the platform's own parser (undici's `Response.formData`) refuses valid
+ * bodies whose boundary text appears inside a part.
+ */
+function parseMultipart(bytes: Buffer, contentType: string): Promise<Record<string, unknown>> {
+  const malformed = () => new RunRequestError(400, 'invalid_request', 'The multipart body is malformed')
+  return new Promise((resolve, reject) => {
+    let parser: busboy.Busboy
+    try {
+      parser = busboy({
+        headers: { 'content-type': contentType },
+        // The whole body is already capped (the app's bodyLimit); fields may use all of it.
+        limits: { parts: MAX_MULTIPART_PARTS, fieldSize: Number.POSITIVE_INFINITY },
+        defParamCharset: 'utf8',
+      })
+    } catch {
+      reject(malformed())
+      return
+    }
+    const parts = new Map<string, unknown[]>()
+    const add = (name: string, item: unknown) => parts.set(name, [...(parts.get(name) ?? []), item])
+    parser.on('field', (name, value) => add(name, value))
+    parser.on('file', (name, stream, info) => {
+      const chunks: Buffer[] = []
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+      stream.on('end', () => {
+        const file = Buffer.concat(chunks)
+        add(name, {
+          filename: info.filename ?? '',
+          // RFC 7578 §4.4: a part without Content-Type is text/plain.
+          contentType: info.mimeType,
+          size: file.length,
+          base64: file.toString('base64'),
+        } satisfies WebhookFile)
+      })
+    })
+    parser.on('partsLimit', () =>
+      reject(
+        new WebhookRejection(
+          413,
+          'too_many_parts',
+          `A multipart body can have at most ${MAX_MULTIPART_PARTS} parts`,
+          'too_many_parts',
+        ),
+      ),
+    )
+    parser.on('error', () => reject(malformed()))
+    parser.on('close', () =>
+      resolve(
+        Object.fromEntries([...parts].map(([name, items]) => [name, items.length === 1 ? items[0] : items])),
+      ),
+    )
+    parser.end(bytes)
+  })
 }
 
 export interface WebhookTarget {
