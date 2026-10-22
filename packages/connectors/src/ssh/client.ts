@@ -1,7 +1,25 @@
 import { Duplex } from 'node:stream'
+import { parseServiceAccountKey, type ServerIdentity, serviceAccountTokens } from '../google-auth'
 import { ConnectorError } from '../types'
-import { type SshConfig, type SshSecrets, SshSettingsError, sshCredentials } from './settings'
-import { SshError, SshTunnel, type SshTunnelOptions } from './tunnel'
+import { type SshConfig, type SshHop, type SshSecrets, SshSettingsError, sshCredentials } from './settings'
+import { SshError, SshTunnel, type SshTunnelOptions, type TunnelIap } from './tunnel'
+
+/** This process's IAP settings (M18), set once by the server. */
+export interface IapDefaults {
+  /** The server's own Google identity, only where the instance allows resources to use it. */
+  serverIdentity?: ServerIdentity
+  /** IAP's endpoint and Google's token endpoint, for tests. */
+  url?: string
+  tokenUrl?: string
+}
+
+let iapDefaults: IapDefaults = {}
+
+export function configureIap(defaults: IapDefaults): void {
+  iapDefaults = defaults
+}
+
+const IAP_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
 /**
  * The tunnel a client of this resource configuration connects through (M17), or none without `ssh`. Made with the
@@ -20,10 +38,66 @@ export function tunnelFor(
     if (err instanceof SshSettingsError) throw new ConnectorError('invalid_config', err.message)
     throw err
   }
-  return new SshTunnel(
-    config.ssh.hops.map((hop) => ({ ...hop, credential: credentials.get(hop.id)! })),
-    options,
-  )
+  const ssh = config.ssh
+  let hops: ConstructorParameters<typeof SshTunnel>[0]
+  try {
+    hops = ssh.hops.map(({ reach, iap, ...hop }) => ({
+      ...hop,
+      credential: credentials.get(hop.id)!,
+      ...(reach === 'iap' && iap ? { iap: iapFor(hop, iap, secrets.ssh?.[hop.id]?.iapKey) } : {}),
+    }))
+  } catch (err) {
+    if (err instanceof SshSettingsError) throw new ConnectorError('invalid_config', err.message)
+    throw err
+  }
+  return new SshTunnel(hops, options)
+}
+
+/** How a hop reaches its VM through IAP: the target, and tokens of the key or of the server's own identity. */
+function iapFor(
+  hop: Pick<SshHop, 'id' | 'host' | 'port'>,
+  iap: NonNullable<SshHop['iap']>,
+  key: string | undefined,
+): TunnelIap {
+  const target = {
+    project: iap.project,
+    zone: iap.zone,
+    instance: iap.instance,
+    interface: iap.interface,
+    port: hop.port,
+  }
+  const where = `SSH server ${hop.host}`
+  const url = iapDefaults.url ? { url: iapDefaults.url } : {}
+  if (iap.identity === 'server') {
+    const identity = iapDefaults.serverIdentity
+    if (!identity)
+      throw new SshSettingsError(
+        hop.id,
+        'iapKey',
+        `${where}: this instance doesn't let resources use its own Google identity; use a service account key`,
+      )
+    return { target, tokens: identity, describe: (signal) => identity.describe(signal), ...url }
+  }
+  if (!key)
+    throw new SshSettingsError(
+      hop.id,
+      'iapKey',
+      `${where}: add the service account key that opens the Google IAP tunnel`,
+    )
+  let parsed: ReturnType<typeof parseServiceAccountKey>
+  try {
+    parsed = parseServiceAccountKey(key, `ssh.${hop.id}.iapKey`)
+  } catch (err) {
+    if (err instanceof ConnectorError)
+      throw new SshSettingsError(hop.id, 'iapKey', `${where}: ${err.message}`)
+    throw err
+  }
+  const tokens = serviceAccountTokens(parsed, {
+    scope: IAP_SCOPE,
+    field: `ssh.${hop.id}.iapKey`,
+    ...(iapDefaults.tokenUrl ? { tokenUrl: iapDefaults.tokenUrl } : {}),
+  })
+  return { target, tokens, describe: async () => parsed.client_email, ...url }
 }
 
 /** A tunnel that couldn't open, as a connection error that says which SSH server and why. */

@@ -238,6 +238,8 @@ interface Session {
  */
 export async function startTestIapServer(options: {
   tokens: string[]
+  /** Also accepts the tokens this says yes to (e.g. any a fake Google issued). */
+  accept?: (token: string) => boolean
   instances: Record<string, string>
 }): Promise<TestIapServer> {
   const tokens = new Set(options.tokens)
@@ -300,7 +302,7 @@ export async function startTestIapServer(options: {
     const url = new URL(req.url ?? '/', 'http://iap')
     const token = req.headers.authorization?.replace(/^Bearer /, '')
     const known = url.pathname === '/v4/connect' || url.pathname === '/v4/reconnect'
-    if (!known || !token || !tokens.has(token)) {
+    if (!known || !token || !(tokens.has(token) || options.accept?.(token))) {
       socket.end(
         'HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nnot authorized',
       )

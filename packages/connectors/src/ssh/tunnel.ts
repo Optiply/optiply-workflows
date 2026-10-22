@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { Duplex } from 'node:stream'
 import ssh2 from 'ssh2'
+import type { GoogleTokens } from '../google-auth'
+import { ConnectorError } from '../types'
+import { IapError, type IapTarget, openIapStream } from './iap'
 import type { SshCredential, SshHop } from './settings'
 
 export type SshErrorCode =
@@ -9,6 +12,10 @@ export type SshErrorCode =
   | 'ssh_host_key_unknown'
   | 'ssh_host_key_changed'
   | 'ssh_forward'
+  /** Reaching the first server through Google Cloud IAP (M18): the identity, the VM or port, or IAP itself. */
+  | 'iap_auth'
+  | 'iap_target'
+  | 'iap_connect'
 
 export interface SshHostKey {
   algorithm: string
@@ -38,11 +45,26 @@ export interface SshTestStep {
   /** `trusted`: matches the pin; `untrusted`: no pin yet; `changed`: another key than the pinned one (`trusted`). */
   hostKey?: SshHostKey & { status: 'trusted' | 'untrusted' | 'changed'; trusted?: string }
   error?: { code: SshErrorCode; message: string }
+  /** The step that reaches the first server through Google IAP (`host` is the VM), before its SSH step. */
+  via?: 'iap'
+  /** Whose Google identity opened the IAP tunnel, where known. */
+  identity?: string
 }
 
 /** One SSH server of a tunnel, with what it signs in with. */
 export interface TunnelHop extends Pick<SshHop, 'id' | 'host' | 'port' | 'username' | 'hostKey'> {
   credential: SshCredential
+  /** The first hop reached through Google IAP instead of directly (M18). */
+  iap?: TunnelIap
+}
+
+export interface TunnelIap {
+  target: IapTarget
+  tokens: GoogleTokens
+  /** Whose identity the tokens are, for Test connection. */
+  describe(signal: AbortSignal): Promise<string>
+  /** IAP's endpoint, for tests. */
+  url?: string
 }
 
 export interface SshTunnelOptions {
@@ -59,7 +81,7 @@ export interface SshTunnelOptions {
  * This process's tunnels, for its metrics: how many are connected now, and how many times one connected again after
  * its connection dropped.
  */
-export const sshTunnelStats = { open: 0, reconnects: 0 }
+export const sshTunnelStats = { open: 0, reconnects: 0, iapResumes: 0 }
 
 /**
  * What happens to this process's tunnels, for its log (never a secret): `servers` are `user@host:port`, in order.
@@ -123,8 +145,15 @@ export class SshTunnel {
   async probe(): Promise<SshTestStep[]> {
     const steps: SshTestStep[] = []
     const clients: ssh2.Client[] = []
+    let iap: Duplex | undefined
     try {
       for (const [i, hop] of this.hops.entries()) {
+        if (i === 0 && hop.iap) {
+          const reached = await this.probeIap(hop, hop.iap)
+          steps.push(reached.step)
+          if (!reached.sock) break
+          iap = reached.sock
+        }
         const started = performance.now()
         const step = (ok: boolean): SshTestStep => ({
           hop: hop.id,
@@ -134,8 +163,7 @@ export class SshTunnel {
           durationMs: Math.round(performance.now() - started),
         })
         try {
-          const sock =
-            i === 0 ? undefined : await forward(clients[i - 1]!, this.hops[i - 1]!, hop.host, hop.port)
+          const sock = i === 0 ? iap : await forward(clients[i - 1]!, this.hops[i - 1]!, hop.host, hop.port)
           clients.push(await this.connectHop(hop, sock))
           const seen = this.seen.get(hop.id)
           steps.push({ ...step(true), ...(seen ? { hostKey: { ...seen, status: 'trusted' as const } } : {}) })
@@ -167,8 +195,56 @@ export class SshTunnel {
       }
     } finally {
       for (const c of clients.reverse()) c.end()
+      iap?.destroy()
     }
     return steps
+  }
+
+  /** The IAP step of Test connection: the stream to the first server, or why there's none. */
+  private async probeIap(hop: TunnelHop, iap: TunnelIap): Promise<{ step: SshTestStep; sock?: Duplex }> {
+    const started = performance.now()
+    const identity = await iap.describe(AbortSignal.timeout(5000)).catch(() => undefined)
+    const step = (ok: boolean): SshTestStep => ({
+      hop: hop.id,
+      host: iap.target.instance,
+      port: iap.target.port,
+      via: 'iap',
+      ok,
+      durationMs: Math.round(performance.now() - started),
+      ...(identity ? { identity } : {}),
+    })
+    try {
+      const sock = await this.openIap(hop)
+      return { step: step(true), sock }
+    } catch (err) {
+      if (!(err instanceof SshError)) throw err
+      return { step: { ...step(false), error: { code: err.code, message: err.message } } }
+    }
+  }
+
+  /** The first hop's connection through IAP, or undefined to connect directly. */
+  private async openIap(hop: TunnelHop): Promise<Duplex | undefined> {
+    const { iap } = hop
+    if (!iap) return undefined
+    const timeout = Math.min(
+      this.options.connectTimeoutMs ?? 15_000,
+      this.options.deadline === undefined ? Number.POSITIVE_INFINITY : this.options.deadline - Date.now(),
+    )
+    if (timeout <= 0) throw new SshError('iap_connect', hop, 'Google IAP: no time left to connect')
+    try {
+      const stream = await openIapStream(iap.target, {
+        getToken: (signal, force) => iap.tokens.token(signal, force),
+        connectTimeoutMs: timeout,
+        ...(iap.url ? { url: iap.url } : {}),
+      })
+      stream.on('resumed', () => sshTunnelStats.iapResumes++)
+      return stream
+    } catch (err) {
+      if (err instanceof IapError) throw new SshError(err.code, hop, err.message)
+      // The identity had no token: Google refused the key, or the server has no identity.
+      if (err instanceof ConnectorError) throw new SshError('iap_auth', hop, `Google IAP: ${err.message}`)
+      throw err
+    }
   }
 
   async close(): Promise<void> {
@@ -202,15 +278,17 @@ export class SshTunnel {
   private async connectAll(): Promise<ssh2.Client[]> {
     const clients: ssh2.Client[] = []
     const started = performance.now()
+    let iap: Duplex | undefined
     try {
       for (const [i, hop] of this.hops.entries()) {
-        // Each next server is reached through the one before.
-        const sock =
-          i === 0 ? undefined : await forward(clients[i - 1]!, this.hops[i - 1]!, hop.host, hop.port)
+        // The first server directly or through IAP, each next one through the one before.
+        if (i === 0) iap = await this.openIap(hop)
+        const sock = i === 0 ? iap : await forward(clients[i - 1]!, this.hops[i - 1]!, hop.host, hop.port)
         clients.push(await this.connectHop(hop, sock))
       }
     } catch (err) {
       for (const c of clients.reverse()) c.end()
+      iap?.destroy()
       if (err instanceof SshError)
         emit({ type: 'failed', servers: this.servers, hop: err.hop.id, code: err.code, message: err.message })
       throw err

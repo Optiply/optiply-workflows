@@ -12,6 +12,13 @@ export {
   type CodeFetchRequest,
   type CodeFetchResponse,
 } from './code-fetch'
+export {
+  type GoogleTokens,
+  isServiceAccountKey,
+  type ServerIdentity,
+  type ServerIdentityOptions,
+  serverIdentity,
+} from './google-auth'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export {
@@ -37,6 +44,8 @@ export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export { type AuthFlowStep, type RestConfig, type RestQuery, type RestSecrets, restConnector } from './rest'
 export { type RunOptions, runQuery, testResource } from './run'
+export { configureIap, type IapDefaults } from './ssh/client'
+export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
 export {
   normalizeSsh,
@@ -61,6 +70,7 @@ export {
   type SshTunnelOptions,
   sshTunnelStats,
   type TunnelHop,
+  type TunnelIap,
 } from './ssh/tunnel'
 export * from './types'
 

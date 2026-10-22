@@ -4,18 +4,38 @@ import { readPrivateKey, type SshKey, SshKeyError } from './keys'
 /** The SSH server and at most two jump hosts before it. */
 export const SSH_MAX_HOPS = 3
 
-const hopSchema = z.object({
-  /** Stable within the config: the hop's secrets are kept under it, so removing a jump host shifts nothing. */
-  id: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
-  host: z.string().trim().min(1),
-  port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().trim().min(1),
-  auth: z.enum(['key', 'password']).default('key'),
-  /** The server's host key as trusted in Test connection; without one, connecting is refused. */
-  hostKey: z
-    .object({ algorithm: z.string().min(1), fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]+$/) })
-    .optional(),
+/** A VM reached through Google Cloud IAP (M18), and whose Google identity opens the tunnel. */
+const iapSchema = z.object({
+  project: z.string().trim().min(1),
+  zone: z.string().trim().min(1),
+  instance: z.string().trim().min(1),
+  interface: z.string().trim().min(1).default('nic0'),
+  /** A service account key kept with the settings (`iapKey`), or the server's own identity (if the instance allows). */
+  identity: z.enum(['key', 'server']).default('key'),
 })
+
+const hopSchema = z.preprocess(
+  // Through IAP the server is the VM: its name is the host the messages and the form show.
+  (hop) => {
+    const h = hop as { reach?: unknown; host?: unknown; iap?: { instance?: unknown } } | null
+    return h && h.reach === 'iap' && !h.host && h.iap?.instance ? { ...h, host: h.iap.instance } : hop
+  },
+  z.object({
+    /** Stable within the config: the hop's secrets are kept under it, so removing a jump host shifts nothing. */
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
+    /** How the first server is reached: at `host:port` (left out), or through Google Cloud IAP to the VM's `port` (M18). */
+    reach: z.enum(['direct', 'iap']).optional(),
+    iap: iapSchema.optional(),
+    host: z.string().trim().min(1),
+    port: z.number().int().min(1).max(65535).default(22),
+    username: z.string().trim().min(1),
+    auth: z.enum(['key', 'password']).default('key'),
+    /** The server's host key as trusted in Test connection; without one, connecting is refused. */
+    hostKey: z
+      .object({ algorithm: z.string().min(1), fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]+$/) })
+      .optional(),
+  }),
+)
 
 /**
  * A resource configuration's SSH tunnel (M17, architecture §2.20): `hops` in the order they're connected to; the first
@@ -27,6 +47,24 @@ export const sshConfigSchema = z
     message: 'Each SSH server needs its own id',
     path: ['hops'],
   })
+  .superRefine((ssh, ctx) => {
+    for (const [i, hop] of ssh.hops.entries()) {
+      if (hop.reach !== 'iap') continue
+      // Only the first server is reached from here; the others through the one before.
+      if (i > 0)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Only the first SSH server can be reached through Google IAP',
+          path: ['hops', i, 'reach'],
+        })
+      else if (!hop.iap)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Name the VM: its project, zone and instance',
+          path: ['hops', i, 'iap'],
+        })
+    }
+  })
 
 /** Per hop id: its private key (and passphrase) or password. Write-only, like every secret. */
 export const sshSecretsSchema = z.record(
@@ -35,6 +73,8 @@ export const sshSecretsSchema = z.record(
     privateKey: z.string().optional(),
     passphrase: z.string().optional(),
     password: z.string().optional(),
+    /** The service account key (JSON) that opens the IAP tunnel to this hop (M18). */
+    iapKey: z.string().optional(),
   }),
 )
 
@@ -50,7 +90,7 @@ export class SshSettingsError extends Error {
   override name = 'SshSettingsError'
   constructor(
     readonly hopId: string,
-    readonly field: 'privateKey' | 'passphrase' | 'password',
+    readonly field: 'privateKey' | 'passphrase' | 'password' | 'iapKey',
     message: string,
   ) {
     super(message)
@@ -72,8 +112,12 @@ export function normalizeSsh(
   for (const hop of hops) {
     const s = secrets?.[hop.id]
     if (!s) continue
-    const used =
-      hop.auth === 'key' ? { privateKey: s.privateKey, passphrase: s.passphrase } : { password: s.password }
+    const used = {
+      ...(hop.auth === 'key'
+        ? { privateKey: s.privateKey, passphrase: s.passphrase }
+        : { password: s.password }),
+      ...(hop.reach === 'iap' && hop.iap?.identity === 'key' ? { iapKey: s.iapKey } : {}),
+    }
     const defined = Object.fromEntries(Object.entries(used).filter(([, v]) => v !== undefined))
     if (Object.keys(defined).length) kept[hop.id] = defined
   }
