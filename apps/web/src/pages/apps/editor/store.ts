@@ -15,11 +15,11 @@ import {
   validateApp,
 } from '@ow/app-definition'
 import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
-import { type SharedDefinition, SharedHistory } from '@ow/collab'
+import { equal, type SharedDefinition, SharedHistory } from '@ow/collab'
 import type * as Y from 'yjs'
 import { create } from 'zustand'
 import { LOCAL, type SaveStatus } from '@/lib/collab-session'
-import { changeKey, sameValue } from '@/lib/history'
+import { changeKey } from '@/lib/history'
 
 export type { SaveStatus }
 
@@ -235,7 +235,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     const before = state.definition
     const next = edit(before)
     // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
-    if (next === before || sameValue(before, next)) return
+    if (next === before || equal(before, next)) return
     history.edit(next, viewOf(state), changeKey(before, next), Date.now())
     set({ ...applied(state, shared.value), ...undoable(history) })
   },

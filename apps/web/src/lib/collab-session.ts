@@ -36,6 +36,9 @@ interface Session<D> {
   close(): void
 }
 
+/** How long Run, publishing or a branch switch waits for the draft to be saved before saying so. */
+const SAVE_TIMEOUT_MS = 10_000
+
 /** `ws(s)://<this host>/api/collab/<key>`: the same origin, so the session cookie goes along. */
 export function collabUrl(key: string): string {
   const { protocol, host } = window.location
@@ -57,11 +60,11 @@ export class SessionSlot<D> {
   /**
    * Opens the document with `key`. The store shows the draft as loaded until it syncs, then edits go into the
    * document and others' come out of it. The same key again (a branch draft replaced after a Git update) puts the
-   * store back on the document.
+   * store back on the document, unless the server ended it (access changed): then it connects afresh.
    */
   open(key: string): void {
     const { host } = this
-    if (this.current?.key === key) {
+    if (this.current?.key === key && this.current.provider.state !== 'closed') {
       if (this.current.attached) host.attach(this.current.shared)
       this.current.changed()
       return
@@ -121,13 +124,21 @@ export class SessionSlot<D> {
 
   /**
    * Resolves once the server has saved every edit made here to the draft (runs and server queries use the draft).
-   * Rejects when it can't be saved.
+   * Rejects when it can't be saved, or not within 10 s (offline, say).
    */
   async ensureSaved(): Promise<void> {
     const session = this.current
     if (!session || this.host.readOnly()) return
-    const status = await session.provider.save()
-    if (status.error) throw new Error(`The draft couldn't be saved: ${status.error}`)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tooLong = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Saving the draft took too long')), SAVE_TIMEOUT_MS)
+    })
+    try {
+      const status = await Promise.race([session.provider.save(), tooLong])
+      if (status.error) throw new Error(`The draft couldn't be saved: ${status.error}`)
+    } finally {
+      clearTimeout(timer)
+    }
   }
 }
 

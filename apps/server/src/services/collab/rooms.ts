@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   type CollabStatus,
+  equal,
   MESSAGE_AWARENESS,
   MESSAGE_SAVE,
   MESSAGE_STATUS,
@@ -88,8 +89,11 @@ export class CollabRoom {
     return this.target.key
   }
 
-  /** Applies what the store holds. */
-  load(updates: Uint8Array[], revision: number): void {
+  /**
+   * Applies what the store holds. A document ahead of its draft (edits stored whose write failed, or whose process went
+   * before writing) is still to write: `dirty` lives here only, so a save request would otherwise find nothing to do.
+   */
+  load(updates: Uint8Array[], revision: number, draft: unknown): void {
     this.revision = revision
     Y.transact(
       this.doc,
@@ -98,6 +102,10 @@ export class CollabRoom {
       },
       LOADED,
     )
+    if (!equal(this.shared.value, draft)) {
+      this.dirty = true
+      this.scheduleWrite()
+    }
   }
 
   add(peer: CollabPeer): void {
@@ -368,10 +376,10 @@ export class CollabRoom {
     if (origin && this.peers.has(origin as CollabPeer)) {
       for (const id of removed) this.peers.get(origin as CollabPeer)?.delete(id)
     }
-    if (origin === RELAYED) {
-      for (const id of [...added, ...updated]) this.remoteIds.add(id)
-      for (const id of removed) this.remoteIds.delete(id)
-    }
+    if (origin === RELAYED) for (const id of [...added, ...updated]) this.remoteIds.add(id)
+    // Removed however it went: relayed, or timed out (30 s without a renewal: its process may be gone), so its owner
+    // can claim it again from here.
+    for (const id of removed) this.remoteIds.delete(id)
     const update = encodeAwarenessUpdate(this.awareness, [...added, ...updated, ...removed])
     const message = awarenessMessage(update)
     for (const peer of this.peers.keys()) peer.send(message)
@@ -498,9 +506,9 @@ export class CollabHub {
   }
 
   private async openRoom(target: CollabTarget): Promise<CollabRoom> {
-    const { updates, revision } = await this.store.load(target)
+    const { updates, revision, draft } = await this.store.load(target, this.source)
     const room = new CollabRoom(target, this.store, this.log, (r, err) => this.fail(r, err), this.source)
-    room.load(updates, revision)
+    room.load(updates, revision, draft)
     this.open.set(target.key, room)
     // What other processes announced between the load and now, and who is there already.
     room.recheck()

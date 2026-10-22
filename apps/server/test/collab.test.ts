@@ -6,16 +6,24 @@ import {
   SharedDefinition,
   workflowSpec,
 } from '@ow/collab'
-import { collabDocuments, collabUpdates, createDb, gitBranchDrafts, workflows } from '@ow/db'
+import { collabDocuments, collabUpdates, createDb, gitBranchDrafts, users, workflows } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import {
+  Awareness,
+  applyAwarenessUpdate,
+  encodeAwarenessUpdate,
+  removeAwarenessStates,
+} from 'y-protocols/awareness'
 import * as sync from 'y-protocols/sync'
 import * as Y from 'yjs'
 import { buildApp } from '../src/api/app'
+import { type CollabPeer, CollabRoom } from '../src/services/collab/rooms'
+import { COLLAB_CHANNEL, CollabStore } from '../src/services/collab/store'
+import { resolveTarget } from '../src/services/collab/target'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 /**
@@ -571,5 +579,135 @@ describe('collab documents across API processes', () => {
     expect(b.code()).toBe('return "rest"')
     await a.close()
     await b.close()
+  })
+})
+
+/** M16 review: the store's reads and loads against compactions and other processes, and presence ids freed. */
+describe('collab store and rooms', () => {
+  const targetOf = async (key: string) => {
+    const [user] = await env.db.select().from(users).where(eq(users.email, 'admin@example.com'))
+    const session = {
+      id: user!.id,
+      email: user!.email,
+      name: user!.name,
+      avatarUrl: null,
+      isAdmin: true,
+      sessionId: 's',
+    }
+    return (await resolveTarget(env.db, session, key))!
+  }
+
+  it('reads a document under its lock, so a compaction never falls between its two queries', async () => {
+    const id = await createWorkflow('read-locked')
+    const key = `workflow:${id}`
+    const store = new CollabStore(env.db)
+    await store.load(await targetOf(key), 'test')
+    const { sql, close } = createDb(env.databaseUrl, { max: 1 })
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const locked = new Promise<void>((resolve) => {
+      void sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtext(${`collab:${key}`}))`
+        resolve()
+        await held
+      })
+    })
+    await locked
+    let read = false
+    const reading = store.read(key).then((updates) => {
+      read = true
+      return updates
+    })
+    await new Promise((r) => setTimeout(r, 200))
+    expect(read).toBe(false)
+    release()
+    expect((await reading).length).toBeGreaterThan(0)
+    await close()
+  })
+
+  it('announces a draft folded in on load, so rooms open in other processes get it', async () => {
+    const id = await createWorkflow('load-announces', 'return 1')
+    const key = `workflow:${id}`
+    const store = new CollabStore(env.db)
+    await store.load(await targetOf(key), 'test')
+    const { sql, close } = createDb(env.databaseUrl, { max: 1 })
+    const heard: { d: string; u?: number; p?: string }[] = []
+    await sql.listen(COLLAB_CHANNEL, (payload) => heard.push(JSON.parse(payload)))
+    data(
+      await admin.mutate('workflows.saveDraft', { id, revision: 2, definition: definition('return "rest"') }),
+    )
+    const loaded = await store.load(await targetOf(key), 'loader')
+    expect(loaded.revision).toBe(3)
+    expect(loaded.draft).toEqual(definition('return "rest"'))
+    await vi.waitFor(() => expect(heard).toContainEqual({ d: key, u: expect.any(Number), p: 'loader' }))
+    await close()
+  })
+
+  it('writes a stored document ahead of its draft once it opens again (a write lost, a process gone)', async () => {
+    const id = await createWorkflow('ahead-of-draft', 'return 1')
+    const key = `workflow:${id}`
+    const store = new CollabStore(env.db)
+    const { updates } = await store.load(await targetOf(key), 'test')
+    // An edit stored by a process that went before writing it to the draft.
+    const doc = new Y.Doc()
+    for (const u of updates) Y.applyUpdate(doc, u)
+    const shared = new SharedDefinition<WorkflowDefinition>(doc, workflowSpec)
+    let edit: Uint8Array | null = null
+    doc.on('update', (u: Uint8Array) => {
+      edit = u
+    })
+    shared.set(definition('return "unwritten"'))
+    await store.append(key, edit!, 'gone')
+    const a = await connect(adminCookie, key)
+    expect(a.code()).toBe('return "unwritten"')
+    await vi.waitFor(async () => {
+      const [stored] = await env.db.select().from(workflows).where(eq(workflows.id, id))
+      expect(stored?.draftDefinition).toEqual(definition('return "unwritten"'))
+      // (Written after the room's one-second wait for more edits.)
+    }, 5000)
+    await a.close()
+  })
+
+  it('lets a peer claim a presence id again once another process stopped renewing it', async () => {
+    const id = await createWorkflow('presence-freed')
+    const key = `workflow:${id}`
+    const store = new CollabStore(env.db)
+    const room = new CollabRoom(await targetOf(key), store, env.app.log, () => {}, 'test')
+    // Someone on another process (now gone) spoke for client id 42.
+    const elsewhere = new Awareness(new Y.Doc())
+    elsewhere.clientID = 42
+    // (Twice: a new client id's first clock is 0, which counts as nothing new.)
+    elsewhere.setLocalState({ selection: ['code1'] })
+    elsewhere.setLocalState({ selection: ['code1'] })
+    room.relayedPresence(encodeAwarenessUpdate(elsewhere, [42]))
+    // Their tab reconnects here with the same client id.
+    const peer: CollabPeer = {
+      user: { id: 'u', name: 'back', avatarUrl: null },
+      readOnly: false,
+      send: () => {},
+      close: () => {},
+    }
+    room.add(peer)
+    const claim = () => {
+      elsewhere.setLocalState({ selection: ['startTrigger'] })
+      const e = encoding.createEncoder()
+      encoding.writeVarUint(e, MESSAGE_AWARENESS)
+      encoding.writeVarUint8Array(e, encodeAwarenessUpdate(elsewhere, [42]))
+      room.receive(peer, encoding.toUint8Array(e))
+    }
+    claim()
+    // Still spoken for elsewhere: refused.
+    expect(room.awareness.getStates().get(42)).toMatchObject({ selection: ['code1'] })
+    // 30 s without a renewal from there: y-protocols removes it as timed out.
+    removeAwarenessStates(room.awareness, [42], 'timeout')
+    claim()
+    expect(room.awareness.getStates().get(42)).toMatchObject({
+      selection: ['startTrigger'],
+      user: { name: 'back' },
+    })
+    room.destroy()
+    elsewhere.destroy()
   })
 })

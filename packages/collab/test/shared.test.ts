@@ -330,6 +330,20 @@ describe('SharedDefinition', () => {
     expect(a.textAt(['blocks', 'x', 'config'])).toBeNull()
   })
 
+  it('stores text fields with \\n line ends (Monaco is bound in one end-of-line character)', () => {
+    const a = replica<WorkflowDefinition>(workflowSpec)
+    // A draft from Git or REST with CRLF (and a lone CR): made, then changed in place.
+    a.set(workflow([code('code1', 'const a = 1\r\nreturn a')]))
+    expect(a.textAt(['blocks', 1, 'config', 'code'])?.toString()).toBe('const a = 1\nreturn a')
+    expect(a.value.blocks[1]).toMatchObject({ config: { code: 'const a = 1\nreturn a' } })
+    a.set(workflow([code('code1', 'const a = 2\r\nreturn a\r')]))
+    expect(a.textAt(['blocks', 1, 'config', 'code'])?.toString()).toBe('const a = 2\nreturn a\n')
+    expect(a.value).toEqual(replica<WorkflowDefinition>(workflowSpec, a).value)
+    // Names and other values are kept as they are.
+    a.set(workflow([{ ...code('code1'), description: 'one\r\ntwo' }]))
+    expect(a.value.blocks[1]).toMatchObject({ description: 'one\r\ntwo' })
+  })
+
   it('deletes a field by its path', () => {
     const a = replica<WorkflowDefinition>(workflowSpec)
     a.set(workflow([{ ...code('code1'), description: 'hi' }]))

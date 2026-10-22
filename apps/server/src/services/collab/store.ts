@@ -34,10 +34,14 @@ export class CollabStore {
   constructor(private db: Db) {}
 
   /**
-   * The document as updates to apply, oldest first, and its revision. A draft opened for the first time gets a
-   * document made from it; a draft written since the document last matched it is folded in.
+   * The document as updates to apply, oldest first, its revision, and the draft (the document may be ahead of it: edits
+   * stored whose write failed, or a process gone before writing). A draft opened for the first time gets a document
+   * made from it; a draft written since the document last matched it is folded in, and the other processes told.
    */
-  async load(target: CollabTarget): Promise<{ updates: Uint8Array[]; revision: number }> {
+  async load(
+    target: CollabTarget,
+    source: string,
+  ): Promise<{ updates: Uint8Array[]; revision: number; draft: unknown }> {
     return this.db.transaction(async (tx) => {
       await lock(tx, target.key)
       const draft = await lockedDraft(tx, target.owner)
@@ -65,14 +69,26 @@ export class CollabStore {
             .orderBy(asc(collabUpdates.id))
         ).map((u) => u.update),
       ]
-      if (draft.revision <= document.revision) return { updates, revision: document.revision }
+      if (draft.revision <= document.revision)
+        return { updates, revision: document.revision, draft: draft.definition }
       const doc = new Y.Doc()
       for (const u of updates) Y.applyUpdate(doc, u)
       const folded = foldUpdate(doc, target, draft.definition)
       doc.destroy()
-      if (folded) await tx.insert(collabUpdates).values({ documentKey: target.key, update: folded })
+      if (folded) {
+        // Rooms open elsewhere fold nothing once the revision moved: they get the update instead.
+        const [row] = await tx
+          .insert(collabUpdates)
+          .values({ documentKey: target.key, update: folded })
+          .returning({ id: collabUpdates.id })
+        await notify(tx, { d: target.key, u: row!.id, p: source })
+      }
       await setRevision(tx, target.key, draft.revision)
-      return { updates: folded ? [...updates, folded] : updates, revision: draft.revision }
+      return {
+        updates: folded ? [...updates, folded] : updates,
+        revision: draft.revision,
+        draft: draft.definition,
+      }
     })
   }
 
@@ -96,18 +112,24 @@ export class CollabStore {
     return row?.update ?? null
   }
 
-  /** The document as stored: its state and the updates since. */
+  /**
+   * The document as stored: its state and the updates since, read under its lock (a compaction between reading the
+   * state and the updates would leave out the updates it folded in).
+   */
   async read(key: string): Promise<Uint8Array[]> {
-    const [document] = await this.db
-      .select({ state: collabDocuments.state })
-      .from(collabDocuments)
-      .where(eq(collabDocuments.key, key))
-    if (!document) return []
-    const updates = await this.db
-      .select({ update: collabUpdates.update })
-      .from(collabUpdates)
-      .where(eq(collabUpdates.documentKey, key))
-    return [document.state, ...updates.map((u) => u.update)]
+    return this.db.transaction(async (tx) => {
+      await lock(tx, key)
+      const [document] = await tx
+        .select({ state: collabDocuments.state })
+        .from(collabDocuments)
+        .where(eq(collabDocuments.key, key))
+      if (!document) return []
+      const updates = await tx
+        .select({ update: collabUpdates.update })
+        .from(collabUpdates)
+        .where(eq(collabUpdates.documentKey, key))
+      return [document.state, ...updates.map((u) => u.update)]
+    })
   }
 
   /** Asks the other processes with the document open to announce who is there (a room just opened here). */

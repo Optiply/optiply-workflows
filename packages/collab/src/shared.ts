@@ -225,7 +225,7 @@ class Writer {
         this.map(current, next, path)
       else if (current instanceof Y.Array && Array.isArray(next)) this.array(current, next, path)
       else if (current instanceof Y.Text && typeof next === 'string' && this.shared.spec.isText(path))
-        text(current, this.wellFormed(next))
+        text(current, this.textForm(next))
       else return this.create(next, path)
       this.seeds.push([current, next])
       return KEEP
@@ -245,6 +245,17 @@ class Writer {
     return s.replace(LONE_SURROGATE_ALL, '\uFFFD')
   }
 
+  /**
+   * A text field's string as the document stores it: well-formed, with `\n` line ends. Monaco's binding works in one
+   * end-of-line character, so a `\r` (a draft saved over REST or from Git with CRLF) would shift its offsets.
+   */
+  private textForm(s: string): string {
+    const well = this.wellFormed(s)
+    if (!well.includes('\r')) return well
+    this.inexact()
+    return well.replace(/\r\n?/g, '\n')
+  }
+
   /** A copy without the keys holding `undefined`, to store as one value. */
   private json(v: unknown): unknown {
     if (typeof v === 'string') return this.wellFormed(v)
@@ -257,10 +268,8 @@ class Writer {
 
   create(v: unknown, path: Path): unknown {
     if (isRecord(v) && this.shared.spec.isAtomic(path)) return this.json(v)
-    if (typeof v === 'string') {
-      const s = this.wellFormed(v)
-      return this.shared.spec.isText(path) ? new Y.Text(s) : s
-    }
+    if (typeof v === 'string')
+      return this.shared.spec.isText(path) ? new Y.Text(this.textForm(v)) : this.wellFormed(v)
     if (Array.isArray(v)) {
       const yarr = new Y.Array<unknown>()
       yarr.push(v.map((item, i) => this.create(item ?? null, [...path, i])))

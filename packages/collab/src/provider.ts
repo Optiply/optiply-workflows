@@ -107,6 +107,11 @@ export class CollabProvider {
     this.setState('closed')
     this.socket?.close(1000)
     this.socket = null
+    // Nobody will answer them now.
+    const closed = { revision: this.status?.revision ?? 0, error: 'Closed' }
+    for (const resolve of this.waiting.splice(0)) resolve(closed)
+    for (const [, save] of this.saves) save.resolve(closed)
+    this.saves.clear()
   }
 
   private connect(): void {
@@ -115,7 +120,6 @@ export class CollabProvider {
     socket.binaryType = 'arraybuffer'
     this.socket = socket
     socket.onopen = () => {
-      this.retries = 0
       this.send((e) => {
         encoding.writeVarUint(e, MESSAGE_SYNC)
         sync.writeSyncStep1(e, this.doc)
@@ -183,6 +187,9 @@ export class CollabProvider {
 
   /** The document matches the server's: what was typed offline went with our step 2. Waiting saves go now. */
   private synced(): void {
+    // Only now: the server accepts the socket before it admits anyone, and one that fails after that would otherwise
+    // be retried every half second.
+    this.retries = 0
     this.setState('synced')
     for (const resolve of this.waiting.splice(0)) this.requestSave(resolve)
     if (this.unsaved && !this.saves.size) this.requestSave(() => {})

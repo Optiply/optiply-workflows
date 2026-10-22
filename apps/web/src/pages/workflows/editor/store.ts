@@ -1,4 +1,4 @@
-import { type SharedDefinition, SharedHistory } from '@ow/collab'
+import { equal, type SharedDefinition, SharedHistory } from '@ow/collab'
 import {
   type Block,
   type Diagnostic,
@@ -10,7 +10,7 @@ import { checkBodySchema } from '@ow/definition/body-schema'
 import type * as Y from 'yjs'
 import { create } from 'zustand'
 import { LOCAL, type SaveStatus } from '@/lib/collab-session'
-import { changeKey, sameValue } from '@/lib/history'
+import { changeKey } from '@/lib/history'
 import type { SampleResult } from './scope-types'
 
 export { LOCAL, type SaveStatus }
@@ -208,7 +208,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
     if (readOnly || !shared || !history) return
     const definition = edit(before)
     // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
-    if (definition === before || sameValue(before, definition)) return
+    if (definition === before || equal(before, definition)) return
     history.edit(definition, { selected, graph }, changeKey(before, definition), Date.now())
     set({ ...applied(shared.value), ...undoable(history) })
   },
