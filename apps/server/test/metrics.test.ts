@@ -1,3 +1,4 @@
+import { sshTunnelStats } from '@ow/connectors'
 import { createDb } from '@ow/db'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -57,6 +58,19 @@ describe('/metrics', () => {
     expect(value(text, 'ow_queue_lag_seconds')).toBe(0)
     expect(value(text, 'ow_user_tasks_open')).toBe(0)
     expect(value(text, 'ow_retention_last_finished_timestamp_seconds')).toBe(0)
+  })
+
+  it("reports this process's SSH tunnels (M17)", async () => {
+    const before = { ...sshTunnelStats }
+    sshTunnelStats.open = 2
+    sshTunnelStats.reconnects = 5
+    try {
+      const text = (await scrape()).body
+      expect(value(text, 'ow_ssh_tunnels_open')).toBe(2)
+      expect(value(text, 'ow_ssh_tunnel_reconnects_total')).toBe(5)
+    } finally {
+      Object.assign(sshTunnelStats, before)
+    }
   })
 
   it('counts the runs and blocks a worker finishes, and the queue it leaves behind', async () => {

@@ -36,7 +36,16 @@ export interface TunnelHop extends Pick<SshHop, 'id' | 'host' | 'port' | 'userna
 export interface SshTunnelOptions {
   /** Connecting and signing in, per hop. */
   connectTimeoutMs?: number
+  /** How often each SSH connection is checked; this many unanswered checks in a row end it. */
+  keepaliveMs?: number
+  keepaliveCountMax?: number
 }
+
+/**
+ * This process's tunnels, for its metrics: how many are connected now, and how many times one connected again after
+ * its connection dropped.
+ */
+export const sshTunnelStats = { open: 0, reconnects: 0 }
 
 /**
  * The SSH connections of one resource configuration (M17, architecture §2.20), opened on first use: no local port, the
@@ -49,6 +58,8 @@ export class SshTunnel {
   private chain: Promise<ssh2.Client[]> | null = null
   private clients: ssh2.Client[] = []
   private closed = false
+  /** Connected before: the next connection is a reconnect. */
+  private connectedOnce = false
 
   constructor(
     private hops: TunnelHop[],
@@ -67,8 +78,16 @@ export class SshTunnel {
   async close(): Promise<void> {
     this.closed = true
     this.chain = null
-    for (const client of this.clients.reverse()) client.end()
-    this.clients = []
+    this.drop(this.clients)
+  }
+
+  /** Ends a chain; counted as no longer open if it was the connected one. */
+  private drop(clients: ssh2.Client[]): void {
+    if (clients === this.clients && clients.length) {
+      this.clients = []
+      sshTunnelStats.open--
+    }
+    for (const c of [...clients].reverse()) c.end()
   }
 
   private connected(): Promise<ssh2.Client[]> {
@@ -93,14 +112,21 @@ export class SshTunnel {
       for (const c of clients.reverse()) c.end()
       throw err
     }
+    // Closed while connecting: nobody will use these.
+    if (this.closed) {
+      for (const c of clients.reverse()) c.end()
+      throw new Error('This SSH tunnel is closed')
+    }
     this.clients = clients
+    sshTunnelStats.open++
+    if (this.connectedOnce) sshTunnelStats.reconnects++
+    this.connectedOnce = true
     for (const client of clients) {
-      // One link gone: the whole chain is; the next `open` connects again.
+      // One link gone (ended, or keepalives unanswered): the whole chain is; the next `open` connects again.
       client.once('close', () => {
         if (this.clients !== clients) return
         this.chain = null
-        this.clients = []
-        for (const c of clients) c.end()
+        this.drop(clients)
       })
     }
     return clients
@@ -132,6 +158,8 @@ export class SshTunnel {
         username: hop.username,
         ...credential,
         readyTimeout: this.options.connectTimeoutMs ?? 15_000,
+        keepaliveInterval: this.options.keepaliveMs ?? 15_000,
+        keepaliveCountMax: this.options.keepaliveCountMax ?? 3,
         tryKeyboard: false,
         hostVerifier: (key: Buffer) => {
           const presented = { algorithm: algorithmOf(key), fingerprint: fingerprintOf(key) }

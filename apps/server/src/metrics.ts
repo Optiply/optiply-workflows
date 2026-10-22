@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
+import { sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import type { RunObserver, ScheduleFire } from '@ow/engine'
 import { sql } from 'drizzle-orm'
@@ -77,6 +78,25 @@ export class Metrics {
       help: 'Webhook calls this process refused with a 4xx, by reason (signature_mismatch, rate_limited, …)',
       labelNames: ['reason'],
       registers,
+    })
+
+    // SSH tunnels (M17), as this process's connectors count them.
+    new client.Gauge({
+      name: 'ow_ssh_tunnels_open',
+      help: 'SSH tunnels this process has connected now (one per resource configuration in use)',
+      registers,
+      collect() {
+        this.set(sshTunnelStats.open)
+      },
+    })
+    new client.Counter({
+      name: 'ow_ssh_tunnel_reconnects_total',
+      help: "Times one of this process's SSH tunnels connected again after its connection dropped",
+      registers,
+      collect() {
+        this.reset()
+        this.inc(sshTunnelStats.reconnects)
+      },
     })
 
     // Read from the database when scraped: one query shared by the gauges of one scrape (prom-client collects them

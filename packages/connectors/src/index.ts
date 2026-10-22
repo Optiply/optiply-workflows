@@ -56,6 +56,7 @@ export {
   type SshHostKey,
   SshTunnel,
   type SshTunnelOptions,
+  sshTunnelStats,
   type TunnelHop,
 } from './ssh/tunnel'
 export * from './types'
