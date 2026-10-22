@@ -51,11 +51,13 @@ export {
   sshSecretsSchema,
 } from './ssh/settings'
 export {
+  onSshTunnelEvent,
   SshError,
   type SshErrorCode,
   type SshHostKey,
   type SshTestStep,
   SshTunnel,
+  type SshTunnelEvent,
   type SshTunnelOptions,
   sshTunnelStats,
   type TunnelHop,

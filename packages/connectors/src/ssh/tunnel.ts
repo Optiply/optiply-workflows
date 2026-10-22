@@ -60,6 +60,33 @@ export interface SshTunnelOptions {
 export const sshTunnelStats = { open: 0, reconnects: 0 }
 
 /**
+ * What happens to this process's tunnels, for its log (never a secret): `servers` are `user@host:port`, in order.
+ * Test connection's probes aren't reported (their result is shown to whoever tests).
+ */
+export type SshTunnelEvent =
+  | { type: 'connected'; servers: string[]; reconnect: boolean; durationMs: number }
+  | { type: 'dropped'; servers: string[] }
+  | { type: 'failed'; servers: string[]; hop: string; code: SshErrorCode; message: string }
+
+const listeners = new Set<(event: SshTunnelEvent) => void>()
+
+/** Hears every tunnel event of this process; returns the way to stop. */
+export function onSshTunnelEvent(listener: (event: SshTunnelEvent) => void): () => void {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+function emit(event: SshTunnelEvent): void {
+  for (const listener of listeners) {
+    try {
+      listener(event)
+    } catch {
+      // A listener's problem isn't the tunnel's.
+    }
+  }
+}
+
+/**
  * The SSH connections of one resource configuration (M17, architecture §2.20), opened on first use: no local port, the
  * driver gets a forwarded channel from `open`. Each hop's host key must match its trusted one; the key a server
  * presented is kept in `seen` (Test connection shows it, trusted or not).
@@ -166,8 +193,13 @@ export class SshTunnel {
     return this.chain
   }
 
+  private get servers(): string[] {
+    return this.hops.map((h) => `${h.username}@${h.host}:${h.port}`)
+  }
+
   private async connectAll(): Promise<ssh2.Client[]> {
     const clients: ssh2.Client[] = []
+    const started = performance.now()
     try {
       for (const [i, hop] of this.hops.entries()) {
         // Each next server is reached through the one before.
@@ -177,6 +209,8 @@ export class SshTunnel {
       }
     } catch (err) {
       for (const c of clients.reverse()) c.end()
+      if (err instanceof SshError)
+        emit({ type: 'failed', servers: this.servers, hop: err.hop.id, code: err.code, message: err.message })
       throw err
     }
     // Closed while connecting: nobody will use these.
@@ -187,6 +221,12 @@ export class SshTunnel {
     this.clients = clients
     sshTunnelStats.open++
     if (this.connectedOnce) sshTunnelStats.reconnects++
+    emit({
+      type: 'connected',
+      servers: this.servers,
+      reconnect: this.connectedOnce,
+      durationMs: Math.round(performance.now() - started),
+    })
     this.connectedOnce = true
     for (const client of clients) {
       // One link gone (ended, or keepalives unanswered): the whole chain is; the next `open` connects again.
@@ -194,6 +234,7 @@ export class SshTunnel {
         if (this.clients !== clients) return
         this.chain = null
         this.drop(clients)
+        emit({ type: 'dropped', servers: this.servers })
       })
     }
     return clients
