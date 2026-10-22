@@ -1220,8 +1220,10 @@ M18 is planned (`architecture.md` §2.7 row, §2.21). The user chose (session 21
 
 0. **Plan:** this section, `architecture.md` §2.21 and the M18 row.
 1. **M17's follow-up:** the `localhost` hint on a refused SSH host (connectors' `sshConnectionError` and the Test connection step); a unit test.
+   **Done (session 21), `3cb36d2`:** `tunnel.ts` `connectError` adds the hint for `ECONNREFUSED` on `localhost`/`127.0.0.1`/`::1` (only the first hop connects directly); the refused-port test checks it.
 2. **Google identities** (`packages/connectors/src/google-auth.ts`):
    - 2a: BigQuery's service account token code moved there (`googleAccessToken(identity)`, cached, refreshed a minute early), BigQuery on it with its tests unchanged.
+     **Built (session 21, not yet committed):** `src/google-auth.ts`: `serviceAccountKeySchema`, `isServiceAccountKey`, `parseServiceAccountKey(text, field)`, `serviceAccountTokens(key, {scope, field, tokenUrl?, dispatcher?})` → `GoogleTokens` (`token(signal, force?)`, cached per identity, refreshed a minute early); BigQuery's `Client` holds `tokens` (same messages and error paths). Connectors 205.
    - 2b: the server's identity: `GOOGLE_APPLICATION_CREDENTIALS` (`service_account`, `authorized_user`) and the metadata server (`GCE_METADATA_HOST`); fake token and metadata endpoints; tests.
 3. **The IAP stream** (`ssh/iap.ts`):
    - 3a: frames, connect, data both ways in 16 KiB frames, acks, close codes to errors; the fake IAP endpoint in `ssh/testing.ts`; tests (a large transfer both ways, each close code).
