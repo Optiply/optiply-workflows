@@ -14,10 +14,11 @@ import {
   type SecretEdit,
   SecretField,
 } from './shared'
+import { type SshConfig, type SshEdits, type SshKeyInfo, SshTunnelFields } from './ssh-tunnel'
 
 type Config = Record<string, unknown>
-/** Secret edits by field; REST secret headers nest one level (`headers: { name: edit }`). */
-type SecretEdits = Record<string, SecretEdit | Record<string, SecretEdit>>
+/** Secret edits by field; nested records nest (`headers: { name: edit }`, `ssh: { hopId: { privateKey: edit } }`). */
+type SecretEdits = { [key: string]: SecretEdit | SecretEdits }
 type Mask = Record<string, unknown> | null
 
 const DEFAULTS: Record<string, Config> = {
@@ -80,6 +81,8 @@ export interface FieldsProps {
   edits: SecretEdits
   setEdit: (key: string, edit: SecretEdits[string]) => void
   disabled: boolean
+  /** Each SSH hop's stored key, as the server describes it (M17). */
+  sshKeys: Record<string, SshKeyInfo> | null
 }
 
 export function SettingsPanel({
@@ -131,6 +134,7 @@ export function SettingsPanel({
     edits,
     setEdit: (key, edit) => setEdits((e) => ({ ...e, [key]: edit })),
     disabled: !canEdit,
+    sshKeys: (stored?.sshKeys as Record<string, SshKeyInfo> | null | undefined) ?? null,
   }
   const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
 
@@ -235,8 +239,34 @@ function Checkbox({
   )
 }
 
+/** The SSH tunnel section of a Postgres, MySQL or REST resource's settings (M17). */
+function Tunnel({
+  config,
+  set,
+  secrets,
+  edits,
+  setEdit,
+  disabled,
+  sshKeys,
+  target,
+}: FieldsProps & { target: string }) {
+  return (
+    <SshTunnelFields
+      ssh={config.ssh as SshConfig | undefined}
+      onChange={(ssh) => set('ssh', ssh)}
+      mask={secrets?.ssh as Record<string, Record<string, unknown>> | undefined}
+      edits={edits.ssh as SshEdits | undefined}
+      setEdits={(e) => setEdit('ssh', e)}
+      keys={sshKeys}
+      disabled={disabled}
+      target={target}
+    />
+  )
+}
+
 /** Postgres and MySQL settings: the same fields, with each one's TLS modes. */
-function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: FieldsProps & { type: string }) {
+function SqlFields(props: FieldsProps & { type: string }) {
+  const { config, set, secrets, edits, setEdit, disabled, type } = props
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -311,6 +341,7 @@ function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: Fie
           type === 'mysql' ? 'Makes the session read-only' : 'Runs every query in a read-only transaction'
         }. A guard against mistakes; use a SELECT-only user for security.`}
       />
+      <Tunnel {...props} target="the database" />
     </>
   )
 }
@@ -408,15 +439,8 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields({
-  config,
-  set,
-  secrets,
-  edits,
-  setEdit,
-  disabled,
-  resourceId,
-}: FieldsProps & { resourceId: string }) {
+function RestFields(props: FieldsProps & { resourceId: string }) {
+  const { config, set, secrets, edits, setEdit, disabled, resourceId } = props
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -599,8 +623,9 @@ function RestFields({
         disabled={disabled}
         onChange={(v) => set('allowPrivateNetwork', v)}
         label="Allow private network addresses"
-        hint="Off by default: requests to localhost, internal IPs and cloud metadata are blocked."
+        hint="Off by default: requests to localhost, internal IPs and cloud metadata are blocked. Through an SSH tunnel they're allowed: what's reached is the SSH server's network."
       />
+      <Tunnel {...props} target="the API" />
     </>
   )
 }
