@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { startTestSshServer } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
@@ -20,8 +21,11 @@ const SSH_KEY = readFileSync(
 )
 const SSH_PASSPHRASE = 'fixture pass'
 const SSH_PASSWORD = 'Ssh-Passw0rd-Secret-3307'
-/** A line from the middle of the key: any of it in a response would show up as this. */
-const SSH_KEY_LINE = SSH_KEY.split('\n')[5]!
+/**
+ * A line from the end of the key (the encrypted private part; the file's first lines hold the public key, which the
+ * settings do show): any of the private key in a response would show up as this.
+ */
+const SSH_KEY_LINE = SSH_KEY.trim().split('\n').at(-2)!
 const SECRETS = [
   PG_SECRET,
   REST_SECRET,
@@ -624,6 +628,97 @@ describe('SSH tunnel settings (M17)', () => {
       hops: [{ ...bastion, host: 'bastion3.example.com', port: 2200, hostKey: repinned }],
     })
     expect(data(port).config.ssh.hops[0].hostKey).toBeUndefined()
+  })
+
+  it('tests through a real SSH server hop by hop, trusts its host key, and then queries through it', async () => {
+    const ssh = await startTestSshServer({
+      users: [
+        {
+          username: 'ow',
+          publicKey: readFileSync(
+            new URL(
+              '../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted.pub',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        },
+      ],
+      hosts: { 'db.internal': String(pgConfig.host) },
+    })
+    try {
+      const viaId = data(
+        await admin.mutate('resources.create', {
+          type: 'postgres',
+          name: 'Via bastion',
+          slug: 'via_bastion',
+        }),
+      ).id
+      const hop = { id: 'b', host: ssh.host, port: ssh.port, username: 'ow', auth: 'key' }
+      const config = (hostKey?: unknown) => ({
+        ...pgConfig,
+        host: 'db.internal',
+        ssh: { hops: [{ ...hop, hostKey }] },
+      })
+      const saved = await admin.mutate('resources.saveConfig', {
+        resourceId: viaId,
+        environmentId: prodId,
+        config: config(),
+        secrets: { password: PG_SECRET, ssh: { b: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } },
+      })
+      // The key as the settings show it: its type, fingerprint and public half.
+      expect(data(saved).sshKeys).toEqual({
+        b: {
+          type: 'ssh-rsa',
+          fingerprint: expect.stringMatching(/^SHA256:/),
+          publicKey: expect.stringMatching(/^ssh-rsa AAAA/),
+        },
+      })
+
+      // Not trusted yet: the hop fails with the key it presented, and the database isn't tried.
+      const first = data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(first).toMatchObject({
+        ok: false,
+        error: { code: 'connection' },
+        ssh: [
+          {
+            hop: 'b',
+            ok: false,
+            hostKey: { ...ssh.hostKey, status: 'untrusted' },
+            error: { code: 'ssh_host_key_unknown' },
+          },
+        ],
+      })
+
+      // Trust: the fingerprint goes into the settings, then everything works through the tunnel.
+      const presented = first.ssh[0].hostKey
+      await admin.mutate('resources.saveConfig', {
+        resourceId: viaId,
+        environmentId: prodId,
+        config: config({ algorithm: presented.algorithm, fingerprint: presented.fingerprint }),
+      })
+      const second = data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(second).toMatchObject({
+        ok: true,
+        message: expect.stringMatching(/^PostgreSQL/),
+        ssh: [{ hop: 'b', ok: true, hostKey: { status: 'trusted' } }],
+      })
+      const run = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select count(*)::int as n from customers' },
+        }),
+      )
+      expect(run).toMatchObject({ ok: true, data: [{ n: 3 }] })
+      expect(ssh.forwards.at(-1)).toMatchObject({ host: 'db.internal', allowed: true })
+
+      const got = data(await admin.query('resources.get', { id: viaId }))
+      const prod = got.environments.find((e: { environmentId: string }) => e.environmentId === prodId)
+      expect(prod.sshKeys.b.fingerprint).toBe(data(saved).sshKeys.b.fingerprint)
+    } finally {
+      await ssh.close()
+    }
   })
 
   it('fails Test connection with why when a key is missing, before connecting anywhere', async () => {

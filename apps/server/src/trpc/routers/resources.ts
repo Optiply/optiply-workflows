@@ -42,6 +42,7 @@ import {
   patchedSecretFields,
   publicConfigVars,
   settleSsh,
+  sshKeyInfo,
   toResolved,
 } from '../../services/resources'
 import { encryptForRow } from '../../services/secrets'
@@ -203,12 +204,14 @@ export const resourcesRouter = router({
         const level = access.level(resource, environmentId)
         if (!level) return []
         const row = byEnv.get(environmentId)
+        const secrets = row ? decryptConfigSecrets(ctx.config.keyring, row) : null
         return [
           {
             environmentId,
             level,
             config: row ? row.config : null,
-            secrets: row ? maskSecrets(decryptConfigSecrets(ctx.config.keyring, row)) : null,
+            secrets: secrets ? maskSecrets(secrets) : null,
+            sshKeys: secrets ? sshKeyInfo(secrets) : null,
             updatedAt: row?.updatedAt ?? null,
           },
         ]
@@ -362,7 +365,7 @@ export const resourcesRouter = router({
           ...(disconnectedAccounts && { disconnectedAccounts }),
         },
       })
-      return { config: values.config, secrets: maskSecrets(secrets) }
+      return { config: values.config, secrets: maskSecrets(secrets), sshKeys: sshKeyInfo(secrets) }
     }),
 
   deleteConfig: authedProcedure
@@ -436,9 +439,11 @@ export const resourcesRouter = router({
             )
           : undefined
       const result = await testResource(connector, tested, credentials ? { credentials } : {})
+      // Each SSH hop's own result and host key (M17): the browser offers Trust for an untrusted or changed key.
+      const ssh = result.ssh ?? null
       return result.ok
-        ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
-        : { ok: false as const, error: errorView(result.error) }
+        ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs, ssh }
+        : { ok: false as const, error: errorView(result.error), ssh }
     }),
 
   /**

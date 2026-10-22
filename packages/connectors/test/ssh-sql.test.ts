@@ -7,6 +7,7 @@ import {
   ConnectorError,
   mysqlConnector,
   PoolManager,
+  parseResource,
   postgresConnector,
   type ResolvedResource,
   runQuery,
@@ -115,6 +116,42 @@ describe('Postgres through an SSH tunnel', () => {
     expect(direct.code).toBe('connection')
   })
 
+  it('reports each SSH hop in Test connection, with its host key, before the database', async () => {
+    const ok = await testResource(postgresConnector, pgResource(tunnel(), 'steps'))
+    expect(ok).toMatchObject({
+      ok: true,
+      ssh: [
+        {
+          hop: 'bastion',
+          host: ssh.host,
+          port: ssh.port,
+          ok: true,
+          hostKey: { ...ssh.hostKey, status: 'trusted' },
+        },
+      ],
+    })
+    const untrusted = await testResource(
+      postgresConnector,
+      pgResource(tunnel({ hostKey: undefined }), 'steps-2'),
+    )
+    expect(untrusted).toMatchObject({
+      ok: false,
+      error: { code: 'connection', details: { ssh: { code: 'ssh_host_key_unknown', hop: 'bastion' } } },
+      ssh: [
+        {
+          hop: 'bastion',
+          ok: false,
+          hostKey: { ...ssh.hostKey, status: 'untrusted' },
+          error: { code: 'ssh_host_key_unknown' },
+        },
+      ],
+    })
+    // A key that can't be used fails before any hop is tried.
+    const noKey = await testResource(postgresConnector, pgResource(tunnel(), 'steps-3', {}))
+    expect(noKey).toMatchObject({ ok: false, error: { code: 'invalid_config' } })
+    expect('ssh' in noKey).toBe(false)
+  })
+
   it('shares one SSH connection for the pool, and ends it with the pool client', async () => {
     await pool.closeAll()
     await vi.waitFor(() => expect(ssh.clients).toBe(0))
@@ -123,6 +160,17 @@ describe('Postgres through an SSH tunnel', () => {
     expect(ssh.clients).toBe(1)
     await pool.closeAll()
     await vi.waitFor(() => expect(ssh.clients).toBe(0))
+  })
+
+  it('ends a tunnelled client at once (postgres says goodbye only to a socket that looks open)', async () => {
+    const client = await postgresConnector.createClient(
+      parseResource(postgresConnector, pgResource(tunnel(), 'end')) as never,
+    )
+    await (client as unknown as { sql: postgres.Sql }).sql`select 1`
+    const started = performance.now()
+    await postgresConnector.destroyClient(client)
+    // Well under postgres's 5 s end timeout, which every pool end used to wait out.
+    expect(performance.now() - started).toBeLessThan(1000)
   })
 
   it('cancels a query that runs too long, through the tunnel too', async () => {

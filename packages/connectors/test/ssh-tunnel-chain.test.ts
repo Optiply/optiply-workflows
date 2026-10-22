@@ -109,6 +109,29 @@ describe('SshTunnel through jump hosts', () => {
     await skipping.close()
   })
 
+  it('probes hop by hop for Test connection, stopping at the first that fails', async () => {
+    const pinnedElsewhere = {
+      algorithm: 'ssh-ed25519',
+      fingerprint: 'SHA256:AAAAbbbbCCCCddddEEEEffffGGGGhhhhIIIIjjjjKKK',
+    }
+    const steps = await new SshTunnel([
+      hopTo('outer', outer),
+      hopTo('middle', middle, { hostKey: pinnedElsewhere }),
+      hopTo('inner', inner),
+    ]).probe()
+    expect(steps).toMatchObject([
+      { hop: 'outer', ok: true, hostKey: { ...outer.hostKey, status: 'trusted' } },
+      {
+        hop: 'middle',
+        ok: false,
+        hostKey: { ...middle.hostKey, status: 'changed', trusted: pinnedElsewhere.fingerprint },
+        error: { code: 'ssh_host_key_changed' },
+      },
+    ])
+    expect(steps).toHaveLength(2)
+    await vi.waitFor(() => expect(outer.clients + middle.clients).toBe(0))
+  })
+
   it('finds a connection gone silent through its keepalives, and connects again', async () => {
     const proxy = await silenceable(inner.port)
     const tunnel = new SshTunnel([hopTo('inner', inner, { port: proxy.port })], {

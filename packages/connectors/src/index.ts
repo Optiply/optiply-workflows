@@ -54,6 +54,7 @@ export {
   SshError,
   type SshErrorCode,
   type SshHostKey,
+  type SshTestStep,
   SshTunnel,
   type SshTunnelOptions,
   sshTunnelStats,

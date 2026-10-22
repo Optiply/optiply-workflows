@@ -87,6 +87,8 @@ export async function startTestSshServer(options: {
             const channel = accept()
             channel.pipe(target).pipe(channel)
             channel.on('close', () => target.destroy())
+            // As sshd does: the forwarded connection gone, the channel is closed (not only ended).
+            target.on('close', () => channel.close())
             target.on('error', () => channel.destroy())
           })
         })

@@ -28,6 +28,18 @@ export class SshError extends Error {
   }
 }
 
+/** One hop as Test connection reports it: reached or not, how long it took, and the host key it presented. */
+export interface SshTestStep {
+  hop: string
+  host: string
+  port: number
+  ok: boolean
+  durationMs: number
+  /** `trusted`: matches the pin; `untrusted`: no pin yet; `changed`: another key than the pinned one (`trusted`). */
+  hostKey?: SshHostKey & { status: 'trusted' | 'untrusted' | 'changed'; trusted?: string }
+  error?: { code: SshErrorCode; message: string }
+}
+
 /** One SSH server of a tunnel, with what it signs in with. */
 export interface TunnelHop extends Pick<SshHop, 'id' | 'host' | 'port' | 'username' | 'hostKey'> {
   credential: SshCredential
@@ -72,7 +84,62 @@ export class SshTunnel {
   async open(host: string, port: number): Promise<Duplex> {
     const clients = await this.connected()
     const last = this.hops.at(-1)!
-    return forward(clients.at(-1)!, last, host, port)
+    return socketLike(await forward(clients.at(-1)!, last, host, port))
+  }
+
+  /**
+   * Connects hop by hop and reports each (Test connection): how long it took, the host key it presented (trusted or
+   * not) and why it failed; stops at the first failure. Leaves nothing connected.
+   */
+  async probe(): Promise<SshTestStep[]> {
+    const steps: SshTestStep[] = []
+    const clients: ssh2.Client[] = []
+    try {
+      for (const [i, hop] of this.hops.entries()) {
+        const started = performance.now()
+        const step = (ok: boolean): SshTestStep => ({
+          hop: hop.id,
+          host: hop.host,
+          port: hop.port,
+          ok,
+          durationMs: Math.round(performance.now() - started),
+        })
+        try {
+          const sock =
+            i === 0 ? undefined : await forward(clients[i - 1]!, this.hops[i - 1]!, hop.host, hop.port)
+          clients.push(await this.connectHop(hop, sock))
+          const seen = this.seen.get(hop.id)
+          steps.push({ ...step(true), ...(seen ? { hostKey: { ...seen, status: 'trusted' as const } } : {}) })
+        } catch (err) {
+          if (!(err instanceof SshError)) throw err
+          const presented = err.hostKey ?? this.seen.get(hop.id)
+          const status =
+            err.code === 'ssh_host_key_changed'
+              ? 'changed'
+              : err.code === 'ssh_host_key_unknown'
+                ? 'untrusted'
+                : 'trusted'
+          steps.push({
+            ...step(false),
+            ...(presented
+              ? {
+                  hostKey: {
+                    algorithm: presented.algorithm,
+                    fingerprint: presented.fingerprint,
+                    status,
+                    ...(err.hostKey?.trusted ? { trusted: err.hostKey.trusted } : {}),
+                  },
+                }
+              : {}),
+            error: { code: err.code, message: err.message },
+          })
+          break
+        }
+      }
+    } finally {
+      for (const c of clients.reverse()) c.end()
+    }
+    return steps
   }
 
   async close(): Promise<void> {
@@ -186,6 +253,29 @@ export class SshTunnel {
       })
     })
   }
+}
+
+/**
+ * A channel with a socket's `readyState`, which drivers read: postgres only says goodbye and ends a socket whose
+ * `readyState` is `'open'`, then waits for it to close (without one, every pool end waited out its 5 s timeout).
+ */
+function socketLike(channel: Duplex): Duplex {
+  let closed = false
+  channel.once('close', () => {
+    closed = true
+  })
+  Object.defineProperty(channel, 'readyState', {
+    configurable: true,
+    get: () =>
+      closed || channel.destroyed
+        ? 'closed'
+        : channel.writable && channel.readable
+          ? 'open'
+          : channel.writable
+            ? 'writeOnly'
+            : 'readOnly',
+  })
+  return channel
 }
 
 /** A `direct-tcpip` channel from `client`'s server to `host:port`. */

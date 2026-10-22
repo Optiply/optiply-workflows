@@ -1,7 +1,9 @@
 import {
   normalizeSsh,
   type ResolvedResource,
+  readPrivateKey,
   type SshConfig,
+  SshKeyError,
   type SshSecrets,
   sshConfigSchema,
   sshCredentials,
@@ -71,6 +73,30 @@ export function settleSsh(
     config: settled.ssh ? { ...restConfig, ssh: settled.ssh } : restConfig,
     secrets: settled.secrets ? { ...restSecrets, ssh: settled.secrets } : restSecrets,
   }
+}
+
+/** What the settings show of an SSH key (M17): never the key, only what identifies it. */
+export type SshKeyInfo = { type: string; fingerprint: string; publicKey: string } | { error: string }
+
+/**
+ * Each hop's key, as the settings show it: its type, fingerprint and public half (the `authorized_keys` line), or
+ * why it can't be read. Hops signing in with a password have none.
+ */
+export function sshKeyInfo(secrets: Record<string, unknown>): Record<string, SshKeyInfo> | null {
+  const hops = secrets.ssh as Record<string, { privateKey?: string; passphrase?: string }> | undefined
+  if (!hops) return null
+  const out: Record<string, SshKeyInfo> = {}
+  for (const [hop, s] of Object.entries(hops)) {
+    if (!s.privateKey) continue
+    try {
+      const key = readPrivateKey(s.privateKey, s.passphrase)
+      out[hop] = { type: key.type, fingerprint: key.fingerprint, publicKey: key.publicKey }
+    } catch (err) {
+      if (!(err instanceof SshKeyError)) throw err
+      out[hop] = { error: err.message }
+    }
+  }
+  return out
 }
 
 /** Names of the top-level secret fields a patch touches (for the audit log; never values). */
