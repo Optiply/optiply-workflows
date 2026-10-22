@@ -50,6 +50,14 @@ export {
   sshCredentials,
   sshSecretsSchema,
 } from './ssh/settings'
+export {
+  SshError,
+  type SshErrorCode,
+  type SshHostKey,
+  SshTunnel,
+  type SshTunnelOptions,
+  type TunnelHop,
+} from './ssh/tunnel'
 export * from './types'
 
 /** Every connector type that resources can use, by `resources.type`. */

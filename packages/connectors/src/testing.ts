@@ -102,3 +102,5 @@ export async function startTestMysql(): Promise<TestMysql> {
     throw err
   }
 }
+
+export { startTestSshServer, type TestSshServer, type TestSshUser } from './ssh/testing'
