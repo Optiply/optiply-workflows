@@ -1,11 +1,15 @@
+import { isIP } from 'node:net'
+import { connect as tlsConnect } from 'node:tls'
 import { parseTemplate, renderJson, renderTemplate, renderText, TemplateError } from '@ow/expressions'
-import { Agent, FormData, fetch, Headers, type Response } from 'undici'
+import { Agent, type buildConnector, FormData, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
 import { clientCredentialsToken } from './oauth'
 import { OAUTH_PROVIDERS } from './oauth-presets'
+import { sshConnectionError, tunnelFor } from './ssh/client'
 import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import {
   type Connector,
   ConnectorError,
@@ -232,6 +236,8 @@ interface Client {
   secrets: Secrets
   agent: Agent
   token?: { value: string; expiresAt: number }
+  /** The SSH tunnel every request goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 const MAX_REDIRECTS = 5
@@ -247,15 +253,17 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   scrubResultData: true,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const agent = new Agent({
       connections: 32,
-      connect: config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
+      connect: tunnel ? tunnelConnector(tunnel) : config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
     })
-    return { config, secrets, agent }
+    return { config, secrets, agent, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ agent }) {
+  async destroyClient({ agent, tunnel }) {
     await agent.close()
+    await tunnel?.close()
   },
 
   async testConnection(client, { signal, credentials }) {
@@ -443,6 +451,42 @@ function multipartFile(
   }
 }
 
+/**
+ * Whether private addresses may be reached: when allowed, or through an SSH tunnel (M17), where what's reached is the
+ * SSH server's network, which is the point (the guard protects this machine's network).
+ */
+function privateNetworkAllowed(config: Config): boolean {
+  return config.allowPrivateNetwork || config.ssh !== undefined
+}
+
+/**
+ * Connects undici's requests through an SSH tunnel: a channel to the host and port from the last SSH server, and for
+ * https TLS over it, with the hostname for SNI and the certificate check. Every request of the resource goes this
+ * way, an OAuth2 client-credentials token included.
+ */
+function tunnelConnector(tunnel: SshTunnel): buildConnector.connector {
+  return ({ hostname, protocol, port, servername }, callback) => {
+    const https = protocol === 'https:'
+    tunnel.open(hostname, Number(port) || (https ? 443 : 80)).then(
+      (channel) => {
+        if (!https) return callback(null, channel as never)
+        const socket = tlsConnect({
+          socket: channel,
+          servername: servername || (isIP(hostname) ? undefined : hostname),
+          ALPNProtocols: ['http/1.1'],
+        })
+        const failed = (err: Error) => callback(err, null)
+        socket.once('error', failed)
+        socket.once('secureConnect', () => {
+          socket.off('error', failed)
+          callback(null, socket)
+        })
+      },
+      (err) => callback(sshConnectionError(err) ?? err, null),
+    )
+  }
+}
+
 /** Queries may only reach the base URL's host and `allowedHosts`, over http(s). */
 function checkHost(config: Config, url: URL): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -457,7 +501,7 @@ function checkHost(config: Config, url: URL): void {
     )
   }
   // IP literals skip DNS, so the connect-time guard never sees them.
-  if (!config.allowPrivateNetwork && isPrivateAddress(url.hostname)) {
+  if (!privateNetworkAllowed(config) && isPrivateAddress(url.hostname)) {
     throw new ConnectorError('blocked', `${url.hostname} is a private address`)
   }
 }
@@ -659,7 +703,7 @@ async function getToken(client: Client, signal: AbortSignal, force = false): Pro
   const secret = requireSecret(client.secrets.clientSecret, 'OAuth2 client secret')
   const token = await clientCredentialsToken(auth, secret, {
     signal,
-    allowPrivateNetwork: client.config.allowPrivateNetwork,
+    allowPrivateNetwork: privateNetworkAllowed(client.config),
     dispatcher: client.agent,
   })
   client.token = {

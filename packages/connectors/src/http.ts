@@ -35,6 +35,8 @@ export function networkError(err: unknown, url: URL): unknown {
     e = e.cause as typeof e
   ) {
     if (e.code === 'OW_BLOCKED_ADDRESS') return new ConnectorError('blocked', e.message ?? 'Blocked address')
+    // Already ours (an SSH tunnel that couldn't open, M17): it says which server and why.
+    if (e instanceof ConnectorError) return e
   }
   const cause = (err as { cause?: { code?: string; message?: string } }).cause
   return new ConnectorError(
