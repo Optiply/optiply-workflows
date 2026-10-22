@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
@@ -12,7 +13,24 @@ const PG_SECRET = 'Pg-R3ader-Secret-7731'
 const REST_SECRET = 'Rest-B3arer-Secret-9152'
 const HEADER_SECRET = 'Hdr-T0ken-Secret-4410'
 const TOKEN_SECRET = 'Cfg-Var-Secret-6628'
-const SECRETS = [PG_SECRET, REST_SECRET, HEADER_SECRET, TOKEN_SECRET]
+// M17: an SSH key (an encrypted test key from the connectors' fixtures), its passphrase and an SSH password.
+const SSH_KEY = readFileSync(
+  new URL('../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted', import.meta.url),
+  'utf8',
+)
+const SSH_PASSPHRASE = 'fixture pass'
+const SSH_PASSWORD = 'Ssh-Passw0rd-Secret-3307'
+/** A line from the middle of the key: any of it in a response would show up as this. */
+const SSH_KEY_LINE = SSH_KEY.split('\n')[5]!
+const SECRETS = [
+  PG_SECRET,
+  REST_SECRET,
+  HEADER_SECRET,
+  TOKEN_SECRET,
+  SSH_PASSPHRASE,
+  SSH_PASSWORD,
+  SSH_KEY_LINE,
+]
 
 let env: TestEnv
 let echo: Server
@@ -518,6 +536,114 @@ describe('config vars', () => {
   })
 })
 
+describe('SSH tunnel settings (M17)', () => {
+  let id: string
+  const bastion = { id: 'bastion', host: 'bastion.example.com', username: 'ow', auth: 'key' }
+  const jump = { id: 'jump', host: 'jump.example.com', port: 2222, username: 'hop', auth: 'password' }
+  const pin = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:AAAAbbbbCCCCddddEEEEffffGGGGhhhhIIIIjjjjKKK' }
+  const save = (ssh: unknown, secrets?: Record<string, unknown>) =>
+    admin.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh },
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    id = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Tunnelled', slug: 'tunnelled' }),
+    ).id
+  })
+
+  it('saves an SSH server with a key, masked like any secret', async () => {
+    const saved = await save(
+      { hops: [bastion] },
+      { password: PG_SECRET, ssh: { bastion: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } },
+    )
+    expect(saved.status).toBe(200)
+    expect(data(saved).config.ssh).toEqual({ hops: [{ ...bastion, port: 22 }] })
+    expect(data(saved).secrets).toEqual({
+      password: { set: true },
+      ssh: { bastion: { privateKey: { set: true }, passphrase: { set: true } } },
+    })
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).secrets.ssh,
+    ).toEqual({
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+  })
+
+  it("refuses a key it can't open, or a hop without its key or password, saying which server", async () => {
+    const wrong = await save({ hops: [bastion] }, { ssh: { bastion: { passphrase: 'not it' } } })
+    expect(wrong.status).toBe(400)
+    expect(wrong.body.error?.message).toBe(
+      "SSH server bastion.example.com: The passphrase doesn't open this key",
+    )
+    const noPassword = await save({ hops: [jump, bastion] })
+    expect(noPassword.body.error?.message).toBe('SSH server jump.example.com: enter the password')
+    const noKey = await save({ hops: [{ ...bastion, id: 'other' }] })
+    expect(noKey.body.error?.message).toBe('SSH server bastion.example.com: add a private key')
+    // Nothing was saved by the refusals.
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).config.ssh.hops,
+    ).toHaveLength(1)
+  })
+
+  it('keeps secrets only for the hops still there, and only what each signs in with', async () => {
+    const both = await save({ hops: [jump, bastion] }, { ssh: { jump: { password: SSH_PASSWORD } } })
+    expect(data(both).secrets.ssh).toEqual({
+      jump: { password: { set: true } },
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+    // The jump host goes: so does its password.
+    const one = await save({ hops: [bastion] })
+    expect(data(one).secrets.ssh).toEqual({
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+    // Signing in with a password instead: the key isn't kept.
+    const password = await save(
+      { hops: [{ ...bastion, auth: 'password' }] },
+      { ssh: { bastion: { password: SSH_PASSWORD } } },
+    )
+    expect(data(password).secrets.ssh).toEqual({ bastion: { password: { set: true } } })
+    await save({ hops: [bastion] }, { ssh: { bastion: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } })
+  })
+
+  it("drops a trusted host key when its hop moves to another host or port, unless it's trusted anew", async () => {
+    expect(data(await save({ hops: [{ ...bastion, hostKey: pin }] })).config.ssh.hops[0].hostKey).toEqual(pin)
+    const moved = await save({ hops: [{ ...bastion, host: 'bastion2.example.com', hostKey: pin }] })
+    expect(data(moved).config.ssh.hops[0].hostKey).toBeUndefined()
+    const repinned = { ...pin, fingerprint: 'SHA256:ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssssRRRRqqqqPPP' }
+    const trusted = await save({
+      hops: [{ ...bastion, host: 'bastion3.example.com', port: 22, hostKey: repinned }],
+    })
+    expect(data(trusted).config.ssh.hops[0].hostKey).toEqual(repinned)
+    const port = await save({
+      hops: [{ ...bastion, host: 'bastion3.example.com', port: 2200, hostKey: repinned }],
+    })
+    expect(data(port).config.ssh.hops[0].hostKey).toBeUndefined()
+  })
+
+  it('fails Test connection with why when a key is missing, before connecting anywhere', async () => {
+    const tested = data(
+      await admin.mutate('resources.test', {
+        resourceId: id,
+        environmentId: prodId,
+        config: { ...pgConfig, ssh: { hops: [{ ...bastion, id: 'fresh' }] } },
+      }),
+    )
+    expect(tested).toEqual({
+      ok: false,
+      error: expect.objectContaining({
+        code: 'invalid_config',
+        message: 'SSH server bastion.example.com: add a private key',
+      }),
+    })
+  })
+})
+
 describe('no secret in any API response', () => {
   it('appears nowhere in what any client received, nor in the audit log', async () => {
     // Read everything once more as both users, then scan every recorded response body.
@@ -527,6 +653,7 @@ describe('no secret in any API response', () => {
     await admin.query('configVars.list')
     await admin.query('audit.list', {})
     await member.query('resources.get', { id: pgId })
+    await admin.query('resources.list')
     expect(responses.length).toBeGreaterThan(50)
     for (const body of responses) {
       for (const secret of SECRETS) expect(body).not.toContain(secret)

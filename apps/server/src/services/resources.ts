@@ -1,4 +1,11 @@
-import type { ResolvedResource } from '@ow/connectors'
+import {
+  normalizeSsh,
+  type ResolvedResource,
+  type SshConfig,
+  type SshSecrets,
+  sshConfigSchema,
+  sshCredentials,
+} from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import { configVars, configVarValues, type Db, type ResourceConfig } from '@ow/db'
 import { and, eq } from 'drizzle-orm'
@@ -38,6 +45,32 @@ export function applySecretPatch(
     } else if (value !== undefined) base[key] = value
   }
   return base
+}
+
+/**
+ * A config's SSH tunnel as it's saved or tested (M17): a hop moved to another host or port loses its trusted host key,
+ * secrets are kept only for hops still there (and only what each signs in with), and every hop's key or password is
+ * checked (a key that's missing, unreadable or locked by another passphrase is refused: `SshSettingsError`).
+ */
+export function settleSsh(
+  before: unknown,
+  config: Record<string, unknown>,
+  secrets: Record<string, unknown>,
+): { config: Record<string, unknown>; secrets: Record<string, unknown> } {
+  if (config.ssh === undefined && secrets.ssh === undefined) return { config, secrets }
+  const previous = sshConfigSchema.safeParse((before as { ssh?: unknown } | null | undefined)?.ssh)
+  const settled = normalizeSsh(
+    previous.success ? previous.data : undefined,
+    config.ssh as SshConfig | undefined,
+    secrets.ssh as SshSecrets | undefined,
+  )
+  const { ssh: _c, ...restConfig } = config
+  const { ssh: _s, ...restSecrets } = secrets
+  if (settled.ssh) sshCredentials(settled.ssh, settled.secrets)
+  return {
+    config: settled.ssh ? { ...restConfig, ssh: settled.ssh } : restConfig,
+    secrets: settled.secrets ? { ...restSecrets, ssh: settled.secrets } : restSecrets,
+  }
 }
 
 /** Names of the top-level secret fields a patch touches (for the audit log; never values). */

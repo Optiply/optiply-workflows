@@ -1,4 +1,11 @@
-import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
+import {
+  ConnectorError,
+  connectors,
+  getConnector,
+  runQuery,
+  SshSettingsError,
+  testResource,
+} from '@ow/connectors'
 import {
   type Db,
   environments,
@@ -34,6 +41,7 @@ import {
   maskSecrets,
   patchedSecretFields,
   publicConfigVars,
+  settleSsh,
   toResolved,
 } from '../../services/resources'
 import { encryptForRow } from '../../services/secrets'
@@ -52,6 +60,16 @@ const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 /** Write-only secret patch: string sets, null clears, absent keeps (see applySecretPatch). */
 const SecretPatch = z.record(z.string(), z.unknown()).optional()
+
+/** Runs `settle`, turning wrong SSH settings into a bad request that says what's wrong (never a secret). */
+function sshSettled<T>(settle: () => T): T {
+  try {
+    return settle()
+  } catch (err) {
+    if (err instanceof SshSettingsError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+    throw err
+  }
+}
 
 /** Each `{{ }}` in the playground gets this long in the sandbox. */
 const EXPRESSION_TIMEOUT_MS = 5_000
@@ -298,10 +316,14 @@ export const resourcesRouter = router({
       if (!config.success) throw invalidInput('configuration', config.error.issues)
 
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
-      const secrets = applySecretPatch(
-        existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
-        input.secrets,
+      const settled = sshSettled(() =>
+        settleSsh(
+          existing?.config,
+          config.data as Record<string, unknown>,
+          applySecretPatch(existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {}, input.secrets),
+        ),
       )
+      const secrets = settled.secrets
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {
         throw invalidInput('credentials', parsedSecrets.error.issues, { pathsOnly: true })
@@ -309,7 +331,7 @@ export const resourcesRouter = router({
 
       const row = { id: existing?.id ?? uuidv7(), environmentId: input.environmentId }
       const values = {
-        config: config.data as Record<string, unknown>,
+        config: settled.config,
         secrets: Object.keys(secrets).length
           ? encryptForRow(ctx.config.keyring, 'resource_configs', row, secrets)
           : null,
@@ -387,6 +409,19 @@ export const resourcesRouter = router({
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,
         ),
+      }
+      // The SSH part as it would be saved; a key that can't be used fails the test with why (M17).
+      const parsedConfig = connector.configSchema.safeParse(tested.config)
+      if (parsedConfig.success) {
+        try {
+          Object.assign(
+            tested,
+            settleSsh(existing?.config, parsedConfig.data as Record<string, unknown>, tested.secrets),
+          )
+        } catch (err) {
+          if (!(err instanceof SshSettingsError)) throw err
+          return { ok: false as const, error: errorView(new ConnectorError('invalid_config', err.message)) }
+        }
       }
       // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
       // auth flow signs in afresh for the test, without storing what it gets (`store: false`).

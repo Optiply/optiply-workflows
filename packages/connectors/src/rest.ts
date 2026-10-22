@@ -5,6 +5,7 @@ import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
 import { clientCredentialsToken } from './oauth'
 import { OAUTH_PROVIDERS } from './oauth-presets'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
 import {
   type Connector,
   ConnectorError,
@@ -203,6 +204,8 @@ const configSchema = z.object({
     .int()
     .positive()
     .default(10 * 1024 * 1024),
+  /** Reach the API through an SSH server (and jump hosts) rather than directly (M17). */
+  ssh: sshConfigSchema.optional(),
 })
 
 const secretsSchema = z.object({
@@ -214,6 +217,7 @@ const secretsSchema = z.object({
   headers: z.record(z.string(), z.string()).default({}),
   /** Named values a custom auth flow reads as `{{ secrets.NAME }}` (a username, a password…). */
   values: z.record(z.string(), z.string()).default({}),
+  ssh: sshSecretsSchema.optional(),
 })
 
 type Config = z.output<typeof configSchema>

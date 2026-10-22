@@ -37,6 +37,19 @@ export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export { type AuthFlowStep, type RestConfig, type RestQuery, type RestSecrets, restConnector } from './rest'
 export { type RunOptions, runQuery, testResource } from './run'
+export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
+export {
+  normalizeSsh,
+  SSH_MAX_HOPS,
+  type SshConfig,
+  type SshCredential,
+  type SshHop,
+  type SshSecrets,
+  SshSettingsError,
+  sshConfigSchema,
+  sshCredentials,
+  sshSecretsSchema,
+} from './ssh/settings'
 export * from './types'
 
 /** Every connector type that resources can use, by `resources.type`. */

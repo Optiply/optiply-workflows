@@ -2,6 +2,7 @@ import { compileSql, TemplateError } from '@ow/expressions'
 import postgres from 'postgres'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -22,9 +23,11 @@ const configSchema = z.object({
   /** Queries returning more rows than this fail rather than load everything into memory. */
   maxRows: z.number().int().positive().default(10_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
+  /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
+  ssh: sshConfigSchema.optional(),
 })
 
-const secretsSchema = z.object({ password: z.string().optional() })
+const secretsSchema = z.object({ password: z.string().optional(), ssh: sshSecretsSchema.optional() })
 
 const querySchema = z.object({ sql: z.string().min(1) })
 
