@@ -163,6 +163,20 @@ describe('SshTunnel through jump hosts', () => {
     await tunnel.close()
   })
 
+  it('connects again after the server behind a jump host is killed (its channel only ends, as with sshd)', async () => {
+    const tunnel = new SshTunnel([hopTo('middle', middle), hopTo('inner', inner)])
+    expect(await roundTrip(await tunnel.open('127.0.0.1', echoPort), 'one')).toBe('echo: one')
+    // No SSH goodbye reaches the tunnel: only the jump host's EOF on the channel.
+    await inner.crash()
+    await vi.waitFor(
+      async () => {
+        expect(await roundTrip(await tunnel.open('127.0.0.1', echoPort), 'two')).toBe('echo: two')
+      },
+      { timeout: 5000 },
+    )
+    await tunnel.close()
+  })
+
   it("doesn't leave a connection behind when closed while still connecting", async () => {
     const open = sshTunnelStats.open
     const tunnel = new SshTunnel([hopTo('middle', middle), hopTo('inner', inner)])

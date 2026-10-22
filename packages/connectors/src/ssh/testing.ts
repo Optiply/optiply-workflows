@@ -18,6 +18,11 @@ export interface TestSshServer {
   restart(): Promise<void>
   /** Ends every connection, as a dropped network would (the server keeps listening). */
   dropAll(): void
+  /**
+   * Stops as a killed sshd does (a container restart): every TCP connection cut without an SSH goodbye, then listening
+   * again on the same port with the same host key.
+   */
+  crash(): Promise<void>
   close(): Promise<void>
 }
 
@@ -58,6 +63,8 @@ export async function startTestSshServer(options: {
     new ssh2.Server({ hostKeys: [hostKey] }, (client) => {
       connections.add(client)
       let authed = false
+      // This connection's forwarded connections: they go with it, as sshd's do.
+      const targets = new Set<Socket>()
       client.on('authentication', (ctx) => {
         const user = users.find((u) => u.username === ctx.username)
         if (ctx.method === 'password' && user && 'password' in user && same(ctx.password, user.password))
@@ -81,19 +88,37 @@ export async function startTestSshServer(options: {
           if (!allowed) return reject()
           const target = connect(info.destPort, hosts[info.destIP] ?? info.destIP)
           sockets.add(target)
-          target.on('close', () => sockets.delete(target))
+          targets.add(target)
+          target.on('close', () => {
+            sockets.delete(target)
+            targets.delete(target)
+          })
           target.once('error', () => reject())
           target.once('connect', () => {
             const channel = accept()
-            channel.pipe(target).pipe(channel)
+            channel.pipe(target)
+            // As OpenSSH's sshd does (seen against it in M17's Compose check): the forwarded connection gone, the
+            // channel only gets an EOF, and is closed once the client has sent its EOF too. (ssh2's own server
+            // channels close right after their EOF, which hid a tunnel that only listened for the close.)
+            let clientEnded = false
+            let targetGone = false
+            target.on('data', (chunk) => channel.write(chunk))
+            channel.on('end', () => {
+              clientEnded = true
+              if (targetGone) channel.close()
+            })
             channel.on('close', () => target.destroy())
-            // As sshd does: the forwarded connection gone, the channel is closed (not only ended).
-            target.on('close', () => channel.close())
+            target.on('close', () => {
+              targetGone = true
+              channel.eof()
+              if (clientEnded) channel.close()
+            })
             target.on('error', () => channel.destroy())
           })
         })
       })
       const gone = () => {
+        for (const t of targets) t.destroy()
         if (!connections.delete(client)) return
         if (authed) signedIn--
       }
@@ -132,6 +157,13 @@ export async function startTestSshServer(options: {
       await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve))
     },
     dropAll,
+    async crash() {
+      for (const c of connections) (c as unknown as { _sock?: Socket })._sock?.destroy()
+      for (const s of sockets) s.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      server = make()
+      await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve))
+    },
     close: stop,
   }
 }

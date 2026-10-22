@@ -228,14 +228,18 @@ export class SshTunnel {
       durationMs: Math.round(performance.now() - started),
     })
     this.connectedOnce = true
+    const lost = () => {
+      if (this.clients !== clients) return
+      this.chain = null
+      this.drop(clients)
+      emit({ type: 'dropped', servers: this.servers })
+    }
     for (const client of clients) {
-      // One link gone (ended, or keepalives unanswered): the whole chain is; the next `open` connects again.
-      client.once('close', () => {
-        if (this.clients !== clients) return
-        this.chain = null
-        this.drop(clients)
-        emit({ type: 'dropped', servers: this.servers })
-      })
+      // One link gone: the whole chain is; the next `open` connects again. `end` as well as `close`: a hop reached
+      // through a jump host whose server dies only gets the jump host's EOF on its channel, and OpenSSH closes the
+      // channel only after an EOF back, so `close` never comes; ssh2 also stops that hop's keepalives on `end`.
+      client.once('close', lost)
+      client.once('end', lost)
     }
     return clients
   }
