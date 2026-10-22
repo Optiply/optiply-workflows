@@ -216,7 +216,9 @@ export function SettingsPanel({
               · {test.data.durationMs} ms
             </p>
           )}
-          {test.data && !test.data.ok && !(test.data.error.details as { ssh?: unknown } | undefined)?.ssh && (
+          {/* A hop that failed shows its own error; anything else (the last SSH server couldn't reach the database, the
+              database refused) shows here. */}
+          {test.data && !test.data.ok && !test.data.ssh?.some((step) => !step.ok) && (
             <ConnectorErrorNote error={test.data.error} onConnected={() => test.mutate(request)} />
           )}
         </div>

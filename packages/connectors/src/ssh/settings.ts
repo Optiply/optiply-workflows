@@ -58,24 +58,16 @@ export class SshSettingsError extends Error {
 }
 
 /**
- * Settings as they're saved: a hop whose host or port changed loses its trusted host key (it's another server), and
- * secrets are kept only for hops that are still there, and only those their way of signing in uses.
+ * Settings as they're saved: secrets are kept only for hops that are still there, and only those their way of signing
+ * in uses. A hop's trusted host key stays as sent, even if its host or port changed: what's trusted is the key, and
+ * another server presents another one (refused); the settings form clears it on such an edit anyway.
  */
 export function normalizeSsh(
-  before: SshConfig | undefined,
   ssh: SshConfig | undefined,
   secrets: SshSecrets | undefined,
 ): { ssh: SshConfig | undefined; secrets: SshSecrets | undefined } {
   if (!ssh) return { ssh: undefined, secrets: undefined }
-  const previous = new Map((before?.hops ?? []).map((h) => [h.id, h]))
-  const hops = ssh.hops.map((hop) => {
-    const old = previous.get(hop.id)
-    const moved = old !== undefined && (old.host !== hop.host || old.port !== hop.port)
-    // The pin it had was the old server's; one trusted since (another fingerprint) is the new server's.
-    return moved && hop.hostKey && old?.hostKey?.fingerprint === hop.hostKey.fingerprint
-      ? withoutPin(hop)
-      : hop
-  })
+  const { hops } = ssh
   const kept: SshSecrets = {}
   for (const hop of hops) {
     const s = secrets?.[hop.id]
@@ -86,11 +78,6 @@ export function normalizeSsh(
     if (Object.keys(defined).length) kept[hop.id] = defined
   }
   return { ssh: { hops }, secrets: Object.keys(kept).length ? kept : undefined }
-}
-
-function withoutPin(hop: SshHop): SshHop {
-  const { hostKey: _, ...rest } = hop
-  return rest
 }
 
 /**

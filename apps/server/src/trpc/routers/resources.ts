@@ -321,7 +321,6 @@ export const resourcesRouter = router({
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       const settled = sshSettled(() =>
         settleSsh(
-          existing?.config,
           config.data as Record<string, unknown>,
           applySecretPatch(existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {}, input.secrets),
         ),
@@ -417,10 +416,7 @@ export const resourcesRouter = router({
       const parsedConfig = connector.configSchema.safeParse(tested.config)
       if (parsedConfig.success) {
         try {
-          Object.assign(
-            tested,
-            settleSsh(existing?.config, parsedConfig.data as Record<string, unknown>, tested.secrets),
-          )
+          Object.assign(tested, settleSsh(parsedConfig.data as Record<string, unknown>, tested.secrets))
         } catch (err) {
           if (!(err instanceof SshSettingsError)) throw err
           return { ok: false as const, error: errorView(new ConnectorError('invalid_config', err.message)) }

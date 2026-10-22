@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { TLSSocket } from 'node:tls'
 import { startTestDatabase } from '@ow/db/testing'
 import mysql from 'mysql2/promise'
 import postgres from 'postgres'
@@ -57,7 +59,7 @@ beforeAll(async () => {
   if (mysqlHere) my = await startTestMysql()
   ssh = await startTestSshServer({
     users: [{ username: 'ow', publicKey: fixture('openssh-ed25519.pub') }],
-    hosts: { 'db.internal': '127.0.0.1' },
+    hosts: { 'db.internal': '127.0.0.1', 'tls.internal': '127.0.0.1' },
   })
   pool = new PoolManager({ sweepIntervalMs: 0 })
 }, 240_000)
@@ -173,6 +175,43 @@ describe('Postgres through an SSH tunnel', () => {
     expect(performance.now() - started).toBeLessThan(1000)
   })
 
+  it('checks a verify-full certificate against the host, through the tunnel', async () => {
+    // A server that answers postgres's SSLRequest and then speaks TLS as `api.internal` (the test CA's certificate).
+    const tlsFixture = (name: string) =>
+      readFileSync(new URL(`./fixtures/tls/${name}`, import.meta.url), 'utf8')
+    const fake = createServer((socket) => {
+      socket.once('data', () => {
+        socket.write('S')
+        const secure = new TLSSocket(socket, {
+          isServer: true,
+          key: tlsFixture('api.internal.key'),
+          cert: tlsFixture('api.internal.crt'),
+        })
+        secure.on('error', () => {})
+        // Past the handshake: that's all this server does.
+        secure.once('secure', () => secure.destroy())
+      })
+      socket.on('error', () => {})
+    })
+    await new Promise<void>((r) => fake.listen(0, '127.0.0.1', r))
+    const port = (fake.address() as { port: number }).port
+    const through = (host: string, version: string) =>
+      runPg(
+        resource(
+          { ...pgBase, host, port, ssl: 'verify-full', caCert: tlsFixture('ca.crt'), ssh: tunnel() },
+          { password: 'x', ssh: keySecrets },
+          version,
+        ),
+        'select 1',
+      )
+    // The certificate is api.internal's: under another name it's refused by the check, with that name.
+    const wrongName = await failure(through('tls.internal', 'tls-wrong'))
+    expect(wrongName.message).toMatch(/Host: tls\.internal\. is not in the cert's altnames/)
+    // (Before the fix, the name checked was "localhost", whatever the host.)
+    expect(wrongName.message).not.toMatch(/localhost/)
+    fake.close()
+  })
+
   it('cancels a query that runs too long, through the tunnel too', async () => {
     const res = pgResource(tunnel(), 'cancel')
     const err = await failure(runPg(res, 'select pg_sleep(30)', 500))
@@ -242,6 +281,18 @@ describe.skipIf(!mysqlHere)('MySQL through an SSH tunnel', () => {
     const tls = await runMy(myResource('my-tls', { ssl: 'require' }), "SHOW SESSION STATUS LIKE 'Ssl_cipher'")
     expect((tls.data as { Value: string }[])[0]!.Value).not.toBe('')
     expect(await testResource(mysqlConnector, myResource('my-test'))).toMatchObject({ ok: true })
+  })
+
+  it("gives the SSH servers their time before MySQL's own connect timeout", async () => {
+    const client = await mysqlConnector.createClient(
+      parseResource(mysqlConnector, myResource('my-timeout')) as never,
+    )
+    // 10 s for MySQL, plus 15 s for the one SSH server: a slow bastion fails as the SSH error that says so.
+    expect(
+      (client as unknown as { connectionOptions: { connectTimeout: number } }).connectionOptions
+        .connectTimeout,
+    ).toBe(25_000)
+    await mysqlConnector.destroyClient(client)
   })
 
   it('kills a query that runs too long from a side connection through it', async () => {

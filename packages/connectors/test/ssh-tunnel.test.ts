@@ -68,6 +68,8 @@ describe('SshTunnel', () => {
     const tunnel = new SshTunnel([hop()])
     const stream = await tunnel.open('127.0.0.1', echoPort)
     expect(await roundTrip(stream, 'ping')).toBe('echo: ping')
+    // Where it leads, as a socket says (postgres's TLS servername comes from `host`).
+    expect(stream).toMatchObject({ host: '127.0.0.1', port: echoPort, readyState: 'open' })
     expect(ssh.forwards.at(-1)).toEqual({ host: '127.0.0.1', port: echoPort, allowed: true })
     expect(tunnel.seen.get('server')).toEqual(ssh.hostKey)
     stream.end()
@@ -141,6 +143,21 @@ describe('SshTunnel', () => {
     const refused = await failure(new SshTunnel([hop()]), echoPort + 1)
     expect(refused.code).toBe('ssh_forward')
     expect(ssh.forwards.at(-1)).toMatchObject({ allowed: false })
+  })
+
+  it('gives up by its deadline, whatever each hop may take', async () => {
+    // Accepts, then never says a word: an SSH server that hangs.
+    const silent = createServer(() => {})
+    await new Promise<void>((r) => silent.listen(0, '127.0.0.1', r))
+    const port = (silent.address() as { port: number }).port
+    const started = performance.now()
+    const steps = await new SshTunnel([hop({ port })], {
+      connectTimeoutMs: 10_000,
+      deadline: Date.now() + 500,
+    }).probe()
+    expect(performance.now() - started).toBeLessThan(2000)
+    expect(steps).toMatchObject([{ ok: false, error: { code: 'ssh_connect' } }])
+    silent.close()
   })
 
   it('connects again on the next open after the connection drops', async () => {

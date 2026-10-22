@@ -67,7 +67,8 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
       user: config.user,
       password: secrets.password,
       ssl: sslOption(config),
-      connectTimeout: 10_000,
+      // Through a tunnel, the SSH servers' own connect time (15 s each) comes first, so their errors say which and why.
+      connectTimeout: 10_000 + (config.ssh?.hops.length ?? 0) * 15_000,
       charset: 'utf8mb4',
       // One statement per query: `select 1; drop table t` is a syntax error, not two statements.
       multipleStatements: false,

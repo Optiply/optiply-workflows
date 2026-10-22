@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   normalizeSsh,
   type ResolvedResource,
@@ -5,7 +6,6 @@ import {
   type SshConfig,
   SshKeyError,
   type SshSecrets,
-  sshConfigSchema,
   sshCredentials,
 } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
@@ -55,17 +55,11 @@ export function applySecretPatch(
  * checked (a key that's missing, unreadable or locked by another passphrase is refused: `SshSettingsError`).
  */
 export function settleSsh(
-  before: unknown,
   config: Record<string, unknown>,
   secrets: Record<string, unknown>,
 ): { config: Record<string, unknown>; secrets: Record<string, unknown> } {
   if (config.ssh === undefined && secrets.ssh === undefined) return { config, secrets }
-  const previous = sshConfigSchema.safeParse((before as { ssh?: unknown } | null | undefined)?.ssh)
-  const settled = normalizeSsh(
-    previous.success ? previous.data : undefined,
-    config.ssh as SshConfig | undefined,
-    secrets.ssh as SshSecrets | undefined,
-  )
+  const settled = normalizeSsh(config.ssh as SshConfig | undefined, secrets.ssh as SshSecrets | undefined)
   const { ssh: _c, ...restConfig } = config
   const { ssh: _s, ...restSecrets } = secrets
   if (settled.ssh) sshCredentials(settled.ssh, settled.secrets)
@@ -87,16 +81,37 @@ export function sshKeyInfo(secrets: Record<string, unknown>): Record<string, Ssh
   if (!hops) return null
   const out: Record<string, SshKeyInfo> = {}
   for (const [hop, s] of Object.entries(hops)) {
-    if (!s.privateKey) continue
-    try {
-      const key = readPrivateKey(s.privateKey, s.passphrase)
-      out[hop] = { type: key.type, fingerprint: key.fingerprint, publicKey: key.publicKey }
-    } catch (err) {
-      if (!(err instanceof SshKeyError)) throw err
-      out[hop] = { error: err.message }
-    }
+    if (s.privateKey) out[hop] = keyInfo(s.privateKey, s.passphrase)
   }
   return out
+}
+
+/**
+ * What's shown of a key, remembered by a hash of the key and passphrase: reading a PuTTY v3 key runs Argon2, and every
+ * settings page would otherwise pay it for each environment and hop. Only public details are kept.
+ */
+const keyInfos = new Map<string, SshKeyInfo>()
+const KEY_INFOS_MAX = 100
+
+function keyInfo(privateKey: string, passphrase: string | undefined): SshKeyInfo {
+  const id = createHash('sha256')
+    .update(privateKey)
+    .update('\0')
+    .update(passphrase ?? '')
+    .digest('base64')
+  const known = keyInfos.get(id)
+  if (known) return known
+  let info: SshKeyInfo
+  try {
+    const key = readPrivateKey(privateKey, passphrase)
+    info = { type: key.type, fingerprint: key.fingerprint, publicKey: key.publicKey }
+  } catch (err) {
+    if (!(err instanceof SshKeyError)) throw err
+    info = { error: err.message }
+  }
+  if (keyInfos.size >= KEY_INFOS_MAX) keyInfos.delete(keyInfos.keys().next().value!)
+  keyInfos.set(id, info)
+  return info
 }
 
 /** Names of the top-level secret fields a patch touches (for the audit log; never values). */

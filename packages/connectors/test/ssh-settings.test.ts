@@ -29,7 +29,7 @@ describe('SSH settings', () => {
   })
 
   it('drops every SSH secret when the tunnel is turned off', () => {
-    expect(normalizeSsh({ hops: [hop('a')] }, undefined, { a: { privateKey: 'k' } })).toEqual({
+    expect(normalizeSsh(undefined, { a: { privateKey: 'k' } })).toEqual({
       ssh: undefined,
       secrets: undefined,
     })

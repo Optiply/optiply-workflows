@@ -140,5 +140,16 @@ describe('readPrivateKey', () => {
     expect(errorOf(() => readPrivateKey(fixture('ppk2-rsa.ppk').replace('File-2', 'File-4')))).toBe(
       'unsupported',
     )
+    // Argon2's cost comes from the file (and isn't covered by its MAC): bounded, and missing values refused.
+    const v3 = fixture('ppk3-ed25519-encrypted.ppk')
+    for (const changed of [
+      v3.replace(/Argon2-Memory: \d+/, 'Argon2-Memory: 4194304'),
+      v3.replace(/Argon2-Passes: \d+/, 'Argon2-Passes: 100000'),
+      v3.replace(/Argon2-Passes: \d+\n/, ''),
+    ]) {
+      expect(() => readPrivateKey(changed, 'fixture pass')).toThrow(
+        /Argon2 settings are missing or too costly/,
+      )
+    }
   })
 })

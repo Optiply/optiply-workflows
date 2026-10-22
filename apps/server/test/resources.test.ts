@@ -615,19 +615,16 @@ describe('SSH tunnel settings (M17)', () => {
     await save({ hops: [bastion] }, { ssh: { bastion: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } })
   })
 
-  it("drops a trusted host key when its hop moves to another host or port, unless it's trusted anew", async () => {
+  it('keeps a trusted host key as sent, even when its hop moves (what is trusted is the key)', async () => {
     expect(data(await save({ hops: [{ ...bastion, hostKey: pin }] })).config.ssh.hops[0].hostKey).toEqual(pin)
-    const moved = await save({ hops: [{ ...bastion, host: 'bastion2.example.com', hostKey: pin }] })
-    expect(data(moved).config.ssh.hops[0].hostKey).toBeUndefined()
-    const repinned = { ...pin, fingerprint: 'SHA256:ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssssRRRRqqqqPPP' }
-    const trusted = await save({
-      hops: [{ ...bastion, host: 'bastion3.example.com', port: 22, hostKey: repinned }],
+    // The same server under another name or port, its key trusted again: kept (the review: it used to be dropped).
+    const moved = await save({
+      hops: [{ ...bastion, host: 'bastion2.example.com', port: 2222, hostKey: pin }],
     })
-    expect(data(trusted).config.ssh.hops[0].hostKey).toEqual(repinned)
-    const port = await save({
-      hops: [{ ...bastion, host: 'bastion3.example.com', port: 2200, hostKey: repinned }],
-    })
-    expect(data(port).config.ssh.hops[0].hostKey).toBeUndefined()
+    expect(data(moved).config.ssh.hops[0].hostKey).toEqual(pin)
+    // Cleared in the form (as it does on such an edit): no pin.
+    const cleared = await save({ hops: [{ ...bastion, host: 'bastion3.example.com' }] })
+    expect(data(cleared).config.ssh.hops[0].hostKey).toBeUndefined()
   })
 
   it('tests through a real SSH server hop by hop, trusts its host key, and then queries through it', async () => {

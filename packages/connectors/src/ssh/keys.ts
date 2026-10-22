@@ -28,6 +28,10 @@ export interface SshKey {
   format: 'openssh' | 'pem' | 'ppk'
 }
 
+/** The most a `.ppk` file may ask Argon2 for: it runs in the server, on every read of the key. */
+const ARGON2_MAX_MEMORY_KIB = 256 * 1024
+const ARGON2_MAX_PASSES = 256
+
 export type SshKeyErrorCode = 'passphrase_needed' | 'wrong_passphrase' | 'unreadable' | 'unsupported'
 
 export class SshKeyError extends Error {
@@ -211,14 +215,35 @@ function readPpk(key: string, passphrase: string | undefined): KeyParts {
         | 'argon2d'
         | undefined
       if (!variant) throw unsupported(`This .ppk file's ${derivation} key derivation isn't supported`)
-      const derived = argon2Sync(variant, {
-        message: pass,
-        nonce: Buffer.from(fields.get('Argon2-Salt') ?? '', 'hex'),
-        memory: Number(fields.get('Argon2-Memory')),
-        passes: Number(fields.get('Argon2-Passes')),
-        parallelism: Number(fields.get('Argon2-Parallelism')),
-        tagLength: 80,
-      })
+      // The file sets Argon2's cost: within limits, since it runs here (PuTTY's own are 8 MiB and passes for ~0.1 s).
+      const memory = Number(fields.get('Argon2-Memory'))
+      const passes = Number(fields.get('Argon2-Passes'))
+      const parallelism = Number(fields.get('Argon2-Parallelism'))
+      const within = (n: number, max: number) => Number.isInteger(n) && n >= 1 && n <= max
+      if (
+        !within(memory, ARGON2_MAX_MEMORY_KIB) ||
+        !within(passes, ARGON2_MAX_PASSES) ||
+        !within(parallelism, 16)
+      )
+        throw unsupported(
+          `This .ppk file's Argon2 settings are missing or too costly (memory up to ${ARGON2_MAX_MEMORY_KIB / 1024} MiB, up to ${ARGON2_MAX_PASSES} passes)`,
+        )
+      let derived: Buffer
+      try {
+        derived = argon2Sync(variant, {
+          message: pass,
+          nonce: Buffer.from(fields.get('Argon2-Salt') ?? '', 'hex'),
+          memory,
+          passes,
+          parallelism,
+          tagLength: 80,
+        })
+      } catch (err) {
+        throw new SshKeyError(
+          'unreadable',
+          `This .ppk file's key derivation failed: ${(err as Error).message}`,
+        )
+      }
       macKey = derived.subarray(48, 80)
       privateBlob = decrypt(privateBlob, derived.subarray(0, 32), derived.subarray(32, 48))
     }

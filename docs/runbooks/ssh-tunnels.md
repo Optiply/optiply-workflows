@@ -17,8 +17,10 @@ api / worker ──SSH──▶ jump host (optional) ──SSH──▶ SSH serv
   resource's pool is in use (the pool drops idle clients after 5 minutes). Saving the settings replaces it.
 - The database's or API's **host is as the SSH server sees it**: `localhost` means the SSH server itself, and an
   internal name only needs to resolve there. TLS (Postgres `verify-full`, MySQL, https) is checked against that host.
-- Every request of a tunnelled REST resource goes through it, an OAuth2 client-credentials token included. The
-  private-network guard doesn't apply: what's reached is the SSH server's network.
+- Every request the REST connector sends for a tunnelled resource goes through it: queries, and an OAuth2
+  client-credentials token. **Not** the OAuth2 authorization-code flow (connecting an account, and refreshing its
+  token): the server does that directly, so its token endpoint must be reachable from the platform itself. The
+  private-network guard doesn't apply to what goes through the tunnel: what's reached is the SSH server's network.
 
 ## Setting one up
 

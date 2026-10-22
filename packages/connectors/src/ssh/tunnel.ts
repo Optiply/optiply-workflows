@@ -48,6 +48,8 @@ export interface TunnelHop extends Pick<SshHop, 'id' | 'host' | 'port' | 'userna
 export interface SshTunnelOptions {
   /** Connecting and signing in, per hop. */
   connectTimeoutMs?: number
+  /** When everything must be done by (epoch ms): each hop gets what's left, at most `connectTimeoutMs`. */
+  deadline?: number
   /** How often each SSH connection is checked; this many unanswered checks in a row end it. */
   keepaliveMs?: number
   keepaliveCountMax?: number
@@ -111,7 +113,7 @@ export class SshTunnel {
   async open(host: string, port: number): Promise<Duplex> {
     const clients = await this.connected()
     const last = this.hops.at(-1)!
-    return socketLike(await forward(clients.at(-1)!, last, host, port))
+    return socketLike(await forward(clients.at(-1)!, last, host, port), host, port)
   }
 
   /**
@@ -247,14 +249,28 @@ export class SshTunnel {
   private connectHop(hop: TunnelHop, sock: Duplex | undefined): Promise<ssh2.Client> {
     const client = new ssh2.Client()
     let refused: SshError | undefined
+    const timeout = Math.min(
+      this.options.connectTimeoutMs ?? 15_000,
+      this.options.deadline === undefined ? Number.POSITIVE_INFINITY : this.options.deadline - Date.now(),
+    )
+    if (timeout <= 0)
+      return Promise.reject(
+        new SshError('ssh_connect', hop, `SSH server ${hop.host}: no time left to connect`),
+      )
     return new Promise((resolve, reject) => {
+      let settled = false
       client.once('ready', () => {
+        settled = true
         client.removeAllListeners('error')
         // Errors after this end the connection, which `close` handles.
         client.on('error', () => {})
         resolve(client)
       })
-      client.once('error', (err: Error & { level?: string; code?: string }) => {
+      // `on`, not `once`: a refused connection can report another error (its socket reset) after the first, and an
+      // 'error' nobody listens to would bring the process down.
+      client.on('error', (err: Error & { level?: string; code?: string }) => {
+        if (settled) return
+        settled = true
         client.end()
         reject(refused ?? connectError(hop, err))
       })
@@ -269,7 +285,7 @@ export class SshTunnel {
         ...(sock ? { sock } : { host: hop.host, port: hop.port }),
         username: hop.username,
         ...credential,
-        readyTimeout: this.options.connectTimeoutMs ?? 15_000,
+        readyTimeout: timeout,
         keepaliveInterval: this.options.keepaliveMs ?? 15_000,
         keepaliveCountMax: this.options.keepaliveCountMax ?? 3,
         tryKeyboard: false,
@@ -301,10 +317,14 @@ export class SshTunnel {
 }
 
 /**
- * A channel with a socket's `readyState`, which drivers read: postgres only says goodbye and ends a socket whose
- * `readyState` is `'open'`, then waits for it to close (without one, every pool end waited out its 5 s timeout).
+ * A channel with what drivers read off a socket: `readyState` (postgres only says goodbye and ends a socket whose
+ * `readyState` is `'open'`, then waits for it to close: without one, every pool end waited out its 5 s timeout), and
+ * `host` and `port` (postgres's TLS `servername`: without it, `verify-full` checked the certificate against
+ * "localhost").
  */
-function socketLike(channel: Duplex): Duplex {
+function socketLike(channel: Duplex, host: string, port: number): Duplex {
+  // Where it leads, as net.Socket's own: postgres takes TLS's servername (and so the certificate check) from `host`.
+  Object.defineProperties(channel, { host: { value: host }, port: { value: port } })
   let closed = false
   channel.once('close', () => {
     closed = true

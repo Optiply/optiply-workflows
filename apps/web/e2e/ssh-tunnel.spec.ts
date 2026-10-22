@@ -186,6 +186,18 @@ test("trust an SSH server's host key in Test connection, then query through it",
       await expect(step.getByTestId('ssh-presented-key')).toHaveText(ssh.hostKey.fingerprint)
       await expect(step.getByRole('button', { name: 'Trust the new key' })).toBeVisible()
     })
+
+    await test.step("every hop fine, but the SSH server can't reach the database: that error is shown", async () => {
+      await trpcMutate(page, 'resources.saveConfig', {
+        resourceId: resource.id,
+        environmentId,
+        config: { ...config(ssh.hostKey), host: 'nowhere.internal' },
+      })
+      await reopen(page)
+      await page.getByRole('button', { name: 'Test connection' }).click()
+      await expect(page.getByTestId('ssh-step-srv')).toContainText('Host key trusted')
+      await expect(page.getByText(/couldn't open a connection to nowhere\.internal/)).toBeVisible()
+    })
   } finally {
     await ssh.close()
   }

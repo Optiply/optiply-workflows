@@ -87,6 +87,8 @@ export async function testResource(
     // Through an SSH tunnel (M17): each hop first, reported on its own; the resource only once they all work.
     const tunnel = tunnelFor(parsed.config as { ssh?: SshConfig }, parsed.secrets as { ssh?: SshSecrets }, {
       connectTimeoutMs: timeoutMs,
+      // The whole chain within the test's own time limit.
+      deadline: Date.now() + timeoutMs,
     })
     if (tunnel) {
       ssh = await tunnel.probe()
