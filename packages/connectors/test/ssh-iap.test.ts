@@ -154,3 +154,66 @@ describe('openIapStream', () => {
     silent.close()
   })
 })
+
+describe('resuming', () => {
+  it('resumes a dropped WebSocket in the middle of a transfer, nothing lost or doubled', async () => {
+    const stream = await openIapStream(target(), options({ resumeDelayMs: 20 }))
+    const data = randomBytes(4 * 1024 * 1024)
+    const chunks: Buffer[] = []
+    let got = 0
+    let dropped = false
+    const done = new Promise<void>((resolve) =>
+      stream.on('data', (c: Buffer) => {
+        chunks.push(c)
+        got += c.length
+        // Once some has come back, the network goes, with frames in flight both ways.
+        if (!dropped && got > 256 * 1024) {
+          dropped = true
+          iap.dropAll()
+        }
+        if (got >= data.length) resolve()
+      }),
+    )
+    for (let at = 0; at < data.length; at += 64 * 1024) stream.write(data.subarray(at, at + 64 * 1024))
+    await done
+    expect(got).toBe(data.length)
+    expect(sha(Buffer.concat(chunks))).toBe(sha(data))
+    expect(stream.resumes).toBeGreaterThanOrEqual(1)
+    expect(iap.reconnects.at(-1)?.sid).toBe(stream.sid)
+    stream.destroy()
+  })
+
+  it('takes a fresh token when IAP asks to authenticate again (4004)', async () => {
+    const forced: boolean[] = []
+    const stream = await openIapStream(
+      target(),
+      options({
+        resumeDelayMs: 20,
+        getToken: async (_signal, force) => {
+          forced.push(force ?? false)
+          return 'good-token'
+        },
+      }),
+    )
+    const resumed = new Promise((r) => stream.once('resumed', r))
+    iap.reauthAll()
+    await resumed
+    expect(forced).toEqual([false, true])
+    stream.write('still here')
+    expect((await readBytes(stream, 10)).toString()).toBe('still here')
+    stream.destroy()
+  })
+
+  it('fails when the session can no longer be resumed', async () => {
+    const stream = await openIapStream(target(), options({ resumeDelayMs: 20, resumeWithinMs: 400 }))
+    const failed = new Promise<Error>((r) => stream.once('error', r))
+    stream.resume()
+    iap.dropAll()
+    iap.forgetSessions()
+    const err = await failed
+    expect(err).toBeInstanceOf(IapError)
+    expect((err as IapError).code).toBe('iap_connect')
+    expect(err.message).toContain("couldn't be resumed within")
+    expect(err.message).toContain('4010 Invalid session id')
+  })
+})
