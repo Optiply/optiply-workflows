@@ -1,4 +1,16 @@
-import { Copy, KeyRound, Plus, ShieldCheck, ShieldQuestion, Trash2, Upload, X } from 'lucide-react'
+import {
+  CircleCheck,
+  CircleX,
+  Copy,
+  KeyRound,
+  Plus,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestion,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { type SecretEdit, SecretField } from './shared'
@@ -356,4 +368,129 @@ function HostKey({ hostKey, onForget }: { hostKey: SshHop['hostKey']; onForget: 
       )}
     </p>
   )
+}
+
+/** One SSH hop as Test connection reports it. */
+export interface SshTestStep {
+  hop: string
+  host: string
+  port: number
+  ok: boolean
+  durationMs: number
+  hostKey?: {
+    algorithm: string
+    fingerprint: string
+    status: 'trusted' | 'untrusted' | 'changed'
+    trusted?: string
+  }
+  error?: { code: string; message: string }
+}
+
+/**
+ * Test connection's SSH hops, one line each: reached or not, how long it took, the host key it presented. An untrusted
+ * key can be trusted here (it goes into the settings, saved with them); a changed one only after a warning.
+ */
+export function SshTestSteps({
+  steps,
+  hops,
+  onTrust,
+  disabled,
+}: {
+  steps: SshTestStep[]
+  hops: SshHop[]
+  onTrust: (hop: string, hostKey: { algorithm: string; fingerprint: string }) => void
+  disabled: boolean
+}) {
+  const label = (id: string) => {
+    const index = hops.findIndex((h) => h.id === id)
+    return index === hops.length - 1 ? 'SSH server' : `Jump host ${index + 1}`
+  }
+  return (
+    <ul className="space-y-2" data-testid="ssh-test-steps">
+      {steps.map((step) => (
+        <li key={step.hop} className="space-y-1 text-sm" data-testid={`ssh-step-${step.hop}`}>
+          <p
+            className={
+              step.ok ? 'flex items-center gap-2 text-success' : 'flex items-center gap-2 text-danger'
+            }
+          >
+            {step.ok ? <CircleCheck className="size-4" /> : <CircleX className="size-4" />}
+            {label(step.hop)} {step.host}:{step.port}
+            <span className="text-muted">· {step.durationMs} ms</span>
+          </p>
+          {step.error && !step.hostKey?.status.match(/untrusted|changed/) && (
+            <p className="pl-6 text-danger">{step.error.message}</p>
+          )}
+          {step.hostKey && <HostKeyResult step={step} onTrust={onTrust} disabled={disabled} />}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function HostKeyResult({
+  step,
+  onTrust,
+  disabled,
+}: {
+  step: SshTestStep
+  onTrust: (hop: string, hostKey: { algorithm: string; fingerprint: string }) => void
+  disabled: boolean
+}) {
+  const key = step.hostKey!
+  const trust = () => onTrust(step.hop, { algorithm: key.algorithm, fingerprint: key.fingerprint })
+  if (key.status === 'trusted')
+    return (
+      <p className="flex items-center gap-1.5 pl-6 text-xs text-muted">
+        <ShieldCheck className="size-3.5 text-success" /> Host key trusted <code>{key.fingerprint}</code>
+      </p>
+    )
+  if (key.status === 'untrusted')
+    return (
+      <div className="space-y-1.5 rounded-md bg-canvas p-2.5 pl-6 text-xs">
+        <p className="flex items-center gap-1.5">
+          <ShieldQuestion className="size-3.5" /> The server presented this host key ({key.algorithm}):
+        </p>
+        <code className="block text-sm text-ink" data-testid="ssh-presented-key">
+          {key.fingerprint}
+        </code>
+        <p className="text-muted">
+          Check it with whoever runs the server (on it:{' '}
+          <code>ssh-keygen -lf /etc/ssh/ssh_host_{shortType(key.algorithm)}_key.pub</code>), then trust it.
+        </p>
+        {!disabled && (
+          <Button size="sm" variant="primary" onClick={trust}>
+            Trust this key
+          </Button>
+        )}
+      </div>
+    )
+  return (
+    <div className="space-y-1.5 rounded-md bg-op-red-1 p-2.5 pl-6 text-xs text-op-red-4">
+      <p className="flex items-center gap-1.5 font-medium">
+        <ShieldAlert className="size-3.5" /> This server's host key changed
+      </p>
+      <p>
+        Trusted: <code>{key.trusted}</code>
+        <br />
+        Presented: <code data-testid="ssh-presented-key">{key.fingerprint}</code>
+      </p>
+      <p>
+        If the server was reinstalled or its keys replaced, check the new key and trust it. Otherwise
+        something may be between here and the server: don't.
+      </p>
+      {!disabled && (
+        <Button size="sm" variant="danger" onClick={trust}>
+          Trust the new key
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/** `ssh-ed25519` → `ed25519`, `ecdsa-sha2-nistp256` → `ecdsa`, `ssh-rsa`/`rsa-sha2-*` → `rsa`: sshd's key file names. */
+function shortType(algorithm: string): string {
+  if (algorithm.includes('ed25519')) return 'ed25519'
+  if (algorithm.startsWith('ecdsa')) return 'ecdsa'
+  return 'rsa'
 }

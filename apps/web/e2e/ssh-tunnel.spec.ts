@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { startTestSshServer } from '@ow/connectors/testing'
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate } from './helpers'
+import { signIn, trpcMutate, trpcQuery } from './helpers'
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../../../packages/connectors/test/fixtures/ssh/${name}`, import.meta.url), 'utf8')
@@ -12,9 +13,10 @@ function fingerprintOf(publicLine: string): string {
   return `SHA256:${createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')}`
 }
 
-/** Reloads the page and goes back to Settings (a configured resource opens on Query). */
-async function reopen(page: Page) {
-  await page.reload()
+/** Reloads the page (or opens `url`) and goes to Settings (a configured resource opens on Query). */
+async function reopen(page: Page, url?: string) {
+  if (url) await page.goto(url)
+  else await page.reload()
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
 }
 
@@ -99,4 +101,92 @@ test('set up an SSH tunnel with a key and a jump host, and turn it off', async (
     await expect(page.getByTestId('ssh-tunnel').locator('fieldset')).toHaveCount(0)
     await expect(page.locator('input[type="password"]')).toHaveCount(0)
   })
+})
+
+/**
+ * M17 step 5b: Test connection through a real (test) SSH server in front of the e2e database: the server's host key
+ * shown and trusted, then the database reached through the tunnel; a changed key warned about with both fingerprints.
+ */
+test("trust an SSH server's host key in Test connection, then query through it", async ({ page }) => {
+  const pg = new URL(process.env.E2E_PG_URL!)
+  const ssh = await startTestSshServer({
+    users: [{ username: 'ow', publicKey: fixture('openssh-ed25519.pub') }],
+    hosts: { 'db.internal': pg.hostname },
+  })
+  try {
+    await signIn(page)
+    const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
+      type: 'postgres',
+      name: 'Through the bastion',
+      slug: `trusted_${Date.now().toString(36)}`,
+    })
+    const envs = await trpcQuery<{ id: string; slug: string }[]>(page, 'environments.list', undefined)
+    const environmentId = envs.find((e) => e.slug === 'production')!.id
+    const hop = { id: 'srv', host: ssh.host, port: ssh.port, username: 'ow', auth: 'key' }
+    const config = (hostKey?: unknown) => ({
+      host: 'db.internal',
+      port: Number(pg.port),
+      database: pg.pathname.slice(1),
+      user: decodeURIComponent(pg.username),
+      ssl: 'disable',
+      ssh: { hops: [{ ...hop, ...(hostKey ? { hostKey } : {}) }] },
+    })
+    await trpcMutate(page, 'resources.saveConfig', {
+      resourceId: resource.id,
+      environmentId,
+      config: config(),
+      secrets: {
+        password: decodeURIComponent(pg.password),
+        ssh: { srv: { privateKey: fixture('openssh-ed25519') } },
+      },
+    })
+    await reopen(page, `/resources/${resource.id}`)
+
+    await test.step('not trusted yet: Test connection shows the key it presented', async () => {
+      await page.getByRole('button', { name: 'Test connection' }).click()
+      const step = page.getByTestId('ssh-step-srv')
+      await expect(step).toContainText(`SSH server ${ssh.host}:${ssh.port}`)
+      await expect(step.getByTestId('ssh-presented-key')).toHaveText(ssh.hostKey.fingerprint)
+      await expect(page.getByText(/Connected/)).toHaveCount(0)
+    })
+
+    await test.step('trusted: tried again, it reaches the database through the tunnel', async () => {
+      await page.getByRole('button', { name: 'Trust this key' }).click()
+      await expect(page.getByTestId('ssh-step-srv')).toContainText('Host key trusted')
+      await expect(page.getByText(/Connected · PostgreSQL/)).toBeVisible()
+      await expect(page.getByText('Save to keep the trusted host key.')).toBeVisible()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await expect(page.getByText('Saved.')).toBeVisible()
+      await reopen(page)
+      await expect(page.getByTestId('ssh-host-key')).toContainText(ssh.hostKey.fingerprint)
+      const run = await trpcMutate<{ ok: boolean; data: unknown }>(page, 'resources.run', {
+        resourceId: resource.id,
+        environmentId,
+        query: { sql: 'select count(*)::int as n from customers' },
+      })
+      expect(run).toMatchObject({ ok: true, data: [{ n: 2 }] })
+      expect(ssh.forwards.at(-1)).toMatchObject({ host: 'db.internal', allowed: true })
+    })
+
+    await test.step('a changed host key is a warning, with both fingerprints', async () => {
+      const other = {
+        algorithm: 'ssh-ed25519',
+        fingerprint: 'SHA256:AAAAbbbbCCCCddddEEEEffffGGGGhhhhIIIIjjjjKKK',
+      }
+      await trpcMutate(page, 'resources.saveConfig', {
+        resourceId: resource.id,
+        environmentId,
+        config: config(other),
+      })
+      await reopen(page)
+      await page.getByRole('button', { name: 'Test connection' }).click()
+      const step = page.getByTestId('ssh-step-srv')
+      await expect(step).toContainText("This server's host key changed")
+      await expect(step).toContainText(other.fingerprint)
+      await expect(step.getByTestId('ssh-presented-key')).toHaveText(ssh.hostKey.fingerprint)
+      await expect(step.getByRole('button', { name: 'Trust the new key' })).toBeVisible()
+    })
+  } finally {
+    await ssh.close()
+  }
 })

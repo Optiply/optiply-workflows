@@ -14,7 +14,7 @@ import {
   type SecretEdit,
   SecretField,
 } from './shared'
-import { type SshConfig, type SshEdits, type SshKeyInfo, SshTunnelFields } from './ssh-tunnel'
+import { type SshConfig, type SshEdits, type SshKeyInfo, SshTestSteps, SshTunnelFields } from './ssh-tunnel'
 
 type Config = Record<string, unknown>
 /** Secret edits by field; nested records nest (`headers: { name: edit }`, `ssh: { hopId: { privateKey: edit } }`). */
@@ -137,6 +137,10 @@ export function SettingsPanel({
     sshKeys: (stored?.sshKeys as Record<string, SshKeyInfo> | null | undefined) ?? null,
   }
   const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
+  // Trusted in Test connection but not saved yet (M17).
+  const pins = (c: Config | null | undefined) =>
+    JSON.stringify(((c?.ssh as SshConfig | undefined)?.hops ?? []).map((h) => h.hostKey ?? null))
+  const unsavedTrust = !!config.ssh && pins(config) !== pins(stored?.config as Config | undefined)
 
   return (
     <div className="space-y-4">
@@ -186,13 +190,33 @@ export function SettingsPanel({
           </div>
           <ErrorNote error={save.error ?? test.error ?? remove.error} />
           {save.isSuccess && !save.isPending && <p className="text-sm text-success">Saved.</p>}
+          {test.data?.ssh && (
+            <SshTestSteps
+              steps={test.data.ssh}
+              hops={(config.ssh as SshConfig | undefined)?.hops ?? []}
+              disabled={!canEdit}
+              onTrust={(hop, hostKey) => {
+                const ssh = config.ssh as SshConfig
+                const next = {
+                  ...config,
+                  ssh: { hops: ssh.hops.map((h) => (h.id === hop ? { ...h, hostKey } : h)) },
+                }
+                setConfig(next)
+                // Tried again with the key trusted: the next hop, or the resource itself.
+                test.mutate({ ...request, config: next })
+              }}
+            />
+          )}
+          {unsavedTrust && test.data && (
+            <p className="text-sm text-muted">Save to keep the trusted host key.</p>
+          )}
           {test.data?.ok && (
             <p className="flex items-center gap-2 text-sm text-success">
               <CircleCheck className="size-4" /> Connected{test.data.message ? ` · ${test.data.message}` : ''}{' '}
               · {test.data.durationMs} ms
             </p>
           )}
-          {test.data && !test.data.ok && (
+          {test.data && !test.data.ok && !(test.data.error.details as { ssh?: unknown } | undefined)?.ssh && (
             <ConnectorErrorNote error={test.data.error} onConnected={() => test.mutate(request)} />
           )}
         </div>

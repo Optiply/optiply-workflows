@@ -35,6 +35,8 @@ export default async function globalSetup() {
   }
 
   const pg = await startTestDatabase()
+  // For specs that point a resource of their own at this database (M17's SSH tunnel spec, through a test SSH server).
+  process.env.E2E_PG_URL = pg.url
   const seed = createDb(pg.url, { max: 1 })
   await seed.sql.unsafe(`
     create table customers (id int primary key, email text not null, plan text not null);
