@@ -29,6 +29,8 @@ export interface TestSshServer {
 export async function startTestSshServer(options: {
   users: TestSshUser[]
   allowForward?: (host: string, port: number) => boolean
+  /** Names only this server resolves (its own /etc/hosts), so a test can tell a tunnelled connection from a direct one. */
+  hosts?: Record<string, string>
   /** A fixed host key (OpenSSH form), e.g. to restart "as another server"; generated otherwise. */
   hostKey?: string
 }): Promise<TestSshServer> {
@@ -36,8 +38,10 @@ export async function startTestSshServer(options: {
   const parsedHostKey = ssh2.utils.parseKey(hostKey)
   if (parsedHostKey instanceof Error) throw parsedHostKey
   const blob = parsedHostKey.getPublicSSH()
+  const hosts = options.hosts ?? {}
   const allow =
-    options.allowForward ?? ((host) => host === '127.0.0.1' || host === 'localhost' || host === '::1')
+    options.allowForward ??
+    ((host) => host in hosts || host === '127.0.0.1' || host === 'localhost' || host === '::1')
   const forwards: TestSshServer['forwards'] = []
   const connections = new Set<ssh2.Connection>()
   const sockets = new Set<Socket>()
@@ -75,7 +79,7 @@ export async function startTestSshServer(options: {
           const allowed = allow(info.destIP, info.destPort)
           forwards.push({ host: info.destIP, port: info.destPort, allowed })
           if (!allowed) return reject()
-          const target = connect(info.destPort, info.destIP)
+          const target = connect(info.destPort, hosts[info.destIP] ?? info.destIP)
           sockets.add(target)
           target.on('close', () => sockets.delete(target))
           target.once('error', () => reject())

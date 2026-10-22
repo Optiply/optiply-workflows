@@ -2,7 +2,9 @@ import { compileSql, TemplateError } from '@ow/expressions'
 import postgres from 'postgres'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
+import { sshConnectionError, tunnelFor } from './ssh/client'
 import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -38,6 +40,8 @@ type Query = z.output<typeof querySchema>
 interface Client {
   sql: postgres.Sql
   config: Config
+  /** The SSH tunnel every connection of the pool goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 const JSON_TYPES = new Set([114, 3802]) // json, jsonb
@@ -51,7 +55,15 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
   querySchema,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const sql = postgres({
+      // Each connection (and each cancel request) is a channel through the tunnel; TLS goes over it, checked against
+      // `host` as the last SSH server reaches it. (`socket` is in postgres's README, not its types.)
+      ...(tunnel
+        ? ({
+            socket: ({ host: [h], port: [p] }: { host: string[]; port: number[] }) => tunnel.open(h!, p!),
+          } as object)
+        : {}),
       host: config.host,
       port: config.port,
       database: config.database,
@@ -67,11 +79,12 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         ...(config.readOnly ? { default_transaction_read_only: true } : {}),
       },
     })
-    return { sql, config }
+    return { sql, config, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ sql }) {
+  async destroyClient({ sql, tunnel }) {
     await sql.end({ timeout: 5 })
+    await tunnel?.close()
   },
 
   async testConnection({ sql }, { signal }) {
@@ -204,6 +217,8 @@ async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }
 /** Postgres errors keep their SQLSTATE and position; connection failures are told apart from query failures. */
 function toError(err: unknown): unknown {
   if (err instanceof ConnectorError) return err
+  const ssh = sshConnectionError(err)
+  if (ssh) return ssh
   if (err instanceof postgres.PostgresError) {
     if (err.code === '57014') {
       return new ConnectorError(

@@ -2,7 +2,9 @@ import { type CompiledSql, compileSql, TemplateError } from '@ow/expressions'
 import mysql from 'mysql2'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
+import { deferredStream, sshConnectionError, tunnelFor } from './ssh/client'
 import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -41,8 +43,10 @@ type Query = z.output<typeof querySchema>
 interface Client {
   pool: mysql.Pool
   config: Config
-  /** Options for a side connection that kills a running query. */
+  /** Options for a side connection that kills a running query (through the tunnel too). */
   connectionOptions: mysql.ConnectionOptions
+  /** The SSH tunnel every connection goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
@@ -53,7 +57,10 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   querySchema,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const connectionOptions: mysql.ConnectionOptions = {
+      // Each connection is a channel through the tunnel; TLS goes over it, checked against `host`.
+      ...(tunnel ? { stream: () => deferredStream(tunnel.open(config.host, config.port)) } : {}),
       host: config.host,
       port: config.port,
       database: config.database,
@@ -82,11 +89,12 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
       idleTimeout: 60_000,
       enableKeepAlive: true,
     })
-    return { pool, config, connectionOptions }
+    return { pool, config, connectionOptions, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ pool }) {
+  async destroyClient({ pool, tunnel }) {
     await new Promise<void>((resolve) => pool.end(() => resolve()))
+    await tunnel?.close()
   },
 
   async testConnection(client, { signal, timeoutMs }) {
@@ -352,6 +360,8 @@ function stopError(stop: 'aborted' | 'timeout'): ConnectorError {
 /** MySQL errors keep their code and SQLSTATE; connection failures are told apart from query failures. */
 function toError(err: unknown, stop: 'aborted' | 'timeout' | undefined): unknown {
   if (err instanceof ConnectorError) return err
+  const ssh = sshConnectionError(err)
+  if (ssh) return ssh
   const e = err as { code?: string; errno?: number; sqlState?: string; sqlMessage?: string; message?: string }
   // Stopped on purpose: whatever the query died of (usually ER_QUERY_INTERRUPTED) is our own KILL QUERY.
   if (stop) return stopError(stop)
