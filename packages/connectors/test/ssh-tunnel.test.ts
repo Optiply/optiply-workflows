@@ -140,6 +140,8 @@ describe('SshTunnel', () => {
     const unreachable = await failure(new SshTunnel([hop({ port })]))
     expect(unreachable.code).toBe('ssh_connect')
     expect(unreachable.message).toContain('ECONNREFUSED')
+    // Refused on loopback: under Compose that's the API's own container, not the machine running the tunnel.
+    expect(unreachable.message).toContain('use host.docker.internal')
     const refused = await failure(new SshTunnel([hop()]), echoPort + 1)
     expect(refused.code).toBe('ssh_forward')
     expect(ssh.forwards.at(-1)).toMatchObject({ allowed: false })

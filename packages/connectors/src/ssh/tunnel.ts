@@ -369,9 +369,15 @@ function connectError(hop: TunnelHop, err: Error & { level?: string; code?: stri
   return new SshError(
     'ssh_connect',
     hop,
-    `SSH server ${hop.host}:${hop.port}: couldn't connect (${err.code ?? err.message})`,
+    `SSH server ${hop.host}:${hop.port}: couldn't connect (${err.code ?? err.message})` +
+      (err.code === 'ECONNREFUSED' && LOOPBACK.has(hop.host.toLowerCase())
+        ? `. ${hop.host} is the machine this server runs on: in Docker, its own container. For a tunnel or ` +
+          'SSH server on the Docker host, use host.docker.internal'
+        : ''),
   )
 }
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
 /** `SHA256:` and the key's hash, as `ssh-keygen -l` shows it. */
 function fingerprintOf(key: Buffer): string {
