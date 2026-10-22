@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { createServer as createHttpServer } from 'node:http'
 import { connect, type Socket } from 'node:net'
 import ssh2 from 'ssh2'
+import { type WebSocket, WebSocketServer } from 'ws'
 
 /** One account on the test SSH server: a password, or the public half of a key (an `authorized_keys` line). */
 export type TestSshUser = { username: string; password: string } | { username: string; publicKey: string }
@@ -172,4 +174,133 @@ function same(a: string, b: string): boolean {
   const x = Buffer.from(a)
   const y = Buffer.from(b)
   return x.length === y.length && timingSafeEqual(x, y)
+}
+
+export interface TestIapServer {
+  /** For `IapOptions.url` (`ws://…/v4`). */
+  url: string
+  /** Access tokens it accepts; any other gets the handshake refused with 403. */
+  readonly tokens: Set<string>
+  /** Every connect asked for, accepted or not. */
+  readonly connects: { project: string; zone: string; instance: string; port: number; origin?: string }[]
+  /** WebSocket connections open now. */
+  readonly open: number
+  /** The largest data frame a client sent. */
+  readonly largestClientFrame: number
+  /** The last ack a client sent: the total bytes it said it had received. */
+  readonly lastClientAck: number
+  /** The next connect is closed with this code (and reason) before reaching the VM. */
+  refuseNext(code: number, reason: string): void
+  close(): Promise<void>
+}
+
+/**
+ * A stand-in for Google IAP's TCP forwarding (M18), speaking the `relay.tunnel.cloudproxy.app` subprotocol: it checks
+ * the bearer token, finds `instances` by `project/zone/instance` (the VM's address, e.g. a test SSH server on
+ * loopback; an unknown one closes with 4047), connects to the asked port there (refused: 4003), says
+ * `CONNECT_SUCCESS_SID`, then relays data frames both ways and acks what it receives, as IAP does.
+ */
+export async function startTestIapServer(options: {
+  tokens: string[]
+  instances: Record<string, string>
+}): Promise<TestIapServer> {
+  const tokens = new Set(options.tokens)
+  const connects: TestIapServer['connects'] = []
+  const sockets = new Set<WebSocket>()
+  let largestClientFrame = 0
+  let lastClientAck = 0
+  let refusal: { code: number; reason: string } | undefined
+  let sid = 0
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (p) => (p.has('relay.tunnel.cloudproxy.app') ? 'relay.tunnel.cloudproxy.app' : false),
+  })
+  const http = createHttpServer((_req, res) => res.writeHead(404).end())
+  http.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url ?? '/', 'http://iap')
+    const token = req.headers.authorization?.replace(/^Bearer /, '')
+    if (url.pathname !== '/v4/connect' || !token || !tokens.has(token)) {
+      socket.end(
+        'HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nnot authorized',
+      )
+      return
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      sockets.add(ws)
+      ws.on('close', () => sockets.delete(ws))
+      const q = url.searchParams
+      const target = {
+        project: q.get('project') ?? '',
+        zone: q.get('zone') ?? '',
+        instance: q.get('instance') ?? '',
+        port: Number(q.get('port')),
+        origin: req.headers.origin,
+      }
+      connects.push(target)
+      if (refusal) {
+        const { code, reason } = refusal
+        refusal = undefined
+        return ws.close(code, reason)
+      }
+      const host = options.instances[`${target.project}/${target.zone}/${target.instance}`]
+      if (!host) return ws.close(4047, 'Failed to lookup instance')
+      const vm = connect(target.port, host)
+      let received = 0
+      let acked = 0
+      const frame = (tag: number, body: Buffer) => {
+        const out = Buffer.alloc(6 + body.length)
+        out.writeUInt16BE(tag, 0)
+        out.writeUInt32BE(body.length, 2)
+        body.copy(out, 6)
+        return out
+      }
+      vm.on('connect', () => ws.send(frame(0x0001, Buffer.from(`sid-${++sid}`))))
+      vm.on('error', () => ws.close(4003, 'failed to connect to backend'))
+      vm.on('close', () => ws.readyState === ws.OPEN && ws.close(1000))
+      vm.on('data', (chunk: Buffer) => {
+        for (let at = 0; at < chunk.length; at += 16 * 1024)
+          ws.send(frame(0x0004, chunk.subarray(at, at + 16 * 1024)))
+      })
+      ws.on('message', (data: Buffer) => {
+        if (data.readUInt16BE(0) === 0x0007) lastClientAck = Number(data.readBigUInt64BE(2))
+        if (data.readUInt16BE(0) !== 0x0004) return
+        const length = data.readUInt32BE(2)
+        largestClientFrame = Math.max(largestClientFrame, length)
+        received += length
+        vm.write(data.subarray(6, 6 + length))
+        if (received - acked > 32 * 1024) {
+          const ack = Buffer.alloc(10)
+          ack.writeUInt16BE(0x0007, 0)
+          ack.writeBigUInt64BE(BigInt(received), 2)
+          acked = received
+          ws.send(ack)
+        }
+      })
+      ws.on('close', () => vm.destroy())
+    })
+  })
+  await new Promise<void>((r) => http.listen(0, '127.0.0.1', r))
+  const port = (http.address() as { port: number }).port
+  return {
+    url: `ws://127.0.0.1:${port}/v4`,
+    tokens,
+    connects,
+    get open() {
+      return sockets.size
+    },
+    get largestClientFrame() {
+      return largestClientFrame
+    },
+    get lastClientAck() {
+      return lastClientAck
+    },
+    refuseNext(code, reason) {
+      refusal = { code, reason }
+    },
+    async close() {
+      for (const ws of sockets) ws.terminate()
+      wss.close()
+      await new Promise((r) => http.close(r))
+    },
+  }
 }
