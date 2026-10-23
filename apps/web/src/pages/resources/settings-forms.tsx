@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
@@ -57,6 +57,7 @@ const DEFAULTS: Record<string, Config> = {
     statementTimeoutMs: 120_000,
     labels: {},
   },
+  pubsub: { identity: 'key' },
   rest: {
     baseUrl: '',
     headers: [],
@@ -167,6 +168,8 @@ export function SettingsPanel({
       <Card className="space-y-5 p-5">
         {resource.type === 'bigquery' ? (
           <BigQueryFields {...props} />
+        ) : resource.type === 'pubsub' ? (
+          <PubSubFields {...props} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
@@ -385,6 +388,94 @@ function SqlFields(props: FieldsProps & { type: string }) {
 }
 
 const GIB = 1024 ** 3
+
+/**
+ * A Pub/Sub resource's settings (M19): its project, and whose Google identity it signs in as: a service account key, or
+ * this server's own where the instance allows it (only admins choose it, as for IAP).
+ */
+function PubSubFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const trpc = useTRPC()
+  const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data
+  const canChoose = !!server?.allowed && server.canChoose
+  const identity = (config.identity as string | undefined) ?? 'key'
+  // Editors keep the server's identity an admin chose, but can't point it at another project.
+  const locked = disabled || (identity === 'server' && !canChoose)
+  return (
+    <>
+      <Field
+        label="Google identity"
+        hint="It needs roles/pubsub.subscriber on the subscriptions triggers pull, and roles/pubsub.publisher on the topics it publishes to."
+      >
+        <Select
+          value={identity}
+          disabled={locked}
+          data-testid="pubsub-identity"
+          onChange={(e) => set('identity', e.target.value)}
+        >
+          <option value="key">A service account key</option>
+          <option value="server" disabled={!canChoose}>
+            This server's Google identity
+          </option>
+        </Select>
+      </Field>
+      {identity === 'server' ? (
+        server &&
+        (server.allowed ? (
+          <div className="space-y-1 text-xs" data-testid="pubsub-server-note">
+            {server.identity && (
+              <p className="text-muted">
+                Signs in as <code className="text-ink">{server.identity}</code>
+              </p>
+            )}
+            {server.error && <p className="text-danger">{server.error}</p>}
+            {!canChoose && (
+              <p className="text-muted">Chosen by an admin: only admins can point it at another project.</p>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-danger" data-testid="pubsub-server-note">
+            This instance doesn't let resources use its own Google identity (any more): choose a service
+            account key.
+          </p>
+        ))
+      ) : (
+        <>
+          {server && !canChoose && (
+            <p className="text-xs text-muted">
+              {server.allowed
+                ? "Only admins can choose this server's own Google identity."
+                : "This instance doesn't let resources use its own Google identity (GOOGLE_SERVER_IDENTITY)."}
+            </p>
+          )}
+          <Field label="Service account key" hint="The JSON key file. Stored encrypted; never shown again.">
+            <SecretField
+              isSet={isSet(secrets, 'serviceAccountKey')}
+              edit={edits.serviceAccountKey as SecretEdit}
+              onChange={(e) => setEdit('serviceAccountKey', e)}
+              disabled={disabled}
+              placeholder='{ "type": "service_account", … }'
+            />
+          </Field>
+        </>
+      )}
+      <Field
+        label="Project"
+        hint={
+          identity === 'server'
+            ? 'The project its subscriptions and topics are in.'
+            : "The project its subscriptions and topics are in. Defaults to the key's project."
+        }
+      >
+        <Input
+          value={String(config.project ?? '')}
+          disabled={locked}
+          placeholder="optiply-production"
+          onChange={(e) => set('project', e.target.value || undefined)}
+        />
+      </Field>
+    </>
+  )
+}
 
 function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
   const text = (key: string) => ({

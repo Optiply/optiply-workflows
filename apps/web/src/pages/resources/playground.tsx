@@ -3,7 +3,7 @@ import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
-import { isSqlType, PLACEHOLDERS } from '@/lib/resource-types'
+import { DEFAULT_PUBSUB_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -17,12 +17,15 @@ type RestBody =
 interface Draft {
   sql: string
   rest: { method: string; path: string; params: KeyValue[]; headers: KeyValue[]; body: RestBody }
+  /** A Pub/Sub resource's publish (M19). */
+  pubsub: { topic: string; messages: string }
   scope: string
 }
 
 const EMPTY: Draft = {
   sql: 'select * from information_schema.tables limit 10',
   rest: { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
+  pubsub: DEFAULT_PUBSUB_QUERY,
   scope: '{\n  \n}',
 }
 
@@ -62,7 +65,8 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
 
   const execute = () => {
     if (!scope) return
-    const query = isSqlType(resource.type) ? { sql: draft.sql } : draft.rest
+    const kind = queryKind(resource.type)
+    const query = kind === 'sql' ? { sql: draft.sql } : kind === 'pubsub' ? draft.pubsub : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -86,7 +90,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="space-y-4 p-4 lg:col-span-2">
-          {isSqlType(resource.type) ? (
+          {queryKind(resource.type) === 'sql' ? (
             <Field
               label="SQL"
               hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
@@ -100,6 +104,33 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
                 onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
               />
             </Field>
+          ) : queryKind(resource.type) === 'pubsub' ? (
+            <>
+              <Field label="Topic" hint="Its id in the resource's project, or projects/…/topics/….">
+                <Input
+                  className="font-mono"
+                  placeholder="orders"
+                  value={draft.pubsub.topic}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) => setDraft({ ...draft, pubsub: { ...draft.pubsub, topic: e.target.value } })}
+                />
+              </Field>
+              <Field
+                label="Messages"
+                hint='One message or an array: {"data": …, "attributes": {…}, "orderingKey": "…"}. Publishing sends them for real.'
+              >
+                <Textarea
+                  rows={8}
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                  value={draft.pubsub.messages}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) =>
+                    setDraft({ ...draft, pubsub: { ...draft.pubsub, messages: e.target.value } })
+                  }
+                />
+              </Field>
+            </>
           ) : (
             <RestQueryEditor rest={draft.rest} setRest={setRest} onKeyDown={onKeyDown} />
           )}

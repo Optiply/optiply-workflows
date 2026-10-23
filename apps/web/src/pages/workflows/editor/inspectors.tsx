@@ -19,7 +19,7 @@ import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-r
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
-import { isSqlType } from '@/lib/resource-types'
+import { defaultQuery, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -386,14 +386,6 @@ function LanguageCode({
 }
 
 type KeyValue = { key: string; value: string }
-const DEFAULT_REST: Record<string, unknown> = {
-  method: 'GET',
-  path: '',
-  params: [],
-  headers: [],
-  body: { type: 'none' },
-}
-
 function QueryForm({ block, ctx }: { block: BlockOf<'resourceQuery'>; ctx: FormContext }) {
   return (
     <QueryEditor
@@ -452,12 +444,7 @@ function QueryEditor({
             onChange({
               resource: e.target.value,
               // Switching kinds of resource starts a fresh query.
-              query:
-                next && current && next.type === current.type
-                  ? query
-                  : isSqlType(next?.type)
-                    ? { sql: 'select 1' }
-                    : DEFAULT_REST,
+              query: next && current && next.type === current.type ? query : defaultQuery(next?.type),
             })
           }}
         >
@@ -469,7 +456,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {isSqlType(current?.type) || (!current && typeof query.sql === 'string') ? (
+      {(current ? queryKind(current.type) === 'sql' : typeof query.sql === 'string') ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -481,9 +468,55 @@ function QueryEditor({
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
+      ) : (current ? queryKind(current.type) === 'pubsub' : typeof query.messages === 'string') ? (
+        <PubSubQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       ) : (
         <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       )}
+    </div>
+  )
+}
+
+/** A Pub/Sub resource's query (M19): publish to a topic, messages as JSON with `{{ }}`. */
+function PubSubQueryForm({
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+}: {
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      <Field label="Topic" hint="Its id in the resource's project, or projects/…/topics/….">
+        <Input
+          className="font-mono"
+          placeholder="orders"
+          value={String(query.topic ?? '')}
+          onChange={(e) => setQuery({ topic: e.target.value })}
+        />
+      </Field>
+      <EditorField
+        label="Messages"
+        hint={
+          'One message or an array of them: {"data": …, "attributes": {…}, "orderingKey": "…"}. Data that isn’t a string is sent as JSON.'
+        }
+      >
+        <Code
+          path={ctx.modelPath(`${models}messages`)}
+          language="plaintext"
+          height={140}
+          value={String(query.messages ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'messages')}
+          text={ctx.text(...at, 'query', 'messages')}
+          onChange={(messages) => setQuery({ messages })}
+        />
+      </EditorField>
     </div>
   )
 }
@@ -927,9 +960,9 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
                   ? {
                       kind,
                       resource: resource?.slug ?? '',
-                      query: (isSqlType(resource?.type) || !resource
-                        ? { sql: 'select {{ value }}' }
-                        : DEFAULT_REST) as never,
+                      query: (resource
+                        ? defaultQuery(resource.type, 'select {{ value }}')
+                        : { sql: 'select {{ value }}' }) as never,
                     }
                   : kind === 'function'
                     ? { kind, function: functions[0]?.name ?? '' }

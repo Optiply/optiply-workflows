@@ -15,7 +15,7 @@ import {
   UserCheck,
   Workflow,
 } from 'lucide-react'
-import { isSqlType } from '@/lib/resource-types'
+import { defaultQuery } from '@/lib/resource-types'
 
 export interface BlockKind {
   label: string
@@ -135,9 +135,7 @@ export function newBlock(
         type,
         config: {
           resource: resource!.slug,
-          query: isSqlType(resource!.type)
-            ? { sql: 'select 1' }
-            : { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
+          query: defaultQuery(resource!.type),
         },
       }
     case 'code':

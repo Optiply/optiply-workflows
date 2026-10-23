@@ -69,8 +69,8 @@ export const byEdge: Identity = (item) =>
 const blockPatterns = (patterns: readonly string[]) =>
   patterns.flatMap((p) => [`blocks.*.${p}`, `functions.*.blocks.*.${p}`])
 
-/** The connector query fields shown in Monaco: SQL, and a REST call's JSON body. */
-const queryText = ['query.sql', 'query.body.json']
+/** The connector query fields shown in Monaco: SQL, a REST call's JSON body, a Pub/Sub publish's messages. */
+const queryText = ['query.sql', 'query.body.json', 'query.messages']
 
 /**
  * Workflows: blocks and functions by name, edges by their ends, conditions and task outcomes by id. Text is every

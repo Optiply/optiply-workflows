@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorAvailable, startTestExecutor } from '@ow/code-executor/testing'
-import { startTestIapServer } from '@ow/connectors/testing'
+import { startFakePubSub, startTestIapServer } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
@@ -78,8 +78,26 @@ export default async function globalSetup() {
   process.env.E2E_IAP_KEY = google.keyJson
   // Specs steer the fake IAP from their own process: POST /drop cuts every WebSocket (sessions stay, as on a dropped
   // network), POST /refuse-next?code=&reason= closes the next connect so; GET /stats counts connects and reconnects.
+  // Pub/Sub (M19): a fake in project `fake-project`, topics `orders` and `refunds` with a subscription each
+  // (`<topic>-sub`). Specs publish and look through E2E_IAP_CONTROL's /pubsub routes.
+  const pubsub = await startFakePubSub({ project: 'fake-project' })
+  for (const topic of ['orders', 'refunds']) {
+    pubsub.createTopic(topic)
+    pubsub.createSubscription(`${topic}-sub`, { topic })
+  }
   const iapControl = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
+    const json = (body: unknown) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    const param = (name: string) => url.searchParams.get(name) ?? ''
+    if (url.pathname === '/pubsub/publish' && req.method === 'POST')
+      return json({
+        messageId: pubsub.publish(param('topic'), param('data'), JSON.parse(param('attributes') || '{}')),
+      })
+    if (url.pathname === '/pubsub/messages') return json(pubsub.messages(param('subscription')))
+    if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
     if (req.method === 'POST' && url.pathname === '/drop') iap.dropAll()
     else if (req.method === 'POST' && url.pathname === '/refuse-next')
       iap.refuseNext(Number(url.searchParams.get('code')), url.searchParams.get('reason') ?? '')
@@ -119,6 +137,7 @@ export default async function globalSetup() {
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
+    GOOGLE_PUBSUB_URL: pubsub.url,
     GOOGLE_TOKEN_URL: google.tokenUrl,
     // The server's identity is the fake metadata server's, never the developer's own gcloud login.
     GOOGLE_APPLICATION_CREDENTIALS: '',
@@ -188,6 +207,7 @@ export default async function globalSetup() {
     await executor?.stop()
     await new Promise((r) => iapControl.close(r))
     await iap.close()
+    await pubsub.close()
     await google.stop()
     rmSync(gitRoot, { recursive: true, force: true })
   }

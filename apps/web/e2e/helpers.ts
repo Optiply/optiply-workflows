@@ -87,3 +87,30 @@ export async function clickEmptyCanvas(page: Page) {
   const box = (await page.locator('.react-flow__pane').boundingBox())!
   await page.mouse.click(box.x + box.width - 40, box.y + 80)
 }
+
+/** Global setup's fake Pub/Sub (`orders` and `refunds`, each with a `<topic>-sub`), through its control routes. */
+export const fakePubSub = {
+  publish: async (topic: string, data: string, attributes: Record<string, string> = {}) =>
+    (
+      await (
+        await fetch(
+          `${process.env.E2E_IAP_CONTROL}/pubsub/publish?${new URLSearchParams({ topic, data, attributes: JSON.stringify(attributes) })}`,
+          { method: 'POST' },
+        )
+      ).json()
+    ).messageId as string,
+  published: async (topic: string) =>
+    (await (await fetch(`${process.env.E2E_IAP_CONTROL}/pubsub/published?topic=${topic}`)).json()) as {
+      messageId: string
+      data: string
+    }[],
+  messages: async (subscription: string) =>
+    (await (
+      await fetch(`${process.env.E2E_IAP_CONTROL}/pubsub/messages?subscription=${subscription}`)
+    ).json()) as {
+      messageId: string
+      data: string
+      deliveries: number
+      acked: boolean
+    }[],
+}
