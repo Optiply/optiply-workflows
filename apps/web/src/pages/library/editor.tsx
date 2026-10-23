@@ -56,6 +56,8 @@ export function LibraryEditorPage() {
   const detail = useQuery({
     ...trpc.libraryQueries.get.queryOptions({ slug }),
     staleTime: Number.POSITIVE_INFINITY,
+    // Opened again, it loads afresh: the slug may now be another library query's (one deleted, then created again).
+    gcTime: 0,
   })
   const branch = detail.data?.gitProtected ? (search.branch ?? null) : null
   const opened = useQuery({

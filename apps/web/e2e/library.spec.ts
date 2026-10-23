@@ -57,6 +57,29 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
 })
 
+/** A library query deleted and created again under its slug opens as the new one, not the deleted one. */
+test('a library query recreated under a deleted one’s slug opens as itself', async ({ page }) => {
+  await signIn(page)
+  const name = `Again ${Date.now()}`
+  const create = async () => {
+    await page.getByRole('link', { name: 'Library' }).click()
+    await page.getByRole('button', { name: 'New query' }).click()
+    await page.getByLabel('Name', { exact: true }).fill(name)
+    await page.getByRole('button', { name: 'Create query' }).click()
+    await expect(page).toHaveURL(/\/library\/again_\d+$/)
+    await expect(page.getByTestId('library-used-by')).toContainText('No app or module uses it yet')
+  }
+
+  await create()
+  await page.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
+  await expect(page).toHaveURL(/\/library$/)
+
+  await create()
+  await typeInto(page, page.locator('[data-testid^="code-library:"]'), 'select 2 as x')
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
+})
+
 /** In the app editor (M14 step 3b): a library query added from the picker, its parameter filled, run and pinned. */
 test('use a library query in an app', async ({ page }) => {
   await signIn(page)
