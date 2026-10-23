@@ -196,3 +196,60 @@ test('test a connection through Google Cloud IAP, trust the VM, query through it
     await ssh.close()
   }
 })
+
+/** M18 review: a jump host added to a server reached through IAP goes after it; another VM forgets the host key. */
+test('a jump host after the IAP server, and another VM forgets its host key', async ({ page }) => {
+  await signIn(page)
+  const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type: 'postgres',
+    name: 'IAP then a jump',
+    slug: `iap_jump_${Date.now().toString(36)}`,
+  })
+  const envs = await trpcQuery<{ id: string; slug: string }[]>(page, 'environments.list', undefined)
+  const environmentId = envs.find((e) => e.slug === 'production')!.id
+  const pin = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:AAAAbbbbCCCCddddEEEEffffGGGGhhhhIIIIjjjjKKK' }
+  await trpcMutate(page, 'resources.saveConfig', {
+    resourceId: resource.id,
+    environmentId,
+    config: {
+      host: 'db.internal',
+      port: 5432,
+      database: 'shop',
+      user: 'reader',
+      ssl: 'disable',
+      ssh: {
+        hops: [{ id: 'vm', reach: 'iap', iap: E2E_IAP_VM, username: 'ow', auth: 'password', hostKey: pin }],
+      },
+    },
+    secrets: { password: 'x', ssh: { vm: { password: 'y', iapKey: process.env.E2E_IAP_KEY! } } },
+  })
+  await reopen(page, `/resources/${resource.id}`)
+  const tunnel = page.getByTestId('ssh-tunnel')
+  const vm = tunnel.getByTestId('ssh-hop-vm')
+
+  await test.step('another zone is another VM: its trusted host key goes', async () => {
+    await expect(vm.getByTestId('ssh-host-key')).toContainText(pin.fingerprint)
+    await vm.getByLabel('Zone', { exact: true }).fill('europe-west1-d')
+    await expect(vm.getByTestId('ssh-host-key')).toContainText('not trusted yet')
+  })
+
+  await test.step('Add a jump host: the IAP server stays first, the new one comes after it', async () => {
+    await tunnel.getByRole('button', { name: 'Add a jump host' }).click()
+    const hops = tunnel.locator('fieldset')
+    await expect(hops).toHaveCount(2)
+    await expect(hops.first()).toHaveAttribute('data-testid', 'ssh-hop-vm')
+    await expect(hops.first()).toContainText('Jump host 1')
+    await expect(hops.first()).toContainText('Connected to first, through Google Cloud IAP.')
+    await expect(hops.last()).toContainText('SSH server')
+    await expect(hops.last().getByTestId('ssh-reach')).toHaveCount(0)
+    await hops.last().getByLabel('Host', { exact: true }).fill('inner.internal')
+    await hops.last().getByLabel('User', { exact: true }).fill('hop')
+    await hops.last().getByLabel('Sign in with').selectOption('password')
+    await hops
+      .last()
+      .getByLabel(/^Password/)
+      .fill('z')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Saved.')).toBeVisible()
+  })
+})

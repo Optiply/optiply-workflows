@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { WebSocketServer } from 'ws'
 import { IAP_MAX_FRAME, IapError, type IapOptions, type IapTarget, openIapStream } from '../src/ssh/iap'
 import { startTestIapServer, type TestIapServer } from '../src/ssh/testing'
 
@@ -120,6 +121,78 @@ describe('openIapStream', () => {
     expect(err.message).toContain('roles/iap.tunnelResourceAccessor')
   })
 
+  it('takes a fresh token once when the handshake refuses a cached one, but not after IAP refused the VM', async () => {
+    const asked: boolean[] = []
+    const getToken = async (_signal: AbortSignal, force?: boolean) => {
+      asked.push(!!force)
+      return force ? 'good-token' : 'stale'
+    }
+    const stream = await openIapStream(target(), options({ getToken }))
+    expect(asked).toEqual([false, true])
+    stream.destroy()
+    // 4033: IAP took the token and refused the target; a new token has the same roles.
+    asked.length = 0
+    iap.refuseNext(4033, 'not authorized')
+    expect(
+      (await failure(openIapStream(target(), options({ getToken: async () => 'good-token' })))).code,
+    ).toBe('iap_auth')
+    const once: boolean[] = []
+    iap.refuseNext(4033, 'not authorized')
+    await failure(
+      openIapStream(
+        target(),
+        options({
+          getToken: async (_s, force) => {
+            once.push(!!force)
+            return 'good-token'
+          },
+        }),
+      ),
+    )
+    expect(once).toEqual([false])
+  })
+
+  it('fails a write that waits when IAP closes cleanly, rather than holding it forever', async () => {
+    const bye = createServer((socket) => socket.end('bye'))
+    await new Promise<void>((r) => bye.listen(0, '127.0.0.1', r))
+    const stream = await openIapStream(target({ port: (bye.address() as { port: number }).port }), options())
+    const closed = new Promise((r) => stream.once('close', r))
+    stream.on('error', () => {})
+    const late = new Promise<Error | null | undefined>((resolve) =>
+      // Written as the stream ends, before it closes its writable side: it would wait for a WebSocket.
+      stream.once('end', () => stream.write('late', resolve)),
+    )
+    stream.resume()
+    expect(await late).toBeInstanceOf(Error)
+    await closed
+    bye.close()
+  })
+
+  it('fails on a frame cut short instead of throwing out of the WebSocket', async () => {
+    // A hand-made endpoint: connects, then sends an ack frame two bytes short.
+    const wss = new WebSocketServer({ port: 0, handleProtocols: (p) => [...p][0] ?? false })
+    await new Promise((r) => wss.once('listening', r))
+    const sid = Buffer.from('s1')
+    const success = Buffer.alloc(6 + sid.length)
+    success.writeUInt16BE(0x0001, 0)
+    success.writeUInt32BE(sid.length, 2)
+    sid.copy(success, 6)
+    let mode: 'short-ack' | 'short-sid' = 'short-ack'
+    wss.on('connection', (ws) => {
+      if (mode === 'short-sid') return ws.send(success.subarray(0, 7))
+      ws.send(success)
+      setTimeout(() => ws.send(Buffer.from([0x00, 0x07, 0, 0, 0, 0, 0, 0])), 20)
+    })
+    const url = `ws://127.0.0.1:${(wss.address() as { port: number }).port}/v4`
+    const stream = await openIapStream(target(), options({ url }))
+    const err = await new Promise<Error>((r) => stream.once('error', r))
+    expect(err).toBeInstanceOf(IapError)
+    expect(err.message).toContain('malformed frame')
+    mode = 'short-sid'
+    expect((await failure(openIapStream(target(), options({ url })))).message).toContain('malformed frame')
+    await new Promise((r) => wss.close(r))
+  })
+
   it('maps the close codes', async () => {
     const unknown = await failure(openIapStream(target({ instance: 'nope' }), options()))
     expect(unknown.code).toBe('iap_target')
@@ -202,6 +275,27 @@ describe('resuming', () => {
     stream.write('still here')
     expect((await readBytes(stream, 10)).toString()).toBe('still here')
     stream.destroy()
+  })
+
+  it("stops resuming once our side ended, and doesn't reconnect after", async () => {
+    const stream = await openIapStream(target(), options({ resumeDelayMs: 50, resumeWithinMs: 10_000 }))
+    let failed: Error | undefined
+    stream.on('error', (err) => (failed = err))
+    const closed = new Promise((r) => stream.once('close', r))
+    stream.resume()
+    const before = iap.reconnects.length
+    // Resuming fails meanwhile (the session is gone), so the stream keeps trying until our side ends.
+    iap.forgetSessions()
+    iap.dropAll()
+    await expect.poll(() => iap.reconnects.length).toBeGreaterThan(before)
+    stream.end()
+    const started = performance.now()
+    await closed
+    expect(performance.now() - started).toBeLessThan(2000)
+    expect(failed).toBeUndefined()
+    const tried = iap.reconnects.length
+    await new Promise((r) => setTimeout(r, 300))
+    expect(iap.reconnects.length).toBe(tried)
   })
 
   it('fails when the session can no longer be resumed', async () => {

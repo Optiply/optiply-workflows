@@ -203,22 +203,28 @@ export class SshTunnel {
   /** The IAP step of Test connection: the stream to the first server, or why there's none. */
   private async probeIap(hop: TunnelHop, iap: TunnelIap): Promise<{ step: SshTestStep; sock?: Duplex }> {
     const started = performance.now()
-    const identity = await iap.describe(AbortSignal.timeout(5000)).catch(() => undefined)
-    const step = (ok: boolean): SshTestStep => ({
-      hop: hop.id,
-      host: iap.target.instance,
-      port: iap.target.port,
-      via: 'iap',
-      ok,
-      durationMs: Math.round(performance.now() - started),
-      ...(identity ? { identity } : {}),
-    })
+    // Whose identity it is, found alongside (a metadata server may be slow): not part of IAP's time.
+    const identity = iap.describe(AbortSignal.timeout(5000)).catch(() => undefined)
+    const step = async (ok: boolean, durationMs: number): Promise<SshTestStep> => {
+      const who = await identity
+      return {
+        hop: hop.id,
+        host: iap.target.instance,
+        port: iap.target.port,
+        via: 'iap',
+        ok,
+        durationMs,
+        ...(who ? { identity: who } : {}),
+      }
+    }
+    const took = () => Math.round(performance.now() - started)
     try {
       const sock = await this.openIap(hop)
-      return { step: step(true), sock }
+      return { step: await step(true, took()), sock }
     } catch (err) {
       if (!(err instanceof SshError)) throw err
-      return { step: { ...step(false), error: { code: err.code, message: err.message } } }
+      const ms = took()
+      return { step: { ...(await step(false, ms)), error: { code: err.code, message: err.message } } }
     }
   }
 

@@ -37,6 +37,8 @@ export class IapError extends Error {
   constructor(
     readonly code: IapErrorCode,
     message: string,
+    /** The handshake refused the token itself (HTTP 401/403): a fresh token may do. */
+    readonly tokenRefused = false,
   ) {
     super(message)
   }
@@ -89,6 +91,8 @@ export class IapStream extends Duplex {
   private confirmed = 0
   private waiters: (() => void)[] = []
   private ending = false
+  /** IAP closed the connection cleanly: nothing more comes, and nothing more can be sent. */
+  private closedByPeer = false
   private readonly where: string
 
   constructor(
@@ -104,8 +108,14 @@ export class IapStream extends Duplex {
 
   private async connect(): Promise<void> {
     const signal = this.attemptSignal(this.options.connectTimeoutMs ?? 15_000)
-    const token = await this.options.getToken(signal)
-    await this.open('connect', token, signal)
+    try {
+      await this.open('connect', await this.options.getToken(signal), signal)
+    } catch (err) {
+      // A cached token Google no longer takes (revoked, rotated credentials): once more with a fresh one. Not after
+      // IAP took the token and refused the target (4033): a new token has the same roles.
+      if (!(err instanceof IapError) || !err.tokenRefused) throw err
+      await this.open('connect', await this.options.getToken(signal, true), signal)
+    }
   }
 
   private attemptSignal(ms: number): AbortSignal {
@@ -164,19 +174,37 @@ export class IapStream extends Duplex {
         else if (this.ws === ws) this.dropped(code, reason.toString())
       })
       ws.on('message', (data: Buffer) => {
-        const ready = this.onMessage(data, kind)
+        let ready: boolean
+        try {
+          ready = this.onMessage(data, kind)
+        } catch (err) {
+          // A frame cut short: nothing after it can be read.
+          if (!(err instanceof RangeError)) throw err
+          const malformed = new IapError('iap_connect', `Google IAP sent a malformed frame for ${this.where}`)
+          if (settled) this.destroy(malformed)
+          else fail(malformed)
+          return
+        }
         if (ready && !settled) {
           settled = true
           signal.removeEventListener('abort', onAbort)
           this.ws = ws
+          // Data that came in the same message as the success couldn't be acked yet.
+          if (this.received - this.acked > ACK_EVERY) this.sendAck()
           resolve()
         }
       })
     })
   }
 
-  /** Handles one message (one or more frames); true when it's the connect or resume success. */
+  /**
+   * Handles one message (one or more frames); true when it's the connect or resume success. A frame cut short throws
+   * a RangeError (Buffer's reads check their bounds; `need` checks the lengths a frame declares).
+   */
   private onMessage(data: Buffer, kind: 'connect' | 'reconnect'): boolean {
+    const need = (end: number) => {
+      if (end > data.length) throw new RangeError('frame cut short')
+    }
     let ready = false
     let at = 0
     while (at + 2 <= data.length) {
@@ -184,6 +212,7 @@ export class IapStream extends Duplex {
       at += 2
       if (tag === TAG_CONNECT_SUCCESS_SID && kind === 'connect') {
         const length = data.readUInt32BE(at)
+        need(at + 4 + length)
         this.sid = data.subarray(at + 4, at + 4 + length).toString('utf8')
         at += 4 + length
         ready = true
@@ -193,6 +222,7 @@ export class IapStream extends Duplex {
         ready = true
       } else if (tag === TAG_DATA) {
         const length = data.readUInt32BE(at)
+        need(at + 4 + length)
         const bytes = data.subarray(at + 4, at + 4 + length)
         at += 4 + length
         this.received += bytes.length
@@ -232,16 +262,22 @@ export class IapStream extends Duplex {
     const frame = Buffer.alloc(10)
     frame.writeUInt16BE(TAG_ACK, 0)
     frame.writeBigUInt64BE(BigInt(this.received), 2)
+    // Without a WebSocket (connecting, resuming) nothing is sent: the next one says what was received.
+    if (!this.ws) return
     this.acked = this.received
-    this.ws?.send(frame)
+    this.ws.send(frame)
   }
 
   private dropped(code: number, reason: string): void {
     this.ws = undefined
     if (this.destroyed) return
     const err = closeError(code, reason, this.where)
-    if (!err) this.push(null)
-    else if (this.ending || !RESUMABLE.has(code)) this.destroy(err)
+    if (!err) {
+      // Nothing more comes; writes waiting for a WebSocket fail rather than wait forever.
+      this.closedByPeer = true
+      this.push(null)
+      this.wake()
+    } else if (this.ending || !RESUMABLE.has(code)) this.destroy(err)
     else void this.resumeSession(code === 4004, err)
   }
 
@@ -252,6 +288,11 @@ export class IapStream extends Duplex {
     let last = cause
     let force = forceToken
     while (!this.destroyed) {
+      // Our side ended meanwhile, with nothing left to deliver: there's nothing to resume.
+      if (this.ending && !this.unconfirmedBytes) {
+        this.destroy()
+        return
+      }
       const left = deadline - Date.now()
       if (left <= 0 || this.options.signal?.aborted) {
         this.destroy(
@@ -269,6 +310,7 @@ export class IapStream extends Duplex {
         // The reconnect said what we had received; resend what IAP hadn't confirmed, before any new write.
         this.acked = this.received
         for (const bytes of this.unconfirmed) this.ws?.send(dataFrame(bytes))
+        if (this.ending) this.ws?.close(1000)
         this.resumes++
         this.emit('resumed')
         this.wake()
@@ -290,9 +332,9 @@ export class IapStream extends Duplex {
 
   /** Until there's an open WebSocket and room for more unconfirmed bytes. */
   private async ready(): Promise<void> {
-    while (!this.destroyed && (!this.ws || this.unconfirmedBytes > MAX_UNCONFIRMED))
+    while (!this.destroyed && !this.closedByPeer && (!this.ws || this.unconfirmedBytes > MAX_UNCONFIRMED))
       await new Promise<void>((resolve) => this.waiters.push(resolve))
-    if (this.destroyed) throw new IapError('iap_connect', 'Google IAP is closed')
+    if (this.destroyed || this.closedByPeer) throw new IapError('iap_connect', 'Google IAP is closed')
   }
 
   override _read(): void {
@@ -347,6 +389,7 @@ function handshakeError(status: number, body: string, where: string): IapError {
       'iap_auth',
       `Google IAP refused the identity (HTTP ${status}${detail}). It needs the IAP-secured Tunnel User role ` +
         '(roles/iap.tunnelResourceAccessor) on the VM or its project',
+      true,
     )
   if (status === 404)
     return new IapError('iap_target', `Google IAP doesn't know ${where} (HTTP 404${detail})`)

@@ -163,7 +163,12 @@ export function SshTunnelFields({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => onChange({ hops: [...hops.slice(0, -1), newHop(), ...hops.slice(-1)] })}
+              onClick={() => {
+                // A jump host goes before the SSH server, but after a first server reached through IAP (only the
+                // first can be): that one becomes a jump host itself.
+                const at = hops[0]?.reach === 'iap' ? Math.max(1, hops.length - 1) : hops.length - 1
+                onChange({ hops: [...hops.slice(0, at), newHop(), ...hops.slice(at)] })
+              }}
             >
               <Plus className="size-4" /> Add a jump host
             </Button>
@@ -418,8 +423,17 @@ function IapFields({
   const canChoose = !!server?.allowed && server.canChoose
   // Editors keep the server's identity where an admin chose it, but can't move it to another VM.
   const locked = disabled || (iap.identity === 'server' && !canChoose)
-  const setIap = (patch: Partial<SshIap>) =>
-    onChange({ iap: { ...iap, ...patch }, ...(patch.instance !== undefined ? { host: patch.instance } : {}) })
+  // Another project, zone or instance is another VM: its trusted host key isn't this one's.
+  const setIap = (patch: Partial<SshIap>) => {
+    const moved = (['project', 'zone', 'instance'] as const).some(
+      (k) => patch[k] !== undefined && patch[k] !== iap[k],
+    )
+    onChange({
+      iap: { ...iap, ...patch },
+      ...(patch.instance !== undefined ? { host: patch.instance } : {}),
+      ...(moved ? { hostKey: undefined } : {}),
+    })
+  }
   const text = (key: 'project' | 'zone' | 'instance') => ({
     value: iap[key],
     disabled: locked,

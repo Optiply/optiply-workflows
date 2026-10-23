@@ -45,7 +45,7 @@ export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export { type AuthFlowStep, type RestConfig, type RestQuery, type RestSecrets, restConnector } from './rest'
 export { type RunOptions, runQuery, testResource } from './run'
-export { checkSshIap, configureIap, type IapDefaults } from './ssh/client'
+export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
 export {

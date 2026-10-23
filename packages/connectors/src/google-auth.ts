@@ -276,6 +276,7 @@ async function fileSource(
 
 function metadataSource(host: string, options: ServerIdentityOptions): IdentitySource {
   const base = `http://${host}/computeMetadata/v1/instance/service-accounts/default`
+  let email: string | undefined
   const get = async (path: string, signal: AbortSignal) => {
     const url = new URL(base + path)
     try {
@@ -301,9 +302,12 @@ function metadataSource(host: string, options: ServerIdentityOptions): IdentityS
         "The metadata server refused the server's token",
       ),
     async describe(signal) {
+      // The VM's account doesn't change: asked once (a failed or empty answer is asked again next time).
+      if (email) return email
       const res = await get('/email', signal)
       const text = (await readBody(res, 64 * 1024)).toString('utf8').trim()
-      return res.ok && text ? text : 'the Google Cloud service account of this server'
+      if (res.ok && text) email = text
+      return email ?? 'the Google Cloud service account of this server'
     },
   }
 }

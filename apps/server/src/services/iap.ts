@@ -1,7 +1,5 @@
-import { configureIap, type ServerIdentity, serverIdentity } from '@ow/connectors'
+import { configureIap, IAP_SCOPE, type ServerIdentity, serverIdentity } from '@ow/connectors'
 import type { Config } from '../config'
-
-const IAP_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
 type IapConfig = Pick<Config, 'GOOGLE_SERVER_IDENTITY' | 'GOOGLE_IAP_URL' | 'GOOGLE_TOKEN_URL'>
 

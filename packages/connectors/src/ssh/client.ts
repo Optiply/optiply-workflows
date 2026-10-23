@@ -19,7 +19,8 @@ export function configureIap(defaults: IapDefaults): void {
   iapDefaults = defaults
 }
 
-const IAP_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+/** What IAP's tokens are asked for, by service account keys and the server's own identity alike. */
+export const IAP_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
 /**
  * The tunnel a client of this resource configuration connects through (M17), or none without `ssh`. Made with the
