@@ -90,6 +90,23 @@ describe('PubSubClient', () => {
     await c.acknowledge('orders-sub', [back!.ackId], signal())
   })
 
+  it('sends an acked message out again when told to, as a lost ack would', async () => {
+    const c = client()
+    for (const r of await c.pull('orders-sub', 50, signal()))
+      await c.acknowledge('orders-sub', [r.ackId], signal())
+    const id = pubsub.publish('orders', 'twice')
+    const [first] = await c.pull('orders-sub', 1, signal())
+    await c.acknowledge('orders-sub', [first!.ackId], signal())
+    pubsub.redeliver('orders-sub', id)
+    const [again] = await c.pull('orders-sub', 1, signal())
+    expect(again!.message.messageId).toBe(id)
+    await c.acknowledge('orders-sub', [again!.ackId], signal())
+    expect(pubsub.messages('orders-sub').find((m) => m.messageId === id)).toMatchObject({
+      deliveries: 2,
+      acked: true,
+    })
+  })
+
   it('counts delivery attempts and dead-letters past the policy', async () => {
     const c = client()
     for (const r of await c.pull('orders-dl', 10, signal()))

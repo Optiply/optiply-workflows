@@ -78,12 +78,20 @@ export default async function globalSetup() {
   process.env.E2E_IAP_KEY = google.keyJson
   // Specs steer the fake IAP from their own process: POST /drop cuts every WebSocket (sessions stay, as on a dropped
   // network), POST /refuse-next?code=&reason= closes the next connect so; GET /stats counts connects and reconnects.
-  // Pub/Sub (M19): a fake in project `fake-project`, topics `orders` and `refunds` with a subscription each
-  // (`<topic>-sub`). Specs publish and look through E2E_IAP_CONTROL's /pubsub routes.
+  // Pub/Sub (M19): a fake in project `fake-project`, a topic per spec part with a subscription each (`<topic>-sub`):
+  // `flaky-sub` dead-letters to `flaky-dead` after 3 deliveries, `slow-sub` gives 2 s to ack. Specs publish and look
+  // through E2E_IAP_CONTROL's /pubsub routes.
   const pubsub = await startFakePubSub({ project: 'fake-project' })
-  for (const topic of ['orders', 'refunds']) {
+  pubsub.createTopic('flaky-dead')
+  for (const topic of ['orders', 'refunds', 'm19', 'flaky', 'slow', 'busy', 'chain', 'paused']) {
     pubsub.createTopic(topic)
-    pubsub.createSubscription(`${topic}-sub`, { topic })
+    pubsub.createSubscription(`${topic}-sub`, {
+      topic,
+      ...(topic === 'flaky' && {
+        deadLetterPolicy: { deadLetterTopic: 'flaky-dead', maxDeliveryAttempts: 3 },
+      }),
+      ...(topic === 'slow' && { ackDeadlineSeconds: 2 }),
+    })
   }
   const iapControl = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -98,6 +106,10 @@ export default async function globalSetup() {
       })
     if (url.pathname === '/pubsub/messages') return json(pubsub.messages(param('subscription')))
     if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
+    if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
+      pubsub.redeliver(param('subscription'), param('messageId'))
+      return json({})
+    }
     if (req.method === 'POST' && url.pathname === '/drop') iap.dropAll()
     else if (req.method === 'POST' && url.pathname === '/refuse-next')
       iap.refuseNext(Number(url.searchParams.get('code')), url.searchParams.get('reason') ?? '')

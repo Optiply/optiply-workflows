@@ -104,6 +104,12 @@ export const fakePubSub = {
       messageId: string
       data: string
     }[],
+  redeliver: async (subscription: string, messageId: string) => {
+    await fetch(
+      `${process.env.E2E_IAP_CONTROL}/pubsub/redeliver?${new URLSearchParams({ subscription, messageId })}`,
+      { method: 'POST' },
+    )
+  },
   messages: async (subscription: string) =>
     (await (
       await fetch(`${process.env.E2E_IAP_CONTROL}/pubsub/messages?subscription=${subscription}`)

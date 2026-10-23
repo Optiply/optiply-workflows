@@ -34,6 +34,8 @@ export interface FakePubSub {
   messages(subscription: string): FakeDelivery[]
   /** What was published to a topic (the dead-letter topic too), oldest first. */
   published(topic: string): { messageId: string; data: string; attributes: Record<string, string> }[]
+  /** Sends a message out again as if its ack had been lost (Pub/Sub is at-least-once): acked or not. */
+  redeliver(subscription: string, messageId: string): void
   /** Deliveries out now (pulled, neither acked nor past their deadline). */
   outstanding(subscription: string): number
   /** The next call to `method` (`pull`, `acknowledge`, `modifyAckDeadline`, `publish`, `get`) answers so. */
@@ -382,6 +384,13 @@ export async function startFakePubSub(
     messages: (subscription) =>
       sub(subscription).entries.map(({ out: _out, publishTime: _p, ...e }) => ({ ...e })),
     published: (topic) => (topics.get(full('topics', topic))?.messages ?? []).map((m) => ({ ...m })),
+    redeliver(subscription, messageId) {
+      const e = sub(subscription).entries.find((m) => m.messageId === messageId)
+      if (!e) throw new Error(`no message ${messageId} on ${subscription}`)
+      e.acked = false
+      e.out = undefined
+      wakeAll()
+    },
     outstanding: (subscription) => {
       const now = Date.now()
       return sub(subscription).entries.filter((e) => !e.acked && e.out && e.out.until > now).length
