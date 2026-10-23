@@ -14,7 +14,14 @@ import {
   type SecretEdit,
   SecretField,
 } from './shared'
-import { type SshConfig, type SshEdits, type SshKeyInfo, SshTestSteps, SshTunnelFields } from './ssh-tunnel'
+import {
+  type IapKeyInfo,
+  type SshConfig,
+  type SshEdits,
+  type SshKeyInfo,
+  SshTestSteps,
+  SshTunnelFields,
+} from './ssh-tunnel'
 
 type Config = Record<string, unknown>
 /** Secret edits by field; nested records nest (`headers: { name: edit }`, `ssh: { hopId: { privateKey: edit } }`). */
@@ -83,6 +90,8 @@ export interface FieldsProps {
   disabled: boolean
   /** Each SSH hop's stored key, as the server describes it (M17). */
   sshKeys: Record<string, SshKeyInfo> | null
+  /** Each IAP hop's stored service account key, as its account (M18). */
+  iapKeys: Record<string, IapKeyInfo> | null
 }
 
 export function SettingsPanel({
@@ -135,6 +144,7 @@ export function SettingsPanel({
     setEdit: (key, edit) => setEdits((e) => ({ ...e, [key]: edit })),
     disabled: !canEdit,
     sshKeys: (stored?.sshKeys as Record<string, SshKeyInfo> | null | undefined) ?? null,
+    iapKeys: (stored?.iapKeys as Record<string, IapKeyInfo> | null | undefined) ?? null,
   }
   const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
   // Trusted in Test connection but not saved yet (M17).
@@ -274,6 +284,7 @@ function Tunnel({
   setEdit,
   disabled,
   sshKeys,
+  iapKeys,
   target,
 }: FieldsProps & { target: string }) {
   return (
@@ -284,6 +295,7 @@ function Tunnel({
       edits={edits.ssh as SshEdits | undefined}
       setEdits={(e) => setEdit('ssh', e)}
       keys={sshKeys}
+      iapKeys={iapKeys}
       disabled={disabled}
       target={target}
     />

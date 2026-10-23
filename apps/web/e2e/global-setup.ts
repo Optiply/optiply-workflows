@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorAvailable, startTestExecutor } from '@ow/code-executor/testing'
+import { startTestIapServer } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { fakeGitHub } from '../../server/test/fake-github'
 import { E2E_PORT } from '../playwright.config'
 
@@ -21,6 +23,8 @@ export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
 /** The token the fake GitHub takes (M11). */
 export const E2E_GITHUB_TOKEN = 'github_pat_e2e_not_secret'
+/** The VM the fake IAP endpoint reaches (at 127.0.0.1, on the port asked for: specs start the SSH server) (M18). */
+export const E2E_IAP_VM = { project: 'e2e-project', zone: 'europe-west1-b', instance: 'bastion' }
 
 /**
  * Starts what the editor needs, as in production: an embedded Postgres, the bundled server (API and worker in one
@@ -61,6 +65,17 @@ export default async function globalSetup() {
   const executor = executorAvailable() ? await startTestExecutor() : null
   if (executor) process.env.E2E_PYTHON = '1'
 
+  // Google Cloud IAP (M18): a fake Google issues tokens (for a service account key, and from its metadata server as
+  // this server's own identity) and a fake IAP endpoint takes them. Specs read the key from E2E_IAP_KEY.
+  const google = new FakeGoogle()
+  await google.start()
+  const iap = await startTestIapServer({
+    tokens: [],
+    accept: (token) => /^(sa|md)-\d+$/.test(token),
+    instances: { [`${E2E_IAP_VM.project}/${E2E_IAP_VM.zone}/${E2E_IAP_VM.instance}`]: '127.0.0.1' },
+  })
+  process.env.E2E_IAP_KEY = google.keyJson
+
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
     ...process.env,
@@ -85,6 +100,13 @@ export default async function globalSetup() {
     GITHUB_API_URL: github.url,
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
+    GOOGLE_SERVER_IDENTITY: 'allow',
+    GOOGLE_IAP_URL: iap.url,
+    GOOGLE_TOKEN_URL: google.tokenUrl,
+    // The server's identity is the fake metadata server's, never the developer's own gcloud login.
+    GOOGLE_APPLICATION_CREDENTIALS: '',
+    HOME: gitRoot,
+    GCE_METADATA_HOST: google.metadataHost,
   }
 
   for (const [email, name] of [
@@ -147,6 +169,8 @@ export default async function globalSetup() {
     await pg.stop()
     await github.close()
     await executor?.stop()
+    await iap.close()
+    await google.stop()
     rmSync(gitRoot, { recursive: true, force: true })
   }
 }
