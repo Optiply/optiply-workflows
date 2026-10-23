@@ -1,43 +1,7 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
 import { expect, type Page, test } from '@playwright/test'
+import { git, pushFiles } from './git-helpers'
 import { E2E_GITHUB_TOKEN } from './global-setup'
 import { signIn, trpcMutate, typeInto } from './helpers'
-
-const gitEnv = {
-  PATH: process.env.PATH ?? '',
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_NOSYSTEM: '1',
-  GIT_AUTHOR_NAME: 'Someone else',
-  GIT_AUTHOR_EMAIL: 'else@optiply.nl',
-  GIT_COMMITTER_NAME: 'Someone else',
-  GIT_COMMITTER_EMAIL: 'else@optiply.nl',
-}
-
-/** Someone else commits files onto a branch with git itself. */
-function pushFiles(repoDir: string, branch: string, files: Record<string, string>) {
-  const dir = mkdtempSync(join(tmpdir(), 'ow-merge-dev-'))
-  try {
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, env: gitEnv }).toString().trim()
-    git('clone', '--quiet', '--branch', branch, repoDir, '.')
-    for (const [path, content] of Object.entries(files)) {
-      mkdirSync(dirname(join(dir, path)), { recursive: true })
-      writeFileSync(join(dir, path), content)
-    }
-    git('add', '-A')
-    git('commit', '--quiet', '-m', 'Someone else')
-    git('push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
-const git = (repoDir: string, ...args: string[]) =>
-  execFileSync('git', ['--git-dir', repoDir, ...args], { env: gitEnv })
-    .toString()
-    .trim()
 
 const query = async <T>(page: Page, path: string, input: unknown): Promise<T> => {
   const res = await page.request.get(
