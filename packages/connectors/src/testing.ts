@@ -103,4 +103,10 @@ export async function startTestMysql(): Promise<TestMysql> {
   }
 }
 
-export { startTestSshServer, type TestSshServer, type TestSshUser } from './ssh/testing'
+export {
+  startTestIapServer,
+  startTestSshServer,
+  type TestIapServer,
+  type TestSshServer,
+  type TestSshUser,
+} from './ssh/testing'

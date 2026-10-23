@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startTestSshServer } from '@ow/connectors/testing'
+import { startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { configureGoogleIap } from '../src/services/iap'
 import { saveTokens } from '../src/services/oauth-tokens'
+import { logSshTunnels } from '../src/services/ssh-log'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 // Distinctive values, so finding one anywhere in a response is unambiguous.
@@ -889,6 +890,148 @@ describe('Google IAP settings (M18)', () => {
     expect(moved.body.error?.message).toBe(
       "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
     )
+  })
+
+  it('tests through IAP step by step, queries through it, and shows what IAP refused', async () => {
+    // A fake Google issues the key's tokens; the fake IAP takes them and connects to the test SSH server (the "VM"),
+    // which forwards to the test database.
+    const ssh = await startTestSshServer({
+      users: [
+        {
+          username: 'ow',
+          publicKey: readFileSync(
+            new URL(
+              '../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted.pub',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        },
+      ],
+      hosts: { 'db.internal': String(pgConfig.host) },
+    })
+    const iap = await startTestIapServer({
+      tokens: [],
+      accept: (token) => /^sa-\d+$/.test(token),
+      instances: { 'proj/europe-west1-c/bastion': '127.0.0.1' },
+    })
+    configureGoogleIap({
+      GOOGLE_SERVER_IDENTITY: 'deny',
+      GOOGLE_IAP_URL: iap.url,
+      GOOGLE_TOKEN_URL: google.tokenUrl,
+    })
+    const logged: { fields: Record<string, unknown>; message: string }[] = []
+    const stopLog = logSshTunnels({
+      info: () => {},
+      warn: ((fields: Record<string, unknown>, message: string) => logged.push({ fields, message })) as never,
+    })
+    try {
+      const viaId = data(
+        await admin.mutate('resources.create', {
+          type: 'postgres',
+          name: 'Through IAP',
+          slug: 'through_iap',
+        }),
+      ).id
+      const config = (hostKey?: unknown) => ({
+        ...pgConfig,
+        host: 'db.internal',
+        ssh: { hops: [hop({}, { port: ssh.port, auth: 'key', hostKey })] },
+      })
+      const saveVia = (hostKey?: unknown) =>
+        admin.mutate('resources.saveConfig', {
+          resourceId: viaId,
+          environmentId: prodId,
+          config: config(hostKey),
+        })
+      const testVia = async () =>
+        data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(
+        (
+          await admin.mutate('resources.saveConfig', {
+            resourceId: viaId,
+            environmentId: prodId,
+            config: config(),
+            secrets: {
+              password: PG_SECRET,
+              ssh: { b: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE, iapKey: google.keyJson } },
+            },
+          })
+        ).status,
+      ).toBe(200)
+
+      // IAP opens with the key's account; the VM's host key isn't trusted yet.
+      const iapStep = {
+        via: 'iap',
+        host: 'bastion',
+        port: ssh.port,
+        ok: true,
+        identity: 'tunnel@fake-project.iam.gserviceaccount.com',
+      }
+      const first = await testVia()
+      expect(first).toMatchObject({
+        ok: false,
+        ssh: [iapStep, { hop: 'b', ok: false, hostKey: { status: 'untrusted' } }],
+      })
+      expect(iap.connects.at(-1)).toMatchObject({
+        project: 'proj',
+        zone: 'europe-west1-c',
+        instance: 'bastion',
+      })
+
+      // Trusted: through IAP and the VM to the database.
+      const { algorithm, fingerprint } = first.ssh[1].hostKey
+      await saveVia({ algorithm, fingerprint })
+      expect(await testVia()).toMatchObject({
+        ok: true,
+        message: expect.stringMatching(/^PostgreSQL/),
+        ssh: [iapStep, { hop: 'b', ok: true, hostKey: { status: 'trusted' } }],
+      })
+      const run = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select count(*)::int as n from customers' },
+        }),
+      )
+      expect(run).toMatchObject({ ok: true, data: [{ n: 3 }] })
+
+      // IAP refuses: Test connection stops at the IAP step and says why.
+      iap.refuseNext(4003, 'failed to connect to backend')
+      expect(await testVia()).toMatchObject({
+        ok: false,
+        error: { code: 'connection' },
+        ssh: [
+          {
+            via: 'iap',
+            ok: false,
+            error: { code: 'iap_target', message: expect.stringMatching(/firewall/) },
+          },
+        ],
+      })
+      iap.refuseNext(4033, 'not authorized')
+      expect(await testVia()).toMatchObject({ ssh: [{ via: 'iap', ok: false, error: { code: 'iap_auth' } }] })
+
+      // A query's tunnel (saved again, so a new one) failing at IAP: the run says so, and so does the log.
+      await saveVia({ algorithm, fingerprint })
+      iap.refuseNext(4033, 'not authorized')
+      const refused = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select 1' },
+        }),
+      )
+      expect(refused).toMatchObject({ ok: false, error: { code: 'connection' } })
+      expect(logged).toContainEqual({
+        message: 'ssh tunnel failed',
+        fields: expect.objectContaining({ hop: 'b', code: 'iap_auth' }),
+      })
+    } finally {
+      stopLog()
+      await iap.close()
+      await ssh.close()
+    }
   })
 })
 
