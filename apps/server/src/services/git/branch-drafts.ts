@@ -209,7 +209,8 @@ export interface DraftFileChange {
 /**
  * What committing the draft would change on the branch: its files against the branch's tip (or the deploy branch,
  * for a branch not made yet). `behind`: the branch moved since the draft's base; `conflict`: the object's files
- * changed there too, so a commit would be refused until the draft is updated from the branch.
+ * changed there too, so a commit would be refused until the draft is updated from the branch; `merge`: whether that
+ * update would merge cleanly or how many conflicts it would leave (null when it can't tell).
  */
 export async function branchDraftChanges(
   db: Db,
@@ -247,9 +248,33 @@ export async function branchDraftChanges(
       behind && haveBase
         ? (await repo.entryAt(tip!, dir)) !== (await repo.entryAt(draft.baseCommit, dir))
         : behind
-    return { tip, behind, conflict, files }
+    const merge = conflict && haveBase ? await updateOutlook(db, repo, target, draft, tip!) : null
+    return { tip, behind, conflict, merge, files }
   } catch (err) {
     throw gitTrpcError(err)
+  }
+}
+
+/**
+ * What updating the draft from the branch would do now: merge cleanly (`conflicts: 0`) or leave conflicts to
+ * resolve. Null where it can't merge (the branch's files have problems, or no longer hold the object).
+ */
+async function updateOutlook(
+  db: Db,
+  repo: GitRepo,
+  target: DraftObject,
+  draft: GitBranchDraft,
+  tip: string,
+): Promise<{ conflicts: number } | null> {
+  const theirs = await readObjectAt(repo, tip, target.kind, target.object.slug)
+  if (!theirs.decoded?.ok) return null
+  try {
+    const merged = await mergeIntoDraft(db, repo, target, draft, theirs.decoded.value.value, undefined)
+    return { conflicts: merged.conflicts.length }
+  } catch (err) {
+    // The base's files have problems: updating says so.
+    if (err instanceof TRPCError) return null
+    throw err
   }
 }
 

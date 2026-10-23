@@ -186,8 +186,8 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
       )}
       {c?.conflict ? (
         <span className="flex items-center gap-1.5 text-danger" data-testid="branch-conflict">
-          <AlertTriangle className="size-3.5" /> Someone changed this {props.kind} on {branch}: update before
-          committing
+          <AlertTriangle className="size-3.5" /> Someone changed this {props.kind} on {branch}:{' '}
+          {mergeOutlook(c.merge)}
         </span>
       ) : (
         c?.behind && <span className="text-warning-strong">{branch} has new commits</span>
@@ -382,8 +382,8 @@ function CommitDialog(
         )}
         {c?.conflict && (
           <p className="rounded-md bg-danger/5 px-3 py-2 text-danger">
-            Someone changed this {kind} on {branch} since you started: close this, update from the branch,
-            then commit.
+            Someone changed this {kind} on {branch} since you started: close this, update from the branch (
+            {mergeOutlook(c.merge)}), then commit.
           </p>
         )}
         <Field label="Message">
@@ -428,4 +428,11 @@ function FileDiff({ before, after }: { before: string | null; after: string | nu
       )}
     </pre>
   )
+}
+
+/** What updating from the branch would do, as the changes query says. */
+function mergeOutlook(merge: { conflicts: number } | null): string {
+  if (!merge) return 'update before committing'
+  if (merge.conflicts === 0) return 'updating merges it with your changes'
+  return `updating leaves ${merge.conflicts} conflict${merge.conflicts === 1 ? '' : 's'} to resolve`
 }

@@ -363,6 +363,7 @@ describe('when others commit to the same branch', () => {
     expect(data(await admin.query('branchDrafts.changes', { id: draftId }))).toMatchObject({
       behind: true,
       conflict: true,
+      merge: { conflicts: 1 },
     })
     const refused = failure(
       await admin.mutate('branchDrafts.commit', { id: draftId, revision: 3, message: 'Four' }),
@@ -543,6 +544,7 @@ describe('a new process, saves during a commit, and a rewritten branch', () => {
     expect(data(await admin.query('branchDrafts.changes', { id: draftId }))).toMatchObject({
       behind: true,
       conflict: true,
+      merge: null,
     })
     expect(failure(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))).toMatchObject({
       code: 'CONFLICT',
@@ -612,6 +614,15 @@ describe('merging the branch into a draft (M20)', () => {
     )
     const tip = await theirCommit(original.replace('const c = 3', 'const c = 30'), { 'README.md': 'hi\n' })
     const before = data(await admin.query('branchDrafts.get', { id: draftId }))
+    expect(data(await admin.query('branchDrafts.changes', { id: draftId }))).toMatchObject({
+      conflict: true,
+      merge: { conflicts: 0 },
+    })
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.commit', { id: draftId, revision: before.revision, message: 'x' }),
+      ),
+    ).toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('merges their changes with yours') })
 
     const result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
     expect(result.status).toBe('updated')
