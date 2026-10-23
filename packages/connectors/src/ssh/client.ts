@@ -53,6 +53,16 @@ export function tunnelFor(
   return new SshTunnel(hops, options)
 }
 
+/**
+ * Checks the IAP part of SSH settings as they're saved or tested (M18): each IAP hop's service account key is there and
+ * is one, or the server's own identity is allowed here. Throws `SshSettingsError` naming the hop; opens nothing.
+ */
+export function checkSshIap(ssh: SshConfig, secrets: SshSecrets | undefined): void {
+  for (const { reach, iap, ...hop } of ssh.hops) {
+    if (reach === 'iap' && iap) iapFor(hop, iap, secrets?.[hop.id]?.iapKey)
+  }
+}
+
 /** How a hop reaches its VM through IAP: the target, and tokens of the key or of the server's own identity. */
 function iapFor(
   hop: Pick<SshHop, 'id' | 'host' | 'port'>,

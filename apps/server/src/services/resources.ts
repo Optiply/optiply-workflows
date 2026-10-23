@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
+  ConnectorError,
+  checkSshIap,
   normalizeSsh,
+  parseServiceAccountKey,
   type ResolvedResource,
   readPrivateKey,
   type SshConfig,
@@ -52,7 +55,8 @@ export function applySecretPatch(
 /**
  * A config's SSH tunnel as it's saved or tested (M17): a hop moved to another host or port loses its trusted host key,
  * secrets are kept only for hops still there (and only what each signs in with), and every hop's key or password is
- * checked (a key that's missing, unreadable or locked by another passphrase is refused: `SshSettingsError`).
+ * checked (a key that's missing, unreadable or locked by another passphrase is refused: `SshSettingsError`), and so is
+ * the way through Google IAP (M18: a service account key that is one, or the server's identity where it's allowed).
  */
 export function settleSsh(
   config: Record<string, unknown>,
@@ -62,7 +66,10 @@ export function settleSsh(
   const settled = normalizeSsh(config.ssh as SshConfig | undefined, secrets.ssh as SshSecrets | undefined)
   const { ssh: _c, ...restConfig } = config
   const { ssh: _s, ...restSecrets } = secrets
-  if (settled.ssh) sshCredentials(settled.ssh, settled.secrets)
+  if (settled.ssh) {
+    sshCredentials(settled.ssh, settled.secrets)
+    checkSshIap(settled.ssh, settled.secrets)
+  }
   return {
     config: settled.ssh ? { ...restConfig, ssh: settled.ssh } : restConfig,
     secrets: settled.secrets ? { ...restSecrets, ssh: settled.secrets } : restSecrets,
@@ -84,6 +91,37 @@ export function sshKeyInfo(secrets: Record<string, unknown>): Record<string, Ssh
     if (s.privateKey) out[hop] = keyInfo(s.privateKey, s.passphrase)
   }
   return out
+}
+
+/** What the settings show of a hop's IAP key (M18): the service account it signs in as, or why it can't be read. */
+export type IapKeyInfo = { clientEmail: string } | { error: string }
+
+export function iapKeyInfo(secrets: Record<string, unknown>): Record<string, IapKeyInfo> | null {
+  const hops = secrets.ssh as Record<string, { iapKey?: string }> | undefined
+  if (!hops) return null
+  const out: Record<string, IapKeyInfo> = {}
+  for (const [hop, s] of Object.entries(hops)) {
+    if (!s.iapKey) continue
+    try {
+      out[hop] = { clientEmail: parseServiceAccountKey(s.iapKey, `ssh.${hop}.iapKey`).client_email }
+    } catch (err) {
+      if (!(err instanceof ConnectorError)) throw err
+      out[hop] = { error: err.message }
+    }
+  }
+  return out
+}
+
+/**
+ * The VM a config's first SSH server is reached at through IAP with the server's own Google identity (M18), as
+ * `project/zone/instance/interface:port`; null when it isn't. Only admins may choose it or point it elsewhere: the
+ * server's identity may reach VMs that no one's key does.
+ */
+export function serverIdentityTarget(config: unknown): string | null {
+  const hop = (config as { ssh?: SshConfig } | null)?.ssh?.hops[0]
+  if (hop?.reach !== 'iap' || hop.iap?.identity !== 'server') return null
+  const { project, zone, instance, interface: nic } = hop.iap
+  return `${project}/${zone}/${instance}/${nic}:${hop.port}`
 }
 
 /**

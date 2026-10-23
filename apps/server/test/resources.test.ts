@@ -1,11 +1,15 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { startTestSshServer } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureGoogleIap } from '../src/services/iap'
 import { saveTokens } from '../src/services/oauth-tokens'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -733,6 +737,158 @@ describe('SSH tunnel settings (M17)', () => {
         message: 'SSH server bastion.example.com: add a private key',
       }),
     })
+  })
+})
+
+describe('Google IAP settings (M18)', () => {
+  const google = new FakeGoogle()
+  /** A line of the service account's private key: none of it may come back. */
+  const iapKeyLine = (JSON.parse(google.keyJson).private_key as string).split('\n')[5]!
+  const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-iap-')), 'key.json')
+  const vm = { project: 'proj', zone: 'europe-west1-c', instance: 'bastion' }
+  const hop = (iap: Record<string, unknown> = {}, over: Record<string, unknown> = {}) => ({
+    id: 'b',
+    reach: 'iap',
+    iap: { ...vm, ...iap },
+    username: 'ow',
+    auth: 'password',
+    ...over,
+  })
+  let id: string
+  let other: string
+  const save = (
+    as: ReturnType<typeof trpc>,
+    resourceId: string,
+    h: unknown,
+    secrets?: Record<string, unknown>,
+  ) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh: { hops: [h] } },
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    SECRETS.push(iapKeyLine)
+    await google.start()
+    writeFileSync(keyFile, google.keyJson)
+    id = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Via IAP', slug: 'via_iap' }),
+    ).id
+    other = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Also IAP', slug: 'also_iap' }),
+    ).id
+    // The member may edit both in production.
+    const groupId = data(await admin.mutate('groups.create', { name: 'IAP editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    for (const objectId of [id, other]) {
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId,
+        groupId,
+        environmentId: prodId,
+        level: 'edit',
+      })
+    }
+  })
+
+  afterAll(async () => {
+    configureGoogleIap({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await google.stop()
+  })
+
+  it("saves a VM reached with a service account key, showing only the key's account", async () => {
+    const saved = await save(admin, id, hop(), {
+      password: PG_SECRET,
+      ssh: { b: { password: SSH_PASSWORD, iapKey: google.keyJson } },
+    })
+    expect(saved.status).toBe(200)
+    expect(data(saved).config.ssh.hops[0]).toMatchObject({
+      host: 'bastion',
+      port: 22,
+      iap: { ...vm, interface: 'nic0', identity: 'key' },
+    })
+    expect(data(saved).secrets.ssh).toEqual({ b: { password: { set: true }, iapKey: { set: true } } })
+    const account = { b: { clientEmail: 'tunnel@fake-project.iam.gserviceaccount.com' } }
+    expect(data(saved).iapKeys).toEqual(account)
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).iapKeys,
+    ).toEqual(account)
+  })
+
+  it('refuses a key that is missing or not a service account key, naming the server', async () => {
+    const bad = await save(admin, id, hop(), { ssh: { b: { iapKey: '{"private_key":"k3y"}' } } })
+    expect(bad.status).toBe(400)
+    expect(bad.body.error?.message).toMatch(/^SSH server bastion: The service account key is missing fields/)
+    const missing = await save(admin, other, hop(), {
+      password: PG_SECRET,
+      ssh: { b: { password: SSH_PASSWORD } },
+    })
+    expect(missing.status).toBe(400)
+    expect(missing.body.error?.message).toBe(
+      'SSH server bastion: add the service account key that opens the Google IAP tunnel',
+    )
+  })
+
+  it("refuses the server's own identity where the instance doesn't allow it", async () => {
+    const refused = await save(admin, id, hop({ identity: 'server' }))
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/doesn't let resources use its own Google identity/)
+  })
+
+  it("lets only admins point the server's identity at a VM; editors keep it and change the rest", async () => {
+    // Allowed, with a token endpoint and an IAP endpoint that go nowhere real.
+    configureGoogleIap(
+      {
+        GOOGLE_SERVER_IDENTITY: 'allow',
+        GOOGLE_TOKEN_URL: google.tokenUrl,
+        GOOGLE_IAP_URL: 'ws://127.0.0.1:1',
+      },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+    const server = hop({ identity: 'server' })
+    expect((await save(member, id, server)).status).toBe(403)
+    expect((await save(admin, id, server)).status).toBe(200)
+    // The key isn't used any more, so it isn't kept.
+    const prod = data(await admin.query('resources.get', { id })).environments.find(
+      (e: { environmentId: string }) => e.environmentId === prodId,
+    )
+    expect(prod.secrets.ssh.b).toEqual({ password: { set: true } })
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'resource.config_saved'))
+      .orderBy(desc(auditEvents.at))
+      .limit(1)
+    expect(audit!.metadata).toMatchObject({ serverIdentityTarget: 'proj/europe-west1-c/bastion/nic0:22' })
+
+    // Editors: the rest of the settings, yes; another VM, port or resource, no.
+    expect((await save(member, id, { ...server, username: 'someone' })).status).toBe(200)
+    expect((await save(member, id, hop({ identity: 'server', instance: 'other-vm' }))).status).toBe(403)
+    expect((await save(member, id, { ...server, port: 2222 })).status).toBe(403)
+    expect(
+      (await save(member, other, server, { password: PG_SECRET, ssh: { b: { password: SSH_PASSWORD } } }))
+        .status,
+    ).toBe(403)
+    // Moving away from the server's identity is fine.
+    expect((await save(member, id, hop(), { ssh: { b: { iapKey: google.keyJson } } })).status).toBe(200)
+    expect((await save(admin, id, server)).status).toBe(200)
+
+    // Test connection opens the tunnel too: the stored settings, yes (here IAP can't be reached); another VM, no.
+    const stored = await member.mutate('resources.test', { resourceId: id, environmentId: prodId })
+    expect(stored.status).toBe(200)
+    expect(data(stored).ok).toBe(false)
+    const moved = await member.mutate('resources.test', {
+      resourceId: id,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh: { hops: [hop({ identity: 'server', instance: 'other-vm' })] } },
+    })
+    expect(moved.status).toBe(403)
+    expect(moved.body.error?.message).toBe(
+      "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+    )
   })
 })
 

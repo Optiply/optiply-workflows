@@ -39,9 +39,11 @@ import { errorView, toJson } from '../../services/query-results'
 import {
   applySecretPatch,
   decryptConfigSecrets,
+  iapKeyInfo,
   maskSecrets,
   patchedSecretFields,
   publicConfigVars,
+  serverIdentityTarget,
   settleSsh,
   sshKeyInfo,
   toResolved,
@@ -71,6 +73,25 @@ function sshSettled<T>(settle: () => T): T {
     if (err instanceof SshSettingsError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
     throw err
   }
+}
+
+/**
+ * Settings that open Google IAP with the server's own identity (M18) to a VM other than the stored settings' need an
+ * admin: editors may keep such settings (and change the rest), not choose or move them. Returns the new target.
+ */
+function requireAdminForServerIdentity(
+  user: { isAdmin: boolean },
+  stored: unknown,
+  next: unknown,
+): string | null {
+  const target = serverIdentityTarget(next)
+  if (target && target !== serverIdentityTarget(stored) && !user.isAdmin) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+    })
+  }
+  return target
 }
 
 /** Each `{{ }}` in the playground gets this long in the sandbox. */
@@ -213,6 +234,7 @@ export const resourcesRouter = router({
             config: row ? row.config : null,
             secrets: secrets ? maskSecrets(secrets) : null,
             sshKeys: secrets ? sshKeyInfo(secrets) : null,
+            iapKeys: secrets ? iapKeyInfo(secrets) : null,
             updatedAt: row?.updatedAt ?? null,
           },
         ]
@@ -332,6 +354,7 @@ export const resourcesRouter = router({
           applySecretPatch(existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {}, input.secrets),
         ),
       )
+      const iapTarget = requireAdminForServerIdentity(ctx.user, existing?.config, settled.config)
       const secrets = settled.secrets
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {
@@ -368,10 +391,17 @@ export const resourcesRouter = router({
         metadata: {
           environment: envSlug,
           changedCredentials: patchedSecretFields(input.secrets),
+          ...(iapTarget &&
+            iapTarget !== serverIdentityTarget(existing?.config) && { serverIdentityTarget: iapTarget }),
           ...(disconnectedAccounts && { disconnectedAccounts }),
         },
       })
-      return { config: values.config, secrets: maskSecrets(secrets), sshKeys: sshKeyInfo(secrets) }
+      return {
+        config: values.config,
+        secrets: maskSecrets(secrets),
+        sshKeys: sshKeyInfo(secrets),
+        iapKeys: iapKeyInfo(secrets),
+      }
     }),
 
   deleteConfig: authedProcedure
@@ -429,6 +459,8 @@ export const resourcesRouter = router({
           return { ok: false as const, error: errorView(new ConnectorError('invalid_config', err.message)) }
         }
       }
+      // Testing opens the tunnel too: the server's identity goes only where an admin pointed it (M18).
+      requireAdminForServerIdentity(ctx.user, existing?.config, tested.config)
       // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
       // auth flow signs in afresh for the test, without storing what it gets (`store: false`).
       const custom = (tested.config as { auth?: { type?: unknown } }).auth?.type === 'custom'

@@ -3,8 +3,8 @@ import { createServer, type Server } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { serverIdentity } from '../src/google-auth'
-import { configureIap, tunnelFor } from '../src/ssh/client'
-import { normalizeSsh, type SshSecrets, sshConfigSchema } from '../src/ssh/settings'
+import { checkSshIap, configureIap, tunnelFor } from '../src/ssh/client'
+import { normalizeSsh, type SshSecrets, SshSettingsError, sshConfigSchema } from '../src/ssh/settings'
 import {
   startTestIapServer,
   startTestSshServer,
@@ -83,6 +83,25 @@ describe('settings', () => {
     expect(normalizeSsh(config, secrets().ssh).secrets?.bastion?.iapKey).toBe(google.keyJson)
     const asServer = sshConfigSchema.parse({ hops: [viaIap({ identity: 'server' })] })
     expect(normalizeSsh(asServer, secrets().ssh).secrets?.bastion).not.toHaveProperty('iapKey')
+  })
+
+  it('checks the IAP key, or that the server identity is allowed, without opening anything', () => {
+    const keyed = sshConfigSchema.parse({ hops: [viaIap()] })
+    expect(() => checkSshIap(keyed, secrets().ssh)).not.toThrow()
+    const missing = (() => {
+      try {
+        checkSshIap(keyed, { bastion: {} })
+      } catch (err) {
+        return err
+      }
+    })()
+    expect(missing).toBeInstanceOf(SshSettingsError)
+    expect(missing).toMatchObject({ hopId: 'bastion', field: 'iapKey' })
+    expect(() => checkSshIap(keyed, secrets({ iapKey: 'not json' }).ssh)).toThrow(/SSH server bastion: /)
+    const server = sshConfigSchema.parse({ hops: [viaIap({ identity: 'server' })] })
+    expect(() => checkSshIap(server, undefined)).toThrow(/doesn't let resources use its own Google identity/)
+    configureIap({ serverIdentity: serverIdentity({ scope: 's', env: {} }) })
+    expect(() => checkSshIap(server, undefined)).not.toThrow()
   })
 
   it('reaches only the first server through IAP, and needs the VM named', () => {
