@@ -480,6 +480,15 @@ export const workflowReleases = pgTable(
 
 export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub'] as const
 
+/** A Pub/Sub trigger's runtime state, as its consumer reports it (`workflow_triggers.state`). */
+export interface PubSubTriggerState {
+  inFlight: number
+  lastMessageAt: string | null
+  lastPullAt: string | null
+  lastError: string | null
+  lastErrorAt: string | null
+}
+
 /**
  * The runtime projection of the live release's triggers, rewritten when a release goes live: rows are matched by
  * kind and name, so a trigger keeps its id (and its runs' `ON CONFLICT (trigger_id, scheduled_for)` guard) across
@@ -514,6 +523,11 @@ export const workflowTriggers = pgTable(
     /** Pub/Sub triggers (M19): the worker pulling for it now, until its lease lapses (renewed while it pulls). */
     leaseOwner: text(),
     leaseExpiresAt: timestamp({ withTimezone: true }),
+    /**
+     * Pub/Sub triggers: what the worker pulling for it last reported (each lease tick), for the editor: messages in
+     * flight, the last one, the last pull error and when it happened, when a pull last succeeded.
+     */
+    state: jsonb().$type<PubSubTriggerState>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

@@ -169,6 +169,13 @@
       "when": 1792750282178,
       "tag": "0023_pubsub_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792753333601,
+      "tag": "0024_pubsub_trigger_state",
+      "breakpoints": true
     }
   ]
 }

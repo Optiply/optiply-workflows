@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_triggers" ADD COLUMN "state" jsonb;

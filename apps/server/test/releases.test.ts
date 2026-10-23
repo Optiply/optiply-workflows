@@ -1,8 +1,14 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { startFakePubSub } from '@ow/connectors/testing'
 import { createDb, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureGoogle } from '../src/services/google'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -571,5 +577,96 @@ describe('schedules on the worker', () => {
       await new Promise((r) => setTimeout(r, 50))
     }
     throw new Error('the scheduled run did not succeed')
+  })
+})
+
+describe('Pub/Sub triggers on the worker (M19)', () => {
+  const google = new FakeGoogle()
+  let pubsub: Awaited<ReturnType<typeof startFakePubSub>>
+  beforeAll(async () => {
+    await google.start()
+    const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-pubsub-')), 'key.json')
+    writeFileSync(keyFile, google.keyJson)
+    pubsub = await startFakePubSub({ project: 'fake-project', pullWaitMs: 100 })
+    pubsub.createTopic('orders')
+    pubsub.createSubscription('orders-live', { topic: 'orders' })
+    // Process-wide, so the worker's consumer (started with the test config) pulls from the fake as this server.
+    configureGoogle(
+      { GOOGLE_SERVER_IDENTITY: 'allow', GOOGLE_PUBSUB_URL: pubsub.url, GOOGLE_TOKEN_URL: google.tokenUrl },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+  })
+  afterAll(async () => {
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await pubsub?.close()
+    await google.stop()
+  })
+
+  it('runs the live release per message, acks it, and the editor sees the trigger pulling', async () => {
+    const { id: resourceId } = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Live events', slug: 'events_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId,
+        environmentId: prodId,
+        config: { identity: 'server', project: 'fake-project' },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_orders',
+      definition(
+        [
+          code(
+            'seen',
+            'return { doubled: startTrigger.data.n * 2, kind: startTrigger.message.attributes.kind }',
+          ),
+        ],
+        {
+          triggers: {
+            pubsub: [{ name: 'orders', enabled: true, resource: 'events_live', subscription: 'orders-live' }],
+          },
+        },
+      ),
+    )
+    data(await publish(wf))
+    await worker.pubsub.tick()
+    const messageId = pubsub.publish('orders', '{"n": 21}', { kind: 'created' })
+
+    await expect.poll(() => pubsub.messages('orders-live')[0]?.acked ?? false, { timeout: 15_000 }).toBe(true)
+    const listed = await env.app.inject({
+      method: 'GET',
+      url: '/api/v1/workflows/on_orders/runs',
+      headers: { cookie: adminCookie },
+    })
+    const [run] = listed.json().runs
+    expect(run).toMatchObject({
+      triggerType: 'pubsub',
+      status: 'succeeded',
+      environment: 'production',
+      version: 'live',
+    })
+    expect(run.input).toMatchObject({
+      data: { n: 21 },
+      message: { messageId, attributes: { kind: 'created' }, subscription: 'orders-live' },
+    })
+    const block = await env.app.inject({
+      method: 'GET',
+      url: `/api/v1/runs/${run.id}/blocks/seen`,
+      headers: { cookie: adminCookie },
+    })
+    expect(block.json().block.data).toEqual({ doubled: 42, kind: 'created' })
+
+    await worker.pubsub.tick()
+    const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id }))
+    expect(trigger).toMatchObject({
+      kind: 'pubsub',
+      environment: 'production',
+      pubsub: {
+        worker: worker.dispatcher.workerId,
+        state: { inFlight: 0, lastMessageAt: expect.any(String), lastError: null },
+        lastDay: { messages: 1, succeeded: 1, failed: 0 },
+      },
+    })
   })
 })

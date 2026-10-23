@@ -168,6 +168,15 @@ describe('PubSubConsumer', () => {
     expect((byMessage.get(second)!.input as { data: unknown }).data).toBe('plain text')
     expect(await triggerRow(trigger.id)).toMatchObject({ leaseOwner: 'w1' })
     expect(consumers[0]!.stats).toEqual({ triggers: 1, inFlight: 2 })
+    // Reported on the trigger's row at the next lease tick, for the editor.
+    await expect
+      .poll(async () => (await triggerRow(trigger.id)).state)
+      .toMatchObject({
+        inFlight: 2,
+        lastMessageAt: expect.any(String),
+        lastPullAt: expect.any(String),
+        lastError: null,
+      })
   })
 
   it('holds a redelivered message whose run is still under way, instead of running it again', async () => {
@@ -276,6 +285,13 @@ describe('PubSubConsumer', () => {
       triggerId: expect.any(String),
       err: expect.stringContaining('Resource not found'),
     })
+    await expect
+      .poll(async () => (await triggerRow(trigger.id)).state)
+      .toMatchObject({
+        lastError: expect.stringContaining('Resource not found'),
+        lastErrorAt: expect.any(String),
+        lastPullAt: null,
+      })
   })
 })
 

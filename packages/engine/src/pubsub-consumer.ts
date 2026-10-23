@@ -6,7 +6,7 @@ import {
   pubsubClient,
   type ReceivedMessage,
 } from '@ow/connectors'
-import { type Db, pubsubDeliveries, workflowRuns } from '@ow/db'
+import { type Db, type PubSubTriggerState, pubsubDeliveries, workflowRuns, workflowTriggers } from '@ow/db'
 import type { PubSubTrigger } from '@ow/definition'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { startRun } from './queue'
@@ -126,6 +126,13 @@ export class PubSubConsumer {
         await subscriber.stop()
       }
     }
+    // What each held trigger is doing, for the editor (one small update per trigger and tick).
+    for (const subscriber of this.subscribers.values()) {
+      await db
+        .update(workflowTriggers)
+        .set({ state: subscriber.state() })
+        .where(and(eq(workflowTriggers.id, subscriber.triggerId), eq(workflowTriggers.leaseOwner, workerId)))
+    }
     for (const trigger of held) {
       const current = this.subscribers.get(trigger.id)
       if (current && current.key === settingsKey(trigger)) continue
@@ -153,12 +160,30 @@ class Subscriber {
   private holding: Promise<void> = Promise.resolve()
   private client: PubSubResourceClient | undefined
   private wakeUp: (() => void) | undefined
+  private lastMessageAt: string | null = null
+  private lastPullAt: string | null = null
+  private lastError: string | null = null
+  private lastErrorAt: string | null = null
 
   constructor(
     private readonly trigger: TriggerRow,
     private readonly opts: PubSubConsumerOptions,
   ) {
     this.key = settingsKey(trigger)
+  }
+
+  get triggerId(): string {
+    return this.trigger.id
+  }
+
+  state(): PubSubTriggerState {
+    return {
+      inFlight: this.held.size,
+      lastMessageAt: this.lastMessageAt,
+      lastPullAt: this.lastPullAt,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+    }
   }
 
   start(): void {
@@ -228,9 +253,13 @@ class Subscriber {
           AbortSignal.any([this.abort.signal, AbortSignal.timeout(90_000)]),
         )
         retry = firstRetry
+        this.lastPullAt = new Date().toISOString()
+        if (received.length) this.lastMessageAt = this.lastPullAt
       } catch (err) {
         if (this.abort.signal.aborted) return
         pubsubStats.pullErrors++
+        this.lastError = describe(err)
+        this.lastErrorAt = new Date().toISOString()
         this.opts.log?.warn(
           { triggerId: this.trigger.id, trigger: this.trigger.name, err: describe(err), retryInMs: retry },
           'pubsub pull failed',

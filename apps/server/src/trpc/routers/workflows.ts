@@ -1,6 +1,7 @@
 import {
   environments,
   permissions,
+  pubsubDeliveries,
   type Workflow,
   webhookRejections,
   workflowReleases,
@@ -16,7 +17,7 @@ import {
 import { checkBodySchema } from '@ow/definition/body-schema'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
@@ -119,6 +120,29 @@ export const workflowsRouter = router({
       .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
       .where(eq(workflowTriggers.workflowId, workflow.id))
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
+    // Pub/Sub triggers (M19): their last day's messages, from what the consumer recorded.
+    const pubsubIds = rows.filter((r) => r.trigger.kind === 'pubsub').map((r) => r.trigger.id)
+    const counts = new Map(
+      (pubsubIds.length
+        ? await ctx.db
+            .select({
+              triggerId: pubsubDeliveries.triggerId,
+              messages: sql<number>`count(*)::int`,
+              succeeded: sql<number>`count(*) filter (where ${pubsubDeliveries.outcome} = 'succeeded')::int`,
+              failed: sql<number>`count(*) filter (where ${pubsubDeliveries.outcome} = 'failed')::int`,
+            })
+            .from(pubsubDeliveries)
+            .where(
+              and(
+                inArray(pubsubDeliveries.triggerId, pubsubIds),
+                gt(pubsubDeliveries.updatedAt, sql`now() - interval '1 day'`),
+              ),
+            )
+            .groupBy(pubsubDeliveries.triggerId)
+        : []
+      ).map((c) => [c.triggerId, c]),
+    )
+    const now = Date.now()
     return rows.map(({ trigger, environment }) => ({
       id: trigger.id,
       kind: trigger.kind,
@@ -129,6 +153,21 @@ export const workflowsRouter = router({
       releaseId: trigger.releaseId,
       nextFireAt: trigger.nextFireAt,
       lastFiredAt: trigger.lastFiredAt,
+      ...(trigger.kind === 'pubsub' && {
+        pubsub: {
+          // Only a lease still current: a worker gone without a goodbye isn't pulling.
+          worker:
+            trigger.leaseOwner && trigger.leaseExpiresAt && trigger.leaseExpiresAt.getTime() > now
+              ? trigger.leaseOwner
+              : null,
+          state: trigger.state ?? null,
+          lastDay: {
+            messages: counts.get(trigger.id)?.messages ?? 0,
+            succeeded: counts.get(trigger.id)?.succeeded ?? 0,
+            failed: counts.get(trigger.id)?.failed ?? 0,
+          },
+        },
+      }),
     }))
   }),
 
