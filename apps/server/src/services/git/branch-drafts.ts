@@ -67,7 +67,7 @@ export async function branchDraftView(draft: GitBranchDraft) {
 }
 
 /** The object's directory at a commit: its files (inside the directory) and, when there are any, what they decode to. */
-async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slug: string) {
+export async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slug: string) {
   const dir = objectDir(kind, slug)
   const raw = await repo.readFiles(commit, [`${dir}/`])
   const files: Files = Object.fromEntries(
@@ -78,7 +78,7 @@ async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slu
   return { dir, files, decoded }
 }
 
-function problemsError(problems: Problem[]): TRPCError {
+export function problemsError(problems: Problem[]): TRPCError {
   const more = problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''
   return new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -210,7 +210,8 @@ export interface DraftFileChange {
  * What committing the draft would change on the branch: its files against the branch's tip (or the deploy branch,
  * for a branch not made yet). `behind`: the branch moved since the draft's base; `conflict`: the object's files
  * changed there too, so a commit would be refused until the draft is updated from the branch; `merge`: whether that
- * update would merge cleanly or how many conflicts it would leave (null when it can't tell).
+ * update would merge cleanly or how many conflicts it would leave (null when it can't tell); `mainAhead`: the deploy
+ * branch changed the object since the branch left it (Update from main brings it in).
  */
 export async function branchDraftChanges(
   db: Db,
@@ -218,9 +219,10 @@ export async function branchDraftChanges(
   target: DraftObject,
   draft: GitBranchDraft,
 ) {
-  const { repo } = await requireGitRepo(db, config)
+  const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   try {
     const tip = await repo.fetchBranch(draft.branch)
+    const main = await repo.fetchBranch(deployBranch)
     // A new process's cache (a restart, another replica) may not have the base yet.
     const haveBase = await repo.ensureCommit(draft.baseCommit)
     if (!tip && !haveBase) throw lostBase()
@@ -249,10 +251,30 @@ export async function branchDraftChanges(
         ? (await repo.entryAt(tip!, dir)) !== (await repo.entryAt(draft.baseCommit, dir))
         : behind
     const merge = conflict && haveBase ? await updateOutlook(db, repo, target, draft, tip!) : null
-    return { tip, behind, conflict, merge, files }
+    const fromMain = main !== null && main !== tip && (await mainAhead(repo, main, draft, tip, dir))
+    return { tip, behind, conflict, merge, mainAhead: fromMain, files }
   } catch (err) {
     throw gitTrpcError(err)
   }
+}
+
+/**
+ * Whether the deploy branch changed the object since the draft's branch left it (the Git bar offers Update from
+ * main): for a branch, since their merge base; for a branch not made yet, since the draft's base.
+ */
+async function mainAhead(
+  repo: GitRepo,
+  main: string,
+  draft: GitBranchDraft,
+  tip: string | null,
+  dir: string,
+): Promise<boolean> {
+  const from = tip ?? draft.baseCommit
+  if (!(await repo.ensureCommit(from))) return false
+  if (await repo.isAncestor(main, from)) return false
+  const base = tip ? await repo.mergeBase(tip, main) : from
+  if (!base) return false
+  return (await repo.entryAt(main, dir)) !== (await repo.entryAt(base, dir))
 }
 
 /**
@@ -311,15 +333,39 @@ export async function updateBranchDraftFromBranch(
     resolutions?: Readonly<Record<string, Resolution>>
   },
 ): Promise<BranchDraftUpdate> {
-  const { target } = opts
-  const { kind, object } = target
   const { repo } = await requireGitRepo(db, config)
   let tip: string | null
-  let theirs: Awaited<ReturnType<typeof readObjectAt>>
   try {
     tip = await repo.fetchBranch(opts.draft.branch)
-    if (!tip)
-      throw new TRPCError({ code: 'NOT_FOUND', message: `The repo has no branch ${opts.draft.branch} yet` })
+  } catch (err) {
+    throw gitTrpcError(err)
+  }
+  if (!tip)
+    throw new TRPCError({ code: 'NOT_FOUND', message: `The repo has no branch ${opts.draft.branch} yet` })
+  return updateDraftTo(db, repo, user, { ...opts, tip, branchExists: true })
+}
+
+/**
+ * Merges the object at `tip` into the draft (from the draft's base) and makes `tip` its base: the branch's tip, or
+ * for a branch not made yet, the deploy branch's (Update from main).
+ */
+export async function updateDraftTo(
+  db: Db,
+  repo: GitRepo,
+  user: User,
+  opts: {
+    target: DraftObject
+    draft: GitBranchDraft
+    tip: string
+    branchExists: boolean
+    discardChanges: boolean
+    resolutions?: Readonly<Record<string, Resolution>>
+  },
+): Promise<BranchDraftUpdate> {
+  const { target, tip } = opts
+  const { kind, object } = target
+  let theirs: Awaited<ReturnType<typeof readObjectAt>>
+  try {
     theirs = await readObjectAt(repo, tip, kind, object.slug)
   } catch (err) {
     throw gitTrpcError(err)
@@ -351,7 +397,7 @@ export async function updateBranchDraftFromBranch(
         name: value.name,
         description: value.description,
         baseCommit: tip,
-        branchExists: true,
+        branchExists: opts.branchExists,
         revision: draft.revision + 1,
         updatedBy: user.id,
       })

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -10,6 +11,7 @@ import {
   workflows,
 } from '@ow/db'
 import { deleteOldRuns } from '@ow/engine'
+import { encodeObjectDir } from '@ow/git-format'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -18,6 +20,7 @@ import {
   updateBranchDraftFromBranch,
 } from '../src/services/git/branch-drafts'
 import { runGitDeploy } from '../src/services/git/deploy'
+import { repoObject } from '../src/services/git/protection'
 import { GitRepo } from '../src/services/git/repo'
 import { fakeGitHub } from './fake-github'
 import { bareRepo, scratch } from './git-helpers'
@@ -732,6 +735,280 @@ describe('merging the branch into a draft (M20)', () => {
       conflicts: [{ kind: 'item', at: ['definition', 'blocks', 'ours'], ours: null }],
     })
     data(await admin.mutate('branchDrafts.discard', { id: draftId }))
+  })
+})
+
+describe('Update from main (M20)', () => {
+  const lines = (...l: string[]) => l.join('\n')
+  const STEP = 'workflows/sync-orders/blocks/step.js'
+  // biome-ignore lint/suspicious/noExplicitAny: untyped JSON
+  const step = (draft: any) =>
+    draft.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code
+  /** Someone commits straight onto main (as a merged pull request would). */
+  const onMain = async (files: Record<string, string>) => {
+    const tip = await other.fetchBranch('main')
+    const commit = await other.commit({ parent: tip, files, message: 'On main', author })
+    expect(await other.push(commit!, 'main')).toBe('ok')
+    return commit!
+  }
+  const openDraft = async (branch: string) =>
+    data(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch, create: true }))
+      .id as string
+  const saveAndCommit = async (id: string, code: string, message: string) => {
+    const { revision } = data(await admin.query('branchDrafts.get', { id }))
+    data(await admin.mutate('branchDrafts.save', { id, revision, definition: flowDefinition(code) }))
+    return data(await admin.mutate('branchDrafts.commit', { id, revision: revision + 1, message }))
+      .commit as string
+  }
+  const parents = (commit: string) =>
+    execFileSync('git', ['-C', remote, 'rev-list', '--parents', '-n', '1', commit], { encoding: 'utf8' })
+      .trim()
+      .split(' ')
+      .slice(1)
+  const start = lines('const a = 1', 'const b = 2', 'const c = 3', 'return a + b + c')
+
+  it('merges main into the branch as a two-parent commit, keeping the draft’s uncommitted changes', async () => {
+    await onMain({ [STEP]: `${start}\n` })
+    const id = await openDraft('from-main')
+    const tip = await saveAndCommit(id, start.replace('const a = 1', 'const a = 10'), 'Ten')
+    // Uncommitted: a comment at the end.
+    const { revision } = data(await admin.query('branchDrafts.get', { id }))
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id,
+        revision,
+        definition: flowDefinition(`${start.replace('const a = 1', 'const a = 10')}\n// mine`),
+      }),
+    )
+    const main = await onMain({
+      [STEP]: `${start.replace('const c = 3', 'const c = 30')}\n`,
+      'docs.md': 'hi\n',
+    })
+    expect(data(await admin.query('branchDrafts.changes', { id }))).toMatchObject({ mainAhead: true })
+
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(result).toMatchObject({
+      status: 'merged',
+      objects: ['workflows/sync-orders'],
+      draft: { status: 'updated' },
+    })
+    expect(await other.fetchBranch('from-main')).toBe(result.commit)
+    expect(parents(result.commit)).toEqual([tip, main])
+    const files = await other.readFiles(result.commit)
+    expect(files[STEP]).toBe(`${lines('const a = 10', 'const b = 2', 'const c = 30', 'return a + b + c')}\n`)
+    expect(files['docs.md']).toBe('hi\n')
+    // The pull request merges cleanly now.
+    expect((await other.mergeTree(main, result.commit)).conflicts).toEqual([])
+    // The draft: main's change, its own commit and its uncommitted line.
+    expect(result.draft.draft.baseCommit).toBe(result.commit)
+    expect(step(result.draft.draft)).toBe(
+      `${lines('const a = 10', 'const b = 2', 'const c = 30', 'return a + b + c')}\n// mine`,
+    )
+    expect(data(await admin.query('branchDrafts.changes', { id }))).toMatchObject({ mainAhead: false })
+    expect(data(await admin.mutate('branchDrafts.updateFromMain', { id }))).toEqual({ status: 'up_to_date' })
+    const [audit] = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'git.merged_main'))
+    expect(audit?.metadata).toMatchObject({ branch: 'from-main', commit: result.commit })
+    data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
+  it('returns conflicts by object without writing, then merges with the resolutions', async () => {
+    await onMain({ [STEP]: `${start}\n` })
+    const id = await openDraft('clash')
+    const tip = await saveAndCommit(id, start.replace('const b = 2', 'const b = "branch"'), 'Branch')
+    await onMain({ [STEP]: `${start.replace('const b = 2', 'const b = "main"')}\n` })
+    const first = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(first).toMatchObject({
+      status: 'conflicts',
+      objects: [
+        {
+          dir: 'workflows/sync-orders',
+          kind: 'workflow',
+          slug: 'sync-orders',
+          conflicts: [{ kind: 'text', at: ['definition', 'blocks', 'step', 'config', 'code'] }],
+        },
+      ],
+    })
+    expect(await other.fetchBranch('clash')).toBe(tip)
+    const [object] = first.objects
+    const second = data(
+      await admin.mutate('branchDrafts.updateFromMain', {
+        id,
+        resolutions: { [object.dir]: { [object.conflicts[0].id]: { chunks: ['theirs'] } } },
+      }),
+    )
+    expect(second.status).toBe('merged')
+    expect(step(second.draft.draft)).toBe(start.replace('const b = 2', 'const b = "main"'))
+    data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
+  it('refuses a conflict outside objects, naming it', async () => {
+    const id = await openDraft('readme')
+    await saveAndCommit(id, 'return "readme"', 'Readme branch')
+    const tip = await other.fetchBranch('readme')
+    const c = await other.commit({ parent: tip, files: { 'README.md': 'branch\n' }, message: 'r', author })
+    await other.push(c!, 'readme')
+    await onMain({ 'README.md': 'main\n' })
+    expect(failure(await admin.mutate('branchDrafts.updateFromMain', { id }))).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('README.md'),
+    })
+    expect(await other.fetchBranch('readme')).toBe(c)
+    data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
+  it('merges another object both sides changed where git’s line merge would conflict', async () => {
+    const extra = (blocks: string[]) =>
+      encodeObjectDir(
+        repoObject('workflow', 'extra', {
+          name: 'Extra',
+          description: null,
+          definition: {
+            schemaVersion: 1,
+            blocks: [
+              { name: 'startTrigger', type: 'startTrigger' },
+              ...blocks.map((name) => ({ name, type: 'code', config: { code: `return "${name}"` } })),
+            ],
+            edges: [],
+          },
+        }),
+      ).files
+    const prefixed = (files: Record<string, string>) =>
+      Object.fromEntries(Object.entries(files).map(([path, text]) => [`workflows/extra/${path}`, text]))
+    await onMain(prefixed(extra(['code1'])))
+    const id = await openDraft('two-objects')
+    await saveAndCommit(id, 'return "two"', 'Two')
+    const tip = await other.fetchBranch('two-objects')
+    const branchSide = await other.commit({
+      parent: tip,
+      directories: { 'workflows/extra': extra(['code1', 'fromBranch']) },
+      message: 'Branch adds a block',
+      author,
+    })
+    await other.push(branchSide!, 'two-objects')
+    const main = await other.fetchBranch('main')
+    const mainSide = await other.commit({
+      parent: main,
+      directories: { 'workflows/extra': extra(['code1', 'fromMain']) },
+      message: 'Main adds a block',
+      author,
+    })
+    await other.push(mainSide!, 'main')
+    // Git alone can't merge workflow.json: both sides added at the same place.
+    expect((await other.mergeTree(branchSide!, mainSide!)).conflicts).toContain(
+      'workflows/extra/workflow.json',
+    )
+
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(result).toMatchObject({ status: 'merged', objects: ['workflows/extra'] })
+    expect(await other.fetchBranch('two-objects')).toBe(result.commit)
+    const files = await other.readFiles(result.commit, ['workflows/extra/'])
+    const json = JSON.parse(files['workflows/extra/workflow.json']!)
+    // Canonical files order blocks by name.
+    expect(json.blocks.map((b: { name: string }) => b.name)).toEqual([
+      'code1',
+      'fromBranch',
+      'fromMain',
+      'startTrigger',
+    ])
+    expect(files['workflows/extra/blocks/fromMain.js']).toBe('return "fromMain"\n')
+    expect((await other.mergeTree(mainSide!, result.commit)).conflicts).toEqual([])
+    data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
+  it('refuses conflicts in an object the person can’t edit', async () => {
+    const [memberUser] = await env.db.select().from(users).where(eq(users.email, 'member@optiply.nl'))
+    const groupId = data(await admin.mutate('groups.create', { name: 'Sync editors' })).id
+    data(await admin.mutate('groups.addMember', { groupId, userId: memberUser!.id }))
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'workflow',
+        objectId: flowId,
+        groupId,
+        environmentId: null,
+        level: 'edit',
+      }),
+    )
+    const id = data(
+      await member.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'member',
+        create: true,
+      }),
+    ).id
+    const { revision } = data(await member.query('branchDrafts.get', { id }))
+    data(await member.mutate('branchDrafts.save', { id, revision, definition: flowDefinition('return "m"') }))
+    data(await member.mutate('branchDrafts.commit', { id, revision: revision + 1, message: 'Member' }))
+    // `workflows/elsewhere` (not on the instance: admins only) gets the same line changed on both sides.
+    const elsewhere = (code: string) =>
+      encodeObjectDir(
+        repoObject('workflow', 'elsewhere', {
+          name: 'Elsewhere',
+          description: null,
+          definition: {
+            schemaVersion: 1,
+            blocks: [{ name: 'a', type: 'code', config: { code } }],
+            edges: [],
+          },
+        }),
+      ).files
+    const main0 = await other.fetchBranch('main')
+    const first = await other.commit({
+      parent: main0,
+      directories: { 'workflows/elsewhere': elsewhere('return 0') },
+      message: 'Elsewhere',
+      author,
+    })
+    await other.push(first!, 'main')
+    const tip = await other.fetchBranch('member')
+    const mainTip = await other.fetchBranch('main')
+    // The branch takes main in first, so `elsewhere` is in their merge base.
+    const { tree } = await other.mergeTree(tip!, mainTip!)
+    const base = await other.commit({ parent: tip, mergeParents: [mainTip!], tree, message: 'Sync', author })
+    await other.push(base!, 'member')
+    const branchSide = await other.commit({
+      parent: base,
+      directories: { 'workflows/elsewhere': elsewhere('return "branch"') },
+      message: 'b',
+      author,
+    })
+    await other.push(branchSide!, 'member')
+    const main1 = await other.fetchBranch('main')
+    const mainSide = await other.commit({
+      parent: main1,
+      directories: { 'workflows/elsewhere': elsewhere('return "main"') },
+      message: 'm',
+      author,
+    })
+    await other.push(mainSide!, 'main')
+    expect(failure(await member.mutate('branchDrafts.updateFromMain', { id }))).toMatchObject({
+      code: 'FORBIDDEN',
+      message: expect.stringContaining('workflows/elsewhere'),
+    })
+    data(await member.mutate('branchDrafts.discard', { id }))
+  })
+
+  it('moves a draft whose branch isn’t made yet onto main’s tip', async () => {
+    await onMain({ [STEP]: `${start}\n` })
+    const id = await openDraft('not-yet')
+    const { revision } = data(await admin.query('branchDrafts.get', { id }))
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id,
+        revision,
+        definition: flowDefinition(start.replace('const a = 1', 'const a = 100')),
+      }),
+    )
+    const main = await onMain({ [STEP]: `${start.replace('const c = 3', 'const c = 300')}\n` })
+    expect(data(await admin.query('branchDrafts.changes', { id }))).toMatchObject({ mainAhead: true })
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(result).toMatchObject({ status: 'merged', commit: null, draft: { status: 'updated' } })
+    expect(result.draft.draft).toMatchObject({ baseCommit: main, branchExists: false })
+    expect(step(result.draft.draft)).toBe(
+      lines('const a = 100', 'const b = 2', 'const c = 300', 'return a + b + c'),
+    )
+    expect(await other.fetchBranch('not-yet')).toBeNull()
+    data(await admin.mutate('branchDrafts.discard', { id }))
   })
 })
 

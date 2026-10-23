@@ -15,7 +15,8 @@ import {
 } from '../../services/git/branch-drafts'
 import { draftColumn, gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import { branchNameSchema } from '../../services/git/repo'
-import { loadAccess, requireLevel } from '../../services/permissions'
+import { updateBranchDraftFromMain } from '../../services/git/update-from-main'
+import { atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
@@ -168,6 +169,41 @@ export const branchDraftsRouter = router({
       return result.status === 'updated'
         ? { status: 'updated' as const, draft: await branchDraftView(result.draft) }
         : result
+    }),
+
+  /**
+   * Brings the deploy branch into the draft's branch as a merge commit (then updates the draft from the branch), or
+   * returns the objects' conflicts to resolve (nothing written). Called again with `resolutions` by object directory.
+   */
+  updateFromMain: authedProcedure
+    .input(z.object({ id: Id, resolutions: z.record(z.string().max(300), resolutionsSchema).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { draft, target } = await editableDraft(ctx, input.id)
+      const access = await loadAccess(ctx.db, ctx.user)
+      const result = await updateBranchDraftFromMain(ctx.db, ctx.config, ctx.user, {
+        target,
+        draft,
+        resolutions: input.resolutions,
+        canEdit: async (kind, slug) => {
+          const object = await loadGitObject(ctx.db, kind, { slug })
+          // Not on the instance yet (new on a branch): admins only.
+          return object ? atLeast(gitObjectLevel(access, kind, object), 'edit') : ctx.user.isAdmin
+        },
+      })
+      if (result.status !== 'merged') return result
+      if (result.commit) {
+        await ctx.audit({
+          action: 'git.merged_main',
+          objectType: target.kind,
+          objectId: target.object.id,
+          metadata: { branch: draft.branch, commit: result.commit, objects: result.objects },
+        })
+      }
+      const update =
+        result.draft.status === 'updated'
+          ? { status: 'updated' as const, draft: await branchDraftView(result.draft.draft) }
+          : result.draft
+      return { status: 'merged' as const, commit: result.commit, objects: result.objects, draft: update }
     }),
 
   /** Commits the draft at `revision` onto its branch, as the caller. */
