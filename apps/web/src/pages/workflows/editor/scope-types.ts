@@ -236,6 +236,15 @@ declare const value: any
 /** In a filter condition or a loop: the current item's index. */
 declare const index: number
 interface OwBlockError { code: string; message: string; details?: unknown }
+/** A Pub/Sub trigger's message (runs a Pub/Sub trigger started); its data is \`startTrigger.data\`. */
+interface OwPubSubMessage {
+  messageId: string; publishTime: string; attributes: Record<string, string>; orderingKey?: string
+  /** Pub/Sub's count, on subscriptions with a dead-letter policy. */
+  deliveryAttempt?: number
+  subscription: string
+  /** The data's bytes, for binary payloads. */
+  dataBase64: string
+}
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean
   headers: { get(name: string): string | null; has(name: string): boolean }
@@ -289,7 +298,7 @@ export function scopeDeclarations(
           : 'unknown'
     const extra =
       block.type === 'startTrigger'
-        ? ' headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>;'
+        ? ' headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: OwPubSubMessage;'
         : ''
     lines.push(
       `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; [key: string]: unknown };${extra} }`,

@@ -19,6 +19,21 @@ export interface RunError {
   details?: unknown
 }
 
+/** What a Pub/Sub-triggered run got besides its data (M19): `startTrigger.message`. */
+export interface RunPubSubMessage {
+  messageId: string
+  publishTime: string
+  attributes: Record<string, string>
+  orderingKey?: string
+  deliveryAttempt?: number
+  subscription: string
+}
+
+/** A run's Pub/Sub message, when a Pub/Sub trigger started it. */
+export function pubsubMessage(run: Pick<RunView, 'triggerType' | 'input'>): RunPubSubMessage | undefined {
+  return run.triggerType === 'pubsub' ? run.input?.message : undefined
+}
+
 export interface RunView {
   id: string
   workflow: { id: string; slug: string; name: string }
@@ -27,7 +42,7 @@ export interface RunView {
   targetBlocks: string[] | null
   status: RunStatus
   triggerType: string
-  input: { data?: unknown }
+  input: { data?: unknown; message?: RunPubSubMessage }
   response: { status: number; headers: Record<string, string>; body: unknown } | null
   error: RunError | null
   recoveries: number

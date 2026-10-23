@@ -3,6 +3,7 @@ import {
   DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   type Diagnostic,
   isValidTimeZone,
+  type PubSubTrigger,
   parseCron,
   resolveWebhookSettings,
   type ScheduleTrigger,
@@ -14,7 +15,7 @@ import {
   type WorkflowDefinition,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
-import { Clock, Plus, Trash2, Webhook } from 'lucide-react'
+import { Clock, Inbox, Plus, Trash2, Webhook } from 'lucide-react'
 import { Badge, Button, Checkbox, CopyButton, Field, Input, linkClass, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -28,10 +29,11 @@ type Triggers = NonNullable<WorkflowDefinition['triggers']>
 function updateTriggers(edit: (triggers: Triggers) => Triggers) {
   useEditor.getState().update((def) => {
     const next = edit(def.triggers ?? {})
-    const { webhook, schedules } = next
+    const { webhook, schedules, pubsub } = next
     const sparse: Triggers = {
       ...(webhook && { webhook }),
       ...(schedules?.length && { schedules }),
+      ...(pubsub?.length && { pubsub }),
     }
     const { triggers: _, ...rest } = def
     return Object.keys(sparse).length ? { ...rest, triggers: sparse } : rest
@@ -59,13 +61,14 @@ function Problems({ problems }: { problems: Diagnostic[] }) {
   )
 }
 
-/** The start trigger's webhook and schedules. They take effect when the workflow is published. */
+/** The start trigger's webhook, schedules and Pub/Sub subscriptions. They take effect when the workflow is published. */
 export function TriggersForm({ testInput }: { testInput: unknown }) {
   const triggers = useEditor((s) => s.definition.triggers)
   return (
     <div className="flex flex-col gap-5">
       <WebhookSection webhook={triggers?.webhook} testInput={testInput} />
       <SchedulesSection schedules={triggers?.schedules ?? []} />
+      <PubSubSection triggers={triggers?.pubsub ?? []} />
     </div>
   )
 }
@@ -410,6 +413,203 @@ function ScheduleCard({ index, schedule }: { index: number; schedule: ScheduleTr
           </>
         ) : (
           'Runs once you publish.'
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Pub/Sub subscriptions that start this workflow, a run per message (M19). */
+function PubSubSection({ triggers }: { triggers: PubSubTrigger[] }) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.resources.list.queryOptions())
+  const resources = (data?.resources ?? []).filter((r) => r.type === 'pubsub')
+  const add = () =>
+    updateTriggers((t) => {
+      const taken = new Set((t.pubsub ?? []).map((p) => p.name))
+      let n = (t.pubsub?.length ?? 0) + 1
+      while (taken.has(`subscription-${n}`)) n++
+      return {
+        ...t,
+        pubsub: [
+          ...(t.pubsub ?? []),
+          { name: `subscription-${n}`, enabled: true, resource: resources[0]?.slug ?? '', subscription: '' },
+        ],
+      }
+    })
+  return (
+    <section className="flex flex-col gap-3" data-testid="pubsub-triggers">
+      <SectionTitle icon={<Inbox className="size-4" />} title="Pub/Sub">
+        <Button size="sm" variant="ghost" onClick={add}>
+          <Plus className="size-3.5" /> Add
+        </Button>
+      </SectionTitle>
+      {!triggers.length && (
+        <p className="text-xs text-muted">
+          {resources.length
+            ? 'No subscriptions. Add one to run this workflow for each message published to its topic.'
+            : 'No subscriptions. Add a Google Cloud Pub/Sub resource first, then a subscription to run this workflow for each message.'}
+        </p>
+      )}
+      {triggers.map((t, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: the name is edited in place; keying by it would remount the card on every keystroke
+        <PubSubCard key={i} index={i} trigger={t} resources={resources} />
+      ))}
+    </section>
+  )
+}
+
+function PubSubCard({
+  index,
+  trigger,
+  resources,
+}: {
+  index: number
+  trigger: PubSubTrigger
+  resources: { slug: string; name: string }[]
+}) {
+  const trpc = useTRPC()
+  const { data: environments } = useQuery(trpc.environments.list.queryOptions())
+  const workflowId = useEditor((s) => s.workflowId)
+  const { data: live } = useQuery({
+    ...trpc.workflows.triggers.queryOptions({ id: workflowId ?? '' }),
+    enabled: !!workflowId,
+    // The worker reports each trigger every few seconds.
+    refetchInterval: 5_000,
+  })
+  const problems = useTriggerProblems('pubsub', index)
+  const at = (field: string) => problems.filter((p) => p.path[3] === field)
+  const general = problems.filter((p) => p.path.length === 3 || p.path[3] === 'name')
+  const patch = (fields: Partial<PubSubTrigger>) =>
+    updateTriggers((t) => ({
+      ...t,
+      pubsub: (t.pubsub ?? []).map((p, i) => {
+        if (i !== index) return p
+        const next: Record<string, unknown> = { ...p, ...fields }
+        for (const [k, v] of Object.entries(next)) if (v === undefined) delete next[k]
+        return next as PubSubTrigger
+      }),
+    }))
+  const projected = live?.find((t) => t.kind === 'pubsub' && t.name === trigger.name)
+  const state = projected && 'pubsub' in projected ? projected.pubsub : undefined
+  const number = (value: string) => (value === '' ? undefined : Math.max(1, Math.round(Number(value) || 1)))
+
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-md border border-border p-3"
+      data-testid={`pubsub-${trigger.name}`}
+    >
+      <div className="flex items-center gap-2">
+        <Input
+          aria-label="Subscription trigger name"
+          className="h-8 flex-1 font-mono"
+          value={trigger.name}
+          onChange={(e) => patch({ name: e.target.value })}
+        />
+        <Checkbox
+          label="On"
+          checked={trigger.enabled}
+          onChange={(e) => patch({ enabled: e.target.checked })}
+        />
+        <Button
+          size="icon"
+          variant="ghost"
+          title="Remove subscription"
+          onClick={() =>
+            updateTriggers((t) => ({ ...t, pubsub: (t.pubsub ?? []).filter((_, i) => i !== index) }))
+          }
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+      <Problems problems={general} />
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Resource">
+          <Select value={trigger.resource} onChange={(e) => patch({ resource: e.target.value })}>
+            {!resources.some((r) => r.slug === trigger.resource) && (
+              <option value={trigger.resource}>{trigger.resource || 'Choose a Pub/Sub resource'}</option>
+            )}
+            {resources.map((r) => (
+              <option key={r.slug} value={r.slug}>
+                {r.name} ({r.slug})
+              </option>
+            ))}
+          </Select>
+          <Problems problems={at('resource')} />
+        </Field>
+        <Field label="Environment">
+          <Select
+            value={trigger.environment ?? ''}
+            onChange={(e) => patch({ environment: e.target.value || undefined })}
+          >
+            <option value="">Default</option>
+            {environments?.map((env) => (
+              <option key={env.slug} value={env.slug}>
+                {env.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+      <Field label="Subscription" hint="Its id in the resource's project, or projects/…/subscriptions/….">
+        <Input
+          className={cn('font-mono', at('subscription').length && 'border-danger')}
+          placeholder="orders-workflow"
+          value={trigger.subscription}
+          onChange={(e) => patch({ subscription: e.target.value })}
+        />
+        <Problems problems={at('subscription')} />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="At once" hint="Messages whose runs may be under way together.">
+          <Input
+            type="number"
+            min={1}
+            max={100}
+            placeholder="4"
+            value={trigger.maxInFlight ?? ''}
+            onChange={(e) => patch({ maxInFlight: number(e.target.value) })}
+          />
+        </Field>
+        <Field label="Hold up to (minutes)" hint="Longer runs: the message is acked and the run goes on.">
+          <Input
+            type="number"
+            min={1}
+            placeholder="60"
+            value={trigger.maxHoldMinutes ?? ''}
+            onChange={(e) => patch({ maxHoldMinutes: number(e.target.value) })}
+          />
+        </Field>
+      </div>
+      <p className="text-xs text-muted">
+        Each message runs the workflow: <code>startTrigger.data</code> is its data (JSON or text),{' '}
+        <code>startTrigger.message</code> its id, attributes and more. It's acked when the run succeeds, and
+        redelivered by Pub/Sub when it fails.
+      </p>
+      <div className="flex flex-col gap-1 text-xs text-muted" data-testid="pubsub-state">
+        {projected ? (
+          <>
+            <span>
+              <Badge tone={projected.enabled ? 'success' : 'neutral'}>Live</Badge>{' '}
+              {!projected.enabled
+                ? 'turned off'
+                : state?.worker
+                  ? `pulling · ${state.state?.inFlight ?? 0} in flight`
+                  : 'waiting for a worker to pull it'}
+              {state &&
+                ` · last day: ${state.lastDay.messages} message${state.lastDay.messages === 1 ? '' : 's'}, ${state.lastDay.failed} failed`}
+              {state?.state?.lastMessageAt &&
+                ` · last message ${new Date(state.state.lastMessageAt).toLocaleString()}`}
+            </span>
+            {state?.state?.lastError && (
+              <span className="text-danger">
+                {state.state.lastErrorAt ? `${new Date(state.state.lastErrorAt).toLocaleString()}: ` : ''}
+                {state.state.lastError}
+              </span>
+            )}
+          </>
+        ) : (
+          'Pulls once you publish.'
         )}
       </div>
     </div>

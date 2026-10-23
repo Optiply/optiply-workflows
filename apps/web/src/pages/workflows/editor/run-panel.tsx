@@ -9,6 +9,7 @@ import {
   duration,
   FINAL_RUN_STATUSES,
   type IterationView,
+  pubsubMessage,
   type RunView,
   runsApi,
 } from '@/lib/runs-api'
@@ -52,6 +53,15 @@ export function RunPanel() {
               {run.environment} · {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version} ·{' '}
               {duration(run.startedAt, run.finishedAt)}
             </span>
+            {pubsubMessage(run) && (
+              <span className="whitespace-nowrap text-xs text-muted" data-testid="run-pubsub">
+                Pub/Sub message <code>{pubsubMessage(run)!.messageId}</code> ·{' '}
+                {pubsubMessage(run)!.subscription}
+                {pubsubMessage(run)!.deliveryAttempt
+                  ? ` · delivery ${pubsubMessage(run)!.deliveryAttempt}`
+                  : ''}
+              </span>
+            )}
             {run.parentRunId && (
               <span className="whitespace-nowrap text-xs text-muted">
                 started by <RunLink runId={run.parentRunId} />
