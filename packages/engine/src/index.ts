@@ -12,6 +12,13 @@ export { InlineRunner, type InlineRunnerOptions } from './inline'
 export { MemoryRunStore, type StoreEvent } from './memory-store'
 export { executeRun } from './orchestrator'
 export { PgRunStore } from './pg-store'
+export {
+  type HeldMessage,
+  PubSubConsumer,
+  type PubSubConsumerOptions,
+  type PubSubLogger,
+  startDelivery,
+} from './pubsub-consumer'
 export * from './queue'
 export {
   claimMaintenanceJob,

@@ -91,6 +91,7 @@ const executors: { [T in Block['type']]: Executor<T> } = {
         headers: input.headers ?? {},
         pathParams: input.pathParams ?? {},
         urlParams: input.urlParams ?? {},
+        ...(input.message ? { message: input.message } : {}),
       },
     }
   },

@@ -724,6 +724,6 @@ function scopeView(block: Block, result: BlockResult): Record<string, unknown> {
     metadata: { ...result.metadata, status: result.status },
   }
   if (block.type !== 'startTrigger') return view
-  const { headers = {}, pathParams = {}, urlParams = {} } = result.metadata
-  return { ...view, headers, pathParams, urlParams }
+  const { headers = {}, pathParams = {}, urlParams = {}, message } = result.metadata
+  return { ...view, headers, pathParams, urlParams, ...(message ? { message } : {}) }
 }

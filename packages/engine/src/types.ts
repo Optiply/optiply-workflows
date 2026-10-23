@@ -50,6 +50,21 @@ export interface RunInput {
   headers?: Record<string, string>
   pathParams?: Record<string, string>
   urlParams?: Record<string, string>
+  /** A Pub/Sub trigger's message (M19): `data` holds its data, this the rest (`startTrigger.message`). */
+  message?: PubSubRunMessage
+}
+
+/** What a Pub/Sub-triggered run sees of its message, besides its data. */
+export interface PubSubRunMessage {
+  messageId: string
+  publishTime: string
+  attributes: Record<string, string>
+  orderingKey?: string
+  /** Pub/Sub's count, on subscriptions with a dead-letter policy. */
+  deliveryAttempt?: number
+  subscription: string
+  /** The data's bytes, for binary payloads `data` can only show as text. */
+  dataBase64: string
 }
 
 /**
