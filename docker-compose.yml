@@ -33,6 +33,8 @@ x-app: &app
     # Without a token Python stays off (a warning at start): the app runs, Python blocks can't.
     PYTHON_EXECUTOR_URL: http://code-executor:8080
     PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
+    # Google Cloud IAP for SSH tunnels (M18): `allow` lets admins pick the server's own Google identity.
+    GOOGLE_SERVER_IDENTITY: ${GOOGLE_SERVER_IDENTITY:-}
 
 services:
   postgres:

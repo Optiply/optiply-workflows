@@ -98,6 +98,15 @@ export class Metrics {
         this.inc(sshTunnelStats.reconnects)
       },
     })
+    new client.Counter({
+      name: 'ow_iap_resumes_total',
+      help: "Times one of this process's Google IAP streams (M18) resumed after its WebSocket dropped",
+      registers,
+      collect() {
+        this.reset()
+        this.inc(sshTunnelStats.iapResumes)
+      },
+    })
 
     // Read from the database when scraped: one query shared by the gauges of one scrape (prom-client collects them
     // all at once), fresh for the next. A failed read keeps their last values rather than failing the scrape.

@@ -60,14 +60,16 @@ describe('/metrics', () => {
     expect(value(text, 'ow_retention_last_finished_timestamp_seconds')).toBe(0)
   })
 
-  it("reports this process's SSH tunnels (M17)", async () => {
+  it("reports this process's SSH tunnels (M17) and IAP resumes (M18)", async () => {
     const before = { ...sshTunnelStats }
     sshTunnelStats.open = 2
     sshTunnelStats.reconnects = 5
+    sshTunnelStats.iapResumes = 3
     try {
       const text = (await scrape()).body
       expect(value(text, 'ow_ssh_tunnels_open')).toBe(2)
       expect(value(text, 'ow_ssh_tunnel_reconnects_total')).toBe(5)
+      expect(value(text, 'ow_iap_resumes_total')).toBe(3)
     } finally {
       Object.assign(sshTunnelStats, before)
     }

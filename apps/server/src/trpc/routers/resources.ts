@@ -19,6 +19,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { serverIdentityView } from '../../services/iap'
 import {
   type AccountKind,
   connectTarget,
@@ -218,6 +219,12 @@ export const resourcesRouter = router({
       }),
     }
   }),
+
+  /**
+   * Whether SSH tunnels may open Google Cloud IAP with this server's own identity (M18, GOOGLE_SERVER_IDENTITY), whose
+   * it is, and whether this user may choose it (admins only).
+   */
+  serverIdentity: authedProcedure.query(({ ctx }) => serverIdentityView(ctx.user)),
 
   create: authedProcedure
     .input(
