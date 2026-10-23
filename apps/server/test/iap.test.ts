@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { loadConfig } from '../src/config'
-import { configureGoogleIap } from '../src/services/iap'
+import { configureGoogle } from '../src/services/google'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 const base = {
@@ -44,7 +44,7 @@ describe('resources.serverIdentity (M18)', () => {
   })
 
   afterAll(async () => {
-    configureGoogleIap({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
     await env?.stop()
     await google.stop()
   })
@@ -54,21 +54,21 @@ describe('resources.serverIdentity (M18)', () => {
   })
 
   it("names the server's service account, and lets only admins choose it", async () => {
-    configureGoogleIap(allow, { GOOGLE_APPLICATION_CREDENTIALS: keyFile })
+    configureGoogle(allow, { GOOGLE_APPLICATION_CREDENTIALS: keyFile })
     const shown = { allowed: true, identity: 'tunnel@fake-project.iam.gserviceaccount.com', error: null }
     expect(await view(admin)).toEqual({ ...shown, canChoose: true })
     expect(await view(editor)).toEqual({ ...shown, canChoose: false })
   })
 
   it("names the VM's service account on Google Cloud", async () => {
-    configureGoogleIap(allow, { HOME: dir, GCE_METADATA_HOST: google.metadataHost })
+    configureGoogle(allow, { HOME: dir, GCE_METADATA_HOST: google.metadataHost })
     const body = await view(admin)
     expect(body).toMatchObject({ allowed: true, error: null })
     expect(body.identity).toMatch(/@/)
   })
 
   it('says why when the server has no Google credentials', async () => {
-    configureGoogleIap(allow, { HOME: dir, GCE_METADATA_HOST: '127.0.0.1:1' })
+    configureGoogle(allow, { HOME: dir, GCE_METADATA_HOST: '127.0.0.1:1' })
     const body = await view(admin)
     expect(body).toMatchObject({ allowed: true, canChoose: true, identity: null })
     expect(body.error).toMatch(/no Google identity/)

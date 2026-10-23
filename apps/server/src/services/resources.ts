@@ -113,11 +113,16 @@ export function iapKeyInfo(secrets: Record<string, unknown>): Record<string, Iap
 }
 
 /**
- * The VM a config's first SSH server is reached at through IAP with the server's own Google identity (M18), as
- * `project/zone/instance/interface:port`; null when it isn't. Only admins may choose it or point it elsewhere: the
- * server's identity may reach VMs that no one's key does.
+ * What a config reaches with the server's own Google identity, or null when it doesn't use it: the VM its first SSH
+ * server is reached at through IAP (M18), as `project/zone/instance/interface:port`, or a Pub/Sub resource's project
+ * (M19), as `pubsub:<project>`. Only admins may choose it or point it elsewhere: the server's identity may reach what
+ * no one's key does.
  */
-export function serverIdentityTarget(config: unknown): string | null {
+export function serverIdentityTarget(config: unknown, type?: string): string | null {
+  if (type === 'pubsub') {
+    const c = config as { identity?: unknown; project?: unknown } | null
+    return c?.identity === 'server' ? `pubsub:${String(c.project ?? '')}` : null
+  }
   const hop = (config as { ssh?: SshConfig } | null)?.ssh?.hops[0]
   if (hop?.reach !== 'iap' || hop.iap?.identity !== 'server') return null
   const { project, zone, instance, interface: nic } = hop.iap

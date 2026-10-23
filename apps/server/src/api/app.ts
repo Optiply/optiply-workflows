@@ -18,7 +18,7 @@ import { CollabHub } from '../services/collab/rooms'
 import { CollabStore } from '../services/collab/store'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
-import { configureGoogleIap } from '../services/iap'
+import { configureGoogle } from '../services/google'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
@@ -64,7 +64,7 @@ export async function buildApp(deps: {
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) app.log.warn(pythonWarning)
-  configureGoogleIap(config)
+  configureGoogle(config)
   const runner = new InlineRunner({
     db,
     pool: services.pool,

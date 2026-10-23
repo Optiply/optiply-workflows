@@ -19,7 +19,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
-import { serverIdentityView } from '../../services/iap'
+import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
 import {
   type AccountKind,
   connectTarget,
@@ -81,14 +81,18 @@ function sshSettled<T>(settle: () => T): T {
  */
 function requireAdminForServerIdentity(
   user: { isAdmin: boolean },
+  type: string,
   stored: unknown,
   next: unknown,
 ): string | null {
-  const target = serverIdentityTarget(next)
-  if (target && target !== serverIdentityTarget(stored) && !user.isAdmin) {
+  const target = serverIdentityTarget(next, type)
+  if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+      message:
+        type === 'pubsub'
+          ? "Only admins can use this server's own Google identity for a Pub/Sub project"
+          : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
     })
   }
   return target
@@ -354,8 +358,17 @@ export const resourcesRouter = router({
           applySecretPatch(existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {}, input.secrets),
         ),
       )
-      const iapTarget = requireAdminForServerIdentity(ctx.user, existing?.config, settled.config)
+      const iapTarget = requireAdminForServerIdentity(
+        ctx.user,
+        resource.type,
+        existing?.config,
+        settled.config,
+      )
       const secrets = settled.secrets
+      if (resource.type === 'pubsub') {
+        const problem = pubsubSettingsProblem(settled.config, secrets)
+        if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
+      }
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {
         throw invalidInput('credentials', parsedSecrets.error.issues, { pathsOnly: true })
@@ -392,7 +405,9 @@ export const resourcesRouter = router({
           environment: envSlug,
           changedCredentials: patchedSecretFields(input.secrets),
           ...(iapTarget &&
-            iapTarget !== serverIdentityTarget(existing?.config) && { serverIdentityTarget: iapTarget }),
+            iapTarget !== serverIdentityTarget(existing?.config, resource.type) && {
+              serverIdentityTarget: iapTarget,
+            }),
           ...(disconnectedAccounts && { disconnectedAccounts }),
         },
       })
@@ -460,7 +475,7 @@ export const resourcesRouter = router({
         }
       }
       // Testing opens the tunnel too: the server's identity goes only where an admin pointed it (M18).
-      requireAdminForServerIdentity(ctx.user, existing?.config, tested.config)
+      requireAdminForServerIdentity(ctx.user, resource.type, existing?.config, tested.config)
       // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
       // auth flow signs in afresh for the test, without storing what it gets (`store: false`).
       const custom = (tested.config as { auth?: { type?: unknown } }).auth?.type === 'custom'

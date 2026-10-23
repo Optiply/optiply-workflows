@@ -3,13 +3,13 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
+import { startFakePubSub, startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
-import { configureGoogleIap } from '../src/services/iap'
+import { configureGoogle } from '../src/services/google'
 import { saveTokens } from '../src/services/oauth-tokens'
 import { logSshTunnels } from '../src/services/ssh-log'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
@@ -795,7 +795,7 @@ describe('Google IAP settings (M18)', () => {
   })
 
   afterAll(async () => {
-    configureGoogleIap({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
     await google.stop()
   })
 
@@ -841,7 +841,7 @@ describe('Google IAP settings (M18)', () => {
 
   it("lets only admins point the server's identity at a VM; editors keep it and change the rest", async () => {
     // Allowed, with a token endpoint and an IAP endpoint that go nowhere real.
-    configureGoogleIap(
+    configureGoogle(
       {
         GOOGLE_SERVER_IDENTITY: 'allow',
         GOOGLE_TOKEN_URL: google.tokenUrl,
@@ -915,7 +915,7 @@ describe('Google IAP settings (M18)', () => {
       accept: (token) => /^sa-\d+$/.test(token),
       instances: { 'proj/europe-west1-c/bastion': '127.0.0.1' },
     })
-    configureGoogleIap({
+    configureGoogle({
       GOOGLE_SERVER_IDENTITY: 'deny',
       GOOGLE_IAP_URL: iap.url,
       GOOGLE_TOKEN_URL: google.tokenUrl,
@@ -1032,6 +1032,126 @@ describe('Google IAP settings (M18)', () => {
       await iap.close()
       await ssh.close()
     }
+  })
+})
+
+describe('Pub/Sub resources (M19)', () => {
+  const google = new FakeGoogle()
+  const keyLine = (JSON.parse(google.keyJson).private_key as string).split('\n')[5]!
+  const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-pubsub-')), 'key.json')
+  let pubsub: Awaited<ReturnType<typeof startFakePubSub>>
+  let id: string
+  let other: string
+  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+  const configure = (identity: 'allow' | 'deny') =>
+    configureGoogle(
+      { GOOGLE_SERVER_IDENTITY: identity, GOOGLE_PUBSUB_URL: pubsub.url, GOOGLE_TOKEN_URL: google.tokenUrl },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+
+  beforeAll(async () => {
+    SECRETS.push(keyLine)
+    await google.start()
+    writeFileSync(keyFile, google.keyJson)
+    pubsub = await startFakePubSub({ project: 'fake-project', pullWaitMs: 50 })
+    pubsub.createTopic('orders')
+    configure('deny')
+    id = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events_m19' }),
+    ).id
+    other = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'More', slug: 'more_m19' }),
+    ).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'Pub/Sub editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    for (const objectId of [id, other])
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId,
+        groupId,
+        environmentId: prodId,
+        level: 'edit',
+      })
+  })
+  afterAll(async () => {
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await pubsub.close()
+    await google.stop()
+  })
+
+  it('saves a key (masked), tests the connection as its account, and publishes', async () => {
+    expect((await save(admin, id, { identity: 'key' })).body.error?.message).toBe(
+      'Add the service account key',
+    )
+    const saved = await save(admin, id, { identity: 'key' }, { serviceAccountKey: google.keyJson })
+    expect(saved.status).toBe(200)
+    expect(data(saved).config).toEqual({ identity: 'key' })
+    expect(data(saved).secrets).toEqual({ serviceAccountKey: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { topic: 'orders', messages: '{"data": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
+    expect(pubsub.published('orders').at(-1)).toMatchObject({ data: '42' })
+  })
+
+  it("refuses the server's identity where the instance doesn't allow it, or without a project", async () => {
+    const refused = await save(admin, id, { identity: 'server', project: 'fake-project' })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/doesn't let resources use its own Google identity/)
+    configure('allow')
+    expect((await save(admin, id, { identity: 'server' })).body.error?.message).toBe(
+      "Name the project: the server's identity has none of its own",
+    )
+  })
+
+  it("lets only admins use the server's identity for a project; editors keep it or go back to a key", async () => {
+    configure('allow')
+    const server = { identity: 'server', project: 'fake-project' }
+    expect((await save(member, other, server)).status).toBe(403)
+    expect((await save(member, other, server)).body.error?.message).toBe(
+      "Only admins can use this server's own Google identity for a Pub/Sub project",
+    )
+    expect((await save(admin, other, server)).status).toBe(200)
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'resource.config_saved'))
+      .orderBy(desc(auditEvents.at))
+      .limit(1)
+    expect(audit!.metadata).toMatchObject({ serverIdentityTarget: 'pubsub:fake-project' })
+    // Saved again as it is, yes; another project, no; Test connection with another project, no.
+    expect((await save(member, other, server)).status).toBe(200)
+    expect((await save(member, other, { ...server, project: 'elsewhere' })).status).toBe(403)
+    const moved = await member.mutate('resources.test', {
+      resourceId: other,
+      environmentId: prodId,
+      config: { ...server, project: 'elsewhere' },
+    })
+    expect(moved.status).toBe(403)
+    const tested = data(await member.mutate('resources.test', { resourceId: other, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
+    })
+    // Back to a key is anyone's to choose.
+    expect(
+      (await save(member, other, { identity: 'key' }, { serviceAccountKey: google.keyJson })).status,
+    ).toBe(200)
   })
 })
 

@@ -7,7 +7,7 @@ import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { GitDeployer } from '../services/git/deployer'
-import { configureGoogleIap } from '../services/iap'
+import { configureGoogle } from '../services/google'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
@@ -34,7 +34,7 @@ export async function startWorker(deps: {
   const authSandbox = new IvmRuntime()
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) log.warn(pythonWarning)
-  configureGoogleIap(config)
+  configureGoogle(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,

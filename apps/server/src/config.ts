@@ -80,13 +80,14 @@ const ConfigSchema = z
     /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN). Without it Python stays off (a warning at start). */
     PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
     /**
-     * `allow` lets SSH tunnels open Google Cloud IAP with this server's own Google identity (M18): its Application
-     * Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's file, or the metadata server). Off by default;
-     * only admins can choose it for a resource.
+     * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
+     * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
+     * file, or the metadata server). Off by default; only admins can choose it for a resource.
      */
     GOOGLE_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
-    /** IAP's WebSocket endpoint and Google's token endpoint: for tests against fakes. */
+    /** IAP's WebSocket endpoint, Pub/Sub's REST API and Google's token endpoint: for tests against fakes. */
     GOOGLE_IAP_URL: z.string().url().optional(),
+    GOOGLE_PUBSUB_URL: z.string().url().optional(),
     GOOGLE_TOKEN_URL: z.string().url().optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
