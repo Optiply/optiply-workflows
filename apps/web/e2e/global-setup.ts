@@ -1,6 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -75,6 +76,22 @@ export default async function globalSetup() {
     instances: { [`${E2E_IAP_VM.project}/${E2E_IAP_VM.zone}/${E2E_IAP_VM.instance}`]: '127.0.0.1' },
   })
   process.env.E2E_IAP_KEY = google.keyJson
+  // Specs steer the fake IAP from their own process: POST /drop cuts every WebSocket (sessions stay, as on a dropped
+  // network), POST /refuse-next?code=&reason= closes the next connect so; GET /stats counts connects and reconnects.
+  const iapControl = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x')
+    if (req.method === 'POST' && url.pathname === '/drop') iap.dropAll()
+    else if (req.method === 'POST' && url.pathname === '/refuse-next')
+      iap.refuseNext(Number(url.searchParams.get('code')), url.searchParams.get('reason') ?? '')
+    else if (req.method !== 'GET' || url.pathname !== '/stats') {
+      res.writeHead(404).end()
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ connects: iap.connects.length, reconnects: iap.reconnects.length }))
+  })
+  await new Promise<void>((r) => iapControl.listen(0, '127.0.0.1', r))
+  process.env.E2E_IAP_CONTROL = `http://127.0.0.1:${(iapControl.address() as { port: number }).port}`
 
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
@@ -169,6 +186,7 @@ export default async function globalSetup() {
     await pg.stop()
     await github.close()
     await executor?.stop()
+    await new Promise((r) => iapControl.close(r))
     await iap.close()
     await google.stop()
     rmSync(gitRoot, { recursive: true, force: true })
