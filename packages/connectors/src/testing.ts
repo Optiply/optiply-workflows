@@ -104,6 +104,12 @@ export async function startTestMysql(): Promise<TestMysql> {
 }
 
 export {
+  type FakeDelivery,
+  type FakePubSub,
+  type FakeSubscriptionSettings,
+  startFakePubSub,
+} from './pubsub/fake'
+export {
   startTestIapServer,
   startTestSshServer,
   type TestIapServer,
