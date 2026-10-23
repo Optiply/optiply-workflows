@@ -1,0 +1,1 @@
+ALTER TABLE "git_branch_drafts" ADD COLUMN "base_value" jsonb;

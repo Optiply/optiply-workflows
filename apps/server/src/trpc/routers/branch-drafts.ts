@@ -50,10 +50,6 @@ async function editableDraft(ctx: AuthedContext, id: string) {
   return loaded
 }
 
-/**
- * Protected workflows, apps, library queries and modules are edited in drafts on Git branches (M11, M14): one per object and branch, saved with
- * optimistic concurrency, run like the main draft, and committed onto the branch. Edit on the object is required.
- */
 /** A merge's resolutions, by conflict id (architecture §2.23). */
 const resolutionsSchema = z
   .record(
@@ -66,6 +62,10 @@ const resolutionsSchema = z
   )
   .refine((r) => Object.keys(r).length <= 1000, 'At most 1000 resolutions')
 
+/**
+ * Protected workflows, apps, library queries and modules are edited in drafts on Git branches (M11, M14): one per object and branch, saved with
+ * optimistic concurrency, run like the main draft, and committed onto the branch. Edit on the object is required.
+ */
 export const branchDraftsRouter = router({
   /** The object's open drafts, newest first. */
   list: authedProcedure.input(z.object({ kind: Kind, id: Id })).query(async ({ ctx, input }) => {
@@ -200,10 +200,16 @@ export const branchDraftsRouter = router({
         })
       }
       const update =
-        result.draft.status === 'updated'
+        result.draft?.status === 'updated'
           ? { status: 'updated' as const, draft: await branchDraftView(result.draft.draft) }
           : result.draft
-      return { status: 'merged' as const, commit: result.commit, objects: result.objects, draft: update }
+      return {
+        status: 'merged' as const,
+        commit: result.commit,
+        objects: result.objects,
+        draft: update,
+        draftError: result.draftError ?? null,
+      }
     }),
 
   /** Commits the draft at `revision` onto its branch, as the caller. */

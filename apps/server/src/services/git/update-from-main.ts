@@ -1,14 +1,21 @@
 import type { MergeConflict, MergeObject, Resolution } from '@ow/collab'
-import { type Db, type GitBranchDraft, gitBranchDrafts } from '@ow/db'
-import { encodeObjectDir, type Files, KIND_LABELS, KIND_ROOTS, type ObjectKind } from '@ow/git-format'
+import type { Db, GitBranchDraft } from '@ow/db'
+import {
+  encodeObjectDir,
+  type Files,
+  KIND_LABELS,
+  KIND_ROOTS,
+  type ObjectKind,
+  objectDir,
+} from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import {
   type BranchDraftUpdate,
   type DraftObject,
   problemsError,
   readObjectAt,
+  reloadDraft,
   updateDraftTo,
 } from './branch-drafts'
 import { GitError } from './cli'
@@ -37,8 +44,18 @@ export type MainUpdate =
   | { status: 'up_to_date' }
   /** Objects both sides changed conflict; nothing written. Resolutions go by object directory, then conflict id. */
   | { status: 'conflicts'; main: string; objects: ObjectConflicts[] }
-  /** The merge commit (null for a branch not made yet: the draft was merged onto main's tip), then the draft's update. */
-  | { status: 'merged'; commit: string | null; objects: string[]; draft: BranchDraftUpdate }
+  /**
+   * The merge commit (null for a branch not made yet: the draft was merged onto main's tip), then the draft's update;
+   * `draftError` when that update failed after the merge commit was pushed (the branch has main; Update from branch
+   * brings it into the draft).
+   */
+  | {
+      status: 'merged'
+      commit: string | null
+      objects: string[]
+      draft: BranchDraftUpdate | null
+      draftError?: string
+    }
 
 /** Resolutions per object directory (`workflows/sync-orders`), each by conflict id. */
 export type MainResolutions = Readonly<Record<string, Readonly<Record<string, Resolution>>>>
@@ -64,7 +81,7 @@ export async function updateBranchDraftFromMain(
   const { target, draft } = opts
   const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   requireNotDeployBranch(draft.branch, deployBranch)
-  const dir = `${KIND_ROOTS[target.kind]}/${target.object.slug}`
+  const dir = objectDir(target.kind, target.object.slug)
   try {
     for (let attempt = 1; ; attempt++) {
       const main = await repo.fetchBranch(deployBranch)
@@ -112,13 +129,13 @@ export async function updateBranchDraftFromMain(
       const both = await changedOnBothSides(repo, base, tip, main)
       const merged: Record<string, Files> = {}
       const conflicted: ObjectConflicts[] = []
-      for (const { kind, slug, dir: objectDir } of both) {
+      for (const { kind, slug, dir: path } of both) {
         const sides = await Promise.all([base, tip, main].map((c) => readObject(repo, c, kind, slug)))
         const [b, ours, theirs] = sides
         if (!ours || !theirs) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: `${objectDir} was deleted on one side and changed on the other: fix it on GitHub`,
+            message: `${path} was deleted on one side and changed on the other: fix it on GitHub`,
           })
         }
         const result = mergeKindObject(
@@ -126,17 +143,17 @@ export async function updateBranchDraftFromMain(
           b ?? { name: '', description: null, definition: {} },
           ours,
           theirs,
-          opts.resolutions?.[objectDir],
+          opts.resolutions?.[path],
         )
         if (result.conflicts.length > 0) {
           if (!(await opts.canEdit(kind, slug))) {
             throw new TRPCError({
               code: 'FORBIDDEN',
-              message: `${objectDir} conflicts with ${deployBranch}, and you can't edit that ${KIND_LABELS[kind]}: ask someone who can`,
+              message: `${path} conflicts with ${deployBranch}, and you can't edit that ${KIND_LABELS[kind]}: ask someone who can`,
             })
           }
           conflicted.push({
-            dir: objectDir,
+            dir: path,
             kind,
             slug,
             name: result.merged.name,
@@ -144,7 +161,7 @@ export async function updateBranchDraftFromMain(
           })
           continue
         }
-        merged[objectDir] = encodeObjectDir(repoObject(kind, slug, result.merged)).files
+        merged[path] = encodeObjectDir(repoObject(kind, slug, result.merged)).files
       }
 
       const git = await repo.mergeTree(tip, main)
@@ -166,14 +183,21 @@ export async function updateBranchDraftFromMain(
         author: { name: user.name, email: user.email },
       })
       if ((await repo.push(commit!, draft.branch)) === 'ok') {
-        const update = await updateDraftTo(db, repo, user, {
-          target,
-          draft: await currentDraft(db, draft),
-          tip: commit!,
-          branchExists: true,
-          discardChanges: false,
-        })
-        return { status: 'merged', commit: commit!, objects: Object.keys(merged), draft: update }
+        const objects = Object.keys(merged)
+        try {
+          const update = await updateDraftTo(db, repo, user, {
+            target,
+            draft: await reloadDraft(db, draft),
+            tip: commit!,
+            branchExists: true,
+            discardChanges: false,
+          })
+          return { status: 'merged', commit: commit!, objects, draft: update }
+        } catch (err) {
+          // The merge commit is on the branch whatever happens to the draft: say both.
+          const message = err instanceof Error ? err.message : String(err)
+          return { status: 'merged', commit: commit!, objects, draft: null, draftError: message }
+        }
       }
       if (attempt >= PUSH_ATTEMPTS) {
         throw new GitError(
@@ -217,11 +241,4 @@ async function readObject(
   if (!decoded) return null
   if (!decoded.ok) throw problemsError(decoded.problems)
   return decoded.value.value
-}
-
-/** The draft as it is now (saves may have come in while merging). */
-async function currentDraft(db: Db, draft: GitBranchDraft): Promise<GitBranchDraft> {
-  const [now] = await db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, draft.id))
-  if (!now) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
-  return now
 }

@@ -176,6 +176,13 @@
       "when": 1792753333601,
       "tag": "0024_pubsub_trigger_state",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792773095780,
+      "tag": "0025_branch_draft_base_value",
+      "breakpoints": true
     }
   ]
 }

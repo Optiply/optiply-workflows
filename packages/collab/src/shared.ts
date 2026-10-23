@@ -324,7 +324,8 @@ const LONE_SURROGATE_ALL = new RegExp(LONE_SURROGATE.source, 'g')
 const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff
 const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
+/** A plain JSON object (not an array, not null): what the merge and the Yjs mapping treat as keyed. */
+export const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** Identity arrays match items with the same (defined) identity; positional ones match equal items. */

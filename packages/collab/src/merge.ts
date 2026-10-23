@@ -1,5 +1,5 @@
 import { diff3Merge } from 'node-diff3'
-import { equal } from './shared'
+import { equal, isRecord } from './shared'
 import type { CollabSpec, Path } from './spec'
 
 /**
@@ -55,11 +55,7 @@ type Unidentified = MergeConflict extends infer C ? (C extends MergeConflict ? O
  * How a conflict is resolved: one side whole, a text's conflicting chunks one by one (`both`: ours, then theirs),
  * or a text written by hand.
  */
-export type Resolution =
-  | 'ours'
-  | 'theirs'
-  | { chunks: ('ours' | 'theirs' | 'both')[] }
-  | { text: string }
+export type Resolution = 'ours' | 'theirs' | { chunks: ('ours' | 'theirs' | 'both')[] } | { text: string }
 
 type Side = 'ours' | 'theirs'
 
@@ -228,9 +224,6 @@ export function mergeText(
   return { chunks, clean: chunks.every((c) => 'ok' in c) }
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v)
-
 /** What kind of item it is: a block's or component's `type`, an app query's `kind`. */
 const typeOf = (v: unknown) => (isRecord(v) ? JSON.stringify([v.type, v.kind]) : undefined)
 
@@ -319,7 +312,8 @@ class Merger {
       merged.set(key, this.item(bi, oi, ti, itemPath, itemAt))
     }
 
-    // Ours' order, then theirs' items ours doesn't have, each after the one before it in theirs.
+    // Ours' order, then theirs' items ours doesn't have (an item ours deleted and a resolution brought back among
+    // them), each after the one before it in theirs.
     const order = ours.map((item) => identity(item)!)
     let after = -1
     for (const item of theirs) {
@@ -327,16 +321,6 @@ class Merger {
       const pos = order.indexOf(key)
       if (pos >= 0) after = pos
       else order.splice(++after, 0, key)
-    }
-    // Ours' deletions that theirs' resolution brought back sit where base had them.
-    for (const [i, item] of base.entries()) {
-      const key = identity(item)!
-      if (order.includes(key)) continue
-      const prev = base
-        .slice(0, i)
-        .map((x) => identity(x)!)
-        .findLast((k) => order.includes(k))
-      order.splice(prev === undefined ? 0 : order.indexOf(prev) + 1, 0, key)
     }
     return order.flatMap((key) => {
       const item = merged.get(key)

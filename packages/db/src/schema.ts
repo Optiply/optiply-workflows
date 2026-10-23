@@ -1225,6 +1225,11 @@ export const gitBranchDrafts = pgTable(
     branchExists: boolean().notNull(),
     /** The draft's last commit. */
     committedCommit: text(),
+    /**
+     * What the draft started from where its base commit had no files for the object (created protected, or its protect
+     * pull request not merged when it was opened): the merge base (M20) until a commit or an update gives it files.
+     */
+    baseValue: jsonb().$type<{ name: string; description: string | null; definition: unknown }>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),

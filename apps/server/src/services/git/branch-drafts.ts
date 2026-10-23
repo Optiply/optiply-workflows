@@ -150,6 +150,8 @@ export async function openBranchDraft(
       description: value.description,
       baseCommit: base,
       branchExists,
+      // The merge base until the draft's base commit has files for it (M20).
+      baseValue: read.decoded ? null : value,
       createdBy: user.id,
       updatedBy: user.id,
     })
@@ -250,12 +252,35 @@ export async function branchDraftChanges(
       behind && haveBase
         ? (await repo.entryAt(tip!, dir)) !== (await repo.entryAt(draft.baseCommit, dir))
         : behind
-    const merge = conflict && haveBase ? await updateOutlook(db, repo, target, draft, tip!) : null
-    const fromMain = main !== null && main !== tip && (await mainAhead(repo, main, draft, tip, dir))
+    // Both only change with the commits (and the draft's revision): cached, as every open editor asks every 30 s.
+    const merge =
+      conflict && haveBase
+        ? await cached(`outlook:${draft.id}:${draft.revision}:${draft.baseCommit}:${tip}`, () =>
+            updateOutlook(db, repo, target, draft, tip!),
+          )
+        : null
+    const fromMain =
+      main !== null &&
+      main !== tip &&
+      (await cached(`main:${main}:${tip ?? draft.baseCommit}:${dir}`, () =>
+        mainAhead(repo, main, draft, tip, dir),
+      ))
     return { tip, behind, conflict, merge, mainAhead: fromMain, files }
   } catch (err) {
     throw gitTrpcError(err)
   }
+}
+
+/** Results that depend only on commits (and a draft's revision), by key; the oldest go past `CACHE_SIZE`. */
+const outlooks = new Map<string, unknown>()
+const CACHE_SIZE = 500
+
+async function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
+  if (outlooks.has(key)) return outlooks.get(key) as T
+  const value = await compute()
+  outlooks.set(key, value)
+  if (outlooks.size > CACHE_SIZE) outlooks.delete(outlooks.keys().next().value!)
+  return value
 }
 
 /**
@@ -398,6 +423,8 @@ export async function updateDraftTo(
         description: value.description,
         baseCommit: tip,
         branchExists: opts.branchExists,
+        // From here the base commit has the object's files (when the tip has them) and is the merge base.
+        ...(theirs.decoded ? { baseValue: null } : {}),
         revision: draft.revision + 1,
         updatedBy: user.id,
       })
@@ -412,8 +439,7 @@ export async function updateDraftTo(
       })
     }
     // Saved meanwhile (someone typing): merge again from what's there now.
-    const [now] = await db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, draft.id))
-    if (!now) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
+    const now = await reloadDraft(db, draft)
     if (attempt >= MERGE_ATTEMPTS) {
       throw new TRPCError({
         code: 'CONFLICT',
@@ -422,6 +448,13 @@ export async function updateDraftTo(
     }
     draft = now
   }
+}
+
+/** The draft as it is now (saves may have come in meanwhile). */
+export async function reloadDraft(db: Db, draft: GitBranchDraft): Promise<GitBranchDraft> {
+  const [now] = await db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, draft.id))
+  if (!now) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
+  return now
 }
 
 /** A draft's object (name, description, definition). */
@@ -434,7 +467,7 @@ const objectValue = (draft: GitBranchDraft): MergeObject<unknown> => ({
 /**
  * The draft merged with `theirs` (the branch's version), from the draft's base commit. Where the base has no files
  * for the object (it was created protected, or its protect pull request wasn't merged when the draft was opened),
- * the base is what the draft started from on the instance: its live release or its draft.
+ * the base is what the draft started from on the instance (kept in `baseValue` when it was opened).
  */
 async function mergeIntoDraft(
   db: Db,
@@ -454,9 +487,15 @@ async function mergeIntoDraft(
     throw gitTrpcError(err)
   }
   if (read.decoded && !read.decoded.ok) throw problemsError(read.decoded.problems)
+  // Where the base commit has no files for the object, what the draft started from (drafts opened before M20
+  // didn't keep it: the object's live release or draft now, the best guess left).
   const base: MergeObject<unknown> = read.decoded?.ok
     ? read.decoded.value.value
-    : { name: object.name, description: object.description, definition: await liveOrDraft(db, kind, object) }
+    : (draft.baseValue ?? {
+        name: object.name,
+        description: object.description,
+        definition: await liveOrDraft(db, kind, object),
+      })
   return mergeKindObject(
     kind,
     normalized(kind, object.slug, base),
@@ -522,6 +561,7 @@ export async function commitBranchDraft(
     .set({
       baseCommit: result.commit,
       branchExists: true,
+      baseValue: null,
       ...(result.changed ? { committedCommit: result.commit } : {}),
     })
     .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.baseCommit, draft.baseCommit)))

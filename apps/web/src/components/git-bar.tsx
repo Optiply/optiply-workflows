@@ -152,6 +152,8 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
   const [merging, setMerging] = useState<{ from: 'branch' | 'main'; groups: ConflictGroup[] } | null>(null)
   /** Commit was clicked while the branch had moved: commit once the update is in. */
   const [commitAfter, setCommitAfter] = useState(false)
+  /** What went wrong outside the mutations: saving before a merge, or the draft's update after main's merge. */
+  const [note, setNote] = useState<string | null>(null)
   const refresh = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }) }),
@@ -179,10 +181,12 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
         updated(result)
         await refresh()
       },
+      onError: () => setCommitAfter(false),
     }),
   )
   const fromMain = useMutation(
     trpc.branchDrafts.updateFromMain.mutationOptions({
+      onError: () => setCommitAfter(false),
       onSuccess: async (result) => {
         if (result.status === 'conflicts') {
           setMerging({
@@ -191,7 +195,14 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           })
         } else if (result.status === 'merged') {
           // Main is in; the draft's own changes may still conflict with what came in.
-          updated(result.draft)
+          if (result.draft) updated(result.draft)
+          else {
+            setMerging(null)
+            setCommitAfter(false)
+            setNote(
+              `${deploy} is merged into ${branch}, but updating this draft failed (${result.draftError}): use Update from branch`,
+            )
+          }
         } else {
           setMerging(null)
         }
@@ -200,8 +211,19 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
     }),
   )
   /** Saves what's typed, then updates (the merge starts from the saved draft). */
-  const startUpdate = async (from: 'branch' | 'main') => {
-    await props.ensureSaved()
+  const startUpdate = async (from: 'branch' | 'main', thenCommit = false) => {
+    setNote(null)
+    // A fresh start: no error left over from the other update in the dialog.
+    update.reset()
+    fromMain.reset()
+    setCommitAfter(thenCommit)
+    try {
+      await props.ensureSaved()
+    } catch (err) {
+      setCommitAfter(false)
+      setNote(`Your changes couldn't be saved, so nothing was merged: ${errorMessage(err)}`)
+      return
+    }
     if (from === 'branch') update.mutate({ id: draft.id })
     else fromMain.mutate({ id: draft.id })
   }
@@ -265,10 +287,7 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           variant="primary"
           loading={update.isPending && commitAfter}
           title="The branch changed this too: update from it first, then commit"
-          onClick={() => {
-            setCommitAfter(true)
-            startUpdate('branch')
-          }}
+          onClick={() => startUpdate('branch', true)}
           data-testid="commit-open"
         >
           <GitCommitHorizontal className="size-3.5" />
@@ -294,7 +313,13 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
         <Trash2 className="size-4" />
       </Button>
       <ErrorNote
-        error={merging ? null : (update.error ?? fromMain.error ?? discard.error ?? changes.error)}
+        error={
+          // The updates' errors show in the dialog while it's open; the rest always here.
+          (merging ? null : (update.error ?? fromMain.error)) ??
+          discard.error ??
+          changes.error ??
+          (note ? new Error(note) : null)
+        }
       />
       {merging && (
         <MergeDialog
@@ -306,7 +331,7 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           }
           groups={merging.groups}
           applying={update.isPending || fromMain.isPending}
-          error={update.error ?? fromMain.error}
+          error={merging.from === 'branch' ? update.error : fromMain.error}
           secondary={
             merging.from === 'branch'
               ? {

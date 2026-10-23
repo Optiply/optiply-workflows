@@ -62,6 +62,8 @@ const deploy = () => runGitDeploy(env.db, env.config, { trigger: 'poll' })
 const author = { name: 'Someone else', email: 'else@optiply.nl' }
 const adminUser = async () =>
   (await env.db.select().from(users).where(eq(users.email, 'admin@optiply.nl')))[0]!
+const stepCode = (draft: { definition: { blocks: { name: string; config?: { code?: string } }[] } }) =>
+  draft.definition.blocks.find((b) => b.name === 'step')!.config!.code
 
 beforeAll(async () => {
   ;({ dir, cleanup } = await scratch())
@@ -457,8 +459,6 @@ describe('when others commit to the same branch', () => {
 describe('a new process, saves during a commit, and a rewritten branch', () => {
   let draftId: string
   const forgetCache = () => rmSync(join(dir, 'cache'), { recursive: true, force: true })
-  const stepCode = (draft: { definition: { blocks: { name: string; config?: { code?: string } }[] } }) =>
-    draft.definition.blocks.find((b) => b.name === 'step')!.config!.code
 
   it('shows changes and commits with an empty cache (a restart, another replica)', async () => {
     draftId = data(
@@ -988,6 +988,29 @@ describe('Update from main (M20)', () => {
     data(await member.mutate('branchDrafts.discard', { id }))
   })
 
+  it('reports a draft update that fails after the merge commit is pushed, and still audits it', async () => {
+    await onMain({ [STEP]: `${start}\n` })
+    const id = await openDraft('post-push')
+    await saveAndCommit(id, start.replace('const a = 1', 'const a = 5'), 'Five')
+    await onMain({ [STEP]: `${start.replace('const c = 3', 'const c = 5')}\n` })
+    // The draft's base is gone (a rewritten branch): its own update can only fail.
+    await env.db
+      .update(gitBranchDrafts)
+      .set({ baseCommit: 'e'.repeat(40) })
+      .where(eq(gitBranchDrafts.id, id))
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(result).toMatchObject({
+      status: 'merged',
+      draft: null,
+      draftError: expect.stringContaining('no longer in the repo'),
+    })
+    expect(await other.fetchBranch('post-push')).toBe(result.commit)
+    expect(parents(result.commit)).toHaveLength(2)
+    const audits = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'git.merged_main'))
+    expect(audits.some((a) => (a.metadata as { commit?: string }).commit === result.commit)).toBe(true)
+    data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
   it('moves a draft whose branch isn’t made yet onto main’s tip', async () => {
     await onMain({ [STEP]: `${start}\n` })
     const id = await openDraft('not-yet')
@@ -1013,6 +1036,43 @@ describe('Update from main (M20)', () => {
 })
 
 describe('objects new to the repo, and apps', () => {
+  it('merges from what the draft started from when its base has no files, even after the object changed here', async () => {
+    const id = data(
+      await admin.mutate('workflows.create', { slug: 'drifting', name: 'Drifting', protected: true }),
+    ).id
+    const draft = data(
+      await admin.mutate('branchDrafts.open', { kind: 'workflow', id, branch: 'drift', create: true }),
+    )
+    expect(draft.definition.blocks.map((b: { name: string }) => b.name)).toEqual(['startTrigger'])
+    // The object changes on the instance meanwhile (as a deploy or a rollback would).
+    await env.db
+      .update(workflows)
+      .set({ draftDefinition: flowDefinition('return "drift"') as never })
+      .where(eq(workflows.id, id))
+    // Someone puts the workflow on the branch, with a step of their own.
+    const main = await other.fetchBranch('main')
+    const theirs = await other.commit({
+      parent: main,
+      directories: {
+        'workflows/drifting': encodeObjectDir(
+          repoObject('workflow', 'drifting', {
+            name: 'Drifting',
+            description: null,
+            definition: flowDefinition('return "theirs"'),
+          }),
+        ).files,
+      },
+      message: 'Theirs',
+      author,
+    })
+    await other.push(theirs!, 'drift')
+    // From the draft's own start (only startTrigger), theirs added the step: taken, not a conflict with the drift.
+    const result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draft.id }))
+    expect(result.status).toBe('updated')
+    expect(stepCode(result.draft)).toBe('return "theirs"')
+    data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
+  })
+
   it('starts a workflow created protected from the instance, and its first merge deploys it', async () => {
     const id = data(
       await admin.mutate('workflows.create', { slug: 'brand-new', name: 'Brand new', protected: true }),
