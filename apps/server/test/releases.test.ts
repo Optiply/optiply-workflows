@@ -433,6 +433,101 @@ describe('trigger projection', () => {
   })
 })
 
+describe('Pub/Sub trigger projection (M19)', () => {
+  let eventsId: string
+  const orders = { name: 'orders', enabled: true, resource: 'events', subscription: 'orders-sub' }
+  beforeAll(async () => {
+    eventsId = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events' }),
+    ).id
+  })
+
+  it('projects Pub/Sub triggers with their defaults and environment, keeping ids and leases across releases', async () => {
+    const wf = await workflowWith(
+      'subscribed',
+      definition([code('a', 'return 1')], {
+        triggers: { pubsub: [orders, { ...orders, name: 'staged', environment: 'staging', maxInFlight: 9 }] },
+      }),
+    )
+    data(await publish(wf))
+    const first = new Map((await triggersOf(wf.id)).map((r) => [r.name, r]))
+    expect(first.get('orders')).toMatchObject({
+      kind: 'pubsub',
+      enabled: true,
+      environmentId: prodId,
+      config: { ...orders, maxInFlight: 4, maxHoldMinutes: 60 },
+      nextFireAt: null,
+    })
+    expect(first.get('staged')).toMatchObject({ environmentId: stagingId, config: { maxInFlight: 9 } })
+
+    // A worker holds the lease; a new release keeps it (and the id), and drops the trigger it no longer has.
+    const leaseExpiresAt = new Date(Date.now() + 30_000)
+    await env.db
+      .update(workflowTriggers)
+      .set({ leaseOwner: 'worker-1', leaseExpiresAt })
+      .where(eq(workflowTriggers.id, first.get('orders')!.id))
+    await wf.save(
+      definition([code('a', 'return 2')], { triggers: { pubsub: [{ ...orders, maxHoldMinutes: 5 }] } }),
+    )
+    data(await publish(wf))
+    const second = await triggersOf(wf.id)
+    expect(second).toHaveLength(1)
+    expect(second[0]).toMatchObject({
+      id: first.get('orders')!.id,
+      leaseOwner: 'worker-1',
+      leaseExpiresAt,
+      config: { maxHoldMinutes: 5 },
+    })
+    expect(
+      data(await admin.query('workflows.triggers', { id: wf.id })).map((t: { name: string }) => t.name),
+    ).toEqual(['orders'])
+  })
+
+  it("refuses an environment that doesn't exist, a resource that isn't Pub/Sub, and one that isn't there", async () => {
+    const wf = await workflowWith(
+      'mis-subscribed',
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, environment: 'qa' }] } }),
+    )
+    expect(failure(await publish(wf))).toEqual({
+      code: 'BAD_REQUEST',
+      message: `Pub/Sub trigger "orders" runs in environment "qa", which doesn't exist`,
+    })
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'warehouse' }] } }),
+    )
+    expect(failure(await publish(wf)).message).toBe(
+      `The workflow isn't valid: Pub/Sub trigger "orders": "warehouse" isn't a Pub/Sub resource`,
+    )
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'nothing' }] } }),
+    )
+    expect(failure(await publish(wf)).message).toBe(
+      `The workflow isn't valid: Pub/Sub trigger "orders": no resource has the slug "nothing"`,
+    )
+  })
+
+  it("needs use on the trigger's resource in every environment to release, like a queried one", async () => {
+    const wf = await workflowWith(
+      'member-subscribed',
+      definition([code('a', 'return 1')], { triggers: { pubsub: [orders] } }),
+    )
+    const grant = (
+      objectType: string,
+      objectId: string,
+      level: string,
+      environmentId: string | null = null,
+    ) =>
+      admin.mutate('permissions.set', { objectType, objectId, groupId: memberGroupId, environmentId, level })
+    data(await grant('workflow', wf.id, 'edit'))
+    expect(failure(await publish(wf, {}, member))).toEqual({
+      code: 'FORBIDDEN',
+      message: 'You need use access to resource "events" in every environment to release this workflow',
+    })
+    data(await grant('resource', eventsId, 'use'))
+    expect(data(await publish(wf, {}, member)).version).toBe('1.0.0')
+  })
+})
+
 describe('schedules on the worker', () => {
   it('runs the live release when a published schedule comes due', async () => {
     const wf = await workflowWith(

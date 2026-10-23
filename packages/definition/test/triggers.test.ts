@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { matchWebhookAlias, nextScheduleFire, parseWebhookAlias, validateDefinition } from '../src'
 import { start, wf } from './helpers'
 
@@ -167,5 +168,81 @@ describe('validateDefinition: triggers', () => {
     )
     expect(result.definition).toBeDefined()
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('Pub/Sub triggers (M19)', () => {
+  const resources: Record<string, { type: string }> = {
+    events: { type: 'pubsub' },
+    shop: { type: 'postgres' },
+  }
+  const check = (pubsub: object[], withResources = true) =>
+    validateDefinition(wf([start], [], { triggers: { pubsub } }), {
+      ...(withResources && {
+        resolveResource: (slug: string) =>
+          resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+      }),
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a subscription by id or full name, with its limits', () => {
+    expect(
+      check([
+        { name: 'orders', enabled: true, resource: 'events', subscription: 'orders-sub', maxInFlight: 10 },
+        {
+          name: 'other',
+          enabled: false,
+          resource: 'events',
+          subscription: 'projects/elsewhere/subscriptions/their-sub',
+          environment: 'staging',
+          maxHoldMinutes: 120,
+        },
+      ]),
+    ).toEqual([])
+  })
+
+  it('refuses a duplicate name, a resource that is not Pub/Sub or not there, and a bad subscription', () => {
+    expect(
+      check([
+        { name: 'a', enabled: true, resource: 'events', subscription: 'ok-sub' },
+        { name: 'a', enabled: true, resource: 'shop', subscription: '9bad' },
+        { name: 'b', enabled: true, resource: 'gone', subscription: 'projects/p/topics/t' },
+      ]),
+    ).toEqual([
+      {
+        code: 'duplicate_pubsub',
+        message: 'Another Pub/Sub trigger is already named "a"',
+        path: ['triggers', 'pubsub', 1, 'name'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message: 'Pub/Sub trigger "a": "shop" isn\'t a Pub/Sub resource',
+        path: ['triggers', 'pubsub', 1, 'resource'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message: 'Pub/Sub trigger "a": "9bad" isn\'t a subscription id or projects/…/subscriptions/… name',
+        path: ['triggers', 'pubsub', 1, 'subscription'],
+      },
+      {
+        code: 'unknown_resource',
+        message: 'Pub/Sub trigger "b": no resource has the slug "gone"',
+        path: ['triggers', 'pubsub', 2, 'resource'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message:
+          'Pub/Sub trigger "b": "projects/p/topics/t" isn\'t a subscription id or projects/…/subscriptions/… name',
+        path: ['triggers', 'pubsub', 2, 'subscription'],
+      },
+    ])
+    // The browser has no resources to check against: only the rest.
+    expect(check([{ name: 'a', enabled: true, resource: 'gone', subscription: 'ok-sub' }], false)).toEqual([])
+  })
+
+  it('bounds the limits in the schema', () => {
+    const codes = check([
+      { name: 'a', enabled: true, resource: 'events', subscription: 'ok-sub', maxInFlight: 0 },
+    ])
+    expect(codes).toMatchObject([{ code: 'schema', path: ['triggers', 'pubsub', 0, 'maxInFlight'] }])
   })
 })

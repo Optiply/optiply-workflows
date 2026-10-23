@@ -210,6 +210,8 @@ export async function setLiveRelease(
 interface ReleasePlan {
   /** Schedule name → environment id. */
   scheduleEnvironments: Map<string, string>
+  /** Pub/Sub trigger name → environment id. */
+  pubsubEnvironments: Map<string, string>
   aliasShape: string | null
 }
 
@@ -303,6 +305,17 @@ async function checkReleasable(
     }
     scheduleEnvironments.set(schedule.name, env.id)
   }
+  const pubsubEnvironments = new Map<string, string>()
+  for (const trigger of definition.triggers?.pubsub ?? []) {
+    const env = trigger.environment ? envs.find((e) => e.slug === trigger.environment) : defaultEnv
+    if (!env) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `Pub/Sub trigger "${trigger.name}" runs in environment "${trigger.environment}", which doesn't exist`,
+      })
+    }
+    pubsubEnvironments.set(trigger.name, env.id)
+  }
 
   const webhook = definition.triggers?.webhook
   if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)
@@ -325,7 +338,7 @@ async function checkReleasable(
       })
     }
   }
-  return { scheduleEnvironments, aliasShape }
+  return { scheduleEnvironments, pubsubEnvironments, aliasShape }
 }
 
 /**
@@ -399,7 +412,7 @@ async function projectTriggers(
 ) {
   const triggers = release.definition.triggers
   const existing = await tx.select().from(workflowTriggers).where(eq(workflowTriggers.workflowId, workflowId))
-  const find = (kind: 'webhook' | 'schedule', name: string) =>
+  const find = (kind: (typeof workflowTriggers.$inferSelect)['kind'], name: string) =>
     existing.find((t) => t.kind === kind && t.name === name)
 
   const rows: (typeof workflowTriggers.$inferInsert)[] = []
@@ -435,6 +448,20 @@ async function projectTriggers(
         : unchanged
           ? previous.nextFireAt
           : nextScheduleFire(schedule, now, previous?.lastFiredAt),
+    })
+  }
+
+  for (const trigger of triggers?.pubsub ?? []) {
+    rows.push({
+      workflowId,
+      releaseId: release.id,
+      kind: 'pubsub',
+      name: trigger.name,
+      enabled: trigger.enabled,
+      config: { maxInFlight: 4, maxHoldMinutes: 60, ...trigger },
+      environmentId: plan.pubsubEnvironments.get(trigger.name)!,
+      aliasShape: null,
+      nextFireAt: null,
     })
   }
 

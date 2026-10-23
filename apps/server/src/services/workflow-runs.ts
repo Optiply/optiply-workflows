@@ -24,6 +24,7 @@ import {
   type Diagnostic,
   literalAssignees,
   queriedResources,
+  triggerResources,
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
@@ -262,7 +263,8 @@ export async function checkDefinition(
   /** `run`: Python only needs an executor; `release` (the default): the executor checks its syntax too. */
   purpose: 'run' | 'release' = 'release',
 ): Promise<{ resources: Resource[]; children: Workflow[]; errors: Diagnostic[] }> {
-  const slugs = queriedResources(definition)
+  // A Pub/Sub trigger's resource is used with no one behind the run, like a queried one: checked and vouched for alike.
+  const slugs = [...new Set([...queriedResources(definition), ...triggerResources(definition)])]
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const childSlugs = calledWorkflows(definition)

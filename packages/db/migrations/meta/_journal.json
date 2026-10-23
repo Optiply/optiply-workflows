@@ -162,6 +162,13 @@
       "when": 1792601136283,
       "tag": "0022_collab_draft_notify",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792750282178,
+      "tag": "0023_pubsub_triggers",
+      "breakpoints": true
     }
   ]
 }

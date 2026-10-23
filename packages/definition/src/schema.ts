@@ -458,9 +458,33 @@ export const scheduleTriggerSchema = z.strictObject({
   environment: z.string().max(63).optional(),
 })
 
+export const MAX_PUBSUB_IN_FLIGHT = 100
+export const MAX_PUBSUB_HOLD_MINUTES = 24 * 60
+
+/**
+ * A Pub/Sub subscription of the live release (M19, architecture §2.22): each message starts a run in `environment`
+ * (default: the default environment), through the `pubsub` resource `resource`'s settings there; the message is acked
+ * when its run succeeds and nacked when it fails.
+ */
+export const pubsubTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `pubsub` resource. */
+  resource: z.string().max(63),
+  /** The subscription's id in the resource's project, or its full name (`projects/…/subscriptions/…`). */
+  subscription: z.string().min(1).max(300),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's acked and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const triggersSchema = z.strictObject({
   webhook: webhookTriggerSchema.optional(),
   schedules: z.array(scheduleTriggerSchema).max(20).optional(),
+  pubsub: z.array(pubsubTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -515,6 +539,7 @@ export type WebhookTrigger = z.output<typeof webhookTriggerSchema>
 export type WebhookAuth = z.output<typeof webhookAuthSchema>
 export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
+export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>
 export type LoopRunner = z.output<typeof loopRunnerSchema>

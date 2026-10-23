@@ -63,6 +63,9 @@ export type DiagnosticCode =
   | 'invalid_cron'
   | 'invalid_timezone'
   | 'duplicate_schedule'
+  /** A Pub/Sub trigger's settings: its resource (a `pubsub` one) or subscription name (M19). */
+  | 'invalid_pubsub'
+  | 'duplicate_pubsub'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -105,6 +108,8 @@ export interface Diagnostic {
 
 /** What the validator needs from a connector; `AnyConnector` from @ow/connectors fits. */
 export interface QueryValidator {
+  /** The resource type (`postgres`, `pubsub`, …): a Pub/Sub trigger needs a `pubsub` resource. */
+  type?: string
   querySchema: z.ZodType
   validateQuery(query: never): TemplateError[]
 }
@@ -804,6 +809,7 @@ function checkTriggers(
   }
   if (def.triggers?.webhook)
     checkWebhook(def.triggers.webhook, (path) => at(['webhook', ...path]), report, options)
+  checkPubSubTriggers(def.triggers?.pubsub, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -854,6 +860,50 @@ function checkTriggers(
         ...at(['schedules', i, 'cron']),
       })
     }
+  })
+}
+
+/** A subscription id (Pub/Sub's rule: a letter, then 2–254 of letters, digits and `-_.~+%`), or a full name. */
+const PUBSUB_SUBSCRIPTION = /^(projects\/[^/]+\/subscriptions\/)?[A-Za-z][\w.~+%-]{2,254}$/
+
+/** M19's Pub/Sub triggers: unique names, a `pubsub` resource (where resources are known), a subscription name. */
+function checkPubSubTriggers(
+  triggers: NonNullable<WorkflowDefinition['triggers']>['pubsub'],
+  at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
+  report: Report,
+  options: ValidateOptions,
+) {
+  const names = new Set<string>()
+  triggers?.forEach((trigger, i) => {
+    const where = `Pub/Sub trigger "${trigger.name}"`
+    if (names.has(trigger.name))
+      report({
+        code: 'duplicate_pubsub',
+        message: `Another Pub/Sub trigger is already named "${trigger.name}"`,
+        ...at(['pubsub', i, 'name']),
+      })
+    names.add(trigger.name)
+    if (options.resolveResource) {
+      const connector = options.resolveResource(trigger.resource)
+      if (!connector)
+        report({
+          code: 'unknown_resource',
+          message: `${where}: no resource has the slug "${trigger.resource}"`,
+          ...at(['pubsub', i, 'resource']),
+        })
+      else if (connector.type !== 'pubsub')
+        report({
+          code: 'invalid_pubsub',
+          message: `${where}: "${trigger.resource}" isn't a Pub/Sub resource`,
+          ...at(['pubsub', i, 'resource']),
+        })
+    }
+    if (!PUBSUB_SUBSCRIPTION.test(trigger.subscription))
+      report({
+        code: 'invalid_pubsub',
+        message: `${where}: "${trigger.subscription}" isn't a subscription id or projects/…/subscriptions/… name`,
+        ...at(['pubsub', i, 'subscription']),
+      })
   })
 }
 
