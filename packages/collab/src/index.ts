@@ -1,4 +1,5 @@
 export * from './history'
+export * from './merge'
 export * from './protocol'
 export * from './provider'
 export * from './shared'
