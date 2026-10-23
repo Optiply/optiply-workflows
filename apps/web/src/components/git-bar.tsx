@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   GitBranch,
   GitCommitHorizontal,
+  GitMerge,
   GitPullRequest,
   Lock,
   RefreshCw,
@@ -10,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { CommitLink, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
+import { type ConflictGroup, MergeDialog } from '@/components/merge-dialog'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { lineDiff, withContext } from '@/lib/diff'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -145,28 +147,64 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
     enabled: draft.branchExists,
     refetchInterval: 60_000,
   })
+  const deploy = git?.branch ?? 'main'
+  /** Open while a merge has conflicts: from the branch (the draft's own) or from main (by object). */
+  const [merging, setMerging] = useState<{ from: 'branch' | 'main'; groups: ConflictGroup[] } | null>(null)
+  /** Commit was clicked while the branch had moved: commit once the update is in. */
+  const [commitAfter, setCommitAfter] = useState(false)
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }) }),
+      queryClient.invalidateQueries({ queryKey: trpc.git.pullRequest.queryKey() }),
+    ])
+  /** The draft's own update came back: replaced, or its conflicts to resolve. */
+  const updated = (result: RouterOutputs['branchDrafts']['updateFromBranch']) => {
+    if (result.status === 'conflicts') {
+      setMerging({
+        from: 'branch',
+        groups: [{ key: '', label: props.object.name, conflicts: result.conflicts }],
+      })
+      return
+    }
+    setMerging(null)
+    props.onReplaced(result.draft)
+    if (commitAfter) {
+      setCommitAfter(false)
+      props.onCommit()
+    }
+  }
   const update = useMutation(
     trpc.branchDrafts.updateFromBranch.mutationOptions({
       onSuccess: async (result) => {
-        if (result.status === 'conflicts') {
-          // The merge dialog comes in M20 step 4; until then, the branch's version can replace the draft's changes.
-          const n = result.conflicts.length
-          if (
-            confirm(
-              `Your changes that aren't committed and the branch's conflict in ${n} place${n === 1 ? '' : 's'}. Replace your changes with the branch's?`,
-            )
-          ) {
-            update.mutate({ id: draft.id, discardChanges: true })
-          }
-          return
-        }
-        props.onReplaced(result.draft)
-        await queryClient.invalidateQueries({
-          queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }),
-        })
+        updated(result)
+        await refresh()
       },
     }),
   )
+  const fromMain = useMutation(
+    trpc.branchDrafts.updateFromMain.mutationOptions({
+      onSuccess: async (result) => {
+        if (result.status === 'conflicts') {
+          setMerging({
+            from: 'main',
+            groups: result.objects.map((o) => ({ key: o.dir, label: o.name, conflicts: o.conflicts })),
+          })
+        } else if (result.status === 'merged') {
+          // Main is in; the draft's own changes may still conflict with what came in.
+          updated(result.draft)
+        } else {
+          setMerging(null)
+        }
+        await refresh()
+      },
+    }),
+  )
+  /** Saves what's typed, then updates (the merge starts from the saved draft). */
+  const startUpdate = async (from: 'branch' | 'main') => {
+    await props.ensureSaved()
+    if (from === 'branch') update.mutate({ id: draft.id })
+    else fromMain.mutate({ id: draft.id })
+  }
   const discard = useMutation(
     trpc.branchDrafts.discard.mutationOptions({
       onSuccess: async () => {
@@ -192,25 +230,56 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
       ) : (
         c?.behind && <span className="text-warning-strong">{branch} has new commits</span>
       )}
+      {c?.mainAhead && (
+        <span className="text-warning-strong" data-testid="main-ahead">
+          {deploy} changed this {props.kind}
+        </span>
+      )}
       <span className="flex-1" />
+      {c?.mainAhead && (
+        <Button
+          size="sm"
+          loading={fromMain.isPending}
+          title={`Merge ${deploy} into ${branch}, keeping your changes`}
+          onClick={() => startUpdate('main')}
+          data-testid="update-from-main"
+        >
+          <GitMerge className="size-3.5" /> Update from {deploy}
+        </Button>
+      )}
       {c?.behind && (
         <Button
           size="sm"
-          loading={update.isPending}
-          title="Load the branch's files into this draft"
-          onClick={() => {
-            // Merged with the draft's changes that aren't committed (M20).
-            update.mutate({ id: draft.id })
-          }}
+          loading={update.isPending && !commitAfter}
+          title="Merge the branch's new commits into this draft, keeping your changes"
+          onClick={() => startUpdate('branch')}
+          data-testid="update-from-branch"
         >
           <RefreshCw className="size-3.5" /> Update from branch
         </Button>
       )}
       {pr.data?.pullRequest && <PullRequestLink pullRequest={pr.data.pullRequest} />}
-      <Button size="sm" variant="primary" onClick={props.onCommit} data-testid="commit-open">
-        <GitCommitHorizontal className="size-3.5" />
-        Commit{c && c.files.length > 0 ? ` (${c.files.length})` : ''}
-      </Button>
+      {c?.conflict ? (
+        <Button
+          size="sm"
+          variant="primary"
+          loading={update.isPending && commitAfter}
+          title="The branch changed this too: update from it first, then commit"
+          onClick={() => {
+            setCommitAfter(true)
+            startUpdate('branch')
+          }}
+          data-testid="commit-open"
+        >
+          <GitCommitHorizontal className="size-3.5" />
+          Update, then commit
+        </Button>
+      ) : (
+        <Button size="sm" variant="primary" onClick={props.onCommit} data-testid="commit-open">
+          <GitCommitHorizontal className="size-3.5" />
+          Commit{c && c.files.length > 0 ? ` (${c.files.length})` : ''}
+        </Button>
+      )}
       <Button
         size="icon"
         variant="ghost"
@@ -224,7 +293,42 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
       >
         <Trash2 className="size-4" />
       </Button>
-      <ErrorNote error={update.error ?? discard.error ?? changes.error} />
+      <ErrorNote
+        error={merging ? null : (update.error ?? fromMain.error ?? discard.error ?? changes.error)}
+      />
+      {merging && (
+        <MergeDialog
+          title={merging.from === 'main' ? `Update from ${deploy}` : 'Update from branch'}
+          intro={
+            merging.from === 'main'
+              ? `${deploy} and ${branch} both changed these. Mine is ${branch}, theirs is ${deploy}. Nothing is committed until you apply.`
+              : `Your changes that aren't committed and the new commits on ${branch} both changed these. Mine is your draft, theirs is the branch. Nothing is saved until you apply.`
+          }
+          groups={merging.groups}
+          applying={update.isPending || fromMain.isPending}
+          error={update.error ?? fromMain.error}
+          secondary={
+            merging.from === 'branch'
+              ? {
+                  label: 'Discard mine, take the branch’s',
+                  onClick: () => {
+                    if (confirm("Replace your changes that aren't committed with the branch's?")) {
+                      update.mutate({ id: draft.id, discardChanges: true })
+                    }
+                  },
+                }
+              : undefined
+          }
+          onApply={(resolutions) => {
+            if (merging.from === 'branch') update.mutate({ id: draft.id, resolutions: resolutions[''] ?? {} })
+            else fromMain.mutate({ id: draft.id, resolutions })
+          }}
+          onClose={() => {
+            setMerging(null)
+            setCommitAfter(false)
+          }}
+        />
+      )}
     </>
   )
 }

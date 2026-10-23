@@ -400,7 +400,9 @@ export function Dialog({
   className?: string
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    // Escape in a code editor is the editor's (closing its suggestions), not the dialog's.
+    const onKey = (e: KeyboardEvent) =>
+      e.key === 'Escape' && !(e.target instanceof Element && e.target.closest('.monaco-editor')) && onClose()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])

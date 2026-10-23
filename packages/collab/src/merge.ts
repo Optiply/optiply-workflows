@@ -58,7 +58,7 @@ type Unidentified = MergeConflict extends infer C ? (C extends MergeConflict ? O
 export type Resolution =
   | 'ours'
   | 'theirs'
-  | { chunks: readonly ('ours' | 'theirs' | 'both')[] }
+  | { chunks: ('ours' | 'theirs' | 'both')[] }
   | { text: string }
 
 type Side = 'ours' | 'theirs'

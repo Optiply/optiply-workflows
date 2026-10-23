@@ -42,6 +42,8 @@ export function MergeDialog(props: {
   groups: ConflictGroup[]
   applying: boolean
   error: unknown
+  /** Another way out, left of Cancel (Update from branch: drop the draft's changes). */
+  secondary?: { label: string; onClick(): void }
   onApply(resolutions: Record<string, Record<string, Resolution>>): void
   onClose(): void
 }) {
@@ -71,6 +73,11 @@ export function MergeDialog(props: {
           <span className="mr-auto self-center text-xs text-muted" data-testid="merge-progress">
             {done} of {all.length} resolved
           </span>
+          {props.secondary && (
+            <Button variant="danger" onClick={props.secondary.onClick} data-testid="merge-secondary">
+              {props.secondary.label}
+            </Button>
+          )}
           <Button onClick={props.onClose}>Cancel</Button>
           <Button
             variant="primary"
