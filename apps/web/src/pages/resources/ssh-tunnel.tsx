@@ -635,11 +635,16 @@ export interface SshTestStep {
     trusted?: string
   }
   error?: { code: string; message: string }
+  /** The step that reaches the first server through Google Cloud IAP (M18): `host` is the VM, `hop` the first's. */
+  via?: 'iap'
+  /** Whose Google identity opened the IAP tunnel, where known. */
+  identity?: string
 }
 
 /**
  * Test connection's SSH hops, one line each: reached or not, how long it took, the host key it presented. An untrusted
- * key can be trusted here (it goes into the settings, saved with them); a changed one only after a warning.
+ * key can be trusted here (it goes into the settings, saved with them); a changed one only after a warning. Through
+ * Google Cloud IAP, a line for IAP comes first: the VM and whose identity opened it.
  */
 export function SshTestSteps({
   steps,
@@ -652,6 +657,11 @@ export function SshTestSteps({
   onTrust: (hop: string, hostKey: { algorithm: string; fingerprint: string }) => void
   disabled: boolean
 }) {
+  // The VM as project/zone/instance, as the settings name it.
+  const iapTarget = (step: SshTestStep) => {
+    const iap = hops.find((h) => h.id === step.hop)?.iap
+    return iap ? `${iap.project}/${iap.zone}/${iap.instance}` : step.host
+  }
   const label = (id: string) => {
     const index = hops.findIndex((h) => h.id === id)
     return index === hops.length - 1 ? 'SSH server' : `Jump host ${index + 1}`
@@ -659,14 +669,27 @@ export function SshTestSteps({
   return (
     <ul className="space-y-2" data-testid="ssh-test-steps">
       {steps.map((step) => (
-        <li key={step.hop} className="space-y-1 text-sm" data-testid={`ssh-step-${step.hop}`}>
+        <li
+          key={`${step.hop}${step.via ? `-${step.via}` : ''}`}
+          className="space-y-1 text-sm"
+          data-testid={`ssh-step-${step.hop}${step.via ? `-${step.via}` : ''}`}
+        >
           <p
             className={
               step.ok ? 'flex items-center gap-2 text-success' : 'flex items-center gap-2 text-danger'
             }
           >
             {step.ok ? <CircleCheck className="size-4" /> : <CircleX className="size-4" />}
-            {label(step.hop)} {step.host}:{step.port}
+            {step.via === 'iap' ? (
+              <>
+                Google Cloud IAP to {iapTarget(step)}:{step.port}
+                {step.identity && <span className="text-muted">· as {step.identity}</span>}
+              </>
+            ) : (
+              <>
+                {label(step.hop)} {step.host}:{step.port}
+              </>
+            )}
             <span className="text-muted">· {step.durationMs} ms</span>
           </p>
           {step.error && !step.hostKey?.status.match(/untrusted|changed/) && (
