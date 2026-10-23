@@ -43,6 +43,7 @@
     "isolated-vm": "7.0.1",
     "lib0": "0.2.119",
     "mysql2": "3.24.5",
+    "node-diff3": "3.2.1",
     "openid-client": "6.8.8",
     "pino": "10.4.0",
     "postgres": "3.4.9",

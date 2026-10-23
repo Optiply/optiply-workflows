@@ -53,6 +53,18 @@ async function editableDraft(ctx: AuthedContext, id: string) {
  * Protected workflows, apps, library queries and modules are edited in drafts on Git branches (M11, M14): one per object and branch, saved with
  * optimistic concurrency, run like the main draft, and committed onto the branch. Edit on the object is required.
  */
+/** A merge's resolutions, by conflict id (architecture §2.23). */
+const resolutionsSchema = z
+  .record(
+    z.string().max(64),
+    z.union([
+      z.enum(['ours', 'theirs']),
+      z.object({ chunks: z.array(z.enum(['ours', 'theirs', 'both'])).max(10_000) }),
+      z.object({ text: z.string().max(2_000_000) }),
+    ]),
+  )
+  .refine((r) => Object.keys(r).length <= 1000, 'At most 1000 resolutions')
+
 export const branchDraftsRouter = router({
   /** The object's open drafts, newest first. */
   list: authedProcedure.input(z.object({ kind: Kind, id: Id })).query(async ({ ctx, input }) => {
@@ -133,17 +145,29 @@ export const branchDraftsRouter = router({
     return branchDraftChanges(ctx.db, ctx.config, target, draft)
   }),
 
-  /** Loads the branch's files into the draft; `discardChanges` drops what isn't committed. */
+  /**
+   * Brings the branch's files into the draft, merged with its uncommitted changes: the updated draft, or the conflicts
+   * to resolve (nothing saved). Called again with `resolutions` by conflict id; `discardChanges` drops the draft's.
+   */
   updateFromBranch: authedProcedure
-    .input(z.object({ id: Id, discardChanges: z.boolean().default(false) }))
+    .input(
+      z.object({
+        id: Id,
+        discardChanges: z.boolean().default(false),
+        resolutions: resolutionsSchema.optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { draft, target } = await editableDraft(ctx, input.id)
-      const updated = await updateBranchDraftFromBranch(ctx.db, ctx.config, ctx.user, {
+      const result = await updateBranchDraftFromBranch(ctx.db, ctx.config, ctx.user, {
         target,
         draft,
         discardChanges: input.discardChanges,
+        resolutions: input.resolutions,
       })
-      return branchDraftView(updated)
+      return result.status === 'updated'
+        ? { status: 'updated' as const, draft: await branchDraftView(result.draft) }
+        : result
     }),
 
   /** Commits the draft at `revision` onto its branch, as the caller. */

@@ -147,8 +147,20 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
   })
   const update = useMutation(
     trpc.branchDrafts.updateFromBranch.mutationOptions({
-      onSuccess: async (updated) => {
-        props.onReplaced(updated)
+      onSuccess: async (result) => {
+        if (result.status === 'conflicts') {
+          // The merge dialog comes in M20 step 4; until then, the branch's version can replace the draft's changes.
+          const n = result.conflicts.length
+          if (
+            confirm(
+              `Your changes that aren't committed and the branch's conflict in ${n} place${n === 1 ? '' : 's'}. Replace your changes with the branch's?`,
+            )
+          ) {
+            update.mutate({ id: draft.id, discardChanges: true })
+          }
+          return
+        }
+        props.onReplaced(result.draft)
         await queryClient.invalidateQueries({
           queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }),
         })
@@ -187,16 +199,8 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           loading={update.isPending}
           title="Load the branch's files into this draft"
           onClick={() => {
-            const discardChanges = (c.files.length ?? 0) > 0
-            if (
-              discardChanges &&
-              !confirm(
-                `Update from ${branch}? Your changes that aren't committed are replaced by the branch's.`,
-              )
-            ) {
-              return
-            }
-            update.mutate({ id: draft.id, discardChanges })
+            // Merged with the draft's changes that aren't committed (M20).
+            update.mutate({ id: draft.id })
           }}
         >
           <RefreshCw className="size-3.5" /> Update from branch

@@ -108,6 +108,9 @@ importers:
       mysql2:
         specifier: 3.24.5
         version: 3.24.5(@types/node@24.19.2)
+      node-diff3:
+        specifier: 3.2.1
+        version: 3.2.1
       openid-client:
         specifier: 6.8.8
         version: 6.8.8

@@ -9,6 +9,16 @@ import {
   validateLibraryQuery,
 } from '@ow/app-definition'
 import {
+  appSpec,
+  type CollabSpec,
+  libraryQuerySpec,
+  type MergeObject,
+  type MergeResult,
+  mergeObject,
+  type Resolution,
+  workflowSpec,
+} from '@ow/collab'
+import {
   type App,
   appReleases,
   apps,
@@ -260,4 +270,36 @@ export async function insertGitObject(
           .returning()
       )[0]
   }
+}
+
+/** The collab spec a kind's definition merges by (a module is an app; a library query has its own). */
+function kindSpec(kind: ObjectKind): CollabSpec {
+  if (kind === 'workflow') return workflowSpec
+  if (kind === 'library_query') return libraryQuerySpec
+  return appSpec
+}
+
+/**
+ * A three-way merge of a kind's object (architecture §2.23), checked against the kind's schema: two sides' changes
+ * that don't fit it together come back as one conflict on their item.
+ */
+export function mergeKindObject(
+  kind: ObjectKind,
+  base: MergeObject<unknown>,
+  ours: MergeObject<unknown>,
+  theirs: MergeObject<unknown>,
+  resolutions?: Readonly<Record<string, Resolution>>,
+): MergeResult<MergeObject<unknown>> {
+  const schema = definitionSchema(kind)
+  return mergeObject(kindSpec(kind), base, ours, theirs, {
+    resolutions,
+    check: (definition) => {
+      const parsed = schema.safeParse(definition)
+      return parsed.success
+        ? []
+        : parsed.error.issues.map((issue) =>
+            issue.path.filter((k): k is string | number => typeof k !== 'symbol'),
+          )
+    },
+  })
 }

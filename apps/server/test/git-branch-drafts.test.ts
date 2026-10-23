@@ -57,6 +57,8 @@ const flowDefinition = (code: string) => ({
 
 const deploy = () => runGitDeploy(env.db, env.config, { trigger: 'poll' })
 const author = { name: 'Someone else', email: 'else@optiply.nl' }
+const adminUser = async () =>
+  (await env.db.select().from(users).where(eq(users.email, 'admin@optiply.nl')))[0]!
 
 beforeAll(async () => {
   ;({ dir, cleanup } = await scratch())
@@ -370,12 +372,26 @@ describe('when others commit to the same branch', () => {
       message: expect.stringContaining('workflows/sync-orders'),
     })
 
-    // Updating would drop the uncommitted change: refused unless asked for.
-    expect(failure(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId })).code).toBe(
-      'CONFLICT',
-    )
-    const updated = data(
-      await admin.mutate('branchDrafts.updateFromBranch', { id: draftId, discardChanges: true }),
+    // Both changed the same line: updating merges, and asks which one stays (nothing saved meanwhile).
+    const merging = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    expect(merging).toMatchObject({
+      status: 'conflicts',
+      tip: theirs,
+      conflicts: [
+        {
+          kind: 'text',
+          at: ['definition', 'blocks', 'step', 'config', 'code'],
+          ours: 'return 4',
+          theirs: 'return "theirs"',
+        },
+      ],
+    })
+    expect(data(await admin.query('branchDrafts.get', { id: draftId })).revision).toBe(3)
+    const { draft: updated } = data(
+      await admin.mutate('branchDrafts.updateFromBranch', {
+        id: draftId,
+        resolutions: { [merging.conflicts[0].id]: 'theirs' },
+      }),
     )
     expect(updated).toMatchObject({ baseCommit: theirs, revision: 4 })
     expect(updated.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code).toBe(
@@ -404,7 +420,10 @@ describe('when others commit to the same branch', () => {
       author,
     })
     await other.push(theirs!, 'shared')
-    const updated = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    const { status, draft: updated } = data(
+      await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }),
+    )
+    expect(status).toBe('updated')
     expect(updated.definition.blocks.find((b: { name: string }) => b.name === 'step').config.code).toBe(
       'return 6',
     )
@@ -434,8 +453,6 @@ describe('when others commit to the same branch', () => {
 describe('a new process, saves during a commit, and a rewritten branch', () => {
   let draftId: string
   const forgetCache = () => rmSync(join(dir, 'cache'), { recursive: true, force: true })
-  const adminUser = async () =>
-    (await env.db.select().from(users).where(eq(users.email, 'admin@optiply.nl')))[0]!
   const stepCode = (draft: { definition: { blocks: { name: string; config?: { code?: string } }[] } }) =>
     draft.definition.blocks.find((b) => b.name === 'step')!.config!.code
 
@@ -537,11 +554,173 @@ describe('a new process, saves during a commit, and a rewritten branch', () => {
         await admin.mutate('branchDrafts.commit', { id: draftId, revision: draft.revision, message: 'x' }),
       ).code,
     ).toBe('CONFLICT')
-    const updated = data(
+    const { draft: updated } = data(
       await admin.mutate('branchDrafts.updateFromBranch', { id: draftId, discardChanges: true }),
     )
     expect(updated.baseCommit).toBe(await other.fetchBranch('fresh'))
     expect(stepCode(updated)).toBe('return "seen"')
+  })
+})
+
+describe('merging the branch into a draft (M20)', () => {
+  let draftId: string
+  const code = (...lines: string[]) => lines.join('\n')
+  const original = code('const a = 1', 'const b = 2', 'const c = 3', 'return a + b + c')
+  const withBlocks = (step: string, extra: { name: string; code: string }[] = []) => ({
+    ...flowDefinition(step),
+    blocks: [
+      ...flowDefinition(step).blocks,
+      ...extra.map((b) => ({ name: b.name, type: 'code', config: { code: b.code } })),
+    ],
+  })
+  // biome-ignore lint/suspicious/noExplicitAny: untyped JSON
+  const block = (draft: any, name: string) =>
+    draft.definition.blocks.find((b: { name: string }) => b.name === name)
+  /** Someone else commits `step`'s code (and whatever else) onto the branch. */
+  const theirCommit = async (step: string, files: Record<string, string> = {}) => {
+    const tip = await other.fetchBranch('merging')
+    const commit = await other.commit({
+      parent: tip,
+      files: { 'workflows/sync-orders/blocks/step.js': `${step}\n`, ...files },
+      message: 'Theirs',
+      author,
+    })
+    await other.push(commit!, 'merging')
+    return commit!
+  }
+  const save = async (definition: unknown) => {
+    const { revision } = data(await admin.query('branchDrafts.get', { id: draftId }))
+    return data(await admin.mutate('branchDrafts.save', { id: draftId, revision, definition }))
+  }
+
+  it('keeps the draft’s changes and the branch’s, line by line and block by block', async () => {
+    draftId = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'merging',
+        create: true,
+      }),
+    ).id
+    await save(withBlocks(original))
+    const { revision } = data(await admin.query('branchDrafts.get', { id: draftId }))
+    data(await admin.mutate('branchDrafts.commit', { id: draftId, revision, message: 'Start' }))
+
+    // Ours: the first line, and a new block. Theirs: the third line, and a README.
+    await save(
+      withBlocks(original.replace('const a = 1', 'const a = 10'), [{ name: 'ours', code: 'return "o"' }]),
+    )
+    const tip = await theirCommit(original.replace('const c = 3', 'const c = 30'), { 'README.md': 'hi\n' })
+    const before = data(await admin.query('branchDrafts.get', { id: draftId }))
+
+    const result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    expect(result.status).toBe('updated')
+    expect(result.draft).toMatchObject({ baseCommit: tip, revision: before.revision + 1 })
+    expect(block(result.draft, 'step').config.code).toBe(
+      code('const a = 10', 'const b = 2', 'const c = 30', 'return a + b + c'),
+    )
+    expect(block(result.draft, 'ours').config.code).toBe('return "o"')
+    // Committing it writes both onto the branch.
+    const committed = data(
+      await admin.mutate('branchDrafts.commit', {
+        id: draftId,
+        revision: result.draft.revision,
+        message: 'Both',
+      }),
+    )
+    expect(committed.changed).toBe(true)
+    expect(await other.fetchBranch('merging')).toBe(committed.commit)
+    const files = await other.readFiles(committed.commit)
+    expect(files['workflows/sync-orders/blocks/step.js']).toContain('const c = 30')
+    expect(files['workflows/sync-orders/blocks/ours.js']).toBe('return "o"\n')
+    expect(files['README.md']).toBe('hi\n')
+  })
+
+  it('applies resolutions on top of a save made while they were chosen', async () => {
+    const current = block(data(await admin.query('branchDrafts.get', { id: draftId })), 'step').config
+      .code as string
+    await save(
+      withBlocks(current.replace('const b = 2', 'const b = 20'), [{ name: 'ours', code: 'return "o"' }]),
+    )
+    const tip = await theirCommit(current.replace('const b = 2', 'const b = 200'))
+    const first = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    expect(first.status).toBe('conflicts')
+    expect(first.conflicts).toHaveLength(1)
+
+    // Someone adds a block meanwhile, away from the conflict.
+    await save(
+      withBlocks(current.replace('const b = 2', 'const b = 20'), [
+        { name: 'ours', code: 'return "o"' },
+        { name: 'later', code: 'return "l"' },
+      ]),
+    )
+    const second = data(
+      await admin.mutate('branchDrafts.updateFromBranch', {
+        id: draftId,
+        resolutions: { [first.conflicts[0].id]: { chunks: ['both'] } },
+      }),
+    )
+    expect(second.status).toBe('updated')
+    expect(second.draft.baseCommit).toBe(tip)
+    expect(block(second.draft, 'step').config.code).toContain('const b = 20\nconst b = 200')
+    expect(block(second.draft, 'later').config.code).toBe('return "l"')
+  })
+
+  it('asks again when the conflicting lines changed after they were resolved', async () => {
+    const current = block(data(await admin.query('branchDrafts.get', { id: draftId })), 'step').config
+      .code as string
+    const extra = [{ name: 'ours', code: 'return "o"' }]
+    await save(withBlocks(`${current}\n// ours`, extra))
+    await theirCommit(`${current}\n// theirs`)
+    const first = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    await save(withBlocks(`${current}\n// ours, again`, extra))
+    const second = data(
+      await admin.mutate('branchDrafts.updateFromBranch', {
+        id: draftId,
+        resolutions: { [first.conflicts[0].id]: 'theirs' },
+      }),
+    )
+    expect(second.status).toBe('conflicts')
+    expect(second.conflicts[0].id).not.toBe(first.conflicts[0].id)
+    expect(second.conflicts[0].ours).toContain('// ours, again')
+    const third = data(
+      await admin.mutate('branchDrafts.updateFromBranch', {
+        id: draftId,
+        resolutions: { [second.conflicts[0].id]: { text: `${current}\n// both` } },
+      }),
+    )
+    expect(block(third.draft, 'step').config.code).toBe(`${current}\n// both`)
+  })
+
+  it('merges again from a save that raced it, instead of failing', async () => {
+    const { draft: stale, target } = await loadBranchDraft(env.db, draftId)
+    const current = block(stale, 'step').config.code as string
+    await save(withBlocks(current, [{ name: 'ours', code: 'return "raced"' }]))
+    await theirCommit(`// top\n${current}`)
+    const result = await updateBranchDraftFromBranch(env.db, env.config, await adminUser(), {
+      target,
+      draft: stale,
+      discardChanges: false,
+    })
+    expect(result.status).toBe('updated')
+    if (result.status !== 'updated') return
+    expect(block(result.draft, 'ours').config.code).toBe('return "raced"')
+    expect(block(result.draft, 'step').config.code).toBe(`// top\n${current}`)
+  })
+
+  it('makes a block deleted on one side and changed on the other one conflict', async () => {
+    const current = block(data(await admin.query('branchDrafts.get', { id: draftId })), 'step').config
+      .code as string
+    // Ours deletes the `ours` block; theirs changes it.
+    await save(withBlocks(current))
+    await theirCommit(current, { 'workflows/sync-orders/blocks/ours.js': 'return "changed"\n' })
+    const result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draftId }))
+    expect(result).toMatchObject({
+      status: 'conflicts',
+      // Deleted: `undefined`, which superjson's raw JSON (read here) shows as null.
+      conflicts: [{ kind: 'item', at: ['definition', 'blocks', 'ours'], ours: null }],
+    })
+    data(await admin.mutate('branchDrafts.discard', { id: draftId }))
   })
 })
 
