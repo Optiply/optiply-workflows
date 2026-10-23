@@ -29,7 +29,7 @@ export interface ValueConflict extends ConflictBase {
   theirs: unknown
 }
 
-/** An identity array's item, whole: deleted on one side and changed on the other, or changed to another `type`. */
+/** An identity array's item, whole: deleted on one side and changed on the other, or changed to another `type` or `kind`. */
 export interface ItemConflict extends ConflictBase {
   kind: 'item'
   base: unknown
@@ -61,6 +61,8 @@ export type Resolution =
   | { chunks: readonly ('ours' | 'theirs' | 'both')[] }
   | { text: string }
 
+type Side = 'ours' | 'theirs'
+
 export interface MergeResult<T> {
   /** The merge, with each unresolved conflict at ours. */
   merged: T
@@ -80,9 +82,107 @@ export function merge<T>(
   resolutions: Readonly<Record<string, Resolution>> = {},
 ): MergeResult<T> {
   const conflicts: MergeConflict[] = []
-  const merged = new Merger(spec, resolutions, conflicts).value(base, ours, theirs, [], [])
+  const merged = new Merger(spec, resolutions, conflicts, new Set(), 'ours').value(base, ours, theirs, [], [])
   return { merged: merged as T, conflicts }
 }
+
+/** A protected object as Git sync keeps it: its name and description beside its definition. */
+export interface MergeObject<D> {
+  name: string
+  description: string | null
+  definition: D
+}
+
+/**
+ * Merges an object (its name and description as values, its definition by `spec`). `check` returns where the
+ * merged definition breaks its schema: two sides' changes that don't fit together. The innermost item there that
+ * both sides changed (a block, a component…; else the definition's key, else the definition) is then merged whole,
+ * as one conflict, until the merge fits.
+ */
+export function mergeObject<D>(
+  spec: CollabSpec,
+  base: MergeObject<D>,
+  ours: MergeObject<D>,
+  theirs: MergeObject<D>,
+  opts: {
+    resolutions?: Readonly<Record<string, Resolution>>
+    check?: (definition: D) => readonly Path[]
+  } = {},
+): MergeResult<MergeObject<D>> {
+  const objectSpec = withinDefinition(spec)
+  const forced = new Set<string>()
+  const run = (fallback: Side, conflicts: MergeConflict[] = []) =>
+    new Merger(objectSpec, opts.resolutions ?? {}, conflicts, forced, fallback).value(
+      base,
+      ours,
+      theirs,
+      [],
+      [],
+    ) as MergeObject<D>
+  for (;;) {
+    const conflicts: MergeConflict[] = []
+    const merged = run('ours', conflicts)
+    if (!opts.check) return { merged, conflicts }
+    // Checked with the conflicts left at ours and at theirs, so a misfit doesn't depend on which side is which.
+    let grew = false
+    for (const value of conflicts.length > 0 ? [merged, run('theirs')] : [merged]) {
+      for (const issue of opts.check(value.definition)) {
+        const at = enclosing(objectSpec, value, ['definition', ...issue]).find((a) => !forced.has(a))
+        if (at !== undefined) {
+          forced.add(at)
+          grew = true
+        }
+      }
+    }
+    // Nothing left to merge whole: a side doesn't fit its schema by itself (saving says so).
+    if (!grew) return { merged, conflicts }
+  }
+}
+
+/** A definition's spec, for the object holding it under `definition`. */
+function withinDefinition(spec: CollabSpec): CollabSpec {
+  const inner = (path: Path) => (path[0] === 'definition' ? path.slice(1) : null)
+  return {
+    identity: (path) => {
+      const p = inner(path)
+      return p ? spec.identity(p) : undefined
+    },
+    isText: (path) => {
+      const p = inner(path)
+      return p ? spec.isText(p) : false
+    },
+    isAtomic: (path) => {
+      const p = inner(path)
+      return p ? spec.isAtomic(p) : false
+    },
+  }
+}
+
+/**
+ * What could be merged whole around `path` in `value`, innermost first: each identity item on the way, then the
+ * definition's key, then the definition (as `at` keys joined, `forced`'s form).
+ */
+function enclosing(spec: CollabSpec, value: unknown, path: Path): string[] {
+  const at: string[] = []
+  const found: string[][] = []
+  let node = value
+  for (const [i, step] of path.entries()) {
+    if (Array.isArray(node) && typeof step === 'number') {
+      const identity = spec.identity(path.slice(0, i))
+      const key = identity?.(node[step])
+      if (key === undefined) break
+      at.push(key)
+      found.push([...at])
+    } else if (isRecord(node) && typeof step === 'string') {
+      at.push(step)
+      if (i === 1) found.push([...at])
+    } else break
+    node = (node as Record<string | number, unknown>)[step]
+  }
+  return [...found.reverse(), ['definition']].map(atKey)
+}
+
+const atKey = (at: readonly string[]) => at.join('\u0000')
 
 /** A text conflict's text from a choice per conflicting chunk; `null` when the choices don't fit its chunks. */
 export function composeText(
@@ -131,13 +231,18 @@ export function mergeText(
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
-const typeOf = (v: unknown) => (isRecord(v) ? v.type : undefined)
+/** What kind of item it is: a block's or component's `type`, an app query's `kind`. */
+const typeOf = (v: unknown) => (isRecord(v) ? JSON.stringify([v.type, v.kind]) : undefined)
 
 class Merger {
   constructor(
     private readonly spec: CollabSpec,
     private readonly resolutions: Readonly<Record<string, Resolution>>,
     private readonly conflicts: MergeConflict[],
+    /** Places merged whole, as one conflict, when both sides changed them (`mergeObject`'s misfits). */
+    private readonly forced: ReadonlySet<string>,
+    /** Where an unresolved conflict's place is left in the merge. */
+    private readonly fallback: Side,
   ) {}
 
   /** `path` is the spec's (array indexes as in ours, or theirs for their additions); `at` the conflict's. */
@@ -146,7 +251,8 @@ class Merger {
     if (equal(base, ours)) return theirs
     if (equal(base, theirs)) return ours
     // Both changed, differently.
-    if (this.spec.isAtomic(path)) return this.valueConflict(base, ours, theirs, at)
+    if (this.spec.isAtomic(path) || this.forced.has(atKey(at)))
+      return this.valueConflict(base, ours, theirs, at)
     if (typeof ours === 'string' && typeof theirs === 'string' && this.spec.isText(path)) {
       return this.text(typeof base === 'string' ? base : '', ours, theirs, at)
     }
@@ -244,7 +350,7 @@ class Merger {
     if (equal(base, theirs)) return ours
     // Deleted on one side, changed on the other; or changed to another kind of item.
     const types = new Set([base, ours, theirs].filter((v) => v !== undefined).map(typeOf))
-    if (ours === undefined || theirs === undefined || types.size > 1) {
+    if (ours === undefined || theirs === undefined || types.size > 1 || this.forced.has(atKey(at))) {
       return this.conflict({ kind: 'item', at, base, ours, theirs })
     }
     return this.value(base, ours, theirs, path, at)
@@ -279,7 +385,7 @@ class Merger {
       if (value !== undefined) return value
     }
     this.conflicts.push({ id, ...conflict } as MergeConflict)
-    return conflict.ours
+    return conflict[this.fallback]
   }
 }
 

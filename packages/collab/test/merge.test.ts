@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { appSpec, composeText, type MergeConflict, merge, mergeText, workflowSpec } from '../src'
+import {
+  appSpec,
+  type CollabSpec,
+  composeText,
+  libraryQuerySpec,
+  type MergeConflict,
+  merge,
+  mergeObject,
+  mergeText,
+  type Path,
+  workflowSpec,
+} from '../src'
 
 const code = (name: string, text: string) => ({ name, type: 'code', config: { code: text } })
 const query = (name: string, sql: string, resource = 'db') => ({
@@ -306,3 +317,96 @@ describe('merge: resolutions', () => {
     expect([b.kind, b.at, b.ours, b.theirs]).toEqual([a.kind, a.at, a.theirs, a.ours])
   })
 })
+
+describe('mergeObject', () => {
+  const object = <D>(definition: D, name = 'Orders', description: string | null = null) => ({
+    name,
+    description,
+    definition,
+  })
+
+  it('merges the name and description as values beside the definition', () => {
+    const base = object(workflow([code('a', '1')]))
+    const ours = object(workflow([code('a', '2')]), 'Orders sync')
+    const theirs = object(workflow([code('a', '1')]), 'Orders', 'Syncs orders')
+    expect(mergeObject(workflowSpec, base, ours, theirs)).toEqual({
+      merged: object(workflow([code('a', '2')]), 'Orders sync', 'Syncs orders'),
+      conflicts: [],
+    })
+    const { conflicts } = mergeObject(workflowSpec, base, ours, object(workflow([code('a', '1')]), 'Sync'))
+    expect(conflicts).toMatchObject([{ kind: 'value', at: ['name'], ours: 'Orders sync', theirs: 'Sync' }])
+  })
+
+  it('places a definition’s conflicts under `definition`', () => {
+    const { conflicts } = mergeObject(
+      workflowSpec,
+      object(workflow([code('a', '1')])),
+      object(workflow([code('a', '2')])),
+      object(workflow([code('a', '3')])),
+    )
+    expect(conflicts).toMatchObject([{ kind: 'text', at: ['definition', 'blocks', 'a', 'config', 'code'] }])
+  })
+
+  it('merges a library query: SQL line by line, parameters by name', () => {
+    const lq = (sql: string, params: { name: string; type: string }[]) =>
+      object({ schemaVersion: 1, resource: 'db', query: { sql }, params })
+    const sql = lines('select *', 'from orders', 'where id = {{ id }}')
+    const { merged, conflicts } = mergeObject(
+      libraryQuerySpec,
+      lq(sql, [{ name: 'id', type: 'number' }]),
+      lq(sql.replace('select *', 'select id, total'), [{ name: 'id', type: 'number' }]),
+      lq(`${sql}\nlimit {{ limit }}`, [
+        { name: 'id', type: 'number' },
+        { name: 'limit', type: 'number' },
+      ]),
+    )
+    expect(conflicts).toEqual([])
+    expect(merged.definition.query.sql).toBe(
+      lines('select id, total', 'from orders', 'where id = {{ id }}', 'limit {{ limit }}'),
+    )
+    expect(merged.definition.params.map((p) => p.name)).toEqual(['id', 'limit'])
+  })
+
+  it('merges whole an item whose two sides’ changes don’t fit its schema together', () => {
+    // A block's config may hold `mode: 'a'` with `a`, or `mode: 'b'` with `b`; never both.
+    const block = (config: Record<string, unknown>) => ({ name: 'x', type: 'loop', config })
+    const def = (config: Record<string, unknown>) => workflow([code('a', '1'), block(config)])
+    const check = (d: ReturnType<typeof def>) =>
+      d.blocks.flatMap((b, i) => ('a' in b.config && 'b' in b.config ? [['blocks', i, 'config', 'b']] : []))
+    const base = object(def({ mode: 'a', a: 1 }))
+    const ours = object(def({ mode: 'a', a: 2 }))
+    const theirs = object(def({ mode: 'b', b: 1 }))
+    // Key by key, it would be { mode: 'b', a: 2, b: 1 }.
+    expect(
+      merge(withDefinition(workflowSpec), base, ours, theirs).merged.definition.blocks[1]!.config,
+    ).toEqual({
+      mode: 'b',
+      a: 2,
+      b: 1,
+    })
+    const { conflicts } = mergeObject(workflowSpec, base, ours, theirs, { check })
+    expect(conflicts).toMatchObject([
+      {
+        kind: 'item',
+        at: ['definition', 'blocks', 'x'],
+        ours: block({ mode: 'a', a: 2 }),
+        theirs: block({ mode: 'b', b: 1 }),
+      },
+    ])
+    const resolved = mergeObject(workflowSpec, base, ours, theirs, {
+      check,
+      resolutions: { [conflicts[0]!.id]: 'theirs' },
+    })
+    expect(resolved).toEqual({ merged: theirs, conflicts: [] })
+  })
+})
+
+/** `workflowSpec` for an object holding the definition under `definition`, as `mergeObject` uses it. */
+function withDefinition(spec: CollabSpec): CollabSpec {
+  const inner = (path: Path) => (path[0] === 'definition' ? path.slice(1) : null)
+  return {
+    identity: (path) => (inner(path) ? spec.identity(inner(path)!) : undefined),
+    isText: (path) => (inner(path) ? spec.isText(inner(path)!) : false),
+    isAtomic: (path) => (inner(path) ? spec.isAtomic(inner(path)!) : false),
+  }
+}

@@ -147,3 +147,12 @@ export const appSpec: CollabSpec = defineSpec({
   ],
   atomic: ['layout.*'],
 })
+
+/**
+ * Library queries (M14; no shared editor yet, but merged in Git): parameters by name; the query's SQL, REST body and
+ * Pub/Sub messages are text.
+ */
+export const libraryQuerySpec: CollabSpec = defineSpec({
+  identity: [['params', byName]],
+  text: queryText,
+})
