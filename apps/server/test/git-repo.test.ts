@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { GitError } from '../src/services/git/cli'
@@ -236,6 +237,92 @@ describe('commitToBranch', () => {
     ).rejects.toMatchObject({
       kind: 'not_found',
     })
+  })
+})
+
+describe('merging (M20)', () => {
+  /** A commit's parents, read from the remote. */
+  const parents = (remote: string, commit: string) =>
+    execFileSync('git', ['-C', remote, 'rev-list', '--parents', '-n', '1', commit], { encoding: 'utf8' })
+      .trim()
+      .split(' ')
+      .slice(1)
+
+  /** main and feature, each one commit after `first`, changing what's given. */
+  async function diverged(main: Record<string, string>, feature: Record<string, string>) {
+    const { repo, remote } = await setup()
+    const first = await seed(repo)
+    const m = await repo.commit({ parent: first, files: main, message: 'Main', author })
+    expect(await repo.push(m!, 'main')).toBe('ok')
+    const f = await repo.commit({ parent: first, files: feature, message: 'Feature', author })
+    expect(await repo.push(f!, 'feature')).toBe('ok')
+    return { repo, remote, first, main: m!, feature: f! }
+  }
+
+  it('finds the merge base, and what is an ancestor', async () => {
+    const { repo, first, main, feature } = await diverged({ 'README.md': 'main\n' }, { 'a.txt': 'a\n' })
+    expect(await repo.mergeBase(feature, main)).toBe(first)
+    expect(await repo.isAncestor(first, feature)).toBe(true)
+    expect(await repo.isAncestor(feature, main)).toBe(false)
+    expect(await repo.isAncestor(main, main)).toBe(true)
+  })
+
+  it('merges a clean tree into a commit with two parents, which merges back into main cleanly', async () => {
+    const { repo, remote, main, feature } = await diverged(
+      { 'README.md': '# Flows, on main\n' },
+      { 'workflows/sync/blocks/a.js': 'return 2\n' },
+    )
+    const merged = await repo.mergeTree(feature, main)
+    expect(merged.conflicts).toEqual([])
+    const commit = await repo.commit({
+      parent: feature,
+      mergeParents: [main],
+      tree: merged.tree,
+      message: 'Update from main',
+      author,
+    })
+    expect(await repo.push(commit!, 'feature')).toBe('ok')
+    expect(parents(remote, commit!)).toEqual([feature, main])
+    const files = await repo.readFiles(commit!)
+    expect(files['README.md']).toBe('# Flows, on main\n')
+    expect(files['workflows/sync/blocks/a.js']).toBe('return 2\n')
+    // Into main now: main is an ancestor, nothing conflicts.
+    expect(await repo.isAncestor(main, commit!)).toBe(true)
+    expect((await repo.mergeTree(main, commit!)).conflicts).toEqual([])
+  })
+
+  it('lists conflicting paths, and writes directories and files over the merged tree', async () => {
+    const { repo, main, feature } = await diverged(
+      { 'workflows/sync/blocks/a.js': 'return "main"\n', 'README.md': 'main\n' },
+      { 'workflows/sync/blocks/a.js': 'return "feature"\n', 'README.md': 'feature\n' },
+    )
+    const merged = await repo.mergeTree(feature, main)
+    expect(merged.conflicts.sort()).toEqual(['README.md', 'workflows/sync/blocks/a.js'])
+    const commit = await repo.commit({
+      parent: feature,
+      mergeParents: [main],
+      tree: merged.tree,
+      directories: { 'workflows/sync': { 'workflow.json': '{}\n', 'blocks/a.js': 'return "both"\n' } },
+      files: { 'README.md': 'both\n' },
+      message: 'Update from main',
+      author,
+    })
+    const files = await repo.readFiles(commit!)
+    expect(files['workflows/sync/blocks/a.js']).toBe('return "both"\n')
+    expect(files['README.md']).toBe('both\n')
+    expect(Object.values(files).some((f) => f.includes('<<<<<<<'))).toBe(false)
+    expect((await repo.mergeTree(main, commit!)).conflicts).toEqual([])
+  })
+
+  it('makes a merge commit even when its tree is its first parent’s', async () => {
+    const { repo, remote, first } = await diverged({ 'README.md': 'main\n' }, { 'a.txt': 'a\n' })
+    const main = await repo.fetchBranch('main')
+    const same = await repo.commit({ parent: first, mergeParents: [main!], message: 'Merge', author })
+    expect(same).not.toBeNull()
+    expect(await repo.push(same!, 'other')).toBe('ok')
+    expect(parents(remote, same!)).toEqual([first, main])
+    // Without another parent, an unchanged tree is still no commit.
+    expect(await repo.commit({ parent: first, message: 'Nothing', author })).toBeNull()
   })
 })
 
