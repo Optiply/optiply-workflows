@@ -253,6 +253,8 @@ describe('PubSubConsumer', () => {
     const before = one.stats.triggers
     await one.tick()
     expect(one.stats.triggers).toBe(before - 2)
+    // The disabled one's lease is given up at once, not left to lapse.
+    expect(await triggerRow(trigger.id)).toMatchObject({ leaseOwner: null, leaseExpiresAt: null })
     await one.stop()
     const leased = await db.execute<{ n: number }>(
       dsql`select count(*)::int as n from workflow_triggers where lease_owner = 'w1'`,
@@ -374,5 +376,68 @@ describe('holding messages until their runs end (3b)', () => {
     await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
     await expect.poll(() => pubsub.messages(subscription)[0]!.acked).toBe(true)
     expect(two.stats.inFlight).toBe(0)
+  })
+})
+
+describe('review fixes (M19)', () => {
+  it('never runs again a message whose run succeeded before its worker recorded it', async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    const id = publish('once only')
+    // w1 never gets to record outcomes: it holds, the run succeeds, and w1 stops (nacking) first.
+    const one = consumer('w1', { checkMs: 60_000 })
+    one.start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
+    await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
+    await one.stop()
+    consumer('w2').start()
+    await expect.poll(() => pubsub.messages(subscription)[0]!.acked, { timeout: 5000 }).toBe(true)
+    expect(await runsOf(trigger.id)).toHaveLength(1)
+    expect(await delivery(id)).toMatchObject({ outcome: 'succeeded', runs: 1 })
+  })
+
+  it('still acks a held message after a failed pull dropped the client', async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    publish('held through an outage')
+    const warnings: string[] = []
+    // The next pull is 10 s after the failure: until then there's no client, and the ack must make its own.
+    consumer('w1', {
+      retryMs: 10_000,
+      log: { info: () => {}, warn: (_o, msg) => warnings.push(msg ?? '') },
+    }).start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
+    pubsub.failNext('pull', 503, 'The service was unable to fulfill your request.')
+    await expect.poll(() => warnings.includes('pubsub pull failed')).toBe(true)
+    await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
+    await expect.poll(() => pubsub.messages(subscription)[0]!.acked).toBe(true)
+    expect(warnings).not.toContain('pubsub ack or nack failed')
+  })
+
+  it('keeps pulling through a new release with the same settings: nothing nacked, new runs on the new release', async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    const held = publish('before the release')
+    const one = consumer('w1')
+    one.start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
+    const [release] = await db
+      .insert(workflowReleases)
+      .values({
+        workflowId: trigger.workflowId,
+        version: '1.0.1',
+        definition,
+        definitionHash: 'b'.repeat(64),
+      })
+      .returning()
+    await db
+      .update(workflowTriggers)
+      .set({ releaseId: release!.id })
+      .where(eq(workflowTriggers.id, trigger.id))
+    await one.tick()
+    // Not restarted: the held message wasn't nacked (and so not delivered again).
+    await sleep(300)
+    expect(pubsub.messages(subscription).find((m) => m.messageId === held)!.deliveries).toBe(1)
+    expect(one.stats.inFlight).toBe(1)
+    publish('after the release')
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(2)
+    expect((await runsOf(trigger.id))[1]!.releaseId).toBe(release!.id)
   })
 })

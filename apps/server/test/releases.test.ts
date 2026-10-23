@@ -446,6 +446,16 @@ describe('Pub/Sub trigger projection (M19)', () => {
     eventsId = data(
       await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events' }),
     ).id
+    // Configured in both environments: a trigger can only go live where its resource is.
+    for (const environmentId of [prodId, stagingId])
+      data(
+        await admin.mutate('resources.saveConfig', {
+          resourceId: eventsId,
+          environmentId,
+          config: { identity: 'key' },
+          secrets: { serviceAccountKey: new FakeGoogle().keyJson },
+        }),
+      )
   })
 
   it('projects Pub/Sub triggers with their defaults and environment, keeping ids and leases across releases', async () => {
@@ -510,6 +520,34 @@ describe('Pub/Sub trigger projection (M19)', () => {
     expect(failure(await publish(wf)).message).toBe(
       `The workflow isn't valid: Pub/Sub trigger "orders": no resource has the slug "nothing"`,
     )
+  })
+
+  it("refuses a trigger in an environment where its resource isn't configured", async () => {
+    const { id: bare } = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Bare', slug: 'bare_events' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: bare,
+        environmentId: prodId,
+        config: { identity: 'key' },
+        secrets: { serviceAccountKey: new FakeGoogle().keyJson },
+      }),
+    )
+    const wf = await workflowWith(
+      'half-configured',
+      definition([code('a', 'return 1')], {
+        triggers: { pubsub: [{ ...orders, resource: 'bare_events', environment: 'staging' }] },
+      }),
+    )
+    expect(failure(await publish(wf))).toEqual({
+      code: 'BAD_REQUEST',
+      message: `Pub/Sub trigger "orders" runs in environment "staging", where resource "bare_events" isn't configured`,
+    })
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'bare_events' }] } }),
+    )
+    expect(data(await publish(wf)).version).toBe('1.0.0')
   })
 
   it("needs use on the trigger's resource in every environment to release, like a queried one", async () => {

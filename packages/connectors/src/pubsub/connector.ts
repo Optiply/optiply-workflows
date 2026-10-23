@@ -85,7 +85,13 @@ export function pubsubClient(config: Config, secrets: Secrets): PubSubResourceCl
         "Name the project: the server's identity has none of its own",
       )
     return {
-      pubsub: new PubSubClient({ project: config.project, tokens: identity, url, dispatcher: agent }),
+      pubsub: new PubSubClient({
+        project: config.project,
+        tokens: identity,
+        url,
+        dispatcher: agent,
+        ownProjectOnly: true,
+      }),
       describe: (signal) => identity.describe(signal),
       agent,
     }

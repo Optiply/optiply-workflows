@@ -492,7 +492,8 @@ function PubSubCard({
     }))
   const projected = live?.find((t) => t.kind === 'pubsub' && t.name === trigger.name)
   const state = projected && 'pubsub' in projected ? projected.pubsub : undefined
-  const number = (value: string) => (value === '' ? undefined : Math.max(1, Math.round(Number(value) || 1)))
+  const number = (value: string, max: number) =>
+    value === '' ? undefined : Math.min(max, Math.max(1, Math.round(Number(value) || 1)))
 
   return (
     <div
@@ -549,6 +550,7 @@ function PubSubCard({
               </option>
             ))}
           </Select>
+          <Problems problems={at('environment')} />
         </Field>
       </div>
       <Field label="Subscription" hint="Its id in the resource's project, or projects/…/subscriptions/….">
@@ -568,8 +570,9 @@ function PubSubCard({
             max={100}
             placeholder="4"
             value={trigger.maxInFlight ?? ''}
-            onChange={(e) => patch({ maxInFlight: number(e.target.value) })}
+            onChange={(e) => patch({ maxInFlight: number(e.target.value, 100) })}
           />
+          <Problems problems={at('maxInFlight')} />
         </Field>
         <Field label="Hold up to (minutes)" hint="Longer runs: the message is acked and the run goes on.">
           <Input
@@ -577,8 +580,9 @@ function PubSubCard({
             min={1}
             placeholder="60"
             value={trigger.maxHoldMinutes ?? ''}
-            onChange={(e) => patch({ maxHoldMinutes: number(e.target.value) })}
+            onChange={(e) => patch({ maxHoldMinutes: number(e.target.value, 24 * 60) })}
           />
+          <Problems problems={at('maxHoldMinutes')} />
         </Field>
       </div>
       <p className="text-xs text-muted">

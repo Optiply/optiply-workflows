@@ -316,6 +316,24 @@ async function checkReleasable(
     }
     pubsubEnvironments.set(trigger.name, env.id)
   }
+  // A trigger pulls with its resource's settings in its environment: they must be there, or every pull would fail.
+  for (const trigger of definition.triggers?.pubsub ?? []) {
+    const resource = resources.find((r) => r.slug === trigger.resource)
+    if (!resource) continue
+    const environmentId = pubsubEnvironments.get(trigger.name)!
+    const [configured] = await db
+      .select({ id: resourceConfigs.id })
+      .from(resourceConfigs)
+      .where(
+        and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, environmentId)),
+      )
+    if (!configured) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `Pub/Sub trigger "${trigger.name}" runs in environment "${envs.find((e) => e.id === environmentId)!.slug}", where resource "${trigger.resource}" isn't configured`,
+      })
+    }
+  }
 
   const webhook = definition.triggers?.webhook
   if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)

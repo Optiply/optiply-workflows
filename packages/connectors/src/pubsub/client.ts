@@ -46,6 +46,11 @@ export interface PubSubClientOptions {
   /** `https://pubsub.googleapis.com` by default; a fake's or the emulator's in tests. */
   url?: string
   dispatcher?: Dispatcher
+  /**
+   * Refuse names in other projects: for the server's own identity, which an admin approved for `project` only (M18's
+   * rule). A key reaches what its own roles allow, so it may name any project.
+   */
+  ownProjectOnly?: boolean
 }
 
 /** The longest ack deadline Pub/Sub takes, in seconds. */
@@ -169,7 +174,13 @@ export class PubSubClient {
   }
 
   private path(kind: 'subscriptions' | 'topics', name: string): string {
-    return `/v1/${resourcePath(this.options.project, kind, name)}`
+    const full = resourcePath(this.options.project, kind, name)
+    if (this.options.ownProjectOnly && !full.startsWith(`projects/${this.options.project}/`))
+      throw new ConnectorError(
+        'invalid_query',
+        `This resource signs in as the server's own identity, for project ${this.options.project} only: ${name} is in another`,
+      )
+    return `/v1/${full}`
   }
 
   private async call<T = unknown>(

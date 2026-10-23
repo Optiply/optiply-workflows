@@ -124,18 +124,30 @@ export class PubSubConsumer {
       if (!ids.has(id)) {
         this.subscribers.delete(id)
         await subscriber.stop()
+        // Not pulling it any more: give the lease up at once (if still ours), so the editor stops showing it pulled.
+        await db.execute(sql`
+          update workflow_triggers set lease_owner = null, lease_expires_at = null
+          where id = ${id} and lease_owner = ${workerId}`)
       }
     }
-    // What each held trigger is doing, for the editor (one small update per trigger and tick).
+    // What each held trigger is doing, for the editor: written when it changed (one small update per such trigger).
     for (const subscriber of this.subscribers.values()) {
+      const state = subscriber.state()
+      const text = JSON.stringify(state)
+      if (text === subscriber.writtenState) continue
       await db
         .update(workflowTriggers)
-        .set({ state: subscriber.state() })
+        .set({ state })
         .where(and(eq(workflowTriggers.id, subscriber.triggerId), eq(workflowTriggers.leaseOwner, workerId)))
+      subscriber.writtenState = text
     }
     for (const trigger of held) {
       const current = this.subscribers.get(trigger.id)
-      if (current && current.key === settingsKey(trigger)) continue
+      if (current && current.key === settingsKey(trigger)) {
+        // A new release with the same trigger settings: its runs start the new release, nothing is restarted.
+        current.trigger = trigger
+        continue
+      }
       if (current) await current.stop()
       if (!current)
         this.opts.log?.info({ triggerId: trigger.id, trigger: trigger.name }, 'pubsub trigger leased')
@@ -146,15 +158,17 @@ export class PubSubConsumer {
   }
 }
 
-/** A new release, other settings or another environment start the trigger's puller afresh. */
+/** Other settings or another environment start the trigger's puller afresh (a new release alone doesn't). */
 function settingsKey(t: TriggerRow): string {
-  return JSON.stringify([t.release_id, t.environment_id, t.config])
+  return JSON.stringify([t.environment_id, t.config])
 }
 
 /** One trigger's puller: its subscription, its held messages, its errors. */
 class Subscriber {
   readonly key: string
   readonly held = new Map<string, HeldMessage>()
+  /** The state last written to the trigger's row. */
+  writtenState: string | undefined
   private readonly abort = new AbortController()
   private loop: Promise<void> = Promise.resolve()
   private holding: Promise<void> = Promise.resolve()
@@ -166,7 +180,8 @@ class Subscriber {
   private lastErrorAt: string | null = null
 
   constructor(
-    private readonly trigger: TriggerRow,
+    /** Swapped for the next release's row by the lease tick when only the release changed. */
+    public trigger: TriggerRow,
     private readonly opts: PubSubConsumerOptions,
   ) {
     this.key = settingsKey(trigger)
@@ -264,9 +279,11 @@ class Subscriber {
           { triggerId: this.trigger.id, trigger: this.trigger.name, err: describe(err), retryInMs: retry },
           'pubsub pull failed',
         )
-        // Settings fixed meanwhile (a key, a role) are picked up on the next try.
-        await this.client?.agent.close().catch(() => {})
+        // Settings fixed meanwhile (a key, a role) are picked up on the next try. The old client is closed a little
+        // later: an ack or extension may be using it, and those get the new one from `pubsub()`.
+        const old = this.client
         this.client = undefined
+        if (old) setTimeout(() => void old.agent.close().catch(() => {}), 30_000).unref()
         await this.sleep(retry)
         retry = Math.min(retry * 2, 30_000)
         continue
@@ -309,10 +326,10 @@ class Subscriber {
     const outcome = await startDelivery(this.opts.db, this.trigger, received)
     if (outcome.kind === 'done') {
       pubsubStats.duplicate++
-      await this.client!.pubsub.acknowledge(
+      await (await this.pubsub()).acknowledge(
         this.trigger.config.subscription,
         [received.ackId],
-        this.abort.signal,
+        this.callSignal(),
       )
       this.opts.log?.info(
         { triggerId: this.trigger.id, messageId: message.messageId },
@@ -333,13 +350,19 @@ class Subscriber {
     await this.extend([received.ackId])
   }
 
+  /** For acks, nacks and extensions: stopped with the subscriber, and never longer than 15 s (a hung call mustn't
+   * stall the hold loop while other messages' deadlines run out). */
+  private callSignal(): AbortSignal {
+    return AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)])
+  }
+
   private async extend(ackIds: string[]): Promise<void> {
     try {
-      await this.client!.pubsub.modifyAckDeadline(
+      await (await this.pubsub()).modifyAckDeadline(
         this.trigger.config.subscription,
         ackIds,
         this.opts.holdDeadlineSeconds ?? 60,
-        this.abort.signal,
+        this.callSignal(),
       )
     } catch (err) {
       // An extension missed: Pub/Sub may redeliver, and the redelivery is held for the same run.
@@ -419,17 +442,22 @@ class Subscriber {
           eq(pubsubDeliveries.lastRunId, h.runId),
         ),
       )
-    this.held.delete(h.messageId)
-    pubsubStats.inFlight--
+    // A redelivery for the same run may have replaced the entry meanwhile: its ack id is the one to answer.
+    const current = this.held.get(h.messageId)
+    const ackId = current && current.runId === h.runId ? current.ackId : h.ackId
+    if (!current || current.runId === h.runId) {
+      this.held.delete(h.messageId)
+      pubsubStats.inFlight--
+    }
     const subscription = this.trigger.config.subscription
     const where = { triggerId: this.trigger.id, messageId: h.messageId, runId: h.runId }
     try {
       if (outcome === 'failed') {
-        await this.client!.pubsub.nack(subscription, [h.ackId], this.abort.signal)
+        await (await this.pubsub()).nack(subscription, [ackId], this.callSignal())
         pubsubStats.nacked++
         this.opts.log?.info(where, 'pubsub message nacked: its run failed')
       } else {
-        await this.client!.pubsub.acknowledge(subscription, [h.ackId], this.abort.signal)
+        await (await this.pubsub()).acknowledge(subscription, [ackId], this.callSignal())
         pubsubStats[outcome === 'released' ? 'released' : 'acked']++
         if (outcome === 'released')
           this.opts.log?.warn(
@@ -477,6 +505,16 @@ export async function startDelivery(
         .where(eq(workflowRuns.id, delivery!.lastRunId))
       if (latest && ['queued', 'running', 'waiting'].includes(latest.status))
         return { kind: 'running' as const, runId: delivery!.lastRunId }
+      // It ended, but its outcome wasn't recorded (its worker stopped first): record it now. One that succeeded is
+      // done: never run again.
+      const ended = latest?.status === 'succeeded' ? 'succeeded' : 'failed'
+      await tx
+        .update(pubsubDeliveries)
+        .set({ outcome: ended, updatedAt: new Date() })
+        .where(
+          and(eq(pubsubDeliveries.triggerId, trigger.id), eq(pubsubDeliveries.messageId, message.messageId)),
+        )
+      if (ended === 'succeeded') return { kind: 'done' as const }
     }
     const n = delivery!.runs + 1
     const { run } = await startRun(tx as unknown as Db, {

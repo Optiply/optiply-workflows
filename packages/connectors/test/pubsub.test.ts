@@ -91,12 +91,23 @@ describe('pubsub resource', () => {
     )
     configurePubSub({
       url: pubsub.url,
+      tokenUrl: google.tokenUrl,
       serverIdentity: serverIdentity({ scope: 's', env: { GCE_METADATA_HOST: google.metadataHost } }),
     })
     expect(await testResource(pubsubConnector, server)).toMatchObject({
       ok: true,
       message: 'Pub/Sub project fake-project as vm@fake-project.iam.gserviceaccount.com',
     })
+    // The server's identity was approved for its project only: other projects' names are refused.
+    const elsewhere = await publish(server, 'projects/secret-prod/topics/x', '{"data": 1}').catch(
+      (e: Error) => e,
+    )
+    expect(elsewhere).toMatchObject({ code: 'invalid_query' })
+    expect((elsewhere as Error).message).toContain('for project fake-project only')
+    // A key may name another project (its own roles decide).
+    await expect(publish(keyed(), 'projects/secret-prod/topics/x', '{"data": 1}')).rejects.toThrow(
+      /Resource not found/,
+    )
     const noProject = await testResource(pubsubConnector, resource({ identity: 'server' }))
     expect(noProject).toMatchObject({
       ok: false,
