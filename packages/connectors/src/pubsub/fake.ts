@@ -182,6 +182,23 @@ export async function startFakePubSub(
   }
 
   const handle = async (method: string, path: string, body: Record<string, unknown>) => {
+    const list = /^\/v1\/projects\/([^/]+)\/topics$/.exec(path)
+    if (list && method === 'GET') {
+      calls.push(`list projects/${list[1]}/topics`)
+      const failure = failures.get('list')
+      if (failure) {
+        failures.delete('list')
+        return { status: failure.status, json: { error: { code: failure.status, message: failure.message } } }
+      }
+      return {
+        status: 200,
+        json: {
+          topics: [...topics.keys()]
+            .filter((t) => t.startsWith(`projects/${list[1]}/`))
+            .map((name) => ({ name })),
+        },
+      }
+    }
     const m = /^\/v1\/(projects\/[^/]+\/(topics|subscriptions)\/[^/:]+)(?::(\w+))?$/.exec(path)
     if (!m) return { status: 404, json: { error: { code: 404, message: `no route ${path}` } } }
     const [, name, kind, verb] = m as unknown as [

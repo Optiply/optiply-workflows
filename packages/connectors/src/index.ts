@@ -1,6 +1,7 @@
 import { bigqueryConnector } from './bigquery'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
+import { pubsubConnector } from './pubsub/connector'
 import { restConnector } from './rest'
 import type { AnyConnector } from './types'
 
@@ -43,6 +44,22 @@ export {
 } from './oauth-presets'
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
+export {
+  MAX_ACK_DEADLINE_SECONDS,
+  type OutgoingMessage,
+  PubSubClient,
+  type PubSubMessage,
+  type ReceivedMessage,
+  resourcePath,
+  type SubscriptionInfo,
+} from './pubsub/client'
+export {
+  configurePubSub,
+  type PubSubDefaults,
+  type PubSubResourceClient,
+  pubsubClient,
+  pubsubConnector,
+} from './pubsub/connector'
 export { type AuthFlowStep, type RestConfig, type RestQuery, type RestSecrets, restConnector } from './rest'
 export { type RunOptions, runQuery, testResource } from './run'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
@@ -81,6 +98,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [mysqlConnector.type]: mysqlConnector,
   [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
+  [pubsubConnector.type]: pubsubConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

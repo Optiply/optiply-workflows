@@ -158,6 +158,16 @@ export class PubSubClient {
     return this.call<{ name: string }>('GET', this.path('topics', topic), signal)
   }
 
+  /** Up to `pageSize` of the project's topics (needs `pubsub.topics.list`, e.g. roles/pubsub.viewer). */
+  async listTopics(pageSize: number, signal: AbortSignal): Promise<string[]> {
+    const res = await this.call<{ topics?: { name: string }[] }>(
+      'GET',
+      `/v1/projects/${encodeURIComponent(this.options.project)}/topics?pageSize=${pageSize}`,
+      signal,
+    )
+    return (res.topics ?? []).map((t) => t.name)
+  }
+
   private path(kind: 'subscriptions' | 'topics', name: string): string {
     return `/v1/${resourcePath(this.options.project, kind, name)}`
   }
