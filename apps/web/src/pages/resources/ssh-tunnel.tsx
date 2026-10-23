@@ -175,7 +175,7 @@ function HopFields({
 }) {
   const isSet = (field: string) => !!mask && field in mask
   return (
-    <fieldset className="space-y-3 rounded-md bg-canvas p-3" data-testid={`ssh-hop-${hop.id}`}>
+    <fieldset className="min-w-0 space-y-3 rounded-md bg-canvas p-3" data-testid={`ssh-hop-${hop.id}`}>
       <div className="flex items-center justify-between">
         <legend className="text-sm font-medium">{label}</legend>
         {onRemove && !disabled && (
