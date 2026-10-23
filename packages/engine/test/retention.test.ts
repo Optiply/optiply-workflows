@@ -2,7 +2,14 @@ import { type Db, environments, maintenanceJobs, workflowReleases, workflows } f
 import { startTestDatabase } from '@ow/db/testing'
 import { sql as dsql, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { claimMaintenanceJob, claimRuns, deleteOldRuns, enqueueRun, RetentionJob } from '../src'
+import {
+  claimMaintenanceJob,
+  claimRuns,
+  deleteOldRuns,
+  enqueueRun,
+  PUBSUB_DELIVERY_DAYS,
+  RetentionJob,
+} from '../src'
 import { connect, wf } from './pg-harness'
 
 let db: Db
@@ -294,5 +301,27 @@ describe('deleteOldRuns: webhook bookkeeping', () => {
       select round(extract(epoch from now() - min(created_at)) / 60)::int as minutes
       from webhook_rejections where trigger_id = ${busy}`)
     expect(oldest!.minutes).toBe(200)
+  })
+})
+
+describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
+  it("deletes finished deliveries past Pub/Sub's longest retention, never one whose run is under way", async () => {
+    const [trigger] = await db.execute<{ id: string }>(dsql`
+      insert into workflow_triggers (id, workflow_id, release_id, kind, name)
+      values (gen_random_uuid(), ${workflowId}, ${releaseId}, 'pubsub', 'orders') returning id`)
+    const deliver = (messageId: string, outcome: string | null, daysAgo: number) =>
+      db.execute(dsql`
+        insert into pubsub_deliveries (trigger_id, message_id, runs, outcome, updated_at)
+        values (${trigger!.id}, ${messageId}, 1, ${outcome}, now() - make_interval(days => ${daysAgo}))`)
+    await deliver('old-done', 'succeeded', PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('old-failed', 'failed', PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('old-running', null, PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('recent', 'succeeded', PUBSUB_DELIVERY_DAYS - 1)
+    // `days` is the runs' horizon: deliveries keep their own.
+    const result = await deleteOldRuns(db, { days: 1, pauseMs: 0 })
+    expect(result.pubsubDeliveries).toBe(2)
+    const left = await db.execute<{ message_id: string }>(dsql`
+      select message_id from pubsub_deliveries where trigger_id = ${trigger!.id} order by message_id`)
+    expect(left.map((r) => r.message_id)).toEqual(['old-running', 'recent'])
   })
 })

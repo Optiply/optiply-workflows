@@ -12,7 +12,7 @@ import {
 import { startTestDatabase } from '@ow/db/testing'
 import { asc, sql as dsql, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { PubSubConsumer, type ResourceProvider } from '../src'
+import { PubSubConsumer, type PubSubConsumerOptions, pubsubStats, type ResourceProvider } from '../src'
 import { connect, wf } from './pg-harness'
 
 // The consumer (M19 step 3a) against Postgres and the fake Pub/Sub, where a second lasts 50 ms (a subscription's 10 s
@@ -70,7 +70,7 @@ const definition = wf([{ name: 'a', type: 'code', config: { code: 'return 1' } }
 let n = 0
 
 /** A topic and subscription of their own, and a workflow whose live release has a Pub/Sub trigger on it. */
-async function subscribed(config: { maxInFlight?: number } = {}) {
+async function subscribed(config: { maxInFlight?: number; maxHoldMinutes?: number } = {}) {
   const i = ++n
   const topic = `topic-${i}`
   const subscription = `sub-${i}`
@@ -97,7 +97,7 @@ async function subscribed(config: { maxInFlight?: number } = {}) {
         resource: 'events',
         subscription,
         maxInFlight: config.maxInFlight ?? 4,
-        maxHoldMinutes: 60,
+        maxHoldMinutes: config.maxHoldMinutes ?? 60,
       },
       environmentId: prodId,
     })
@@ -110,8 +110,18 @@ async function subscribed(config: { maxInFlight?: number } = {}) {
   }
 }
 
-function consumer(workerId = 'w1') {
-  const c = new PubSubConsumer({ db, resources, workerId, intervalMs: 100, leaseMs: 30_000, retryMs: 50 })
+function consumer(workerId = 'w1', over: Partial<PubSubConsumerOptions> = {}) {
+  const c = new PubSubConsumer({
+    db,
+    resources,
+    workerId,
+    intervalMs: 100,
+    leaseMs: 30_000,
+    retryMs: 50,
+    checkMs: 50,
+    extendEveryMs: 200,
+    ...over,
+  })
   consumers.push(c)
   return c
 }
@@ -163,9 +173,9 @@ describe('PubSubConsumer', () => {
   it('holds a redelivered message whose run is still under way, instead of running it again', async () => {
     const { trigger, publish, subscription } = await subscribed()
     publish('once')
-    consumer().start()
+    // Held for 10 s (500 ms here) and not extended in time: Pub/Sub delivers it again.
+    consumer('w1', { holdDeadlineSeconds: 10, extendEveryMs: 60_000 }).start()
     await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
-    // Past its 500 ms deadline (no extension yet: step 3b), Pub/Sub delivers it again.
     await expect
       .poll(() => pubsub.messages(subscription)[0]!.deliveries, { timeout: 5000 })
       .toBeGreaterThan(1)
@@ -266,5 +276,87 @@ describe('PubSubConsumer', () => {
       triggerId: expect.any(String),
       err: expect.stringContaining('Resource not found'),
     })
+  })
+})
+
+/** A run's end, as the dispatcher would write it. */
+const end = (runId: string, status: 'succeeded' | 'failed' | 'cancelled') =>
+  db.update(workflowRuns).set({ status, finishedAt: new Date() }).where(eq(workflowRuns.id, runId))
+const delivery = async (messageId: string) =>
+  (await db.select().from(pubsubDeliveries).where(eq(pubsubDeliveries.messageId, messageId)))[0]!
+
+describe('holding messages until their runs end (3b)', () => {
+  it('acks when the run succeeds; nacks when it fails or is cancelled, and Pub/Sub delivers it again', async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    const ok = publish('fine')
+    const bad = publish('breaks')
+    const stopped = publish('cancelled')
+    const before = { ...pubsubStats }
+    consumer().start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(3)
+    const runFor = async (messageId: string) =>
+      (await runsOf(trigger.id)).find(
+        (r) => (r.input as { message: { messageId: string } }).message.messageId === messageId,
+      )!
+    await end((await runFor(ok)).id, 'succeeded')
+    await end((await runFor(bad)).id, 'failed')
+    await end((await runFor(stopped)).id, 'cancelled')
+    const message = (id: string) => pubsub.messages(subscription).find((m) => m.messageId === id)!
+    await expect.poll(() => message(ok).acked).toBe(true)
+    expect(await delivery(ok)).toMatchObject({ outcome: 'succeeded', runs: 1 })
+    // Nacked: delivered again at once, and run again.
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(5)
+    expect(message(bad).deliveries).toBe(2)
+    expect(await delivery(bad)).toMatchObject({ runs: 2, outcome: null })
+    expect(pubsubStats.acked - before.acked).toBe(1)
+    expect(pubsubStats.nacked - before.nacked).toBe(2)
+  })
+
+  it("keeps a message whose run outlasts the subscription's deadline: no redelivery", async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    const id = publish('slow')
+    // Held 20 s (1 s here) at a time, extended every 200 ms; the subscription's own deadline is 500 ms.
+    consumer('w1', { holdDeadlineSeconds: 20 }).start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
+    await sleep(1500)
+    expect(pubsub.messages(subscription)[0]!.deliveries).toBe(1)
+    await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
+    await expect.poll(() => pubsub.messages(subscription)[0]!.acked).toBe(true)
+    expect(await delivery(id)).toMatchObject({ outcome: 'succeeded' })
+  })
+
+  it('acks a message held past maxHoldMinutes, and its run goes on', async () => {
+    const { trigger, publish, subscription } = await subscribed({ maxHoldMinutes: 1 })
+    const id = publish('long')
+    const warnings: string[] = []
+    consumer('w1', {
+      holdMinuteMs: 300,
+      log: { info: () => {}, warn: (_o, msg) => warnings.push(msg ?? '') },
+    }).start()
+    await expect.poll(() => pubsub.messages(subscription)[0]?.acked ?? false).toBe(true)
+    expect(await delivery(id)).toMatchObject({ outcome: 'released' })
+    expect((await runsOf(trigger.id))[0]!.status).toBe('queued')
+    expect(warnings).toContain('pubsub message held past maxHoldMinutes: acked, its run goes on')
+    // Delivered again anyway (at-least-once): acked without a run.
+    expect(await runsOf(trigger.id)).toHaveLength(1)
+  })
+
+  it('hands a held message over when its worker stops: the next one holds it for the same run, and acks it', async () => {
+    const { trigger, publish, subscription } = await subscribed()
+    publish('handed over')
+    const one = consumer('w1')
+    one.start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
+    // w1 stops: it nacks what it held and gives the lease up; w2 takes the trigger and gets the message again.
+    await one.stop()
+    const two = consumer('w2')
+    two.start()
+    await expect.poll(() => two.stats.inFlight, { timeout: 5000 }).toBe(1)
+    // At least twice: a pull w1 cancelled as it stopped may have taken it once more on the way.
+    expect(pubsub.messages(subscription)[0]!.deliveries).toBeGreaterThanOrEqual(2)
+    expect(await runsOf(trigger.id)).toHaveLength(1)
+    await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
+    await expect.poll(() => pubsub.messages(subscription)[0]!.acked).toBe(true)
+    expect(two.stats.inFlight).toBe(0)
   })
 })

@@ -5,6 +5,8 @@ import { sleep } from './retry'
 /** How long webhook rejections are kept, and how many per webhook at most. */
 export const REJECTION_DAYS = 7
 export const MAX_REJECTIONS_PER_WEBHOOK = 200
+/** How long finished Pub/Sub deliveries are kept: Pub/Sub keeps an unacked message 31 days at most. */
+export const PUBSUB_DELIVERY_DAYS = 32
 
 export interface RetentionOptions {
   /** Runs that finished longer ago than this many days are deleted. */
@@ -33,6 +35,8 @@ export interface RetentionResult {
   rateWindows: number
   /** Webhook rejections older than 7 days, or beyond the latest 200 of their webhook. */
   rejections: number
+  /** Finished Pub/Sub deliveries past Pub/Sub's longest message retention (M19). */
+  pubsubDeliveries: number
   /** The longest single statement, in ms: each one is its own short transaction. */
   longestStatementMs: number
   durationMs: number
@@ -65,6 +69,7 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
     snapshots: 0,
     rateWindows: 0,
     rejections: 0,
+    pubsubDeliveries: 0,
     longestStatementMs: 0,
     durationMs: 0,
     stopped: false,
@@ -184,6 +189,18 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
             from webhook_rejections) r
           where r.created_at < ${now}::timestamptz - interval '${sql.raw(String(REJECTION_DAYS))} days'
              or r.n > ${MAX_REJECTIONS_PER_WEBHOOK}
+          limit ${chunk})
+        returning 1`,
+    )
+    // Kept while Pub/Sub could still redeliver the message (31 days at most): a redelivery of one whose run
+    // succeeded must still be recognised.
+    result.pubsubDeliveries = await drain(
+      'pubsub_deliveries',
+      () => sql`
+        delete from pubsub_deliveries where (trigger_id, message_id) in (
+          select trigger_id, message_id from pubsub_deliveries
+          where outcome is not null
+            and updated_at < ${now}::timestamptz - interval '${sql.raw(String(PUBSUB_DELIVERY_DAYS))} days'
           limit ${chunk})
         returning 1`,
     )

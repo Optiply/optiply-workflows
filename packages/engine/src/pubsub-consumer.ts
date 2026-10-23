@@ -8,7 +8,7 @@ import {
 } from '@ow/connectors'
 import { type Db, pubsubDeliveries, workflowRuns } from '@ow/db'
 import type { PubSubTrigger } from '@ow/definition'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { startRun } from './queue'
 import type { PubSubRunMessage, ResourceProvider } from './types'
 
@@ -31,7 +31,18 @@ export interface PubSubConsumerOptions {
   leaseMs?: number
   /** The first wait after a failed pull, doubling up to 30 s: 1 s. */
   retryMs?: number
+  /** How often held messages' runs are checked for their end: 1 s. */
+  checkMs?: number
+  /** How often held messages' deadlines are extended: 20 s. */
+  extendEveryMs?: number
+  /** The deadline set each time, in Pub/Sub's seconds: 60. */
+  holdDeadlineSeconds?: number
+  /** How long a minute of `maxHoldMinutes` is, for tests: 60 s. */
+  holdMinuteMs?: number
 }
+
+/** This process's Pub/Sub triggers, for metrics (`ow_pubsub_*`). */
+export const pubsubStats = { inFlight: 0, acked: 0, nacked: 0, duplicate: 0, released: 0, pullErrors: 0 }
 
 export interface PubSubLogger {
   info(obj: object, msg?: string): void
@@ -139,6 +150,7 @@ class Subscriber {
   readonly held = new Map<string, HeldMessage>()
   private readonly abort = new AbortController()
   private loop: Promise<void> = Promise.resolve()
+  private holding: Promise<void> = Promise.resolve()
   private client: PubSubResourceClient | undefined
   private wakeUp: (() => void) | undefined
 
@@ -151,12 +163,29 @@ class Subscriber {
 
   start(): void {
     this.loop = this.pullLoop()
+    this.holding = this.holdLoop()
   }
 
+  /**
+   * Stops pulling and holding. Held messages are nacked, so the trigger's next worker gets them at once (and holds them
+   * for their runs, which go on); one nack it can't send just waits out its deadline.
+   */
   async stop(): Promise<void> {
     this.abort.abort()
     this.wake()
-    await this.loop
+    await Promise.all([this.loop, this.holding])
+    const left = [...this.held.values()]
+    this.held.clear()
+    pubsubStats.inFlight -= left.length
+    if (left.length && this.client) {
+      await this.client.pubsub
+        .nack(
+          this.trigger.config.subscription,
+          left.map((h) => h.ackId),
+          AbortSignal.timeout(5_000),
+        )
+        .catch(() => {})
+    }
     await this.client?.agent.close().catch(() => {})
     this.client = undefined
   }
@@ -201,6 +230,7 @@ class Subscriber {
         retry = firstRetry
       } catch (err) {
         if (this.abort.signal.aborted) return
+        pubsubStats.pullErrors++
         this.opts.log?.warn(
           { triggerId: this.trigger.id, trigger: this.trigger.name, err: describe(err), retryInMs: retry },
           'pubsub pull failed',
@@ -249,6 +279,7 @@ class Subscriber {
     const { message } = received
     const outcome = await startDelivery(this.opts.db, this.trigger, received)
     if (outcome.kind === 'done') {
+      pubsubStats.duplicate++
       await this.client!.pubsub.acknowledge(
         this.trigger.config.subscription,
         [received.ackId],
@@ -260,12 +291,129 @@ class Subscriber {
       )
       return
     }
+    const earlier = this.held.get(message.messageId)
+    if (!earlier) pubsubStats.inFlight++
     this.held.set(message.messageId, {
       ackId: received.ackId,
       messageId: message.messageId,
       runId: outcome.runId,
-      since: Date.now(),
+      // A redelivery of a message already held keeps its hold's start.
+      since: earlier?.since ?? Date.now(),
     })
+    // The subscription's own deadline (10 s by default) is short: held for longer at once.
+    await this.extend([received.ackId])
+  }
+
+  private async extend(ackIds: string[]): Promise<void> {
+    try {
+      await this.client!.pubsub.modifyAckDeadline(
+        this.trigger.config.subscription,
+        ackIds,
+        this.opts.holdDeadlineSeconds ?? 60,
+        this.abort.signal,
+      )
+    } catch (err) {
+      // An extension missed: Pub/Sub may redeliver, and the redelivery is held for the same run.
+      if (!this.abort.signal.aborted)
+        this.opts.log?.warn(
+          { triggerId: this.trigger.id, err: describe(err) },
+          'pubsub hold extension failed',
+        )
+    }
+  }
+
+  /** Watches held messages' runs: acks on success, nacks on failure or cancel, releases past the hold, extends. */
+  private async holdLoop(): Promise<void> {
+    const checkMs = this.opts.checkMs ?? 1_000
+    const extendEveryMs = this.opts.extendEveryMs ?? 20_000
+    const maxHoldMs = this.trigger.config.maxHoldMinutes * (this.opts.holdMinuteMs ?? 60_000)
+    let nextExtend = Date.now() + extendEveryMs
+    while (!this.abort.signal.aborted) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, checkMs)
+        const signal = this.abort.signal
+        function done() {
+          clearTimeout(timer)
+          signal.removeEventListener('abort', done)
+          resolve()
+        }
+        signal.addEventListener('abort', done, { once: true })
+      })
+      if (this.abort.signal.aborted || !this.held.size) continue
+      try {
+        const held = [...this.held.values()]
+        const statuses = new Map(
+          (
+            await this.opts.db
+              .select({ id: workflowRuns.id, status: workflowRuns.status })
+              .from(workflowRuns)
+              .where(
+                inArray(
+                  workflowRuns.id,
+                  held.map((h) => h.runId),
+                ),
+              )
+          ).map((r) => [r.id, r.status]),
+        )
+        const now = Date.now()
+        for (const h of held) {
+          const status = statuses.get(h.runId)
+          if (status === 'succeeded') await this.finish(h, 'succeeded')
+          // Failed, cancelled, or gone (deleted with its workflow): Pub/Sub redelivers it.
+          else if (status === undefined || status === 'failed' || status === 'cancelled')
+            await this.finish(h, 'failed')
+          else if (now - h.since >= maxHoldMs) await this.finish(h, 'released')
+        }
+        if (now >= nextExtend && this.held.size) {
+          nextExtend = now + extendEveryMs
+          await this.extend([...this.held.values()].map((h) => h.ackId))
+        }
+      } catch (err) {
+        if (!this.abort.signal.aborted)
+          this.opts.log?.warn({ triggerId: this.trigger.id, err: describe(err) }, 'pubsub hold check failed')
+      }
+    }
+  }
+
+  /**
+   * A held message's end: recorded first (so a redelivery of one whose ack was lost is recognised), then acked
+   * (`succeeded`, `released`) or nacked (`failed`, for Pub/Sub to redeliver with its backoff and dead-letter policy).
+   */
+  private async finish(h: HeldMessage, outcome: 'succeeded' | 'failed' | 'released'): Promise<void> {
+    await this.opts.db
+      .update(pubsubDeliveries)
+      .set({ outcome, updatedAt: new Date() })
+      .where(
+        and(
+          eq(pubsubDeliveries.triggerId, this.trigger.id),
+          eq(pubsubDeliveries.messageId, h.messageId),
+          eq(pubsubDeliveries.lastRunId, h.runId),
+        ),
+      )
+    this.held.delete(h.messageId)
+    pubsubStats.inFlight--
+    const subscription = this.trigger.config.subscription
+    const where = { triggerId: this.trigger.id, messageId: h.messageId, runId: h.runId }
+    try {
+      if (outcome === 'failed') {
+        await this.client!.pubsub.nack(subscription, [h.ackId], this.abort.signal)
+        pubsubStats.nacked++
+        this.opts.log?.info(where, 'pubsub message nacked: its run failed')
+      } else {
+        await this.client!.pubsub.acknowledge(subscription, [h.ackId], this.abort.signal)
+        pubsubStats[outcome === 'released' ? 'released' : 'acked']++
+        if (outcome === 'released')
+          this.opts.log?.warn(
+            { ...where, maxHoldMinutes: this.trigger.config.maxHoldMinutes },
+            'pubsub message held past maxHoldMinutes: acked, its run goes on',
+          )
+      }
+    } catch (err) {
+      // Lost: Pub/Sub redelivers it after its deadline, and the recorded outcome decides then.
+      if (!this.abort.signal.aborted)
+        this.opts.log?.warn({ ...where, err: describe(err) }, 'pubsub ack or nack failed')
+    }
+    this.wake()
   }
 }
 

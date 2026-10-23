@@ -17,6 +17,7 @@ export {
   PubSubConsumer,
   type PubSubConsumerOptions,
   type PubSubLogger,
+  pubsubStats,
   startDelivery,
 } from './pubsub-consumer'
 export * from './queue'
@@ -24,6 +25,7 @@ export {
   claimMaintenanceJob,
   deleteOldRuns,
   finishMaintenanceJob,
+  PUBSUB_DELIVERY_DAYS,
   RetentionJob,
   type RetentionLogger,
   type RetentionOptions,

@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import type { RunObserver, ScheduleFire } from '@ow/engine'
+import { pubsubStats, type RunObserver, type ScheduleFire } from '@ow/engine'
 import { sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import client from 'prom-client'
@@ -105,6 +105,36 @@ export class Metrics {
       collect() {
         this.reset()
         this.inc(sshTunnelStats.iapResumes)
+      },
+    })
+
+    // Pub/Sub triggers (M19), as this process's consumer counts them.
+    new client.Counter({
+      name: 'ow_pubsub_messages_total',
+      help: 'Pub/Sub messages this process finished with, by outcome (acked, nacked, duplicate, released past the hold)',
+      labelNames: ['outcome'],
+      registers,
+      collect() {
+        this.reset()
+        for (const outcome of ['acked', 'nacked', 'duplicate', 'released'] as const)
+          this.inc({ outcome }, pubsubStats[outcome])
+      },
+    })
+    new client.Gauge({
+      name: 'ow_pubsub_in_flight',
+      help: 'Pub/Sub messages this process holds now, their runs under way',
+      registers,
+      collect() {
+        this.set(pubsubStats.inFlight)
+      },
+    })
+    new client.Counter({
+      name: 'ow_pubsub_pull_errors_total',
+      help: "Pulls of this process's Pub/Sub triggers that failed (no access, a missing subscription, Pub/Sub down)",
+      registers,
+      collect() {
+        this.reset()
+        this.inc(pubsubStats.pullErrors)
       },
     })
 

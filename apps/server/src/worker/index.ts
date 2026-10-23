@@ -1,6 +1,6 @@
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { Dispatcher, RetentionJob, Scheduler } from '@ow/engine'
+import { Dispatcher, PubSubConsumer, RetentionJob, Scheduler } from '@ow/engine'
 import { IvmRuntime } from '@ow/sandbox'
 import type { Logger } from 'pino'
 import type postgres from 'postgres'
@@ -67,12 +67,23 @@ export async function startWorker(deps: {
     pollMs: config.GIT_POLL_SECONDS * 1000,
   })
   git.start()
+  // Pub/Sub triggers (M19): pulled by one worker at a time each, under the dispatcher's name.
+  const pubsub = new PubSubConsumer({
+    db,
+    resources: dbResourceProvider(db, config.keyring, authSandbox),
+    workerId: dispatcher.workerId,
+    log: log.child({ component: 'pubsub' }),
+  })
+  pubsub.start()
   return {
     dispatcher,
     scheduler,
     retention,
     git,
+    pubsub,
     stop: async () => {
+      // First, so held messages are nacked to the next worker while this one can still finish runs.
+      await pubsub.stop()
       await git.stop()
       await retention.stop()
       await scheduler.stop()
