@@ -1266,6 +1266,8 @@ export const collabDocuments = pgTable(
     workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
     appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
     moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
+    /** A library query's main draft (M21: the library query editor is multiplayer too). */
+    libraryQueryId: uuid().references(() => libraryQueries.id, { onDelete: 'cascade' }),
     branchDraftId: uuid().references(() => gitBranchDrafts.id, { onDelete: 'cascade' }),
     /** The document as one Yjs update, with `collab_updates` folded in so far. */
     state: bytea().notNull(),
@@ -1277,7 +1279,7 @@ export const collabDocuments = pgTable(
   (t) => [
     check(
       'collab_documents_object_ck',
-      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.moduleId}, ${t.branchDraftId}) = 1`,
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.moduleId}, ${t.libraryQueryId}, ${t.branchDraftId}) = 1`,
     ),
   ],
 )

@@ -183,6 +183,13 @@
       "when": 1792773095780,
       "tag": "0025_branch_draft_base_value",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792832002256,
+      "tag": "0026_collab_library_queries",
+      "breakpoints": true
     }
   ]
 }

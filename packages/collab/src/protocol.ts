@@ -28,13 +28,17 @@ export interface CollabStatus {
 /** Close codes besides the standard ones. */
 export const CLOSE_ACCESS_LOST = 4403
 
-export const COLLAB_KINDS = ['workflow', 'app', 'module', 'branch'] as const
+export const COLLAB_KINDS = ['workflow', 'app', 'module', 'library', 'branch'] as const
 export type CollabKind = (typeof COLLAB_KINDS)[number]
 
-/** A document's key: the main draft of a workflow, app or module, or a Git branch draft (`branch:<draft id>`). */
+/**
+ * A document's key: the main draft of a workflow, app, module or (M21) library query, or a Git branch draft
+ * (`branch:<draft id>`).
+ */
 export const collabKey = (kind: CollabKind, id: string): string => `${kind}:${id}`
 
-const KEY = /^(workflow|app|module|branch):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+const KEY =
+  /^(workflow|app|module|library|branch):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
 
 export function parseCollabKey(key: string): { kind: CollabKind; id: string } | null {
   const m = KEY.exec(key)

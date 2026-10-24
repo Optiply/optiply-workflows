@@ -1,5 +1,14 @@
 import { equal, SharedDefinition } from '@ow/collab'
-import { apps, collabDocuments, collabUpdates, type Db, gitBranchDrafts, modules, workflows } from '@ow/db'
+import {
+  apps,
+  collabDocuments,
+  collabUpdates,
+  type Db,
+  gitBranchDrafts,
+  libraryQueries,
+  modules,
+  workflows,
+} from '@ow/db'
 import { asc, eq, inArray, sql } from 'drizzle-orm'
 import * as Y from 'yjs'
 import type { CollabOwner, CollabTarget } from './target'
@@ -280,7 +289,9 @@ async function lockedDraft(tx: Tx, owner: CollabOwner): Promise<{ definition: un
         ? [workflows, owner.workflowId]
         : 'appId' in owner
           ? [apps, owner.appId]
-          : [modules, owner.moduleId]
+          : 'libraryQueryId' in owner
+            ? [libraryQueries, owner.libraryQueryId]
+            : [modules, owner.moduleId]
     return (
       await tx
         .select({ definition: table.draftDefinition, revision: table.draftRevision })
@@ -310,5 +321,7 @@ async function writeDraft(
   const values = { draftDefinition: definition as never, draftRevision: revision, updatedBy: userId }
   if ('workflowId' in owner) await tx.update(workflows).set(values).where(eq(workflows.id, owner.workflowId))
   else if ('appId' in owner) await tx.update(apps).set(values).where(eq(apps.id, owner.appId))
-  else await tx.update(modules).set(values).where(eq(modules.id, owner.moduleId))
+  else if ('libraryQueryId' in owner) {
+    await tx.update(libraryQueries).set(values).where(eq(libraryQueries.id, owner.libraryQueryId))
+  } else await tx.update(modules).set(values).where(eq(modules.id, owner.moduleId))
 }

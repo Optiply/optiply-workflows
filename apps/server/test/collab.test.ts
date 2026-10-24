@@ -1,12 +1,22 @@
 import {
+  type CollabSpec,
   type CollabStatus,
+  libraryQuerySpec,
   MESSAGE_AWARENESS,
   MESSAGE_STATUS,
   MESSAGE_SYNC,
   SharedDefinition,
   workflowSpec,
 } from '@ow/collab'
-import { collabDocuments, collabUpdates, createDb, gitBranchDrafts, users, workflows } from '@ow/db'
+import {
+  collabDocuments,
+  collabUpdates,
+  createDb,
+  gitBranchDrafts,
+  libraryQueries,
+  users,
+  workflows,
+} from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import * as decoding from 'lib0/decoding'
@@ -82,10 +92,10 @@ function endedWith(cookie: string, key: string): Promise<{ code: number; reason:
 }
 
 /** A browser's side of the connection: a document kept in sync with the server's, and presence. */
-async function connect(cookie: string, key: string, base = baseUrl) {
+async function connect(cookie: string, key: string, base = baseUrl, spec: CollabSpec = workflowSpec) {
   const ws = await open(cookie, key, base)
   const doc = new Y.Doc()
-  const shared = new SharedDefinition<WorkflowDefinition>(doc, workflowSpec)
+  const shared = new SharedDefinition<WorkflowDefinition>(doc, spec)
   const awareness = new Awareness(doc)
   const send = (write: (e: encoding.Encoder) => void) => {
     const e = encoding.createEncoder()
@@ -464,6 +474,96 @@ describe('collab documents', () => {
     expect(c.code()).toBe('return "closed"')
     expect(c.status()).toEqual({ revision: 5, error: null })
     await c.close()
+  })
+})
+
+/** A library query's definition, as the library editor edits it (M21). */
+const libraryDefinition = (sql: string) => ({
+  schemaVersion: 1,
+  resource: 'optiply_db',
+  query: { sql },
+  params: [{ name: 'id' }],
+})
+
+describe('library query documents (M21)', () => {
+  async function createLibraryQuery(slug: string, sql: string): Promise<string> {
+    const { id } = data(await admin.mutate('libraryQueries.create', { slug, name: slug }))
+    data(
+      await admin.mutate('libraryQueries.saveDraft', { id, revision: 1, definition: libraryDefinition(sql) }),
+    )
+    return id
+  }
+  const connectLibrary = async (cookie: string, key: string) => {
+    const peer = await connect(cookie, key, baseUrl, libraryQuerySpec)
+    const shared = peer.shared as unknown as SharedDefinition<ReturnType<typeof libraryDefinition>>
+    return {
+      ...peer,
+      sql: () => shared.value.query.sql,
+      type: (sql: string) => shared.set({ ...shared.value, query: { ...shared.value.query, sql } }),
+    }
+  }
+  const stored = async (id: string) =>
+    (await env.db.select().from(libraryQueries).where(eq(libraryQueries.id, id)))[0]!
+
+  it('relays the SQL between two editors and writes it to the draft', async () => {
+    const id = await createLibraryQuery('together', 'select {{ id }}')
+    const key = `library:${id}`
+    const a = await connectLibrary(adminCookie, key)
+    const b = await connectLibrary(adminCookie, key)
+    expect(a.sql()).toBe('select {{ id }}')
+    a.type('select {{ id }} as x')
+    await vi.waitFor(() => expect(b.sql()).toBe('select {{ id }} as x'))
+    // Both typing at once: the text merges.
+    a.type('select {{ id }} as x -- a')
+    b.type('-- b\nselect {{ id }} as x')
+    await vi.waitFor(() => expect(a.sql()).toBe('-- b\nselect {{ id }} as x -- a'))
+    await vi.waitFor(() => expect(b.sql()).toBe('-- b\nselect {{ id }} as x -- a'))
+    await vi.waitFor(async () => expect((await stored(id)).draftDefinition.query.sql).toBe(a.sql()), {
+      timeout: 3000,
+    })
+    await a.close()
+    await b.close()
+    await settled(key)
+  })
+
+  it('folds a draft saved some other way into the open document', async () => {
+    const id = await createLibraryQuery('library_folded', 'select 1')
+    const key = `library:${id}`
+    const a = await connectLibrary(adminCookie, key)
+    data(
+      await admin.mutate('libraryQueries.saveDraft', {
+        id,
+        revision: 2,
+        definition: libraryDefinition('select 2'),
+      }),
+    )
+    await vi.waitFor(() => expect(a.sql()).toBe('select 2'))
+    await a.close()
+  })
+
+  it('lets Use watch, and gives strangers nothing', async () => {
+    const id = await createLibraryQuery('library_watched', 'select 1')
+    const key = `library:${id}`
+    expect((await endedWith(memberCookie, key)).reason).toMatch(/./)
+    await admin.mutate('permissions.set', {
+      objectType: 'library_query',
+      objectId: id,
+      groupId: memberGroupId,
+      environmentId: null,
+      level: 'use',
+    })
+    const watcher = await connectLibrary(memberCookie, key)
+    const editor = await connectLibrary(adminCookie, key)
+    // The watcher's browser keeps its own edit; nobody else gets it.
+    watcher.type('select "watcher"')
+    editor.type('select "editor"')
+    await vi.waitFor(() => expect(watcher.sql()).toContain('"editor"'))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(editor.sql()).toBe('select "editor"')
+    await watcher.close()
+    await editor.close()
+    await settled(key)
+    expect((await stored(id)).draftDefinition.query.sql).toBe('select "editor"')
   })
 })
 

@@ -1,7 +1,8 @@
 import { appDefinitionSchema } from '@ow/app-definition'
-import { appSpec, type CollabSpec, parseCollabKey, workflowSpec } from '@ow/collab'
+import { appSpec, type CollabSpec, libraryQuerySpec, parseCollabKey, workflowSpec } from '@ow/collab'
 import type { Db } from '@ow/db'
-import { workflowDefinitionSchema } from '@ow/definition'
+import { libraryQueryDefinitionSchema, workflowDefinitionSchema } from '@ow/definition'
+import type { ObjectKind } from '@ow/git-format'
 import type { SessionUser } from '../../auth/sessions'
 import { loadBranchDraft } from '../git/branch-drafts'
 import { gitObjectLevel, loadGitObject } from '../git/kinds'
@@ -12,6 +13,7 @@ export type CollabOwner =
   | { workflowId: string }
   | { appId: string }
   | { moduleId: string }
+  | { libraryQueryId: string }
   | { branchDraftId: string }
 
 /** A draft someone opened for editing together, as they may use it. */
@@ -28,8 +30,9 @@ export interface CollabTarget {
 }
 
 /**
- * The draft a key names, if `user` may see it: a workflow's, app's or module's main draft (Use to watch, Edit to
- * write, read-only for everyone when protected), or a Git branch draft of one (Edit, as for the branch drafts API).
+ * The draft a key names, if `user` may see it: a workflow's, app's, module's or library query's (M21) main draft (Use
+ * to watch, Edit to write, read-only for everyone when protected), or a Git branch draft of one (Edit, as for the
+ * branch drafts API).
  * Null when there's no such draft or the user can't see it: the same answer, so keys reveal nothing.
  */
 export async function resolveTarget(db: Db, user: SessionUser, key: string): Promise<CollabTarget | null> {
@@ -38,40 +41,48 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
   const access = await loadAccess(db, user)
   if (parsed.kind === 'branch') {
     const loaded = await loadBranchDraft(db, parsed.id).catch(() => null)
-    if (!loaded || loaded.target.kind === 'library_query') return null
+    if (!loaded) return null
     const level = gitObjectLevel(access, loaded.target.kind, loaded.target.object)
     if (!atLeast(level, 'edit')) return null
     const { draft } = loaded
     return {
       key,
-      ...rules(loaded.target.kind === 'workflow'),
+      ...rules(loaded.target.kind),
       owner: { branchDraftId: draft.id },
       readOnly: false,
       draft: { definition: draft.definition, revision: draft.revision },
     }
   }
-  const object = await loadGitObject(db, parsed.kind, { id: parsed.id })
-  const level = object && gitObjectLevel(access, parsed.kind, object)
+  const kind: ObjectKind = parsed.kind === 'library' ? 'library_query' : parsed.kind
+  const object = await loadGitObject(db, kind, { id: parsed.id })
+  const level = object && gitObjectLevel(access, kind, object)
   if (!object || !level) return null
   return {
     key,
-    ...rules(parsed.kind === 'workflow'),
+    ...rules(kind),
     owner:
-      parsed.kind === 'workflow'
+      kind === 'workflow'
         ? { workflowId: object.id }
-        : parsed.kind === 'app'
+        : kind === 'app'
           ? { appId: object.id }
-          : { moduleId: object.id },
+          : kind === 'module'
+            ? { moduleId: object.id }
+            : { libraryQueryId: object.id },
     readOnly: !atLeast(level, 'edit') || object.gitProtected,
     draft: { definition: object.draftDefinition, revision: object.draftRevision },
   }
 }
 
-/** A workflow's mapping and schema, or an app's (a module's definition is an app's). */
-function rules(workflow: boolean): Pick<CollabTarget, 'spec' | 'check'> {
-  const schema = workflow ? workflowDefinitionSchema : appDefinitionSchema
+/** A kind's mapping and schema: a workflow's, a library query's (M21) or an app's (a module's definition is an app's). */
+function rules(kind: ObjectKind): Pick<CollabTarget, 'spec' | 'check'> {
+  const [spec, schema] =
+    kind === 'workflow'
+      ? [workflowSpec, workflowDefinitionSchema]
+      : kind === 'library_query'
+        ? [libraryQuerySpec, libraryQueryDefinitionSchema]
+        : [appSpec, appDefinitionSchema]
   return {
-    spec: workflow ? workflowSpec : appSpec,
+    spec,
     check: (definition) => {
       const parsed = schema.safeParse(definition)
       if (parsed.success) return null
