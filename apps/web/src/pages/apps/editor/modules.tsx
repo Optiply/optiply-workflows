@@ -1,4 +1,11 @@
-import { type AppComponent, addModuleInstance, instanceKeys, setProp, usedModules } from '@ow/app-definition'
+import {
+  type AppComponent,
+  addModuleInstance,
+  instanceKeys,
+  MAX_MODULE_DEPTH,
+  setProp,
+  usedModules,
+} from '@ow/app-definition'
 import { compareVersions } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -41,7 +48,7 @@ export function useModuleSync() {
   }, [releases.data, releaseKey, setModuleReleases])
 }
 
-/** Places a published module in the app (M14): where the palette would put a component. */
+/** Places a published module in the app or (M21) module: where the palette would put a component. */
 export function AddModule() {
   const [open, setOpen] = useState(false)
   return (
@@ -59,10 +66,27 @@ function AddModuleDialog({ onClose }: { onClose: () => void }) {
   const list = useQuery(trpc.modules.list.queryOptions())
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
+  const self = useAppEditor((s) => s.slug)
   const [search, setSearch] = useState('')
   const needle = search.trim().toLowerCase()
-  const published = (list.data ?? []).filter(
-    (m) => m.liveVersion && (!needle || m.name.toLowerCase().includes(needle) || m.slug.includes(needle)),
+  const live = (list.data ?? []).filter((m) => m.liveVersion)
+  // How each live release nests (M21): what would make a cycle or nest too deep here isn't offered.
+  const nesting = useQuery({
+    ...trpc.modules.resolve.queryOptions({ slugs: live.map((m) => m.slug) }),
+    enabled: live.length > 0,
+  })
+  const placeable = (m: (typeof live)[number]) => {
+    if (m.slug === self) return false
+    const own = nesting.data?.[m.slug]
+    const n = own?.liveVersion ? own.nesting?.[own.liveVersion] : undefined
+    if (!n) return true
+    if (self && n.reaches.includes(self)) return false
+    return n.depth <= (self ? MAX_MODULE_DEPTH - 1 : MAX_MODULE_DEPTH)
+  }
+  const offered = live.filter(placeable)
+  const left = live.length - offered.length
+  const published = offered.filter(
+    (m) => !needle || m.name.toLowerCase().includes(needle) || m.slug.includes(needle),
   )
   return (
     <Dialog title="Add a module" onClose={onClose}>
@@ -83,6 +107,13 @@ function AddModuleDialog({ onClose }: { onClose: () => void }) {
               Open Modules
             </Link>
           </EmptyState>
+        )}
+        {left > 0 && (
+          <p className="text-xs text-muted" data-testid="module-picker-left">
+            {left === 1 ? '1 module isn’t listed' : `${left} modules aren’t listed`}: placing{' '}
+            {left === 1 ? 'it' : 'them'} here would nest modules more than {MAX_MODULE_DEPTH} deep, or make{' '}
+            {self ? 'this module hold itself' : 'a module hold itself'}.
+          </p>
         )}
         <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto" data-testid="module-picker">
           {published.map((m) => (

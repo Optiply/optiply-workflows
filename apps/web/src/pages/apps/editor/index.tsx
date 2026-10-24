@@ -121,10 +121,11 @@ export function DraftLoader({
       load(id, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
         kind,
+        ...(data && { slug: data.slug }),
       })
       openSession(kind, id, draft.id)
     },
-    [load, kind],
+    [load, kind, data],
   )
   useEffect(() => {
     if (!data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
@@ -133,6 +134,7 @@ export function DraftLoader({
       load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
         readOnly: data.gitProtected,
         kind,
+        slug: data.slug,
       })
       openSession(kind, data.id, null)
     }
@@ -383,12 +385,10 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
                   <section>
                     <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
                     <Palette />
-                    {/* No modules inside modules. */}
-                    {app.kind === 'app' && (
-                      <div className="mt-1.5">
-                        <AddModule />
-                      </div>
-                    )}
+                    {/* Modules inside modules too (M21), as deep as the limit allows. */}
+                    <div className="mt-1.5">
+                      <AddModule />
+                    </div>
                   </section>
                 )}
                 <section>

@@ -41,6 +41,8 @@ export type ModuleRef = ModuleInfo & { id: string; name: string }
 interface AppEditorState {
   /** Whose draft is edited: an app's, or a module's (M14; same editor, saved and run as the module's). */
   kind: 'app' | 'module'
+  /** A module's slug (M21): its instances reaching it back are cycles. Null for an app. */
+  slug: string | null
   /** The app's id, or the module's. */
   appId: string | null
   /** The Git branch draft being edited (M11), or null for the app's own (main) draft. */
@@ -97,7 +99,7 @@ interface AppEditorState {
     definition: AppDefinition,
     revision: number,
     draftHash: string,
-    opts?: { branchDraftId?: string | null; readOnly?: boolean; kind?: 'app' | 'module' },
+    opts?: { branchDraftId?: string | null; readOnly?: boolean; kind?: 'app' | 'module'; slug?: string },
   ): void
   /** The shared document synced: it's the definition from now on, and edits go into it. */
   attach(shared: SharedDefinition<AppDefinition>): void
@@ -134,6 +136,7 @@ interface AppEditorState {
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
   kind: 'app',
+  slug: null,
   appId: null,
   branchDraftId: null,
   readOnly: false,
@@ -161,6 +164,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
     set({
       appId,
       kind: opts.kind ?? 'app',
+      slug: opts.kind === 'module' ? (opts.slug ?? null) : null,
       branchDraftId: opts.branchDraftId ?? null,
       readOnly: opts.readOnly ?? false,
       definition,
@@ -169,7 +173,10 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       draftHash,
       status: 'connecting',
       saveError: null,
-      diagnostics: validate(definition, get()),
+      diagnostics: validate(definition, {
+        ...get(),
+        slug: opts.kind === 'module' ? (opts.slug ?? null) : null,
+      }),
       selected: null,
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
@@ -308,9 +315,9 @@ function viewOf(state: AppEditorState): AppEditorView {
  */
 function validate(
   definition: AppDefinition,
-  { libraries, modules }: Pick<AppEditorState, 'libraries' | 'modules'>,
+  { libraries, modules, slug }: Pick<AppEditorState, 'libraries' | 'modules' | 'slug'>,
 ): AppDiagnostic[] {
-  const options: AppValidateOptions = {}
+  const options: AppValidateOptions = slug ? { self: slug } : {}
   if (usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))) {
     options.resolveLibrary = (slug) => libraries[slug] ?? undefined
   }
