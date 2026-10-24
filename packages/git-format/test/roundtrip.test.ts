@@ -90,7 +90,14 @@ function block(r: Rng, name: string): Block {
       { method: 'GET', path: text(r) },
       {},
     ])
-  switch (r.int(8)) {
+  switch (r.int(9)) {
+    case 7:
+      return {
+        name,
+        type: 'libraryQuery',
+        config: { library: 'customers', version: r.pick(['latest', '1.2.0']), params: { id: text(r) } },
+        ...settings,
+      }
     case 0:
       return { name, type: 'code', config: { code: text(r), ...language(r) }, ...settings }
     case 1:
@@ -106,6 +113,7 @@ function block(r: Rng, name: string): Block {
             { kind: 'query' as const, resource: 'shop', query: query() },
             { kind: 'function' as const, function: 'fn0' },
             { kind: 'workflow' as const, workflow: 'child-flow', input: text(r) },
+            { kind: 'library' as const, library: 'customers', version: '1.0.0', params: { id: text(r) } },
           ]),
         },
       }

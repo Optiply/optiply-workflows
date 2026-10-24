@@ -85,7 +85,13 @@ function freeName(def: WorkflowDefinition, stem: string): string {
 }
 
 function newBlock(r: Random, name: string): Block {
-  switch (r.int(6)) {
+  switch (r.int(7)) {
+    case 5:
+      return {
+        name,
+        type: 'libraryQuery',
+        config: { library: 'customers', version: 'latest', params: { id: '{{ a }}', region: "'eu'" } },
+      }
     case 0:
       return {
         name,
@@ -120,6 +126,21 @@ function editBlock(r: Random, block: Block): Block | null {
           query: { ...block.config.query, sql: typeInto(r, String(block.config.query.sql)) },
         },
       }
+    case 'libraryQuery': {
+      // Parameters are text (typed into), added and removed by name; the version is a value (M21).
+      const params = { ...block.config.params }
+      const names = Object.keys(params)
+      const choice = r.int(4)
+      const name = r.pick(names)
+      if (choice === 0 && name) params[name] = typeInto(r, params[name] ?? '')
+      else if (choice === 1) params[`p${r.int(100)}`] = '{{ b }}'
+      else if (choice === 2 && name) delete params[name]
+      else {
+        const version = r.pick(['latest', '1.0.0', '1.2.0'] as const) ?? 'latest'
+        return { ...block, config: { ...block.config, version } }
+      }
+      return { ...block, config: { ...block.config, params } }
+    }
     case 'filter':
       return r.chance(0.5)
         ? { ...block, config: { ...block.config, input: typeInto(r, block.config.input) } }

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  blockClipSchema,
   checkLibraryReference,
+  copyBlocks,
   type LibraryInfo,
   libraryQueryDefinitionSchema,
   libraryScope,
+  pasteBlocks,
+  renameBlock,
   usedLibraries,
   validateDefinition,
+  type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '../src'
 import { code, start, wf } from './helpers'
@@ -148,6 +153,44 @@ describe('Library query blocks (M21)', () => {
       ),
     )
     expect(usedLibraries(def).sort()).toEqual(['customers', 'orders'])
+  })
+})
+
+describe('editing Library query blocks (M21)', () => {
+  const def = workflowDefinitionSchema.parse(
+    wf(
+      [
+        start,
+        code('orders'),
+        library('library1', {
+          library: 'customers',
+          version: 'latest',
+          params: { id: '{{ orders.data[0].id }}' },
+        }),
+      ],
+      [
+        ['startTrigger', 'orders'],
+        ['orders', 'library1'],
+      ],
+    ),
+  )
+  const paramsOf = (d: WorkflowDefinition, name: string) =>
+    (d.blocks.find((b) => b.name === name) as { config: { params: Record<string, string> } }).config.params
+
+  it('rewrites the parameters when a block they read is renamed', () => {
+    const result = renameBlock(def, 'orders', 'purchases')
+    if (!result.ok) throw new Error(result.error)
+    expect(paramsOf(result.definition, 'library1')).toEqual({ id: '{{ purchases.data[0].id }}' })
+  })
+
+  it('copies and pastes with the parameters following renamed blocks', () => {
+    const clip = copyBlocks(def, null, ['orders', 'library1'])!
+    expect(blockClipSchema.safeParse(JSON.parse(JSON.stringify(clip))).success).toBe(true)
+    const pasted = pasteBlocks(def, null, clip)
+    const names = pasted.definition.blocks.map((b) => b.name)
+    expect(names).toEqual(['startTrigger', 'orders', 'library1', 'orders1', 'library2'])
+    expect(paramsOf(pasted.definition, 'library2')).toEqual({ id: '{{ orders1.data[0].id }}' })
+    expect(validateDefinition(pasted.definition).ok).toBe(true)
   })
 })
 
