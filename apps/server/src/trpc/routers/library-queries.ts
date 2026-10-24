@@ -6,7 +6,7 @@ import {
   validateLibraryQuery,
 } from '@ow/app-definition'
 import { type LibraryQuery, libraryQueries, libraryQueryReleases, permissions, users } from '@ow/db'
-import { workflowSlugSchema } from '@ow/definition'
+import { type LibraryInfo, workflowSlugSchema } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -232,10 +232,13 @@ export const libraryQueriesRouter = router({
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       const infos = await libraryInfos(ctx.db, [...new Set(input.slugs)])
+      // One the caller may not use says only that (M21): "needs use access", not "unknown", and nothing more.
       return Object.fromEntries(
-        [...infos]
-          .filter(([, { query }]) => access.libraryQueryLevel(query) !== null)
-          .map(([slug, { query, info }]) => [slug, { id: query.id, name: query.name, ...info }]),
+        [...infos].map(([slug, { query, info }]): [string, LibraryInfo & { id?: string; name?: string }] =>
+          access.libraryQueryLevel(query) !== null
+            ? [slug, { id: query.id, name: query.name, ...info }]
+            : [slug, { liveVersion: null, versions: {}, noUse: true }],
+        ),
       )
     }),
 

@@ -36,7 +36,7 @@ export interface AppEditorView {
 export type { LibraryRef }
 
 /** A module the app places, as the server described it (`modules.resolve`). */
-export type ModuleRef = ModuleInfo & { id: string; name: string }
+export type ModuleRef = ModuleInfo & { id?: string; name?: string }
 
 interface AppEditorState {
   /** Whose draft is edited: an app's, or a module's (M14; same editor, saved and run as the module's). */

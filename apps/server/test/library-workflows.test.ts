@@ -214,6 +214,14 @@ describe('Library query blocks', () => {
 })
 
 describe('the library query', () => {
+  it('tells someone who may not use it so, and nothing more', async () => {
+    expect(data(await member.query('libraryQueries.resolve', { slugs: ['customer_label', 'nope'] }))).toEqual(
+      {
+        customer_label: { liveVersion: null, versions: {}, noUse: true },
+      },
+    )
+  })
+
   it('lists the workflows using it and refuses to be deleted while they do', async () => {
     const used = data(await admin.query('libraryQueries.usedBy', { libraryQueryId: libraryId }))
     expect(used.workflows.map((w: { slug: string }) => w.slug).sort()).toEqual([

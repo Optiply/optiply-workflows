@@ -1,6 +1,7 @@
 import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
+import { renameModuleInputReads } from './rename'
 import {
   type AppComponent,
   type AppDefinition,
@@ -457,7 +458,8 @@ export function addModuleItem(
 
 /**
  * Replaces a module's input, output or event. Renaming an event re-points the `moduleEvent` actions firing it;
- * code reading a renamed input (`inputs.<old>`) is left for the person to change (the problems list shows it).
+ * renaming an input rewrites the module's reads of it (`inputs.<old>`, M21). Apps passing the old input aren't
+ * changed (they're other objects): publishing warns about them.
  */
 export function updateModuleItem<P extends ModulePart>(
   def: AppDefinition,
@@ -472,7 +474,8 @@ export function updateModuleItem<P extends ModulePart>(
     ...def,
     module: { ...spec, [part]: items.map((i) => (i.name === name ? next : i)) },
   }
-  if (part !== 'events' || next.name === name) return updated
+  if (next.name === name || part === 'outputs') return updated
+  if (part === 'inputs') return renameModuleInputReads(updated, name, next.name).definition
   const repoint = (handlers: EventHandler[] | undefined) =>
     handlers?.map((h) =>
       h.action.type === 'moduleEvent' && h.action.event === name

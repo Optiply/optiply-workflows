@@ -35,6 +35,9 @@ export interface FieldRef {
   shorthand?: true
   /** With `{ properties: true }`: the property read straight off it (`b` in `a.b`). */
   property?: string
+  /** Where that property's name is, when known (M21: renaming a module's input). */
+  propertyStart?: number
+  propertyEnd?: number
 }
 
 /** Every field of a block that holds code or templates, in a stable order. */
@@ -129,7 +132,15 @@ export function fieldRefs(
   const collect = (code: string, kind: CodeKind, offset: number) => {
     try {
       for (const ref of freeIdentifierRefs(code, kind, options)) {
-        refs.push({ ...ref, start: ref.start + offset, end: ref.end + offset })
+        refs.push({
+          ...ref,
+          start: ref.start + offset,
+          end: ref.end + offset,
+          ...(ref.propertyStart !== undefined && {
+            propertyStart: ref.propertyStart + offset,
+            propertyEnd: ref.propertyEnd! + offset,
+          }),
+        })
       }
     } catch (err) {
       if (!(err instanceof TemplateError)) throw err

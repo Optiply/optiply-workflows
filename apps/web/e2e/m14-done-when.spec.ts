@@ -165,10 +165,10 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
         definition: changed,
       })
     ).revision
-    // In the editor the library query isn't theirs to see: a problem, and Publish waits.
+    // In the editor they're told they need Use on it (M21; it was "unknown" before): a problem, and Publish waits.
     await viewer.goto(`/apps/${latestSlug}/edit`)
     await viewer.getByRole('tab', { name: /^Problems/ }).click()
-    await expect(viewer.getByText(`No library query has the slug "${librarySlug}"`)).toBeVisible()
+    await expect(viewer.getByText(`You need use access to library query "${librarySlug}"`)).toBeVisible()
     await expect(viewer.getByRole('button', { name: 'Publish', exact: true })).toBeDisabled()
     // And the server refuses it.
     const refused = await viewer.request.post('/api/trpc/apps.publish', {

@@ -17,6 +17,9 @@ export interface IdentifierRef {
    * Missing when the reference is used whole (`f(a)`) or with a computed key (`a[k]`).
    */
   property?: string
+  /** Where that property's name is (inside the quotes for `a['b']`), when it's known: to rename it (M21). */
+  propertyStart?: number
+  propertyEnd?: number
 }
 
 export type CodeKind =
@@ -90,7 +93,11 @@ export function freeIdentifierRefs(
       const found: IdentifierRef = { name: id.name, start: id.start - offset, end: id.end - offset }
       if (shorthands.has(id.start)) found.shorthand = true
       const property = properties?.get(id.start)
-      if (property !== undefined) found.property = property
+      if (property !== undefined) {
+        found.property = property.name
+        found.propertyStart = property.start - offset
+        found.propertyEnd = property.end - offset
+      }
       return found
     })
     .sort((a, b) => a.start - b.start)
@@ -111,18 +118,22 @@ function shorthandValueStarts(root: Node): Set<number> {
   return starts
 }
 
-/** The property each identifier that is a member expression's object reads, by the identifier's start offset. */
-function memberProperties(root: Node): Map<number, string> {
-  const props = new Map<number, string>()
+/**
+ * The property each identifier that is a member expression's object reads, by the identifier's start offset: its
+ * name and where the name is (inside the quotes for a string key).
+ */
+function memberProperties(root: Node): Map<number, { name: string; start: number; end: number }> {
+  const props = new Map<number, { name: string; start: number; end: number }>()
   const visit = (value: unknown) => {
     if (Array.isArray(value)) return value.forEach(visit)
     if (!value || typeof value !== 'object' || typeof (value as { type?: unknown }).type !== 'string') return
     const node = value as Node & { object?: Node & { name?: string }; property?: Node; computed?: boolean }
     if (node.type === 'MemberExpression' && node.object?.type === 'Identifier') {
       const prop = node.property as (Node & { name?: string; value?: unknown }) | undefined
-      if (!node.computed && prop?.type === 'Identifier') props.set(node.object.start, prop.name!)
-      else if (node.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
-        props.set(node.object.start, prop.value)
+      if (!node.computed && prop?.type === 'Identifier') {
+        props.set(node.object.start, { name: prop.name!, start: prop.start, end: prop.end })
+      } else if (node.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
+        props.set(node.object.start, { name: prop.value, start: prop.start + 1, end: prop.end - 1 })
       }
     }
     for (const [key, child] of Object.entries(node)) if (key !== 'loc') visit(child)

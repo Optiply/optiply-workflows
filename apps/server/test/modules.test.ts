@@ -217,6 +217,10 @@ describe('apps placing modules', () => {
       code: 'FORBIDDEN',
       message: 'You need use access to module "placed_picker" to release this app, which uses it',
     })
+    // Someone who may not use it learns only that (M21): "needs use access" rather than "unknown".
+    expect(data(await member.query('modules.resolve', { slugs: ['placed_picker', 'nope'] }))).toEqual({
+      placed_picker: { liveVersion: null, versions: {}, noUse: true },
+    })
     await grant('module', m.id, 'use')
     expect(data(await publish()).version).toBe('1.0.0')
 

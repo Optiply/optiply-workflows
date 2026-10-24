@@ -4,6 +4,7 @@ import {
   appDefinitionSchema,
   emptyModule,
   MAX_MODULE_DEPTH,
+  type ModuleInfo,
   validateApp,
 } from '@ow/app-definition'
 import { type Module, moduleReleases, modules, permissions, users } from '@ow/db'
@@ -244,10 +245,13 @@ export const modulesRouter = router({
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       const infos = await moduleInfos(ctx.db, [...new Set(input.slugs)])
+      // One the caller may not use says only that (M21): "needs use access", not "unknown", and nothing more.
       return Object.fromEntries(
-        [...infos]
-          .filter(([, { module }]) => access.moduleLevel(module) !== null)
-          .map(([slug, { module, info }]) => [slug, { id: module.id, name: module.name, ...info }]),
+        [...infos].map(([slug, { module, info }]): [string, ModuleInfo & { id?: string; name?: string }] =>
+          access.moduleLevel(module) !== null
+            ? [slug, { id: module.id, name: module.name, ...info }]
+            : [slug, { liveVersion: null, versions: {}, noUse: true }],
+        ),
       )
     }),
 

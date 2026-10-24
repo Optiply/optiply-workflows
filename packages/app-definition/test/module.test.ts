@@ -11,6 +11,7 @@ import {
   moduleNesting,
   removeModuleItem,
   renameAppEntity,
+  renameModuleInputReads,
   updateModuleItem,
   validateApp,
 } from '../src'
@@ -40,6 +41,9 @@ const picker = (extra: Partial<AppDefinition> = {}): AppDefinition => ({
   },
   ...extra,
 })
+
+/** A resource query's SQL, by its index. */
+const sqlOf = (def: AppDefinition, i: number) => (def.queries[i] as { query?: { sql?: unknown } }).query?.sql
 
 const codes = (def: unknown, options = {}) =>
   validateApp(def, options).diagnostics.map((d) => [d.code, d.path.join('.'), d.severity])
@@ -132,6 +136,7 @@ describe('module instances in apps', () => {
       },
     },
     draft_only: { liveVersion: null, versions: {} },
+    locked: { liveVersion: null, versions: {}, noUse: true },
   }
   const resolveModule = (slug: string) => modules[slug]
   const instance = (props: Record<string, unknown>, extra: object = {}) =>
@@ -177,6 +182,7 @@ describe('module instances in apps', () => {
         comp('b', 'module', { module: 'draft_only' }),
         comp('c', 'module', { module: 'customer_picker', version: '9.9.9' }),
         comp('d', 'module', { module: '{{ x }}' }),
+        comp('e', 'module', { module: 'locked' }),
       ],
     })
     expect(codes(bad, { resolveModule })).toEqual([
@@ -184,6 +190,7 @@ describe('module instances in apps', () => {
       ['unpublished_module', 'components.1.props.version', 'error'],
       ['unknown_version', 'components.2.props.version', 'error'],
       ['unknown_module', 'components.3.props.module', 'error'],
+      ['no_use_access', 'components.4.props.module', 'error'],
       ['unknown_identifier', 'components.3.props.module', 'error'],
     ])
   })
@@ -272,12 +279,62 @@ describe('editing a module’s interface', () => {
     expect(renamed.components[2]!.events![0]!.action).toEqual({ type: 'moduleEvent', event: 'chosen' })
     expect(codes(renamed)).toEqual([])
 
-    // An input renamed: code still reading the old name is a problem to fix.
+    // An input renamed (M21): the module's reads of it follow.
     const input = updateModuleItem(picker(), 'inputs', 'region', { name: 'area', testValue: 'EU' })
     expect(input.module!.inputs[1]).toEqual({ name: 'area', testValue: 'EU' })
-    expect(codes(input).map(([code]) => code)).toContain('unknown_property')
+    expect(sqlOf(input, 0)).toBe('select * from customers where region = {{ inputs.area }}')
+    expect(codes(input)).toEqual([])
 
     expect(removeModuleItem(picker(), 'outputs', 'selectedId').module!.outputs).toEqual([])
+  })
+})
+
+describe('renaming a module input (M21)', () => {
+  it('rewrites inputs.<old> wherever the module reads it, and nothing else', () => {
+    const def = picker({
+      queries: [
+        sqlQuery(
+          'customers',
+          'select * from c where region = {{ inputs.region }} and x = {{ other.region }}',
+        ),
+        {
+          name: 'compute',
+          kind: 'js',
+          code: [
+            'const a = inputs.region + inputs["region"] + inputs.label',
+            'const f = (inputs) => inputs.region',
+            'return a + f({})',
+          ].join('\n'),
+        },
+      ] as AppDefinition['queries'],
+    })
+    def.module!.outputs[0]!.value = '{{ inputs?.region ?? null }}'
+    const renamed = renameModuleInputReads(def, 'region', 'area')
+    expect(sqlOf(renamed.definition, 0)).toBe(
+      'select * from c where region = {{ inputs.area }} and x = {{ other.region }}',
+    )
+    // A parameter named inputs is the function's own: its reads stay.
+    expect((renamed.definition.queries[1] as { code: string }).code).toBe(
+      [
+        'const a = inputs.area + inputs["area"] + inputs.label',
+        'const f = (inputs) => inputs.region',
+        'return a + f({})',
+      ].join('\n'),
+    )
+    expect(renamed.definition.module!.outputs[0]!.value).toBe('{{ inputs?.area ?? null }}')
+    expect(renamed.changed).toHaveLength(3)
+  })
+
+  it('leaves a field it can’t read alone, and says so', () => {
+    const def = picker()
+    def.components[1]!.props!.value = '{{ inputs.region +'
+    const renamed = renameModuleInputReads(def, 'region', 'area')
+    expect(renamed.skipped).toEqual([['components', 1, 'props', 'value']])
+    expect(renamed.definition.components[1]!.props!.value).toBe('{{ inputs.region +')
+  })
+
+  it('waits for a valid name', () => {
+    expect(renameModuleInputReads(picker(), 'region', 'not valid').changed).toEqual([])
   })
 })
 

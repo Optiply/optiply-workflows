@@ -100,7 +100,7 @@ export function LibraryQueryHeader({
   const library = useAppEditor((s) => s.libraries[query.library])
   const releases = useQuery({
     ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: library?.id ?? '' }),
-    enabled: !!library,
+    enabled: !!library?.id,
   })
   return (
     <>
@@ -160,7 +160,7 @@ export function LibraryQueryBody({
   const library = useAppEditor((s) => s.libraries[query.library])
   const releases = useQuery({
     ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: library?.id ?? '' }),
-    enabled: !!library,
+    enabled: !!library?.id,
   })
   const release = releases.data?.find((r) =>
     query.version === 'latest' ? r.live : r.version === query.version,
@@ -177,8 +177,13 @@ export function LibraryQueryBody({
 
   if (library === null) {
     return (
+      <p className="text-sm text-danger">No library query has the slug "{query.library}". Pick another.</p>
+    )
+  }
+  if (library?.noUse) {
+    return (
       <p className="text-sm text-danger">
-        No library query "{query.library}" that you can use. Ask its owner for access, or pick another.
+        You need use access to library query "{query.library}". Ask its owner for access, or pick another.
       </p>
     )
   }

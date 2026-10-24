@@ -120,6 +120,8 @@ export interface ModuleInfo {
   versions: Record<string, ModuleInterface>
   /** Each release's nesting, by version (M21); without it, depth and cycles through it aren't checked. */
   nesting?: Record<string, ModuleNesting>
+  /** The module exists but the person may not use it (M21): reported as needing use access, nothing else shown. */
+  noUse?: boolean
 }
 
 /**
@@ -755,6 +757,13 @@ function checkModuleInstance(
     report({
       code: 'unknown_module',
       message: `No module has the slug "${slug}"`,
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+  } else if (info.noUse) {
+    report({
+      code: 'no_use_access',
+      message: `You need use access to module "${slug}"`,
       path: [...base, 'props', 'module'],
       ...at,
     })

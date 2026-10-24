@@ -3,8 +3,11 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { useTRPC } from '@/lib/trpc'
 
-/** A library query an app or workflow uses, as the server described it (`libraryQueries.resolve`). */
-export type LibraryRef = LibraryInfo & { id: string; name: string }
+/**
+ * A library query an app or workflow uses, as the server described it (`libraryQueries.resolve`); one the person
+ * may not use has `noUse` and no id or name (M21).
+ */
+export type LibraryRef = LibraryInfo & { id?: string; name?: string }
 
 /**
  * Keeps an editor's knowledge of the library queries its definition uses current (M14, M21): `key` is their slugs
