@@ -1,6 +1,14 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS, taskOutcomes } from '@ow/definition'
+import {
+  type Block,
+  type BlockOf,
+  calledFunctions,
+  type LibraryReference,
+  libraryScope,
+  MAX_WAIT_MS,
+  taskOutcomes,
+} from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
 import type { HostFunction } from '@ow/sandbox'
 import { childResult, waitForChild } from './children'
@@ -23,6 +31,8 @@ export interface BlockContext {
   environmentId: string
   /** See `ExecuteRunOptions.actingUserId`. */
   actingUserId: string | null
+  /** See `ExecuteRunOptions.currentUserId` (M21). */
+  currentUserId: string | null
   services: EngineServices
   /** Aborted on timeout, run failure or interruption. */
   signal: AbortSignal
@@ -105,9 +115,8 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     return { data, metadata }
   },
 
-  // Runs from M21 step 2a; until then a clear failure rather than a missing executor.
-  async libraryQuery() {
-    throw new BlockFailure('library', "Library query blocks can't run yet")
+  async libraryQuery(block, ctx) {
+    return runLibraryQuery(block.config, ctx, ctx)
   },
 
   async branch(block, ctx) {
@@ -463,6 +472,7 @@ export async function runResourceQuery(
   query: Record<string, unknown>,
   work: Work,
   ctx: BlockContext,
+  opts: { evaluate?: Evaluate; timeoutMs?: number; labels?: Record<string, string> } = {},
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
@@ -475,9 +485,9 @@ export async function runResourceQuery(
     | { workflowId?: string; environment?: string; triggerType?: string }
     | undefined
   const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
-    evaluate: evaluatorFor(work, ctx),
+    evaluate: opts.evaluate ?? evaluatorFor(work, ctx),
     signal: work.signal,
-    timeoutMs: work.timeoutMs,
+    timeoutMs: opts.timeoutMs ?? work.timeoutMs,
     ...(target.credentials && { credentials: target.credentials }),
     labels: {
       ow_source: 'workflow',
@@ -485,9 +495,55 @@ export async function runResourceQuery(
       ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
       ...(workflow?.environment && { ow_environment: workflow.environment }),
       ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
+      ...opts.labels,
     },
   })
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+}
+
+/**
+ * Runs a library query (a Library query block, or a loop's library runner; M21): the release's resource and query,
+ * resolved now (so `latest` follows the live release on every attempt). The parameters are rendered in the work's
+ * scope; the library query's own `{{ }}`s see only them, `current_user` (whoever started the run) and the stdlib.
+ */
+export async function runLibraryQuery(
+  ref: LibraryReference & { params?: Record<string, string> | undefined },
+  work: Work,
+  ctx: BlockContext,
+): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
+  const library = ctx.services.library
+  if (!library) throw new BlockFailure('library', "Library queries aren't available here")
+  const { version, definition } = await library.resolve(ref.library, ref.version)
+  const evaluate = evaluatorFor(work, ctx)
+  const values: Record<string, unknown> = {}
+  for (const [name, template] of Object.entries(ref.params ?? {})) {
+    try {
+      values[name] = (await renderTemplate(template, evaluate)) ?? null
+    } catch (err) {
+      if (err instanceof BlockFailure) {
+        throw new BlockFailure(err.code, `Parameter ${name}: ${err.message}`)
+      }
+      throw err
+    }
+  }
+  const user = ctx.currentUserId ? await library.user(ctx.currentUserId) : null
+  const scope = libraryScope(definition, values, user)
+  const evaluateLibrary: Evaluate = async (code) => {
+    try {
+      return await ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: work.timeoutMs })
+    } catch (err) {
+      throw new BlockFailure(
+        'expression',
+        `Error in {{ ${code.trim()} }} of library query "${ref.library}": ${(err as Error).message}`,
+      )
+    }
+  }
+  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
+    evaluate: evaluateLibrary,
+    timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
+    labels: { ow_library: ref.library },
+  })
+  return { data, metadata: { ...metadata, library: { slug: ref.library, version } } }
 }
 
 /** Calls a workflow function with argument templates (a Function block, or a loop's function runner). */

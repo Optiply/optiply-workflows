@@ -25,7 +25,7 @@ import {
   suspendRun,
 } from './queue'
 import { PgUserTasks } from './tasks'
-import type { BlockResult, ResourceProvider, RunInput, RunResponse } from './types'
+import type { BlockResult, LibraryQueries, ResourceProvider, RunInput, RunResponse } from './types'
 
 /** Run-specific values the engine can't know: config vars (secret ones decrypted) and what to scrub. */
 export interface RunContextProvider {
@@ -51,6 +51,8 @@ export interface RunExecutorOptions {
   createSandbox?: () => CodeRuntime
   /** Runs Python code blocks; shared by every run of the process. Without it they fail (`python_unavailable`). */
   python?: PythonRunner
+  /** Library queries for Library query blocks and runners (M21). Without it they fail (`library`). */
+  library?: LibraryQueries
   /** Default 30s; renewed every third of it. */
   leaseMs?: number
   log?: DispatcherLogger
@@ -160,6 +162,7 @@ export class RunExecutor {
         environmentId: run.environmentId,
         // Only a draft run has a person behind it (whoever ran it from the editor).
         actingUserId: run.draftSnapshotId ? run.createdBy : null,
+        currentUserId: run.createdBy,
         input: run.input as RunInput,
         globals: {
           configVars: context.configVars,
@@ -179,6 +182,7 @@ export class RunExecutor {
           children: this.children,
           tasks: this.tasks,
           python: this.opts.python,
+          library: this.opts.library,
         },
         store,
         checkpoints,
