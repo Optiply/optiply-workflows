@@ -88,6 +88,21 @@ const executable = { ...named, settings: blockSettingsSchema.optional() }
 /** Parameter values for a function call: templates by parameter name. */
 const functionArgsSchema = z.record(identifierSchema, z.string())
 
+/** `latest` (the library query's live release, whichever it is when it runs) or a pinned `1.2.3` (M14, M21). */
+export const libraryVersionSchema = z.union([
+  z.literal('latest'),
+  z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, 'Use latest or a version like 1.2.3'),
+])
+
+/** A library query's slug, version and parameter values (templates by name; one not given is null) (M21). */
+const libraryCallShape = {
+  library: workflowSlugSchema,
+  version: libraryVersionSchema,
+  params: functionArgsSchema.optional(),
+}
+
 const keyValueSchema = z.strictObject({ key: z.string(), value: z.string() })
 
 export const startTriggerBlockSchema = z.strictObject({
@@ -129,6 +144,16 @@ export const resourceQueryBlockSchema = z.strictObject({
     /** The connector's query, checked against its `querySchema` when resources are known. Strings are templates. */
     query: z.record(z.string(), z.json()),
   }),
+})
+
+/**
+ * Runs a library query (M21): its release's resource and query, vouched for by whoever published it; the workflow
+ * passes the parameters, evaluated in the run's scope. Its data and metadata are a resource query's.
+ */
+export const libraryQueryBlockSchema = z.strictObject({
+  ...executable,
+  type: z.literal('libraryQuery'),
+  config: z.strictObject(libraryCallShape),
 })
 
 export const branchBlockSchema = z.strictObject({
@@ -195,6 +220,10 @@ export const loopRunnerSchema = z.discriminatedUnion('kind', [
     kind: z.literal('query'),
     resource: resourceSlugSchema,
     query: z.record(z.string(), z.json()),
+  }),
+  z.strictObject({
+    kind: z.literal('library'),
+    ...libraryCallShape,
   }),
   z.strictObject({
     kind: z.literal('function'),
@@ -335,6 +364,7 @@ export const blockSchema = z.discriminatedUnion('type', [
   startTriggerBlockSchema,
   codeBlockSchema,
   resourceQueryBlockSchema,
+  libraryQueryBlockSchema,
   branchBlockSchema,
   filterBlockSchema,
   responseBlockSchema,

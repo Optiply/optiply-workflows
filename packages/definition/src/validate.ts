@@ -3,6 +3,7 @@ import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
+import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
 import {
   type Block,
@@ -31,6 +32,7 @@ import {
   blockGraphs,
   calledFunctions,
   functionReturnBlock,
+  libraryCall,
   pythonFields,
 } from './walk'
 
@@ -81,6 +83,12 @@ export type DiagnosticCode =
   | 'task_in_handler'
   | 'unknown_workflow'
   | 'unpublished_workflow'
+  /** A Library query block's or runner's library query (M21): see `checkLibraryReference`. */
+  | 'unknown_library'
+  | 'no_use_access'
+  | 'unpublished_library'
+  | 'unknown_version'
+  | 'missing_param'
   | 'python_unsupported'
   | 'python_builtin'
   /** Python code assigns a block's or run global's name: there it's the code's own variable (a warning). */
@@ -125,6 +133,11 @@ export interface ValidateOptions {
    * execute). When given, every Workflow block and loop workflow runner is checked.
    */
   resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
+  /**
+   * The library queries the workflow may use (M21), by slug; undefined for none with that slug. When given, every
+   * Library query block and library loop runner is checked (`checkLibraryReference`).
+   */
+  resolveLibrary?: (slug: string) => LibraryInfo | undefined
   /**
    * Whether a User Task assignee written out in full (no `{{ }}`) exists: a user by email, a group by name. When
    * given, each one is checked; templated ones are checked when the task opens.
@@ -215,6 +228,24 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
           block: block.name,
           ...(fn && { function: fn.name }),
         })
+      })
+    }
+  }
+
+  // Library queries exist, may be used, have the release named, and get the parameters they declare (M21).
+  if (options.resolveLibrary) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        const use = libraryCall(block)
+        if (!use) return
+        for (const problem of checkLibraryReference(use.call, options.resolveLibrary!)) {
+          report({
+            ...problem,
+            path: [...path, 'blocks', i, ...use.at, ...problem.path],
+            block: block.name,
+            ...(fn && { function: fn.name }),
+          })
+        }
       })
     }
   }

@@ -47,6 +47,9 @@ export function codeFields(block: Block): CodeField[] {
     case 'resourceQuery':
       // Connector-agnostic: every string in the query is a template.
       return templateStrings(block.config.query, ['config', 'query'])
+    case 'libraryQuery':
+      // The parameters' templates; the library query's own `{{ }}`s read only its parameters (M21).
+      return argFields(block.config.params, ['config', 'params'])
     case 'branch':
       return block.config.conditions.map((c, i) => ({
         path: ['config', 'conditions', i, 'expression'],
@@ -179,6 +182,7 @@ function runnerFields(runner: LoopRunner): CodeField[] {
       ]
     case 'query':
       return templateStrings(runner.query, [...at, 'query'], ITEM_LOCALS)
+    case 'library':
     case 'function':
       return argFields(runner.params, [...at, 'params'], ITEM_LOCALS)
     case 'workflow':

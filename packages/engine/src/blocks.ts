@@ -105,6 +105,11 @@ const executors: { [T in Block['type']]: Executor<T> } = {
     return { data, metadata }
   },
 
+  // Runs from M21 step 2a; until then a clear failure rather than a missing executor.
+  async libraryQuery() {
+    throw new BlockFailure('library', "Library query blocks can't run yet")
+  },
+
   async branch(block, ctx) {
     for (const condition of block.config.conditions) {
       let value: unknown

@@ -1,4 +1,5 @@
 import { codeFields, fieldRefs } from './fields'
+import type { LibraryReference } from './library'
 import type { Block, Edge, FunctionDefinition, WorkflowDefinition } from './schema'
 
 /** The main graph or one function's: what the validator, the engine and renaming walk. */
@@ -51,6 +52,25 @@ export function calledWorkflows(def: WorkflowDefinition): string[] {
     if (block.type === 'workflow') slugs.add(block.config.workflow)
     if (block.type === 'loop' && block.config.runner.kind === 'workflow')
       slugs.add(block.config.runner.workflow)
+  }
+  return [...slugs]
+}
+
+/** The library query a block uses (M21): a Library query block's or a library loop runner's, with its path. */
+export function libraryCall(block: Block): { call: LibraryReference; at: (string | number)[] } | undefined {
+  if (block.type === 'libraryQuery') return { call: block.config, at: ['config'] }
+  if (block.type === 'loop' && block.config.runner.kind === 'library') {
+    return { call: block.config.runner, at: ['config', 'runner'] }
+  }
+  return undefined
+}
+
+/** Slugs of every library query the definition uses (M21), functions included. */
+export function usedLibraries(def: WorkflowDefinition): string[] {
+  const slugs = new Set<string>()
+  for (const block of allBlocks(def)) {
+    const use = libraryCall(block)
+    if (use) slugs.add(use.call.library)
   }
   return [...slugs]
 }

@@ -1,4 +1,10 @@
-import { blockNameSchema, conditionIdSchema, resourceSlugSchema, workflowSlugSchema } from '@ow/definition'
+import {
+  blockNameSchema,
+  conditionIdSchema,
+  libraryVersionSchema,
+  resourceSlugSchema,
+  workflowSlugSchema,
+} from '@ow/definition'
 import { z } from 'zod'
 
 /**
@@ -152,13 +158,7 @@ export const jsAppQuerySchema = z.strictObject({
   code: z.string(),
 })
 
-/** `latest` (the library query's live release, whichever it is when the query runs) or a pinned `1.2.3`. */
-export const libraryVersionSchema = z.union([
-  z.literal('latest'),
-  z
-    .string()
-    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, 'Use latest or a version like 1.2.3'),
-])
+export { libraryVersionSchema }
 
 /**
  * A query from the Query Library (M14): the library query's own resource and query run on the server; the app

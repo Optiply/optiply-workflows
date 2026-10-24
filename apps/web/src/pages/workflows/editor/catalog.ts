@@ -6,6 +6,7 @@ import {
   Filter,
   GitBranch,
   Hourglass,
+  Library,
   type LucideIcon,
   Play,
   Repeat,
@@ -41,6 +42,12 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
     icon: Database,
     tone: 'bg-op-blue-1 text-op-blue-4',
     prefix: 'query',
+  },
+  libraryQuery: {
+    label: 'Library query',
+    icon: Library,
+    tone: 'bg-op-blue-1 text-op-blue-4',
+    prefix: 'library',
   },
   code: { label: 'Code', icon: Code2, tone: 'bg-op-orange-1 text-op-orange-4', prefix: 'code' },
   branch: { label: 'Branch', icon: GitBranch, tone: 'bg-op-purple-1 text-op-purple-4', prefix: 'branch' },
@@ -138,6 +145,8 @@ export function newBlock(
           query: defaultQuery(resource!.type),
         },
       }
+    case 'libraryQuery':
+      return { name, type, config: { library: '', version: 'latest' } }
     case 'code':
       return context.python
         ? { name, type, config: { code: 'return None', language: 'python' } }
@@ -183,6 +192,10 @@ export function summary(block: Block): string {
       const sql = block.config.query.sql
       return typeof sql === 'string' ? firstLine(sql) : `${block.config.resource}`
     }
+    case 'libraryQuery':
+      return block.config.library
+        ? `${block.config.library}@${block.config.version}`
+        : 'No library query chosen'
     case 'code':
       return firstLine(block.config.code)
     case 'branch':

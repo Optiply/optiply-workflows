@@ -966,7 +966,9 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
                     }
                   : kind === 'function'
                     ? { kind, function: functions[0]?.name ?? '' }
-                    : { kind, workflow: '' },
+                    : kind === 'library'
+                      ? { kind, library: '', version: 'latest' }
+                      : { kind, workflow: '' },
             )
           }}
         >

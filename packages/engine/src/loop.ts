@@ -204,6 +204,8 @@ async function runner(block: LoopBlock, ctx: BlockContext, work: Work, key: stri
       return runCode(block, runner.code, work, ctx, runner.language)
     case 'query':
       return (await runResourceQuery(runner.resource, runner.query, work, ctx)).data
+    case 'library':
+      throw new BlockFailure('library', "Library query runners can't run yet")
     case 'function':
       return callWorkflowFunction(runner.function, runner.params, work, ctx)
     case 'workflow':
