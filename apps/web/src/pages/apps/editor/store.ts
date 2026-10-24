@@ -6,7 +6,6 @@ import {
   type ComponentSpec,
   componentSpec,
   instanceInterface,
-  type LibraryInfo,
   type ModuleInfo,
   moduleComponentSpec,
   resolvePage,
@@ -20,6 +19,7 @@ import type * as Y from 'yjs'
 import { create } from 'zustand'
 import { LOCAL, type SaveStatus } from '@/lib/collab-session'
 import { changeKey } from '@/lib/history'
+import type { LibraryRef } from '@/lib/library-refs'
 
 export type { SaveStatus }
 
@@ -33,8 +33,7 @@ export interface AppEditorView {
   page: string | null
 }
 
-/** A library query the app uses, as the server described it (`libraryQueries.resolve`). */
-export type LibraryRef = LibraryInfo & { id: string; name: string }
+export type { LibraryRef }
 
 /** A module the app places, as the server described it (`modules.resolve`). */
 export type ModuleRef = ModuleInfo & { id: string; name: string }

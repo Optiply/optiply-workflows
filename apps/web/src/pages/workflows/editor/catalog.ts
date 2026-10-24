@@ -87,6 +87,7 @@ export function kindOf(block: Block): BlockKind {
 /** Block types the user can add (there's exactly one start trigger). */
 export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'resourceQuery',
+  'libraryQuery',
   'code',
   'branch',
   'filter',

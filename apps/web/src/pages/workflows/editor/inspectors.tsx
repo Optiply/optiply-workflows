@@ -15,7 +15,8 @@ import {
   type WaitUnit,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
@@ -228,6 +229,8 @@ function TypeForm({ block, ctx }: { block: Block; ctx: FormContext }) {
       return <CodeForm block={block} ctx={ctx} />
     case 'resourceQuery':
       return <QueryForm block={block} ctx={ctx} />
+    case 'libraryQuery':
+      return <LibraryQueryForm block={block} ctx={ctx} />
     case 'branch':
       return <BranchForm block={block} ctx={ctx} />
     case 'filter':
@@ -974,6 +977,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
         >
           <option value="code">Code</option>
           <option value="query">A resource query</option>
+          <option value="library">A library query</option>
           <option value="function">A function</option>
           <option value="workflow">A workflow</option>
         </Select>
@@ -1004,6 +1008,15 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
           onChange={(next) =>
             setRunner({ kind: 'query', resource: next.resource, query: next.query as never })
           }
+        />
+      )}
+      {runner.kind === 'library' && (
+        <LibraryCall
+          call={runner}
+          at={['config', 'runner']}
+          ctx={ctx}
+          hint="Parameters may use value and index."
+          onChange={(call) => setRunner({ kind: 'library', ...call })}
         />
       )}
       {runner.kind === 'function' && (
@@ -1142,6 +1155,151 @@ function FunctionCallForm({ block, ctx }: { block: BlockOf<'function'>; ctx: For
           config: { function: fn, ...(params && { params }) },
         }))
       }
+    />
+  )
+}
+
+type LibraryCallConfig = BlockOf<'libraryQuery'>['config']
+
+/**
+ * The library query to run, its version and the parameters' templates (a Library query block, a loop's library
+ * runner; M21). The parameters shown are the chosen release's, plus any passed that it doesn't declare.
+ */
+function LibraryCall({
+  call,
+  onChange,
+  at,
+  ctx,
+  hint,
+}: {
+  call: LibraryCallConfig
+  onChange: (call: LibraryCallConfig) => void
+  at: (string | number)[]
+  ctx: FormContext
+  hint?: string
+}) {
+  const trpc = useTRPC()
+  const list = useQuery(trpc.libraryQueries.list.queryOptions())
+  const ref = useEditor((s) => s.libraries[call.library])
+  const id = ref?.id ?? list.data?.find((q) => q.slug === call.library)?.id
+  const releases = useQuery({
+    ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: id ?? '' }),
+    enabled: !!id,
+  })
+  const published = (list.data ?? []).filter((q) => q.liveVersion)
+  const chosen = published.find((q) => q.slug === call.library)
+  const release = releases.data?.find((r) =>
+    call.version === 'latest' ? r.live : r.version === call.version,
+  )
+  const declared = release?.params ?? []
+  const extra = Object.keys(call.params ?? {}).filter((name) => !declared.some((p) => p.name === name))
+  const setParam = (name: string, value: string) => {
+    const params = { ...call.params }
+    if (value) params[name] = value
+    else delete params[name]
+    const { params: _old, ...rest } = call
+    onChange(Object.keys(params).length ? { ...rest, params } : rest)
+  }
+  return (
+    <div className="flex flex-col gap-3" data-testid="library-call">
+      <div className="flex items-end gap-2">
+        <Field label="Library query" className="min-w-0 flex-1">
+          <Select
+            value={call.library}
+            onChange={(e) => onChange({ library: e.target.value, version: 'latest' })}
+          >
+            {!chosen && (
+              <option value={call.library}>
+                {call.library ? `${call.library} (not found)` : 'Choose a library query…'}
+              </option>
+            )}
+            {published.map((q) => (
+              <option key={q.slug} value={q.slug}>
+                {q.name} ({q.slug})
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {call.library && (
+          <Link
+            to="/library/$slug"
+            params={{ slug: call.library }}
+            title="Open in the Query Library"
+            className="mb-2 text-muted hover:text-ink"
+          >
+            <ExternalLink className="size-4" />
+          </Link>
+        )}
+      </div>
+      {list.data && published.length === 0 && (
+        <p className="text-xs text-muted">
+          Only published library queries you can use are listed.{' '}
+          <Link to="/library" className="text-accent hover:underline">
+            Open the Query Library
+          </Link>
+        </p>
+      )}
+      {call.library && (
+        <Field label="Version">
+          <Select value={call.version} onChange={(e) => onChange({ ...call, version: e.target.value })}>
+            <option value="latest">
+              Latest, whichever is live{ref?.liveVersion ? ` (now v${ref.liveVersion})` : ''}
+            </option>
+            {releases.data?.map((r) => (
+              <option key={r.id} value={r.version}>
+                v{r.version}
+              </option>
+            ))}
+            {call.version !== 'latest' && !releases.data?.some((r) => r.version === call.version) && (
+              <option value={call.version}>v{call.version}</option>
+            )}
+          </Select>
+        </Field>
+      )}
+      <Problems list={[...ctx.problemsAt(...at, 'library'), ...ctx.problemsAt(...at, 'version')]} />
+      {release && declared.length === 0 && extra.length === 0 && (
+        <p className="text-xs text-muted">This release has no parameters.</p>
+      )}
+      {[...declared, ...extra.map((name) => ({ name, description: undefined }))].map((p) => (
+        <EditorField
+          key={p.name}
+          label={<span className="font-mono">{p.name}</span>}
+          hint={p.description ?? (extra.includes(p.name) ? 'Not a parameter of this release' : undefined)}
+        >
+          <TemplateLine
+            path={ctx.modelPath(`${at.join('.')}.params.${p.name}.txt`)}
+            value={call.params?.[p.name] ?? ''}
+            problems={ctx.problemsAt(...at, 'params', p.name)}
+            text={ctx.text(...at, 'params', p.name)}
+            onChange={(value) => setParam(p.name, value)}
+            removeEmpty
+          />
+        </EditorField>
+      ))}
+      {hint && declared.length > 0 && <p className="-mt-1 text-xs text-muted">{hint}</p>}
+      {release && (
+        <details className="rounded-md border border-border" data-testid="library-call-query">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+            The query (v{release.version}, on {release.resource})
+          </summary>
+          <pre className="overflow-x-auto px-3 pb-3 font-mono text-xs whitespace-pre-wrap">
+            {typeof release.query.sql === 'string'
+              ? release.query.sql
+              : JSON.stringify(release.query, null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function LibraryQueryForm({ block, ctx }: { block: BlockOf<'libraryQuery'>; ctx: FormContext }) {
+  return (
+    <LibraryCall
+      call={block.config}
+      at={['config']}
+      ctx={ctx}
+      onChange={(config) => updateBlock<BlockOf<'libraryQuery'>>(block.name, (b) => ({ ...b, config }))}
     />
   )
 }

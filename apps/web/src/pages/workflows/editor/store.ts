@@ -3,6 +3,7 @@ import {
   type Block,
   type Diagnostic,
   type Edge,
+  usedLibraries,
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
@@ -11,6 +12,7 @@ import type * as Y from 'yjs'
 import { create } from 'zustand'
 import { LOCAL, type SaveStatus } from '@/lib/collab-session'
 import { changeKey } from '@/lib/history'
+import type { LibraryRef } from '@/lib/library-refs'
 import type { SampleResult } from './scope-types'
 
 export { LOCAL, type SaveStatus }
@@ -75,6 +77,11 @@ interface EditorState {
   /** The function open on the canvas, or null for the workflow itself. */
   graph: string | null
   diagnostics: Diagnostic[]
+  /**
+   * What the server said about the library queries the workflow uses (M21), by slug; null for one that doesn't
+   * exist or the person can't see. The validator checks Library query blocks once every one used is known.
+   */
+  libraries: Record<string, LibraryRef | null>
   /** Results of the latest finished run, by block, for autocompletion. */
   samples: Record<string, SampleResult>
   sideTab: SideTab
@@ -131,6 +138,8 @@ interface EditorState {
   setSamples(samples: Record<string, SampleResult>): void
   /** Shows a workflow-level tab in the side panel (and deselects the block). */
   showTab(tab: SideTab): void
+  /** What the server said about library queries the workflow uses (merged into `libraries`); re-validates. */
+  setLibraries(libraries: Record<string, LibraryRef | null>): void
 }
 
 const EMPTY: WorkflowDefinition = { schemaVersion: 1, blocks: [], edges: [] }
@@ -151,6 +160,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   notice: null,
   graph: null,
   diagnostics: [],
+  libraries: {},
   samples: {},
   sideTab: 'problems',
   history: null,
@@ -173,7 +183,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
       selection: [],
       notice: null,
       graph: null,
-      diagnostics: validateDefinition(definition, { checkBodySchema }).diagnostics,
+      diagnostics: validate(definition, get().libraries),
       ...newHistory(get().history, null),
     }),
 
@@ -273,7 +283,23 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   setSamples: (samples) => set({ samples }),
   showTab: (sideTab) => set({ sideTab, selected: null }),
+  setLibraries: (found) => {
+    const libraries = { ...get().libraries, ...found }
+    set({ libraries, diagnostics: validate(get().definition, libraries) })
+  },
 }))
+
+/** The browser's checks, Library query blocks included once the server said about each one the workflow uses. */
+function validate(
+  definition: WorkflowDefinition,
+  libraries: Record<string, LibraryRef | null>,
+): Diagnostic[] {
+  const known = usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))
+  return validateDefinition(definition, {
+    checkBodySchema,
+    ...(known && { resolveLibrary: (slug: string) => libraries[slug] ?? undefined }),
+  }).diagnostics
+}
 
 /**
  * The state after `definition` replaces the current one, validated. With a `view` (undo, redo, or someone else's edit),
@@ -282,7 +308,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
 function applied(definition: WorkflowDefinition, view?: EditorView): Partial<EditorState> {
   return {
     definition,
-    diagnostics: validateDefinition(definition, { checkBodySchema }).diagnostics,
+    diagnostics: validate(definition, useEditor.getState().libraries),
     ...(view && restoredView(definition, view)),
   }
 }

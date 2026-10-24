@@ -1,4 +1,4 @@
-import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
+import { type BlockType, type Diagnostic, usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
@@ -19,6 +19,7 @@ import { PresenceAvatars } from '@/components/presence-avatars'
 import { Avatar, Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
+import { useLibraryRefs } from '@/lib/library-refs'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
@@ -198,6 +199,11 @@ function EditorLayout({
     if (fallback && !useRun.getState().environment) useRun.getState().setEnvironment(fallback.slug)
   }, [environments, slug])
   useLastRunSamples(slug)
+  // The library queries Library query blocks use, for the validator and the inspector (M21).
+  useLibraryRefs(
+    useEditor((s) => usedLibraries(s.definition).join(',')),
+    useEditor((s) => s.setLibraries),
+  )
   useRunEvents()
   // A protected workflow's main draft is read-only: it changes on branches. Running it still works.
   const readOnly = useEditor((s) => s.readOnly)

@@ -2,8 +2,9 @@ import { type AppDefinition, addLibraryQuery, type LibraryAppQuery, usedLibrarie
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ExternalLink, Library } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Dialog, EmptyState, ErrorNote, Input, Select, Spinner } from '@/components/ui'
+import { useLibraryRefs } from '@/lib/library-refs'
 import { useTRPC } from '@/lib/trpc'
 import { AppCodeField, EditorField, problemsAt } from './fields'
 import { useAppEditor } from './store'
@@ -13,18 +14,11 @@ import { useAppEditor } from './store'
  * versions and parameters while the app is edited.
  */
 export function useLibrarySync() {
-  const trpc = useTRPC()
   const key = useAppEditor((s) => usedLibraries(s.definition).join(','))
-  const setLibraries = useAppEditor((s) => s.setLibraries)
-  const slugs = key ? key.split(',') : []
-  const resolved = useQuery({
-    ...trpc.libraryQueries.resolve.queryOptions({ slugs }),
-    enabled: slugs.length > 0,
-  })
-  useEffect(() => {
-    if (!resolved.data || !key) return
-    setLibraries(Object.fromEntries(key.split(',').map((slug) => [slug, resolved.data[slug] ?? null])))
-  }, [resolved.data, key, setLibraries])
+  useLibraryRefs(
+    key,
+    useAppEditor((s) => s.setLibraries),
+  )
 }
 
 /** Picks a published library query to add to the app. */
