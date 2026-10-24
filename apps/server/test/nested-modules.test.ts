@@ -8,6 +8,7 @@ import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './help
 
 let env: TestEnv
 let admin: ReturnType<typeof trpc>
+let prodId: string
 
 type Res = {
   status: number
@@ -20,14 +21,14 @@ const data = (res: Res): any => {
 }
 const failure = (res: Res) => ({ code: res.body.error?.data?.code, message: res.body.error?.message })
 
-/** A module (or, without `module`, an app) placing `holds` (slugs, `latest`) above a text. */
-const definition = (holds: string[], module = true) => ({
+/** A module (or, without `module`, an app) placing `holds` (slugs, `latest`) above a text, with `queries`. */
+const definition = (holds: string[], module = true, queries: object[] = []) => ({
   schemaVersion: 1,
   components: [
     { name: 'label', type: 'text', props: { value: 'hi' } },
     ...holds.map((slug, i) => ({ name: `m${i}`, type: 'module', props: { module: slug } })),
   ],
-  queries: [],
+  queries,
   layout: Object.fromEntries([
     ['label', { x: 0, y: 0, w: 4, h: 2 }],
     ...holds.map((_, i) => [`m${i}`, { x: 0, y: 2 + i * 6, w: 12, h: 6 }]),
@@ -35,9 +36,17 @@ const definition = (holds: string[], module = true) => ({
   ...(module && { module: { inputs: [], outputs: [], events: [] } }),
 })
 
+const where = (at: string) => ({
+  name: 'where',
+  kind: 'resource',
+  resource: 'optiply_db',
+  query: { sql: `select '${at}' as at` },
+  run: 'auto',
+})
+
 const objects = new Map<string, { id: string; revision: number }>()
 
-async function saveModule(slug: string, holds: string[]) {
+async function saveModule(slug: string, holds: string[], queries: object[] = []) {
   let known = objects.get(slug)
   if (!known) {
     known = { id: data(await admin.mutate('modules.create', { slug, name: slug })).id, revision: 1 }
@@ -47,7 +56,7 @@ async function saveModule(slug: string, holds: string[]) {
     await admin.mutate('modules.saveDraft', {
       id: known.id,
       revision: known.revision,
-      definition: definition(holds),
+      definition: definition(holds, true, queries),
     }),
   ).revision
   return known
@@ -68,6 +77,8 @@ beforeAll(async () => {
   env = await startTestApp()
   await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
   admin = trpc(env.app, await login(env.app, 'admin@optiply.nl'))
+  const envs = data(await admin.query('environments.list')) as { id: string; slug: string }[]
+  prodId = envs.find((e) => e.slug === 'production')!.id
 
   // leaf ← middle ← top, all following latest, and an app placing top: three levels below the app.
   for (const [slug, holds] of [
@@ -139,5 +150,71 @@ describe('modules inside modules', () => {
       code: 'CONFLICT',
       message: 'Modules use this module: "middle". Remove it from them first',
     })
+  })
+})
+
+describe('nested instances at run time', () => {
+  it('open with every release the page runs, and run the innermost query through the path', async () => {
+    await saveModule('q_leaf', [], [where('leaf')])
+    await saveModule('q_mid', ['q_leaf'])
+    await saveModule('q_top', ['q_mid'], [where('top')])
+    const ids: Record<string, string> = {}
+    for (const slug of ['q_leaf', 'q_mid', 'q_top']) ids[slug] = data(await publishModule(slug)).id
+    const app = data(await admin.mutate('apps.create', { slug: 'chain-app', name: 'Chain app' }))
+    const saved = data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: definition(['q_top'], false),
+      }),
+    )
+    const live = data(await admin.mutate('apps.publish', { appId: app.id, draftRevision: saved.revision }))
+
+    const opened = data(await admin.query('apps.open', { slug: 'chain-app' }))
+    expect(Object.keys(opened.modules).sort()).toEqual(['q_leaf@latest', 'q_mid@latest', 'q_top@latest'])
+    expect(opened.modules['q_leaf@latest'].releaseId).toBe(ids.q_leaf)
+
+    const run = (module: object) =>
+      admin.mutate('apps.runQuery', {
+        appId: app.id,
+        releaseId: live.id,
+        query: 'where',
+        module,
+        environmentId: prodId,
+        values: {},
+      })
+    const path = [
+      { instance: 'm0', releaseId: ids.q_top },
+      { instance: 'm0', releaseId: ids.q_mid },
+      { instance: 'm0', releaseId: ids.q_leaf },
+    ]
+    expect(data(await run(path))).toMatchObject({ ok: true, data: [{ at: 'leaf' }] })
+    // One step (the M14 shape) still runs the outer instance's query.
+    expect(data(await run({ instance: 'm0', releaseId: ids.q_top }))).toMatchObject({ data: [{ at: 'top' }] })
+    // A release the page no longer runs, or an instance that isn't there.
+    expect(failure(await run([path[0], { ...path[1], releaseId: ids.q_leaf }, path[2]])).code).toBe(
+      'CONFLICT',
+    )
+    expect(failure(await run([path[0], { instance: 'nope', releaseId: ids.q_mid }]))).toEqual({
+      code: 'NOT_FOUND',
+      message: 'Module "q_top" has no module instance named "nope"',
+    })
+  })
+
+  it("run a module draft's nested instance queries from their releases", async () => {
+    const top = objects.get('q_top')!
+    const mid = data(await admin.query('modules.get', { id: objects.get('q_mid')!.id })).liveRelease.id
+    const leaf = data(await admin.query('modules.get', { id: objects.get('q_leaf')!.id })).liveRelease.id
+    const res = await admin.mutate('modules.runQuery', {
+      moduleId: top.id,
+      query: 'where',
+      path: [
+        { instance: 'm0', releaseId: mid },
+        { instance: 'm0', releaseId: leaf },
+      ],
+      environmentId: prodId,
+      values: {},
+    })
+    expect(data(res)).toMatchObject({ ok: true, data: [{ at: 'leaf' }] })
   })
 })

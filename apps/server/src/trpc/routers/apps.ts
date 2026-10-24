@@ -4,6 +4,7 @@ import {
   appDefinitionSchema,
   emptyApp,
   instanceKeys,
+  MAX_MODULE_DEPTH,
   validateApp,
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
@@ -12,7 +13,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
-import { moduleReleasesByKey } from '../../services/modules'
+import { moduleReleaseTree } from '../../services/modules'
 import {
   type Access,
   checkFolderMove,
@@ -34,6 +35,8 @@ const Slug = z
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 const QueryName = z.string().max(64)
+/** A module instance on a query's path, and the module release the page runs for it (M14, M21). */
+const InstanceStep = z.object({ instance: QueryName, releaseId: Id })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -122,7 +125,7 @@ export const appsRouter = router({
     return {
       ...summary(app, access),
       release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
-      modules: await moduleReleasesByKey(ctx.db, instanceKeys(live.definition)),
+      modules: await moduleReleaseTree(ctx.db, instanceKeys(live.definition)),
     }
   }),
 
@@ -330,8 +333,14 @@ export const appsRouter = router({
         /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
         branchDraftId: Id.optional(),
         query: QueryName,
-        /** A module instance's query (M14): the instance and the module release the page runs. */
-        module: z.object({ instance: QueryName, releaseId: Id }).optional(),
+        /**
+         * A module instance's query (M14): the instance and the module release the page runs; inside modules (M21),
+         * the path of them from the app, outermost first.
+         */
+        module: z
+          .union([InstanceStep, z.array(InstanceStep).min(1).max(MAX_MODULE_DEPTH)])
+          .transform((m) => (Array.isArray(m) ? m : [m]))
+          .optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),
@@ -362,7 +371,9 @@ export const appsRouter = router({
           metadata: {
             query: input.query,
             version: version ?? 'draft',
-            ...(module && { module: `${input.module!.instance}: ${module.slug}@${module.version}` }),
+            ...(module && {
+              module: `${input.module!.map((m) => m.instance).join('/')}: ${module.slug}@${module.version}`,
+            }),
             ...(library && { library: `${library.slug}@${library.version}` }),
             ok: outcome.ok,
             errorCode: outcome.ok ? undefined : outcome.error.code,

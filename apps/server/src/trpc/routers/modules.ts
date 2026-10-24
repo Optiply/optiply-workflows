@@ -3,6 +3,7 @@ import {
   appDefinitionHash,
   appDefinitionSchema,
   emptyModule,
+  MAX_MODULE_DEPTH,
   validateApp,
 } from '@ow/app-definition'
 import { type Module, moduleReleases, modules, permissions, users } from '@ow/db'
@@ -16,7 +17,7 @@ import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   moduleInfos,
-  moduleReleasesByKey,
+  moduleReleaseTree,
   moduleUsers,
   publishModuleRelease,
   runModuleDraftQuery,
@@ -39,6 +40,8 @@ const Slug = workflowSlugSchema
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 const QueryName = z.string().max(64)
+/** A module instance on a query's path, and the module release the page runs for it (M14, M21). */
+const InstanceStep = z.object({ instance: QueryName, releaseId: Id })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -256,7 +259,7 @@ export const modulesRouter = router({
     .input(z.object({ keys: z.array(z.string().max(200)).max(200) }))
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
-      return moduleReleasesByKey(ctx.db, input.keys, (m) => atLeast(access.moduleLevel(m), 'use'))
+      return moduleReleaseTree(ctx.db, input.keys, (m) => atLeast(access.moduleLevel(m), 'use'))
     }),
 
   /** Deletes the module with its releases and grants; refused while apps place it. */
@@ -364,6 +367,12 @@ export const modulesRouter = router({
         /** A Git branch draft (M14) instead of the main draft. */
         branchDraftId: Id.optional(),
         query: QueryName,
+        /** A query of a module instance inside the module (M21): the path of instances, outermost first. */
+        path: z
+          .array(InstanceStep)
+          .min(1)
+          .max(MAX_MODULE_DEPTH - 1)
+          .optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),
@@ -381,6 +390,7 @@ export const modulesRouter = router({
           module,
           ...(definition && { definition }),
           query: input.query,
+          ...(input.path && { path: input.path }),
           environmentId: input.environmentId,
           values: input.values,
           ...(signal && { signal }),

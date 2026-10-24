@@ -2,6 +2,9 @@ import {
   type AppDefinition,
   appDefinitionHash,
   canonicalizeApp,
+  instanceKeys,
+  instanceRelease,
+  MAX_MODULE_DEPTH,
   type ModuleInfo,
   moduleInterface,
 } from '@ow/app-definition'
@@ -131,6 +134,79 @@ export async function moduleReleasesByKey(
     if (release)
       found[ref.key] = { releaseId: release.id, version: release.version, definition: release.definition }
   }
+  return found
+}
+
+/**
+ * Every module release a page runs (M21): those `keys` name, and those their instances name, and so on, down to
+ * the nesting limit. Keyed by `slug@version` like `moduleReleasesByKey`, whose `visible` applies at every level.
+ */
+export async function moduleReleaseTree(
+  db: Db,
+  keys: string[],
+  visible?: (module: Module) => boolean,
+): Promise<Record<string, InstanceRelease>> {
+  const found: Record<string, InstanceRelease> = {}
+  let next = [...new Set(keys)]
+  for (let level = 0; level < MAX_MODULE_DEPTH && next.length; level++) {
+    const got = await moduleReleasesByKey(db, next, visible)
+    Object.assign(found, got)
+    next = [...new Set(Object.values(got).flatMap((r) => instanceKeys(r.definition)))].filter(
+      (key) => !Object.hasOwn(found, key),
+    )
+  }
+  return found
+}
+
+/** One step of a module instance's path (M14, M21): the instance, and the module release the page runs for it. */
+export interface InstanceStep {
+  instance: string
+  releaseId: string
+}
+
+/**
+ * Walks a query's module path from an app's or module's definition (M21): each instance in the definition before
+ * it, its release checked against the one the page runs (CONFLICT "reload" when it moved on), down to the
+ * innermost. A draft's runner needs Use on the outermost module (the ones inside were vouched for by its
+ * publisher). Returns the innermost instance's module, release and definition.
+ */
+export async function walkInstancePath(
+  db: Db,
+  access: Access,
+  definition: AppDefinition,
+  path: InstanceStep[],
+  opts: { draft: boolean; what: 'app' | 'module' },
+): Promise<{ module: Module; release: ModuleRelease }> {
+  let current = definition
+  let found: { module: Module; release: ModuleRelease } | undefined
+  for (const [i, step] of path.entries()) {
+    const component = current.components.find((c) => c.name === step.instance && c.type === 'module')
+    const ref = component && instanceRelease(component)
+    if (!ref) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: found
+          ? `Module "${found.module.slug}" has no module instance named "${step.instance}"`
+          : `The ${opts.what} has no module instance named "${step.instance}"`,
+      })
+    }
+    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
+    if (release.id !== step.releaseId) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: `Module "${module.slug}" has a new version; reload to get it`,
+      })
+    }
+    if (i === 0 && opts.draft && !atLeast(access.moduleLevel(module), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to module "${module.slug}" to run the draft's queries`,
+      })
+    }
+    found = { module, release }
+    current = release.definition
+  }
+  if (!found) throw new TRPCError({ code: 'BAD_REQUEST', message: 'An empty module path' })
   return found
 }
 
@@ -355,6 +431,8 @@ export async function runModuleDraftQuery(
     /** A Git branch draft's definition (M14), instead of the main draft. */
     definition?: AppDefinition
     query: string
+    /** A query of a module instance inside the module (M21): its path from the draft. */
+    path?: InstanceStep[]
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
@@ -366,14 +444,20 @@ export async function runModuleDraftQuery(
       message: 'You need edit access to this module to run its draft',
     })
   }
+  const draft = opts.definition ?? opts.module.draftDefinition
+  const labels = { ow_source: 'module', ow_module: opts.module.slug, ow_user: user.id }
+  // An instance's query runs from its release, vouched for by its publisher (Use on the outermost one is checked).
+  const inner = opts.path?.length
+    ? await walkInstancePath(deps.db, access, draft, opts.path, { draft: true, what: 'module' })
+    : null
   const { outcome, manual } = await runDefinitionQuery(deps, access, user, {
-    definition: opts.definition ?? opts.module.draftDefinition,
+    definition: inner ? inner.release.definition : draft,
     what: 'module',
     query: opts.query,
     environmentId: opts.environmentId,
     values: opts.values,
-    draft: true,
-    labels: { ow_source: 'module', ow_module: opts.module.slug, ow_user: user.id },
+    draft: !inner,
+    labels: inner ? { ...labels, ow_module: inner.module.slug } : labels,
     ...(opts.signal && { signal: opts.signal }),
   })
   return { outcome, manual }

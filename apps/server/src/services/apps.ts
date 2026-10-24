@@ -27,7 +27,7 @@ import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
-import { moduleInfos, resolveModuleRelease } from './modules'
+import { type InstanceStep, moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -325,8 +325,8 @@ export async function runAppQuery(
     /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
     branchDraftId?: string
     query: string
-    /** A module instance's query (M14): the instance's name and the module release the page runs. */
-    module?: { instance: string; releaseId: string }
+    /** A module instance's query (M14): the path of instances from the app, outermost first (M21). */
+    module?: InstanceStep[]
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
@@ -375,29 +375,11 @@ export async function runAppQuery(
   }
 
   const labels = { ow_source: 'app', ow_app: app.slug, ow_user: user.id }
-  if (opts.module) {
-    const { instance } = opts.module
-    const component = definition.components.find((c) => c.name === instance && c.type === 'module')
-    const ref = component && instanceRelease(component)
-    if (!ref) {
-      throw new TRPCError({
-        code: 'NOT_FOUND',
-        message: `The app has no module instance named "${instance}"`,
-      })
-    }
-    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
-    if (release.id !== opts.module.releaseId) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: `Module "${module.slug}" has a new version; reload to get it`,
-      })
-    }
-    if (opts.releaseId === null && !atLeast(access.moduleLevel(module), 'use')) {
-      throw new TRPCError({
-        code: 'FORBIDDEN',
-        message: `You need use access to module "${module.slug}" to run the draft's queries`,
-      })
-    }
+  if (opts.module?.length) {
+    const { module, release } = await walkInstancePath(db, access, definition, opts.module, {
+      draft: opts.releaseId === null,
+      what: 'app',
+    })
     const ran = await runDefinitionQuery(deps, access, user, {
       definition: release.definition,
       what: 'module',
