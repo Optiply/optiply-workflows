@@ -32,6 +32,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { droppedUses } from '../../services/publish-impact'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -233,6 +234,29 @@ export const modulesRouter = router({
     const { access, module } = await visibleModule(ctx, { id: input.moduleId })
     const users = await moduleUsers(ctx.db, module.slug)
     return usedByView(access, users)
+  }),
+
+  /**
+   * For the publish dialog (M21): the inputs the live release declares and the draft doesn't, and the apps and
+   * modules placing it on `latest` that pass them (a warning; publishing isn't refused).
+   */
+  publishImpact: authedProcedure.input(z.object({ moduleId: Id })).query(async ({ ctx, input }) => {
+    const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+    requireLevel(access.moduleLevel(module), 'edit', 'this module')
+    const [live] = module.liveReleaseId
+      ? await ctx.db.select().from(moduleReleases).where(eq(moduleReleases.id, module.liveReleaseId))
+      : []
+    return droppedUses(
+      ctx.db,
+      access,
+      {
+        kind: 'module',
+        slug: module.slug,
+        live: live ? (live.definition.module?.inputs ?? []).map((i) => i.name) : null,
+        draft: (module.draftDefinition.module?.inputs ?? []).map((i) => i.name),
+      },
+      await moduleUsers(ctx.db, module.slug),
+    )
   }),
 
   /**

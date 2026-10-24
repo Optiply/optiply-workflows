@@ -28,6 +28,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { droppedUses } from '../../services/publish-impact'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -220,6 +221,32 @@ export const libraryQueriesRouter = router({
     const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
     const users = await libraryUsers(ctx.db, query.slug)
     return usedByView(access, users)
+  }),
+
+  /**
+   * For the publish dialog (M21): the parameters the live release declares and the draft doesn't, and the apps,
+   * modules and workflows on `latest` passing them (a warning; publishing isn't refused).
+   */
+  publishImpact: authedProcedure.input(z.object({ libraryQueryId: Id })).query(async ({ ctx, input }) => {
+    const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+    requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+    const [live] = query.liveReleaseId
+      ? await ctx.db
+          .select()
+          .from(libraryQueryReleases)
+          .where(eq(libraryQueryReleases.id, query.liveReleaseId))
+      : []
+    return droppedUses(
+      ctx.db,
+      access,
+      {
+        kind: 'library',
+        slug: query.slug,
+        live: live ? live.definition.params.map((p) => p.name) : null,
+        draft: query.draftDefinition.params.map((p) => p.name),
+      },
+      await libraryUsers(ctx.db, query.slug),
+    )
   }),
 
   /**

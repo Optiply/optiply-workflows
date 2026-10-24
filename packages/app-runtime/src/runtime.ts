@@ -165,7 +165,13 @@ export class AppRuntime {
           (this.stale.has(q.name) || !this.runs.has(q.name))),
     )
     for (const q of opening) this.stale.delete(q.name)
-    return Promise.allSettled(run.map((q) => this.runQuiet(q.name))).then(() => {})
+    // Module instances on the page start the first time it opens (M21), and keep their state after it closes.
+    const starting = this.definition.components.flatMap((c) =>
+      c.type === 'module' && this.pages.get(c.name) === next && !this.instances.has(c.name)
+        ? [this.startInstance(c)]
+        : [],
+    )
+    return Promise.allSettled([...starting, ...run.map((q) => this.runQuiet(q.name))]).then(() => {})
   }
 
   /**
@@ -199,45 +205,53 @@ export class AppRuntime {
   }
 
   /**
-   * Starts a runtime for each module instance whose release the page sent, with its inputs from the instance's
-   * props; with `previous`, an instance of the same module there carries over (see `start`). Returns their loads.
-   * What they publish meanwhile goes into the app's first patch, and their outputs into its model, so the app's
-   * on-load queries see them (and run once).
+   * Starts a runtime for each module instance on the page shown (or on every page) whose release the page sent;
+   * those on other pages start when theirs first opens (M21). With `previous`, an instance of the same module there
+   * carries over (see `start`). Returns their loads. What they publish meanwhile goes into the app's first patch, and
+   * their outputs into its model, so the app's on-load queries see them (and run once).
    */
   private startInstances(previous?: AppRuntime): Promise<void>[] {
-    const loading: Promise<void>[] = []
     this.early = {}
-    for (const component of this.definition.components) {
-      if (component.type !== 'module') continue
-      const release = this.releaseOf(component)
-      if (!release) continue
-      const name = component.name
-      try {
-        const iface = moduleInterface(release.definition)
-        const inputs = Object.fromEntries(iface.inputs.map((i) => [i, this.model.get(`${name}.${i}`)]))
-        const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
-          ...(this.options.globals && { globals: this.options.globals }),
-          ...(this.options.runner && { runner: this.options.runner }),
-          // Its own instances run from the same releases (M21: modules inside modules).
-          ...(this.options.modules && { modules: this.options.modules }),
-          autoRunDelayMs: this.autoRunDelayMs,
-          inputs,
-          onEvent: (event) => this.fire(name, event),
-        })
-        this.instances.set(name, {
-          runtime,
-          slug: release.slug,
-          releaseId: release.releaseId,
-          inputs: new Set(iface.inputs),
-          errors: {},
-        })
-        const before = previous?.instances.get(name)
-        loading.push(runtime.start(before?.slug === release.slug ? { previous: before.runtime } : {}))
-      } catch (err) {
-        this.bridge.log('error', `${name}: the module could not start: ${message(err)}`)
-      }
+    return this.definition.components.flatMap((component) =>
+      component.type === 'module' && this.active(component.name)
+        ? [this.startInstance(component, previous)]
+        : [],
+    )
+  }
+
+  /** Starts one module instance, with its inputs from the instance's props; resolves when its on-load work ends. */
+  private startInstance(
+    component: AppDefinition['components'][number],
+    previous?: AppRuntime,
+  ): Promise<void> {
+    const release = this.releaseOf(component)
+    if (!release) return Promise.resolve()
+    const name = component.name
+    try {
+      const iface = moduleInterface(release.definition)
+      const inputs = Object.fromEntries(iface.inputs.map((i) => [i, this.model.get(`${name}.${i}`)]))
+      const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
+        ...(this.options.globals && { globals: this.options.globals }),
+        ...(this.options.runner && { runner: this.options.runner }),
+        // Its own instances run from the same releases (M21: modules inside modules).
+        ...(this.options.modules && { modules: this.options.modules }),
+        autoRunDelayMs: this.autoRunDelayMs,
+        inputs,
+        onEvent: (event) => this.fire(name, event),
+      })
+      this.instances.set(name, {
+        runtime,
+        slug: release.slug,
+        releaseId: release.releaseId,
+        inputs: new Set(iface.inputs),
+        errors: {},
+      })
+      const before = previous?.instances.get(name)
+      return runtime.start(before?.slug === release.slug ? { previous: before.runtime } : {})
+    } catch (err) {
+      this.bridge.log('error', `${name}: the module could not start: ${message(err)}`)
+      return Promise.resolve()
     }
-    return loading
   }
 
   /**

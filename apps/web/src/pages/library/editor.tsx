@@ -6,6 +6,7 @@ import { GitBranch, History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lu
 import { useEffect, useMemo, useState } from 'react'
 import CodeField, { type FieldProblem } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
+import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
@@ -771,6 +772,8 @@ function PublishDialog({
   const [notes, setNotes] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
   const usedBy = useQuery(trpc.libraryQueries.usedBy.queryOptions({ libraryQueryId: detail.id }))
+  // Parameters this release drops that apps, modules or workflows on latest still pass (M21).
+  const impact = useQuery(trpc.libraryQueries.publishImpact.queryOptions({ libraryQueryId: detail.id }))
   const publish = useMutation(trpc.libraryQueries.publish.mutationOptions())
   const version = bumpVersion(highest, bump)
   const users =
@@ -827,6 +830,7 @@ function PublishDialog({
           {users > 0 &&
             ` ${users} ${users === 1 ? 'app, module or workflow uses' : 'apps, modules or workflows use'} this query.`}
         </p>
+        <DroppedWarning impact={impact.data} what="parameter" />
         {highest ? (
           <Field label="Version">
             <Select

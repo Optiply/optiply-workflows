@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { GitBranch, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
+import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -105,6 +106,13 @@ function useReleaseApi(app: EditorApp) {
     accessHelp:
       'Use opens the live release and runs its queries (no access to the resources needed) · Edit also changes the draft and publishes · Own also deletes and manages access.',
   }
+}
+
+/** Inputs this module release drops that apps or modules placing it on latest still pass (M21). */
+function ModuleDropped({ moduleId }: { moduleId: string }) {
+  const trpc = useTRPC()
+  const impact = useQuery(trpc.modules.publishImpact.queryOptions({ moduleId }))
+  return <DroppedWarning impact={impact.data} what="input" />
 }
 
 interface PublishInput {
@@ -278,6 +286,7 @@ function PublishDialog({
     >
       <div className="flex flex-col gap-4">
         <p className="text-sm text-muted">{api.publishHelp(live?.version ?? null)}</p>
+        {app.kind === 'module' && <ModuleDropped moduleId={app.id} />}
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Version</span>
           <div className="grid grid-cols-2 gap-2">

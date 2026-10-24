@@ -218,3 +218,47 @@ describe('nested instances at run time', () => {
     expect(data(res)).toMatchObject({ ok: true, data: [{ at: 'leaf' }] })
   })
 })
+
+describe('publishing a module release that drops an input (M21)', () => {
+  it('lists the apps placing it on latest that pass the input', async () => {
+    const withInput = (inputs: string[]) => ({
+      ...definition([]),
+      module: { inputs: inputs.map((name) => ({ name })), outputs: [], events: [] },
+    })
+    const created = data(await admin.mutate('modules.create', { slug: 'impact_mod', name: 'impact_mod' }))
+    let revision = data(
+      await admin.mutate('modules.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: withInput(['region']),
+      }),
+    ).revision
+    data(await admin.mutate('modules.publish', { moduleId: created.id, draftRevision: revision }))
+    for (const [slug, props] of [
+      ['impact-latest', { module: 'impact_mod', region: 'EU' }],
+      ['impact-pinned', { module: 'impact_mod', version: '1.0.0', region: 'EU' }],
+    ] as const) {
+      const app = data(await admin.mutate('apps.create', { slug, name: slug }))
+      data(
+        await admin.mutate('apps.saveDraft', {
+          id: app.id,
+          revision: 1,
+          definition: {
+            schemaVersion: 1,
+            components: [{ name: 'm0', type: 'module', props }],
+            queries: [],
+            layout: { m0: { x: 0, y: 0, w: 12, h: 6 } },
+          },
+        }),
+      )
+    }
+    revision = data(
+      await admin.mutate('modules.saveDraft', { id: created.id, revision, definition: withInput([]) }),
+    ).revision
+    expect(data(await admin.query('modules.publishImpact', { moduleId: created.id }))).toEqual({
+      dropped: ['region'],
+      uses: [expect.objectContaining({ kind: 'app', slug: 'impact-latest', passes: ['region'] })],
+      hidden: 0,
+    })
+  })
+})

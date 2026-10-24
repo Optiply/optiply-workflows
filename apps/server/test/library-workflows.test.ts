@@ -213,6 +213,44 @@ describe('Library query blocks', () => {
   })
 })
 
+describe('publishing a release that drops a parameter (M21)', () => {
+  it('lists those on latest still passing it, and only those', async () => {
+    const query = data(await admin.query('libraryQueries.get', { id: libraryId }))
+    // Nothing dropped yet.
+    expect(data(await admin.query('libraryQueries.publishImpact', { libraryQueryId: libraryId }))).toEqual({
+      dropped: [],
+      uses: [],
+      hidden: 0,
+    })
+    const saved = data(
+      await admin.mutate('libraryQueries.saveDraft', {
+        id: libraryId,
+        revision: query.draftRevision,
+        definition: { ...query.draftDefinition, query: { sql: 'select 1 as id' }, params: [] },
+      }),
+    )
+    const impact = data(await admin.query('libraryQueries.publishImpact', { libraryQueryId: libraryId }))
+    expect(impact.dropped).toEqual(['id'])
+    // label-one pins 1.0.0 and label-gone names a release that doesn't exist: neither follows latest.
+    expect(impact.uses.map((u: { slug: string; passes: string[] }) => [u.slug, u.passes]).sort()).toEqual([
+      ['label-child', ['id']],
+      ['label-member', ['id']],
+    ])
+    expect(impact.hidden).toBe(0)
+    // Putting it back clears the warning.
+    data(
+      await admin.mutate('libraryQueries.saveDraft', {
+        id: libraryId,
+        revision: saved.revision,
+        definition: query.draftDefinition,
+      }),
+    )
+    expect(
+      data(await admin.query('libraryQueries.publishImpact', { libraryQueryId: libraryId })).uses,
+    ).toEqual([])
+  })
+})
+
 describe('the library query', () => {
   it('tells someone who may not use it so, and nothing more', async () => {
     expect(data(await member.query('libraryQueries.resolve', { slugs: ['customer_label', 'nope'] }))).toEqual(

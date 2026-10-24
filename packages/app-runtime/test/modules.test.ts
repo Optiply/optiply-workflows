@@ -262,3 +262,33 @@ describe('modules inside modules (M21)', () => {
     ).toEqual(['shellA/picker1/broken.value', 'shellB/picker1/broken.value'])
   })
 })
+
+describe('module instances on pages (M21)', () => {
+  const paged: AppDefinition = {
+    schemaVersion: 1,
+    pages: [{ name: 'home' }, { name: 'pick' }],
+    components: [
+      comp('title', 'text', { value: 'Home' }, { page: 'home' }),
+      comp('picker1', 'module', { module: 'picker', search: 'Ad' }, { page: 'pick' }),
+    ],
+    queries: [],
+  } as AppDefinition
+
+  it('starts an instance when its page first opens, and keeps it when the page closes', async () => {
+    const t = setup(paged)
+    await t.started
+    expect(sent(t.calls)).toEqual([])
+    expect(Object.keys(t.state).some((k) => k.startsWith('picker1/'))).toBe(false)
+
+    await t.runtime.navigate('pick')
+    expect(sent(t.calls)).toEqual(['picker1@r-live/find Ad'])
+    expect(t.state['picker1/name1.value']).toBe('Ad')
+    t.runtime.set({ 'picker1/name1.value': 'Bea' })
+
+    await t.runtime.navigate('home')
+    await t.runtime.navigate('pick')
+    // The same instance: started once, what was typed still there.
+    expect(sent(t.calls)).toEqual(['picker1@r-live/find Ad'])
+    expect(t.state['picker1/name1.value']).toBe('Bea')
+  })
+})
