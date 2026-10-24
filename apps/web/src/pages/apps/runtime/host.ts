@@ -1,5 +1,5 @@
 import runtimeCode from 'virtual:app-runtime'
-import { type AppDefinition, instanceRelease, runsAutomatically } from '@ow/app-definition'
+import { type AppDefinition, instanceRelease, MAX_MODULE_DEPTH, runsAutomatically } from '@ow/app-definition'
 import {
   type AppUrl,
   CONNECT_MESSAGE,
@@ -419,13 +419,16 @@ export class AppHost {
     return { inputs: Object.fromEntries(inputs.map((i) => [i.name, i.testValue ?? null])) }
   }
 
-  /** Runs a server query; a module instance's with `module` (M14), known on the page as `instance/query`. */
+  /**
+   * Runs a server query; a module instance's with `module` (M14), the path of instances to it (M21), known on the
+   * page as `outer/inner/query`.
+   */
   private async runQuery(
     query: string,
     values: Record<string, unknown>,
     module: QueryModule | undefined,
   ): Promise<QueryOutcome> {
-    const name = module ? `${module.instance}/${query}` : String(query)
+    const name = module ? [...module.map((m) => m.instance), query].join('/') : String(query)
     try {
       await this.options.beforeQuery?.()
       const outcome =
@@ -434,6 +437,7 @@ export class AppHost {
               moduleId: this.options.appId,
               ...(this.options.branchDraftId ? { branchDraftId: this.options.branchDraftId } : {}),
               query: String(query),
+              ...(module && { path: module }),
               environmentId: this.options.environmentId,
               values,
             })
@@ -560,9 +564,14 @@ export class AppHost {
   }
 }
 
-/** The module a query belongs to, as the sandbox (untrusted) says; the server checks it. */
+/** The module instance path a query belongs to, as the sandbox (untrusted) says; the server checks it. */
 function queryModule(module: unknown): QueryModule | undefined {
-  if (!module || typeof module !== 'object') return undefined
-  const { instance, releaseId } = module as Record<string, unknown>
-  return typeof instance === 'string' && typeof releaseId === 'string' ? { instance, releaseId } : undefined
+  if (!Array.isArray(module) || module.length === 0 || module.length > MAX_MODULE_DEPTH) return undefined
+  const path: QueryModule = []
+  for (const step of module) {
+    const { instance, releaseId } = (step ?? {}) as Record<string, unknown>
+    if (typeof instance !== 'string' || typeof releaseId !== 'string') return undefined
+    path.push({ instance, releaseId })
+  }
+  return path
 }

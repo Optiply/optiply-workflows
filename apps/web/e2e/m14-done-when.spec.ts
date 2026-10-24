@@ -238,7 +238,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
           appId: app.id,
           releaseId: live.id,
           query: 'drop_everything',
-          module: { instance: 'customerPicker1', releaseId: release.id },
+          module: [{ instance: 'customerPicker1', releaseId: release.id }],
           environmentId: (
             await trpcQuery<{ id: string; isDefault: boolean }[]>(page, 'environments.list', undefined)
           ).find((e) => e.isDefault)!.id,

@@ -59,9 +59,22 @@ const host: AppDefinition = {
   variables: [{ name: 'chosen', initialValue: null }] as AppDefinition['variables'],
 }
 
+/** A shell (M21): a module holding a picker, passing its own `search` on and its picker's choice out. */
+const shell: AppDefinition = {
+  schemaVersion: 1,
+  components: [comp('picker1', 'module', { module: 'picker', search: '{{ inputs.search }}' })],
+  queries: [],
+  module: {
+    inputs: [{ name: 'search', default: 'Z' }],
+    outputs: [{ name: 'chosen', value: '{{ picker1.selected }}' }],
+    events: [],
+  },
+}
+
 const modules: ModuleReleases = {
   'picker@latest': { definition: picker, releaseId: 'r-live' },
   'picker@1.0.0': { definition: picker, releaseId: 'r-1' },
+  'shell@latest': { definition: shell, releaseId: 'r-shell' },
 }
 
 function setup(
@@ -76,7 +89,7 @@ function setup(
   const bridge: HostBridge = {
     async runQuery(query, values, module) {
       calls.push({ query, values, ...(module && { module }) })
-      return { ok: true, data: [{ query, instance: module?.instance ?? null }] }
+      return { ok: true, data: [{ query, instance: module?.map((m) => m.instance).join('/') ?? null }] }
     },
     confirm: async () => true,
     effect: () => {},
@@ -102,7 +115,7 @@ function setup(
 const sent = (calls: { query: string; values: Record<string, unknown>; module?: QueryModule }[]) =>
   calls.map(
     (c) =>
-      `${c.module ? `${c.module.instance}@${c.module.releaseId}/` : ''}${c.query} ${Object.values(c.values).join()}`,
+      `${c.module ? `${c.module.map((m) => `${m.instance}@${m.releaseId}`).join('/')}/` : ''}${c.query} ${Object.values(c.values).join()}`,
   )
 
 describe('module instances', () => {
@@ -199,5 +212,53 @@ describe('module instances', () => {
     expect(runtime.model.get('inputs.search')).toBe('Z')
     expect(await runtime.fire('pick', 'click')).toBe(true)
     expect(calls).toContain('info: Module event: picked')
+  })
+})
+
+describe('modules inside modules (M21)', () => {
+  const nested: AppDefinition = {
+    schemaVersion: 1,
+    components: [
+      comp('shellA', 'module', { module: 'shell', search: 'Ad' }),
+      comp('shellB', 'module', { module: 'shell', search: 'Gr' }),
+      comp('shown', 'text', { value: '{{ shellA.chosen }}' }),
+    ],
+    queries: [],
+  }
+
+  it('runs an instance’s own instances, each apart, with queries naming their whole path', async () => {
+    const t = setup(nested)
+    await t.started
+    expect(sent(t.calls).sort()).toEqual([
+      'shellA@r-shell/picker1@r-live/find Ad',
+      'shellB@r-shell/picker1@r-live/find Gr',
+    ])
+    expect(t.state['shellA/picker1/name1.value']).toBe('Ad')
+    expect(t.state['shellB/picker1/name1.value']).toBe('Gr')
+    expect(t.state['shellA/picker1/find.data']).toEqual([{ query: 'find', instance: 'shellA/picker1' }])
+    // Outputs come up a level at a time: the picker's into the shell's, the shell's into the app.
+    expect(t.state['shellA.chosen']).toBe('Ad')
+    expect(t.state['shown.value']).toBe('Ad')
+  })
+
+  it('routes what the user types to the innermost instance, and its output back up', async () => {
+    const t = setup(nested)
+    await t.started
+    t.runtime.set({ 'shellA/picker1/name1.value': 'Bea' })
+    await wait()
+    expect(t.state['shellA/picker1/name1.value']).toBe('Bea')
+    expect(t.state['shellB/picker1/name1.value']).toBe('Gr')
+    expect(t.state['shellA.chosen']).toBe('Bea')
+    expect(t.state['shown.value']).toBe('Bea')
+  })
+
+  it('names errors by their whole path', async () => {
+    const t = setup(nested)
+    await t.started
+    expect(
+      Object.keys(t.errors())
+        .filter((k) => k.includes('broken'))
+        .sort(),
+    ).toEqual(['shellA/picker1/broken.value', 'shellB/picker1/broken.value'])
   })
 })

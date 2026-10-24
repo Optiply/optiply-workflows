@@ -334,13 +334,10 @@ export const appsRouter = router({
         branchDraftId: Id.optional(),
         query: QueryName,
         /**
-         * A module instance's query (M14): the instance and the module release the page runs; inside modules (M21),
-         * the path of them from the app, outermost first.
+         * A module instance's query (M14): the instances from the app to it, outermost first (M21: modules inside
+         * modules), each with the module release the page runs.
          */
-        module: z
-          .union([InstanceStep, z.array(InstanceStep).min(1).max(MAX_MODULE_DEPTH)])
-          .transform((m) => (Array.isArray(m) ? m : [m]))
-          .optional(),
+        module: z.array(InstanceStep).min(1).max(MAX_MODULE_DEPTH).optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),

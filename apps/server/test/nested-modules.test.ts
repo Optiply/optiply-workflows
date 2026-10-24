@@ -189,8 +189,8 @@ describe('nested instances at run time', () => {
       { instance: 'm0', releaseId: ids.q_leaf },
     ]
     expect(data(await run(path))).toMatchObject({ ok: true, data: [{ at: 'leaf' }] })
-    // One step (the M14 shape) still runs the outer instance's query.
-    expect(data(await run({ instance: 'm0', releaseId: ids.q_top }))).toMatchObject({ data: [{ at: 'top' }] })
+    // The outer instance's own query: a path of one.
+    expect(data(await run([path[0]]))).toMatchObject({ data: [{ at: 'top' }] })
     // A release the page no longer runs, or an instance that isn't there.
     expect(failure(await run([path[0], { ...path[1], releaseId: ids.q_leaf }, path[2]])).code).toBe(
       'CONFLICT',

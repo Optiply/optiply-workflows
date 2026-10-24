@@ -284,7 +284,7 @@ describe('apps placing modules', () => {
         appId: a.id,
         releaseId: opts.appRelease === undefined ? live.id : opts.appRelease,
         query: 'regions',
-        module: { instance, releaseId },
+        module: [{ instance, releaseId }],
         environmentId: prodId,
         values: { ' inputs.region ': 'US' },
       })

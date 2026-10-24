@@ -56,11 +56,14 @@ export interface ModuleRelease {
 /** The module releases an app's instances run, by `slug@version` with the version as the instance names it (`latest` or a version). */
 export type ModuleReleases = Record<string, ModuleRelease>
 
-/** Which module instance a query belongs to, and the release it runs (M14). */
-export interface QueryModule {
+/** A module instance on a query's path, and the module release the page runs for it (M14). */
+export interface InstanceStep {
   instance: string
   releaseId: string
 }
+
+/** Which module instance a query belongs to: the instances from the app to it, outermost first (M21). */
+export type QueryModule = InstanceStep[]
 
 export type HostMessage =
   | {

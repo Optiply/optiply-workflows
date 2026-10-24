@@ -218,6 +218,8 @@ export class AppRuntime {
         const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
           ...(this.options.globals && { globals: this.options.globals }),
           ...(this.options.runner && { runner: this.options.runner }),
+          // Its own instances run from the same releases (M21: modules inside modules).
+          ...(this.options.modules && { modules: this.options.modules }),
           autoRunDelayMs: this.autoRunDelayMs,
           inputs,
           onEvent: (event) => this.fire(name, event),
@@ -238,14 +240,17 @@ export class AppRuntime {
     return loading
   }
 
-  /** What a module instance's runtime sees of the page: its queries tagged, its values under its prefix. */
+  /**
+   * What a module instance's runtime sees of the page: its queries tagged with their path (this instance first,
+   * then those inside it), its values under its prefix.
+   */
   private instanceBridge(name: string): HostBridge {
     return {
-      runQuery: (query, values) =>
-        this.bridge.runQuery(query, values, {
-          instance: name,
-          releaseId: this.instances.get(name)!.releaseId,
-        }),
+      runQuery: (query, values, inner) =>
+        this.bridge.runQuery(query, values, [
+          { instance: name, releaseId: this.instances.get(name)!.releaseId },
+          ...(inner ?? []),
+        ]),
       confirm: (text) => this.bridge.confirm(text),
       effect: (effect) => this.bridge.effect(effect),
       log: (level, text) => this.bridge.log(level, `${name}/${text}`),
