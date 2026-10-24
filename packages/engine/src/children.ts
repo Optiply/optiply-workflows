@@ -49,6 +49,11 @@ export class PgChildRuns implements ChildRuns {
         `Workflows can call workflows at most ${MAX_CHILD_DEPTH} levels deep; does "${request.workflow}" call itself?`,
       )
     }
+    // A child run has the same person behind it as its parent (M21: library queries' `current_user`).
+    const [parent] = await this.db
+      .select({ createdBy: workflowRuns.createdBy })
+      .from(workflowRuns)
+      .where(eq(workflowRuns.id, request.parentRunId))
     const { run } = await startRun(this.db, {
       workflowId: workflow.id,
       releaseId: workflow.liveReleaseId,
@@ -57,6 +62,7 @@ export class PgChildRuns implements ChildRuns {
       parentRunId: request.parentRunId,
       idempotencyKey: request.key,
       input: { data: request.input ?? null },
+      createdBy: parent?.createdBy ?? null,
     })
     return run.id
   }

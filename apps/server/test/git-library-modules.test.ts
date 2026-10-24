@@ -302,4 +302,44 @@ describe('deploying them from Git', () => {
     // Nothing new: nothing to do.
     expect(await deploy()).toMatchObject({ status: 'up_to_date' })
   })
+  it('creates a library query before a workflow using it, in one commit (M21)', async () => {
+    const triple: RepoObject = {
+      kind: 'library_query',
+      slug: 'triple',
+      value: { name: 'Triple', description: null, definition: plusOne(2) as never },
+    }
+    const flow: RepoObject = {
+      kind: 'workflow',
+      slug: 'triple-flow',
+      value: {
+        name: 'Triple flow',
+        description: null,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'library1',
+              type: 'libraryQuery',
+              config: { library: 'triple', version: 'latest', params: { n: '1' } },
+            },
+          ],
+          edges: [{ from: 'startTrigger', port: 'out', to: 'library1' }],
+        },
+      },
+    }
+    await pushMain('Triples', [flow, triple])
+    expect(outcomes(await deploy())).toMatchObject({
+      'library_query:triple': 'created',
+      'workflow:triple-flow': 'created',
+    })
+    const used = data(
+      await admin.query('libraryQueries.usedBy', {
+        libraryQueryId: data(await admin.query('libraryQueries.get', { slug: 'triple' })).id,
+      }),
+    )
+    expect(used.workflows).toEqual([
+      expect.objectContaining({ slug: 'triple-flow', where: ['draft', 'live'] }),
+    ])
+  })
 })

@@ -378,6 +378,7 @@ describe('library queries in apps', () => {
         expect.objectContaining({ slug: 'pinned_app', where: ['draft', 'live'] }),
       ],
       modules: [],
+      workflows: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
@@ -445,6 +446,7 @@ describe('library queries in apps', () => {
     expect(data(await member.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
       apps: [],
       modules: [],
+      workflows: [],
       hidden: 1,
     })
     await grant('library_query', q.id, null)
@@ -477,11 +479,12 @@ describe('library queries in apps', () => {
     expect(data(await admin.query('libraryQueries.usedBy', { libraryQueryId: q.id }))).toEqual({
       apps: [],
       modules: [expect.objectContaining({ slug: 'lib_module', where: ['draft'] })],
+      workflows: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('libraryQueries.delete', { id: q.id }))).toEqual({
       code: 'CONFLICT',
-      message: 'Apps or modules use this library query: "Lib module". Remove it from them first',
+      message: 'Modules use this library query: "Lib module". Remove it from them first',
     })
     await admin.mutate('modules.delete', { id: created.id })
     expect(data(await admin.mutate('libraryQueries.delete', { id: q.id }))).toBeDefined()

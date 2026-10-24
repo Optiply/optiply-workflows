@@ -8,6 +8,7 @@ import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
@@ -44,6 +45,7 @@ export async function startWorker(deps: {
     context: dbRunContext(db, config.keyring),
     concurrency: config.WORKER_CONCURRENCY,
     python: configurePython(config) ?? undefined,
+    library: engineLibrary(db),
     log: log.child({ component: 'dispatcher' }),
     observer: metrics.observer,
   })

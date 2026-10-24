@@ -218,7 +218,8 @@ interface ReleasePlan {
 /**
  * The checks for making a definition live. Its runs start from webhooks and schedules with no user behind them, so
  * whoever makes it live vouches for it: they need Edit on the workflow, Use on every resource it queries in every
- * environment (a webhook can pick any environment), and Use on every workflow it calls (each must be published).
+ * environment (a webhook can pick any environment), Use on every workflow it calls (each must be published) and on
+ * every library query it uses (M21; the release it names must exist).
  * The definition must be valid, with each query checked by its connector, its schedules' environments must exist,
  * and its webhook alias must be free. `access` null is Git sync (M11): no grants are checked, the rest is.
  */
@@ -231,7 +232,7 @@ async function checkReleasable(
   if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
   }
-  const { resources, children, errors } = await checkDefinition(db, definition)
+  const { resources, children, libraries, errors } = await checkDefinition(db, definition)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
     throw new TRPCError({
@@ -289,6 +290,16 @@ async function checkReleasable(
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to workflow "${child.slug}" to release this workflow, which calls it`,
+      })
+    }
+  }
+
+  // Its library queries (M21): whoever releases vouches for using them, as for an app's.
+  for (const library of access ? libraries : []) {
+    if (!atLeast(access!.libraryQueryLevel(library), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to library query "${library.slug}" to release this workflow, which uses it`,
       })
     }
   }

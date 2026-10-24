@@ -226,6 +226,7 @@ describe('apps placing modules', () => {
         expect.objectContaining({ slug: 'wrong_props_app', where: ['draft'] }),
       ],
       modules: [],
+      workflows: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('modules.delete', { id: m.id }))).toEqual({

@@ -19,6 +19,7 @@ import { CollabStore } from '../services/collab/store'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
@@ -73,6 +74,7 @@ export async function buildApp(deps: {
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     python: configurePython(config) ?? undefined,
+    library: engineLibrary(db),
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),
     observer: metrics.observer,
