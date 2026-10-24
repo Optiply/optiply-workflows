@@ -4,6 +4,7 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   expressionSide,
+  type InstanceStep,
   usedLibraries,
   usedModules,
   validateApp,
@@ -26,7 +27,7 @@ import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
-import { type InstanceStep, moduleInfos, walkInstancePath } from './modules'
+import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'

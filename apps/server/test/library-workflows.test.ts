@@ -277,3 +277,32 @@ describe('the library query', () => {
     expect(refused.message).toMatch(/^Workflows use this library query: "label-/)
   })
 })
+
+describe('a live release after its library query drops a parameter (review fix)', () => {
+  it('still runs manually, the parameter it passes ignored', async () => {
+    const query = data(await admin.query('libraryQueries.get', { id: libraryId }))
+    const saved = data(
+      await admin.mutate('libraryQueries.saveDraft', {
+        id: libraryId,
+        revision: query.draftRevision,
+        definition: { ...query.draftDefinition, query: { sql: "select 'dropped' as at" }, params: [] },
+      }),
+    )
+    data(
+      await admin.mutate('libraryQueries.publish', {
+        libraryQueryId: libraryId,
+        draftRevision: saved.revision,
+      }),
+    )
+    // label-child follows latest and passes `id`, which the live release no longer has.
+    const started = await rest(adminCookie, 'POST', '/workflows/label-child/runs?environment=production', {
+      input: {},
+      version: 'live',
+    })
+    expect(started.status).toBe(202)
+    expect(await waitForRun(started.body.run.id)).toMatchObject({
+      status: 'succeeded',
+      response: { body: [{ at: 'dropped' }] },
+    })
+  })
+})

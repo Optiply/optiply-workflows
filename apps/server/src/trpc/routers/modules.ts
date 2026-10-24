@@ -17,6 +17,7 @@ import { inUseMessage, usedByView } from '../../services/dependents'
 import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
+  instanceStepSchema,
   moduleInfos,
   moduleReleaseTree,
   moduleUsers,
@@ -42,8 +43,6 @@ const Slug = workflowSlugSchema
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 const QueryName = z.string().max(64)
-/** A module instance on a query's path, and the module release the page runs for it (M14, M21). */
-const InstanceStep = z.object({ instance: QueryName, releaseId: Id })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -397,7 +396,7 @@ export const modulesRouter = router({
         query: QueryName,
         /** A query of a module instance inside the module (M21): the path of instances, outermost first. */
         path: z
-          .array(InstanceStep)
+          .array(instanceStepSchema)
           .min(1)
           .max(MAX_MODULE_DEPTH - 1)
           .optional(),

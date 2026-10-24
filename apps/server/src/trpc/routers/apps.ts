@@ -13,7 +13,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
-import { moduleReleaseTree } from '../../services/modules'
+import { instanceStepSchema, moduleReleaseTree } from '../../services/modules'
 import {
   type Access,
   checkFolderMove,
@@ -35,8 +35,6 @@ const Slug = z
 const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 const QueryName = z.string().max(64)
-/** A module instance on a query's path, and the module release the page runs for it (M14, M21). */
-const InstanceStep = z.object({ instance: QueryName, releaseId: Id })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -337,7 +335,7 @@ export const appsRouter = router({
          * A module instance's query (M14): the instances from the app to it, outermost first (M21: modules inside
          * modules), each with the module release the page runs.
          */
-        module: z.array(InstanceStep).min(1).max(MAX_MODULE_DEPTH).optional(),
+        module: z.array(instanceStepSchema).min(1).max(MAX_MODULE_DEPTH).optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),

@@ -8,7 +8,7 @@ import {
 } from '@ow/app-definition'
 import { appReleases, apps, type Db, moduleReleases, modules } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { eq, sql } from 'drizzle-orm'
+import { eq, inArray, type SQL, sql } from 'drizzle-orm'
 
 /**
  * How module releases nest (M21): each release's depth and the modules it reaches, `latest` as the live release.
@@ -29,17 +29,49 @@ export interface NestingOverride {
 const DEPTH_CAP = MAX_MODULE_DEPTH + 2
 const NEW = '\0new'
 
-export async function loadNesting(db: Db, override?: NestingOverride): Promise<NestingWorld> {
-  const rows = await db
-    .select({
-      slug: modules.slug,
-      liveReleaseId: modules.liveReleaseId,
-      id: moduleReleases.id,
-      version: moduleReleases.version,
-      components: sql<AppComponent[]>`${moduleReleases.definition} -> 'components'`,
-    })
-    .from(moduleReleases)
-    .innerJoin(modules, eq(modules.id, moduleReleases.moduleId))
+/**
+ * With `roots`, only the releases of those modules and the modules they reach are loaded (level by level), enough
+ * for their nesting; without, every module release (the live-release check looks at every live app and module).
+ */
+export async function loadNesting(
+  db: Db,
+  override?: NestingOverride,
+  roots?: readonly string[],
+): Promise<NestingWorld> {
+  const select = (where?: SQL) =>
+    db
+      .select({
+        slug: modules.slug,
+        liveReleaseId: modules.liveReleaseId,
+        id: moduleReleases.id,
+        version: moduleReleases.version,
+        components: sql<AppComponent[]>`${moduleReleases.definition} -> 'components'`,
+      })
+      .from(moduleReleases)
+      .innerJoin(modules, eq(modules.id, moduleReleases.moduleId))
+      .where(where)
+  let rows: Awaited<ReturnType<typeof select>> = []
+  if (!roots) rows = await select()
+  else {
+    const seen = new Set<string>()
+    let next = [...new Set(roots)]
+    // Cycles end because a slug is loaded once; the cap only guards against something unforeseen.
+    for (let level = 0; next.length && level <= DEPTH_CAP * 4; level++) {
+      for (const slug of next) seen.add(slug)
+      const found = await select(inArray(modules.slug, next))
+      rows.push(...found)
+      next = [
+        ...new Set(
+          found.flatMap((r) =>
+            (r.components ?? []).flatMap((c) => {
+              const ref = c.type === 'module' ? instanceRelease(c) : null
+              return ref && !seen.has(ref.slug) ? [ref.slug] : []
+            }),
+          ),
+        ),
+      ]
+    }
+  }
   type Release = { id: string; components: AppComponent[] }
   const releases = new Map<string, Release>()
   for (const r of rows) {

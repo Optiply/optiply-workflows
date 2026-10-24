@@ -2,6 +2,7 @@ import {
   type AppDefinition,
   appDefinitionHash,
   canonicalizeApp,
+  type InstanceStep,
   instanceKeys,
   instanceRelease,
   MAX_MODULE_DEPTH,
@@ -12,6 +13,7 @@ import { type Db, type Module, type ModuleRelease, moduleReleases, modules } fro
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { type AnyColumn, and, eq, inArray, or, type SQL, sql } from 'drizzle-orm'
+import { z } from 'zod'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
 import { type Dependent, dependents } from './dependents'
 import { checkLiveNesting, loadNesting } from './module-nesting'
@@ -47,7 +49,7 @@ export async function moduleInfos(
           ),
         )
     : []
-  const world = releases.length ? await loadNesting(db) : null
+  const world = releases.length ? await loadNesting(db, undefined, slugs) : null
   return new Map(
     rows.map((module) => {
       const own = releases.filter((r) => r.moduleId === module.id)
@@ -139,7 +141,8 @@ export async function moduleReleasesByKey(
 
 /**
  * Every module release a page runs (M21): those `keys` name, and those their instances name, and so on, down to
- * the nesting limit. Keyed by `slug@version` like `moduleReleasesByKey`, whose `visible` applies at every level.
+ * the nesting limit. Keyed by `slug@version` like `moduleReleasesByKey`. `visible` applies to the outermost ones
+ * only: the modules inside were vouched for by their publishers, as `walkInstancePath` runs them.
  */
 export async function moduleReleaseTree(
   db: Db,
@@ -149,7 +152,7 @@ export async function moduleReleaseTree(
   const found: Record<string, InstanceRelease> = {}
   let next = [...new Set(keys)]
   for (let level = 0; level < MAX_MODULE_DEPTH && next.length; level++) {
-    const got = await moduleReleasesByKey(db, next, visible)
+    const got = await moduleReleasesByKey(db, next, level === 0 ? visible : undefined)
     Object.assign(found, got)
     next = [...new Set(Object.values(got).flatMap((r) => instanceKeys(r.definition)))].filter(
       (key) => !Object.hasOwn(found, key),
@@ -158,11 +161,8 @@ export async function moduleReleaseTree(
   return found
 }
 
-/** One step of a module instance's path (M14, M21): the instance, and the module release the page runs for it. */
-export interface InstanceStep {
-  instance: string
-  releaseId: string
-}
+/** A step of a query's module path as the API takes it (`InstanceStep`), for both routers. */
+export const instanceStepSchema = z.object({ instance: z.string().max(64), releaseId: z.string().uuid() })
 
 /**
  * Walks a query's module path from an app's or module's definition (M21): each instance in the definition before

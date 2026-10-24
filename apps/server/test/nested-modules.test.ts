@@ -262,3 +262,28 @@ describe('publishing a module release that drops an input (M21)', () => {
     })
   })
 })
+
+describe('the release tree for a draft (review fix)', () => {
+  it('needs Use on the outermost module only, like the queries it runs', async () => {
+    await createLocalUser(env.db, 'member@optiply.nl')
+    const member = trpc(env.app, await login(env.app, 'member@optiply.nl'))
+    const users = data(await admin.query('users.list')) as { id: string; email: string }[]
+    const group = data(await admin.mutate('groups.create', { name: 'Tree' }))
+    await admin.mutate('groups.addMember', {
+      groupId: group.id,
+      userId: users.find((u) => u.email === 'member@optiply.nl')!.id,
+    })
+    await admin.mutate('permissions.set', {
+      objectType: 'module',
+      objectId: objects.get('q_top')!.id,
+      groupId: group.id,
+      environmentId: null,
+      level: 'use',
+    })
+    const tree = data(
+      await member.query('modules.instanceReleases', { keys: ['q_top@latest', 'q_leaf@1.0.0'] }),
+    )
+    // q_top's insides come along; q_leaf asked for directly isn't the member's to use.
+    expect(Object.keys(tree).sort()).toEqual(['q_leaf@latest', 'q_mid@latest', 'q_top@latest'])
+  })
+})

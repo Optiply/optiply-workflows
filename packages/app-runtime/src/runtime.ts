@@ -212,8 +212,9 @@ export class AppRuntime {
    */
   private startInstances(previous?: AppRuntime): Promise<void>[] {
     this.early = {}
+    // Those already running before an edit keep running (and their state), whatever page is shown.
     return this.definition.components.flatMap((component) =>
-      component.type === 'module' && this.active(component.name)
+      component.type === 'module' && (this.active(component.name) || previous?.instances.has(component.name))
         ? [this.startInstance(component, previous)]
         : [],
     )
@@ -312,8 +313,14 @@ export class AppRuntime {
   private route(name: string): [AppRuntime, string] {
     const slash = name.indexOf('/')
     if (slash < 0) return [this, name]
-    const instance = this.instances.get(name.slice(0, slash))
-    if (!instance) throw new Error(`No module instance is named ${name.slice(0, slash)}`)
+    const owner = name.slice(0, slash)
+    // An instance on a page not opened yet starts when something reaches into it (M21).
+    if (!this.instances.has(owner)) {
+      const component = this.definition.components.find((c) => c.name === owner && c.type === 'module')
+      if (component) void this.startInstance(component)
+    }
+    const instance = this.instances.get(owner)
+    if (!instance) throw new Error(`No module instance is named ${owner}`)
     return [instance.runtime, name.slice(slash + 1)]
   }
 

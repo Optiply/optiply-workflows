@@ -470,12 +470,20 @@ export function updateModuleItem<P extends ModulePart>(
   const spec = def.module
   if (!spec) return def
   const items = spec[part] as ModuleSpec[P][number][]
+  // The first item with that name (two share it only while a duplicate is being fixed).
+  const at = items.findIndex((i) => i.name === name)
+  if (at < 0) return def
   const updated: AppDefinition = {
     ...def,
-    module: { ...spec, [part]: items.map((i) => (i.name === name ? next : i)) },
+    module: { ...spec, [part]: items.map((i, j) => (j === at ? next : i)) },
   }
   if (next.name === name || part === 'outputs') return updated
-  if (part === 'inputs') return renameModuleInputReads(updated, name, next.name).definition
+  if (part === 'inputs') {
+    // The reads follow only when they're unambiguous: no other input has the new name, none other the old one.
+    const named = (n: string) => items.filter((i) => i.name === n).length
+    if (named(next.name) > 0 || named(name) > 1) return updated
+    return renameModuleInputReads(updated, name, next.name).definition
+  }
   const repoint = (handlers: EventHandler[] | undefined) =>
     handlers?.map((h) =>
       h.action.type === 'moduleEvent' && h.action.event === name

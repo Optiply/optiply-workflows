@@ -285,6 +285,19 @@ function QueryCard({
   const sql = resource ? isSqlType(resource.type) : 'sql' in definition.query
   const [json, setJson] = useState(() => JSON.stringify(definition.query, null, 2))
   const [jsonError, setJsonError] = useState<string | null>(null)
+  // The text follows the query when it changes some other way (the draft loading, someone else, undo); while it
+  // still means the query (typing), it stays as typed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `json` is read, not followed
+  useEffect(() => {
+    let same = false
+    try {
+      same = JSON.stringify(JSON.parse(json)) === JSON.stringify(definition.query)
+    } catch {}
+    if (!same) {
+      setJson(JSON.stringify(definition.query, null, 2))
+      setJsonError(null)
+    }
+  }, [definition.query])
   // The SQL's text in the shared document (M21): typing merges with others', with their cursors shown.
   const shared = useLibraryEditor((s) => s.shared)
   const hasSql = typeof definition.query.sql === 'string'

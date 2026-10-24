@@ -256,7 +256,7 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
     },
   })
   await page.goto(`/modules/${slug}`)
-  await expect(page.getByTestId('module-used-by')).toContainText('No app uses it yet')
+  await expect(page.getByTestId('module-used-by')).toContainText('Nothing uses it yet')
   // A module has no pages: no Navigation to add.
   await expect(page.getByRole('button', { name: 'Navigation', exact: true })).toHaveCount(0)
 

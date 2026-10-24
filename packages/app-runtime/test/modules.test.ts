@@ -291,4 +291,26 @@ describe('module instances on pages (M21)', () => {
     expect(sent(t.calls)).toEqual(['picker1@r-live/find Ad'])
     expect(t.state['picker1/name1.value']).toBe('Bea')
   })
+  it('starts an instance on a page not opened yet when something reaches into it', async () => {
+    const t = setup(paged)
+    await t.started
+    t.runtime.set({ 'picker1/name1.value': 'Cy' })
+    await wait()
+    expect(sent(t.calls)).toEqual(['picker1@r-live/find Ad'])
+    expect(t.state['picker1/name1.value']).toBe('Cy')
+  })
+
+  it('keeps a started instance on another page, with its state, through an edit', async () => {
+    const t = setup(paged)
+    await t.started
+    await t.runtime.navigate('pick')
+    t.runtime.set({ 'picker1/name1.value': 'Bea' })
+    await t.runtime.navigate('home')
+    // The editor applies an edit: a new runtime takes over from this one, on the home page.
+    const next = setup(paged, { runtime: t.runtime, state: {} })
+    await next.started
+    // The new runtime's first patch has the instance, as it was (not restarted from its default).
+    expect(next.patches[0]!.values['picker1/name1.value']).toBe('Bea')
+    expect(sent(next.calls)).toEqual([])
+  })
 })

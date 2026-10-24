@@ -333,6 +333,17 @@ describe('renaming a module input (M21)', () => {
     expect(renamed.definition.components[1]!.props!.value).toBe('{{ inputs.region +')
   })
 
+  it('leaves the reads alone when the new name is another input’s, or two share the old one (review fix)', () => {
+    const def = picker()
+    // `label` and `region`: renaming region to label would merge their reads.
+    const merged = updateModuleItem(def, 'inputs', 'region', { name: 'label' })
+    expect(sqlOf(merged, 0)).toBe('select * from customers where region = {{ inputs.region }}')
+    // Two inputs now named label: renaming one back changes only the first, and no reads.
+    const back = updateModuleItem(merged, 'inputs', 'label', { name: 'other' })
+    expect(back.module!.inputs.map((i) => i.name)).toEqual(['other', 'label'])
+    expect(back.components[1]!.props!.value).toBe('{{ inputs.label }}')
+  })
+
   it('waits for a valid name', () => {
     expect(renameModuleInputReads(picker(), 'region', 'not valid').changed).toEqual([])
   })

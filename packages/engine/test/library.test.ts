@@ -191,5 +191,7 @@ describe('library loop runners', () => {
       ['a', 0, 'ada@optiply.nl', 'undefined'],
       ['b', 1, 'ada@optiply.nl', 'undefined'],
     ])
+    // The release is looked up once for the loop, not per item.
+    expect(resolved).toBe(1)
   })
 })

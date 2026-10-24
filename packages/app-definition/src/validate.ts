@@ -144,6 +144,15 @@ export function moduleNesting(
 }
 
 /**
+ * A module instance on a query's path, and the module release the page runs for it (M14; a path of them for
+ * modules inside modules, outermost first: M21). The browser sends it; the server walks it.
+ */
+export interface InstanceStep {
+  instance: string
+  releaseId: string
+}
+
+/**
  * The release a module instance names, from its `module` and `version` props (`latest` when missing), and the
  * `slug@version` key the app's module releases are looked up by; null when they aren't plain strings.
  */

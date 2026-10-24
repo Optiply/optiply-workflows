@@ -501,6 +501,9 @@ export async function runResourceQuery(
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
 }
 
+/** What a block attempt looked up for its library queries (M21): releases and the user, by key. */
+const attemptCaches = new WeakMap<BlockContext, Map<string, Promise<unknown>>>()
+
 /**
  * Runs a library query (a Library query block, or a loop's library runner; M21): the release's resource and query,
  * resolved now (so `latest` follows the live release on every attempt). The parameters are rendered in the work's
@@ -513,7 +516,17 @@ export async function runLibraryQuery(
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   const library = ctx.services.library
   if (!library) throw new BlockFailure('library', "Library queries aren't available here")
-  const { version, definition } = await library.resolve(ref.library, ref.version)
+  // Looked up once per attempt: the release (a loop's iterations share it; a retry resolves `latest` again) and
+  // the user.
+  const cache = attemptCaches.get(ctx) ?? new Map<string, Promise<unknown>>()
+  attemptCaches.set(ctx, cache)
+  const once = <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    if (!cache.has(key)) cache.set(key, load())
+    return cache.get(key) as Promise<T>
+  }
+  const { version, definition } = await once(`release:${ref.library}@${ref.version}`, () =>
+    library.resolve(ref.library, ref.version),
+  )
   const evaluate = evaluatorFor(work, ctx)
   const values: Record<string, unknown> = {}
   for (const [name, template] of Object.entries(ref.params ?? {})) {
@@ -526,7 +539,8 @@ export async function runLibraryQuery(
       throw err
     }
   }
-  const user = ctx.currentUserId ? await library.user(ctx.currentUserId) : null
+  const userId = ctx.currentUserId
+  const user = userId ? await once(`user:${userId}`, () => library.user(userId)) : null
   const scope = libraryScope(definition, values, user)
   const evaluateLibrary: Evaluate = async (code) => {
     try {

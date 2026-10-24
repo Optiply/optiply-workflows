@@ -199,7 +199,12 @@ async function prepareRun(
     source = { releaseId: release!.id }
   }
 
-  const { resources: rows, children, libraries, errors } = await checkDefinition(db, definition, 'run')
+  const {
+    resources: rows,
+    children,
+    libraries,
+    errors,
+  } = await checkDefinition(db, definition, 'run', version === 'draft')
   if (errors.length) {
     throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
       diagnostics: errors satisfies Diagnostic[],
@@ -275,6 +280,12 @@ export async function checkDefinition(
   definition: WorkflowDefinition,
   /** `run`: Python only needs an executor; `release` (the default): the executor checks its syntax too. */
   purpose: 'run' | 'release' = 'release',
+  /**
+   * Whether library queries are checked against the library (M21): not for a live release's run, which was checked
+   * when it was published (a library query's newer live release may have dropped a parameter it passes: a warning
+   * at that publish, ignored at run time).
+   */
+  checkLibraries = true,
 ): Promise<{
   resources: Resource[]
   children: Workflow[]
@@ -323,7 +334,7 @@ export async function checkDefinition(
       if (!child) return undefined
       return child.liveReleaseId ? 'published' : 'unpublished'
     },
-    resolveLibrary: (slug) => libraries.get(slug)?.info,
+    ...(checkLibraries && { resolveLibrary: (slug: string) => libraries.get(slug)?.info }),
   })
   const errors = validation.diagnostics.filter((d) => d.severity === 'error')
   // Python's syntax is the executor's to check (only when the rest is valid: a broken schema has no fields).
