@@ -49,6 +49,8 @@ function queriedResources(def: AppDefinition): string[] {
 export async function checkApp(
   db: Db,
   definition: AppDefinition,
+  /** Checking a module (M21): its slug, so instances reaching it back are cycles. */
+  self?: string,
 ): Promise<{
   resources: Resource[]
   libraries: LibraryQuery[]
@@ -70,6 +72,7 @@ export async function checkApp(
       return resource ? getConnector(resource.type) : undefined
     },
     resolveLibrary: (slug) => libraries.get(slug)?.info,
+    ...(self && { self }),
   })
   return {
     resources: rows,
@@ -108,8 +111,10 @@ export async function checkVouched(
   access: Access | null,
   definition: AppDefinition,
   what: 'app' | 'module',
+  /** A module's slug (M21; see `checkApp`). */
+  self?: string,
 ): Promise<void> {
-  const { resources: used, libraries, modules: placed, errors } = await checkApp(db, definition)
+  const { resources: used, libraries, modules: placed, errors } = await checkApp(db, definition, self)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
     throw new TRPCError({

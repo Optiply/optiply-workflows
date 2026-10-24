@@ -11,12 +11,16 @@ import { TRPCError } from '@trpc/server'
 import { type AnyColumn, and, eq, inArray, or, type SQL, sql } from 'drizzle-orm'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
 import { type Dependent, dependents } from './dependents'
+import { checkLiveNesting, loadNesting } from './module-nesting'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-/** The modules an app places, by slug, with what the validator needs (the live version, each release's interface). */
+/**
+ * The modules an app (or module) places, by slug, with what the validator needs: the live version, and each
+ * release's interface and nesting (M21).
+ */
 export async function moduleInfos(
   db: Db,
   slugs: string[],
@@ -40,6 +44,7 @@ export async function moduleInfos(
           ),
         )
     : []
+  const world = releases.length ? await loadNesting(db) : null
   return new Map(
     rows.map((module) => {
       const own = releases.filter((r) => r.moduleId === module.id)
@@ -47,6 +52,12 @@ export async function moduleInfos(
         liveVersion: own.find((r) => r.id === module.liveReleaseId)?.version ?? null,
         versions: Object.fromEntries(
           own.map((r) => [r.version, moduleInterface({ module: r.module ?? undefined })]),
+        ),
+        nesting: Object.fromEntries(
+          own.flatMap((r) => {
+            const nesting = world?.of(module.slug, r.version)
+            return nesting ? [[r.version, nesting]] : []
+          }),
         ),
       }
       return [module.slug, { module, info }]
@@ -154,14 +165,15 @@ export async function resolveModuleRelease(
 const placesModule = (column: SQL | AnyColumn, slug: string) =>
   sql`${column} -> 'components' @> ${JSON.stringify([{ type: 'module', props: { module: slug } }])}::jsonb`
 
-/** The apps placing a module: in their draft, their live release or an open Git branch draft (no modules in modules). */
+/** The apps and modules (M21) placing a module: in their draft, their live release or an open Git branch draft. */
 export const moduleUsers = (db: Db, slug: string): Promise<Dependent[]> =>
-  dependents(db, (column) => placesModule(column, slug), { modules: false })
+  dependents(db, (column) => placesModule(column, slug), { modules: true })
 
 /**
  * What making a module release live takes. Apps run its queries without their viewers or publishers holding any
  * grant on its resources, so whoever publishes it vouches for them, like an app's publisher (`checkVouched`), with
- * Edit on the module. It must be a module (a `module` part). `access` null is Git sync.
+ * Edit on the module. It must be a module (a `module` part), and (M21) it mustn't make a module hold itself or
+ * nest an app's modules too deep, through those following it on `latest`. `access` null is Git sync.
  */
 async function checkReleasable(
   db: Db,
@@ -178,7 +190,8 @@ async function checkReleasable(
       message: "The module isn't valid: it has no inputs, outputs or events part",
     })
   }
-  await checkVouched(db, access, definition, 'module')
+  await checkVouched(db, access, definition, 'module', module.slug)
+  await checkLiveNesting(db, module.slug, definition.components)
 }
 
 const changedSince = (revision: number) =>

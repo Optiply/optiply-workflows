@@ -243,6 +243,7 @@ describe('apps placing modules', () => {
         name: 'placed_picker',
         liveVersion: '1.0.0',
         versions: { '1.0.0': { inputs: ['region'], outputs: ['selectedRegion'], events: ['picked'] } },
+        nesting: { '1.0.0': { depth: 1, reaches: [] } },
       },
     })
     for (const [type, id] of [

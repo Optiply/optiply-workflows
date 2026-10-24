@@ -119,7 +119,7 @@ export const modulesRouter = router({
         draftDefinition: module.draftDefinition,
         draftRevision: module.draftRevision,
         draftHash: await appDefinitionHash(module.draftDefinition),
-        diagnostics: (await checkApp(ctx.db, module.draftDefinition)).diagnostics,
+        diagnostics: (await checkApp(ctx.db, module.draftDefinition, module.slug)).diagnostics,
         liveRelease: live
           ? {
               id: live.id,
