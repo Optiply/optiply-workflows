@@ -6,7 +6,9 @@ import {
   addModuleItem,
   buildAppGraph,
   emptyModule,
+  MAX_MODULE_DEPTH,
   type ModuleInfo,
+  moduleNesting,
   removeModuleItem,
   renameAppEntity,
   updateModuleItem,
@@ -62,7 +64,6 @@ describe('module definitions', () => {
     def.components[1]!.props!.value = '{{ inputs.nope }}'
     expect(codes(def)).toEqual([
       ['unknown_event', 'components.2.events.1.action.event', 'error'],
-      ['nested_module', 'components.4.type', 'error'],
       ['module_pages', 'pages', 'error'],
       ['invalid_name', 'components.3.name', 'error'],
       ['invalid_name', 'module.inputs.2.name', 'error'],
@@ -185,6 +186,74 @@ describe('module instances in apps', () => {
       ['unknown_module', 'components.3.props.module', 'error'],
       ['unknown_identifier', 'components.3.props.module', 'error'],
     ])
+  })
+})
+
+describe('modules inside modules (M21)', () => {
+  const iface = { inputs: [], outputs: [], events: [] }
+  const nested = (depth: number, reaches: string[]) => ({ depth, reaches })
+  const modules: Record<string, ModuleInfo> = {
+    leaf: { liveVersion: '1.0.0', versions: { '1.0.0': iface }, nesting: { '1.0.0': nested(1, []) } },
+    middle: {
+      liveVersion: '2.0.0',
+      versions: { '1.0.0': iface, '2.0.0': iface },
+      nesting: { '1.0.0': nested(1, []), '2.0.0': nested(2, ['leaf']) },
+    },
+    top: {
+      liveVersion: '1.0.0',
+      versions: { '1.0.0': iface },
+      nesting: { '1.0.0': nested(3, ['leaf', 'middle']) },
+    },
+    // Holds `outer`, the module checked below, through `middle`-like nesting.
+    loop: { liveVersion: '1.0.0', versions: { '1.0.0': iface }, nesting: { '1.0.0': nested(2, ['outer']) } },
+  }
+  const resolveModule = (slug: string) => modules[slug]
+  const holding = (...instances: [string, string?][]) =>
+    app({
+      components: instances.map(([module, version], i) =>
+        comp(`m${i}`, 'module', { module, ...(version && { version }) }),
+      ),
+    })
+  const inModule = (def: AppDefinition): AppDefinition => ({
+    ...def,
+    module: { inputs: [], outputs: [], events: [] },
+  })
+
+  it('lets an app hold modules three deep, and a module one less', () => {
+    expect(MAX_MODULE_DEPTH).toBe(3)
+    expect(codes(holding(['top'], ['middle']), { resolveModule })).toEqual([])
+    expect(codes(inModule(holding(['middle'], ['leaf'])), { resolveModule, self: 'outer' })).toEqual([])
+    expect(codes(inModule(holding(['top'])), { resolveModule, self: 'outer' })).toEqual([
+      ['module_depth', 'components.0.props.module', 'error'],
+    ])
+    // A pinned release nests as that release does.
+    expect(codes(inModule(holding(['middle', '1.0.0'])), { resolveModule, self: 'outer' })).toEqual([])
+  })
+
+  it('refuses a module holding itself, directly or through others', () => {
+    expect(codes(inModule(holding(['outer'])), { self: 'outer' })).toEqual([
+      ['module_cycle', 'components.0.props.module', 'error'],
+    ])
+    const loop = validateApp(inModule(holding(['loop'])), { resolveModule, self: 'outer' }).diagnostics
+    expect(loop.map((d) => d.code)).toEqual(['module_cycle'])
+    expect(loop[0]!.message).toBe(
+      'Module "loop" holds this module (directly or through others): a module can’t hold itself',
+    )
+  })
+
+  it('computes how a definition nests from what its instances run', () => {
+    const lookup = (slug: string, version: string) => {
+      const info = modules[slug]
+      const at = version === 'latest' ? info?.liveVersion : version
+      return at ? info?.nesting?.[at] : undefined
+    }
+    expect(moduleNesting(holding(), lookup)).toEqual({ depth: 1, reaches: [] })
+    expect(moduleNesting(holding(['middle'], ['leaf']), lookup)).toEqual({
+      depth: 3,
+      reaches: ['leaf', 'middle'],
+    })
+    expect(moduleNesting(holding(['middle', '1.0.0']), lookup)).toEqual({ depth: 2, reaches: ['middle'] })
+    expect(moduleNesting(holding(['unknown']), lookup)).toEqual({ depth: 2, reaches: ['unknown'] })
   })
 })
 

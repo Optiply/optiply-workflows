@@ -63,7 +63,10 @@ export type AppDiagnosticCode =
   | 'unknown_param'
   | 'missing_param'
   | 'module_pages'
-  | 'nested_module'
+  /** A module instance reaching the module it's in (M21). */
+  | 'module_cycle'
+  /** Module instances nested deeper than `MAX_MODULE_DEPTH` (M21). */
+  | 'module_depth'
   | 'not_in_module'
   | 'unknown_module'
   | 'unpublished_module'
@@ -95,6 +98,18 @@ export interface AppValidateOptions {
    * take any props and events (their module isn't known).
    */
   resolveModule?: (slug: string) => ModuleInfo | undefined
+  /** The slug of the module being checked (M21): an instance reaching it back is a cycle. */
+  self?: string
+}
+
+/** How deep modules nest below an app (M21): an app holds a module holding a module holding a module, no deeper. */
+export const MAX_MODULE_DEPTH = 3
+
+/** How a module release nests (M21): 1 plus the deepest module it holds, and every module it reaches. */
+export interface ModuleNesting {
+  depth: number
+  /** Slugs of the modules it holds, and those they hold, and so on (`latest` as the live release). */
+  reaches: readonly string[]
 }
 
 /** What the validator needs to know about a module an app places (M14). */
@@ -103,6 +118,27 @@ export interface ModuleInfo {
   liveVersion: string | null
   /** Each release's inputs, outputs and events, by version. */
   versions: Record<string, ModuleInterface>
+  /** Each release's nesting, by version (M21); without it, depth and cycles through it aren't checked. */
+  nesting?: Record<string, ModuleNesting>
+}
+
+/**
+ * How a module definition nests (M21), from how the releases its instances run nest (`nesting(slug, version)`,
+ * undefined when unknown: counted as holding nothing).
+ */
+export function moduleNesting(
+  def: AppDefinition,
+  nesting: (slug: string, version: string) => ModuleNesting | undefined,
+): ModuleNesting {
+  let depth = 1
+  const reaches = new Set<string>()
+  for (const { slug, version } of placed(def)) {
+    const inner = nesting(slug, version)
+    depth = Math.max(depth, 1 + (inner?.depth ?? 1))
+    reaches.add(slug)
+    for (const s of inner?.reaches ?? []) reaches.add(s)
+  }
+  return { depth, reaches: [...reaches].sort() }
 }
 
 /**
@@ -205,7 +241,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   def.components.forEach((c, i) => {
     const at = { entity: c.name }
     const spec = specFor(c)
-    if (c.type === 'module') checkModuleInstance(def, c, ['components', i], resolveModule, report)
+    if (c.type === 'module') checkModuleInstance(def, c, ['components', i], options, report)
     if (!spec) {
       report({
         code: 'unknown_type',
@@ -682,31 +718,31 @@ function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, 
 }
 
 /**
- * A module instance (M14): it names a module by slug (not a template), isn't inside another module, and with
- * `resolve`, names a module and release that exist.
+ * A module instance (M14): it names a module by slug (not a template), and with `resolve`, a module and release
+ * that exist. In a module (M21), it doesn't reach that module back, and doesn't nest deeper than the limit leaves.
  */
 function checkModuleInstance(
   def: AppDefinition,
   c: AppComponent,
   base: (string | number)[],
-  resolve: AppValidateOptions['resolveModule'],
+  { resolveModule: resolve, self }: AppValidateOptions,
   report: Report,
 ) {
   const at = { entity: c.name }
-  if (def.module) {
-    report({
-      code: 'nested_module',
-      message: 'A module can’t hold another module',
-      path: [...base, 'type'],
-      ...at,
-    })
-    return
-  }
   const slug = c.props?.module
   if (typeof slug !== 'string' || !slug || slug.includes('{{')) {
     report({
       code: 'unknown_module',
       message: 'Pick a module: its slug, not a {{ }} template',
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+    return
+  }
+  if (self && slug === self) {
+    report({
+      code: 'module_cycle',
+      message: 'A module can’t hold itself',
       path: [...base, 'props', 'module'],
       ...at,
     })
@@ -739,6 +775,29 @@ function checkModuleInstance(
       path: [...base, 'props', 'version'],
       ...at,
     })
+  } else {
+    const release = version === 'latest' ? info.liveVersion! : version
+    const nesting = info.nesting && Object.hasOwn(info.nesting, release) ? info.nesting[release] : undefined
+    if (self && nesting?.reaches.includes(self)) {
+      report({
+        code: 'module_cycle',
+        message: `Module "${slug}" holds this module (directly or through others): a module can’t hold itself`,
+        path: [...base, 'props', 'module'],
+        ...at,
+      })
+      return
+    }
+    const limit = def.module ? MAX_MODULE_DEPTH - 1 : MAX_MODULE_DEPTH
+    if (nesting && nesting.depth > limit) {
+      report({
+        code: 'module_depth',
+        message: def.module
+          ? `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep, and this module adds one`
+          : `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep`,
+        path: [...base, 'props', 'module'],
+        ...at,
+      })
+    }
   }
 }
 
