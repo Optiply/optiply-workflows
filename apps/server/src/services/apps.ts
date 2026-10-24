@@ -4,7 +4,6 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   expressionSide,
-  instanceRelease,
   usedLibraries,
   usedModules,
   validateApp,

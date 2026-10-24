@@ -1,17 +1,14 @@
-import {
-  type LibraryDiagnostic,
-  type LibraryParam,
-  type LibraryQueryDefinition,
-  validateLibraryQuery,
-} from '@ow/app-definition'
+import type { LibraryDiagnostic, LibraryParam, LibraryQueryDefinition } from '@ow/app-definition'
 import { bumpVersion, compareVersions, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { GitBranch, History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import CodeField, { type FieldProblem } from '@/components/code/code-field'
+import type { TextBinding } from '@/components/code/text-binding'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { GitBar } from '@/components/git-bar'
+import { PresenceAvatars } from '@/components/presence-avatars'
 import {
   Badge,
   Button,
@@ -26,16 +23,27 @@ import {
   Spinner,
   Textarea,
 } from '@/components/ui'
+import { UndoButtons } from '@/components/undo-buttons'
+import type { SaveStatus as SaveStatusName } from '@/lib/collab-session'
+import { useEditorKeys } from '@/lib/editor-keys'
 import { isSqlType } from '@/lib/resource-types'
 import { parseTestValue, showTestValue } from '@/lib/test-value'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor, ConnectorErrorNote, ResultView } from '../resources/shared'
+import {
+  closeLibrarySession,
+  ensureLibrarySaved,
+  libraryAwareness,
+  openLibrarySession,
+  useLibraryPresence,
+} from './collab'
+import { useLibraryEditor } from './store'
 
 const route = getRouteApi('/app/library/$slug')
+const appRoute = getRouteApi('/app')
 
 type Detail = RouterOutputs['libraryQueries']['get']
-type Status = 'saved' | 'dirty' | 'saving' | 'conflict'
 
 /** Problems at `path` (and below it), as Monaco squiggles. */
 function problemsAt(diagnostics: LibraryDiagnostic[], path: (string | number)[]): FieldProblem[] {
@@ -100,10 +108,10 @@ export function LibraryEditorPage() {
         onUpdated: setDraftInfo,
       }
     : null
-  // Remounting on another revision from the server (a reload after a conflict), or another draft, starts from it.
+  // Another draft (or the branch draft replaced) starts again from it; edits by others arrive through the document.
   return (
     <Editor
-      key={`${detail.data.id}:${branchDraft?.id ?? 'main'}:${epoch}:${detail.data.draftRevision}`}
+      key={`${detail.data.id}:${branchDraft?.id ?? 'main'}:${epoch}`}
       initial={detail.data}
       draft={branchDraft ?? null}
       git={git}
@@ -130,89 +138,51 @@ function Editor({
   draft: BranchDraft | null
   git: EditorGit | null
 }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
-  // A branch draft (M14) instead of the main draft.
-  const start = draft
-    ? {
-        definition: draft.definition as LibraryQueryDefinition,
-        diagnostics: draft.diagnostics as LibraryDiagnostic[],
-        draftHash: draft.draftHash,
-        revision: draft.revision,
-      }
-    : {
-        definition: initial.draftDefinition,
-        diagnostics: initial.diagnostics,
-        draftHash: initial.draftHash,
-        revision: initial.draftRevision,
-      }
-  const [definition, setDefinition] = useState<LibraryQueryDefinition>(start.definition)
-  const [diagnostics, setDiagnostics] = useState<LibraryDiagnostic[]>(start.diagnostics)
-  const [draftHash, setDraftHash] = useState(start.draftHash)
-  const [status, setStatus] = useState<Status>('saved')
-  const revision = useRef(start.revision)
-  const latest = useRef(definition)
-  /** What the server has: nothing to save while `latest` is still it. */
-  const saved = useRef(definition)
-  const saving = useRef<Promise<void> | null>(null)
-  const save = useMutation({
-    mutationFn: (input: { id: string; revision: number; definition: LibraryQueryDefinition }) =>
-      draft
-        ? trpcClient.branchDrafts.save.mutate({ ...input, id: draft.id })
-        : trpcClient.libraryQueries.saveDraft.mutate(input),
-  })
-  const saveDraft = save.mutateAsync
+  const { me } = appRoute.useRouteContext()
   // A protected library query's main draft is what main deployed: it changes on branches.
   const canEdit = (initial.level === 'edit' || initial.level === 'own') && !(initial.gitProtected && !draft)
-
-  const edit = (next: (d: LibraryQueryDefinition) => LibraryQueryDefinition) => {
-    if (!canEdit) return
-    const d = next(latest.current)
-    latest.current = d
-    setDefinition(d)
-    // The browser's checks right away; the server's (with the connector) come back when it saves.
-    setDiagnostics(validateLibraryQuery(d).diagnostics)
-    setStatus((s) => (s === 'conflict' ? s : 'dirty'))
-  }
-
-  /** Saves what's edited, if anything; resolves with the revision the server has once it has it. */
-  const ensureSaved = useCallback(async (): Promise<number> => {
-    if (saving.current) await saving.current
-    const sent = latest.current
-    if (sent === saved.current) return revision.current
-    saving.current = (async () => {
-      setStatus('saving')
-      try {
-        const result = await saveDraft({ id: initial.id, revision: revision.current, definition: sent })
-        revision.current = result.revision
-        saved.current = sent
-        setDraftHash(result.draftHash)
-        if (latest.current === sent) {
-          setDiagnostics(result.diagnostics as LibraryDiagnostic[])
-          setStatus('saved')
-        } else {
-          setStatus('dirty')
-        }
-      } catch (err) {
-        setStatus(errorMessage(err).includes('since revision') ? 'conflict' : 'dirty')
-        throw err
-      } finally {
-        saving.current = null
-      }
-    })()
-    await saving.current
-    return revision.current
-  }, [initial, saveDraft])
-
-  // Autosave 800 ms after the last edit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each edit (`definition`) restarts the wait
+  // The draft as loaded, until its shared document syncs (M21); then the document, edited together.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the editor remounts for another draft
   useEffect(() => {
-    if (status !== 'dirty') return
-    const timer = setTimeout(() => void ensureSaved().catch(() => {}), 800)
-    return () => clearTimeout(timer)
-  }, [status, definition, ensureSaved])
+    const start = draft
+      ? {
+          definition: draft.definition as LibraryQueryDefinition,
+          diagnostics: draft.diagnostics as LibraryDiagnostic[],
+          draftHash: draft.draftHash,
+          revision: draft.revision,
+        }
+      : {
+          definition: initial.draftDefinition,
+          diagnostics: initial.diagnostics,
+          draftHash: initial.draftHash,
+          revision: initial.draftRevision,
+        }
+    useLibraryEditor
+      .getState()
+      .load(start.definition, start.revision, start.draftHash, start.diagnostics, !canEdit)
+    openLibrarySession(initial.id, draft?.id ?? null)
+    return () => closeLibrarySession()
+  }, [])
+  const definition = useLibraryEditor((s) => s.definition)
+  const diagnostics = useLibraryEditor((s) => s.diagnostics)
+  const draftHash = useLibraryEditor((s) => s.draftHash)
+  const status = useLibraryEditor((s) => s.status)
+  const readOnly = useLibraryEditor((s) => s.readOnly)
+  const { canUndo, canRedo, update, undo, redo } = useLibraryEditor()
+  const peers = useLibraryPresence((s) => s.peers)
+  useEditorKeys({ editable: !readOnly, undo, redo })
+  // Leaving with edits the server hasn't saved yet asks first.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const s = useLibraryEditor.getState()
+      if (!s.readOnly && (s.status === 'saving' || s.status === 'offline' || s.status === 'error')) {
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
 
-  const reload = () => queryClient.invalidateQueries({ queryKey: trpc.libraryQueries.get.pathKey() })
   const errors = diagnostics.filter((d) => d.severity === 'error').length
 
   return (
@@ -229,13 +199,15 @@ function Editor({
         }
         actions={
           <>
-            <SaveStatus status={status} error={save.error} onReload={reload} />
+            <PresenceAvatars peers={peers} me={me.id} />
+            {!readOnly && <UndoButtons canUndo={canUndo} canRedo={canRedo} onUndo={undo} onRedo={redo} />}
+            <SaveStatus status={status} />
             <ReleaseControls
               detail={initial}
-              draftHash={draftHash}
+              draftHash={draftHash ?? ''}
               status={status}
               errors={errors}
-              ensureSaved={ensureSaved}
+              ensureSaved={ensureLibrarySaved}
             />
           </>
         }
@@ -248,27 +220,27 @@ function Editor({
           draft={draft}
           onSwitch={async (next) => {
             try {
-              await ensureSaved()
+              await ensureLibrarySaved()
             } catch (err) {
               if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
             }
             git.onSwitch(next)
           }}
           ensureSaved={async () => {
-            await ensureSaved()
+            await ensureLibrarySaved()
           }}
-          revision={() => revision.current}
+          revision={() => useLibraryEditor.getState().revision}
           onReplaced={git.onReplaced}
           onUpdated={git.onUpdated}
         />
       )}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-4">
-          <QueryCard definition={definition} diagnostics={diagnostics} readOnly={!canEdit} edit={edit} />
-          <RunCard detail={initial} branchDraftId={draft?.id ?? null} ensureSaved={ensureSaved} />
+          <QueryCard definition={definition} diagnostics={diagnostics} readOnly={readOnly} edit={update} />
+          <RunCard detail={initial} branchDraftId={draft?.id ?? null} ensureSaved={ensureLibrarySaved} />
         </div>
         <div className="flex flex-col gap-4">
-          <ParamsCard definition={definition} diagnostics={diagnostics} readOnly={!canEdit} edit={edit} />
+          <ParamsCard definition={definition} diagnostics={diagnostics} readOnly={readOnly} edit={update} />
           <UsedByCard id={initial.id} />
         </div>
       </div>
@@ -276,24 +248,21 @@ function Editor({
   )
 }
 
-function SaveStatus({ status, error, onReload }: { status: Status; error: unknown; onReload: () => void }) {
-  if (status === 'conflict') {
-    return (
-      <span className="flex items-center gap-2 text-xs text-danger">
-        Someone else saved this query.
-        <Button size="sm" onClick={onReload}>
-          Reload
-        </Button>
-      </span>
-    )
-  }
+const SAVE_LABELS: Record<SaveStatusName, { text: string; className: string }> = {
+  connecting: { text: 'Connecting…', className: 'text-muted' },
+  saved: { text: 'Saved', className: 'text-muted' },
+  saving: { text: 'Saving…', className: 'text-muted' },
+  offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
+  error: { text: 'Not saved', className: 'text-danger' },
+  closed: { text: 'Disconnected: reload', className: 'text-danger' },
+}
+
+function SaveStatus({ status }: { status: SaveStatusName }) {
+  const saveError = useLibraryEditor((s) => s.saveError)
+  const label = SAVE_LABELS[status]
   return (
-    <span
-      className="text-xs text-muted"
-      data-testid="save-status"
-      title={error ? errorMessage(error) : undefined}
-    >
-      {status === 'saved' ? 'Saved' : status === 'saving' ? 'Saving…' : 'Unsaved changes'}
+    <span className={cn('text-xs', label.className)} data-testid="save-status" title={saveError ?? undefined}>
+      {label.text}
     </span>
   )
 }
@@ -315,6 +284,20 @@ function QueryCard({
   const sql = resource ? isSqlType(resource.type) : 'sql' in definition.query
   const [json, setJson] = useState(() => JSON.stringify(definition.query, null, 2))
   const [jsonError, setJsonError] = useState<string | null>(null)
+  // The SQL's text in the shared document (M21): typing merges with others', with their cursors shown.
+  const shared = useLibraryEditor((s) => s.shared)
+  const hasSql = typeof definition.query.sql === 'string'
+  const sqlBinding = useMemo((): TextBinding | null => {
+    const text = shared && !readOnly && hasSql ? shared.textAt(['query', 'sql']) : null
+    if (!text) return null
+    return {
+      text,
+      write: (change) => useLibraryEditor.getState().editText(['query', 'sql'], change),
+      undo: () => useLibraryEditor.getState().undo(),
+      redo: () => useLibraryEditor.getState().redo(),
+      awareness: libraryAwareness(),
+    }
+  }, [shared, readOnly, hasSql])
   const resourceProblems = diagnostics.filter((d) => d.path[0] === 'resource')
   return (
     <Card className="flex flex-col gap-3 p-4">
@@ -362,6 +345,7 @@ function QueryCard({
           readOnly={readOnly}
           value={String(definition.query.sql ?? '')}
           problems={problemsAt(diagnostics, ['query', 'sql'])}
+          binding={sqlBinding}
           onChange={(text) => edit((d) => ({ ...d, query: { ...d.query, sql: text } }))}
         />
       ) : (
@@ -651,7 +635,7 @@ function ReleaseControls({
 }: {
   detail: Detail
   draftHash: string
-  status: Status
+  status: SaveStatusName
   errors: number
   ensureSaved: () => Promise<number>
 }) {
