@@ -243,6 +243,10 @@ export const resourcesRouter = router({
             config: row ? row.config : null,
             /** This instance's own values over `config` (M22), by path. */
             overrides: row ? row.overrides : null,
+            /** Configured from Git without the secrets its connector needs yet (M22): an admin fills them in. */
+            secretsSet: !!row?.secrets,
+            needsSecrets:
+              !!row && !row.secrets && !connectorFor(resource.type).secretsSchema.safeParse({}).success,
             secrets: secrets ? maskSecrets(secrets) : null,
             sshKeys: secrets ? sshKeyInfo(secrets) : null,
             iapKeys: secrets ? iapKeyInfo(secrets) : null,

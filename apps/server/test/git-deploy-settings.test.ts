@@ -1,5 +1,13 @@
 import { join } from 'node:path'
-import { auditEvents, configVars, configVarValues, environments, gitObjects } from '@ow/db'
+import {
+  auditEvents,
+  configVars,
+  configVarValues,
+  environments,
+  gitObjects,
+  resourceConfigs,
+  resources,
+} from '@ow/db'
 import { encodeSettingsDir, type Files, manifestFile, type SettingsObject } from '@ow/git-format'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -198,3 +206,140 @@ function data(res: { body: { result?: { data: unknown }; error?: unknown } }) {
   if (res.body.error) throw new Error(JSON.stringify(res.body.error))
   return res.body.result!.data as never
 }
+
+const resource = (
+  slug: string,
+  environmentsOf: Record<string, Record<string, unknown>>,
+  extra: { name?: string; type?: string; description?: string | null } = {},
+): SettingsObject => ({
+  kind: 'resource',
+  slug,
+  value: {
+    name: extra.name ?? slug,
+    description: extra.description ?? null,
+    type: extra.type ?? 'postgres',
+    environments: Object.fromEntries(Object.entries(environmentsOf).map(([e, config]) => [e, { config }])),
+  },
+})
+const pg = (host: string) => ({ host, port: 5432, database: 'orders', user: 'app' })
+
+type ResourceView = {
+  id: string
+  gitProtected: boolean
+  name: string
+  environments: {
+    environmentId: string
+    config: Record<string, unknown> | null
+    overrides: Record<string, unknown> | null
+    secretsSet: boolean
+    needsSecrets: boolean
+  }[]
+}
+async function resourceView(slug: string) {
+  const [row] = await env.db.select().from(resources).where(eq(resources.slug, slug))
+  const view = data(await admin.query('resources.get', { id: row!.id })) as ResourceView
+  const at = (envSlug: string) => view.environments.find((e) => e.environmentId === envId(envSlug))!
+  return { view, at }
+}
+
+describe('deploying resources (M22)', () => {
+  it('creates them protected with each environment Git configures, needing secrets', async () => {
+    await pushMain('Add resources', [
+      resource(
+        'orders_db',
+        { production: pg('db.internal'), staging: pg('db.staging') },
+        { name: 'Orders DB' },
+      ),
+      resource('warehouse', { production: { projectId: 'optiply-dw' } }, { type: 'bigquery' }),
+    ])
+    const result = await deploy()
+    expect(outcomes(result)).toMatchObject({
+      'resource:orders_db': 'created',
+      'resource:warehouse': 'created',
+    })
+    const { view, at } = await resourceView('orders_db')
+    expect(view).toMatchObject({ gitProtected: true, name: 'Orders DB' })
+    expect(at('production')).toMatchObject({
+      config: pg('db.internal'),
+      secretsSet: false,
+      needsSecrets: false,
+    })
+    expect((await resourceView('warehouse')).at('production').needsSecrets).toBe(true)
+  })
+
+  it('updates configs keeping secrets and overrides, and drops environments Git left', async () => {
+    const { view } = await resourceView('orders_db')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: view.id,
+        environmentId: envId('production'),
+        config: pg('db.internal'),
+        secrets: { password: 'mine' },
+      }),
+    )
+    data(
+      await admin.mutate('resources.setOverrides', {
+        resourceId: view.id,
+        environmentId: envId('production'),
+        overrides: { host: 'localhost' },
+      }),
+    )
+    await pushMain('Move orders DB', [
+      resource(
+        'orders_db',
+        { production: { ...pg('db2.internal'), database: 'orders2' } },
+        { name: 'Orders' },
+      ),
+    ])
+    const result = await deploy()
+    expect(outcomes(result)).toMatchObject({
+      'resource:orders_db': 'updated',
+      'resource:warehouse': 'unchanged',
+    })
+    const { view: after, at } = await resourceView('orders_db')
+    expect(after.name).toBe('Orders')
+    expect(at('production')).toMatchObject({
+      config: { host: 'db2.internal', database: 'orders2' },
+      overrides: { host: 'localhost' },
+      secretsSet: true,
+    })
+    expect(at('staging').config).toBeNull()
+    const audits = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'resource.updated'))
+    expect(audits.at(-1)!.metadata).toMatchObject({ slug: 'orders_db', source: 'git' })
+  })
+
+  it('refuses a type change, a bad config, overrides that no longer fit, an unprotected one; the rest deploys', async () => {
+    data(await admin.mutate('resources.create', { type: 'postgres', name: 'Mine', slug: 'mine_db' }))
+    // An override the next settings can't take (the connector would refuse the result).
+    const { view } = await resourceView('orders_db')
+    await env.db
+      .update(resourceConfigs)
+      .set({ overrides: { port: 'not a port' } })
+      .where(eq(resourceConfigs.resourceId, view.id))
+    await pushMain('Broken', [
+      resource('warehouse', { production: pg('x') }, { type: 'postgres' }),
+      resource('mine_db', { production: pg('y') }),
+      resource('bad_config', { production: { host: 5 } }),
+      resource('orders_db', { production: pg('db3') }),
+      resource('fresh_db', { staging: pg('fresh') }),
+    ])
+    const result = (await deploy()) as Deployed
+    expect(outcomes(result)).toMatchObject({
+      'resource:warehouse': 'problem',
+      'resource:mine_db': 'problem',
+      'resource:bad_config': 'problem',
+      'resource:fresh_db': 'created',
+    })
+    const problems = Object.fromEntries(result.objects.map((o) => [o.slug, JSON.stringify(o.problems ?? [])]))
+    expect(problems.warehouse).toContain("type can't change")
+    expect(problems.mine_db).toContain('not_protected')
+    expect(problems.bad_config).toContain('production: host')
+    // The resource with nothing written for a problem stays as it was.
+    expect((await resourceView('warehouse')).at('production').config).toMatchObject({
+      projectId: 'optiply-dw',
+    })
+    expect(outcomes(result)['resource:orders_db']).toBe('problem')
+    expect(problems.orders_db).toContain('override_conflict')
+    expect((await resourceView('orders_db')).at('production').config).toMatchObject({ host: 'db2.internal' })
+  })
+})

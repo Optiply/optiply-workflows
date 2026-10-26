@@ -35,7 +35,7 @@ import { deployLibraryQueryFromGit } from '../library-queries'
 import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
-import { deployConfigVar } from './deploy-settings'
+import { deployConfigVar, deployResource } from './deploy-settings'
 import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
@@ -77,7 +77,10 @@ export type DeployResult =
   | { status: 'up_to_date'; commit: string }
   | { status: 'deployed'; commit: string; ok: boolean; objects: ObjectOutcome[]; problems: GitProblem[] }
 
-type DeployConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
+type DeployConfig = Pick<
+  Config,
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY'
+>
 
 interface DeployLogger {
   info(obj: object, msg: string): void
@@ -252,10 +255,18 @@ async function deployOnce(
         continue
       }
       const result = object.result.value
-      // Resources deploy from M22 step 3a-2.
-      if (result.kind !== 'config_var') continue
+      const item = { slug: object.slug, treeSha }
       outcomes.push(
-        await deployConfigVar(db, { slug: object.slug, treeSha, value: result.value }, { commit }),
+        result.kind === 'config_var'
+          ? await deployConfigVar(db, { ...item, value: result.value }, { commit })
+          : await deployResource(
+              db,
+              { ...item, value: result.value },
+              { commit },
+              {
+                serverIdentity: config.GOOGLE_SERVER_IDENTITY === 'allow',
+              },
+            ),
       )
       await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
     }
