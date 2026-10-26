@@ -18,6 +18,7 @@ import {
   resultPage,
 } from '../services/oauth-connect'
 import { authFingerprint, saveTokens } from '../services/oauth-tokens'
+import { effectiveConfig } from '../services/resources'
 
 const StartQuery = z.object({
   resourceId: z.string().uuid(),
@@ -82,7 +83,7 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         account: query.data.account,
         ...(query.data.appId && { appId: query.data.appId }),
         userId: user.id,
-        consent: authFingerprint(target.config.config)!,
+        consent: authFingerprint(effectiveConfig(target.config))!,
       }
       reply.setCookie(pendingCookieName(state), JSON.stringify(pending), {
         ...cookieOptions,
@@ -162,7 +163,7 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         return finish(reply, err.status, { ok: false, message: err.message, ...ids })
       throw err
     }
-    const consent = authFingerprint(target.config.config)!
+    const consent = authFingerprint(effectiveConfig(target.config))!
     if (consent !== pending.consent) {
       return finish(reply, 400, {
         ok: false,

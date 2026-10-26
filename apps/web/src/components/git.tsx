@@ -233,6 +233,13 @@ export const GIT_KIND_ROOTS: Record<GitKind, string> = {
   module: 'modules',
 }
 
+/** Every kind's directory in the repo, resources and config vars (M22) included. */
+export const GIT_ALL_ROOTS: Record<GitKind | 'resource' | 'config_var', string> = {
+  ...GIT_KIND_ROOTS,
+  resource: 'resources',
+  config_var: 'config-vars',
+}
+
 /** Refetches a kind's list and objects (after protecting or unprotecting one). */
 function useRefreshKind(kind: GitKind) {
   const trpc = useTRPC()

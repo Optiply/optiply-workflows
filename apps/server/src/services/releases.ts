@@ -30,6 +30,7 @@ import { uniqueOr } from '../trpc/errors'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
+import { effectiveConfig } from './resources'
 import { checkDefinition } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -265,6 +266,7 @@ async function checkReleasable(
         resourceId: resourceConfigs.resourceId,
         environmentId: resourceConfigs.environmentId,
         config: resourceConfigs.config,
+        overrides: resourceConfigs.overrides,
       })
       .from(resourceConfigs)
       .where(
@@ -273,7 +275,7 @@ async function checkReleasable(
           resources.map((r) => r.id),
         ),
       )
-    const perUser = configs.find((c) => authorizationCode(c.config)?.tokens === 'perUser')
+    const perUser = configs.find((c) => authorizationCode(effectiveConfig(c))?.tokens === 'perUser')
     if (perUser) {
       const resource = resources.find((r) => r.id === perUser.resourceId)!
       const env = envs.find((e) => e.id === perUser.environmentId)

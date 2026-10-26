@@ -1,9 +1,10 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { auditEvents, configVars, configVarValues, resources } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { auditEvents, configVars, configVarValues, resourceConfigs, resources } from '@ow/db'
+import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { GitRepo } from '../src/services/git/repo'
+import { applyOverrides, effectiveConfig } from '../src/services/resources'
 import { fakeGitHub } from './fake-github'
 import { bareRepo, scratch } from './git-helpers'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
@@ -225,5 +226,171 @@ describe('protecting a config var (M22)', () => {
     }
     const files = await filesOn(result.branch, 'config-vars/')
     expect(files['config-vars/TOKEN/config-var.json']).toBe('{\n  "secret": true\n}\n')
+  })
+})
+
+describe('on main, protected (M22)', () => {
+  let resourceId: string
+  const prod = () => envId('production')
+  const getResource = async () =>
+    data(await admin.query('resources.get', { id: resourceId })) as {
+      environments: {
+        environmentId: string
+        config: Record<string, unknown>
+        overrides: Record<string, unknown>
+      }[]
+    }
+
+  it('refuses changing what Git holds of a resource, and takes its secrets', async () => {
+    const [row] = await env.db.select().from(resources).where(eq(resources.slug, 'orders_db'))
+    resourceId = row!.id
+    await env.db.update(resources).set({ gitProtected: true }).where(eq(resources.id, resourceId))
+    const config = { host: 'db.internal', port: 5432, database: 'orders', user: 'app' }
+    expect(
+      code(await admin.mutate('resources.update', { id: resourceId, name: 'Renamed', description: null })),
+    ).toBe('PRECONDITION_FAILED')
+    expect(code(await admin.mutate('resources.delete', { id: resourceId }))).toBe('PRECONDITION_FAILED')
+    expect(code(await admin.mutate('resources.deleteConfig', { resourceId, environmentId: prod() }))).toBe(
+      'PRECONDITION_FAILED',
+    )
+    const changed = await admin.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prod(),
+      config: { ...config, host: 'elsewhere' },
+    })
+    expect(code(changed)).toBe('PRECONDITION_FAILED')
+    expect(JSON.stringify(changed.body)).toContain('secrets and overrides here')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId,
+        environmentId: prod(),
+        config,
+        secrets: { password: 'rotated' },
+      }),
+    )
+    const [stored] = await env.db
+      .select()
+      .from(resourceConfigs)
+      .where(eq(resourceConfigs.resourceId, resourceId))
+    expect(stored).toBeDefined()
+  })
+
+  it('overrides single fields of a protected resource on this instance', async () => {
+    data(
+      await admin.mutate('resources.setOverrides', {
+        resourceId,
+        environmentId: prod(),
+        overrides: { host: 'db.local', port: 6543 },
+      }),
+    )
+    const view = (await getResource()).environments.find((e) => e.environmentId === prod())!
+    expect(view.config.host).toBe('db.internal')
+    expect(view.overrides).toEqual({ host: 'db.local', port: 6543 })
+    const [row] = await env.db
+      .select()
+      .from(resourceConfigs)
+      .where(and(eq(resourceConfigs.environmentId, prod()), eq(resourceConfigs.resourceId, resourceId)))
+    expect(effectiveConfig(row!)).toMatchObject({ host: 'db.local', port: 6543, database: 'orders' })
+    expect(
+      code(
+        await admin.mutate('resources.setOverrides', {
+          resourceId,
+          environmentId: prod(),
+          overrides: { nope: 1 },
+        }),
+      ),
+    ).toBe('BAD_REQUEST')
+    expect(
+      code(
+        await admin.mutate('resources.setOverrides', {
+          resourceId,
+          environmentId: prod(),
+          overrides: { port: 'x' },
+        }),
+      ),
+    ).toBe('BAD_REQUEST')
+    data(await admin.mutate('resources.setOverrides', { resourceId, environmentId: prod(), overrides: {} }))
+    expect((await getResource()).environments.find((e) => e.environmentId === prod())!.overrides).toEqual({})
+  })
+
+  it('keeps overrides to protected resources', async () => {
+    const other: { id: string } = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Plain', slug: 'plain_db' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: other.id,
+        environmentId: prod(),
+        config: { host: 'h', port: 5432, database: 'd', user: 'u' },
+      }),
+    )
+    expect(
+      code(
+        await admin.mutate('resources.setOverrides', {
+          resourceId: other.id,
+          environmentId: prod(),
+          overrides: { host: 'x' },
+        }),
+      ),
+    ).toBe('PRECONDITION_FAILED')
+  })
+
+  it("takes a protected config var's local values and secret values, nothing else", async () => {
+    const vars = data(await admin.query('configVars.list')) as {
+      id: string
+      name: string
+      gitProtected: boolean
+      values: Record<string, { value?: string; local?: true }>
+    }[]
+    const apiBase = vars.find((v) => v.name === 'API_BASE')!
+    const token = vars.find((v) => v.name === 'TOKEN')!
+    expect(apiBase.gitProtected).toBe(true)
+    expect(apiBase.values[envId('staging')]).toEqual({ value: 'http://localhost:4000/', local: true })
+    expect(code(await admin.mutate('configVars.update', { id: apiBase.id, description: 'x' }))).toBe(
+      'PRECONDITION_FAILED',
+    )
+    expect(code(await admin.mutate('configVars.delete', { id: apiBase.id }))).toBe('PRECONDITION_FAILED')
+    const set = (value: string | null, local?: boolean) =>
+      admin.mutate('configVars.setValue', {
+        configVarId: apiBase.id,
+        environmentId: prod(),
+        value,
+        ...(local === undefined ? {} : { local }),
+      })
+    expect(code(await set('https://other/'))).toBe('PRECONDITION_FAILED')
+    expect(code(await set(null))).toBe('PRECONDITION_FAILED')
+    data(await set('https://mine/', true))
+    const after = (data(await admin.query('configVars.list')) as typeof vars).find(
+      (v) => v.name === 'API_BASE',
+    )!
+    expect(after.values[prod()]).toEqual({ value: 'https://mine/', local: true })
+    data(await set(null))
+    const cleared = (data(await admin.query('configVars.list')) as typeof vars).find(
+      (v) => v.name === 'API_BASE',
+    )!
+    expect(cleared.values[prod()]).toBeUndefined()
+    data(
+      await admin.mutate('configVars.setValue', {
+        configVarId: token.id,
+        environmentId: prod(),
+        value: 'rotated',
+      }),
+    )
+  })
+})
+
+describe('applyOverrides', () => {
+  it('sets values at paths, making objects on the way, without touching the config', () => {
+    const config = { host: 'a', ssh: { host: 'b', port: 22 }, list: [1] }
+    expect(
+      applyOverrides(config, { host: 'x', 'ssh.host': 'y', 'list.first': 1, 'new.deep.key': true }),
+    ).toEqual({
+      host: 'x',
+      ssh: { host: 'y', port: 22 },
+      list: { first: 1 },
+      new: { deep: { key: true } },
+    })
+    expect(config).toEqual({ host: 'a', ssh: { host: 'b', port: 22 }, list: [1] })
+    expect(applyOverrides(config, {})).toBe(config)
   })
 })

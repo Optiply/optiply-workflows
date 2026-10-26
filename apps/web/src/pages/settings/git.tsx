@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, GitBranch, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
-import { CommitLink, GIT_KIND_ROOTS } from '@/components/git'
+import { CommitLink, GIT_ALL_ROOTS } from '@/components/git'
 import {
   Badge,
   Button,
@@ -387,7 +387,7 @@ function DeployPanel() {
 function ObjectLink({ object }: { object: Status['objects'][number] }) {
   const label = (
     <span className="font-mono text-sm">
-      {GIT_KIND_ROOTS[object.kind]}/{object.slug}
+      {GIT_ALL_ROOTS[object.kind]}/{object.slug}
     </span>
   )
   if (object.objectId && object.status !== 'missing') {

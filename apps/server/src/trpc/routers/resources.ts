@@ -15,10 +15,12 @@ import {
   resourceConfigs,
   resources,
 } from '@ow/db'
+import { canonicalJson } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
 import {
   type AccountKind,
@@ -37,10 +39,13 @@ import {
 import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
+  applyOverrides,
   applySecretPatch,
   decryptConfigSecrets,
+  effectiveConfig,
   iapKeyInfo,
   maskSecrets,
+  OVERRIDE_PATH,
   patchedSecretFields,
   publicConfigVars,
   serverIdentityTarget,
@@ -236,6 +241,8 @@ export const resourcesRouter = router({
             environmentId,
             level,
             config: row ? row.config : null,
+            /** This instance's own values over `config` (M22), by path. */
+            overrides: row ? row.overrides : null,
             secrets: secrets ? maskSecrets(secrets) : null,
             sshKeys: secrets ? sshKeyInfo(secrets) : null,
             iapKeys: secrets ? iapKeyInfo(secrets) : null,
@@ -299,6 +306,7 @@ export const resourcesRouter = router({
       const { access, resource, envIds } = await visibleResource(ctx, input.id)
       requireLevel(access.levelEverywhere(resource, envIds), 'edit', 'this resource in every environment')
       assertNotBuiltIn(resource)
+      requireSettingsUnprotected(resource, 'resource', 'its name, description and folder change')
       await ctx.db
         .update(resources)
         .set({ name: input.name, description: input.description ?? null, folderId: input.folderId ?? null })
@@ -315,6 +323,12 @@ export const resourcesRouter = router({
     const { access, resource, envIds } = await visibleResource(ctx, input.id)
     requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
     assertNotBuiltIn(resource)
+    if (resource.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This resource is kept in Git: unprotect it before deleting it',
+      })
+    }
     const configIds = await ctx.db.transaction(async (tx) => {
       const rows = await tx
         .select({ id: resourceConfigs.id })
@@ -352,6 +366,22 @@ export const resourcesRouter = router({
       if (!config.success) throw invalidInput('configuration', config.error.issues)
 
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      // A protected resource's settings are Git's (M22): here only its secrets change (and overrides, apart).
+      if (resource.gitProtected) {
+        const stored = existing && connector.configSchema.safeParse(existing.config)
+        if (
+          !stored ||
+          canonicalJson(stored.success ? stored.data : existing.config) !== canonicalJson(config.data)
+        ) {
+          requireSettingsUnprotected(
+            resource,
+            'resource',
+            existing
+              ? 'its settings change (secrets and overrides here)'
+              : 'it gets settings in a new environment',
+          )
+        }
+      }
       const settled = sshSettled(() =>
         settleSsh(
           config.data as Record<string, unknown>,
@@ -376,7 +406,7 @@ export const resourcesRouter = router({
 
       const row = { id: existing?.id ?? uuidv7(), environmentId: input.environmentId }
       const values = {
-        config: settled.config,
+        config: resource.gitProtected ? existing!.config : settled.config,
         secrets: Object.keys(secrets).length
           ? encryptForRow(ctx.config.keyring, 'resource_configs', row, secrets)
           : null,
@@ -384,8 +414,9 @@ export const resourcesRouter = router({
         updatedAt: new Date(),
       }
       // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
-      const before = existing ? authFingerprint(existing.config) : null
-      const consentChanged = before !== null && before !== authFingerprint(values.config)
+      const before = existing ? authFingerprint(effectiveConfig(existing)) : null
+      const consentChanged =
+        before !== null && before !== authFingerprint(applyOverrides(values.config, existing!.overrides))
       let disconnectedAccounts = 0
       if (existing) {
         disconnectedAccounts = await ctx.db.transaction(async (tx) => {
@@ -419,12 +450,95 @@ export const resourcesRouter = router({
       }
     }),
 
+  /**
+   * This instance's own values for single non-secret fields of a protected resource (M22), by path (`host`,
+   * `ssh.host`): applied over Git's settings wherever they're read, never touched by a deploy. Replaces the
+   * environment's overrides; `{}` clears them.
+   */
+  setOverrides: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        overrides: z
+          .record(
+            z.string().regex(OVERRIDE_PATH, "Expected a setting's path, such as host or ssh.host"),
+            z.unknown(),
+          )
+          .refine((o) => Object.keys(o).length <= 50, 'At most 50 overrides'),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      assertNotBuiltIn(resource)
+      if (!resource.gitProtected) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: "Overrides are for resources kept in Git: change this one's settings instead",
+        })
+      }
+      const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!existing) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "This resource isn't configured in this environment: its settings come from Git",
+        })
+      }
+      const connector = connectorFor(resource.type)
+      const next = connector.configSchema.safeParse(applyOverrides(existing.config, input.overrides))
+      if (!next.success) throw invalidInput('configuration', next.error.issues)
+      // A path the connector doesn't keep would be dropped silently: say so instead.
+      for (const [path, value] of Object.entries(input.overrides)) {
+        const kept = path
+          .split('.')
+          .reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], next.data)
+        if (canonicalJson(kept ?? null) !== canonicalJson(value ?? null)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: `"${path}" isn't a setting of this resource` })
+        }
+      }
+      const secrets = decryptConfigSecrets(ctx.config.keyring, existing)
+      sshSettled(() => settleSsh(next.data as Record<string, unknown>, secrets))
+      const iapTarget = requireAdminForServerIdentity(
+        ctx.user,
+        resource.type,
+        effectiveConfig(existing),
+        next.data,
+      )
+      const consentChanged = authFingerprint(effectiveConfig(existing)) !== authFingerprint(next.data)
+      const disconnectedAccounts = await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(resourceConfigs)
+          .set({ overrides: input.overrides, updatedBy: ctx.user.id, updatedAt: new Date() })
+          .where(eq(resourceConfigs.id, existing.id))
+        return consentChanged ? deleteTokens(tx, existing.id) : 0
+      })
+      await ctx.services.pool.invalidate(existing.id)
+      await ctx.audit({
+        action: 'resource.overrides_saved',
+        objectType: 'resource',
+        objectId: resource.id,
+        environmentId: input.environmentId,
+        metadata: {
+          environment: await environmentSlug(ctx.db, input.environmentId),
+          paths: Object.keys(input.overrides).sort(),
+          ...(iapTarget &&
+            iapTarget !== serverIdentityTarget(effectiveConfig(existing), resource.type) && {
+              serverIdentityTarget: iapTarget,
+            }),
+          ...(disconnectedAccounts && { disconnectedAccounts }),
+        },
+      })
+      return { overrides: input.overrides, config: next.data as Record<string, unknown> }
+    }),
+
   deleteConfig: authedProcedure
     .input(z.object({ resourceId: Id, environmentId: Id }))
     .mutation(async ({ ctx, input }) => {
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
       assertNotBuiltIn(resource)
+      requireSettingsUnprotected(resource, 'resource', 'its settings in an environment are removed')
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       if (!existing) return
       await ctx.db.delete(resourceConfigs).where(eq(resourceConfigs.id, existing.id))
@@ -458,7 +572,7 @@ export const resourcesRouter = router({
         resourceId: resource.id,
         environmentId: input.environmentId,
         version: 'test',
-        config: input.config ?? existing?.config ?? {},
+        config: input.config ?? (existing ? effectiveConfig(existing) : {}),
         secrets: applySecretPatch(
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,
@@ -516,7 +630,7 @@ export const resourcesRouter = router({
       const level = access.level(resource, environmentId)
       if (!level) continue
       const row = await getConfigRow(ctx.db, resource.id, environmentId)
-      const auth = row && authorizationCode(row.config)
+      const auth = row && authorizationCode(effectiveConfig(row))
       if (!row || !auth) {
         environments.push({
           environmentId,
@@ -528,7 +642,7 @@ export const resourcesRouter = router({
         continue
       }
       const shared = auth.tokens === 'shared'
-      const consent = authFingerprint(row.config)!
+      const consent = authFingerprint(effectiveConfig(row))!
       let connectedPeople: number | null = null
       if (!shared && atLeast(level, 'edit')) {
         const [counted] = await ctx.db

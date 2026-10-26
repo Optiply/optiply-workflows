@@ -168,6 +168,38 @@ export function decryptConfigSecrets(keyring: Keyring, row: ResourceConfig): Rec
     : {}
 }
 
+/** An override's path: a config field, or one inside nested settings (`ssh.host`). */
+export const OVERRIDE_PATH = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/
+
+/**
+ * `config` with this instance's overrides on top (M22): each value set at its path, making objects on the way (a
+ * value that isn't an object there is replaced). `config` itself is left alone.
+ */
+export function applyOverrides(
+  config: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+): Record<string, unknown> {
+  const paths = Object.keys(overrides)
+  if (paths.length === 0) return config
+  const out = structuredClone(config)
+  for (const path of paths.sort()) {
+    const keys = path.split('.')
+    let target = out
+    for (const key of keys.slice(0, -1)) {
+      const next = target[key]
+      if (typeof next !== 'object' || next === null || Array.isArray(next)) target[key] = {}
+      target = target[key] as Record<string, unknown>
+    }
+    target[keys.at(-1)!] = overrides[path]
+  }
+  return out
+}
+
+/** The config a resource runs with in an environment: the stored one (Git's, when protected) and the overrides. */
+export function effectiveConfig(row: Pick<ResourceConfig, 'config' | 'overrides'>): Record<string, unknown> {
+  return applyOverrides(row.config, row.overrides)
+}
+
 /** A config row as connectors need it. The version changes on every save, so pooled clients are replaced. */
 export function toResolved(keyring: Keyring, row: ResourceConfig): ResolvedResource {
   return {
@@ -175,7 +207,7 @@ export function toResolved(keyring: Keyring, row: ResourceConfig): ResolvedResou
     resourceId: row.resourceId,
     environmentId: row.environmentId,
     version: row.updatedAt.toISOString(),
-    config: row.config,
+    config: effectiveConfig(row),
     secrets: decryptConfigSecrets(keyring, row),
   }
 }

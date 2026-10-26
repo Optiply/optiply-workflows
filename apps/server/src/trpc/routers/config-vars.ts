@@ -1,9 +1,10 @@
-import { configVars, configVarValues, environments } from '@ow/db'
+import { configVars, configVarValues, environments, gitObjects } from '@ow/db'
 import { CONFIG_VAR_NAME } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import { encryptForRow } from '../../services/secrets'
 import { uniqueOr } from '../errors'
 import { adminProcedure, authedProcedure, router } from '../init'
@@ -27,11 +28,17 @@ export const configVarsRouter = router({
       name: v.name,
       description: v.description,
       isSecret: v.isSecret,
+      gitProtected: v.gitProtected,
       values: Object.fromEntries(
         values
           .filter((x) => x.configVarId === v.id)
-          .map((x) => [x.environmentId, v.isSecret ? { set: true as const } : { value: x.value ?? '' }]),
-      ) as Record<string, { set: true } | { value: string }>,
+          .map((x) => [
+            x.environmentId,
+            v.isSecret
+              ? { set: true as const }
+              : { value: x.value ?? '', ...(x.local && { local: true as const }) },
+          ]),
+      ) as Record<string, { set: true } | { value: string; local?: true }>,
     }))
   }),
 
@@ -57,6 +64,9 @@ export const configVarsRouter = router({
   update: adminProcedure
     .input(z.object({ id: Id, description: Description }))
     .mutation(async ({ ctx, input }) => {
+      const [variable] = await ctx.db.select().from(configVars).where(eq(configVars.id, input.id))
+      if (!variable) throw new TRPCError({ code: 'NOT_FOUND', message: 'Config var not found' })
+      requireSettingsUnprotected(variable, 'config_var', 'its description changes')
       await ctx.db
         .update(configVars)
         .set({ description: input.description ?? null })
@@ -64,6 +74,14 @@ export const configVarsRouter = router({
     }),
 
   delete: adminProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
+    const [variable] = await ctx.db.select().from(configVars).where(eq(configVars.id, input.id))
+    if (variable)
+      if (variable.gitProtected) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This config var is kept in Git: unprotect it before deleting it',
+        })
+      }
     const [deleted] = await ctx.db.delete(configVars).where(eq(configVars.id, input.id)).returning()
     if (!deleted) throw new TRPCError({ code: 'NOT_FOUND', message: 'Config var not found' })
     await ctx.audit({
@@ -74,9 +92,20 @@ export const configVarsRouter = router({
     })
   }),
 
-  /** Sets one environment's value, or removes it with `value: null`. Secret values are encrypted. */
+  /**
+   * Sets one environment's value, or removes it with `value: null`. Secret values are encrypted. A protected var's
+   * non-secret values are Git's (M22): here only a `local` value (this instance's own, kept by deploys) is set, and
+   * removing it brings Git's back on the next deploy.
+   */
   setValue: adminProcedure
-    .input(z.object({ configVarId: Id, environmentId: Id, value: z.string().max(10_000).nullable() }))
+    .input(
+      z.object({
+        configVarId: Id,
+        environmentId: Id,
+        value: z.string().max(10_000).nullable(),
+        local: z.boolean().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const [variable] = await ctx.db.select().from(configVars).where(eq(configVars.id, input.configVarId))
       if (!variable) throw new TRPCError({ code: 'NOT_FOUND', message: 'Config var not found' })
@@ -90,7 +119,25 @@ export const configVarsRouter = router({
         eq(configVarValues.configVarId, variable.id),
         eq(configVarValues.environmentId, input.environmentId),
       )
-      const [existing] = await ctx.db.select({ id: configVarValues.id }).from(configVarValues).where(where)
+      const [existing] = await ctx.db
+        .select({ id: configVarValues.id, local: configVarValues.local })
+        .from(configVarValues)
+        .where(where)
+      const gitValues = variable.gitProtected && !variable.isSecret
+      if (gitValues && (input.value === null ? !existing?.local : !input.local)) {
+        requireSettingsUnprotected(
+          variable,
+          'config_var',
+          input.value === null ? 'its values are removed' : 'its values change (or set a local value here)',
+        )
+      }
+      if (gitValues && input.value === null) {
+        // Git's value comes back with the next deploy of the var's directory.
+        await ctx.db
+          .update(gitObjects)
+          .set({ treeSha: null })
+          .where(and(eq(gitObjects.kind, 'config_var'), eq(gitObjects.slug, variable.name)))
+      }
       if (input.value === null) {
         await ctx.db.delete(configVarValues).where(where)
       } else {
@@ -100,7 +147,7 @@ export const configVarsRouter = router({
               value: null,
               valueEncrypted: encryptForRow(ctx.config.keyring, 'config_var_values', row, input.value),
             }
-          : { value: input.value, valueEncrypted: null }
+          : { value: input.value, valueEncrypted: null, local: gitValues }
         if (existing) {
           await ctx.db
             .update(configVarValues)
@@ -117,7 +164,7 @@ export const configVarsRouter = router({
         objectType: 'config_var',
         objectId: variable.id,
         environmentId: input.environmentId,
-        metadata: { name: variable.name, environment: env.slug },
+        metadata: { name: variable.name, environment: env.slug, ...(gitValues && { local: true }) },
       })
     }),
 })
