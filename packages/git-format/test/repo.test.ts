@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   decodeRepo,
   encodeObject,
+  encodeSettingsDir,
   type Files,
   MANIFEST_FILE,
   manifestFile,
   objectDir,
   type RepoObject,
+  type SettingsObject,
   splitRepo,
 } from '../src'
 
@@ -199,5 +201,141 @@ describe('library queries and modules (M14)', () => {
     expect(problems('customer-picker')).toEqual([
       ['modules/customer-picker/module.json', 'invalid_definition'],
     ])
+  })
+})
+
+const resource: SettingsObject = {
+  kind: 'resource',
+  slug: 'orders_db',
+  value: {
+    name: 'Orders DB',
+    description: null,
+    type: 'postgres',
+    environments: {
+      production: {
+        config: { host: 'db.internal', port: 5432, database: 'orders', ssl: { mode: 'require' } },
+      },
+      staging: { config: { host: 'db.staging', port: 5432, database: 'orders' } },
+    },
+  },
+}
+const apiBase: SettingsObject = {
+  kind: 'config_var',
+  slug: 'API_BASE',
+  value: {
+    description: 'Where the API is',
+    secret: false,
+    values: { production: 'https://api.example.com/' },
+  },
+}
+const token: SettingsObject = {
+  kind: 'config_var',
+  slug: 'TOKEN',
+  value: { description: null, secret: true, values: {} },
+}
+
+const withSettings = (): Files => {
+  const files = repo()
+  for (const object of [resource, apiBase, token]) {
+    const { dir, files: inside } = encodeSettingsDir(object)
+    for (const [path, content] of Object.entries(inside)) files[`${dir}/${path}`] = content
+  }
+  return files
+}
+
+describe('resources and config vars (M22)', () => {
+  it('have directories of their own: resources/<slug>/resource.json and config-vars/<NAME>/config-var.json', () => {
+    const files = withSettings()
+    expect(
+      Object.keys(files).filter((p) => p.startsWith('resources/') || p.startsWith('config-vars/')),
+    ).toEqual([
+      'resources/orders_db/resource.json',
+      'config-vars/API_BASE/config-var.json',
+      'config-vars/TOKEN/config-var.json',
+    ])
+    expect(JSON.parse(files['config-vars/TOKEN/config-var.json']!)).toEqual({ secret: true })
+    expect(JSON.parse(files['resources/orders_db/resource.json']!)).toEqual({
+      name: 'Orders DB',
+      type: 'postgres',
+      environments: resource.value.environments,
+    })
+  })
+
+  it('decode apart from the objects, which stay as they were', () => {
+    const decoded = decodeRepo(withSettings())
+    expect(decoded.problems).toEqual([])
+    expect(decoded.objects.map((o) => o.kind)).toEqual(['app', 'workflow'])
+    expect(decoded.settings.map((o) => [o.kind, o.slug])).toEqual([
+      ['config_var', 'API_BASE'],
+      ['config_var', 'TOKEN'],
+      ['resource', 'orders_db'],
+    ])
+    for (const { result } of decoded.settings) expect(result.ok).toBe(true)
+    const db = decoded.settings.find((o) => o.slug === 'orders_db')!.result
+    expect(db.ok && db.value).toEqual(resource)
+    expect(splitRepo(withSettings()).objects.map((o) => o.slug)).toEqual(['order-admin', 'sync-orders'])
+  })
+
+  it('report their own problems: names, stray files, secret values, unknown keys, a missing file', () => {
+    const files = withSettings()
+    files['resources/orders-db/resource.json'] = '{}'
+    files['config-vars/1ST/config-var.json'] = '{}'
+    files['config-vars/stray.json'] = '{}'
+    files['resources/orders_db/notes.md'] = 'x'
+    files['config-vars/TOKEN/config-var.json'] = JSON.stringify({
+      secret: true,
+      values: { production: 'hunter2' },
+    })
+    files['config-vars/API_BASE/config-var.json'] = JSON.stringify({ secret: false, password: 'x' })
+    files['resources/empty/README.md'] = 'x'
+    const decoded = decodeRepo(files)
+    expect(decoded.problems.map((p) => [p.path, p.code])).toEqual([
+      ['resources/orders-db', 'invalid_slug'],
+      ['config-vars/1ST', 'invalid_slug'],
+      ['config-vars/stray.json', 'unexpected_file'],
+    ])
+    expect(decoded.problems[0]!.message).toContain("isn't a valid resource slug")
+    expect(decoded.problems[1]!.message).toContain("isn't a valid config var name")
+    expect(decoded.problems[2]!.message).toContain('config-vars/<NAME>/')
+    const problems = (slug: string) => {
+      const result = decoded.settings.find((o) => o.slug === slug)!.result
+      return result.ok ? [] : result.problems.map((p) => [p.path, p.code, p.message])
+    }
+    expect(problems('orders_db')).toEqual([
+      [
+        'resources/orders_db/notes.md',
+        'unexpected_file',
+        "resources/orders_db/notes.md doesn't belong in this directory",
+      ],
+    ])
+    expect(problems('TOKEN')).toEqual([
+      [
+        'config-vars/TOKEN/config-var.json',
+        'invalid_definition',
+        "config-vars/TOKEN/config-var.json: values: a secret config var's values stay on each instance, not in Git",
+      ],
+    ])
+    expect(problems('API_BASE').map(([, code]) => code)).toEqual(['invalid_definition'])
+    expect(problems('empty').map(([path, code]) => [path, code])).toEqual([
+      ['resources/empty/resource.json', 'missing_file'],
+      ['resources/empty/README.md', 'unexpected_file'],
+    ])
+  })
+
+  it('refuse a config without a type, an environment that is not a slug, and a secrets key', () => {
+    const files = withSettings()
+    files['resources/orders_db/resource.json'] = JSON.stringify({
+      name: 'Orders DB',
+      environments: { Production: { config: {} } },
+      secrets: { password: 'x' },
+    })
+    const result = decodeRepo(files).settings.find((o) => o.slug === 'orders_db')!.result
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const messages = result.problems.map((p) => p.message).join('\n')
+      expect(messages).toContain('type')
+      expect(messages).toContain('Production')
+      expect(messages).toContain('secrets')
+    }
   })
 })

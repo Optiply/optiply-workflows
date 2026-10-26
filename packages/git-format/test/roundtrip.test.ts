@@ -16,14 +16,20 @@ import {
 } from '@ow/definition'
 import { describe, expect, it } from 'vitest'
 import {
+  type ConfigVarObject,
   decodeApp,
+  decodeConfigVar,
   decodeLibraryQuery,
   decodeModule,
+  decodeResource,
   decodeWorkflow,
   encodeApp,
+  encodeConfigVar,
   encodeLibraryQuery,
   encodeModule,
+  encodeResource,
   encodeWorkflow,
+  type ResourceObject,
   workflowForGit,
 } from '../src'
 
@@ -246,6 +252,44 @@ function libraryQueryDefinition(r: Rng): LibraryQueryDefinition {
   }
 }
 
+/** A JSON value as a connector's config holds: nested objects and arrays, the awkward strings, numbers, null. */
+function jsonValue(r: Rng, depth = 0): unknown {
+  const roll = r.int(depth > 2 ? 4 : 6)
+  if (roll === 0) return text(r)
+  if (roll === 1) return r.pick([0, -1, 5432, 1.5, 1e21])
+  if (roll === 2) return r.chance(0.5)
+  if (roll === 3) return null
+  if (roll === 4) return Array.from({ length: r.int(3) }, () => jsonValue(r, depth + 1))
+  return Object.fromEntries(names(r, 'k', r.int(4)).map((k) => [k, jsonValue(r, depth + 1)]))
+}
+
+const ENVIRONMENTS = ['production', 'staging', 'dev-2', 'eu_west']
+
+function resource(r: Rng): ResourceObject {
+  return {
+    name: `Resource ${r.int(100)}`,
+    description: r.chance(0.5) ? text(r).trim() || null : null,
+    type: r.pick(['postgres', 'rest', 'mysql', 'bigquery', 'pubsub']),
+    environments: Object.fromEntries(
+      ENVIRONMENTS.filter(() => r.chance(0.5)).map((env) => [
+        env,
+        { config: Object.fromEntries(names(r, 'field', r.int(5)).map((k) => [k, jsonValue(r)])) },
+      ]),
+    ),
+  }
+}
+
+function configVar(r: Rng): ConfigVarObject {
+  const secret = r.chance(0.3)
+  return {
+    description: r.chance(0.5) ? text(r).trim().slice(0, 500) || null : null,
+    secret,
+    values: secret
+      ? {}
+      : Object.fromEntries(ENVIRONMENTS.filter(() => r.chance(0.5)).map((e) => [e, text(r)])),
+  }
+}
+
 const SEEDS = Array.from({ length: 400 }, (_, i) => i + 1)
 
 describe('round trip', () => {
@@ -307,5 +351,23 @@ describe('round trip', () => {
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(definition))
     expect(await libraryQueryHash(decoded.value.definition)).toBe(await libraryQueryHash(definition))
     expect(encodeLibraryQuery(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('resource, seed %i', (seed) => {
+    const object = resource(rng(seed))
+    const { files } = encodeResource(object)
+    const decoded = decodeResource(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(canonicalJson(decoded.value)).toBe(canonicalJson(object))
+    expect(encodeResource(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('config var, seed %i', (seed) => {
+    const object = configVar(rng(seed))
+    const { files } = encodeConfigVar(object)
+    const decoded = decodeConfigVar(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(decoded.value).toEqual(object)
+    expect(encodeConfigVar(decoded.value).files).toEqual(files)
   })
 })
