@@ -22,6 +22,9 @@ import {
   type ObjectKind,
   objectDir,
   type RepoObject,
+  SETTINGS_ROOTS,
+  type SettingsKind,
+  settingsDir,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { desc, sql } from 'drizzle-orm'
@@ -32,24 +35,29 @@ import { deployLibraryQueryFromGit } from '../library-queries'
 import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
-import { insertGitObject, isObjectKind, loadGitObject, protectedObjectIds } from './kinds'
+import { deployConfigVar } from './deploy-settings'
+import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
 export type DeployTrigger = (typeof GIT_DEPLOY_TRIGGERS)[number]
+
+/** Resources and config vars go before every other kind; config vars first, as resources may name them. */
+const SETTINGS_ORDER: readonly SettingsKind[] = ['config_var', 'resource']
 
 /** The order a deploy goes in: what other objects use comes first. */
 const DEPLOY_ORDER: readonly ObjectKind[] = ['library_query', 'module', 'workflow', 'app']
 
 /** What a deploy did with one object directory. */
 export interface ObjectOutcome {
-  kind: ObjectKind
+  kind: ObjectKind | SettingsKind
   slug: string
   /**
    * `created`: a new workflow, app, library query or module (and its first release, unless it has problems); `released`: a new live
-   * release; `unchanged`: the directory, or at least its definition, is what's already live; `problem`: not
-   * deployed (the live release stays); `missing`: the directory left the branch.
+   * release; `updated`: a resource's or config var's settings changed (M22); `unchanged`: the directory, or at least
+   * its definition, is what's already live; `problem`: not deployed (the live release stays); `missing`: the
+   * directory left the branch.
    */
-  outcome: 'created' | 'released' | 'unchanged' | 'problem' | 'missing'
+  outcome: 'created' | 'released' | 'updated' | 'unchanged' | 'problem' | 'missing'
   objectId?: string | null
   treeSha?: string | null
   version?: string
@@ -192,7 +200,7 @@ async function deployOnce(
   }
 
   const startedAt = new Date()
-  const roots = Object.values(KIND_ROOTS)
+  const roots = [...Object.values(KIND_ROOTS), ...Object.values(SETTINGS_ROOTS)]
   const files = await repo.readFiles(commit, [MANIFEST_FILE, ...roots.map((r) => `${r}/`)])
   const trees = await repo.subtrees(commit, roots)
   const info = await repo.commitInfo(commit)
@@ -202,12 +210,56 @@ async function deployOnce(
   // An unchanged directory is skipped only while its object is still there and protected (one deleted on the
   // instance comes back).
   const protectedIds = await protectedObjectIds(db)
-  const rowOf = (kind: ObjectKind, slug: string) => rows.find((r) => r.kind === kind && r.slug === slug)
+  const rowOf = (kind: ObjectKind | SettingsKind, slug: string) =>
+    rows.find((r) => r.kind === kind && r.slug === slug)
+  const unchanged = (row: GitObject | undefined, treeSha: string | null) =>
+    !opts.force &&
+    row?.status === 'deployed' &&
+    row.treeSha === treeSha &&
+    !!row.objectId &&
+    protectedIds.has(row.objectId)
   const outcomes: ObjectOutcome[] = []
 
   // A repo in a format this version doesn't read (or without ow.json) deploys nothing.
-  const blocked = checkManifest(files).length > 0 && decoded.objects.length > 0
+  const blocked = checkManifest(files).length > 0 && decoded.objects.length + decoded.settings.length > 0
   if (!blocked) {
+    // Config vars, then resources (M22): what workflows and apps need is there before they're checked.
+    const settings = [...decoded.settings].sort(
+      (a, b) => SETTINGS_ORDER.indexOf(a.kind) - SETTINGS_ORDER.indexOf(b.kind),
+    )
+    for (const object of settings) {
+      const treeSha = trees.get(settingsDir(object.kind, object.slug)) ?? null
+      const row = rowOf(object.kind, object.slug)
+      if (unchanged(row, treeSha)) {
+        outcomes.push({
+          kind: object.kind,
+          slug: object.slug,
+          outcome: 'unchanged',
+          objectId: row!.objectId,
+          treeSha,
+        })
+        continue
+      }
+      if (!object.result.ok) {
+        outcomes.push({
+          kind: object.kind,
+          slug: object.slug,
+          outcome: 'problem',
+          objectId: row?.objectId ?? null,
+          treeSha,
+          problems: object.result.problems,
+        })
+        continue
+      }
+      const result = object.result.value
+      // Resources deploy from M22 step 3a-2.
+      if (result.kind !== 'config_var') continue
+      outcomes.push(
+        await deployConfigVar(db, { slug: object.slug, treeSha, value: result.value }, { commit }),
+      )
+      await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
+    }
+
     type Pending = {
       kind: ObjectKind
       slug: string
@@ -219,18 +271,12 @@ async function deployOnce(
     for (const object of decoded.objects) {
       const treeSha = trees.get(objectDir(object.kind, object.slug)) ?? null
       const row = rowOf(object.kind, object.slug)
-      if (
-        !opts.force &&
-        row?.status === 'deployed' &&
-        row.treeSha === treeSha &&
-        row.objectId &&
-        protectedIds.has(row.objectId)
-      ) {
+      if (unchanged(row, treeSha)) {
         outcomes.push({
           kind: object.kind,
           slug: object.slug,
           outcome: 'unchanged',
-          objectId: row.objectId,
+          objectId: row!.objectId,
           treeSha,
         })
         continue
@@ -269,10 +315,8 @@ async function deployOnce(
     }
 
     // Directories that left the branch: the objects stay, flagged, and stop deploying.
-    const present = new Set(decoded.objects.map((o) => `${o.kind}:${o.slug}`))
+    const present = new Set([...decoded.objects, ...decoded.settings].map((o) => `${o.kind}:${o.slug}`))
     for (const row of rows) {
-      // Resources and config vars (M22) aren't deployed yet.
-      if (!isObjectKind(row.kind)) continue
       if (row.status !== 'missing' && !present.has(`${row.kind}:${row.slug}`)) {
         outcomes.push({
           kind: row.kind,
@@ -324,6 +368,7 @@ async function deployOnce(
       trigger: opts.trigger,
       created: count('created'),
       released: count('released'),
+      updated: count('updated'),
       problems: objectProblems.length + repoProblems.length,
       missing: count('missing'),
     },

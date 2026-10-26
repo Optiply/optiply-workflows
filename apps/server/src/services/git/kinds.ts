@@ -22,6 +22,7 @@ import {
   type App,
   appReleases,
   apps,
+  configVars,
   type Db,
   GIT_OBJECT_KINDS,
   gitBranchDrafts,
@@ -32,6 +33,7 @@ import {
   moduleReleases,
   modules,
   type PermissionLevel,
+  resources,
   type Workflow,
   workflowReleases,
   workflows,
@@ -220,7 +222,7 @@ export function kindTitle(kind: ObjectKind): string {
 /** Every protected object's id, of any kind (deploy skips their unchanged directories). */
 export async function protectedObjectIds(db: Db): Promise<Set<string>> {
   const rows = await Promise.all(
-    [workflows, apps, libraryQueries, modules].map((table) =>
+    [workflows, apps, libraryQueries, modules, resources, configVars].map((table) =>
       db.select({ id: table.id }).from(table).where(eq(table.gitProtected, true)),
     ),
   )
