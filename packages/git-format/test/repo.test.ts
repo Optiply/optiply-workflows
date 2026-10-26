@@ -10,6 +10,7 @@ import {
   type RepoObject,
   type SettingsObject,
   splitRepo,
+  workflowForGit,
 } from '../src'
 
 const workflow: RepoObject = {
@@ -336,6 +337,43 @@ describe('resources and config vars (M22)', () => {
       expect(messages).toContain('type')
       expect(messages).toContain('Production')
       expect(messages).toContain('secrets')
+    }
+  })
+})
+
+describe('folders (M22)', () => {
+  it('sit beside the name, are left out at the top level, and leave the definition alone', () => {
+    const inFolder: RepoObject = { ...workflow, value: { ...workflow.value, folder: 'Finance/Reports' } }
+    const json = JSON.parse(encodeObject(inFolder).files['workflows/sync-orders/workflow.json']!)
+    expect(json.folder).toBe('Finance/Reports')
+    expect('folder' in JSON.parse(encodeObject(workflow).files['workflows/sync-orders/workflow.json']!)).toBe(
+      false,
+    )
+    const decoded = decodeRepo({ [MANIFEST_FILE]: manifestFile(), ...encodeObject(inFolder).files })
+    const result = decoded.objects[0]!.result
+    expect(result.ok && result.value.value).toEqual({
+      ...inFolder.value,
+      definition: workflowForGit(workflow.value.definition as never),
+    })
+  })
+
+  it('refuse empty names, spaces at either end and long names, naming the folder', () => {
+    for (const bad of [
+      '',
+      'Finance/',
+      '/Finance',
+      'a//b',
+      ' Finance',
+      'Finance /Reports',
+      'x'.repeat(81),
+      3,
+    ]) {
+      const files: Files = { [MANIFEST_FILE]: manifestFile(), ...encodeObject(app).files }
+      const json = JSON.parse(files['apps/order-admin/app.json']!)
+      files['apps/order-admin/app.json'] = JSON.stringify({ ...json, folder: bad })
+      const result = decodeRepo(files).objects[0]!.result
+      expect(result.ok, JSON.stringify(bad)).toBe(false)
+      if (!result.ok) expect(result.problems.map((p) => p.message).join()).toContain('folder')
     }
   })
 })

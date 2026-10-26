@@ -263,12 +263,22 @@ function jsonValue(r: Rng, depth = 0): unknown {
   return Object.fromEntries(names(r, 'k', r.int(4)).map((k) => [k, jsonValue(r, depth + 1)]))
 }
 
+/** No folder (the top level) half the time, else a path of awkward but valid names. */
+function folder(r: Rng): { folder?: string } {
+  if (r.chance(0.5)) return {}
+  const parts = Array.from({ length: 1 + r.int(3) }, () =>
+    r.pick(['Finance', 'Reports 2026', 'é漢🙂', 'a.b', '"q"', 'x'.repeat(80), 'In  between']),
+  )
+  return { folder: parts.join('/') }
+}
+
 const ENVIRONMENTS = ['production', 'staging', 'dev-2', 'eu_west']
 
 function resource(r: Rng): ResourceObject {
   return {
     name: `Resource ${r.int(100)}`,
     description: r.chance(0.5) ? text(r).trim() || null : null,
+    ...folder(r),
     type: r.pick(['postgres', 'rest', 'mysql', 'bigquery', 'pubsub']),
     environments: Object.fromEntries(
       ENVIRONMENTS.filter(() => r.chance(0.5)).map((env) => [
@@ -300,6 +310,7 @@ describe('round trip', () => {
     const object = {
       name: `Flow ${seed}`,
       description: r.chance(0.5) ? text(r).trim() || null : null,
+      ...folder(r),
       definition,
     }
     const { files } = encodeWorkflow(object)
@@ -308,6 +319,7 @@ describe('round trip', () => {
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(workflowForGit(definition)))
     expect(decoded.value.name).toBe(object.name)
     expect(decoded.value.description).toBe(object.description)
+    expect(decoded.value.folder).toBe(object.folder)
     expect(await definitionHash(decoded.value.definition)).toBe(await definitionHash(definition))
     // Encoding what came back gives the same files.
     expect(encodeWorkflow(decoded.value).files).toEqual(files)
@@ -317,12 +329,13 @@ describe('round trip', () => {
     const r = rng(seed)
     const definition = appDefinition(r)
     expect(appDefinitionSchema.safeParse(definition).success).toBe(true)
-    const object = { name: `App ${seed}`, description: null, definition }
+    const object = { name: `App ${seed}`, description: null, ...folder(r), definition }
     const { files } = encodeApp(object)
     const decoded = decodeApp(files)
     if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(canonicalizeApp(definition)))
     expect(await appDefinitionHash(decoded.value.definition)).toBe(await appDefinitionHash(definition))
+    expect(decoded.value.folder).toBe(object.folder)
     expect(encodeApp(decoded.value).files).toEqual(files)
   })
 
