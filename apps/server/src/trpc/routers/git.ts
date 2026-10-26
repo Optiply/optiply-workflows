@@ -1,4 +1,5 @@
 import { environments, GIT_OBJECT_KINDS, GIT_SETTINGS_KINDS } from '@ow/db'
+import { folderPathSchema } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
@@ -21,9 +22,11 @@ import {
   testGitConnection,
 } from '../../services/git/settings'
 import {
+  commitSettings,
   loadSettingsRow,
   protectSettings,
   type SettingsRow,
+  settingsChanges,
   unprotectSettings,
 } from '../../services/git/settings-objects'
 import { loadAccess, requireLevel } from '../../services/permissions'
@@ -32,6 +35,14 @@ import { adminProcedure, authedProcedure, type Context, router } from '../init'
 const Id = z.string().uuid()
 const Kind = z.enum(GIT_OBJECT_KINDS)
 const SettingsKind = z.enum(GIT_SETTINGS_KINDS)
+/** The form's edits for Save to branch (`SettingsEdit`): resources' fields and configs, config vars' values. */
+const SettingsEditInput = z.strictObject({
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(1000).nullish(),
+  folder: folderPathSchema.nullish(),
+  configs: z.record(Id, z.unknown()).optional(),
+  values: z.record(Id, z.string().max(10_000).nullable()).optional(),
+})
 
 /**
  * A resource or config var to protect or unprotect: a resource needs Own in every environment (its settings are
@@ -42,6 +53,7 @@ async function settingsRow(
   kind: (typeof GIT_SETTINGS_KINDS)[number],
   id: string,
   action: string,
+  required: 'own' | 'edit' = 'own',
 ): Promise<SettingsRow> {
   const row = await loadSettingsRow(ctx.db, kind, id)
   const what = kind === 'resource' ? 'Resource' : 'Config var'
@@ -60,7 +72,7 @@ async function settingsRow(
   }
   requireLevel(
     access.levelEverywhere(resource, envIds),
-    'own',
+    required,
     `this resource in every environment to ${action} it`,
   )
   return resource as SettingsRow
@@ -221,6 +233,49 @@ export const gitRouter = router({
       await unprotectSettings(ctx.db, input.kind, row)
       await ctx.audit({ action: `${input.kind}.unprotected`, objectType: input.kind, objectId: row.id })
       return { ok: true }
+    }),
+
+  /**
+   * Save to branch (M22), first step: what committing a protected resource's or config var's edited settings onto
+   * the branch would change, and the commit that's against (`base`, passed back to `commitSettings`).
+   */
+  settingsChanges: authedProcedure
+    .input(z.object({ kind: SettingsKind, id: Id, branch: branchNameSchema, edit: SettingsEditInput }))
+    .query(async ({ ctx, input }) => {
+      const row = await settingsRow(ctx, input.kind, input.id, 'change', 'edit')
+      return settingsChanges(ctx.db, ctx.config, {
+        kind: input.kind,
+        row,
+        branch: input.branch,
+        edit: input.edit,
+      })
+    }),
+
+  /**
+   * Save to branch: commits the edited settings onto the branch (made from the deploy branch when new) as the person.
+   * CONFLICT when the branch changed them since `base`; opening the pull request is `openPullRequest`.
+   */
+  commitSettings: authedProcedure
+    .input(
+      z.object({
+        kind: SettingsKind,
+        id: Id,
+        branch: branchNameSchema,
+        base: z.string().regex(/^[0-9a-f]{40}$/),
+        edit: SettingsEditInput,
+        message: z.string().trim().min(1).max(5000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const row = await settingsRow(ctx, input.kind, input.id, 'change', 'edit')
+      const result = await commitSettings(ctx.db, ctx.config, ctx.user, { ...input, row })
+      await ctx.audit({
+        action: `${input.kind}.committed`,
+        objectType: input.kind,
+        objectId: row.id,
+        metadata: { branch: result.branch, commit: result.commit },
+      })
+      return result
     }),
 
   /** The repo's branches, the deploy branch first. */

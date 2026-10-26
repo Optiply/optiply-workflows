@@ -394,3 +394,156 @@ describe('applyOverrides', () => {
     expect(applyOverrides(config, {})).toBe(config)
   })
 })
+
+describe('Save to branch (M22)', () => {
+  type Changes = {
+    base: string
+    branchExists: boolean
+    files: { path: string; status: string; before: string | null; after: string | null }[]
+  }
+  const config = (host: string) => ({ host, port: 5432, database: 'orders', user: 'app' })
+  let resourceId: string
+
+  it('shows what a commit would change, from the deploy branch for a new branch', async () => {
+    const [row] = await env.db.select().from(resources).where(eq(resources.slug, 'orders_db'))
+    resourceId = row!.id
+    const changes = data(
+      await admin.query('git.settingsChanges', {
+        kind: 'resource',
+        id: resourceId,
+        branch: 'move-orders-db',
+        edit: { configs: { [envId('production')]: config('db2.internal') } },
+      }),
+    ) as Changes
+    expect(changes.branchExists).toBe(false)
+    expect(changes.base).toBe(await reader.fetchBranch('main'))
+    expect(changes.files.map((f) => [f.path, f.status])).toEqual([
+      ['resources/orders_db/resource.json', 'added'],
+    ])
+    expect(JSON.parse(changes.files[0]!.after!).environments.production.config.host).toBe('db2.internal')
+  })
+
+  it('commits onto the branch as the person, keeping environments this instance lacks', async () => {
+    // Someone's hand-written file on a branch names an environment this instance doesn't have.
+    const main = (await reader.fetchBranch('main'))!
+    const handFile = {
+      name: 'Orders DB',
+      type: 'postgres',
+      environments: {
+        eu_west: { config: config('db.eu') },
+        production: { config: config('db.internal') },
+      },
+    }
+    const hand = await reader.commit({
+      parent: main,
+      files: { 'resources/orders_db/resource.json': `${JSON.stringify(handFile, null, 2)}\n` },
+      message: 'By hand',
+      author: { name: 'Someone', email: 'someone@optiply.nl' },
+    })
+    expect(await reader.push(hand!, 'by-hand')).toBe('ok')
+
+    const edit = { configs: { [envId('production')]: config('db2.internal') }, folder: 'Finance' }
+    const changes = data(
+      await admin.query('git.settingsChanges', { kind: 'resource', id: resourceId, branch: 'by-hand', edit }),
+    ) as Changes
+    expect(changes.branchExists).toBe(true)
+    expect(changes.base).toBe(hand)
+    expect(changes.files[0]!.status).toBe('modified')
+    const result = data(
+      await admin.mutate('git.commitSettings', {
+        kind: 'resource',
+        id: resourceId,
+        branch: 'by-hand',
+        base: changes.base,
+        edit,
+        message: 'Move orders DB',
+      }),
+    ) as { commit: string }
+    expect(await reader.fetchBranch('by-hand')).toBe(result.commit)
+    expect((await reader.commitInfo(result.commit)).authorEmail).toBe('admin@optiply.nl')
+    const json = JSON.parse((await filesOn('by-hand', 'resources/'))['resources/orders_db/resource.json']!)
+    expect(json.folder).toBe('Finance')
+    expect(json.environments.eu_west.config.host).toBe('db.eu')
+    expect(json.environments.production.config.host).toBe('db2.internal')
+    expect(json.environments.staging).toBeUndefined()
+
+    // A commit from the old base, after the branch changed the file: CONFLICT.
+    const stale = await admin.mutate('git.commitSettings', {
+      kind: 'resource',
+      id: resourceId,
+      branch: 'by-hand',
+      base: changes.base,
+      edit: { name: 'Other' },
+      message: 'Rename',
+    })
+    expect(code(stale)).toBe('CONFLICT')
+    const audits = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'resource.committed'))
+    expect(audits).toHaveLength(1)
+  })
+
+  it('needs Edit everywhere, a protected object and a branch other than the deploy branch', async () => {
+    const edit = { name: 'X' }
+    expect(
+      code(
+        await member.query('git.settingsChanges', { kind: 'resource', id: resourceId, branch: 'b', edit }),
+      ),
+    ).toBe('FORBIDDEN')
+    expect(
+      code(
+        await admin.query('git.settingsChanges', { kind: 'resource', id: resourceId, branch: 'main', edit }),
+      ),
+    ).toBe('BAD_REQUEST')
+    const [plain] = await env.db.select().from(resources).where(eq(resources.slug, 'plain_db'))
+    expect(
+      code(await admin.query('git.settingsChanges', { kind: 'resource', id: plain!.id, branch: 'b', edit })),
+    ).toBe('PRECONDITION_FAILED')
+  })
+
+  it("commits a config var's values, and never a secret one's", async () => {
+    const vars = data(await admin.query('configVars.list')) as { id: string; name: string }[]
+    const apiBase = vars.find((v) => v.name === 'API_BASE')!
+    const token = vars.find((v) => v.name === 'TOKEN')!
+    const edit = { values: { [envId('staging')]: 'https://staging.example.com/' }, description: 'The API' }
+    const changes = data(
+      await admin.query('git.settingsChanges', {
+        kind: 'config_var',
+        id: apiBase.id,
+        branch: 'api-base',
+        edit,
+      }),
+    ) as Changes
+    data(
+      await admin.mutate('git.commitSettings', {
+        kind: 'config_var',
+        id: apiBase.id,
+        branch: 'api-base',
+        base: changes.base,
+        edit,
+        message: 'Staging API',
+      }),
+    )
+    const json = JSON.parse(
+      (await filesOn('api-base', 'config-vars/'))['config-vars/API_BASE/config-var.json']!,
+    )
+    expect(json).toEqual({
+      description: 'The API',
+      secret: false,
+      values: { staging: 'https://staging.example.com/' },
+    })
+    expect(
+      code(
+        await admin.query('git.settingsChanges', {
+          kind: 'config_var',
+          id: token.id,
+          branch: 'token',
+          edit: { values: { [envId('production')]: 'x' } },
+        }),
+      ),
+    ).toBe('BAD_REQUEST')
+    expect(
+      code(
+        await member.query('git.settingsChanges', { kind: 'config_var', id: apiBase.id, branch: 'b', edit }),
+      ),
+    ).toBe('FORBIDDEN')
+  })
+})
