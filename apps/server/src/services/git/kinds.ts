@@ -23,6 +23,7 @@ import {
   appReleases,
   apps,
   type Db,
+  GIT_OBJECT_KINDS,
   gitBranchDrafts,
   type LibraryQuery,
   libraryQueries,
@@ -51,6 +52,11 @@ import type { Access } from '../permissions'
  * What differs between the kinds Git sync keeps (workflows, apps, and since M14 library queries and modules): their
  * tables, levels, releases and definitions. Protect, branch drafts and deploy go through these.
  */
+
+/** A kind with drafts and releases, as opposed to resources and config vars (M22, `settings-objects.ts`). */
+export function isObjectKind(kind: string): kind is ObjectKind {
+  return (GIT_OBJECT_KINDS as readonly string[]).includes(kind)
+}
 
 /** A row of any kind Git sync keeps; what they share is what Git needs. */
 export type GitObjectRow = Workflow | App | LibraryQuery | Module

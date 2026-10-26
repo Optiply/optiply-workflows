@@ -204,6 +204,8 @@ export const resources = pgTable(
     folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
     /** Built-in resources the platform provisions and keeps up to date; their settings can't be edited. */
     systemKind: text({ enum: ['database'] }),
+    /** Kept in the Git repo (M22): its settings change through Git, its secrets and overrides here. */
+    gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -251,6 +253,11 @@ export const resourceConfigs = pgTable(
       .references(() => environments.id, { onDelete: 'cascade' }),
     /** Non-secret settings (host, base URL, options), shaped by the connector's configSchema. */
     config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * This instance's own values for single non-secret fields, by path (`host`, `ssh.host`), applied over `config`
+     * (M22). For a protected resource, `config` is Git's and a deploy never touches these.
+     */
+    overrides: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     /**
      * Encrypted JSON of the connector's secretsSchema (`@ow/crypto` token, AAD `resource_configs:<id>:<envId>`).
      * Never returned to the browser.
@@ -317,6 +324,8 @@ export const configVars = pgTable(
     description: text(),
     /** Secret values are encrypted at rest and never returned to the browser. */
     isSecret: boolean().notNull().default(false),
+    /** Kept in the Git repo (M22): its description and non-secret values change through Git. */
+    gitProtected: boolean().notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -337,6 +346,8 @@ export const configVarValues = pgTable(
     value: text(),
     /** Set for secret vars (`@ow/crypto` token, AAD `config_var_values:<id>:<envId>`). */
     valueEncrypted: text(),
+    /** This instance's own value (M22): a deploy of a protected config var leaves it. */
+    local: boolean().notNull().default(false),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1139,6 +1150,8 @@ export const gitSettings = pgTable(
 export type GitSettings = typeof gitSettings.$inferSelect
 
 export const GIT_OBJECT_KINDS = ['workflow', 'app', 'library_query', 'module'] as const
+/** Kept in Git beside them (M22), without drafts or releases. */
+export const GIT_SETTINGS_KINDS = ['resource', 'config_var'] as const
 export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
 
 /** A problem with an object's files or definition, by path from the repo's root (`@ow/git-format`'s shape). */
@@ -1156,9 +1169,10 @@ export const gitObjects = pgTable(
   'git_objects',
   {
     id: id(),
-    kind: text({ enum: GIT_OBJECT_KINDS }).notNull(),
+    kind: text({ enum: [...GIT_OBJECT_KINDS, ...GIT_SETTINGS_KINDS] }).notNull(),
+    /** A config var's name. */
     slug: text().notNull(),
-    /** The workflow or app on the instance; null when none could be made. */
+    /** The object on the instance; null when none could be made. */
     objectId: uuid(),
     /** The directory's tree when it last deployed (or failed to). */
     treeSha: text(),
@@ -1172,7 +1186,10 @@ export const gitObjects = pgTable(
   },
   (t) => [
     unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
-    check('git_objects_kind_ck', sql`${t.kind} in ('workflow', 'app', 'library_query', 'module')`),
+    check(
+      'git_objects_kind_ck',
+      sql`${t.kind} in ('workflow', 'app', 'library_query', 'module', 'resource', 'config_var')`,
+    ),
     check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
   ],
 )

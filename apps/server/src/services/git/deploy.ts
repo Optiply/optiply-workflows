@@ -32,7 +32,7 @@ import { deployLibraryQueryFromGit } from '../library-queries'
 import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
-import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
+import { insertGitObject, isObjectKind, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
 export type DeployTrigger = (typeof GIT_DEPLOY_TRIGGERS)[number]
@@ -271,6 +271,8 @@ async function deployOnce(
     // Directories that left the branch: the objects stay, flagged, and stop deploying.
     const present = new Set(decoded.objects.map((o) => `${o.kind}:${o.slug}`))
     for (const row of rows) {
+      // Resources and config vars (M22) aren't deployed yet.
+      if (!isObjectKind(row.kind)) continue
       if (row.status !== 'missing' && !present.has(`${row.kind}:${row.slug}`)) {
         outcomes.push({
           kind: row.kind,
