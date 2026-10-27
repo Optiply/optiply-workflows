@@ -1,5 +1,6 @@
 import { getRouteApi, Link, Outlet } from '@tanstack/react-router'
 import { ShieldAlert } from 'lucide-react'
+import { GitProblemsBadge } from '@/components/git-health'
 import { EmptyState, PageHeader, tabClass } from '@/components/ui'
 
 const appRoute = getRouteApi('/app')
@@ -27,7 +28,10 @@ export function SettingsLayout() {
             activeProps={{ className: tabClass(true) }}
             inactiveProps={{ className: tabClass(false) }}
           >
-            {tab.label}
+            <span className="flex items-center gap-1.5">
+              {tab.label}
+              {tab.to === '/settings/git' && me.isAdmin && <GitProblemsBadge />}
+            </span>
           </Link>
         ))}
       </div>

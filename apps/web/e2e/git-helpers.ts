@@ -68,6 +68,27 @@ export function pushFiles(repoDir: string, branch: string, files: Record<string,
   }
 }
 
+/** Makes `branch` with just `ow.json` when the repo doesn't have it yet (a spec run on its own, on a fresh repo). */
+export function ensureBranch(repoDir: string, branch: string) {
+  try {
+    git(repoDir, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`)
+    return
+  } catch {
+    // Not there yet.
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'ow-e2e-dev-'))
+  try {
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, env: gitEnv }).toString().trim()
+    run('init', '--quiet', '--initial-branch', branch)
+    writeFileSync(join(dir, 'ow.json'), '{\n  "format": 1\n}\n')
+    run('add', '-A')
+    run('commit', '--quiet', '-m', 'Start')
+    run('push', '--quiet', repoDir, `HEAD:refs/heads/${branch}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** Someone else changes a JSON file on a branch. */
 export function editRepoJson(repoDir: string, branch: string, path: string, edit: (json: Json) => void) {
   const json = JSON.parse(readRepoFile(repoDir, branch, path))
