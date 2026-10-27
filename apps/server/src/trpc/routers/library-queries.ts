@@ -157,9 +157,12 @@ export const libraryQueriesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, input)
       requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(query, 'library_query', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== query.folderId) {
+        requireUnprotected(query, 'library_query', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'library_query',

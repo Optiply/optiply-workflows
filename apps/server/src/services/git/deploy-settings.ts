@@ -13,6 +13,7 @@ import { recordAudit } from '../../audit'
 import { authFingerprint, deleteTokens } from '../oauth-tokens'
 import { applyOverrides, serverIdentityTarget } from '../resources'
 import type { ObjectOutcome } from './deploy'
+import { ensureFolderPath, type FolderMove, folderPathOf } from './folders'
 
 /**
  * Deploying resources and config vars (M22): they have no releases, so a deploy writes what Git holds of them
@@ -137,7 +138,7 @@ export async function deployConfigVar(
 
 /**
  * A resource from Git: created protected (no owner: admins grant access) when the instance has none by that slug,
- * or its name, description and each environment's config written. Secrets, OAuth accounts (dropped when the sign-in
+ * or its name, description, folder (made when missing) and each environment's config written. Secrets, OAuth accounts (dropped when the sign-in
  * settings change, as when saving) and overrides stay. Everything is checked before anything is written: the type,
  * each config by the connector, the overrides still fitting, and the server's own Google identity being allowed.
  * An environment Git doesn't configure loses its config here.
@@ -204,6 +205,11 @@ export async function deployResource(
     next.set(env.id, parsed.data as Record<string, unknown>)
   }
 
+  const folderId = await ensureFolderPath(db, 'resource', value.folder, git)
+  let folder: FolderMove | undefined
+  if (resource && resource.folderId !== folderId) {
+    folder = { from: (await folderPathOf(db, resource.folderId)) ?? null, to: value.folder ?? null }
+  }
   let created = false
   let changed = false
   await db.transaction(async (tx) => {
@@ -215,6 +221,7 @@ export async function deployResource(
           name: value.name,
           description: value.description,
           type: value.type,
+          folderId,
           gitProtected: true,
         })
         .onConflictDoNothing()
@@ -222,10 +229,14 @@ export async function deployResource(
       if (!inserted) return
       resource = inserted
       created = true
-    } else if (resource.name !== value.name || (resource.description ?? null) !== value.description) {
+    } else if (
+      resource.name !== value.name ||
+      (resource.description ?? null) !== value.description ||
+      folder
+    ) {
       await tx
         .update(resources)
-        .set({ name: value.name, description: value.description, updatedAt: new Date() })
+        .set({ name: value.name, description: value.description, folderId, updatedAt: new Date() })
         .where(eq(resources.id, resource.id))
       changed = true
     }
@@ -269,5 +280,6 @@ export async function deployResource(
     outcome: created ? 'created' : changed ? 'updated' : 'unchanged',
     objectId: resource.id,
     treeSha: item.treeSha,
+    ...(folder ? { folder } : {}),
   }
 }

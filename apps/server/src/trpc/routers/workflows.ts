@@ -256,9 +256,12 @@ export const workflowsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
-      // The name and description live in the repo; the folder and concurrency limit are the instance's.
+      // The name, description and folder live in the repo (the folder since M22); the concurrency limit is the instance's.
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(workflow, 'workflow', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== workflow.folderId) {
+        requireUnprotected(workflow, 'workflow', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'workflow',

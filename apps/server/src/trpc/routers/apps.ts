@@ -174,9 +174,12 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, input)
       requireLevel(access.appLevel(app), 'edit', 'this app')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(app, 'app', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== app.folderId) {
+        requireUnprotected(app, 'app', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'app',

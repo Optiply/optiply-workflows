@@ -5,7 +5,6 @@ import {
   configVarValues,
   type Db,
   environments,
-  folders,
   type Resource,
   resourceConfigs,
   resources,
@@ -22,6 +21,7 @@ import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch } from './commit'
+import { folderPathOf } from './folders'
 import {
   commitProtect,
   gitTrpcError,
@@ -48,25 +48,6 @@ export async function loadSettingsRow(db: Db, kind: SettingsKind, id: string): P
   const table = kind === 'resource' ? resources : configVars
   const [row] = await db.select().from(table).where(eq(table.id, id))
   return row ?? null
-}
-
-/** The folder's path from the top, `Finance/Reports`; undefined at the top level. */
-export async function folderPathOf(db: Db, folderId: string | null): Promise<string | undefined> {
-  if (!folderId) return undefined
-  const names: string[] = []
-  const seen = new Set<string>()
-  let id: string | null = folderId
-  while (id && !seen.has(id)) {
-    seen.add(id)
-    const [folder]: Array<{ name: string; parentId: string | null }> = await db
-      .select({ name: folders.name, parentId: folders.parentId })
-      .from(folders)
-      .where(eq(folders.id, id))
-    if (!folder) break
-    names.unshift(folder.name)
-    id = folder.parentId
-  }
-  return names.length > 0 ? names.join('/') : undefined
 }
 
 /**

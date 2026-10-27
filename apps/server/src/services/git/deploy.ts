@@ -36,6 +36,7 @@ import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
 import { deployConfigVar, deployResource } from './deploy-settings'
+import { type FolderMove, moveToGitFolder } from './folders'
 import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
@@ -53,7 +54,8 @@ export interface ObjectOutcome {
   slug: string
   /**
    * `created`: a new workflow, app, library query or module (and its first release, unless it has problems); `released`: a new live
-   * release; `updated`: a resource's or config var's settings changed (M22); `unchanged`: the directory, or at least
+   * release; `updated`: a resource's or config var's settings changed, or an object moved to another folder without
+   * a new release (M22); `unchanged`: the directory, or at least
    * its definition, is what's already live; `problem`: not deployed (the live release stays); `missing`: the
    * directory left the branch.
    */
@@ -62,6 +64,8 @@ export interface ObjectOutcome {
   treeSha?: string | null
   version?: string
   problems?: GitProblem[]
+  /** Moved into the folder Git names (M22). */
+  folder?: FolderMove
   /** Made by this deploy (a later pass may still release it). */
   created?: boolean
 }
@@ -352,12 +356,13 @@ async function deployOnce(
     summary: {
       subject: releaseNotes(info),
       author: { name: info.authorName, email: info.authorEmail },
-      objects: changed.map(({ kind, slug, outcome, version, problems }) => ({
+      objects: changed.map(({ kind, slug, outcome, version, problems, folder }) => ({
         kind,
         slug,
         outcome,
         version,
         problems,
+        folder,
       })),
       unchanged: outcomes.length - changed.length,
       problems: repoProblems,
@@ -496,13 +501,25 @@ async function deployObject(
         },
       })
     }
+    // Into its Git folder once deployed: a directory with problems leaves the object where it is.
+    const folder = await moveToGitFolder(db, kind, object, item.value.folder, git)
+    if (folder && !created) {
+      await recordAudit(db, {
+        actorUserId: null,
+        action: `${kind}.updated`,
+        objectType: kind,
+        objectId: object.id,
+        metadata: { slug, folder: folder.to, source: 'git', commit: git.commit },
+      })
+    }
     return {
       kind,
       slug,
-      outcome: created ? 'created' : release ? 'released' : 'unchanged',
+      outcome: created ? 'created' : release ? 'released' : folder ? 'updated' : 'unchanged',
       objectId: object.id,
       treeSha,
       version: release?.version,
+      ...(folder ? { folder } : {}),
     }
   } catch (err) {
     if (err instanceof TRPCError) return problem('invalid_definition', err.message, object.id)

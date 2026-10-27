@@ -371,4 +371,28 @@ describe('protecting again', () => {
     const files = await reader.readFiles((await reader.fetchBranch(again.branch))!, ['workflows/'])
     expect(files['workflows/twice/blocks/step.js']).toBe('return 1\n')
   })
+
+  it('writes the folder it is in, which then stays as Git has it (M22)', async () => {
+    const finance = data(await admin.mutate('folders.create', { name: 'Finance', type: 'workflow' })) as {
+      id: string
+    }
+    const reports = data(
+      await admin.mutate('folders.create', { name: 'Reports', parentId: finance.id, type: 'workflow' }),
+    ) as { id: string }
+    const id = await publishedWorkflow('filed')
+    data(await admin.mutate('workflows.update', { id, folderId: reports.id }))
+    const result = data(await admin.mutate('git.protect', { kind: 'workflow', id })) as { branch: string }
+    const files = await reader.readFiles((await reader.fetchBranch(result.branch))!, ['workflows/'])
+    expect(JSON.parse(files['workflows/filed/workflow.json']!)).toMatchObject({
+      name: 'Flow filed',
+      folder: 'Finance/Reports',
+    })
+    expect(code(await admin.mutate('workflows.update', { id, folderId: finance.id }))).toBe(
+      'PRECONDITION_FAILED',
+    )
+    expect(code(await admin.mutate('workflows.update', { id, folderId: null }))).toBe('PRECONDITION_FAILED')
+    // Its own folder again, or no folder given: not a move.
+    data(await admin.mutate('workflows.update', { id, folderId: reports.id, maxConcurrentRuns: 2 }))
+    data(await admin.mutate('workflows.update', { id, maxConcurrentRuns: 3 }))
+  })
 })

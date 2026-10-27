@@ -174,9 +174,12 @@ export const modulesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, input)
       requireLevel(access.moduleLevel(module), 'edit', 'this module')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(module, 'module', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== module.folderId) {
+        requireUnprotected(module, 'module', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'module',
