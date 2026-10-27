@@ -6,6 +6,7 @@ import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
 import { GitHubError, openGitHub } from '../../services/git/github'
 import { gitHealth } from '../../services/git/health'
 import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
+import { openPromotion } from '../../services/git/promotion'
 import {
   gitTrpcError,
   openPullRequestFor,
@@ -322,6 +323,30 @@ export const gitRouter = router({
       throw err
     }
   }),
+
+  /**
+   * Promote (M22): a pull request from this instance's deploy branch into another branch, or the one already open;
+   * `up_to_date` when that branch already has everything.
+   */
+  openPromotion: adminProcedure
+    .input(
+      z.object({
+        target: branchNameSchema,
+        title: z.string().trim().min(1).max(250).optional(),
+        body: z.string().max(10_000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await openPromotion(ctx.db, ctx.config, input)
+      if (result.status === 'opened' && result.pullRequest) {
+        await ctx.audit({
+          action: 'git.promotion_opened',
+          objectType: 'git_settings',
+          metadata: { target: input.target, number: result.pullRequest.number },
+        })
+      }
+      return result
+    }),
 
   /** Opens a pull request from the branch into the deploy branch, or returns the one already open. */
   openPullRequest: authedProcedure

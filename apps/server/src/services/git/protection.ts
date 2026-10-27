@@ -243,12 +243,13 @@ export async function unprotectObject(db: Db, kind: ObjectKind, object: GitObjec
 export async function openPullRequestFor(
   db: Db,
   config: Pick<Config, 'keyring' | 'GITHUB_API_URL'>,
-  opts: { branch: string; title: string; body: string },
+  /** `base`: the deploy branch unless given (Promote, M22). */
+  opts: { branch: string; title: string; body: string; base?: string },
 ): Promise<{ pullRequest: PullRequestView | null; pullRequestError: string | null }> {
   const opened = await openGitHub(db, config)
   if ('error' in opened) return { pullRequest: null, pullRequestError: opened.error }
   try {
-    const pullRequest = await opened.github.openPullRequest({ ...opts, base: opened.branch })
+    const pullRequest = await opened.github.openPullRequest({ ...opts, base: opts.base ?? opened.branch })
     return { pullRequest, pullRequestError: null }
   } catch (err) {
     if (err instanceof GitHubError) return { pullRequest: null, pullRequestError: err.message }
