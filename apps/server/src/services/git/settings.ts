@@ -1,10 +1,10 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Keyring } from '@ow/crypto'
-import { type Db, type GitSettings, gitSettings } from '@ow/db'
+import { type Db, type GitSettings, gitSettings, workflows } from '@ow/db'
 import { checkManifest, KIND_ROOTS, MANIFEST_FILE, splitRepo } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import type { Config } from '../../config'
 import { decryptForRow, encryptForRow } from '../secrets'
@@ -23,6 +23,8 @@ export interface GitSettingsView {
   branch: string
   token: { set: boolean }
   webhookSecret: { set: boolean }
+  /** Run when a deploy's problems change (M22). */
+  notifyWorkflow: { id: string; name: string } | null
   updatedAt: Date | null
 }
 
@@ -50,7 +52,34 @@ export async function gitSettingsView(db: Db, keyring: Keyring): Promise<GitSett
     branch: loaded?.row.branch ?? 'main',
     token: { set: Boolean(loaded?.secrets.token) },
     webhookSecret: { set: Boolean(loaded?.secrets.webhookSecret) },
+    notifyWorkflow: await notifyWorkflowOf(db, loaded?.row.notifyWorkflowId ?? null),
     updatedAt: loaded?.row.updatedAt ?? null,
+  }
+}
+
+async function notifyWorkflowOf(db: Db, id: string | null): Promise<GitSettingsView['notifyWorkflow']> {
+  if (!id) return null
+  const [workflow] = await db
+    .select({ id: workflows.id, name: workflows.name })
+    .from(workflows)
+    .where(eq(workflows.id, id))
+  return workflow ?? null
+}
+
+/**
+ * Picks the workflow run when a deploy's problems change (M22), or none. Its live release runs, so it needs one by
+ * then; until it has, notifications are only logged.
+ */
+export async function setNotifyWorkflow(db: Db, workflowId: string | null): Promise<void> {
+  if (workflowId && !(await notifyWorkflowOf(db, workflowId))) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow not found' })
+  }
+  const updated = await db
+    .update(gitSettings)
+    .set({ notifyWorkflowId: workflowId })
+    .returning({ id: gitSettings.id })
+  if (updated.length === 0) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Set up Git sync first' })
   }
 }
 

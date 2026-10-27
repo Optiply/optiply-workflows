@@ -4,6 +4,7 @@ import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
 import { GitHubError, openGitHub } from '../../services/git/github'
+import { gitHealth } from '../../services/git/health'
 import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import {
   gitTrpcError,
@@ -19,6 +20,7 @@ import {
   loadGitSettings,
   repoWebUrl,
   saveGitSettings,
+  setNotifyWorkflow,
   testGitConnection,
 } from '../../services/git/settings'
 import {
@@ -152,6 +154,22 @@ export const gitRouter = router({
 
   /** What the last deploys did, and each workflow and app directory's state. */
   status: adminProcedure.query(({ ctx }) => gitDeployStatus(ctx.db)),
+
+  /** The problems keeping objects from deploying, for the admin banner (M22). */
+  health: adminProcedure.query(({ ctx }) => gitHealth(ctx.db)),
+
+  /** The workflow run when a deploy's problems change (M22); null for none. */
+  setNotifyWorkflow: adminProcedure
+    .input(z.object({ workflowId: Id.nullable() }))
+    .mutation(async ({ ctx, input }) => {
+      await setNotifyWorkflow(ctx.db, input.workflowId)
+      await ctx.audit({
+        action: 'git.notify_workflow_set',
+        objectType: 'git_settings',
+        metadata: { workflowId: input.workflowId },
+      })
+      return gitSettingsView(ctx.db, ctx.config.keyring)
+    }),
 
   /**
    * Deploys the branch now, re-checking every directory (after creating a resource a deploy was missing, say).

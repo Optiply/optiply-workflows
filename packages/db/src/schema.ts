@@ -624,7 +624,8 @@ export const pubsubDeliveries = pgTable(
 
 /** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
 export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
-export const RUN_TRIGGER_TYPES = ['manual', 'webhook', 'schedule', 'workflow', 'pubsub'] as const
+/** `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. */
+export const RUN_TRIGGER_TYPES = ['manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git'] as const
 export const BLOCK_STATUSES = [
   'pending',
   'running',
@@ -729,7 +730,7 @@ export const workflowRuns = pgTable(
     ),
     check(
       'workflow_runs_trigger_type_ck',
-      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub')`,
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git')`,
     ),
     check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
     check(
@@ -1142,6 +1143,10 @@ export const gitSettings = pgTable(
      * M22): the next poll re-checks the last deploy's problem objects without a new commit.
      */
     retryRequestedAt: timestamp({ withTimezone: true }),
+    /** Its live release runs when a deploy ends with different problems than last time (M22). */
+    notifyWorkflowId: uuid().references((): AnyPgColumn => workflows.id, { onDelete: 'set null' }),
+    /** The problems the last notification was about (null: none yet), to tell when they change. */
+    notifiedProblems: jsonb().$type<GitHealthProblem[]>(),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1200,6 +1205,14 @@ export const gitObjects = pgTable(
 )
 
 /** `retry` (M22): the deployed commit again, for its problem objects. */
+/** A deploy problem as `git.health` and the notify workflow see it (M22); `kind` and `slug` are null for the repo's. */
+export interface GitHealthProblem {
+  kind: string | null
+  slug: string | null
+  path: string
+  message: string
+}
+
 export const GIT_DEPLOY_TRIGGERS = ['poll', 'webhook', 'manual', 'retry'] as const
 
 /** What each deploy of a new branch commit (or an admin's Deploy now) did. */

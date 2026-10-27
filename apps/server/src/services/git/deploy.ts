@@ -37,6 +37,7 @@ import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
 import { deployConfigVar, deployResource } from './deploy-settings'
 import { type FolderMove, moveToGitFolder } from './folders'
+import { notifyIfChanged } from './health'
 import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
@@ -83,7 +84,7 @@ export type DeployResult =
 
 type DeployConfig = Pick<
   Config,
-  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY'
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY' | 'PUBLIC_URL'
 >
 
 interface DeployLogger {
@@ -378,28 +379,31 @@ async function deployOnce(
   const objectProblems = outcomes.filter((o) => o.outcome === 'problem')
   const ok = repoProblems.length === 0 && objectProblems.length === 0
   const changed = outcomes.filter((o) => o.outcome !== 'unchanged')
-  await db.insert(gitDeploys).values({
-    commit,
-    previousCommit: settings.deployedCommit,
-    trigger,
-    status: ok ? 'ok' : 'problems',
-    summary: {
-      subject: releaseNotes(info),
-      author: { name: info.authorName, email: info.authorEmail },
-      objects: changed.map(({ kind, slug, outcome, version, problems, folder }) => ({
-        kind,
-        slug,
-        outcome,
-        version,
-        problems,
-        folder,
-      })),
-      unchanged: outcomes.length - changed.length,
-      problems: repoProblems,
-    },
-    startedAt,
-    finishedAt: new Date(),
-  })
+  const [recorded] = await db
+    .insert(gitDeploys)
+    .values({
+      commit,
+      previousCommit: settings.deployedCommit,
+      trigger,
+      status: ok ? 'ok' : 'problems',
+      summary: {
+        subject: releaseNotes(info),
+        author: { name: info.authorName, email: info.authorEmail },
+        objects: changed.map(({ kind, slug, outcome, version, problems, folder }) => ({
+          kind,
+          slug,
+          outcome,
+          version,
+          problems,
+          folder,
+        })),
+        unchanged: outcomes.length - changed.length,
+        problems: repoProblems,
+      },
+      startedAt,
+      finishedAt: new Date(),
+    })
+    .returning({ id: gitDeploys.id })
   await db.execute(sql`
     delete from git_deploys where id not in (
       select id from git_deploys order by started_at desc limit ${KEEP_DEPLOYS})`)
@@ -419,6 +423,8 @@ async function deployOnce(
       missing: count('missing'),
     },
   })
+  // When the problems changed (or went away), the notify workflow runs (M22).
+  await notifyIfChanged(db, config, { id: recorded!.id, commit }, opts.log)
   opts.log?.info({ commit, trigger, ok, changed: changed.length }, 'git deploy finished')
   return { status: 'deployed', commit, ok, objects: outcomes, problems: repoProblems }
 }
