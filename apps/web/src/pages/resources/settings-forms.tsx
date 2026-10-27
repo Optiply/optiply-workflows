@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleCheck, Plus } from 'lucide-react'
+import { CircleCheck, GitBranch, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { SaveToBranchDialog } from '@/components/settings-git'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -115,6 +116,9 @@ export function SettingsPanel({
     ...(stored?.config ?? {}),
   }))
   const [edits, setEdits] = useState<SecretEdits>({})
+  const [savingToBranch, setSavingToBranch] = useState(false)
+  // Protected (M22): the settings are Git's, so saving here changes the secrets only (sent with Git's settings).
+  const fromGit = resource.gitProtected
 
   const refresh = () =>
     Promise.all([
@@ -148,6 +152,9 @@ export function SettingsPanel({
     iapKeys: (stored?.iapKeys as Record<string, IapKeyInfo> | null | undefined) ?? null,
   }
   const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
+  const secretsOnly = { ...request, config: (stored?.config ?? {}) as Config }
+  const changedHere =
+    JSON.stringify(config) !== JSON.stringify({ ...DEFAULTS[resource.type], ...(stored?.config ?? {}) })
   // Trusted in Test connection but not saved yet (M17).
   const pins = (c: Config | null | undefined) =>
     JSON.stringify(((c?.ssh as SshConfig | undefined)?.hops ?? []).map((h) => h.hostKey ?? null))
@@ -160,9 +167,27 @@ export function SettingsPanel({
           You can use this resource here but not change its settings.
         </p>
       )}
-      {!stored?.config && canEdit && (
+      {!stored?.config && canEdit && !fromGit && (
         <p className="rounded-md bg-accent-soft px-3 py-2 text-sm text-accent">
           Not configured in this environment yet. Fill in the settings and save.
+        </p>
+      )}
+      {fromGit && (
+        <p
+          className="rounded-md bg-accent-soft px-3 py-2 text-sm text-accent"
+          data-testid="settings-from-git"
+        >
+          {stored?.config
+            ? 'These settings come from Git: change them with Save to branch. Secrets are this instance’s own and are saved here.'
+            : 'Git has no settings for this environment: add them with Save to branch.'}
+        </p>
+      )}
+      {stored?.needsSecrets && (
+        <p
+          className="rounded-md bg-warning-soft px-3 py-2 text-sm text-warning-strong"
+          data-testid="needs-secrets"
+        >
+          Deployed from Git without its secrets: fill them in for this environment and save.
         </p>
       )}
       <Card className="space-y-5 p-5">
@@ -180,13 +205,33 @@ export function SettingsPanel({
       {canEdit && (
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(request)}>
-              Save
-            </Button>
+            {fromGit ? (
+              <>
+                <Button
+                  variant="primary"
+                  loading={save.isPending}
+                  disabled={!stored?.config || !secretsOnly.secrets}
+                  onClick={() => save.mutate(secretsOnly)}
+                >
+                  Save secrets
+                </Button>
+                <Button
+                  disabled={!changedHere && !!stored?.config}
+                  onClick={() => setSavingToBranch(true)}
+                  data-testid="save-to-branch"
+                >
+                  <GitBranch className="size-4" /> Save to branch…
+                </Button>
+              </>
+            ) : (
+              <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(request)}>
+                Save
+              </Button>
+            )}
             <Button loading={test.isPending} onClick={() => test.mutate(request)}>
               Test connection
             </Button>
-            {stored?.config && (
+            {stored?.config && !fromGit && (
               <Button
                 variant="danger"
                 className="ml-auto"
@@ -237,6 +282,14 @@ export function SettingsPanel({
         </div>
       )}
       {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
+      {savingToBranch && (
+        <SaveToBranchDialog
+          kind="resource"
+          object={resource}
+          edit={{ configs: { [environmentId]: config } }}
+          onClose={() => setSavingToBranch(false)}
+        />
+      )}
     </div>
   )
 }

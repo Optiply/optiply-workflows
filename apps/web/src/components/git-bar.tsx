@@ -525,7 +525,7 @@ function CommitDialog(
 }
 
 /** A file's changes, line by line (unchanged stretches folded). */
-function FileDiff({ before, after }: { before: string | null; after: string | null }) {
+export function FileDiff({ before, after }: { before: string | null; after: string | null }) {
   const diff = lineDiff(before ?? '', after ?? '')
   if (!diff) return <p className="px-3 pb-3 text-xs text-muted">Too long to compare here.</p>
   return (

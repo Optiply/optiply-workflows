@@ -3,6 +3,7 @@ import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plug, Plus, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { FolderSections, NewFolderForm, useFolders } from '@/components/folders'
+import { ProtectedBadge } from '@/components/git'
 import {
   Badge,
   Button,
@@ -117,6 +118,7 @@ function ResourceRow({
         </div>
         <div className="truncate font-mono text-xs text-muted">{resource.slug}</div>
       </div>
+      {resource.gitProtected && <ProtectedBadge />}
       <div className="flex gap-1.5">
         {resource.environments
           .filter((e) => e.level)

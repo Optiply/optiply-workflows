@@ -21,6 +21,23 @@ const PLURAL: Record<FolderType, string> = {
 }
 const appRoute = getRouteApi('/app')
 
+/** A folder's path from the top, `Finance/Reports` (as Git keeps it, M22); null for none. */
+export function folderPath(
+  folders: readonly { id: string; name: string; parentId: string | null }[],
+  id: string | null,
+): string | null {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (let at = id; at && !seen.has(at); ) {
+    seen.add(at)
+    const folder = folders.find((f) => f.id === at)
+    if (!folder) break
+    names.unshift(folder.name)
+    at = folder.parentId
+  }
+  return names.length > 0 ? names.join('/') : null
+}
+
 /** A kind's folders and whether the person may manage them. */
 export function useFolders(type: FolderType) {
   const trpc = useTRPC()
