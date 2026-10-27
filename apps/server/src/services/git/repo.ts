@@ -169,6 +169,32 @@ export class GitRepo {
     })
   }
 
+  /** Fetches every branch in one go (M22: which branches change an object) and returns each one's commit. */
+  fetchAllBranches(): Promise<Map<string, string>> {
+    return withLock(this.dir, async () => {
+      await this.network([
+        'fetch',
+        '--no-tags',
+        '--quiet',
+        '--prune',
+        this.remote.url,
+        '+refs/heads/*:refs/remotes/origin/*',
+      ])
+      const { stdout } = await this.git([
+        'for-each-ref',
+        '--format=%(objectname) %(refname)',
+        'refs/remotes/origin/',
+      ])
+      const heads = new Map<string, string>()
+      for (const line of stdout.split('\n')) {
+        const [sha, ref] = line.split(' ')
+        if (sha && ref?.startsWith('refs/remotes/origin/'))
+          heads.set(ref.slice('refs/remotes/origin/'.length), sha)
+      }
+      return heads
+    })
+  }
+
   /** Fetches a branch and returns its commit, or null when the remote has no such branch. */
   fetchBranch(branch: string): Promise<string | null> {
     const name = branchNameSchema.parse(branch)

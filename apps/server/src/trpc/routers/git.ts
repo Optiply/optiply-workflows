@@ -6,6 +6,7 @@ import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
 import { GitHubError, openGitHub } from '../../services/git/github'
 import { gitHealth } from '../../services/git/health'
 import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
+import { objectBranches } from '../../services/git/object-branches'
 import { openPromotion } from '../../services/git/promotion'
 import {
   gitTrpcError,
@@ -297,20 +298,29 @@ export const gitRouter = router({
       return result
     }),
 
-  /** The repo's branches, the deploy branch first. */
-  branches: authedProcedure.query(async ({ ctx }) => {
-    const { repo, branch } = await requireGitRepo(ctx.db, ctx.config)
-    try {
-      const heads = await repo.listBranches()
-      return [...heads]
-        .map(([name, commit]) => ({ name, commit, deploy: name === branch }))
-        .sort(
-          (a, b) => Number(b.deploy) - Number(a.deploy) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-        )
-    } catch (err) {
-      throw gitTrpcError(err)
-    }
-  }),
+  /**
+   * The repo's branches, the deploy branch first. For an object (M22), the branches that change it or hold its draft
+   * here come next, marked (`changes`, `draft`).
+   */
+  branches: authedProcedure
+    .input(z.object({ kind: Kind, id: Id }).optional())
+    .query(async ({ ctx, input }) => {
+      if (input) {
+        const { object } = await gitObject(ctx, input.kind, input.id)
+        return objectBranches(ctx.db, ctx.config, { kind: input.kind, object })
+      }
+      const { repo, branch } = await requireGitRepo(ctx.db, ctx.config)
+      try {
+        const heads = await repo.listBranches()
+        return [...heads]
+          .map(([name, commit]) => ({ name, commit, deploy: name === branch, changes: false, draft: false }))
+          .sort(
+            (a, b) => Number(b.deploy) - Number(a.deploy) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+          )
+      } catch (err) {
+        throw gitTrpcError(err)
+      }
+    }),
 
   /** The branch's pull request into the deploy branch (open ones first), or null. */
   pullRequest: authedProcedure.input(z.object({ branch: branchNameSchema })).query(async ({ ctx, input }) => {

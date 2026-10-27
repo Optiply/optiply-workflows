@@ -1294,3 +1294,43 @@ describe('folders on branches (M22)', () => {
     data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
   })
 })
+
+describe('branches for one object (M22)', () => {
+  const STEP = 'workflows/sync-orders/blocks/step.js'
+  const commitOn = async (branch: string, from: string, files: Record<string, string>) => {
+    const commit = await other.commit({ parent: from, files, message: `On ${branch}`, author })
+    expect(await other.push(commit!, branch)).toBe('ok')
+    return commit!
+  }
+
+  it('lists the deploy branch first, then the branches that change it or hold its draft', async () => {
+    const main = (await other.fetchBranch('main'))!
+    await commitOn('touches-it', main, { [STEP]: 'return "touched"\n' })
+    await commitOn('elsewhere', main, { 'docs/notes.md': 'hi\n' })
+    // Behind main, which then changes the workflow: not a change of the branch's.
+    expect(await other.push(main, 'behind')).toBe('ok')
+    await commitOn('main', main, { [STEP]: 'return "main moved"\n' })
+    data(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch: 'elsewhere' }))
+
+    const branches = data(await admin.query('git.branches', { kind: 'workflow', id: flowId })) as {
+      name: string
+      deploy: boolean
+      changes: boolean
+      draft: boolean
+    }[]
+    expect(branches[0]).toMatchObject({ name: 'main', deploy: true })
+    const by = (name: string) => branches.find((b) => b.name === name)!
+    expect(by('touches-it')).toMatchObject({ changes: true, draft: false })
+    expect(by('elsewhere')).toMatchObject({ changes: false, draft: true })
+    expect(by('behind')).toMatchObject({ changes: false, draft: false })
+    const firstPlain = branches.findIndex((b) => !b.deploy && !b.changes && !b.draft)
+    const lastMarked = branches.findLastIndex((b) => b.changes || b.draft)
+    expect(lastMarked).toBeLessThan(firstPlain)
+
+    // Without an object: every branch, unmarked.
+    const all = data(await admin.query('git.branches')) as { name: string; changes: boolean }[]
+    expect(all.find((b) => b.name === 'touches-it')).toMatchObject({ changes: false })
+    const unknown = { kind: 'workflow', id: '01a17de9-0000-7000-8000-000000000000' }
+    expect(failure(await admin.query('git.branches', unknown)).code).toBe('NOT_FOUND')
+  })
+})
