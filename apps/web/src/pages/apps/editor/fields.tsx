@@ -56,7 +56,13 @@ export function AppCodeField({
         />
       }
     >
-      <LazyCodeField {...props} binding={binding} path={`file:///app/${appId}/${props.path.join('/')}`} />
+      <LazyCodeField
+        {...props}
+        // A protected app on main (M22): shown, not edited.
+        readOnly={props.readOnly || readOnly}
+        binding={binding}
+        path={`file:///app/${appId}/${props.path.join('/')}`}
+      />
     </Suspense>
   )
 }
@@ -175,6 +181,7 @@ export function EditorField({
 /** The name of a component, query, transformer or variable; renaming rewrites every reference to it. */
 export function NameField({ name, onRenamed }: { name: string; onRenamed?: (next: string) => void }) {
   const update = useAppEditor((s) => s.update)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const [text, setText] = useState(name)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -195,6 +202,7 @@ export function NameField({ name, onRenamed }: { name: string; onRenamed?: (next
       <Input
         aria-label="Name"
         value={text}
+        disabled={readOnly}
         className="h-8 font-mono text-sm"
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}

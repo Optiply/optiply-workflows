@@ -98,6 +98,8 @@ export function LibraryQueryHeader({
 }) {
   const trpc = useTRPC()
   const library = useAppEditor((s) => s.libraries[query.library])
+  const readOnly = useAppEditor((s) => s.readOnly)
+
   const releases = useQuery({
     ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: library?.id ?? '' }),
     enabled: !!library?.id,
@@ -117,6 +119,7 @@ export function LibraryQueryHeader({
         </Link>
       </span>
       <Select
+        disabled={readOnly}
         aria-label="Version"
         className="w-44"
         value={query.version}
@@ -133,6 +136,7 @@ export function LibraryQueryHeader({
         )}
       </Select>
       <Select
+        disabled={readOnly}
         aria-label="Run"
         className="w-56"
         value={query.run}

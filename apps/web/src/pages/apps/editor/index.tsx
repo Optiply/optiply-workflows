@@ -410,7 +410,10 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
             </div>
             {!preview && selected && (
               <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
-                <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
+                <fieldset disabled={readOnly} className="contents" data-testid="inspector">
+                  <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                </fieldset>
               </aside>
             )}
           </div>

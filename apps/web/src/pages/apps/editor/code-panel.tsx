@@ -78,6 +78,7 @@ export function CodePanel() {
 
 function CodeTab() {
   const definition = useAppEditor((s) => s.definition)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const open = useAppEditor((s) => s.openCode)
   const openItem = useAppEditor((s) => s.openCodeItem)
   const update = useAppEditor((s) => s.update)
@@ -99,33 +100,38 @@ function CodeTab() {
         <ListSection
           title="Queries"
           actions={
-            <>
-              <Button
-                size="icon"
-                variant="ghost"
-                title="Add a resource query"
-                onClick={() => add((d) => addQuery(d, 'resource', { page }))}
-              >
-                <Database className="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                title="Add a JS query"
-                onClick={() => add((d) => addQuery(d, 'js', { page }))}
-              >
-                <Code2 className="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                title="Add a query from the library"
-                onClick={() => setPicking(true)}
-              >
-                <Library className="size-3.5" />
-              </Button>
-              {picking && <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />}
-            </>
+            // A protected app on main (M22): nothing added.
+            !readOnly && (
+              <>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title="Add a resource query"
+                  onClick={() => add((d) => addQuery(d, 'resource', { page }))}
+                >
+                  <Database className="size-3.5" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title="Add a JS query"
+                  onClick={() => add((d) => addQuery(d, 'js', { page }))}
+                >
+                  <Code2 className="size-3.5" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  title="Add a query from the library"
+                  onClick={() => setPicking(true)}
+                >
+                  <Library className="size-3.5" />
+                </Button>
+                {picking && (
+                  <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />
+                )}
+              </>
+            )
           }
         >
           {definition.queries.map((q) => (
@@ -142,14 +148,16 @@ function CodeTab() {
         <ListSection
           title="Transformers"
           actions={
-            <Button
-              size="icon"
-              variant="ghost"
-              title="Add a transformer"
-              onClick={() => add((d) => addTransformer(d, { page }))}
-            >
-              <Braces className="size-3.5" />
-            </Button>
+            !readOnly && (
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a transformer"
+                onClick={() => add((d) => addTransformer(d, { page }))}
+              >
+                <Braces className="size-3.5" />
+              </Button>
+            )
           }
         >
           {definition.transformers?.map((t) => (
@@ -165,9 +173,11 @@ function CodeTab() {
         <ListSection
           title="Variables"
           actions={
-            <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
-              <VariableIcon className="size-3.5" />
-            </Button>
+            !readOnly && (
+              <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
+                <VariableIcon className="size-3.5" />
+              </Button>
+            )
           }
         >
           {definition.variables?.map((v) => (
@@ -268,6 +278,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const update = useAppEditor((s) => s.update)
   const openItem = useAppEditor((s) => s.openCodeItem)
   const run = useRunQuery()
+  const readOnly = useAppEditor((s) => s.readOnly)
+
   const index = definition.queries.findIndex((q) => q.name === query.name)
   const base = ['queries', index]
   const edit = (change: (q: AppQuery) => AppQuery) => update((def) => updateQuery(def, query.name, change))
@@ -294,6 +306,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
           <>
             <Select
               aria-label="Resource"
+              disabled={readOnly}
               className="w-56"
               value={query.resource}
               onChange={(e) => edit((q) => ({ ...q, resource: e.target.value }))}
@@ -310,6 +323,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
             </Select>
             <Select
               aria-label="Run"
+              disabled={readOnly}
               className="w-56"
               value={query.run}
               onChange={(e) => edit((q) => ({ ...q, run: e.target.value as 'auto' | 'manual' }))}
@@ -330,6 +344,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
           <Button
             size="icon"
             variant="ghost"
+            className={readOnly ? 'hidden' : undefined}
             title="Delete query"
             onClick={() => {
               update((def) => removeCode(def, query.name))
@@ -432,6 +447,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
             <Input
               type="number"
               min={100}
+              disabled={readOnly}
               className="h-8 w-40"
               value={query.timeoutMs ?? ''}
               placeholder="120000"
@@ -536,6 +552,7 @@ function QueryResult({ name }: { name: string }) {
 
 function TransformerEditor({ name }: { name: string }) {
   const definition = useAppEditor((s) => s.definition)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const update = useAppEditor((s) => s.update)
   const openItem = useAppEditor((s) => s.openCodeItem)
@@ -556,7 +573,7 @@ function TransformerEditor({ name }: { name: string }) {
         <Button
           size="icon"
           variant="ghost"
-          className="ml-auto"
+          className={readOnly ? 'hidden' : 'ml-auto'}
           title="Delete transformer"
           onClick={() => {
             update((def) => removeCode(def, name))
@@ -585,6 +602,7 @@ function TransformerEditor({ name }: { name: string }) {
 
 function VariableEditor({ name }: { name: string }) {
   const definition = useAppEditor((s) => s.definition)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const update = useAppEditor((s) => s.update)
   const openItem = useAppEditor((s) => s.openCodeItem)
@@ -601,7 +619,7 @@ function VariableEditor({ name }: { name: string }) {
         <Button
           size="icon"
           variant="ghost"
-          className="ml-auto"
+          className={readOnly ? 'hidden' : 'ml-auto'}
           title="Delete variable"
           onClick={() => {
             update((def) => removeCode(def, name))

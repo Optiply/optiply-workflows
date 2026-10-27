@@ -296,9 +296,11 @@ export function PageSelect({
   className?: string
 }) {
   const pages = useAppEditor((s) => s.definition.pages) ?? []
+  const readOnly = useAppEditor((s) => s.readOnly)
   return (
     <Select
       aria-label="Page"
+      disabled={readOnly}
       className={className}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || null)}

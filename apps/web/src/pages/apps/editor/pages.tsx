@@ -22,6 +22,7 @@ export function PagesPanel() {
   const definition = useAppEditor((s) => s.definition)
   const update = useAppEditor((s) => s.update)
   const current = useAppEditor((s) => s.url.page)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const setUrl = useAppEditor((s) => s.setUrl)
   const pages = definition.pages ?? []
   const add = () => {
@@ -33,9 +34,11 @@ export function PagesPanel() {
     <section aria-label="Pages">
       <div className="mb-2 flex items-center gap-1">
         <h2 className={cn('flex-1', sectionLabelClass)}>Pages</h2>
-        <Button size="icon" variant="ghost" title="Add a page" onClick={add}>
-          <Plus className="size-3.5" />
-        </Button>
+        {!readOnly && (
+          <Button size="icon" variant="ghost" title="Add a page" onClick={add}>
+            <Plus className="size-3.5" />
+          </Button>
+        )}
       </div>
       {pages.length === 0 ? (
         <p className="px-1 text-xs text-muted">
@@ -71,6 +74,7 @@ export function PagesPanel() {
 /** The page being edited: its name (in the URL and in code), title, place in the order, or deletion. */
 function PageSettings({ page }: { page: string }) {
   const definition = useAppEditor((s) => s.definition)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const update = useAppEditor((s) => s.update)
   const setUrl = useAppEditor((s) => s.setUrl)
   const pages = definition.pages ?? []
@@ -92,7 +96,8 @@ function PageSettings({ page }: { page: string }) {
   }
   if (index === -1) return null
   return (
-    <div className="mt-2 flex flex-col gap-2 rounded-md border border-border p-2">
+    // A protected app on main (M22): shown, not edited.
+    <fieldset disabled={readOnly} className="mt-2 flex flex-col gap-2 rounded-md border border-border p-2">
       <EditorField label="Page name">
         <Input
           aria-label="Page name"
@@ -146,6 +151,6 @@ function PageSettings({ page }: { page: string }) {
           <Trash2 className="size-3.5" />
         </Button>
       </div>
-    </div>
+    </fieldset>
   )
 }
