@@ -1,4 +1,5 @@
 import { diff3Merge } from 'node-diff3'
+import { findRenames, type Renamer } from './renames'
 import { equal, isRecord } from './shared'
 import type { CollabSpec, Path } from './spec'
 
@@ -103,20 +104,25 @@ export function mergeObject<D>(
   opts: {
     resolutions?: Readonly<Record<string, Resolution>>
     check?: (definition: D) => readonly Path[]
+    /** Follows each side's renames (M22): applied to the base and the other side before merging. */
+    renamer?: Renamer<D>
   } = {},
 ): MergeResult<MergeObject<D>> {
   const objectSpec = withinDefinition(spec)
   const forced = new Set<string>()
-  const run = (fallback: Side, conflicts: MergeConflict[] = []) =>
+  const renamed = opts.renamer
+    ? followRenames(opts.renamer, base, ours, theirs, opts.resolutions ?? {})
+    : { base, ours, theirs, conflicts: [] }
+  const run = (fallback: Side, conflicts: MergeConflict[] = renamed.conflicts.slice()) =>
     new Merger(objectSpec, opts.resolutions ?? {}, conflicts, forced, fallback).value(
-      base,
-      ours,
-      theirs,
+      renamed.base,
+      renamed.ours,
+      renamed.theirs,
       [],
       [],
     ) as MergeObject<D>
   for (;;) {
-    const conflicts: MergeConflict[] = []
+    const conflicts: MergeConflict[] = renamed.conflicts.slice()
     const merged = run('ours', conflicts)
     if (!opts.check) return { merged, conflicts }
     // Checked with the conflicts left at ours and at theirs, so a misfit doesn't depend on which side is which.
@@ -132,6 +138,71 @@ export function mergeObject<D>(
     }
     // Nothing left to merge whole: a side doesn't fit its schema by itself (saving says so).
     if (!grew) return { merged, conflicts }
+  }
+}
+
+/**
+ * Each side's renames applied to the base and to the other side (M22), so the merge sees the item under one name.
+ * A rename is followed only where the other side still has the item under its old name and nothing under the new
+ * one (a deleted item stays deleted-and-changed). Both sides renaming an item differently is a conflict over its
+ * name (`[definition, <collection>, <old name>, 'name']`): resolved to one side, or left at ours.
+ */
+function followRenames<D>(
+  renamer: Renamer<D>,
+  base: MergeObject<D>,
+  ours: MergeObject<D>,
+  theirs: MergeObject<D>,
+  resolutions: Readonly<Record<string, Resolution>>,
+): { base: MergeObject<D>; ours: MergeObject<D>; theirs: MergeObject<D>; conflicts: MergeConflict[] } {
+  let b = base.definition
+  let o = ours.definition
+  let t = theirs.definition
+  const conflicts: MergeConflict[] = []
+  const has = (d: D, group: string, name: string) =>
+    renamer.items(d).some((i) => i.group === group && i.name === name)
+  const theirRenames = findRenames(renamer, b, t)
+  const apply = (d: D, group: string, from: string, to: string) => renamer.rename(d, group, from, to)
+  for (const mine of findRenames(renamer, b, o)) {
+    const twin = theirRenames.find((r) => r.group === mine.group && r.from === mine.from)
+    if (twin) {
+      theirRenames.splice(theirRenames.indexOf(twin), 1)
+      let to = mine.to
+      if (twin.to !== mine.to) {
+        const conflict: Unidentified = {
+          kind: 'value',
+          at: ['definition', mine.group, mine.from, 'name'],
+          base: mine.from,
+          ours: mine.to,
+          theirs: twin.to,
+        }
+        const id = conflictId(conflict)
+        const resolution = resolutions[id]
+        if (resolution === 'theirs') to = twin.to
+        else if (resolution !== 'ours') conflicts.push({ id, ...conflict } as MergeConflict)
+      }
+      const nextBase = apply(b, mine.group, mine.from, to)
+      const nextOurs = to === mine.to ? o : apply(o, mine.group, mine.to, to)
+      const nextTheirs = to === twin.to ? t : apply(t, twin.group, twin.to, to)
+      if (nextBase && nextOurs && nextTheirs) [b, o, t] = [nextBase, nextOurs, nextTheirs]
+      continue
+    }
+    if (!has(t, mine.group, mine.from) || has(t, mine.group, mine.to)) continue
+    const nextBase = apply(b, mine.group, mine.from, mine.to)
+    const nextTheirs = apply(t, mine.group, mine.from, mine.to)
+    if (nextBase && nextTheirs) [b, t] = [nextBase, nextTheirs]
+  }
+  for (const theirsRename of theirRenames) {
+    const { group, from, to } = theirsRename
+    if (!has(o, group, from) || has(o, group, to) || !has(b, group, from)) continue
+    const nextBase = apply(b, group, from, to)
+    const nextOurs = apply(o, group, from, to)
+    if (nextBase && nextOurs) [b, o] = [nextBase, nextOurs]
+  }
+  return {
+    base: { ...base, definition: b },
+    ours: { ...ours, definition: o },
+    theirs: { ...theirs, definition: t },
+    conflicts,
   }
 }
 
