@@ -204,6 +204,13 @@
       "when": 1793112412587,
       "tag": "0028_branch_draft_folder",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793113694348,
+      "tag": "0029_git_deploy_retries",
+      "breakpoints": true
     }
   ]
 }

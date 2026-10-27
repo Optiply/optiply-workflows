@@ -26,6 +26,8 @@ x-app: &app
     METRICS_TOKEN: ${METRICS_TOKEN:-}
     # Git sync (M11): workers check the deploy branch this often (seconds; 0: webhook and Deploy now only).
     GIT_POLL_SECONDS: ${GIT_POLL_SECONDS:-60}
+    # Deploy problems are re-checked this often (minutes; 0: only when the instance changes; M22).
+    GIT_RETRY_MINUTES: ${GIT_RETRY_MINUTES:-10}
     # Local test repos and a fake GitHub only (file:// and http:// repos; another GitHub API). Keep unset.
     GIT_ALLOW_INSECURE_URLS: ${GIT_ALLOW_INSECURE_URLS:-false}
     GITHUB_API_URL: ${GITHUB_API_URL:-}

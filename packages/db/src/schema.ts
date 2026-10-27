@@ -1134,9 +1134,14 @@ export const gitSettings = pgTable(
     lastError: text(),
     /** A webhook or an admin asked for a deploy; the process holding the lease goes again when it's done. */
     deployRequestedAt: timestamp({ withTimezone: true }),
-    deployRequestedBy: text({ enum: ['poll', 'webhook', 'manual'] }),
+    deployRequestedBy: text({ enum: ['poll', 'webhook', 'manual', 'retry'] }),
     /** One deploy at a time across processes: whoever moves this into the future runs it. */
     deployLeaseUntil: timestamp({ withTimezone: true }),
+    /**
+     * Something a problem object may have been waiting for changed (a resource, config var, library query or module;
+     * M22): the next poll re-checks the last deploy's problem objects without a new commit.
+     */
+    retryRequestedAt: timestamp({ withTimezone: true }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1194,7 +1199,8 @@ export const gitObjects = pgTable(
   ],
 )
 
-export const GIT_DEPLOY_TRIGGERS = ['poll', 'webhook', 'manual'] as const
+/** `retry` (M22): the deployed commit again, for its problem objects. */
+export const GIT_DEPLOY_TRIGGERS = ['poll', 'webhook', 'manual', 'retry'] as const
 
 /** What each deploy of a new branch commit (or an admin's Deploy now) did. */
 export const gitDeploys = pgTable(

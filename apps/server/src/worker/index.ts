@@ -16,7 +16,7 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
  * The workflow worker: claims queued runs and executes them (see `Dispatcher` in @ow/engine), renews their
  * leases and recovers runs whose worker died, and fires due schedules every 5 s (`Scheduler`; every worker ticks,
  * and each due schedule is fired by one of them), and once a day deletes runs older than `RUN_RETENTION_DAYS`
- * (`RetentionJob`; one worker a day wins the job), and deploys from Git every `GIT_POLL_SECONDS` (`GitDeployer`; one
+ * (`RetentionJob`; one worker a day wins the job), and deploys from Git every `GIT_POLL_SECONDS`, re-checking problem objects every `GIT_RETRY_MINUTES` (`GitDeployer`; one
  * process at a time). `stop()` stops firing and hands in-flight runs back to the queue.
  */
 export async function startWorker(deps: {
@@ -67,6 +67,7 @@ export async function startWorker(deps: {
     config,
     log: log.child({ component: 'git' }),
     pollMs: config.GIT_POLL_SECONDS * 1000,
+    retryMs: config.GIT_RETRY_MINUTES * 60_000,
   })
   git.start()
   // Pub/Sub triggers (M19): pulled by one worker at a time each, under the dispatcher's name.

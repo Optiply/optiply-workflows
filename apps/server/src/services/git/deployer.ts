@@ -9,10 +9,12 @@ interface DeployerLogger {
 
 /**
  * Deploys from Git in this process: every `pollMs` (workers; the first check soon after start), and when asked
- * (the API's push webhook). Every process may poll; the lease in `git_settings` lets one deploy at a time.
+ * (the API's push webhook). Every `retryMs` the last deploy's problem objects are re-checked without a new commit
+ * (M22). Every process may poll; the lease in `git_settings` lets one deploy at a time.
  */
 export class GitDeployer {
   private timer: NodeJS.Timeout | undefined
+  private retryTimer: NodeJS.Timeout | undefined
   private first: NodeJS.Timeout | undefined
   private readonly inFlight = new Set<Promise<unknown>>()
 
@@ -24,10 +26,21 @@ export class GitDeployer {
       /** 0: don't poll. */
       pollMs: number
       firstPollMs?: number
+      /** 0 or left out: no timed retries (a marked change is still picked up by the next poll). */
+      retryMs?: number
     },
   ) {}
 
   start(): void {
+    const retryMs = this.opts.retryMs ?? 0
+    if (retryMs > 0 && !this.retryTimer) {
+      const retry = () =>
+        void this.track(
+          runGitDeploy(this.opts.db, this.opts.config, { trigger: 'poll', retry: true, log: this.opts.log }),
+        )
+      this.retryTimer = setInterval(retry, retryMs)
+      this.retryTimer.unref()
+    }
     if (this.opts.pollMs <= 0 || this.timer) return
     const poll = () =>
       void this.track(runGitDeploy(this.opts.db, this.opts.config, { trigger: 'poll', log: this.opts.log }))
@@ -45,7 +58,9 @@ export class GitDeployer {
   async stop(): Promise<void> {
     clearTimeout(this.first)
     clearInterval(this.timer)
+    clearInterval(this.retryTimer)
     this.timer = undefined
+    this.retryTimer = undefined
     await Promise.allSettled([...this.inFlight])
   }
 

@@ -1,0 +1,1 @@
+ALTER TABLE "git_settings" ADD COLUMN "retry_requested_at" timestamp with time zone;

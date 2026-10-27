@@ -452,7 +452,7 @@ interface DeploySummary {
   problems?: Array<{ path: string; message: string }>
 }
 
-const TRIGGERS = { poll: 'Check', webhook: 'Push', manual: 'Deploy now' } as const
+const TRIGGERS = { poll: 'Check', webhook: 'Push', manual: 'Deploy now', retry: 'Retry' } as const
 
 function RecentDeploys({ deploys, webUrl }: { deploys: Deploy[]; webUrl: string | null | undefined }) {
   return (

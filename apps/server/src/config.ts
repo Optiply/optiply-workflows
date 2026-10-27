@@ -70,6 +70,8 @@ const ConfigSchema = z
     GIT_ALLOW_INSECURE_URLS: bool,
     /** Workers check the deploy branch this often (seconds; 0 turns polling off: webhooks and Deploy now only). */
     GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
+    /** Workers re-check the last deploy's problem objects this often (minutes; 0 off; M22). */
+    GIT_RETRY_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
     GITHUB_API_URL: z.string().url().optional(),
     /**

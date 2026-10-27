@@ -12,7 +12,7 @@ import {
   type Module,
   type Workflow,
 } from '@ow/db'
-import type { WorkflowDefinition } from '@ow/definition'
+import { canonicalJson, type WorkflowDefinition } from '@ow/definition'
 import {
   checkManifest,
   decodeRepo,
@@ -27,7 +27,7 @@ import {
   settingsDir,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { desc, sql } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 import type { Config } from '../../config'
 import { deployAppFromGit } from '../apps'
@@ -99,6 +99,22 @@ const MAX_ROUNDS = 5
 const KEEP_DEPLOYS = 200
 
 /**
+ * Audited changes a problem object may have been waiting for (M22): resources (secrets and overrides included),
+ * config vars, library queries and modules. Running their queries changes nothing.
+ */
+const RETRY_ACTIONS = /^(resource|config_var|library_query|module)\.(?!query_run$)/
+
+/** Whether an audited action marks the last deploy's problem objects for a re-check. */
+export function asksForGitRetry(action: string): boolean {
+  return RETRY_ACTIONS.test(action)
+}
+
+/** Marks the last deploy's problem objects for a re-check by the next poll (nothing without Git sync). */
+export async function requestGitRetry(db: Db): Promise<void> {
+  await db.update(gitSettings).set({ retryRequestedAt: sql`now()` })
+}
+
+/**
  * Asks for a deploy (a webhook, an admin's Deploy now) and runs it here unless another process holds the lease, in
  * which case that one goes again when it's done.
  */
@@ -119,7 +135,7 @@ export async function requestGitDeploy(
 export async function runGitDeploy(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force?: boolean; log?: DeployLogger },
+  opts: { trigger: DeployTrigger; force?: boolean; retry?: boolean; log?: DeployLogger },
 ): Promise<DeployResult> {
   const claimed = await db
     .update(gitSettings)
@@ -137,7 +153,8 @@ export async function runGitDeploy(
   let held = true
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      result = await deployOnce(db, config, { trigger, force, log: opts.log })
+      const retry = round === 0 && (opts.retry ?? false)
+      result = await deployOnce(db, config, { trigger, force, retry, log: opts.log })
       const next = await handBackLease(db)
       if (!next.again) {
         held = false
@@ -179,7 +196,7 @@ export async function handBackLease(db: Db): Promise<{ again: boolean; by: Deplo
 async function deployOnce(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force: boolean; log?: DeployLogger },
+  opts: { trigger: DeployTrigger; force: boolean; retry: boolean; log?: DeployLogger },
 ): Promise<DeployResult> {
   const opened = await openGitRepo(db, config)
   const [settings] = await db.select().from(gitSettings)
@@ -201,10 +218,18 @@ async function deployOnce(
     await checked()
     return { status: 'empty' }
   }
+  // Every deploy re-checks the problem objects, so it takes the retry mark (a mark set from here on stays).
+  const marked = await takeRetryMark(db)
+  // The deployed commit again for its problem objects (M22): asked for, or something they may need changed.
+  let retrying = false
   if (!opts.force && commit === settings.deployedCommit) {
-    await checked()
-    return { status: 'up_to_date', commit }
+    if (!((opts.retry || marked) && (await hasProblemObjects(db)))) {
+      await checked()
+      return { status: 'up_to_date', commit }
+    }
+    retrying = true
   }
+  const trigger: DeployTrigger = retrying ? 'retry' : opts.trigger
 
   const startedAt = new Date()
   const roots = [...Object.values(KIND_ROOTS), ...Object.values(SETTINGS_ROOTS)]
@@ -342,6 +367,11 @@ async function deployOnce(
         })
       }
     }
+    // A retry that changed nothing (the same problems again) isn't a deploy worth recording.
+    if (retrying && !outcomes.some((o) => isNews(o, rowOf(o.kind, o.slug)))) {
+      await checked()
+      return { status: 'up_to_date', commit }
+    }
     await saveOutcomes(db, commit, outcomes)
   }
 
@@ -351,7 +381,7 @@ async function deployOnce(
   await db.insert(gitDeploys).values({
     commit,
     previousCommit: settings.deployedCommit,
-    trigger: opts.trigger,
+    trigger,
     status: ok ? 'ok' : 'problems',
     summary: {
       subject: releaseNotes(info),
@@ -381,7 +411,7 @@ async function deployOnce(
     objectType: 'git_settings',
     metadata: {
       commit,
-      trigger: opts.trigger,
+      trigger,
       created: count('created'),
       released: count('released'),
       updated: count('updated'),
@@ -389,8 +419,35 @@ async function deployOnce(
       missing: count('missing'),
     },
   })
-  opts.log?.info({ commit, trigger: opts.trigger, ok, changed: changed.length }, 'git deploy finished')
+  opts.log?.info({ commit, trigger, ok, changed: changed.length }, 'git deploy finished')
   return { status: 'deployed', commit, ok, objects: outcomes, problems: repoProblems }
+}
+
+/** Takes the retry mark: whether one was set. */
+async function takeRetryMark(db: Db): Promise<boolean> {
+  const taken = await db
+    .update(gitSettings)
+    .set({ retryRequestedAt: null })
+    .where(sql`${gitSettings.retryRequestedAt} is not null`)
+    .returning({ id: gitSettings.id })
+  return taken.length > 0
+}
+
+async function hasProblemObjects(db: Db): Promise<boolean> {
+  const [row] = await db
+    .select({ id: gitObjects.id })
+    .from(gitObjects)
+    .where(eq(gitObjects.status, 'problem'))
+    .limit(1)
+  return Boolean(row)
+}
+
+/** Whether an outcome differs from what the directory's row already says. */
+function isNews(outcome: ObjectOutcome, row: GitObject | undefined): boolean {
+  if (outcome.outcome === 'unchanged') return false
+  if (outcome.outcome !== 'problem' || row?.status !== 'problem') return true
+  // Compared canonically: jsonb doesn't keep the keys' order.
+  return canonicalJson(outcome.problems ?? []) !== canonicalJson(row.problems)
 }
 
 /**
