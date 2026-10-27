@@ -10,6 +10,13 @@ const gitEnv = {
   PATH: process.env.PATH ?? '',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_NOSYSTEM: '1',
+  // No background gc or maintenance: a temporary clone must be done with once git returns (M22: a detached
+  // auto-gc writing into one while it was removed failed m20-done-when with ENOTEMPTY).
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'gc.auto',
+  GIT_CONFIG_VALUE_0: '0',
+  GIT_CONFIG_KEY_1: 'maintenance.auto',
+  GIT_CONFIG_VALUE_1: 'false',
   GIT_AUTHOR_NAME: 'A developer',
   GIT_AUTHOR_EMAIL: 'dev@optiply.nl',
   GIT_COMMITTER_NAME: 'A developer',
@@ -31,7 +38,7 @@ function pushFiles(repoDir: string, branch: string, files: Record<string, string
     git('push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`)
     return git('rev-parse', 'HEAD')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }
 
