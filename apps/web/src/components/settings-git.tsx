@@ -50,7 +50,7 @@ export function SaveToBranchDialog({
     trpc.git.commitSettings.mutationOptions({
       onSuccess: async (result) => {
         setCommitted({ commit: result.commit, branch: result.branch })
-        await queryClient.invalidateQueries({ queryKey: trpc.git.branches.queryKey() })
+        await queryClient.invalidateQueries({ queryKey: trpc.git.branches.pathKey() })
       },
     }),
   )

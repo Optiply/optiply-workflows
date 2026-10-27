@@ -6,11 +6,13 @@ import {
   GitMerge,
   GitPullRequest,
   Lock,
+  Pencil,
   RefreshCw,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { CommitLink, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
+import { folderPath, useFolders } from '@/components/folders'
+import { CommitLink, GIT_KIND_LABELS, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
 import { type ConflictGroup, MergeDialog } from '@/components/merge-dialog'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { lineDiff, withContext } from '@/lib/diff'
@@ -50,20 +52,23 @@ export function GitBar(props: GitBarProps) {
   const { kind, object, branch, draft } = props
   const trpc = useTRPC()
   const { data: git } = useGitInfo()
-  const branches = useQuery({ ...trpc.git.branches.queryOptions(), staleTime: 30_000 })
+  // This object's branches (M22): the ones changing it, or holding its draft, come first.
+  const branches = useQuery({ ...trpc.git.branches.queryOptions({ kind, id: object.id }), staleTime: 30_000 })
   const drafts = useQuery(trpc.branchDrafts.list.queryOptions({ kind, id: object.id }))
   const [naming, setNaming] = useState(false)
   const [newBranch, setNewBranch] = useState('')
   const [committing, setCommitting] = useState(false)
   const deploy = git?.branch ?? 'main'
 
-  const names = [
+  const others = (branches.data ?? []).filter((b) => !b.deploy)
+  const mine = [
     ...new Set([
       ...(drafts.data ?? []).map((d) => d.branch),
-      ...(branches.data ?? []).filter((b) => !b.deploy).map((b) => b.name),
+      ...others.filter((b) => b.changes || b.draft).map((b) => b.name),
       ...(branch ? [branch] : []),
     ]),
   ].sort()
+  const rest = others.map((b) => b.name).filter((name) => !mine.includes(name))
 
   return (
     <div
@@ -107,11 +112,24 @@ export function GitBar(props: GitBarProps) {
           }}
         >
           <option value="">{deploy} (deployed, read-only)</option>
-          {names.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
+          {mine.length > 0 && (
+            <optgroup label={`Changing this ${GIT_KIND_LABELS[kind]}`}>
+              {mine.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {rest.length > 0 && (
+            <optgroup label="Other branches">
+              {rest.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
           <option value={NEW_BRANCH}>New branch…</option>
         </Select>
       )}
@@ -150,6 +168,7 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
   const deploy = git?.branch ?? 'main'
   /** Open while a merge has conflicts: from the branch (the draft's own) or from main (by object). */
   const [merging, setMerging] = useState<{ from: 'branch' | 'main'; groups: ConflictGroup[] } | null>(null)
+  const [detailing, setDetailing] = useState(false)
   /** Commit was clicked while the branch had moved: commit once the update is in. */
   const [commitAfter, setCommitAfter] = useState(false)
   /** What went wrong outside the mutations: saving before a merge, or the draft's update after main's merge. */
@@ -299,6 +318,20 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
           Commit{c && c.files.length > 0 ? ` (${c.files.length})` : ''}
         </Button>
       )}
+      <Button size="sm" onClick={() => setDetailing(true)} data-testid="branch-details-open">
+        <Pencil className="size-3.5" /> Details
+      </Button>
+      {detailing && (
+        <DetailsDialog
+          kind={props.kind}
+          draft={draft}
+          onClose={() => setDetailing(false)}
+          onSaved={async (next) => {
+            props.onUpdated(next)
+            await refresh()
+          }}
+        />
+      )}
       <Button
         size="icon"
         variant="ghost"
@@ -386,7 +419,7 @@ function CommitDialog(
     Promise.all([
       queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }) }),
       queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.list.queryKey() }),
-      queryClient.invalidateQueries({ queryKey: trpc.git.branches.queryKey() }),
+      queryClient.invalidateQueries({ queryKey: trpc.git.branches.pathKey() }),
       queryClient.invalidateQueries({ queryKey: trpc.git.pullRequest.queryKey({ branch: branch! }) }),
     ])
   const commit = useMutation(
@@ -519,6 +552,99 @@ function CommitDialog(
           <Textarea rows={3} value={message} onChange={(e) => setMessage(e.target.value)} />
         </Field>
         <ErrorNote error={commit.error ?? changes.error} />
+      </div>
+    </Dialog>
+  )
+}
+
+/**
+ * The name, description and folder Git keeps for the object, on this branch (M22): saved on the draft without a new
+ * revision, committed with the next commit.
+ */
+function DetailsDialog({
+  kind,
+  draft,
+  onClose,
+  onSaved,
+}: {
+  kind: GitKind
+  draft: Draft
+  onClose(): void
+  onSaved(draft: Draft): Promise<unknown>
+}) {
+  const trpc = useTRPC()
+  const { data: folders } = useFolders(kind)
+  const [form, setForm] = useState({
+    name: draft.name,
+    description: draft.description ?? '',
+    folder: draft.folder ?? '',
+  })
+  const paths = [
+    ...new Set([
+      ...(folders?.folders ?? []).map((f) => folderPath(folders!.folders, f.id)!),
+      ...(draft.folder ? [draft.folder] : []),
+    ]),
+  ].sort()
+  const save = useMutation(
+    trpc.branchDrafts.setDetails.mutationOptions({
+      onSuccess: async (next) => {
+        await onSaved(next)
+        onClose()
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Details on ${draft.branch}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!form.name.trim()}
+            loading={save.isPending}
+            onClick={() =>
+              save.mutate({
+                id: draft.id,
+                name: form.name.trim(),
+                description: form.description.trim() || null,
+                folder: form.folder || null,
+              })
+            }
+            data-testid="branch-details-save"
+          >
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4 text-sm">
+        <p className="text-muted">
+          Git keeps these with the {GIT_KIND_LABELS[kind]}: they change here when the branch merges and
+          deploys.
+        </p>
+        <Field label="Name">
+          <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </Field>
+        <Field label="Description">
+          <Textarea
+            rows={2}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
+        </Field>
+        <Field label="Folder" hint="The deploy makes a folder this instance doesn't have yet.">
+          <Select value={form.folder} onChange={(e) => setForm({ ...form, folder: e.target.value })}>
+            <option value="">Not in a folder</option>
+            {paths.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <ErrorNote error={save.error} />
       </div>
     </Dialog>
   )

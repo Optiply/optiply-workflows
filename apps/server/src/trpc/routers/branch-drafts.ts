@@ -109,6 +109,36 @@ export const branchDraftsRouter = router({
     return branchDraftView(draft)
   }),
 
+  /**
+   * The name, description and folder the repo keeps for the object, on this branch (M22). Not the definition, so the
+   * draft's revision stays: people editing it together (M16) aren't told someone else saved. The next commit takes
+   * them along.
+   */
+  setDetails: authedProcedure
+    .input(
+      z.object({
+        id: Id,
+        name: Name.optional(),
+        description: Description,
+        /** A folder path, `Finance/Reports`; null or empty for the top level. */
+        folder: z.union([folderPathSchema, z.literal('')]).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { draft } = await editableDraft(ctx, input.id)
+      const [updated] = await ctx.db
+        .update(gitBranchDrafts)
+        .set({
+          ...(input.name !== undefined && { name: input.name }),
+          ...(input.description !== undefined && { description: input.description || null }),
+          ...(input.folder !== undefined && { folder: input.folder || null }),
+          updatedBy: ctx.user.id,
+        })
+        .where(eq(gitBranchDrafts.id, draft.id))
+        .returning()
+      return branchDraftView(updated!)
+    }),
+
   /** Saves the draft (and the name, description and folder the repo keeps) if nobody saved since `revision`. */
   save: authedProcedure
     .input(

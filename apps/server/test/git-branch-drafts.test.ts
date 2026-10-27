@@ -1252,6 +1252,49 @@ describe('folders on branches (M22)', () => {
     data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
   })
 
+  it('sets the name, description and folder without a new revision, and commits them', async () => {
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: objectId,
+        branch: 'detailing',
+        create: true,
+      }),
+    )
+    const view = data(
+      await admin.mutate('branchDrafts.setDetails', {
+        id: draft.id,
+        name: 'Filed, renamed',
+        description: 'Why it exists',
+        folder: 'Ops/Nightly',
+      }),
+    )
+    expect(view).toMatchObject({
+      name: 'Filed, renamed',
+      description: 'Why it exists',
+      folder: 'Ops/Nightly',
+    })
+    expect(view.revision).toBe(draft.revision)
+    await commit(draft.id, draft.revision)
+    const files = await other.readFiles((await other.fetchBranch('detailing'))!, [FILE])
+    expect(JSON.parse(files[FILE]!)).toMatchObject({
+      name: 'Filed, renamed',
+      description: 'Why it exists',
+      folder: 'Ops/Nightly',
+    })
+    // Cleared: the top level, no description.
+    data(await admin.mutate('branchDrafts.setDetails', { id: draft.id, description: null, folder: '' }))
+    expect(
+      failure(await admin.mutate('branchDrafts.setDetails', { id: draft.id, folder: 'Ops/ ' })).code,
+    ).toBe('BAD_REQUEST')
+    expect(failure(await member.mutate('branchDrafts.setDetails', { id: draft.id, name: 'Mine' })).code).toBe(
+      'NOT_FOUND',
+    )
+    const after = data(await admin.query('branchDrafts.get', { id: draft.id }))
+    expect(after).toMatchObject({ name: 'Filed, renamed', description: null, folder: null })
+    data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
+  })
+
   it('takes the branch’s folder on update, unless the draft changed it too', async () => {
     const draft = data(
       await admin.mutate('branchDrafts.open', {
