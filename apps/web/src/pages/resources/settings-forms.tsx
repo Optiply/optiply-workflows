@@ -7,6 +7,7 @@ import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
+import { OverridesCard } from './overrides'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -201,6 +202,9 @@ export function SettingsPanel({
           <RestFields {...props} resourceId={resource.id} />
         )}
       </Card>
+      {fromGit && stored?.config && (
+        <OverridesCard resource={resource} environmentId={environmentId} canEdit={canEdit} />
+      )}
 
       {canEdit && (
         <div className="space-y-3">
