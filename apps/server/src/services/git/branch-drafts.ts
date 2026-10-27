@@ -1,4 +1,4 @@
-import type { MergeConflict, MergeObject, MergeResult, Resolution } from '@ow/collab'
+import type { MergeConflict, MergeResult, Resolution } from '@ow/collab'
 import { type Db, type GitBranchDraft, gitBranchDrafts } from '@ow/db'
 import {
   decodeObject,
@@ -14,11 +14,13 @@ import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch, GitConflictError } from './commit'
+import { folderPathOf } from './folders'
 import {
   definitionSchema,
   draftColumn,
   draftOwner,
   draftTarget,
+  type GitMergeObject,
   type GitObjectRow,
   kindDefinitionHash,
   kindDiagnostics,
@@ -55,6 +57,7 @@ export async function branchDraftView(draft: GitBranchDraft) {
     branch: draft.branch,
     name: draft.name,
     description: draft.description,
+    folder: draft.folder,
     definition: draft.definition,
     revision: draft.revision,
     baseCommit: draft.baseCommit,
@@ -128,11 +131,13 @@ export async function openBranchDraft(
   } catch (err) {
     throw gitTrpcError(err)
   }
-  let value: { name: string; description: string | null; definition: unknown }
+  let value: GitMergeObject
   if (!read.decoded) {
+    const folder = await folderPathOf(db, object.folderId)
     value = {
       name: object.name,
       description: object.description,
+      ...(folder ? { folder } : {}),
       definition: await liveOrDraft(db, kind, object),
     }
   } else if (!read.decoded.ok) {
@@ -148,6 +153,7 @@ export async function openBranchDraft(
       definition: value.definition as GitBranchDraft['definition'],
       name: value.name,
       description: value.description,
+      folder: value.folder ?? null,
       baseCommit: base,
       branchExists,
       // The merge base until the draft's base commit has files for it (M20).
@@ -176,6 +182,8 @@ export async function saveBranchDraft(
     definition: unknown
     name?: string
     description?: string | null
+    /** A folder path (`Finance/Reports`); null for the top level. */
+    folder?: string | null
   },
 ): Promise<GitBranchDraft> {
   const { kind } = draftTarget(opts.draft)
@@ -187,6 +195,7 @@ export async function saveBranchDraft(
       definition: parsed.data as GitBranchDraft['definition'],
       ...(opts.name !== undefined ? { name: opts.name } : {}),
       ...(opts.description !== undefined ? { description: opts.description } : {}),
+      ...(opts.folder !== undefined ? { folder: opts.folder || null } : {}),
       revision: opts.revision + 1,
       updatedBy: user.id,
     })
@@ -229,7 +238,9 @@ export async function branchDraftChanges(
     const haveBase = await repo.ensureCommit(draft.baseCommit)
     if (!tip && !haveBase) throw lostBase()
     const against = tip ?? draft.baseCommit
-    const { dir, files: now } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
+    const { dir, files: now } = encodeObjectDir(
+      repoObject(target.kind, target.object.slug, objectValue(draft)),
+    )
     const { files: there } = await readObjectAt(repo, against, target.kind, target.object.slug)
     const paths = [...new Set([...Object.keys(now), ...Object.keys(there)])].sort()
     const clip = (text: string | undefined) =>
@@ -399,7 +410,7 @@ export async function updateDraftTo(
 
   let draft = opts.draft
   for (let attempt = 1; ; attempt++) {
-    let value: MergeObject<unknown>
+    let value: GitMergeObject
     if (opts.discardChanges || !theirs.decoded) {
       // Dropping the draft's changes, or the branch has no files for it (deleted there): nothing to merge.
       value = theirs.decoded?.ok ? theirs.decoded.value.value : objectValue(draft)
@@ -421,6 +432,7 @@ export async function updateDraftTo(
         definition: value.definition as GitBranchDraft['definition'],
         name: value.name,
         description: value.description,
+        folder: value.folder ?? null,
         baseCommit: tip,
         branchExists: opts.branchExists,
         // From here the base commit has the object's files (when the tip has them) and is the merge base.
@@ -457,10 +469,11 @@ export async function reloadDraft(db: Db, draft: GitBranchDraft): Promise<GitBra
   return now
 }
 
-/** A draft's object (name, description, definition). */
-const objectValue = (draft: GitBranchDraft): MergeObject<unknown> => ({
+/** A draft's object (name, description, folder, definition). */
+const objectValue = (draft: GitBranchDraft): GitMergeObject => ({
   name: draft.name,
   description: draft.description,
+  ...(draft.folder ? { folder: draft.folder } : {}),
   definition: draft.definition,
 })
 
@@ -474,9 +487,9 @@ async function mergeIntoDraft(
   repo: GitRepo,
   target: DraftObject,
   draft: GitBranchDraft,
-  theirs: MergeObject<unknown>,
+  theirs: GitMergeObject,
   resolutions: Readonly<Record<string, Resolution>> | undefined,
-): Promise<MergeResult<MergeObject<unknown>>> {
+): Promise<MergeResult<GitMergeObject>> {
   const { kind, object } = target
   let read: Awaited<ReturnType<typeof readObjectAt>>
   try {
@@ -489,11 +502,12 @@ async function mergeIntoDraft(
   if (read.decoded && !read.decoded.ok) throw problemsError(read.decoded.problems)
   // Where the base commit has no files for the object, what the draft started from (drafts opened before M20
   // didn't keep it: the object's live release or draft now, the best guess left).
-  const base: MergeObject<unknown> = read.decoded?.ok
+  const base: GitMergeObject = read.decoded?.ok
     ? read.decoded.value.value
     : (draft.baseValue ?? {
         name: object.name,
         description: object.description,
+        folder: await folderPathOf(db, object.folderId),
         definition: await liveOrDraft(db, kind, object),
       })
   return mergeKindObject(
@@ -509,7 +523,7 @@ async function mergeIntoDraft(
  * An object as reading its files gives it back, so the three sides of a merge compare alike (a draft may hold what
  * the files leave out, such as an empty workflow layout).
  */
-function normalized(kind: ObjectKind, slug: string, value: MergeObject<unknown>): MergeObject<unknown> {
+function normalized(kind: ObjectKind, slug: string, value: GitMergeObject): GitMergeObject {
   const { files } = encodeObjectDir(repoObject(kind, slug, value))
   const decoded = decodeObject({ kind, slug, files })
   return decoded.ok ? decoded.value.value : value
@@ -536,7 +550,7 @@ export async function commitBranchDraft(
   const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   // A draft opened before the deploy branch was changed in Settings → Git could be on it now.
   requireNotDeployBranch(draft.branch, deployBranch)
-  const { dir, files } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
+  const { dir, files } = encodeObjectDir(repoObject(target.kind, target.object.slug, objectValue(draft)))
   let result: { commit: string; changed: boolean }
   try {
     const main = await ensureBaseBranch(repo, deployBranch, user)

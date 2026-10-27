@@ -1167,3 +1167,130 @@ describe('objects new to the repo, and apps', () => {
     expect(left.map((s) => s.revision)).toEqual([draft!.revision])
   })
 })
+
+describe('folders on branches (M22)', () => {
+  const FILE = 'workflows/filed-flow/workflow.json'
+  let objectId: string
+  let finance: string
+  const folderIn = async (branch: string, file = FILE) => {
+    const files = await other.readFiles((await other.fetchBranch(branch))!, [file])
+    return JSON.parse(files[file]!).folder ?? null
+  }
+  const save = async (id: string, change: { folder?: string | null; code?: string }) => {
+    const { revision } = data(await admin.query('branchDrafts.get', { id }))
+    data(
+      await admin.mutate('branchDrafts.save', {
+        id,
+        revision,
+        definition: flowDefinition(change.code ?? 'return 1'),
+        ...(change.folder !== undefined ? { folder: change.folder } : {}),
+      }),
+    )
+    return revision + 1
+  }
+  const commit = async (id: string, revision: number) =>
+    data(await admin.mutate('branchDrafts.commit', { id, revision, message: 'Folder' }))
+  /** Someone else commits the workflow's JSON with a folder of theirs onto a branch. */
+  const theirFolder = async (branch: string, folder: string, path = FILE) => {
+    const tip = await other.fetchBranch(branch)
+    const json = JSON.parse((await other.readFiles(tip!, [path]))[path]!)
+    const next = await other.commit({
+      parent: tip,
+      files: { [path]: `${JSON.stringify({ ...json, folder }, null, 2)}\n` },
+      message: 'Their folder',
+      author,
+    })
+    expect(await other.push(next!, branch)).toBe('ok')
+  }
+
+  beforeAll(async () => {
+    finance = data(await admin.mutate('folders.create', { name: 'Finance', type: 'workflow' })).id
+    objectId = data(
+      await admin.mutate('workflows.create', {
+        slug: 'filed-flow',
+        name: 'Filed flow',
+        protected: true,
+        folderId: finance,
+      }),
+    ).id
+  })
+
+  it('keeps the folder from opening to committing, and commits a new one', async () => {
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: objectId,
+        branch: 'filing',
+        create: true,
+      }),
+    )
+    // The repo has no files for it yet: the instance's folder.
+    expect(draft.folder).toBe('Finance')
+    let revision = await save(draft.id, {})
+    const changes = data(await admin.query('branchDrafts.changes', { id: draft.id }))
+    const json = changes.files.find((f: { path: string }) => f.path === FILE)
+    expect(JSON.parse(json.after)).toMatchObject({ folder: 'Finance' })
+    await commit(draft.id, revision)
+    expect(await folderIn('filing')).toBe('Finance')
+
+    revision = await save(draft.id, { folder: 'Finance/Reports' })
+    await commit(draft.id, revision)
+    expect(await folderIn('filing')).toBe('Finance/Reports')
+    revision = await save(draft.id, { folder: null })
+    await commit(draft.id, revision)
+    expect(await folderIn('filing')).toBeNull()
+    expect(
+      failure(
+        await admin.mutate('branchDrafts.save', {
+          id: draft.id,
+          revision: revision,
+          definition: flowDefinition('return 1'),
+          folder: 'Finance/ Reports',
+        }),
+      ).code,
+    ).toBe('BAD_REQUEST')
+    data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
+  })
+
+  it('takes the branch’s folder on update, unless the draft changed it too', async () => {
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: objectId,
+        branch: 'refiling',
+        create: true,
+      }),
+    )
+    await commit(draft.id, await save(draft.id, {}))
+    await theirFolder('refiling', 'Ops')
+    let result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draft.id }))
+    expect(result).toMatchObject({ status: 'updated', draft: { folder: 'Ops' } })
+
+    await save(draft.id, { folder: 'Mine', code: 'return "mine"' })
+    await theirFolder('refiling', 'Theirs')
+    result = data(await admin.mutate('branchDrafts.updateFromBranch', { id: draft.id }))
+    expect(result).toMatchObject({ status: 'updated', draft: { folder: 'Mine' } })
+    expect(stepCode(result.draft)).toBe('return "mine"')
+    data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
+  })
+
+  it('keeps main’s folder change when Update from main merges the object', async () => {
+    const MAIN_FILE = 'workflows/sync-orders/workflow.json'
+    const draft = data(
+      await admin.mutate('branchDrafts.open', {
+        kind: 'workflow',
+        id: flowId,
+        branch: 'refolded',
+        create: true,
+      }),
+    )
+    await commit(draft.id, await save(draft.id, { code: 'return "branch"' }))
+    await theirFolder('main', 'Moved on main', MAIN_FILE)
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id: draft.id }))
+    expect(result).toMatchObject({ status: 'merged', objects: ['workflows/sync-orders'] })
+    expect(await folderIn('refolded', MAIN_FILE)).toBe('Moved on main')
+    expect(result.draft.draft.folder).toBe('Moved on main')
+    expect(stepCode(result.draft.draft)).toBe('return "branch"')
+    data(await admin.mutate('branchDrafts.discard', { id: draft.id }))
+  })
+})

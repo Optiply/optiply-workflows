@@ -287,19 +287,25 @@ function kindSpec(kind: ObjectKind): CollabSpec {
   return appSpec
 }
 
+/** An object as a merge sees it: since M22 with the folder the repo keeps for it (undefined at the top level). */
+export type GitMergeObject = MergeObject<unknown> & { folder?: string }
+
 /**
  * A three-way merge of a kind's object (architecture §2.23), checked against the kind's schema: two sides' changes
- * that don't fit it together come back as one conflict on their item.
+ * that don't fit it together come back as one conflict on their item. The folder is never a conflict: the side that
+ * changed it wins, ours when both did.
  */
 export function mergeKindObject(
   kind: ObjectKind,
-  base: MergeObject<unknown>,
-  ours: MergeObject<unknown>,
-  theirs: MergeObject<unknown>,
+  base: GitMergeObject,
+  ours: GitMergeObject,
+  theirs: GitMergeObject,
   resolutions?: Readonly<Record<string, Resolution>>,
-): MergeResult<MergeObject<unknown>> {
+): MergeResult<GitMergeObject> {
   const schema = definitionSchema(kind)
-  return mergeObject(kindSpec(kind), base, ours, theirs, {
+  const folder = ours.folder === base.folder ? theirs.folder : ours.folder
+  const bare = ({ name, description, definition }: GitMergeObject) => ({ name, description, definition })
+  const result = mergeObject(kindSpec(kind), bare(base), bare(ours), bare(theirs), {
     resolutions,
     check: (definition) => {
       const parsed = schema.safeParse(definition)
@@ -310,4 +316,5 @@ export function mergeKindObject(
           )
     },
   })
+  return { ...result, merged: { ...result.merged, ...(folder ? { folder } : {}) } }
 }

@@ -1,5 +1,5 @@
 import { GIT_OBJECT_KINDS, gitBranchDrafts } from '@ow/db'
-import { KIND_LABELS } from '@ow/git-format'
+import { folderPathSchema, KIND_LABELS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -109,7 +109,7 @@ export const branchDraftsRouter = router({
     return branchDraftView(draft)
   }),
 
-  /** Saves the draft (and the name and description the repo keeps) if nobody saved since `revision`. */
+  /** Saves the draft (and the name, description and folder the repo keeps) if nobody saved since `revision`. */
   save: authedProcedure
     .input(
       z.object({
@@ -118,6 +118,8 @@ export const branchDraftsRouter = router({
         definition: z.unknown(),
         name: Name.optional(),
         description: Description,
+        /** A folder path, `Finance/Reports`; null or empty for the top level (M22). */
+        folder: z.union([folderPathSchema, z.literal('')]).nullish(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -128,6 +130,7 @@ export const branchDraftsRouter = router({
         definition: input.definition,
         name: input.name,
         description: input.description,
+        folder: input.folder,
       })
       const view = await branchDraftView(saved)
       return { revision: view.revision, draftHash: view.draftHash, diagnostics: view.diagnostics }

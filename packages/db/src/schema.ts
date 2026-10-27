@@ -1234,6 +1234,8 @@ export const gitBranchDrafts = pgTable(
     definition: jsonb().$type<WorkflowDefinition | AppDefinition | LibraryQueryDefinition>().notNull(),
     name: text().notNull(),
     description: text(),
+    /** The folder path the repo keeps for the object, `Finance/Reports` (M22); null at the top level. */
+    folder: text(),
     /** Bumped on every save (optimistic concurrency, and draft snapshots for runs). */
     revision: integer().notNull().default(1),
     /** The commit the draft's files came from (or that it last committed): what a commit goes on top of. */
@@ -1246,7 +1248,12 @@ export const gitBranchDrafts = pgTable(
      * What the draft started from where its base commit had no files for the object (created protected, or its protect
      * pull request not merged when it was opened): the merge base (M20) until a commit or an update gives it files.
      */
-    baseValue: jsonb().$type<{ name: string; description: string | null; definition: unknown }>(),
+    baseValue: jsonb().$type<{
+      name: string
+      description: string | null
+      folder?: string
+      definition: unknown
+    }>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
