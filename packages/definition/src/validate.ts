@@ -5,6 +5,7 @@ import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
 import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
+import { MAX_REQUIREMENTS, requirementProblems } from './requirements'
 import {
   type Block,
   type BlockOf,
@@ -97,6 +98,8 @@ export type DiagnosticCode =
   | 'python_keyword'
   /** The server's: no code executor for Python (or it couldn't be reached to check the code). */
   | 'python_unavailable'
+  /** A workflow's Python package (M23): not a plain requirement, a duplicate, or too many. */
+  | 'invalid_requirement'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -181,6 +184,7 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   }
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report, options)
+  checkRequirements(def, report)
 
   // User Task assignees written out in full exist.
   if (options.resolveAssignee) {
@@ -819,6 +823,19 @@ function checkRecursion(
 }
 
 /** Trigger problems are pinned to the start trigger, whose inspector edits them. */
+/** M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS. */
+function checkRequirements(def: WorkflowDefinition, report: Report) {
+  const requirements = def.settings?.python?.requirements
+  if (!requirements) return
+  const path = ['settings', 'python', 'requirements']
+  if (requirements.length > MAX_REQUIREMENTS) {
+    report({ code: 'invalid_requirement', message: `At most ${MAX_REQUIREMENTS} packages`, path })
+  }
+  for (const { index, message } of requirementProblems(requirements)) {
+    report({ code: 'invalid_requirement', message, path: [...path, index] })
+  }
+}
+
 function checkTriggers(
   def: WorkflowDefinition,
   start: string | undefined,

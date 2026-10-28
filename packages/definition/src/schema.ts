@@ -385,6 +385,11 @@ export const edgeSchema = z.strictObject({
 export const workflowSettingsSchema = z.strictObject({
   /** Whole-run limit. Time spent waiting (M5) doesn't count. */
   timeoutMs: z.number().int().min(1000).max(MAX_RUN_TIMEOUT_MS).optional(),
+  /**
+   * The workflow's Python packages (M23): pip requirements, installed for its Python blocks. Loose here (the
+   * validator says what's wrong with each, see `requirementProblems`), so a bad line doesn't hide other problems.
+   */
+  python: z.strictObject({ requirements: z.array(z.string().max(1000)).max(100) }).optional(),
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const

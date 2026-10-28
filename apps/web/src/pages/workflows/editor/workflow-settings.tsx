@@ -1,17 +1,23 @@
-import { DEFAULT_RUN_TIMEOUT_MS, MAX_RUN_TIMEOUT_MS } from '@ow/definition'
+import {
+  DEFAULT_RUN_TIMEOUT_MS,
+  MAX_REQUIREMENTS,
+  MAX_RUN_TIMEOUT_MS,
+  type WorkflowDefinition,
+} from '@ow/definition'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
-import { Button, ErrorNote, Field, Input } from '@/components/ui'
+import { Button, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
 
 type Workflow = RouterOutputs['workflows']['get']
+type WorkflowSettings = NonNullable<WorkflowDefinition['settings']>
 
 /**
- * Workflow-wide settings: the run timeout is part of the definition (saved with the draft, live once published);
- * the concurrency limit belongs to the workflow and applies to every run at once.
+ * Workflow-wide settings: the run timeout and the Python packages are part of the definition (saved with the
+ * draft, live once published); the concurrency limit belongs to the workflow and applies to every run at once.
  */
 export function WorkflowSettingsTab({
   workflow,
@@ -28,10 +34,10 @@ export function WorkflowSettingsTab({
   const setTimeoutMinutes = (text: string) =>
     useEditor.getState().update((def) => {
       const minutes = Number(text)
-      const { settings: _, ...rest } = def
-      if (!text.trim() || !Number.isFinite(minutes) || minutes <= 0) return rest
+      if (!text.trim() || !Number.isFinite(minutes) || minutes <= 0)
+        return withSetting(def, 'timeoutMs', undefined)
       const ms = Math.min(MAX_RUN_TIMEOUT_MS, Math.max(1000, Math.round(minutes * 60_000)))
-      return { ...rest, settings: { ...def.settings, timeoutMs: ms } }
+      return withSetting(def, 'timeoutMs', ms)
     })
 
   return (
@@ -50,9 +56,70 @@ export function WorkflowSettingsTab({
           onChange={(e) => setTimeoutMinutes(e.target.value)}
         />
       </Field>
+      <PythonPackages canEdit={canEdit} />
       <ConcurrencyLimit workflow={workflow} canEdit={hasEdit} />
       {workflow.level === 'own' && <GitProtection workflow={workflow} />}
     </div>
+  )
+}
+
+/** One workflow setting set, or removed with `undefined`; settings left empty go too (stored sparsely). */
+function withSetting<K extends keyof WorkflowSettings>(
+  def: WorkflowDefinition,
+  key: K,
+  value: WorkflowSettings[K] | undefined,
+): WorkflowDefinition {
+  const { [key]: _old, ...others } = def.settings ?? {}
+  const settings = value === undefined ? others : { ...others, [key]: value }
+  const { settings: _settings, ...rest } = def
+  return Object.keys(settings).length ? { ...rest, settings } : rest
+}
+
+/**
+ * The workflow's Python packages (M23): pip requirements, one a line, installed for its Python blocks. Blank lines
+ * aren't kept; the validator's problems show under the field, by line.
+ */
+function PythonPackages({ canEdit }: { canEdit: boolean }) {
+  const requirements = useEditor((s) => s.definition.settings?.python?.requirements)
+  // The whole list from the store (a filtered one would be a new array on every read), filtered here.
+  const problems = useEditor((s) => s.diagnostics).filter((d) => d.code === 'invalid_requirement')
+  const setText = (text: string) =>
+    useEditor.getState().update((def) => {
+      const lines = text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+      return withSetting(def, 'python', lines.length ? { requirements: lines } : undefined)
+    })
+  return (
+    <Field
+      label="Python packages"
+      hint={`pip requirements for this workflow's Python blocks, one a line (polars==1.9.0, openpyxl>=3.1), at most ${MAX_REQUIREMENTS}; wheels from the package index only. Installed before a run, kept with each release.`}
+    >
+      <Textarea
+        rows={4}
+        className="font-mono text-xs"
+        disabled={!canEdit}
+        placeholder="polars==1.9.0"
+        spellCheck={false}
+        aria-label="Python packages"
+        defaultValue={requirements?.join('\n') ?? ''}
+        onChange={(e) => setText(e.target.value)}
+      />
+      {problems.length > 0 && (
+        <ul className="flex flex-col gap-0.5 text-xs text-danger" data-testid="requirement-problems">
+          {problems.map((p) => {
+            const index = p.path[3]
+            return (
+              <li key={`${index ?? 'all'}-${p.message}`}>
+                {typeof index === 'number' ? `${requirements?.[index] ?? `Line ${index + 1}`}: ` : ''}
+                {p.message}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Field>
   )
 }
 

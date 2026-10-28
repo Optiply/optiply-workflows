@@ -23,6 +23,8 @@ import { FileSlots, namedRecords } from './slots'
 
 export const WORKFLOW_FILE = 'workflow.json'
 export const LAYOUT_FILE = 'layout.json'
+/** The workflow's Python packages (M23), one requirement a line, as pip reads them. */
+export const REQUIREMENTS_FILE = 'requirements.txt'
 
 export interface WorkflowObject extends ObjectMeta {
   definition: WorkflowDefinition
@@ -35,7 +37,9 @@ export interface WorkflowObject extends ObjectMeta {
  * - `blocks/<name>.js`: a code block's code, or a loop's code runner (`blocks/<name>.py` when it's Python);
  * - `blocks/<name>.sql`: a resource query's `sql` (the loop's query runner too), its `{{ }}`s as they are;
  * - `functions/<function>/blocks/…`: the same for a function's blocks;
- * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any.
+ * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any;
+ * - `requirements.txt`: the Python packages (`settings.python.requirements`), when there are any. Read back, blank
+ *   lines and comment lines are left out (people edit it on GitHub too).
  *
  * Everything else (conditions, REST queries, templates) stays in the JSON. Empty layouts aren't kept: they read
  * back as none, which is the same canvas.
@@ -48,7 +52,9 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
     ...fn,
     blocks: fn.blocks.map((block) => moveOut(block, `functions/${fn.name}/blocks/`, files)),
   }))
-  const { layout: _layout, ...logic } = def
+  const { layout: _layout, ...logic } = withoutRequirements(def)
+  const requirements = def.settings?.python?.requirements
+  if (requirements?.length) files[REQUIREMENTS_FILE] = textFile(requirements.join('\n'))
   files[WORKFLOW_FILE] = canonicalJson(
     { ...metaFields(workflow), ...logic, blocks, ...(functions ? { functions } : {}) },
     { pretty: true },
@@ -75,7 +81,7 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
   }
   const { meta, rest: raw, problems } = splitMeta(WORKFLOW_FILE, parsed.value)
 
-  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE])
+  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE, REQUIREMENTS_FILE])
   for (const block of namedRecords(raw.blocks)) moveIn(block, 'blocks/', slots)
   for (const fn of namedRecords(raw.functions)) {
     for (const block of namedRecords(fn.blocks)) moveIn(block, `functions/${fn.name}/blocks/`, slots)
@@ -87,6 +93,16 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
     if (!layout.ok) problems.push(layout.problem)
     else if (!isRecord(layout.value)) problems.push(invalid(LAYOUT_FILE, 'Expected an object'))
     else problems.push(...applyLayout(raw, layout.value))
+  }
+
+  if (files[REQUIREMENTS_FILE] !== undefined) {
+    if (isRecord(raw.settings) && isRecord(raw.settings.python)) {
+      problems.push(invalid(WORKFLOW_FILE, `settings.python: the packages belong in ${REQUIREMENTS_FILE}`))
+    }
+    const requirements = readRequirements(files[REQUIREMENTS_FILE])
+    if (requirements.length) {
+      raw.settings = { ...(isRecord(raw.settings) ? raw.settings : {}), python: { requirements } }
+    }
   }
 
   const result = workflowDefinitionSchema.safeParse(raw)
@@ -118,6 +134,22 @@ export function workflowForGit(def: WorkflowDefinition): WorkflowDefinition {
     })
   }
   return out
+}
+
+/** The definition without its Python packages (they're `requirements.txt`), and without `settings` left empty. */
+function withoutRequirements(def: WorkflowDefinition): WorkflowDefinition {
+  if (!def.settings?.python) return def
+  const { python: _python, ...settings } = def.settings
+  const { settings: _settings, ...rest } = def
+  return Object.keys(settings).length ? { ...rest, settings } : rest
+}
+
+/** `requirements.txt`'s requirements: its lines without blank ones and comments (the validator checks the rest). */
+export function readRequirements(content: string): string[] {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
 }
 
 /** The block without the strings that get files, which go into `files`. */
