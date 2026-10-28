@@ -9,13 +9,16 @@ import {
   validateLibraryQuery,
 } from '@ow/app-definition'
 import {
+  appRenamer,
   appSpec,
   type CollabSpec,
   libraryQuerySpec,
   type MergeObject,
   type MergeResult,
   mergeObject,
+  type Renamer,
   type Resolution,
+  workflowRenamer,
   workflowSpec,
 } from '@ow/collab'
 import {
@@ -287,13 +290,21 @@ function kindSpec(kind: ObjectKind): CollabSpec {
   return appSpec
 }
 
+/** How a kind's renames are followed in a merge (§2.25): blocks for workflows, components and queries for apps and modules. */
+function kindRenamer(kind: ObjectKind): Renamer<unknown> | undefined {
+  if (kind === 'workflow') return workflowRenamer as Renamer<unknown>
+  if (kind === 'library_query') return undefined
+  return appRenamer as Renamer<unknown>
+}
+
 /** An object as a merge sees it: since M22 with the folder the repo keeps for it (undefined at the top level). */
 export type GitMergeObject = MergeObject<unknown> & { folder?: string }
 
 /**
  * A three-way merge of a kind's object (architecture §2.23), checked against the kind's schema: two sides' changes
  * that don't fit it together come back as one conflict on their item. The folder is never a conflict: the side that
- * changed it wins, ours when both did.
+ * changed it wins, ours when both did. Renames are followed: an item one side renamed and the other edited merges
+ * as one item under its new name (only when all three definitions fit the schema: the renamer reads their items).
  */
 export function mergeKindObject(
   kind: ObjectKind,
@@ -305,8 +316,10 @@ export function mergeKindObject(
   const schema = definitionSchema(kind)
   const folder = ours.folder === base.folder ? theirs.folder : ours.folder
   const bare = ({ name, description, definition }: GitMergeObject) => ({ name, description, definition })
+  const wellFormed = [base, ours, theirs].every((o) => schema.safeParse(o.definition).success)
   const result = mergeObject(kindSpec(kind), bare(base), bare(ours), bare(theirs), {
     resolutions,
+    renamer: wellFormed ? kindRenamer(kind) : undefined,
     check: (definition) => {
       const parsed = schema.safeParse(definition)
       return parsed.success

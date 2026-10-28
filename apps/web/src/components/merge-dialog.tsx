@@ -9,6 +9,7 @@ import {
   conflictingChunks,
   conflictLabel,
   conflictLanguage,
+  isRenameConflict,
   isResolved,
   resolutionOf,
   resolvedCount,
@@ -134,6 +135,9 @@ function ConflictCard(props: {
                 ? 'you changed it; it was deleted on the other side'
                 : 'changed into something else on each side'}
           </span>
+        )}
+        {isRenameConflict(conflict) && (
+          <span className="text-xs text-muted">renamed differently on each side</span>
         )}
         <span className="flex-1" />
         {resolved && <span className="text-xs text-success">Resolved</span>}

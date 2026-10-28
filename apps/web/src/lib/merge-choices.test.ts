@@ -4,6 +4,7 @@ import {
   chooseChunk,
   conflictLabel,
   conflictLanguage,
+  isRenameConflict,
   isResolved,
   resolutionOf,
   resolvedCount,
@@ -43,6 +44,23 @@ describe('conflictLabel', () => {
     expect(conflictLabel(['definition', 'layout', 'blocks', 'a'])).toBe('Block a · position')
     expect(conflictLabel(['definition', 'layout', 'table1'])).toBe('Component table1 · position')
     expect(conflictLabel(['definition'])).toBe('The whole definition')
+  })
+
+  it('tells a rename conflict apart (M22)', () => {
+    const value = (at: string[]): MergeConflict => ({
+      id: 'x',
+      kind: 'value',
+      at,
+      base: 'a',
+      ours: 'b',
+      theirs: 'c',
+    })
+    expect(isRenameConflict(value(['definition', 'blocks', 'step', 'name']))).toBe(true)
+    expect(conflictLabel(['definition', 'blocks', 'step', 'name'])).toBe('Block step · name')
+    expect(isRenameConflict(value(['definition', 'components', 'table1', 'name']))).toBe(true)
+    expect(isRenameConflict(value(['name']))).toBe(false)
+    expect(isRenameConflict(value(['definition', 'blocks', 'step', 'config', 'name']))).toBe(false)
+    expect(isRenameConflict(value(['definition', 'settings', 'x', 'name']))).toBe(false)
   })
 })
 

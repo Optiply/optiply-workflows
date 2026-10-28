@@ -49,13 +49,13 @@ const failure = (res: { body: { error?: { message: string; data?: { code: string
   message: res.body.error?.message,
 })
 
-const flowDefinition = (code: string) => ({
+const flowDefinition = (code: string, block = 'step') => ({
   schemaVersion: 1,
   blocks: [
     { name: 'startTrigger', type: 'startTrigger' },
-    { name: 'step', type: 'code', config: { code } },
+    { name: block, type: 'code', config: { code } },
   ],
-  edges: [{ from: 'startTrigger', port: 'out', to: 'step' }],
+  edges: [{ from: 'startTrigger', port: 'out', to: block }],
 })
 
 const deploy = () => runGitDeploy(env.db, env.config, { trigger: 'poll' })
@@ -754,9 +754,9 @@ describe('Update from main (M20)', () => {
   const openDraft = async (branch: string) =>
     data(await admin.mutate('branchDrafts.open', { kind: 'workflow', id: flowId, branch, create: true }))
       .id as string
-  const saveAndCommit = async (id: string, code: string, message: string) => {
+  const saveAndCommit = async (id: string, code: string, message: string, block?: string) => {
     const { revision } = data(await admin.query('branchDrafts.get', { id }))
-    data(await admin.mutate('branchDrafts.save', { id, revision, definition: flowDefinition(code) }))
+    data(await admin.mutate('branchDrafts.save', { id, revision, definition: flowDefinition(code, block) }))
     return data(await admin.mutate('branchDrafts.commit', { id, revision: revision + 1, message }))
       .commit as string
   }
@@ -839,6 +839,102 @@ describe('Update from main (M20)', () => {
     expect(second.status).toBe('merged')
     expect(step(second.draft.draft)).toBe(start.replace('const b = 2', 'const b = "main"'))
     data(await admin.mutate('branchDrafts.discard', { id }))
+  })
+
+  /** Main's sync-orders directory replaced whole (a rename moves a block's .js file); nothing when it's the same. */
+  const flowDirOnMain = async (files: Record<string, string>) => {
+    const tip = await other.fetchBranch('main')
+    const commit = await other.commit({
+      parent: tip,
+      directories: { 'workflows/sync-orders': files },
+      message: 'On main',
+      author,
+    })
+    if (commit) expect(await other.push(commit, 'main')).toBe('ok')
+  }
+  /** Main's sync-orders with one code block named `block`. */
+  const flowOnMain = (code: string, block: string) =>
+    flowDirOnMain(
+      encodeObjectDir(
+        repoObject('workflow', 'sync-orders', {
+          name: 'Sync orders',
+          description: null,
+          definition: flowDefinition(code, block),
+        }),
+      ).files,
+    )
+  /** Main's sync-orders files as they are, to put back after a test that renames on main. */
+  const mainFlowDir = async () => {
+    const files = await other.readFiles((await other.fetchBranch('main'))!, ['workflows/sync-orders/'])
+    return Object.fromEntries(
+      Object.entries(files).map(([path, text]) => [path.slice('workflows/sync-orders/'.length), text]),
+    )
+  }
+  // biome-ignore lint/suspicious/noExplicitAny: untyped JSON
+  const blockNames = (draft: any) => draft.definition.blocks.map((b: { name: string }) => b.name).sort()
+
+  it('follows a block renamed on the branch and changed on main (M22)', async () => {
+    const before = await mainFlowDir()
+    await flowOnMain(start, 'step')
+    const id = await openDraft('renamed')
+    await saveAndCommit(id, start, 'Rename step to stage', 'stage')
+    await flowOnMain(start.replace('const c = 3', 'const c = 30'), 'step')
+
+    const result = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(result).toMatchObject({ status: 'merged', objects: ['workflows/sync-orders'] })
+    const merged = result.draft.draft
+    expect(blockNames(merged)).toEqual(['stage', 'startTrigger'])
+    expect(merged.definition.blocks.find((b: { name: string }) => b.name === 'stage').config.code).toBe(
+      start.replace('const c = 3', 'const c = 30'),
+    )
+    expect(merged.definition.edges).toEqual([{ from: 'startTrigger', port: 'out', to: 'stage' }])
+    expect(await other.fetchBranch('renamed')).toBe(result.commit)
+    const files = await other.readFiles(result.commit, ['workflows/sync-orders/'])
+    expect(Object.keys(files).filter((path) => path.includes('/blocks/'))).toEqual([
+      'workflows/sync-orders/blocks/stage.js',
+    ])
+    data(await admin.mutate('branchDrafts.discard', { id }))
+    await flowDirOnMain(before)
+  })
+
+  it('makes two different renames of a block one conflict over its name, resolved by a side (M22)', async () => {
+    const before = await mainFlowDir()
+    await flowOnMain(start, 'step')
+    const id = await openDraft('renamed-twice')
+    await saveAndCommit(id, start, 'Rename step to stage', 'stage')
+    // A rename only: a block renamed and changed on one side reads as deleted and added.
+    await flowOnMain(start, 'phase')
+
+    const first = data(await admin.mutate('branchDrafts.updateFromMain', { id }))
+    expect(first).toMatchObject({
+      status: 'conflicts',
+      objects: [
+        {
+          dir: 'workflows/sync-orders',
+          conflicts: [
+            {
+              kind: 'value',
+              at: ['definition', 'blocks', 'step', 'name'],
+              base: 'step',
+              ours: 'stage',
+              theirs: 'phase',
+            },
+          ],
+        },
+      ],
+    })
+    const [object] = first.objects
+    const second = data(
+      await admin.mutate('branchDrafts.updateFromMain', {
+        id,
+        resolutions: { [object.dir]: { [object.conflicts[0].id]: 'theirs' } },
+      }),
+    )
+    expect(second.status).toBe('merged')
+    expect(blockNames(second.draft.draft)).toEqual(['phase', 'startTrigger'])
+    expect(second.draft.draft.definition.edges).toEqual([{ from: 'startTrigger', port: 'out', to: 'phase' }])
+    data(await admin.mutate('branchDrafts.discard', { id }))
+    await flowDirOnMain(before)
   })
 
   it('refuses a conflict outside objects, naming it', async () => {

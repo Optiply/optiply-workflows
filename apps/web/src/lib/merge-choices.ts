@@ -60,6 +60,21 @@ export function conflictLabel(at: readonly string[]): string {
   return `${owner}${name}${rest ? ` · ${rest}` : ''}`
 }
 
+/**
+ * Whether a conflict is two sides renaming the same item differently (M22): a value conflict on a named item's
+ * `name`, which only the merge's rename following reports (names are items' identities otherwise).
+ */
+export function isRenameConflict(conflict: MergeConflict): boolean {
+  const { at } = conflict
+  return (
+    conflict.kind === 'value' &&
+    at.length === 4 &&
+    at[0] === 'definition' &&
+    ITEM_COLLECTIONS.has(at[1]!) &&
+    at[3] === 'name'
+  )
+}
+
 /** The editor language for a text conflict, from where it is. */
 export function conflictLanguage(at: readonly string[]): 'sql' | 'javascript' | 'json' | 'plaintext' {
   const last = at.at(-1)
