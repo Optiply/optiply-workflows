@@ -3,6 +3,7 @@
  * them with the real builder (from a local package index) and import them in the real executor, sharing the envs
  * volume as in Compose.
  */
+import { execFileSync } from 'node:child_process'
 import {
   executorAvailable,
   startTestBuilder,
@@ -13,8 +14,8 @@ import {
   type TestIndex,
   testEnvsVolume,
 } from '@ow/code-executor/testing'
-import { createDb, pythonEnvs } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { auditEvents, createDb, pythonEnvs, workflowReleases, workflows } from '@ow/db'
+import { and, eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { configurePython, pythonDiagnostics } from '../src/services/python'
@@ -180,6 +181,74 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
     )
     expect(await runDraft(slug)).toMatchObject({ status: 'succeeded' })
     expect(await envRow(['owtest-b'])).toBeUndefined()
+  })
+
+  it('publishes with the lock, which live runs install even when the env and the draft record are gone', async () => {
+    const slug = await workflowWith(
+      'pkg-live',
+      ['owtest-a'],
+      [python('use', 'import owtest_a\nreturn {"b": owtest_a.B}'), reply],
+    )
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, slug))
+    const release = data(
+      await admin.mutate('releases.publish', { workflowId: flow!.id, draftRevision: flow!.draftRevision }),
+    )
+    const [stored] = await env.db.select().from(workflowReleases).where(eq(workflowReleases.id, release.id))
+    const row = await envRow(['owtest-a'])
+    expect(stored!.pythonLock).toEqual(row!.lock)
+
+    // Nothing left but the release's lock: it installs again.
+    await env.db.delete(pythonEnvs)
+    execFileSync('docker', ['exec', builder.container, 'sh', '-c', `rm -rf /envs/${row!.envId}`])
+    const live = await rest('POST', `/workflows/${slug}/runs`, { input: {}, version: 'live' })
+    expect(live.status).toBe(202)
+    expect(await waitForRun(live.body.run.id)).toMatchObject({
+      status: 'succeeded',
+      response: { body: { b: '1.0.0' } },
+    })
+    expect(await envRow(['owtest-a'])).toBeUndefined() // the release's lock, not the draft's requirements
+  })
+
+  it("refuses to publish packages that can't be installed, saying why", async () => {
+    const slug = await workflowWith('pkg-bad-publish', ['owtest-nope'], [python('use', 'return 1'), reply])
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, slug))
+    const res = await admin.mutate('releases.publish', {
+      workflowId: flow!.id,
+      draftRevision: flow!.draftRevision,
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.error?.message).toContain("The workflow's Python packages couldn't be installed")
+  })
+
+  it('installs a release it rolls back to, and audits each new env', async () => {
+    const slug = await workflowWith('pkg-rollback', ['owtest-b'], [python('use', 'return 1'), reply])
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, slug))
+    const first = data(
+      await admin.mutate('releases.publish', { workflowId: flow!.id, draftRevision: flow!.draftRevision }),
+    )
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: flow!.id,
+        revision: flow!.draftRevision,
+        definition: { ...flow!.draftDefinition, settings: { python: { requirements: ['owtest-a'] } } },
+      }),
+    )
+    data(await admin.mutate('releases.publish', { workflowId: flow!.id, draftRevision: saved.revision }))
+    const [firstRow] = await env.db.select().from(workflowReleases).where(eq(workflowReleases.id, first.id))
+    expect(firstRow!.pythonLock!.packages.map((p) => p.name)).toEqual(['owtest-b'])
+    const firstEnv = (await envRow(['owtest-b']))!.envId!
+    execFileSync('docker', ['exec', builder.container, 'sh', '-c', 'rm -rf /envs/*'])
+    data(await admin.mutate('releases.setLive', { workflowId: flow!.id, releaseId: first.id }))
+    const envs = execFileSync('docker', ['exec', builder.container, 'ls', '/envs']).toString().split('\n')
+    expect(envs).toContain(firstEnv)
+
+    const audits = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'python.env_built'), eq(auditEvents.objectId, flow!.id)))
+    expect(audits.map((a) => a.metadata)).toContainEqual(
+      expect.objectContaining({ requirements: ['owtest-b'], packages: ['owtest-b==1.0.0'] }),
+    )
   })
 
   it('refuses packages on an instance without a builder', async () => {

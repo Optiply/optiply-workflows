@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { type Db, pythonEnvs, type WorkflowRun, workflowReleases } from '@ow/db'
-import type { PythonLock, WorkflowDefinition } from '@ow/definition'
+import { type PythonLock, pythonFields, type WorkflowDefinition } from '@ow/definition'
 import { BlockFailure, type PythonEnvProvider } from '@ow/engine'
 import { eq, sql } from 'drizzle-orm'
+import { recordAudit } from '../audit'
 import type { Config } from '../config'
 
 /**
@@ -108,14 +109,20 @@ function packagesFailure(answer: Extract<BuildAnswer, { ok: false }>): BlockFail
  * (cheap when the env is there; it comes back if the builder removed it), else resolved and recorded. A failure is
  * recorded too (the editor shows it) and thrown; the next run tries again.
  */
-export async function envForRequirements(db: Db, client: PythonBuilderClient, requirements: string[]) {
+export async function envForRequirements(
+  db: Db,
+  client: PythonBuilderClient,
+  requirements: string[],
+  /** Whose workflow it is, for the audit of a new install (`python.env_built`). */
+  who: { workflowId: string; actorUserId: string | null },
+): Promise<{ envId: string; lock: PythonLock }> {
   const hash = requirementsHash(requirements)
   const [row] = await db.select().from(pythonEnvs).where(eq(pythonEnvs.requirementsHash, hash))
   if (row?.state === 'ready' && row.lock) {
     const installed = await client.install(row.lock)
     if (installed.ok) {
       await db.update(pythonEnvs).set({ lastUsedAt: new Date() }).where(eq(pythonEnvs.requirementsHash, hash))
-      return installed.envId
+      return { envId: installed.envId, lock: row.lock }
     }
     // Only a lock for another platform (the builder moved) is worth resolving again; the rest is the failure.
     if (installed.error.kind !== 'platform') throw packagesFailure(installed)
@@ -136,14 +143,62 @@ export async function envForRequirements(db: Db, client: PythonBuilderClient, re
     .insert(pythonEnvs)
     .values({ requirementsHash: hash, requirements, ...recorded })
     .onConflictDoUpdate({ target: pythonEnvs.requirementsHash, set: { ...recorded, lastUsedAt: sql`now()` } })
-  if (!built.ok) throw packagesFailure(built)
-  return built.envId
+  if (!built.ok || !built.lock) {
+    throw packagesFailure(
+      built.ok
+        ? { ok: false, error: { kind: 'install', message: 'The builder gave no lock' }, log: built.log }
+        : built,
+    )
+  }
+  if (!built.cached) {
+    await recordAudit(db, {
+      actorUserId: who.actorUserId,
+      action: 'python.env_built',
+      objectType: 'workflow',
+      objectId: who.workflowId,
+      metadata: {
+        requirements,
+        packages: built.lock.packages.map((p) => `${p.name}==${p.version}`),
+        envId: built.envId,
+        sizeBytes: built.sizeBytes,
+      },
+    })
+  }
+  return { envId: built.envId, lock: built.lock }
+}
+
+/**
+ * The lock a release keeps (M23): null without packages or Python. A lock it has already (a rollback) is installed
+ * again; otherwise the requirements' (the one draft runs used, when they did). Throws the `BlockFailure` of a
+ * failed install, for publishing to refuse with.
+ */
+export async function releaseLock(
+  db: Db,
+  definition: WorkflowDefinition,
+  existing: PythonLock | null,
+  who: { workflowId: string; actorUserId: string | null },
+): Promise<PythonLock | null> {
+  const requirements = definition.settings?.python?.requirements ?? []
+  if (!requirements.length || !pythonFields(definition).length) return null
+  if (!builder) {
+    throw new BlockFailure(
+      'python_packages_unavailable',
+      "This workflow's Python packages can't be installed here: the instance has no package builder (PYTHON_BUILDER_URL)",
+    )
+  }
+  if (existing) {
+    const installed = await builder.install(existing)
+    if (installed.ok) return existing
+    if (installed.error.kind !== 'platform') throw packagesFailure(installed)
+  }
+  return (await envForRequirements(db, builder, requirements, who)).lock
 }
 
 /** The engine's `PythonEnvProvider`: a release's lock when it has one, else the definition's requirements. */
 export function dbPythonEnvs(db: Db, client: PythonBuilderClient): PythonEnvProvider {
   return {
     async envFor(run: WorkflowRun, definition: WorkflowDefinition) {
+      const who = { workflowId: run.workflowId, actorUserId: run.createdBy }
       if (run.releaseId) {
         const [release] = await db
           .select({ lock: workflowReleases.pythonLock })
@@ -155,10 +210,11 @@ export function dbPythonEnvs(db: Db, client: PythonBuilderClient): PythonEnvProv
           if (installed.error.kind !== 'platform') throw packagesFailure(installed)
           // Made on another platform: the same versions, with this platform's wheels.
           const pinned = release.lock.packages.map((p) => `${p.name}==${p.version}`)
-          return envForRequirements(db, client, pinned)
+          return (await envForRequirements(db, client, pinned, who)).envId
         }
       }
-      return envForRequirements(db, client, definition.settings?.python?.requirements ?? [])
+      return (await envForRequirements(db, client, definition.settings?.python?.requirements ?? [], who))
+        .envId
     },
   }
 }

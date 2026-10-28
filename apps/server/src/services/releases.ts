@@ -16,6 +16,7 @@ import {
   canonicalJson,
   definitionHash,
   nextScheduleFire,
+  type PythonLock,
   parseWebhookAlias,
   type ResolvedWebhook,
   resolveWebhookSettings,
@@ -24,11 +25,13 @@ import {
   type WorkflowDefinition,
   webhookEnvironments,
 } from '@ow/definition'
+import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
+import { releaseLock } from './python-envs'
 import { nextReleaseVersion } from './release-versions'
 import { effectiveConfig } from './resources'
 import { checkDefinition } from './workflow-runs'
@@ -62,7 +65,7 @@ export async function publishRelease(
     })
   }
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, access, workflow, definition)
+  const plan = await checkReleasable(db, access, workflow, definition, { actorUserId: user.id })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one workflow.
@@ -79,6 +82,7 @@ export async function publishRelease(
       notes: opts.notes,
       createdBy: user.id,
       gitCommit: null,
+      pythonLock: plan.pythonLock,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -111,7 +115,7 @@ export async function deployWorkflowFromGit(
 ): Promise<WorkflowRelease | null> {
   const definition = canonicalize(opts.definition)
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, null, opts.workflow, definition)
+  const plan = await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(workflows).where(eq(workflows.id, opts.workflow.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The workflow was deleted meanwhile' })
@@ -131,6 +135,7 @@ export async function deployWorkflowFromGit(
       notes: opts.notes,
       createdBy: null,
       gitCommit: opts.commit,
+      pythonLock: plan.pythonLock,
     })
     if ('unchanged' in release) return null
     await makeLive(tx, locked.id, release, plan, opts.now ?? new Date())
@@ -153,6 +158,7 @@ async function insertRelease(
     notes?: string | null
     createdBy: string | null
     gitCommit: string | null
+    pythonLock: PythonLock | null
   },
 ): Promise<WorkflowRelease | { unchanged: string }> {
   const existing = await tx
@@ -179,6 +185,7 @@ async function insertRelease(
       notes: opts.notes?.trim() || null,
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
+      pythonLock: opts.pythonLock,
     })
     .returning()
   return release!
@@ -188,14 +195,24 @@ async function insertRelease(
 export async function setLiveRelease(
   db: Db,
   access: Access,
-  opts: { workflow: Workflow; releaseId: string; now?: Date },
+  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null },
 ): Promise<WorkflowRelease> {
   const [release] = await db
     .select()
     .from(workflowReleases)
     .where(and(eq(workflowReleases.id, opts.releaseId), eq(workflowReleases.workflowId, opts.workflow.id)))
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
-  const plan = await checkReleasable(db, access, opts.workflow, release.definition)
+  const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
+    actorUserId: opts.actorUserId ?? null,
+    lock: release.pythonLock,
+  })
+  // A release from before its packages had a lock (or before M23) gets one now: live runs install it.
+  if (plan.pythonLock && !release.pythonLock) {
+    await db
+      .update(workflowReleases)
+      .set({ pythonLock: plan.pythonLock })
+      .where(eq(workflowReleases.id, release.id))
+  }
   await db.transaction(async (tx) => {
     await tx
       .select({ id: workflows.id })
@@ -214,6 +231,8 @@ interface ReleasePlan {
   /** Pub/Sub trigger name → environment id. */
   pubsubEnvironments: Map<string, string>
   aliasShape: string | null
+  /** The Python packages' lock (M23), installed: null without packages or Python. */
+  pythonLock: PythonLock | null
 }
 
 /**
@@ -229,6 +248,7 @@ async function checkReleasable(
   access: Access | null,
   workflow: Workflow,
   definition: WorkflowDefinition,
+  python: { actorUserId: string | null; lock?: PythonLock | null },
 ): Promise<ReleasePlan> {
   if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
@@ -369,7 +389,18 @@ async function checkReleasable(
       })
     }
   }
-  return { scheduleEnvironments, pubsubEnvironments, aliasShape }
+  // Last, as it may take a while (a first install): every cheaper reason to refuse comes first.
+  let pythonLock: PythonLock | null
+  try {
+    pythonLock = await releaseLock(db, definition, python.lock ?? null, {
+      workflowId: workflow.id,
+      actorUserId: python.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
+  return { scheduleEnvironments, pubsubEnvironments, aliasShape, pythonLock }
 }
 
 /**

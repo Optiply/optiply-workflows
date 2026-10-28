@@ -87,7 +87,11 @@ export const releasesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireRollbackAllowed(workflow, 'workflow', ctx.user)
-      const release = await setLiveRelease(ctx.db, access, { workflow, releaseId: input.releaseId })
+      const release = await setLiveRelease(ctx.db, access, {
+        workflow,
+        releaseId: input.releaseId,
+        actorUserId: ctx.user.id,
+      })
       await ctx.audit({
         action: 'workflow.release_live',
         objectType: 'workflow',
