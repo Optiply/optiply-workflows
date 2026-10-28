@@ -56,3 +56,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t optiply-workflows:ci .
       - run: docker build -t optiply-workflows-code-executor:ci apps/code-executor
+      - run: docker build --target builder -t optiply-workflows-python-builder:ci apps/code-executor

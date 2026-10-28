@@ -35,6 +35,15 @@ export function executorAvailable(): boolean {
 
 /** The image for this checkout's executor sources, tagged by their hash (built once, reused while unchanged). */
 export function executorImage(): string {
+  return sourcesImage('ow-code-executor')
+}
+
+/** The package builder's image (the Dockerfile's `builder` target, M23), tagged like the executor's. */
+export function builderImage(): string {
+  return sourcesImage('ow-python-builder', 'builder')
+}
+
+function sourcesImage(repository: string, target?: string): string {
   const hash = createHash('sha256')
   const files = [
     'Dockerfile',
@@ -50,25 +59,24 @@ export function executorImage(): string {
       .update('\0')
       .update(readFileSync(join(ROOT, file)))
       .update('\0')
-  const image = `ow-code-executor:test-${hash.digest('hex').slice(0, 16)}`
+  const image = `${repository}:test-${hash.digest('hex').slice(0, 16)}`
   try {
     execFileSync('docker', ['image', 'inspect', image], { stdio: 'ignore' })
   } catch {
-    execFileSync('docker', ['build', '-q', '-f', join(ROOT, 'Dockerfile'), '-t', image, ROOT], {
-      stdio: ['ignore', 'ignore', 'inherit'],
-      timeout: 900_000,
-    })
+    const targetArgs = target ? ['--target', target] : []
+    execFileSync(
+      'docker',
+      ['build', '-q', '-f', join(ROOT, 'Dockerfile'), ...targetArgs, '-t', image, ROOT],
+      {
+        stdio: ['ignore', 'ignore', 'inherit'],
+        timeout: 900_000,
+      },
+    )
     // Earlier sources' images (433 MB each) would pile up; one still running a container stays.
-    const old = execFileSync('docker', [
-      'image',
-      'ls',
-      'ow-code-executor',
-      '--format',
-      '{{.Repository}}:{{.Tag}}',
-    ])
+    const old = execFileSync('docker', ['image', 'ls', repository, '--format', '{{.Repository}}:{{.Tag}}'])
       .toString()
       .split('\n')
-      .filter((tag) => tag.startsWith('ow-code-executor:test-') && tag !== image)
+      .filter((tag) => tag.startsWith(`${repository}:test-`) && tag !== image)
     for (const tag of old) {
       try {
         execFileSync('docker', ['image', 'rm', tag], { stdio: 'ignore' })
@@ -115,6 +123,58 @@ export async function startTestExecutor(opts: { env?: Record<string, string> } =
     ['run', '-d', '--rm', '--name', name, ...EXECUTOR_DOCKER_FLAGS, ...env, '-p', '127.0.0.1::8080', image],
     { stdio: ['ignore', 'ignore', 'inherit'] },
   )
+  return { ...(await waitForHealth(name)), token, container: name }
+}
+
+export { buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
+
+export interface TestBuilder {
+  url: string
+  token: string
+  container: string
+  stop(): Promise<void>
+}
+
+/**
+ * A package builder for tests (M23): a throwaway container of this checkout's `builder` target on a random local
+ * port, installing from `indexUrl` (a `startTestIndex`'s `url`: the container reaches the host through
+ * `host.docker.internal`). Its envs stay in the container (`docker exec` to look); `env` adds settings.
+ */
+export async function startTestBuilder(opts: {
+  indexUrl: string
+  env?: Record<string, string>
+}): Promise<TestBuilder> {
+  const image = builderImage()
+  const token = randomBytes(24).toString('hex')
+  const name = `ow-python-builder-test-${randomBytes(4).toString('hex')}`
+  const env = Object.entries({
+    PYTHON_BUILDER_TOKEN: token,
+    PYTHON_PACKAGE_INDEX_URL: opts.indexUrl,
+    ...opts.env,
+  }).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+  execFileSync(
+    'docker',
+    [
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      name,
+      // Docker Desktop knows host.docker.internal; Linux (CI) needs it named.
+      '--add-host',
+      'host.docker.internal:host-gateway',
+      ...env,
+      '-p',
+      '127.0.0.1::8080',
+      image,
+    ],
+    { stdio: ['ignore', 'ignore', 'inherit'] },
+  )
+  return { ...(await waitForHealth(name)), token, container: name }
+}
+
+/** The container's published port, once its `/health` answers; the container is removed if it never does. */
+async function waitForHealth(name: string): Promise<{ url: string; stop: () => Promise<void> }> {
   const stop = async () => {
     try {
       execFileSync('docker', ['rm', '-f', name], { stdio: 'ignore' })
@@ -132,11 +192,11 @@ export async function startTestExecutor(opts: { env?: Record<string, string> } =
       } catch {}
       if (Date.now() > deadline) {
         const logs = execFileSync('docker', ['logs', name]).toString()
-        throw new Error(`The executor didn't start:\n${logs}`)
+        throw new Error(`${name} didn't start:\n${logs}`)
       }
       await new Promise((resolve) => setTimeout(resolve, 200))
     }
-    return { url, token, container: name, stop }
+    return { url, stop }
   } catch (err) {
     await stop()
     throw err
