@@ -100,6 +100,8 @@ export type DiagnosticCode =
   | 'python_unavailable'
   /** A workflow's Python package (M23): not a plain requirement, a duplicate, or too many. */
   | 'invalid_requirement'
+  /** The server's: packages declared, no package builder to install them (M23). */
+  | 'python_packages_unavailable'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'

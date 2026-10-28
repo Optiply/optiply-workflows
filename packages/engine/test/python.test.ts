@@ -6,6 +6,7 @@ import { executorAvailable, startTestExecutor, type TestExecutor } from '@ow/cod
 import { PythonExecutorClient } from '@ow/sandbox'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { MemoryRunStore } from '../src'
+import { shared as sharedOnce } from '../src/executor'
 import { code, fakeQ, run, testServices, wf } from './helpers'
 
 const available = executorAvailable()
@@ -218,5 +219,61 @@ it('fails Python blocks without an executor', async () => {
     block: 'p',
     code: 'python_unavailable',
     message: "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)",
+  })
+})
+
+describe("a run's Python packages (M23)", () => {
+  // A runner that answers with the env it was given: these tests are about the env, not Python.
+  const echoEnv = {
+    run: async (_code: string, _scope: object, opts: { envId?: string }) => opts.envId ?? null,
+    check: async () => [],
+  }
+
+  it('passes the env to the executor for every Python block', async () => {
+    const { outcome, data } = await run(
+      { ...shared.services, python: echoEnv, pythonEnv: async () => 'e'.repeat(32) },
+      wf(
+        [python('one', 'return 1'), python('two', 'return 2')],
+        [
+          ['startTrigger', 'one'],
+          ['one', 'two'],
+        ],
+      ),
+    )
+    expect(outcome.status).toBe('succeeded')
+    expect([data('one'), data('two')]).toEqual(['e'.repeat(32), 'e'.repeat(32)])
+  })
+
+  it("asks the provider once for the run's blocks, and again after a failure", async () => {
+    let calls = 0
+    let fail = true
+    const env = sharedOnce(async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 10))
+      if (fail) throw new Error('index down')
+      return 'env'
+    })
+    await expect(Promise.all([env(), env()])).rejects.toThrow('index down')
+    expect(calls).toBe(1)
+    fail = false
+    expect(await Promise.all([env(), env(), env()])).toEqual(['env', 'env', 'env'])
+    expect(await env()).toBe('env')
+    expect(calls).toBe(2)
+  })
+
+  it('says in the log that it waits for the packages, so a timeout then reads in context', async () => {
+    const { outcome, store } = await run(
+      { ...shared.services, python: echoEnv, pythonEnv: () => new Promise<string>(() => {}) },
+      wf([python('slow', 'return 1', { timeoutMs: 1500 })], [['startTrigger', 'slow']]),
+    )
+    expect(outcome.error).toMatchObject({ block: 'slow', code: 'timeout' })
+    expect(store.logs.map((l) => l.message)).toEqual([
+      "Waiting for the workflow's Python packages to install…",
+    ])
+    const quick = await run(
+      { ...shared.services, python: echoEnv, pythonEnv: async () => 'e'.repeat(32) },
+      wf([python('fast', 'return 1')], [['startTrigger', 'fast']]),
+    )
+    expect(quick.store.logs).toEqual([]) // a ready env says nothing
   })
 })

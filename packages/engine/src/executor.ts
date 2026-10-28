@@ -7,11 +7,11 @@ import {
   workflowReleases,
   workflowRuns,
 } from '@ow/db'
-import { DEFAULT_RUN_TIMEOUT_MS, type WorkflowDefinition } from '@ow/definition'
+import { DEFAULT_RUN_TIMEOUT_MS, pythonFields, type WorkflowDefinition } from '@ow/definition'
 import { type CodeRuntime, IvmRuntime, type PythonRunner } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
 import { PgChildRuns } from './children'
-import { LeaseLostError, RunCancelledError } from './errors'
+import { BlockFailure, LeaseLostError, RunCancelledError } from './errors'
 import { executeRun } from './orchestrator'
 import { PgRunStore } from './pg-store'
 import {
@@ -30,6 +30,15 @@ import type { BlockResult, LibraryQueries, ResourceProvider, RunInput, RunRespon
 /** Run-specific values the engine can't know: config vars (secret ones decrypted) and what to scrub. */
 export interface RunContextProvider {
   load(run: WorkflowRun): Promise<{ configVars: Record<string, unknown>; secrets: string[] }>
+}
+
+/** Where a run's Python packages come from (M23): the server builds or installs them (docs/architecture.md §2.26). */
+export interface PythonEnvProvider {
+  /**
+   * The builder's env id for this run's packages: a release's lock, or the draft's requirements. Throws a
+   * `BlockFailure` (`python_packages`, the build's log in its details) when they can't be installed.
+   */
+  envFor(run: WorkflowRun, definition: WorkflowDefinition): Promise<string>
 }
 
 export interface DispatcherLogger {
@@ -51,6 +60,11 @@ export interface RunExecutorOptions {
   createSandbox?: () => CodeRuntime
   /** Runs Python code blocks; shared by every run of the process. Without it they fail (`python_unavailable`). */
   python?: PythonRunner
+  /**
+   * Python packages (M23): the env for a run whose definition declares some. Without it such runs' Python blocks fail
+   * (`python_packages_unavailable`).
+   */
+  pythonEnvs?: PythonEnvProvider
   /** Library queries for Library query blocks and runners (M21). Without it they fail (`library`). */
   library?: LibraryQueries
   /** Default 30s; renewed every third of it. */
@@ -182,6 +196,7 @@ export class RunExecutor {
           children: this.children,
           tasks: this.tasks,
           python: this.opts.python,
+          pythonEnv: this.pythonEnvFor(run, definition),
           library: this.opts.library,
         },
         store,
@@ -217,6 +232,31 @@ export class RunExecutor {
     if (!finished) this.log.warn({ runId: run.id }, 'lost the lease before finishing the run')
   }
 
+  /**
+   * The run's Python packages (M23); undefined when its definition declares none or has no Python. Asked for as the
+   * run starts, so a first install overlaps the blocks before its Python ones; they wait for it.
+   */
+  private pythonEnvFor(
+    run: WorkflowRun,
+    definition: WorkflowDefinition,
+  ): (() => Promise<string>) | undefined {
+    if (!definition.settings?.python?.requirements.length || !pythonFields(definition).length)
+      return undefined
+    const provider = this.opts.pythonEnvs
+    if (!provider) {
+      return () =>
+        Promise.reject(
+          new BlockFailure(
+            'python_packages_unavailable',
+            "This workflow's Python packages can't be installed on this instance (PYTHON_BUILDER_URL)",
+          ),
+        )
+    }
+    const env = shared(() => provider.envFor(run, definition))
+    env().catch(() => {}) // the Python block that waits for it reports a failure
+    return env
+  }
+
   private observe(
     run: WorkflowRun,
     definition: WorkflowDefinition,
@@ -246,6 +286,21 @@ export class RunExecutor {
     } catch (err) {
       this.log.warn({ err }, 'run observer failed')
     }
+  }
+}
+
+/**
+ * Asks once for many callers (a loop's iterations share it); a failure isn't kept, so a retried block asks again (the
+ * index may have been down).
+ */
+export function shared<T>(get: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined
+  return () => {
+    pending ??= get().catch((err: unknown) => {
+      pending = undefined
+      throw err
+    })
+    return pending
   }
 }
 

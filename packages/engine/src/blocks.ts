@@ -458,13 +458,44 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
   if (!python) {
     throw new BlockFailure('python_unavailable', "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)")
   }
+  const envId = ctx.services.pythonEnv ? await waitForEnv(ctx.services.pythonEnv(), work) : undefined
   // As JSON (the client serializes it once; results already are JSON).
   return python.run(code, work.scope, {
     timeoutMs: work.timeoutMs,
     signal: work.signal,
+    ...(envId && { envId }),
     onLog: (level, args) => work.log(level, formatLogArgs(args)),
   })
 }
+
+/**
+ * The run's Python packages, saying so in the block's log when they take a while (a first install): a block timeout
+ * then reads in context (the install goes on, for a retry or the next run). Leaves early when the work stops.
+ */
+function waitForEnv(env: Promise<string>, work: Work): Promise<string> {
+  if (work.signal.aborted) return Promise.reject(work.signal.reason)
+  return new Promise((resolve, reject) => {
+    let waiting = false
+    const timer = setTimeout(() => {
+      waiting = true
+      work.log('info', "Waiting for the workflow's Python packages to install…")
+    }, ENV_WAIT_LOG_MS)
+    const stop = () => reject(work.signal.reason)
+    work.signal.addEventListener('abort', stop, { once: true })
+    env
+      .then((id) => {
+        if (waiting) work.log('info', "The workflow's Python packages are installed")
+        resolve(id)
+      }, reject)
+      .finally(() => {
+        clearTimeout(timer)
+        work.signal.removeEventListener('abort', stop)
+      })
+  })
+}
+
+/** A Python block waiting this long for its packages says so in its log. */
+const ENV_WAIT_LOG_MS = 1000
 
 /** Runs a query (a query block, or a loop's query runner) against a resource in the run's environment. */
 export async function runResourceQuery(

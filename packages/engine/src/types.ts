@@ -133,6 +133,11 @@ export interface EngineServices {
   tasks?: UserTasks
   /** Runs Python code (the code executor). Without it Python blocks fail with `python_unavailable`. */
   python?: PythonRunner
+  /**
+   * The run's Python packages (M23): the builder's env for its definition's requirements, asked for when a Python
+   * block first runs (shared by the rest). Absent when the definition declares none.
+   */
+  pythonEnv?: () => Promise<string>
   /** Library queries (M21): Library query blocks and runners. Without it they fail with `library`. */
   library?: LibraryQueries
 }

@@ -21,6 +21,7 @@ import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
+import { pythonEnvProvider } from '../services/python-envs'
 import { RunEventHub } from '../services/run-events'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
@@ -74,6 +75,7 @@ export async function buildApp(deps: {
     context: dbRunContext(db, config.keyring),
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     python: configurePython(config) ?? undefined,
+    pythonEnvs: pythonEnvProvider(db, config),
     library: engineLibrary(db),
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),

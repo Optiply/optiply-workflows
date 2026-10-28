@@ -213,6 +213,7 @@ describe('deploying from Git', () => {
       .select()
       .from(workflowReleases)
       .where(eq(workflowReleases.workflowId, flow!.id))
+      .orderBy(workflowReleases.createdAt) // without it Postgres may answer through the newest-first index
     expect(releases.map((r) => [r.version, r.gitCommit])).toEqual([
       ['1.0.0', first],
       ['1.0.1', second],

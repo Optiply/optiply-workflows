@@ -82,6 +82,13 @@ const ConfigSchema = z
     /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN). Without it Python stays off (a warning at start). */
     PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
     /**
+     * The package builder that installs workflows' Python packages (M23, the `python-builder` service), e.g.
+     * `http://python-builder:8080`. Without it, workflows that declare packages can't run or be published.
+     */
+    PYTHON_BUILDER_URL: z.string().url().optional(),
+    /** The builder's bearer token (its PYTHON_BUILDER_TOKEN). */
+    PYTHON_BUILDER_TOKEN: z.string().min(16).optional(),
+    /**
      * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
      * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
      * file, or the metadata server). Off by default; only admins can choose it for a resource.

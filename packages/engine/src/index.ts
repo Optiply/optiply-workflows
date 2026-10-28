@@ -7,7 +7,7 @@ export {
   type RunContextProvider,
 } from './dispatcher'
 export { BlockFailure, LeaseLostError, RunCancelledError, toEngineError } from './errors'
-export { RunExecutor, type RunExecutorOptions, type RunObserver } from './executor'
+export { type PythonEnvProvider, RunExecutor, type RunExecutorOptions, type RunObserver } from './executor'
 export { InlineRunner, type InlineRunnerOptions } from './inline'
 export { MemoryRunStore, type StoreEvent } from './memory-store'
 export { executeRun } from './orchestrator'

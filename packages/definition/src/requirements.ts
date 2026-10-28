@@ -76,3 +76,12 @@ export function requirementProblems(requirements: readonly string[]): { index: n
   })
   return problems
 }
+
+/**
+ * What the package builder resolved a workflow's requirements to (M23): every package, its version and its wheel's
+ * sha256, for one platform. A release keeps it, so live runs install exactly that.
+ */
+export interface PythonLock {
+  platform: string
+  packages: { name: string; version: string; sha256: string }[]
+}

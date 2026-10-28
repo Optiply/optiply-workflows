@@ -43,7 +43,8 @@ MAX_ENV_BYTES = int(float(os.environ.get("PYTHON_ENV_MAX_MB", "1024")) * 1024 * 
 MAX_BUILDS = int(os.environ.get("PYTHON_MAX_BUILDS", "2"))
 KEEP_DAYS = float(os.environ.get("PYTHON_ENV_KEEP_DAYS", "30"))
 BUILD_TIMEOUT_S = float(os.environ.get("PYTHON_BUILD_TIMEOUT_SECONDS", "300"))
-MAX_REQUIREMENTS = 30
+# The workflow editor allows 30; a release moved to another platform comes back as its lock, every package pinned.
+MAX_REQUIREMENTS = 500
 MAX_LOG_CHARS = 64 * 1024
 PLATFORM = f"cp{sys.version_info.major}{sys.version_info.minor}-{sysconfig.get_platform()}"
 

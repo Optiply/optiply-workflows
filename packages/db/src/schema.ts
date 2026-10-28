@@ -1,8 +1,9 @@
 import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
-import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
+import type { OpenTaskField, PythonLock, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
   type AnyPgColumn,
+  bigint,
   bigserial,
   boolean,
   check,
@@ -475,6 +476,11 @@ export const workflowReleases = pgTable(
     notes: text(),
     /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
     gitCommit: text(),
+    /**
+     * The Python packages' lock (M23), when the definition declares packages: built when it was published, so live
+     * runs install exactly these.
+     */
+    pythonLock: jsonb().$type<PythonLock>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -1342,3 +1348,27 @@ export const collabUpdates = pgTable(
 )
 
 export type CollabDocument = typeof collabDocuments.$inferSelect
+
+/**
+ * Python package sets the builder resolved (M23, docs/architecture.md §2.26): a workflow draft's requirements → their
+ * lock and env. Draft runs reuse the lock while the requirements stay the same; releases keep theirs in
+ * `workflow_releases.python_lock`.
+ */
+export const pythonEnvs = pgTable('python_envs', {
+  /** `requirementsHash`: the requirements' SHA-256, sorted. */
+  requirementsHash: text().primaryKey(),
+  requirements: jsonb().$type<string[]>().notNull(),
+  /** `ready` (the lock and env below) or `failed` (the error and log; the next run tries again). */
+  state: text().$type<'ready' | 'failed'>().notNull(),
+  lock: jsonb().$type<PythonLock>(),
+  envId: text(),
+  sizeBytes: bigint({ mode: 'number' }),
+  error: jsonb().$type<{ kind: string; message: string }>(),
+  /** pip's output from the last build (cut to 64 kB by the builder). */
+  log: text(),
+  builtAt: timestamp({ withTimezone: true }),
+  lastUsedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  createdAt: createdAt(),
+})
+
+export type PythonEnv = typeof pythonEnvs.$inferSelect

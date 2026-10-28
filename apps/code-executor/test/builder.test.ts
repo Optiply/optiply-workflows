@@ -79,7 +79,7 @@ describe.skipIf(!available)('the package builder', () => {
       ['pkg @ https://example.com/pkg.whl'],
       ['pkg; sys_platform == "linux"'],
       ['./local'],
-      Array.from({ length: 31 }, (_, i) => `p${i}`),
+      Array.from({ length: 501 }, (_, i) => `p${i}`),
       'owtest-a',
     ]) {
       expect((await post('/build', { requirements })).status).toBe(400)
