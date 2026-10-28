@@ -95,7 +95,7 @@ worker / api ──/build, /install──▶ python-builder ──pip (wheels on
 | `PYTHON_ENV_MAX_MB` | builder | 1024 | The largest env. Over it: `too_big`. |
 | `PYTHON_ENV_KEEP_DAYS` | builder | 30 | Envs unused this long are removed (hourly); their locks bring them back on the next run. |
 | `PYTHON_MAX_BUILDS` | builder | 2 | Builds at once (one per env). |
-| `PYTHON_BUILD_TIMEOUT_SECONDS` | builder | 300 | One build or install. |
+| `PYTHON_BUILD_TIMEOUT_SECONDS` | builder | 300 | One build or install, from when it gets its slot (waiting for one is up to as long again). An env that's there already answers at once, without a slot. |
 
 Cleaning by hand: `docker compose exec python-builder sh -c 'rm -rf /envs/<envId>'` (or all of them); the next run
 or publish installs what it needs again. The volume's size: `docker compose exec python-builder du -sh /envs`.
@@ -137,7 +137,8 @@ faster than it refills: raise `PYTHON_WARM_JAILS` (and `mem_limit`), or `PYTHON_
 Measured on the Mac's Docker Desktop (8 CPUs; M23 step 2b), over HTTP: a block importing pandas p50 **37 ms** warm
 (the executor tests: 24 ms) against 359 ms cold; a trivial block 18 ms warm, 48 ms cold; back to back (the pool
 empty, refills one at a time) a trivial block 50 ms and a pandas one 49 ms. A warm jail holds ~42 MB (numpy and
-pandas), counted in its `PYTHON_MEMORY_MB`, as when the code imports them itself.
+pandas); once it's ready its limit is raised by that much (`PYTHON_MEMORY_MB` plus what the imports took), so its
+run has the memory a cold jail's run has (`warm_jail_memory` in the log if the jail's cgroup couldn't be found).
 
 ## Logs
 

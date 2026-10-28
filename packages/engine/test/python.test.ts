@@ -261,6 +261,21 @@ describe("a run's Python packages (M23)", () => {
     expect(calls).toBe(2)
   })
 
+  it('gives a failure met ahead (prefetch) to the first caller, without asking again', async () => {
+    let calls = 0
+    const env = sharedOnce(async () => {
+      calls++
+      throw new Error(`failure ${calls}`)
+    })
+    env.prefetch()
+    await new Promise((r) => setTimeout(r, 10))
+    await expect(env()).rejects.toThrow('failure 1')
+    expect(calls).toBe(1)
+    await expect(env()).rejects.toThrow('failure 2') // a caller had it: the next asks again
+    env.prefetch() // ahead of time only: never asks again while there is an answer
+    expect(calls).toBe(2)
+  })
+
   it('says in the log that it waits for the packages, so a timeout then reads in context', async () => {
     const { outcome, store } = await run(
       { ...shared.services, python: echoEnv, pythonEnv: () => new Promise<string>(() => {}) },

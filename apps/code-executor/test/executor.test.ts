@@ -388,6 +388,18 @@ describe.skipIf(!available)('the code executor', () => {
       expect(memory).toMatchObject({ error: { kind: 'memory' }, warm: true })
     })
 
+    it("gives a warm jail's run the memory a cold one has (its imports don't count)", async () => {
+      await poolFull()
+      // 215 MB of the 256: over the limit if numpy and pandas (~45 MB, imported while waiting) counted.
+      const outcome = await run('b = bytearray(215 * 1024 * 1024)\nreturn len(b) // (1024 * 1024)')
+      expect(outcome).toMatchObject({ ok: true, result: 215, warm: true })
+      await poolFull()
+      expect(await run('b = bytearray(1024 * 1024 * 1024)\nreturn 1')).toMatchObject({
+        error: { kind: 'memory' },
+        warm: true,
+      })
+    })
+
     // A second container of its own: not when the tests use another executor (PYTHON_EXECUTOR_TEST_URL).
     it.skipIf(!!process.env.PYTHON_EXECUTOR_TEST_URL)(
       'starts a cold jail when no warm one is ready, and keeps none with PYTHON_WARM_JAILS=0',

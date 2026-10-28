@@ -253,7 +253,7 @@ export class RunExecutor {
         )
     }
     const env = shared(() => provider.envFor(run, definition))
-    env().catch(() => {}) // the Python block that waits for it reports a failure
+    env.prefetch() // the Python block that waits for it reports a failure
     return env
   }
 
@@ -290,18 +290,31 @@ export class RunExecutor {
 }
 
 /**
- * Asks once for many callers (a loop's iterations share it); a failure isn't kept, so a retried block asks again (the
- * index may have been down).
+ * Asks once for many callers (a loop's iterations share it). A failure is kept until a caller has had it, then the
+ * next call asks again (a retried block: the index may have been down). `prefetch` asks ahead without being a
+ * caller, so a failure it meets goes to the first block that waits, not asked for twice.
  */
-export function shared<T>(get: () => Promise<T>): () => Promise<T> {
+export function shared<T>(get: () => Promise<T>): (() => Promise<T>) & { prefetch(): void } {
   let pending: Promise<T> | undefined
-  return () => {
-    pending ??= get().catch((err: unknown) => {
-      pending = undefined
-      throw err
-    })
+  let seen = false // `pending` failed and a caller has had that
+  const start = () => {
+    pending = get()
+    seen = false
+    pending.catch(() => {})
     return pending
   }
+  const call = () => {
+    const current = !pending || seen ? start() : pending
+    return current.catch((err: unknown) => {
+      if (pending === current) seen = true
+      throw err
+    })
+  }
+  return Object.assign(call, {
+    prefetch: () => {
+      if (!pending) start()
+    },
+  })
 }
 
 async function loadDefinition(db: Db, run: WorkflowRun): Promise<WorkflowDefinition> {

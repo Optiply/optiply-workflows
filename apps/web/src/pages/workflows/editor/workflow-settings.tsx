@@ -92,14 +92,19 @@ function PythonPackages({
   const requirements = useEditor((s) => s.definition.settings?.python?.requirements)
   // The whole list from the store (a filtered one would be a new array on every read), filtered here.
   const problems = useEditor((s) => s.diagnostics).filter((d) => d.code === 'invalid_requirement')
-  const setText = (text: string) =>
-    useEditor.getState().update((def) => {
-      const lines = text
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-      return withSetting(def, 'python', lines.length ? { requirements: lines } : undefined)
-    })
+  const stored = requirements?.join('\n') ?? ''
+  const [text, setText] = useState(stored)
+  // Someone else's change (a collaborator, undo, a reload) shows here; the field's own blank lines stay while typing.
+  useEffect(() => {
+    setText((current) => (requirementLines(current).join('\n') === stored ? current : stored))
+  }, [stored])
+  const edit = (value: string) => {
+    setText(value)
+    const lines = requirementLines(value)
+    useEditor
+      .getState()
+      .update((def) => withSetting(def, 'python', lines.length ? { requirements: lines } : undefined))
+  }
   return (
     <Field
       label="Python packages"
@@ -112,8 +117,8 @@ function PythonPackages({
         placeholder="polars==1.9.0"
         spellCheck={false}
         aria-label="Python packages"
-        defaultValue={requirements?.join('\n') ?? ''}
-        onChange={(e) => setText(e.target.value)}
+        value={text}
+        onChange={(e) => edit(e.target.value)}
       />
       {problems.length > 0 && (
         <ul className="flex flex-col gap-0.5 text-xs text-danger" data-testid="requirement-problems">
@@ -147,7 +152,8 @@ function PackagesState({ workflowId, requirements }: { workflowId: string; requi
   const state = useQuery(trpc.workflows.pythonEnv.queryOptions(input))
   const install = useMutation(
     trpc.workflows.installPythonEnv.mutationOptions({
-      onSuccess: (data) => queryClient.setQueryData(trpc.workflows.pythonEnv.queryKey(input), data),
+      // Under the requirements it installed: the field may have changed since.
+      onSuccess: (data, sent) => queryClient.setQueryData(trpc.workflows.pythonEnv.queryKey(sent), data),
     }),
   )
   const data = state.data
@@ -192,6 +198,14 @@ function PackagesState({ workflowId, requirements }: { workflowId: string; requi
       <ErrorNote error={install.error ?? state.error} />
     </div>
   )
+}
+
+/** The field's lines as requirements: trimmed, blank ones left out. */
+function requirementLines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
 }
 
 /** `value` once it has stayed the same for `ms` (compared as JSON). */

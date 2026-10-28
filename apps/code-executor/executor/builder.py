@@ -201,14 +201,35 @@ def touch(path):
     os.utime(path)
 
 
+def installed(eid):
+    """The env's size when it's on the volume (touched, as it's used), else None. Call under its env lock."""
+    final = os.path.join(ENVS, eid)
+    if not os.path.isfile(os.path.join(final, "lock.json")):
+        return None
+    touch(os.path.join(final, "used"))
+    try:
+        with open(os.path.join(final, "size")) as f:
+            return int(f.read())
+    except (OSError, ValueError):  # an env from before the size was kept
+        return dir_size(os.path.join(final, "site"))
+
+
+def cached(lock):
+    """(envId, size) when the lock's env is there already: no build slot needed for that."""
+    eid = env_id(lock)
+    with env_lock(eid):
+        size = installed(eid)
+    return None if size is None else (eid, size)
+
+
 def install(lock, deadline):
     """The lock's env on the volume (installed unless it's there): (envId, size, cached, pip's output)."""
     eid = env_id(lock)
     final = os.path.join(ENVS, eid)
     with env_lock(eid):
-        if os.path.isfile(os.path.join(final, "lock.json")):
-            touch(os.path.join(final, "used"))
-            return eid, dir_size(os.path.join(final, "site")), True, ""
+        size = installed(eid)
+        if size is not None:
+            return eid, size, True, ""
         base, index = pip_args()
         tmp = tempfile.mkdtemp(prefix=".tmp-", dir=ENVS)
         try:
@@ -240,6 +261,8 @@ def install(lock, deadline):
                 )
             with open(os.path.join(tmp, "lock.json"), "w") as f:
                 json.dump(lock, f, sort_keys=True, indent=2)
+            with open(os.path.join(tmp, "size"), "w") as f:
+                f.write(str(size))
             touch(os.path.join(tmp, "used"))
             # Readable by the jail's user (nobody), never writable.
             for root, dirs, files in os.walk(tmp):
@@ -257,6 +280,11 @@ def install(lock, deadline):
                 shutil.rmtree(tmp, ignore_errors=True)
 
 
+def unused(used, now):
+    """Whether an env's `used` file is older than KEEP_DAYS."""
+    return os.path.isfile(used) and now - os.stat(used).st_mtime > KEEP_DAYS * 86400
+
+
 def clean():
     """Removes envs unused for KEEP_DAYS, and temporary directories a crash left behind."""
     now = time.time()
@@ -268,10 +296,14 @@ def clean():
                     shutil.rmtree(path, ignore_errors=True)
                 continue
             used = os.path.join(path, "used")
-            if os.path.isfile(used) and now - os.stat(used).st_mtime > KEEP_DAYS * 86400:
-                with env_lock(name):
-                    shutil.rmtree(path, ignore_errors=True)
-                log("env_removed", envId=name)
+            if not unused(used, now):
+                continue
+            with env_lock(name):
+                # Again under the lock: an install may have used it since.
+                if not unused(used, now):
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+            log("env_removed", envId=name)
         except OSError:
             pass
 
@@ -284,6 +316,41 @@ def cleaner():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ow-python-builder"
+
+    def answer(self, body):
+        """The request's answer; None when no build slot came free. An env that's there needs no slot (most
+        installs are a run checking its env); the build's own time counts from its slot."""
+        output = ""
+        try:
+            lock = None
+            if self.path == "/install":
+                lock = check_lock(body.get("lock"))
+                there = cached(lock)
+                if there:
+                    return {"ok": True, "envId": there[0], "sizeBytes": there[1], "cached": True, "log": ""}
+            if not builds.acquire(timeout=BUILD_TIMEOUT_S):
+                return None
+            try:
+                deadline = time.monotonic() + BUILD_TIMEOUT_S
+                if self.path == "/build":
+                    lock, output = resolve([r.strip() for r in body["requirements"]], deadline)
+                eid, size, was_cached, install_output = install(lock, deadline)
+            finally:
+                builds.release()
+            output += install_output
+            answer = {"ok": True, "envId": eid, "sizeBytes": size, "cached": was_cached, "log": scrub(output)}
+            if self.path == "/build":
+                answer["lock"] = lock
+            return answer
+        except BuildError as exc:
+            output += exc.output
+            return {"ok": False, "error": {"kind": exc.kind, "message": scrub(str(exc))}, "log": scrub(output)}
+        except OSError as exc:  # the volume (full, not writable)
+            return {
+                "ok": False,
+                "error": {"kind": "install", "message": f"The env couldn't be written: {exc}"},
+                "log": scrub(output),
+            }
     sys_version = ""
     protocol_version = "HTTP/1.1"
 
@@ -334,27 +401,9 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 return self.refuse(HTTPStatus.BAD_REQUEST, f"Expected requirements: at most {MAX_REQUIREMENTS} names with versions")
         started = time.monotonic()
-        deadline = started + BUILD_TIMEOUT_S
-        if not builds.acquire(timeout=BUILD_TIMEOUT_S):
+        answer = self.answer(body)
+        if answer is None:
             return self.refuse(HTTPStatus.SERVICE_UNAVAILABLE, "The builder is busy; try again")
-        output = ""
-        try:
-            if self.path == "/build":
-                lock, output = resolve([r.strip() for r in body["requirements"]], deadline)
-            else:
-                lock = check_lock(body.get("lock"))
-            eid, size, cached, install_output = install(lock, deadline)
-            output += install_output
-            answer = {"ok": True, "envId": eid, "sizeBytes": size, "cached": cached, "log": scrub(output)}
-            if self.path == "/build":
-                answer["lock"] = lock
-        except BuildError as exc:
-            output += exc.output
-            answer = {"ok": False, "error": {"kind": exc.kind, "message": scrub(str(exc))}, "log": scrub(output)}
-        except OSError as exc:  # the volume (full, not writable)
-            answer = {"ok": False, "error": {"kind": "install", "message": f"The env couldn't be written: {exc}"}, "log": scrub(output)}
-        finally:
-            builds.release()
         error = answer.get("error")
         log(
             "build" if self.path == "/build" else "install",

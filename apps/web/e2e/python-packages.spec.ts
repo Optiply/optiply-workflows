@@ -28,6 +28,13 @@ test("a workflow's Python packages in its settings", async ({ page }) => {
 
   await packages.fill('polars==1.9.0\nopenpyxl>=3.1')
   await expect(problems).toHaveCount(0)
+  // Undo and redo show in the field (it follows the draft, not only its own typing).
+  await packages.fill('polars==1.9.0\nopenpyxl>=3.1\nnumpy')
+  await page.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(packages).toHaveValue('polars==1.9.0\nopenpyxl>=3.1')
+  await page.getByRole('button', { name: 'Redo', exact: true }).click()
+  await expect(packages).toHaveValue('polars==1.9.0\nopenpyxl>=3.1\nnumpy')
+  await packages.fill('polars==1.9.0\nopenpyxl>=3.1')
   // A run timeout set and cleared again leaves the packages alone.
   const timeout = panel.getByPlaceholder('15')
   await timeout.fill('5')

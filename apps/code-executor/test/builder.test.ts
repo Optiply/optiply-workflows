@@ -57,6 +57,7 @@ describe.skipIf(!available)('the package builder', () => {
       { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
       { name: 'owtest-b', version: '2.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "2.0.0"\n' } },
       { name: 'owtest-c', version: '1.0.0', sdistOnly: true },
+      { name: 'owtest-slow', version: '1.0.0', delayMs: 6000, files: { 'owtest_slow.py': 'X = 1\n' } },
     ])
     builder = await startTestBuilder({ indexUrl: index.url })
   })
@@ -97,6 +98,7 @@ describe.skipIf(!available)('the package builder', () => {
     const env = `/envs/${built.envId}`
     expect(sh(builder, `cat ${env}/site/owtest_b/__init__.py`)).toBe('VERSION = "2.0.0"\n')
     expect(JSON.parse(sh(builder, `cat ${env}/lock.json`))).toEqual(built.lock)
+    expect(Number(sh(builder, `cat ${env}/size`))).toBe(built.sizeBytes)
     // Readable by the jail's user, writable by nobody but the builder.
     expect(sh(builder, `stat -c %a ${env} ${env}/site/owtest_a/__init__.py`).split('\n')).toEqual([
       '755',
@@ -150,6 +152,29 @@ describe.skipIf(!available)('the package builder', () => {
       ok: false,
       error: { kind: 'invalid' },
     })
+  })
+
+  it("answers an env that's there without a build slot, and times a build from its slot", async () => {
+    const one = await startTestBuilder({
+      indexUrl: index.url,
+      env: { PYTHON_MAX_BUILDS: '1', PYTHON_BUILD_TIMEOUT_SECONDS: '9' },
+    })
+    try {
+      const built = await call('/build', { requirements: ['owtest-b==1.0.0'] }, one)
+      expect(built.ok).toBe(true)
+      // The only slot is held for 6 s by a build whose index page answers late; another waits for it.
+      const slow = call('/build', { requirements: ['owtest-slow'] }, one)
+      await new Promise((r) => setTimeout(r, 500))
+      const queued = call('/build', { requirements: ['owtest-b<2'] }, one)
+      const started = Date.now()
+      expect(await call('/install', { lock: built.lock }, one)).toMatchObject({ ok: true, cached: true })
+      expect(Date.now() - started).toBeLessThan(1500)
+      expect((await slow).error).toBeUndefined()
+      // It waited ~6 s of its 9 for the slot: the 9 count from the slot, so it still has its time.
+      expect((await queued).error).toBeUndefined()
+    } finally {
+      await one.stop()
+    }
   })
 
   it('refuses an env over its size, and removes envs unused for PYTHON_ENV_KEEP_DAYS', async () => {

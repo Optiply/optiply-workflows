@@ -242,6 +242,17 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
     const envs = execFileSync('docker', ['exec', builder.container, 'ls', '/envs']).toString().split('\n')
     expect(envs).toContain(firstEnv)
 
+    // A release whose lock was made on another platform: rolling back installs its exact versions (pinned), not
+    // whatever its loose requirements resolve to today.
+    await env.db
+      .update(workflowReleases)
+      .set({ pythonLock: { ...firstRow!.pythonLock!, platform: 'cp312-other_platform' } })
+      .where(eq(workflowReleases.id, first.id))
+    await env.db.delete(pythonEnvs)
+    data(await admin.mutate('releases.setLive', { workflowId: flow!.id, releaseId: first.id }))
+    expect(await envRow(['owtest-b==1.0.0'])).toMatchObject({ state: 'ready' })
+    expect(await envRow(['owtest-b'])).toBeUndefined()
+
     const audits = await env.db
       .select()
       .from(auditEvents)
@@ -255,16 +266,16 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
     const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, 'pkg-run'))
     const ask = async (requirements: string[]) =>
       data(await admin.query('workflows.pythonEnv', { workflowId: flow!.id, requirements }))
-    expect(await ask(['owtest-b==1.0.0'])).toEqual({ available: true, state: 'none' })
+    expect(await ask(['owtest-b<=1.0.0'])).toEqual({ available: true, state: 'none' })
     const installed = data(
       await admin.mutate('workflows.installPythonEnv', {
         workflowId: flow!.id,
-        requirements: ['owtest-b==1.0.0'],
+        requirements: ['owtest-b<=1.0.0'],
       }),
     )
     expect(installed).toMatchObject({ available: true, state: 'ready', packages: ['owtest-b==1.0.0'] })
     expect(installed.sizeBytes).toBeGreaterThan(0)
-    expect(await ask(['owtest-b==1.0.0'])).toMatchObject({ state: 'ready' })
+    expect(await ask(['owtest-b<=1.0.0'])).toMatchObject({ state: 'ready' })
 
     const failed = data(
       await admin.mutate('workflows.installPythonEnv', {

@@ -17,6 +17,8 @@ export interface TestPackage {
   requires?: string[]
   /** Served as an sdist only (a `.tar.gz` pip won't take with `--only-binary`). */
   sdistOnly?: boolean
+  /** Its index page answers this late the first time: a build that holds the builder's slot a while. */
+  delayMs?: number
 }
 
 export interface TestIndex {
@@ -113,6 +115,7 @@ function zip(files: [string, Buffer][]): Buffer {
 export async function startTestIndex(packages: TestPackage[]): Promise<TestIndex> {
   const files = new Map<string, Buffer>()
   const links = new Map<string, string[]>()
+  const delays = new Map<string, number>()
   const hashes: Record<string, string> = {}
   for (const pkg of packages) {
     const { filename, data } = pkg.sdistOnly
@@ -123,13 +126,19 @@ export async function startTestIndex(packages: TestPackage[]): Promise<TestIndex
     const page = links.get(normalize(pkg.name)) ?? []
     page.push(`<a href="/files/${filename}#sha256=${sha256(data)}">${filename}</a>`)
     links.set(normalize(pkg.name), page)
+    if (pkg.delayMs) delays.set(normalize(pkg.name), pkg.delayMs)
   }
   const server: Server = createServer((req, res) => {
     const path = decodeURIComponent((req.url ?? '/').split('?')[0]!)
     const simple = /^\/simple\/([^/]+)\/?$/.exec(path)
     if (simple && links.has(normalize(simple[1]!))) {
-      res.writeHead(200, { 'content-type': 'text/html' })
-      res.end(`<!doctype html><html><body>${links.get(normalize(simple[1]!))!.join('<br>')}</body></html>`)
+      const name = normalize(simple[1]!)
+      const delay = delays.get(name) ?? 0
+      delays.delete(name) // the first request only (pip reads the page again to install)
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/html' })
+        res.end(`<!doctype html><html><body>${links.get(name)!.join('<br>')}</body></html>`)
+      }, delay)
       return
     }
     const file = /^\/files\/([^/]+)$/.exec(path)

@@ -42,6 +42,9 @@ MAX_RESULT_BYTES = 16 * 1024 * 1024
 MAX_LOG_BYTES = 1024 * 1024
 # When streaming, a line printed without its newline yet goes out after this long.
 PARTIAL_LINE_S = 0.25
+# A stream's reader that takes longer than this to take a chunk counts as gone (the jail is killed): writing waits
+# for it, and the run's deadline is only checked between writes.
+STREAM_WRITE_TIMEOUT_S = 10
 MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000
 CHECK_TIMEOUT_MS = 5000
 JAIL_CONFIG = os.path.join(HERE, "jail.cfg")
@@ -56,6 +59,7 @@ WARM_START_PARALLEL = int(os.environ.get("PYTHON_WARM_START_PARALLEL", "1"))
 # A warm jail's nsjail limits: its time in the pool plus the longest run (the server's deadline comes first).
 WARM_LIMIT_S = int(WARM_MAX_IDLE_S + WARM_START_S + MAX_TIMEOUT_MS // 1000 + 1)
 READY = b"\x06"
+CGROUP_ROOT = "/sys/fs/cgroup"
 # Workflows' packages (M23): envs the builder installed (`<envId>/site`), mounted read-only into the jail.
 ENVS = os.environ.get("PYTHON_ENVS_DIR", "/envs")
 ENV_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -130,6 +134,39 @@ class Jail:
 
     def alive(self):
         return self.proc.poll() is None
+
+    def credit_imports(self):
+        """A warm jail's memory limit raised by what its imports took, so its run gets the memory a cold one gets
+        (the code would have paid for the imports itself there). False when its cgroup can't be found."""
+        cgroup = self._cgroup()
+        if not cgroup:
+            return False
+        try:
+            with open(os.path.join(cgroup, "memory.current")) as f:
+                used = int(f.read())
+            with open(os.path.join(cgroup, "memory.max"), "w") as f:
+                f.write(str(MEMORY_MB * 1024 * 1024 + used))
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _cgroup(self):
+        """nsjail's cgroup for this jail: `NSJAIL.<pid>`, named after the jailed process (nsjail's child)."""
+        try:
+            names = os.listdir(CGROUP_ROOT)
+        except OSError:
+            return None
+        for name in names:
+            if not name.startswith("NSJAIL."):
+                continue
+            try:
+                with open(f"/proc/{name.split('.', 1)[1]}/stat") as f:
+                    parent = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            if parent == self.proc.pid:
+                return os.path.join(CGROUP_ROOT, name)
+        return None
 
     def jail_errors(self):
         """nsjail's own errors, once the jail has ended (it couldn't start, or it was killed)."""
@@ -224,6 +261,8 @@ class Pool:
         try:
             jail = Jail(WARM_LIMIT_S, warm=True)
             ok = jail.wait_ready(WARM_START_S)
+            if ok and not jail.credit_imports():
+                log("warm_jail_memory", message="Couldn't raise a warm jail's memory limit by its imports")
         except OSError:
             ok = False
         errors = []
@@ -503,12 +542,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def client_gone(self):
         """Whether the worker hung up (it cancelled or timed out): then the jail goes too."""
+        timeout = self.connection.gettimeout()  # a stream's write timeout stays as it was
         try:
             self.connection.setblocking(False)
             try:
                 return self.connection.recv(1, 0x2) == b""  # MSG_PEEK
             finally:
-                self.connection.setblocking(True)
+                self.connection.settimeout(timeout)
         except BlockingIOError:
             return False
         except OSError:
@@ -569,6 +609,7 @@ class Handler(BaseHTTPRequestHandler):
             if stream:
                 try:
                     self.start_stream()
+                    self.connection.settimeout(STREAM_WRITE_TIMEOUT_S)
                 except OSError:  # the caller hung up before its stream started
                     gone = True
 
@@ -612,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_chunk([{"outcome": outcome}])
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+            self.connection.settimeout(None)  # a kept-alive connection waits for its next request as long as it likes
         except OSError:
             self.close_connection = True
 

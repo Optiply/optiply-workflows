@@ -186,12 +186,25 @@ export async function releaseLock(
       "This workflow's Python packages can't be installed here: the instance has no package builder (PYTHON_BUILDER_URL)",
     )
   }
-  if (existing) {
-    const installed = await builder.install(existing)
-    if (installed.ok) return existing
-    if (installed.error.kind !== 'platform') throw packagesFailure(installed)
-  }
+  if (existing) return (await installLock(db, builder, existing, who)).lock
   return (await envForRequirements(db, builder, requirements, who)).lock
+}
+
+/**
+ * A lock made before (a release's) installed: as it is, or, when it was made on another platform, its exact
+ * versions pinned with this platform's wheels (that lock is answered then; the release keeps its own).
+ */
+async function installLock(
+  db: Db,
+  client: PythonBuilderClient,
+  lock: PythonLock,
+  who: { workflowId: string; actorUserId: string | null },
+): Promise<{ envId: string; lock: PythonLock }> {
+  const installed = await client.install(lock)
+  if (installed.ok) return { envId: installed.envId, lock }
+  if (installed.error.kind !== 'platform') throw packagesFailure(installed)
+  const pinned = lock.packages.map((p) => `${p.name}==${p.version}`)
+  return envForRequirements(db, client, pinned, who)
 }
 
 /** The engine's `PythonEnvProvider`: a release's lock when it has one, else the definition's requirements. */
@@ -204,14 +217,7 @@ export function dbPythonEnvs(db: Db, client: PythonBuilderClient): PythonEnvProv
           .select({ lock: workflowReleases.pythonLock })
           .from(workflowReleases)
           .where(eq(workflowReleases.id, run.releaseId))
-        if (release?.lock) {
-          const installed = await client.install(release.lock)
-          if (installed.ok) return installed.envId
-          if (installed.error.kind !== 'platform') throw packagesFailure(installed)
-          // Made on another platform: the same versions, with this platform's wheels.
-          const pinned = release.lock.packages.map((p) => `${p.name}==${p.version}`)
-          return (await envForRequirements(db, client, pinned, who)).envId
-        }
+        if (release?.lock) return (await installLock(db, client, release.lock, who)).envId
       }
       return (await envForRequirements(db, client, definition.settings?.python?.requirements ?? [], who))
         .envId
