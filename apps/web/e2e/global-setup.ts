@@ -225,7 +225,7 @@ export default async function globalSetup() {
   }
 }
 
-function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+export function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('node', ['--no-node-snapshot', ...args], { cwd: serverDir, env, stdio: 'inherit' })
     child.once('exit', (code) =>
@@ -234,7 +234,7 @@ function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   })
 }
 
-async function waitForHealth(url: string, server: ChildProcess) {
+export async function waitForHealth(url: string, server: ChildProcess) {
   for (let i = 0; i < 120; i++) {
     if (server.exitCode !== null) throw new Error(`the server exited with ${server.exitCode}`)
     try {
