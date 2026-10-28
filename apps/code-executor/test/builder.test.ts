@@ -57,7 +57,8 @@ describe.skipIf(!available)('the package builder', () => {
       { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
       { name: 'owtest-b', version: '2.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "2.0.0"\n' } },
       { name: 'owtest-c', version: '1.0.0', sdistOnly: true },
-      { name: 'owtest-slow', version: '1.0.0', delayMs: 6000, files: { 'owtest_slow.py': 'X = 1\n' } },
+      { name: 'owtest-slow', version: '1.0.0', delayMs: 7000, files: { 'owtest_slow.py': 'X = 1\n' } },
+      { name: 'owtest-slow2', version: '1.0.0', delayMs: 3000, files: { 'owtest_slow2.py': 'X = 2\n' } },
     ])
     builder = await startTestBuilder({ indexUrl: index.url })
   })
@@ -133,6 +134,10 @@ describe.skipIf(!available)('the package builder', () => {
     expect(installed).toMatchObject({ ok: true, cached: false, envId: built.envId })
     expect(sh(builder, `ls /envs/${built.envId}/site`)).toContain('owtest_a')
     expect(await call('/install', { lock: built.lock })).toMatchObject({ ok: true, cached: true })
+    // An env from before its size was kept is measured once, then keeps it.
+    sh(builder, `rm /envs/${built.envId}/size`)
+    const measured = await call('/install', { lock: built.lock })
+    expect(Number(sh(builder, `cat /envs/${built.envId}/size`))).toBe(measured.sizeBytes)
 
     const lock = built.lock!
     expect(await call('/install', { lock: { ...lock, platform: 'cp312-win_amd64' } })).toMatchObject({
@@ -157,20 +162,20 @@ describe.skipIf(!available)('the package builder', () => {
   it("answers an env that's there without a build slot, and times a build from its slot", async () => {
     const one = await startTestBuilder({
       indexUrl: index.url,
-      env: { PYTHON_MAX_BUILDS: '1', PYTHON_BUILD_TIMEOUT_SECONDS: '9' },
+      env: { PYTHON_MAX_BUILDS: '1', PYTHON_BUILD_TIMEOUT_SECONDS: '10' },
     })
     try {
       const built = await call('/build', { requirements: ['owtest-b==1.0.0'] }, one)
       expect(built.ok).toBe(true)
-      // The only slot is held for 6 s by a build whose index page answers late; another waits for it.
+      // The only slot is held for 7 s by a build whose index page answers late; another (itself 3 s) waits for it.
       const slow = call('/build', { requirements: ['owtest-slow'] }, one)
       await new Promise((r) => setTimeout(r, 500))
-      const queued = call('/build', { requirements: ['owtest-b<2'] }, one)
+      const queued = call('/build', { requirements: ['owtest-slow2'] }, one)
       const started = Date.now()
       expect(await call('/install', { lock: built.lock }, one)).toMatchObject({ ok: true, cached: true })
       expect(Date.now() - started).toBeLessThan(1500)
       expect((await slow).error).toBeUndefined()
-      // It waited ~6 s of its 9 for the slot: the 9 count from the slot, so it still has its time.
+      // It waited ~7 s for the slot and needs ~3.5: counted from the request it would have ~3 left and time out.
       expect((await queued).error).toBeUndefined()
     } finally {
       await one.stop()

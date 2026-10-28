@@ -292,19 +292,29 @@ export class RunExecutor {
 /**
  * Asks once for many callers (a loop's iterations share it). A failure is kept until a caller has had it, then the
  * next call asks again (a retried block: the index may have been down). `prefetch` asks ahead without being a
- * caller, so a failure it meets goes to the first block that waits, not asked for twice.
+ * caller, so a failure it meets goes to the first block that waits, not asked for twice — unless it's older than
+ * `freshMs` by then (the block came much later: ask again).
  */
-export function shared<T>(get: () => Promise<T>): (() => Promise<T>) & { prefetch(): void } {
+export function shared<T>(
+  get: () => Promise<T>,
+  freshMs = 30_000,
+): (() => Promise<T>) & { prefetch(): void } {
   let pending: Promise<T> | undefined
   let seen = false // `pending` failed and a caller has had that
+  let failedAt: number | undefined // when `pending` failed
   const start = () => {
-    pending = get()
+    const current = get()
+    pending = current
     seen = false
-    pending.catch(() => {})
-    return pending
+    failedAt = undefined
+    current.catch(() => {
+      if (pending === current) failedAt = Date.now()
+    })
+    return current
   }
   const call = () => {
-    const current = !pending || seen ? start() : pending
+    const stale = failedAt !== undefined && Date.now() - failedAt > freshMs
+    const current = !pending || seen || stale ? start() : pending
     return current.catch((err: unknown) => {
       if (pending === current) seen = true
       throw err

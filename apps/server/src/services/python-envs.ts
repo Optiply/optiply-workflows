@@ -60,6 +60,21 @@ export class PythonBuilderClient {
     return this.post('/install', { lock })
   }
 
+  /** The platform the builder installs for (`cp312-linux-aarch64`), asked once; null while it can't be reached. */
+  async platform(): Promise<string | null> {
+    if (this.knownPlatform) return this.knownPlatform
+    try {
+      const res = await fetch(`${this.url}/health`, { signal: AbortSignal.timeout(10_000) })
+      const health = (await res.json()) as { platform?: string }
+      this.knownPlatform = health.platform ?? null
+    } catch {
+      return null
+    }
+    return this.knownPlatform
+  }
+
+  private knownPlatform: string | null = null
+
   private async post(path: string, body: unknown): Promise<BuildAnswer> {
     const unavailable = (message: string): BuildAnswer => ({
       ok: false,
@@ -200,11 +215,20 @@ async function installLock(
   lock: PythonLock,
   who: { workflowId: string; actorUserId: string | null },
 ): Promise<{ envId: string; lock: PythonLock }> {
+  const pinned = () =>
+    envForRequirements(
+      db,
+      client,
+      lock.packages.map((p) => `${p.name}==${p.version}`),
+      who,
+    )
+  // Known to be another platform's: straight to its versions (every live run would ask the builder twice).
+  const platform = await client.platform()
+  if (platform && platform !== lock.platform) return pinned()
   const installed = await client.install(lock)
   if (installed.ok) return { envId: installed.envId, lock }
   if (installed.error.kind !== 'platform') throw packagesFailure(installed)
-  const pinned = lock.packages.map((p) => `${p.name}==${p.version}`)
-  return envForRequirements(db, client, pinned, who)
+  return pinned()
 }
 
 /** The engine's `PythonEnvProvider`: a release's lock when it has one, else the definition's requirements. */

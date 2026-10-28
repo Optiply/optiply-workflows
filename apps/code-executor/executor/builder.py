@@ -210,8 +210,14 @@ def installed(eid):
     try:
         with open(os.path.join(final, "size")) as f:
             return int(f.read())
-    except (OSError, ValueError):  # an env from before the size was kept
-        return dir_size(os.path.join(final, "site"))
+    except (OSError, ValueError):  # an env from before the size was kept: walked once, then kept
+        size = dir_size(os.path.join(final, "site"))
+        try:
+            with open(os.path.join(final, "size"), "w") as f:
+                f.write(str(size))
+        except OSError:
+            pass
+        return size
 
 
 def cached(lock):
@@ -316,6 +322,8 @@ def cleaner():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ow-python-builder"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
 
     def answer(self, body):
         """The request's answer; None when no build slot came free. An env that's there needs no slot (most
@@ -351,8 +359,6 @@ class Handler(BaseHTTPRequestHandler):
                 "error": {"kind": "install", "message": f"The env couldn't be written: {exc}"},
                 "log": scrub(output),
             }
-    sys_version = ""
-    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         pass

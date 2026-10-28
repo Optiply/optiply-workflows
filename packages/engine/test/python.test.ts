@@ -276,6 +276,19 @@ describe("a run's Python packages (M23)", () => {
     expect(calls).toBe(2)
   })
 
+  it('asks again when the failure met ahead is old by the time a block waits', async () => {
+    let calls = 0
+    const env = sharedOnce(async () => {
+      calls++
+      if (calls === 1) throw new Error('index down at the start')
+      return 'env'
+    }, 50)
+    env.prefetch()
+    await new Promise((r) => setTimeout(r, 100)) // the first Python block comes long after
+    expect(await env()).toBe('env')
+    expect(calls).toBe(2)
+  })
+
   it('says in the log that it waits for the packages, so a timeout then reads in context', async () => {
     const { outcome, store } = await run(
       { ...shared.services, python: echoEnv, pythonEnv: () => new Promise<string>(() => {}) },

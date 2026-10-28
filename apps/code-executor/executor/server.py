@@ -45,6 +45,8 @@ PARTIAL_LINE_S = 0.25
 # A stream's reader that takes longer than this to take a chunk counts as gone (the jail is killed): writing waits
 # for it, and the run's deadline is only checked between writes.
 STREAM_WRITE_TIMEOUT_S = 10
+# The outcome (a result of up to 16 MB) may take its reader longer; the jail is done and its slot free by then.
+STREAM_OUTCOME_TIMEOUT_S = 120
 MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000
 CHECK_TIMEOUT_MS = 5000
 JAIL_CONFIG = os.path.join(HERE, "jail.cfg")
@@ -152,6 +154,13 @@ class Jail:
 
     def _cgroup(self):
         """nsjail's cgroup for this jail: `NSJAIL.<pid>`, named after the jailed process (nsjail's child)."""
+        try:
+            with open(f"/proc/{self.proc.pid}/task/{self.proc.pid}/children") as f:
+                child = f.read().split()
+            if len(child) == 1 and os.path.isdir(os.path.join(CGROUP_ROOT, f"NSJAIL.{child[0]}")):
+                return os.path.join(CGROUP_ROOT, f"NSJAIL.{child[0]}")
+        except OSError:
+            pass  # a kernel without /proc/…/children: look for the cgroup whose process nsjail started
         try:
             names = os.listdir(CGROUP_ROOT)
         except OSError:
@@ -458,8 +467,10 @@ class Execution:
 
     def _outcome(self, code, killed, elapsed):
         self._end_partial()
-        if self.emit and killed != "cancelled":
-            self._send()  # what came in after the last read, before the outcome
+        # What came in after the last read, before the outcome. A write that failed (timed out) may have left half a
+        # chunk on the connection: then nothing more goes on it.
+        if self.emit and killed != "cancelled" and not self._send():
+            killed = "cancelled"
         logs = self.lines
         if killed == "cancelled":
             return {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}, "logs": logs}
@@ -650,6 +661,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(HTTPStatus.OK, outcome)
         outcome.pop("logs", None)
         try:
+            self.connection.settimeout(STREAM_OUTCOME_TIMEOUT_S)
             self.send_chunk([{"outcome": outcome}])
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
