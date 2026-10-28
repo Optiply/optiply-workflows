@@ -661,4 +661,27 @@ describe.skipIf(!available)('the code executor', () => {
     console.log(`trivial Python block over HTTP: p50 ${p50.toFixed(1)} ms, p90 ${p90.toFixed(1)} ms`)
     expect(p50).toBeLessThan(process.env.CI ? 500 : 150)
   })
+
+  it('runs a block that imports pandas quickly from the warm pool', async () => {
+    await poolFull()
+    const times: number[] = []
+    let warm = 0
+    for (let i = 0; i < 20; i++) {
+      // Time for the pool to replace the jail just used, as between a workflow's runs.
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const started = performance.now()
+      const outcome = await run('import pandas as pd\nreturn int(pd.Series(query1.data).sum())', {
+        query1: { data: [1, 2, 3] },
+      })
+      times.push(performance.now() - started)
+      expect(outcome.result).toBe(6)
+      if (outcome.warm) warm++
+    }
+    times.sort((a, b) => a - b)
+    const p50 = times[10]!
+    console.log(`pandas block from the warm pool: p50 ${p50.toFixed(1)} ms, p90 ${times[18]!.toFixed(1)} ms`)
+    expect(warm).toBeGreaterThanOrEqual(18)
+    // Cold, `import pandas` alone takes ~210 ms (M12); the target is under 60 ms on Compose (§2.26).
+    expect(p50).toBeLessThan(process.env.CI ? 500 : 100)
+  })
 })

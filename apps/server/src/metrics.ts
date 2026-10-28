@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http'
 import { sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { pubsubStats, type RunObserver, type ScheduleFire } from '@ow/engine'
+import { pythonStats } from '@ow/sandbox'
 import { sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import client from 'prom-client'
@@ -105,6 +106,18 @@ export class Metrics {
       collect() {
         this.reset()
         this.inc(sshTunnelStats.iapResumes)
+      },
+    })
+
+    // Python executions (M23), by the executor's jail: warm from its pool, or cold.
+    new client.Counter({
+      name: 'ow_python_executions_total',
+      help: "Python executions this process asked the code executor for, by jail (warm: from the executor's pool)",
+      labelNames: ['jail'],
+      registers,
+      collect() {
+        this.reset()
+        for (const jail of ['warm', 'cold'] as const) this.inc({ jail }, pythonStats[jail])
       },
     })
 

@@ -51,7 +51,7 @@ PREIMPORT = os.environ.get("PYTHON_PREIMPORT", "numpy,pandas")
 WARM_MAX_IDLE_S = float(os.environ.get("PYTHON_WARM_MAX_IDLE_SECONDS", "600"))
 # How long a warm jail may take to get ready, and how many start at once (their imports compete with runs).
 WARM_START_S = 30
-WARM_START_PARALLEL = 2
+WARM_START_PARALLEL = int(os.environ.get("PYTHON_WARM_START_PARALLEL", "1"))
 # A warm jail's nsjail limits: its time in the pool plus the longest run (the server's deadline comes first).
 WARM_LIMIT_S = int(WARM_MAX_IDLE_S + WARM_START_S + MAX_TIMEOUT_MS // 1000 + 1)
 READY = b"\x06"

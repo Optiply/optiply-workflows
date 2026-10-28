@@ -2,8 +2,9 @@
 
 Python code blocks (and loop code runners) run in the **code executor** (`apps/code-executor`), a separate service:
 each execution is a fresh CPython 3.12 interpreter in an [nsjail](https://github.com/google/nsjail) jail with no
-network, a read-only view of Python and its packages, and limits on memory, processes, CPU and time. The design is
-`docs/architecture.md` §2.14; this page is for running it.
+network, a read-only view of Python and its packages, and limits on memory, processes, CPU and time. Some jails are
+started ahead (the warm pool, below). The design is `docs/architecture.md` §2.14 and §2.26; this page is for running
+it.
 
 ## How it fits
 
@@ -12,7 +13,8 @@ worker / api ──HTTP + bearer token──▶ code-executor ──▶ nsjail �
    (internal Docker network `executor`: no database, no internet)
 ```
 
-- The **workers** (and the API, for sync webhook runs) send `POST /run { code, scope, timeoutMs }`; the server checks
+- The **workers** (and the API, for sync webhook runs) send `POST /run { code, scope, timeoutMs, stream: true }` and
+  get what the code prints line by line as it prints it (NDJSON), then the outcome; the server checks
   Python's syntax with `POST /check` before runs, publishing and Git deploys, and the editor does too.
 - The executor holds **no secrets** except its token: no database, no encryption keys. The jail sees nothing of the
   container but Python, the packages and a 64 MB `/tmp`.
@@ -27,10 +29,14 @@ worker / api ──HTTP + bearer token──▶ code-executor ──▶ nsjail �
 | executor | `PYTHON_MAX_CONCURRENT` | CPU count (Compose: 4) | Executions at once; more wait up to `PYTHON_QUEUE_WAIT_SECONDS` (30), then 503 (`unavailable`: the block fails, retries apply). |
 | executor | `PYTHON_MAX_CHECKS` | 2 | Syntax checks at once (the editor's, before publishing), in slots apart from runs: checks never hold up runs. |
 | executor | `PYTHON_MAX_REQUEST_MB` | 64 | The largest request (code plus the blocks it reads). |
-| executor container | `mem_limit` (Compose) | 2g | Must hold `PYTHON_MAX_CONCURRENT × PYTHON_MEMORY_MB` plus the server. |
+| executor | `PYTHON_WARM_JAILS` | `PYTHON_MAX_CONCURRENT` (Compose: 4) | Jails kept started ahead (the warm pool); 0 for none (every run starts its own, as before M23). |
+| executor | `PYTHON_PREIMPORT` | `numpy,pandas` | Modules a warm jail imports while it waits; empty for none. |
+| executor | `PYTHON_WARM_MAX_IDLE_SECONDS` | 600 | A warm jail waiting longer is replaced. |
+| executor | `PYTHON_WARM_START_PARALLEL` | 1 | Warm jails starting at once. Their imports compete with runs for CPU: 2 refills a busy pool faster but slowed back-to-back small blocks (a Python loop) by ~15% on the Mac. |
+| executor container | `mem_limit` (Compose) | 2g | Must hold `PYTHON_MAX_CONCURRENT × PYTHON_MEMORY_MB`, ~45 MB per warm jail (numpy and pandas imported) and the server. |
 
-Fixed limits per execution: the block's timeout (the jail's wall clock and CPU time, rounded up to whole seconds
-plus one), 32 processes, one CPU, 256 open files, 16 MB per file, a 64 MB `/tmp`, 1 MB of printed output (then cut
+Fixed limits per execution: the block's timeout (the server's deadline, from the request; the CPU time, rounded up
+to whole seconds plus one, set by the runner once the request arrives; nsjail's own limits are a backstop), 32 processes, one CPU, 256 open files, 16 MB per file, a 64 MB `/tmp`, 1 MB of printed output (then cut
 off, said so), a 16 MB result.
 
 ## The container's privileges (and why)
@@ -69,13 +75,34 @@ The packages are fixed in the image (`apps/code-executor/executor/requirements.i
    imports the package if it matters.
 5. Deploy: `docker compose up -d --build code-executor`. `GET /health` (and the startup log line) lists the packages.
 
+## The warm pool
+
+Starting a jail and an interpreter costs ~30 ms and `import pandas` ~210 ms more; the warm pool pays that before the
+run. A warm jail is nsjail and the runner started with `OW_WARM`: it imports `PYTHON_PREIMPORT`, says it's ready (one
+byte on its result pipe) and waits for its request. A run takes the one that waited longest; **each jail runs one
+execution and exits** (nothing carries over: not modules, files in `/tmp`, nor the environment), and a replacement
+starts in the background. When none is ready the run starts a cold jail, as before. Syntax checks always start
+their own. The runner exits without the interpreter's teardown (`os._exit` after its outcome), which with pandas
+loaded took longer than a small block's whole run.
+
+`GET /health` shows the pool: `{"size", "ready", "starting", "warm", "cold"}` (the last two count runs since start).
+The app's `/metrics` has `ow_python_executions_total{jail="warm"|"cold"}`. Many cold runs mean the pool empties
+faster than it refills: raise `PYTHON_WARM_JAILS` (and `mem_limit`), or `PYTHON_WARM_START_PARALLEL`.
+
+Measured on the Mac's Docker Desktop (8 CPUs; M23 step 2b), over HTTP: a block importing pandas p50 **37 ms** warm
+(the executor tests: 24 ms) against 359 ms cold; a trivial block 18 ms warm, 48 ms cold; back to back (the pool
+empty, refills one at a time) a trivial block 50 ms and a pandas one 49 ms. A warm jail holds ~42 MB (numpy and
+pandas), counted in its `PYTHON_MEMORY_MB`, as when the code imports them itself.
+
 ## Logs
 
 `docker compose logs code-executor`: one JSON line per event.
 
 - `listening`: started, with its limits and packages.
-- `execution`: each `/run` or `/check`: `ms`, `ok`, and the error kind (`syntax`, `runtime`, `timeout`, `memory`,
-  `serialization`, `cancelled`). No code, data or output is logged.
+- `execution`: each `/run` or `/check`: `ms`, `ok`, the error kind (`syntax`, `runtime`, `timeout`, `memory`,
+  `serialization`, `cancelled`) and `warm`. No code, data or output is logged.
+- `warm_jail_failed`: a warm jail didn't start (nsjail's errors) or wasn't ready within 30 s; the pool retries after
+  2, 4, … up to 60 s.
 - `jail_failed`: a jail couldn't start; nsjail's own errors follow. The block fails as `unavailable` with nsjail's
   reason.
 
@@ -92,3 +119,4 @@ What the code printed is in the run's logs in the app, not here.
 | `unavailable: The executor couldn't start a jail: …` | The container lacks its privileges (the capability, seccomp profile or AppArmor setting), or cgroup v2 isn't available. The message is nsjail's. |
 | The executor exits at start: `PYTHON_EXECUTOR_TOKEN must be set` | No token (or under 16 characters) in its environment. |
 | `memory` errors for reasonable data | Raise `PYTHON_MEMORY_MB` (and `mem_limit` with it); pandas copies data freely. |
+| Python blocks slower than usual, `/health`'s `cold` climbing | The pool empties faster than it refills (see The warm pool), or `warm_jail_failed` in the log. |

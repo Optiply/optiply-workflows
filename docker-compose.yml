@@ -95,7 +95,8 @@ services:
         condition: service_started
         required: false
 
-  # Runs Python code blocks, each in a fresh nsjail jail (docs/architecture.md §2.14, docs/runbooks/python.md).
+  # Runs Python code blocks, each in a fresh nsjail jail (docs/architecture.md §2.14, §2.26, docs/runbooks/python.md);
+  # PYTHON_WARM_JAILS of them are started ahead, numpy and pandas imported, each used for one run.
   # The only service with extra privileges: SYS_ADMIN for nsjail's namespaces, Docker's seccomp profile plus
   # pivot_root, and AppArmor off (Docker's profile refuses nsjail's mounts; the jail has its own seccomp policy).
   # It holds no secrets but its token, has no published port, and sits on an internal network with the app only:
@@ -109,11 +110,14 @@ services:
       PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
       PYTHON_MEMORY_MB: ${PYTHON_MEMORY_MB:-256}
       PYTHON_MAX_CONCURRENT: ${PYTHON_MAX_CONCURRENT:-4}
+      PYTHON_WARM_JAILS: ${PYTHON_WARM_JAILS:-4}
+      PYTHON_PREIMPORT: ${PYTHON_PREIMPORT-numpy,pandas}  # set it empty for none
     cap_add: [SYS_ADMIN]
     security_opt:
       - seccomp=./apps/code-executor/seccomp.json
       - apparmor=unconfined
-    # The jails' memory counts here too: PYTHON_MAX_CONCURRENT x PYTHON_MEMORY_MB, plus the server.
+    # The jails' memory counts here too: PYTHON_MAX_CONCURRENT x PYTHON_MEMORY_MB, plus ~45 MB per warm jail (numpy
+    # and pandas imported) and the server.
     mem_limit: 2g
     pids_limit: 512
     networks: [executor]

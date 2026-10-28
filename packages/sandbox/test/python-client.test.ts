@@ -2,7 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { PythonExecutorClient, SandboxError } from '../src'
+import { PythonExecutorClient, pythonStats, SandboxError } from '../src'
 
 type Handler = (body: Record<string, unknown>, res: ServerResponse) => void
 let handler: Handler = () => {}
@@ -102,7 +102,7 @@ it('asks for a stream and logs each line as it arrives, before the outcome', asy
     send({ log: { level: 'log', message: 'one' } })
     send({ log: { level: 'error', message: 'two' } })
     finish = () => {
-      send({ outcome: { ok: true, result: 3 } })
+      send({ outcome: { ok: true, result: 3, warm: true } })
       res.end()
     }
   }
@@ -110,8 +110,10 @@ it('asks for a stream and logs each line as it arrives, before the outcome', asy
   const running = client().run('x', {}, { timeoutMs: 5000, onLog: (level, args) => logs.push([level, args]) })
   await expect.poll(() => logs.length).toBe(2)
   expect(seen.at(-1)).toMatchObject({ path: '/run', stream: true })
+  const warmBefore = pythonStats.warm
   finish()
   expect(await running).toBe(3)
+  expect(pythonStats.warm).toBe(warmBefore + 1)
   expect(logs).toEqual([
     ['log', ['one']],
     ['error', ['two']],

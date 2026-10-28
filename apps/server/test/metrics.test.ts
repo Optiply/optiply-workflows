@@ -1,5 +1,6 @@
 import { sshTunnelStats } from '@ow/connectors'
 import { createDb } from '@ow/db'
+import { pythonStats } from '@ow/sandbox'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Metrics, metricsAllowed, serveMetrics } from '../src/metrics'
@@ -75,6 +76,19 @@ describe('/metrics', () => {
       expect(value(text, 'ow_pubsub_pull_errors_total')).toBe(0)
     } finally {
       Object.assign(sshTunnelStats, before)
+    }
+  })
+
+  it("reports this process's Python executions by jail (M23)", async () => {
+    const before = { ...pythonStats }
+    pythonStats.warm = 7
+    pythonStats.cold = 2
+    try {
+      const text = (await scrape()).body
+      expect(value(text, 'ow_python_executions_total{jail="warm"}')).toBe(7)
+      expect(value(text, 'ow_python_executions_total{jail="cold"}')).toBe(2)
+    } finally {
+      Object.assign(pythonStats, before)
     }
   })
 

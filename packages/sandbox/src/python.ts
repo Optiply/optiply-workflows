@@ -27,8 +27,15 @@ export interface PythonProblem {
   column: number | null
 }
 
+/**
+ * This process's Python executions by the jail they ran in (M23): `warm` ones from the executor's pool, `cold` ones
+ * started for them. Read by the server's metrics.
+ */
+export const pythonStats = { warm: 0, cold: 0 }
+
 interface Outcome {
   ok: boolean
+  warm?: boolean
   result?: unknown
   error?: { kind: string; message: string; line?: number | null; column?: number | null; traceback?: string }
   logs?: { level: string; message: string }[]
@@ -82,6 +89,8 @@ export class PythonExecutorClient implements PythonRunner {
         return readStream(res, onLog)
       },
     )
+    // An executor from before the pool doesn't say.
+    if (outcome.warm !== undefined) pythonStats[outcome.warm ? 'warm' : 'cold']++
     if (outcome.ok) return outcome.result ?? null
     if (outcome.error?.kind === 'timeout') {
       throw new SandboxError('timeout', `The Python code didn't finish within ${timeoutMs} ms`)

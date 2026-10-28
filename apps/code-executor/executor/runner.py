@@ -247,3 +247,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Everything is written (the channels write at once): skip the interpreter's teardown, which with pandas
+    # loaded takes longer than a small block's whole run, and which the server would wait for.
+    os._exit(0)
