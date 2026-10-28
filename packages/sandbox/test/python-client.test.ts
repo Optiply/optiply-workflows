@@ -152,3 +152,17 @@ it('hangs up mid-stream when the work is aborted', async () => {
   await expect(running).rejects.toThrow('cancelled')
   await expect.poll(() => closed).toBe(true)
 })
+
+it("sends the workflow's env and reads a missing one as python_packages", async () => {
+  handler = (_, res) => {
+    const send = ndjson(res)
+    send({ outcome: { ok: false, error: { kind: 'python_packages', message: "aren't installed here" } } })
+    res.end()
+  }
+  const err = await failure(client().run('x', {}, { timeoutMs: 5000, envId: 'a'.repeat(32) }))
+  expect(seen.at(-1)).toMatchObject({ path: '/run', envId: 'a'.repeat(32) })
+  expect(err).toMatchObject({ kind: 'python_packages', message: "aren't installed here" })
+  handler = (_, res) => json(res, { ok: true, result: 1 })
+  await client().run('x', {}, { timeoutMs: 5000 })
+  expect(seen.at(-1)).not.toHaveProperty('envId')
+})

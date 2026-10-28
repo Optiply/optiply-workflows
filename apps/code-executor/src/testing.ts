@@ -102,7 +102,13 @@ export const EXECUTOR_DOCKER_FLAGS = [
  * of this checkout's image on a random local port, removed by `stop()`. `env` adds settings (e.g.
  * `PYTHON_MAX_CONCURRENT`).
  */
-export async function startTestExecutor(opts: { env?: Record<string, string> } = {}): Promise<TestExecutor> {
+export async function startTestExecutor(
+  opts: {
+    env?: Record<string, string>
+    /** A Docker volume holding the builder's envs (M23), mounted read-only at /envs: start the builder first. */
+    envsVolume?: string
+  } = {},
+): Promise<TestExecutor> {
   if (process.env.PYTHON_EXECUTOR_TEST_URL) {
     return {
       url: process.env.PYTHON_EXECUTOR_TEST_URL.replace(/\/$/, ''),
@@ -120,7 +126,19 @@ export async function startTestExecutor(opts: { env?: Record<string, string> } =
   ])
   execFileSync(
     'docker',
-    ['run', '-d', '--rm', '--name', name, ...EXECUTOR_DOCKER_FLAGS, ...env, '-p', '127.0.0.1::8080', image],
+    [
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      name,
+      ...EXECUTOR_DOCKER_FLAGS,
+      ...env,
+      ...(opts.envsVolume ? ['-v', `${opts.envsVolume}:/envs:ro`] : []),
+      '-p',
+      '127.0.0.1::8080',
+      image,
+    ],
     { stdio: ['ignore', 'ignore', 'inherit'] },
   )
   return { ...(await waitForHealth(name)), token, container: name }
@@ -143,6 +161,8 @@ export interface TestBuilder {
 export async function startTestBuilder(opts: {
   indexUrl: string
   env?: Record<string, string>
+  /** A Docker volume for its envs (shared with an executor); a new one takes the image's /envs and its owner. */
+  envsVolume?: string
 }): Promise<TestBuilder> {
   const image = builderImage()
   const token = randomBytes(24).toString('hex')
@@ -164,6 +184,7 @@ export async function startTestBuilder(opts: {
       '--add-host',
       'host.docker.internal:host-gateway',
       ...env,
+      ...(opts.envsVolume ? ['-v', `${opts.envsVolume}:/envs`] : []),
       '-p',
       '127.0.0.1::8080',
       image,
@@ -171,6 +192,20 @@ export async function startTestBuilder(opts: {
     { stdio: ['ignore', 'ignore', 'inherit'] },
   )
   return { ...(await waitForHealth(name)), token, container: name }
+}
+
+/** A Docker volume for envs shared by a test builder and executor; `remove()` once both have stopped. */
+export function testEnvsVolume(): { name: string; remove(): void } {
+  const name = `ow-python-envs-test-${randomBytes(4).toString('hex')}`
+  execFileSync('docker', ['volume', 'create', name], { stdio: 'ignore' })
+  return {
+    name,
+    remove: () => {
+      try {
+        execFileSync('docker', ['volume', 'rm', '-f', name], { stdio: 'ignore' })
+      } catch {}
+    },
+  }
 }
 
 /** The container's published port, once its `/health` answers; the container is removed if it never does. */

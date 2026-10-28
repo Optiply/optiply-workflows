@@ -4,6 +4,7 @@ Runs inside the jail: one Python code block (or a syntax check), then exits.
 Input is one JSON document on stdin (with "resultFd" and "cpuSeconds", the CPU time it may use from then on):
   {"mode": "run", "code": "...", "scope": {...}}
   {"mode": "check", "fields": [{"id": "...", "code": "..."}]}
+With OW_ENV (a workflow's packages, M23) that directory goes first on sys.path, .pth files and all.
 In a warm jail (OW_WARM names the result fd) it first imports OW_PREIMPORT's modules, writes one byte (\x06) to the
 result fd to say it's ready, and only then waits for its request.
 The outcome is one JSON document on its own pipe (the fd in "resultFd"), so nothing printed is mistaken for it:
@@ -23,6 +24,7 @@ import json
 import math
 import os
 import resource
+import site
 import sys
 import traceback
 
@@ -222,7 +224,18 @@ def limit_cpu(seconds):
     resource.setrlimit(resource.RLIMIT_CPU, (total, total))
 
 
+def use_env(path):
+    """A workflow's packages ahead of the image's: its versions win, the image's stay there for what it lacks."""
+    before = list(sys.path)
+    site.addsitedir(path)
+    added = [entry for entry in sys.path if entry not in before]
+    sys.path[:] = added + before
+
+
 def main():
+    env = os.environ.pop("OW_ENV", None)
+    if env:
+        use_env(env)
     warm = os.environ.pop("OW_WARM", None)
     if warm:
         warm_up(int(warm))

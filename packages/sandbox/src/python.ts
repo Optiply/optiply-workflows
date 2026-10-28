@@ -1,4 +1,4 @@
-import { type LogLevel, SandboxError } from './types'
+import { type LogLevel, SandboxError, type SandboxErrorKind } from './types'
 
 /**
  * Python code blocks run by the code executor (apps/code-executor, docs/architecture.md §2.14), each in a fresh
@@ -16,6 +16,8 @@ export interface PythonRunOptions {
   timeoutMs: number
   /** Aborting hangs up on the executor, which kills the jail. */
   signal?: AbortSignal
+  /** The workflow's packages (M23): the builder's env, ahead of the image's packages. */
+  envId?: string
   /** What the code prints, a line each (stdout as `log`, stderr as `error`), as it prints it. */
   onLog?: (level: LogLevel, args: unknown[]) => void
 }
@@ -42,7 +44,7 @@ interface Outcome {
   problems?: PythonProblem[]
 }
 
-const KINDS = new Set(['syntax', 'runtime', 'timeout', 'memory', 'serialization'])
+const KINDS = new Set(['syntax', 'runtime', 'timeout', 'memory', 'serialization', 'python_packages'])
 /** The executor is asked to stop this much before the run's timeout, so it reports the timeout (with the prints). */
 const RUN_MARGIN_MS = 500
 /** How long a check may take, the executor's queue included, before it counts as unavailable. */
@@ -76,7 +78,7 @@ export class PythonExecutorClient implements PythonRunner {
     }
     const outcome = await this.request(
       '/run',
-      { code, scope, timeoutMs: asked, stream: true },
+      { code, scope, timeoutMs: asked, stream: true, ...(opts.envId && { envId: opts.envId }) },
       opts.signal,
       timeoutMs + RUN_SLACK_MS,
       async (res) => {
@@ -218,7 +220,7 @@ function toSandboxError(error: Outcome['error']): SandboxError {
     return new SandboxError('unavailable', error.message)
   }
   return new SandboxError(
-    error.kind as 'syntax' | 'runtime' | 'timeout' | 'memory' | 'serialization',
+    error.kind as Exclude<SandboxErrorKind, 'unavailable'>,
     `${error.message}${where}`,
     error.traceback,
     Object.keys(details).length ? details : undefined,

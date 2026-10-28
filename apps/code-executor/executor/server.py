@@ -1,7 +1,7 @@
 """
 The code executor: runs Python code blocks for the workflow workers, each in a fresh nsjail jail.
 
-  POST /run    {"code": "...", "scope": {...}, "timeoutMs": 10000}
+  POST /run    {"code": "...", "scope": {...}, "timeoutMs": 10000, "envId": "..." (a workflow's packages, optional)}
                -> {"ok": true, "result": ..., "logs": [...]} or {"ok": false, "error": {...}, "logs": [...]}
                With "stream": true, NDJSON (chunked) instead: {"log": {"level", "message"}} per line as the code
                prints it, then {"outcome": {"ok", "result" | "error"}} as the last line.
@@ -17,6 +17,7 @@ import collections
 import hmac
 import json
 import os
+import re
 import select
 import selectors
 import signal
@@ -55,6 +56,9 @@ WARM_START_PARALLEL = int(os.environ.get("PYTHON_WARM_START_PARALLEL", "1"))
 # A warm jail's nsjail limits: its time in the pool plus the longest run (the server's deadline comes first).
 WARM_LIMIT_S = int(WARM_MAX_IDLE_S + WARM_START_S + MAX_TIMEOUT_MS // 1000 + 1)
 READY = b"\x06"
+# Workflows' packages (M23): envs the builder installed (`<envId>/site`), mounted read-only into the jail.
+ENVS = os.environ.get("PYTHON_ENVS_DIR", "/envs")
+ENV_ID = re.compile(r"^[0-9a-f]{32}$")
 
 run_slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 check_slots = threading.BoundedSemaphore(MAX_CHECKS)
@@ -81,7 +85,7 @@ class Jail:
     limits allow for the time it may wait in the pool (the runner lowers its CPU limit once the request arrives,
     and the server keeps the request's deadline)."""
 
-    def __init__(self, seconds, warm=False):
+    def __init__(self, seconds, warm=False, env_site=None):
         self.warm = warm
         self.born = time.monotonic()
         self.result_r, result_w = os.pipe()
@@ -99,6 +103,9 @@ class Jail:
         ]
         if warm:
             args += ["--env", f"OW_WARM={result_w}", "--env", f"OW_PREIMPORT={PREIMPORT}"]
+        if env_site:
+            # The workflow's packages, ahead of the image's on sys.path (the runner puts them there).
+            args += ["--bindmount_ro", f"{env_site}:/opt/env", "--env", "OW_ENV=/opt/env"]
         try:
             self.proc = subprocess.Popen(
                 args,
@@ -245,8 +252,9 @@ class Execution:
 
     `emit`, when given, gets the log lines as they're printed (a list per read; the server streams them)."""
 
-    def __init__(self, request, timeout_ms, emit=None):
+    def __init__(self, request, timeout_ms, emit=None, env_site=None):
         self.request = request
+        self.env_site = env_site
         self.timeout_ms = timeout_ms
         self.emit = emit
         self.lines = []  # the log lines so far, {"level", "message"}
@@ -264,7 +272,7 @@ class Execution:
         seconds = max(1, -(-self.timeout_ms // 1000))  # whole seconds, rounded up
         started = time.monotonic()
         if jail is None:
-            jail = Jail(seconds + 1)
+            jail = Jail(seconds + 1, env_site=self.env_site)
         proc = jail.proc
         # The runner writes its outcome to the fd nsjail passes through, and limits its own CPU time from now (a
         # warm jail's nsjail limits had to allow for its time in the pool).
@@ -525,16 +533,21 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self.refuse(HTTPStatus.BAD_REQUEST, f"Send a JSON object of at most {MAX_REQUEST_BYTES // (1024 * 1024)} MB")
         stream = False
+        env_id = None
         if self.path == "/run":
             code, scope, timeout_ms = body.get("code"), body.get("scope", {}), body.get("timeoutMs", 10000)
             stream = body.get("stream", False)
+            env_id = body.get("envId")
             if (
                 not isinstance(code, str)
                 or not isinstance(scope, dict)
                 or not isinstance(timeout_ms, int)
                 or not isinstance(stream, bool)
+                or not (env_id is None or (isinstance(env_id, str) and ENV_ID.match(env_id)))
             ):
-                return self.refuse(HTTPStatus.BAD_REQUEST, "Expected code (a string), scope (an object), timeoutMs")
+                return self.refuse(
+                    HTTPStatus.BAD_REQUEST, "Expected code (a string), scope (an object), timeoutMs, envId (an env's id)"
+                )
             timeout_ms = min(max(timeout_ms, 100), MAX_TIMEOUT_MS)
             request = {"mode": "run", "code": code, "scope": scope}
         else:
@@ -562,12 +575,17 @@ class Handler(BaseHTTPRequestHandler):
                 def emit(lines):
                     self.send_chunk([{"log": line} for line in lines])
 
+            env_site = os.path.join(ENVS, env_id, "site") if env_id else None
             if gone:
                 outcome = {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}}
+            elif env_id and not os.path.isfile(os.path.join(ENVS, env_id, "lock.json")):
+                message = f"The workflow's Python packages aren't installed here (env {env_id}): the builder installs them"
+                outcome = {"ok": False, "error": {"kind": "python_packages", "message": message}, "logs": []}
             else:
-                # Runs take a warm jail when one is ready; checks start their own (they have their own limits).
-                jail = pool.take() if self.path == "/run" else None
-                outcome = Execution(request, timeout_ms, emit).run(self.client_gone, jail)
+                # Runs take a warm jail when one is ready (a warm jail's mounts are fixed: never for packages);
+                # checks start their own (they have their own limits).
+                jail = pool.take() if self.path == "/run" and not env_id else None
+                outcome = Execution(request, timeout_ms, emit, env_site).run(self.client_gone, jail)
         finally:
             slots.release()
         ms = round((time.monotonic() - started) * 1000)
@@ -575,7 +593,15 @@ class Handler(BaseHTTPRequestHandler):
         warm = outcome.pop("warm", False)
         if self.path == "/run":
             outcome["warm"] = warm
-        log("execution", path=self.path, ms=ms, ok=outcome.get("ok"), error=error and error.get("kind"), warm=warm)
+        log(
+            "execution",
+            path=self.path,
+            ms=ms,
+            ok=outcome.get("ok"),
+            error=error and error.get("kind"),
+            warm=warm,
+            env=env_id,
+        )
         if error and error.get("kind") == "cancelled":
             self.close_connection = True
             return
