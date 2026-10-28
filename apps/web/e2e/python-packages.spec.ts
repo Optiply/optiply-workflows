@@ -40,3 +40,29 @@ test("a workflow's Python packages in its settings", async ({ page }) => {
   await expect(panel.getByLabel('Python packages')).toHaveValue('polars==1.9.0\nopenpyxl>=3.1')
   await expect(panel.getByPlaceholder('15')).toHaveValue('')
 })
+
+test('installing the packages from the settings, and why it failed', async ({ page }) => {
+  test.skip(!process.env.E2E_PYTHON_PACKAGES, 'needs the package builder (Docker)')
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Install ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await clickEmptyCanvas(page)
+  const panel = page.getByTestId('side-panel')
+  await panel.getByRole('button', { name: 'Settings', exact: true }).click()
+  const state = panel.getByTestId('packages-state')
+
+  // Requirements only this run asks for (the specifier changes nothing): nothing has installed them before.
+  await panel.getByLabel('Python packages').fill(`owtest-a\nowtest-b!=0.0.${Date.now()}`)
+  await expect(state).toContainText('Not installed yet')
+  await state.getByRole('button', { name: 'Install now' }).click()
+  await expect(state).toContainText('Installed: owtest-a==1.0.0, owtest-b==1.0.0', { timeout: 60_000 })
+
+  await panel.getByLabel('Python packages').fill('owtest-missing')
+  await expect(state).toContainText('Not installed yet')
+  await state.getByRole('button', { name: 'Install now' }).click()
+  await expect(state).toContainText('Install failed', { timeout: 60_000 })
+  await state.getByText("pip's output").click()
+  await expect(state.locator('pre')).toContainText('owtest-missing')
+})

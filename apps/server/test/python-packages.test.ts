@@ -251,6 +251,37 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
     )
   })
 
+  it('tells the editor whether packages are installed, and installs them on request', async () => {
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, 'pkg-run'))
+    const ask = async (requirements: string[]) =>
+      data(await admin.query('workflows.pythonEnv', { workflowId: flow!.id, requirements }))
+    expect(await ask(['owtest-b==1.0.0'])).toEqual({ available: true, state: 'none' })
+    const installed = data(
+      await admin.mutate('workflows.installPythonEnv', {
+        workflowId: flow!.id,
+        requirements: ['owtest-b==1.0.0'],
+      }),
+    )
+    expect(installed).toMatchObject({ available: true, state: 'ready', packages: ['owtest-b==1.0.0'] })
+    expect(installed.sizeBytes).toBeGreaterThan(0)
+    expect(await ask(['owtest-b==1.0.0'])).toMatchObject({ state: 'ready' })
+
+    const failed = data(
+      await admin.mutate('workflows.installPythonEnv', {
+        workflowId: flow!.id,
+        requirements: ['owtest-gone'],
+      }),
+    )
+    expect(failed).toMatchObject({ state: 'failed', error: expect.stringContaining('owtest-gone') })
+    expect(failed.log).toContain('owtest-gone')
+    const refused = await admin.mutate('workflows.installPythonEnv', {
+      workflowId: flow!.id,
+      requirements: ['-e git+https://x'],
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toContain('pip options')
+  })
+
   it('refuses packages on an instance without a builder', async () => {
     const definition = {
       schemaVersion: 1,
@@ -266,6 +297,10 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
           path: ['settings', 'python', 'requirements'],
         }),
       ])
+      const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, 'pkg-run'))
+      expect(
+        data(await admin.query('workflows.pythonEnv', { workflowId: flow!.id, requirements: ['owtest-a'] })),
+      ).toMatchObject({ available: false, message: expect.stringContaining('no package builder') })
     } finally {
       configurePythonPackages(env.config)
       configurePython(env.config)

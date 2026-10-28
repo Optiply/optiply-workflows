@@ -4,11 +4,11 @@ import {
   MAX_RUN_TIMEOUT_MS,
   type WorkflowDefinition,
 } from '@ow/definition'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
-import { Button, ErrorNote, Field, Input, Textarea } from '@/components/ui'
+import { Button, ErrorNote, Field, Input, Spinner, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
 
@@ -56,7 +56,7 @@ export function WorkflowSettingsTab({
           onChange={(e) => setTimeoutMinutes(e.target.value)}
         />
       </Field>
-      <PythonPackages canEdit={canEdit} />
+      <PythonPackages workflowId={workflow.id} canEdit={canEdit} hasEdit={hasEdit} />
       <ConcurrencyLimit workflow={workflow} canEdit={hasEdit} />
       {workflow.level === 'own' && <GitProtection workflow={workflow} />}
     </div>
@@ -79,7 +79,16 @@ function withSetting<K extends keyof WorkflowSettings>(
  * The workflow's Python packages (M23): pip requirements, one a line, installed for its Python blocks. Blank lines
  * aren't kept; the validator's problems show under the field, by line.
  */
-function PythonPackages({ canEdit }: { canEdit: boolean }) {
+function PythonPackages({
+  workflowId,
+  canEdit,
+  hasEdit,
+}: {
+  workflowId: string
+  canEdit: boolean
+  /** Edit on the workflow: the install state and Install now (they're about the packages, not this draft). */
+  hasEdit: boolean
+}) {
   const requirements = useEditor((s) => s.definition.settings?.python?.requirements)
   // The whole list from the store (a filtered one would be a new array on every read), filtered here.
   const problems = useEditor((s) => s.diagnostics).filter((d) => d.code === 'invalid_requirement')
@@ -119,8 +128,87 @@ function PythonPackages({ canEdit }: { canEdit: boolean }) {
           })}
         </ul>
       )}
+      {hasEdit && requirements?.length && !problems.length ? (
+        <PackagesState workflowId={workflowId} requirements={requirements} />
+      ) : null}
     </Field>
   )
+}
+
+/**
+ * Whether these packages are installed (M23): their versions and size, pip's reason when it failed, or not yet;
+ * Install now so the next run doesn't wait. Asked again a moment after the field stops changing.
+ */
+function PackagesState({ workflowId, requirements }: { workflowId: string; requirements: string[] }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const settled = useSettled(requirements, 600)
+  const input = { workflowId, requirements: settled }
+  const state = useQuery(trpc.workflows.pythonEnv.queryOptions(input))
+  const install = useMutation(
+    trpc.workflows.installPythonEnv.mutationOptions({
+      onSuccess: (data) => queryClient.setQueryData(trpc.workflows.pythonEnv.queryKey(input), data),
+    }),
+  )
+  const data = state.data
+  const button = (label: string) => (
+    <Button size="sm" loading={install.isPending} onClick={() => install.mutate(input)}>
+      {label}
+    </Button>
+  )
+  return (
+    <div className="flex flex-col gap-1.5 text-xs" data-testid="packages-state">
+      {install.isPending ? (
+        <span className="text-muted">Installing… (a first install can take a minute)</span>
+      ) : !data ? (
+        <Spinner />
+      ) : !data.available ? (
+        <span className="text-warning-strong">{data.message}</span>
+      ) : data.state === 'none' ? (
+        <div className="flex items-center gap-2">
+          <span className="text-muted">Not installed yet: the next run installs them first.</span>
+          {button('Install now')}
+        </div>
+      ) : data.state === 'ready' ? (
+        <span className="text-muted">
+          Installed: {data.packages.join(', ')} ({formatBytes(data.sizeBytes)})
+        </span>
+      ) : (
+        <>
+          <div className="flex items-center gap-2">
+            <span className="text-danger">Install failed: {data.error}</span>
+            {button('Try again')}
+          </div>
+          {data.log && (
+            <details>
+              <summary className="cursor-pointer text-muted">pip's output</summary>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-canvas p-2 font-mono">
+                {data.log}
+              </pre>
+            </details>
+          )}
+        </>
+      )}
+      <ErrorNote error={install.error ?? state.error} />
+    </div>
+  )
+}
+
+/** `value` once it has stayed the same for `ms` (compared as JSON). */
+function useSettled<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value)
+  const key = JSON.stringify(value)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for `value`
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), ms)
+    return () => clearTimeout(timer)
+  }, [key, ms])
+  return settled
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} kB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** Owners protect the workflow in Git (M11), or unprotect it. */

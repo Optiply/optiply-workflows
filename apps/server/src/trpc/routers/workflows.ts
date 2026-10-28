@@ -2,6 +2,7 @@ import {
   environments,
   permissions,
   pubsubDeliveries,
+  pythonEnvs,
   type Workflow,
   webhookRejections,
   workflowReleases,
@@ -10,11 +11,15 @@ import {
 } from '@ow/db'
 import {
   definitionHash,
+  MAX_REQUIREMENT_LENGTH,
+  MAX_REQUIREMENTS,
+  requirementProblems,
   validateDefinition,
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '@ow/definition'
 import { checkBodySchema } from '@ow/definition/body-schema'
+import { BlockFailure } from '@ow/engine'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
@@ -28,10 +33,15 @@ import {
   requireLevel,
 } from '../../services/permissions'
 import { pythonRunner } from '../../services/python'
+import { envForRequirements, pythonBuilder, requirementsHash } from '../../services/python-envs'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
+/** A workflow's Python packages (M23), as the editor's field holds them. */
+const requirementsInput = z.array(z.string().max(MAX_REQUIREMENT_LENGTH)).min(1).max(MAX_REQUIREMENTS)
+const NO_BUILDER =
+  "This instance can't install Python packages: it has no package builder (PYTHON_BUILDER_URL)"
 /** Appears in webhook URLs (M4), so it's a stable identifier. */
 const Slug = z
   .string()
@@ -336,6 +346,45 @@ export const workflowsRouter = router({
       }
     }),
 
+  /**
+   * The state of a set of Python packages (M23) for the editor: installed (the lock's packages, its size), failed
+   * (pip's reason and output) or not yet. The editor sends what its field holds, saved or not.
+   */
+  pythonEnv: authedProcedure
+    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .query(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      return pythonEnvState(ctx.db, input.requirements)
+    }),
+
+  /** Installs a set of Python packages now (M23), so the next run doesn't wait; the answer is the new state. */
+  installPythonEnv: authedProcedure
+    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      const problem = requirementProblems(input.requirements)[0]
+      if (problem) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `${input.requirements[problem.index]}: ${problem.message}`,
+        })
+      }
+      const client = pythonBuilder()
+      if (!client) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: NO_BUILDER })
+      try {
+        await envForRequirements(ctx.db, client, input.requirements, {
+          workflowId: workflow.id,
+          actorUserId: ctx.user.id,
+        })
+      } catch (err) {
+        if (!(err instanceof BlockFailure)) throw err
+        // Recorded as failed: the state says why.
+      }
+      return pythonEnvState(ctx.db, input.requirements)
+    }),
+
   /** Deletes the workflow with its releases and run history. */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
@@ -356,3 +405,29 @@ export const workflowsRouter = router({
     return { ok: true }
   }),
 })
+
+/** `python_envs`' row for these requirements, as the editor shows it. */
+async function pythonEnvState(db: Context['db'], requirements: string[]) {
+  if (!pythonBuilder()) return { available: false as const, message: NO_BUILDER }
+  const [row] = await db
+    .select()
+    .from(pythonEnvs)
+    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements)))
+  if (!row) return { available: true as const, state: 'none' as const }
+  if (row.state === 'failed') {
+    return {
+      available: true as const,
+      state: 'failed' as const,
+      error: row.error?.message ?? 'The install failed',
+      log: row.log ?? '',
+      at: row.lastUsedAt,
+    }
+  }
+  return {
+    available: true as const,
+    state: 'ready' as const,
+    packages: (row.lock?.packages ?? []).map((p) => `${p.name}==${p.version}`),
+    sizeBytes: row.sizeBytes ?? 0,
+    at: row.builtAt,
+  }
+}

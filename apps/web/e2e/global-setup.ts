@@ -5,7 +5,13 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { executorAvailable, startTestExecutor } from '@ow/code-executor/testing'
+import {
+  executorAvailable,
+  startTestBuilder,
+  startTestExecutor,
+  startTestIndex,
+  testEnvsVolume,
+} from '@ow/code-executor/testing'
 import { startFakePubSub, startTestIapServer } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
@@ -63,8 +69,28 @@ export default async function globalSetup() {
 
   // Python (M12): the code executor in a container, when Docker is there (CI must have it). Specs that need it read
   // E2E_PYTHON.
-  const executor = executorAvailable() ? await startTestExecutor() : null
+  // Workflows' packages (M23): a local package index, the builder and the executor sharing an envs volume, unless
+  // the executor is another one (PYTHON_EXECUTOR_TEST_URL). Specs that need them read E2E_PYTHON_PACKAGES.
+  const docker = executorAvailable()
+  const packages = docker && !process.env.PYTHON_EXECUTOR_TEST_URL
+  const index = packages
+    ? await startTestIndex([
+        {
+          name: 'owtest-a',
+          version: '1.0.0',
+          requires: ['owtest-b'],
+          files: { 'owtest_a/__init__.py': 'from owtest_b import VERSION as B\nNAME = "owtest-a"\n' },
+        },
+        { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
+      ])
+    : null
+  const volume = packages ? testEnvsVolume() : null
+  // The builder first: a new volume takes its /envs and their owner.
+  const builder =
+    index && volume ? await startTestBuilder({ indexUrl: index.url, envsVolume: volume.name }) : null
+  const executor = docker ? await startTestExecutor(volume ? { envsVolume: volume.name } : {}) : null
   if (executor) process.env.E2E_PYTHON = '1'
+  if (builder) process.env.E2E_PYTHON_PACKAGES = '1'
 
   // Google Cloud IAP (M18): a fake Google issues tokens (for a service account key, and from its metadata server as
   // this server's own identity) and a fake IAP endpoint takes them. Specs read the key from E2E_IAP_KEY.
@@ -147,6 +173,7 @@ export default async function globalSetup() {
     GITHUB_API_URL: github.url,
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
+    ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
     GOOGLE_PUBSUB_URL: pubsub.url,
@@ -217,6 +244,9 @@ export default async function globalSetup() {
     await pg.stop()
     await github.close()
     await executor?.stop()
+    await builder?.stop()
+    await index?.stop()
+    volume?.remove()
     await new Promise((r) => iapControl.close(r))
     await iap.close()
     await pubsub.close()
