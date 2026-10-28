@@ -5,6 +5,7 @@
 import { executorAvailable, startTestExecutor, type TestExecutor } from '@ow/code-executor/testing'
 import { PythonExecutorClient } from '@ow/sandbox'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { MemoryRunStore } from '../src'
 import { code, fakeQ, run, testServices, wf } from './helpers'
 
 const available = executorAvailable()
@@ -164,6 +165,23 @@ describe.skipIf(!available)('Python code blocks', () => {
       message: "The Python code didn't finish within 2500 ms",
     })
     expect(store.logs.map((l) => l.message)).toEqual(['started'])
+  })
+
+  it('logs each line while the block is still running', async () => {
+    const store = new MemoryRunStore()
+    const running = run(
+      services(),
+      wf(
+        [python('slow', py('import time', 'print("first")', 'time.sleep(2)', 'print("second")', 'return 1'))],
+        [['startTrigger', 'slow']],
+      ),
+      { store },
+    )
+    // "first" is in the run's log a good while before the block ends.
+    await expect.poll(() => store.logs.map((l) => l.message), { timeout: 1800 }).toEqual(['first'])
+    const { outcome } = await running
+    expect(outcome.status).toBe('succeeded')
+    expect(store.logs.map((l) => l.message)).toEqual(['first', 'second'])
   })
 
   it('hangs up on the executor when the run is aborted', async () => {

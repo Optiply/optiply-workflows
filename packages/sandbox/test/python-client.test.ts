@@ -89,3 +89,64 @@ it('reads busy and refusals as unavailable, and returns the problems of a check'
     { id: 'a', message: 'SyntaxError', line: 1, column: 2 },
   ])
 })
+
+const ndjson = (res: ServerResponse) => {
+  res.writeHead(200, { 'content-type': 'application/x-ndjson' })
+  return (item: unknown) => res.write(`${JSON.stringify(item)}\n`)
+}
+
+it('asks for a stream and logs each line as it arrives, before the outcome', async () => {
+  let finish = () => {}
+  handler = (_, res) => {
+    const send = ndjson(res)
+    send({ log: { level: 'log', message: 'one' } })
+    send({ log: { level: 'error', message: 'two' } })
+    finish = () => {
+      send({ outcome: { ok: true, result: 3 } })
+      res.end()
+    }
+  }
+  const logs: [string, unknown[]][] = []
+  const running = client().run('x', {}, { timeoutMs: 5000, onLog: (level, args) => logs.push([level, args]) })
+  await expect.poll(() => logs.length).toBe(2)
+  expect(seen.at(-1)).toMatchObject({ path: '/run', stream: true })
+  finish()
+  expect(await running).toBe(3)
+  expect(logs).toEqual([
+    ['log', ['one']],
+    ['error', ['two']],
+  ])
+})
+
+it('reads a stream that ends without its outcome as unavailable, keeping what was logged', async () => {
+  handler = (_, res) => {
+    ndjson(res)({ log: { level: 'log', message: 'started' } })
+    setTimeout(() => res.destroy(), 50)
+  }
+  const logs: unknown[][] = []
+  const err = await failure(client().run('x', {}, { timeoutMs: 5000, onLog: (_, args) => logs.push(args) }))
+  expect(err.kind).toBe('unavailable')
+  expect(err.message).toContain('The Python executor stopped answering')
+  expect(logs).toEqual([['started']])
+})
+
+it('hangs up mid-stream when the work is aborted', async () => {
+  let closed = false
+  handler = (_, res) => {
+    ndjson(res)({ log: { level: 'log', message: 'started' } })
+    res.on('close', () => {
+      closed = true
+    })
+  }
+  const abort = new AbortController()
+  const logs: unknown[][] = []
+  const running = client().run(
+    'x',
+    {},
+    { timeoutMs: 5000, signal: abort.signal, onLog: (_, a) => logs.push(a) },
+  )
+  await expect.poll(() => logs.length).toBe(1)
+  abort.abort(new Error('cancelled'))
+  await expect(running).rejects.toThrow('cancelled')
+  await expect.poll(() => closed).toBe(true)
+})

@@ -67,6 +67,33 @@ test('a Python code block in the editor', async ({ page }) => {
   })
 })
 
+test("a Python block's prints show in the run view while it runs", async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('button', { name: 'New workflow' }).click()
+  await page.getByPlaceholder('Sync orders').fill(`Python logs ${Date.now().toString(36)}`)
+  await page.getByRole('button', { name: 'Create workflow' }).click()
+  await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
+  await block(page, 'startTrigger').click()
+  await addBlock(page, 'Python code')
+  // On one line: the typing helper compares single-line text.
+  await typeInto(
+    page,
+    field(page, 'python1', 'code.py'),
+    'import time; print("first"); time.sleep(4); print("second"); return 1',
+  )
+  await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
+
+  await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
+  const panel = page.getByTestId('run-panel')
+  await panel.getByRole('button', { name: 'logs' }).click()
+  // The first line is there while the block still runs (it sleeps 4 s after printing it).
+  await expect(panel.getByTestId('run-logs')).toContainText('first', { timeout: 3500 })
+  await expect(panel.getByTestId('run-logs')).not.toContainText('second')
+  await expect(block(page, 'python1')).toHaveAttribute('data-status', 'running')
+  await expect(panel.getByTestId('run-logs')).toContainText('second', { timeout: 10_000 })
+  await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded')
+})
+
 /** Runs the workflow and waits for this run (not an earlier one) to reply with `text`. */
 async function runAndExpect(page: Page, text: string) {
   const picker = page.getByLabel('Run', { exact: true })
