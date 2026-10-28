@@ -1,9 +1,11 @@
 """
 Runs inside the jail: one Python code block (or a syntax check), then exits.
 
-Input is one JSON document on stdin:
+Input is one JSON document on stdin (with "resultFd" and "cpuSeconds", the CPU time it may use from then on):
   {"mode": "run", "code": "...", "scope": {...}}
   {"mode": "check", "fields": [{"id": "...", "code": "..."}]}
+In a warm jail (OW_WARM names the result fd) it first imports OW_PREIMPORT's modules, writes one byte (\x06) to the
+result fd to say it's ready, and only then waits for its request.
 The outcome is one JSON document on its own pipe (the fd in "resultFd"), so nothing printed is mistaken for it:
   {"ok": true, "result": ...}
   {"ok": false, "error": {"kind": "syntax|runtime|serialization|memory", "message": "...", "line": 3, ...}}
@@ -15,10 +17,12 @@ What the code prints is the run's log: sys.stdout and sys.stderr write tagged fr
 import ast
 import datetime
 import decimal
+import importlib
 import io
 import json
 import math
 import os
+import resource
 import sys
 import traceback
 
@@ -191,12 +195,45 @@ def check(fields):
     return {"ok": True, "problems": problems}
 
 
+def warm_up(ready_fd):
+    """A warm jail: the usual packages imported ahead (quietly: their output isn't the code's), then ready."""
+    names = [name for name in os.environ.pop("OW_PREIMPORT", "").split(",") if name.strip()]
+    out, err = sys.stdout, sys.stderr
+    with open(os.devnull, "w") as quiet:
+        sys.stdout = sys.stderr = quiet
+        try:
+            for name in names:
+                try:
+                    importlib.import_module(name.strip())
+                except Exception:
+                    pass  # a missing package: the code's own import says so
+        finally:
+            sys.stdout, sys.stderr = out, err
+    os.write(ready_fd, b"\x06")
+
+
+def limit_cpu(seconds):
+    """CPU time from now on (a warm jail's nsjail limit allowed for its imports and its wait)."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    total = math.ceil(usage.ru_utime + usage.ru_stime) + int(seconds)
+    _, hard = resource.getrlimit(resource.RLIMIT_CPU)
+    if hard != resource.RLIM_INFINITY:
+        total = min(total, hard)  # it may only be lowered (a cold jail's is about this already)
+    resource.setrlimit(resource.RLIMIT_CPU, (total, total))
+
+
 def main():
+    warm = os.environ.pop("OW_WARM", None)
+    if warm:
+        warm_up(int(warm))
     sys.stdout = Channel(b"L")
     sys.stderr = Channel(b"E")
     request = json.loads(sys.stdin.buffer.read(), object_hook=Obj)
     sys.stdin.close()
     result_fd = int(request.pop("resultFd", 3))
+    cpu_seconds = request.pop("cpuSeconds", None)
+    if cpu_seconds:
+        limit_cpu(cpu_seconds)
     if request.get("mode") == "check":
         outcome = check(request["fields"])
     else:

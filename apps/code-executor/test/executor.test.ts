@@ -12,6 +12,15 @@ interface Outcome {
   error?: { kind: string; message: string; line?: number | null; column?: number; traceback?: string }
   logs: { level: string; message: string }[]
   problems?: { id: string; message: string; line: number; column: number }[]
+  warm?: boolean
+}
+
+interface PoolStats {
+  size: number
+  ready: number
+  starting: number
+  warm: number
+  cold: number
 }
 
 const available = executorAvailable()
@@ -58,6 +67,11 @@ async function stream(
     buffered = lines.pop()!
     for (const line of lines) {
       const item = JSON.parse(line) as Streamed
+      if ('outcome' in item) {
+        // Whether it ran warm is the pool tests' subject.
+        expect(typeof item.outcome.warm).toBe('boolean')
+        delete item.outcome.warm
+      }
       items.push({ at: performance.now() - started, item })
       if (opts.until?.(item)) {
         await reader.cancel()
@@ -67,6 +81,26 @@ async function stream(
   }
   expect(buffered).toBe('')
   return items
+}
+
+async function poolStats(of: TestExecutor = executor): Promise<PoolStats> {
+  return ((await (await fetch(`${of.url}/health`)).json()) as { pool: PoolStats }).pool
+}
+
+/** Waits for every warm jail to be ready (each run takes one; replacements start in the background). */
+async function poolFull(of: TestExecutor = executor) {
+  await expect
+    .poll(async () => (await poolStats(of)).ready, { timeout: 30_000 })
+    .toBe((await poolStats(of)).size)
+}
+
+/** The jails in the executor's container (warm ones waiting included); null without a container to look in. */
+function jails(of: TestExecutor = executor): number | null {
+  if (!of.container) return null
+  return execFileSync('docker', ['top', of.container])
+    .toString()
+    .split('\n')
+    .filter((line) => line.includes('nsjail')).length
 }
 
 /** Lines of Python, so the tests read like the code people write. */
@@ -269,6 +303,8 @@ describe.skipIf(!available)('the code executor', () => {
     })
 
     it('kills the jail when the caller hangs up mid-stream', async () => {
+      await poolFull()
+      const before = jails()
       const abort = new AbortController()
       const items = await stream(py('import time', 'print("started")', 'time.sleep(20)'), 30_000, {
         signal: abort.signal,
@@ -276,16 +312,102 @@ describe.skipIf(!available)('the code executor', () => {
       })
       expect(items).toHaveLength(1)
       abort.abort()
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      if (executor.container) {
-        const processes = execFileSync('docker', ['top', executor.container]).toString()
-        expect(processes).not.toContain('nsjail')
-      }
+      // Its jail is gone: back to the warm ones (its replacement among them).
+      if (before !== null) await expect.poll(() => jails(), { timeout: 10_000 }).toBeLessThanOrEqual(before)
     })
 
     it('refuses a stream flag that is not a boolean', async () => {
       expect((await post('/run', { code: 'return 1', stream: 'yes' })).status).toBe(400)
     })
+  })
+
+  describe('the warm pool', () => {
+    it('runs in a jail started ahead, its packages already imported, and refills', async () => {
+      await poolFull()
+      const stats = await poolStats()
+      expect(stats).toMatchObject({ size: 4, ready: 4 })
+      const outcome = await run(py('import sys', 'return ["pandas" in sys.modules, "numpy" in sys.modules]'))
+      expect(outcome).toMatchObject({ ok: true, result: [true, true], warm: true })
+      expect((await poolStats()).warm).toBe(stats.warm + 1)
+      await poolFull()
+    })
+
+    it('carries nothing over from one execution to the next', async () => {
+      await poolFull()
+      const first = await run(
+        py(
+          'import json, os',
+          'json.marker = "left behind"',
+          'open("/tmp/left", "w").write("behind")',
+          'os.environ["LEFT"] = "behind"',
+          'globals()["left"] = 1',
+          'return 1',
+        ),
+      )
+      expect(first).toMatchObject({ ok: true, warm: true })
+      await poolFull()
+      const second = await run(
+        py(
+          'import json, os',
+          'return {',
+          '    "module": hasattr(json, "marker"),',
+          '    "file": os.path.exists("/tmp/left"),',
+          '    "env": sorted(k for k in os.environ if k in ("LEFT", "OW_WARM", "OW_PREIMPORT")),',
+          '    "global": "left" in globals(),',
+          '}',
+        ),
+      )
+      expect(second).toMatchObject({
+        ok: true,
+        warm: true,
+        result: { module: false, file: false, env: [], global: false },
+      })
+    })
+
+    it("counts a warm jail's limits from its request, not from its start", async () => {
+      await poolFull()
+      await new Promise((resolve) => setTimeout(resolve, 2500)) // the jails wait in the pool
+      // A second and a half of CPU within a two-second timeout: neither the wait nor the imports count.
+      const busy = await run(
+        py(
+          'import time',
+          'end = time.process_time() + 1.5',
+          'while time.process_time() < end: pass',
+          'return 1',
+        ),
+        {},
+        2000,
+      )
+      expect(busy).toMatchObject({ ok: true, result: 1, warm: true })
+      const started = Date.now()
+      const loop = await run('while True: pass', {}, 1500)
+      expect(loop).toMatchObject({ error: { kind: 'timeout' }, warm: true })
+      expect(Date.now() - started).toBeLessThan(5000)
+      await poolFull()
+      const memory = await run('b = bytearray(1024 * 1024 * 1024)\nreturn len(b)')
+      expect(memory).toMatchObject({ error: { kind: 'memory' }, warm: true })
+    })
+
+    // A second container of its own: not when the tests use another executor (PYTHON_EXECUTOR_TEST_URL).
+    it.skipIf(!!process.env.PYTHON_EXECUTOR_TEST_URL)(
+      'starts a cold jail when no warm one is ready, and keeps none with PYTHON_WARM_JAILS=0',
+      async () => {
+        const cold = await startTestExecutor({ env: { PYTHON_WARM_JAILS: '0' } })
+        try {
+          expect(await poolStats(cold)).toMatchObject({ size: 0, ready: 0 })
+          const res = await fetch(`${cold.url}/run`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${cold.token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ code: 'import sys\nreturn "pandas" in sys.modules', timeoutMs: 10_000 }),
+          })
+          expect(await res.json()).toMatchObject({ ok: true, result: false, warm: false })
+          expect(await poolStats(cold)).toMatchObject({ warm: 0, cold: 1 })
+          expect(jails(cold) ?? 0).toBe(0)
+        } finally {
+          await cold.stop()
+        }
+      },
+    )
   })
 
   describe('errors', () => {
@@ -489,6 +611,8 @@ describe.skipIf(!available)('the code executor', () => {
     })
 
     it('kills the jail when the caller hangs up', async () => {
+      await poolFull()
+      const before = jails()
       const abort = new AbortController()
       const pending = post(
         '/run',
@@ -498,11 +622,7 @@ describe.skipIf(!available)('the code executor', () => {
       await new Promise((resolve) => setTimeout(resolve, 1000))
       abort.abort()
       await expect(pending).rejects.toThrow()
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      if (executor.container) {
-        const processes = execFileSync('docker', ['top', executor.container]).toString()
-        expect(processes).not.toContain('nsjail')
-      }
+      if (before !== null) await expect.poll(() => jails(), { timeout: 10_000 }).toBeLessThanOrEqual(before)
     })
 
     it('checks code while every run slot is busy (checks have slots of their own)', async () => {

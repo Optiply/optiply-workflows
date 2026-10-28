@@ -6,15 +6,18 @@ The code executor: runs Python code blocks for the workflow workers, each in a f
                With "stream": true, NDJSON (chunked) instead: {"log": {"level", "message"}} per line as the code
                prints it, then {"outcome": {"ok", "result" | "error"}} as the last line.
   POST /check  {"fields": [{"id": "...", "code": "..."}]} -> {"ok": true, "problems": [...]}
-  GET  /health -> {"ok": true, "python": "3.12.x", "packages": {...}}
+  GET  /health -> {"ok": true, "python": "3.12.x", "packages": {...}, "pool": {"ready", "starting", ...}}
+Runs say whether they ran in a warm jail ("warm"): one started ahead, its packages imported, used once.
 
 Every request but /health needs `Authorization: Bearer <PYTHON_EXECUTOR_TOKEN>`. The standard library only: nothing
 is installed outside the jail. The server holds no secrets but its token; the jail sees none.
 """
 
+import collections
 import hmac
 import json
 import os
+import select
 import selectors
 import signal
 import subprocess
@@ -42,6 +45,16 @@ MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000
 CHECK_TIMEOUT_MS = 5000
 JAIL_CONFIG = os.path.join(HERE, "jail.cfg")
 NSJAIL = os.environ.get("NSJAIL", "/usr/local/bin/nsjail")
+# The warm pool: jails started ahead with these modules imported, each for one run.
+WARM_JAILS = int(os.environ.get("PYTHON_WARM_JAILS", str(MAX_CONCURRENT)))
+PREIMPORT = os.environ.get("PYTHON_PREIMPORT", "numpy,pandas")
+WARM_MAX_IDLE_S = float(os.environ.get("PYTHON_WARM_MAX_IDLE_SECONDS", "600"))
+# How long a warm jail may take to get ready, and how many start at once (their imports compete with runs).
+WARM_START_S = 30
+WARM_START_PARALLEL = 2
+# A warm jail's nsjail limits: its time in the pool plus the longest run (the server's deadline comes first).
+WARM_LIMIT_S = int(WARM_MAX_IDLE_S + WARM_START_S + MAX_TIMEOUT_MS // 1000 + 1)
+READY = b"\x06"
 
 run_slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 check_slots = threading.BoundedSemaphore(MAX_CHECKS)
@@ -59,6 +72,172 @@ def utf8_complete(data):
             size = 1 if byte < 0x80 else 2 if byte >> 5 == 0b110 else 3 if byte >> 4 == 0b1110 else 4
             return len(data) - k if size > k else len(data)
     return len(data)
+
+
+class Jail:
+    """An nsjail process with the runner in it, not yet given its request.
+
+    A warm one (`warm=True`) imports PREIMPORT first, then says it's ready with one byte on the result pipe; its
+    limits allow for the time it may wait in the pool (the runner lowers its CPU limit once the request arrives,
+    and the server keeps the request's deadline)."""
+
+    def __init__(self, seconds, warm=False):
+        self.warm = warm
+        self.born = time.monotonic()
+        self.result_r, result_w = os.pipe()
+        self.jail_log_r, jail_log_w = os.pipe()
+        self.result_fd = result_w  # its number inside the jail too
+        args = [
+            NSJAIL,
+            "--config", JAIL_CONFIG,
+            "--quiet",
+            "--log_fd", str(jail_log_w),
+            "--pass_fd", str(result_w),
+            "--time_limit", str(seconds),
+            "--rlimit_cpu", str(seconds),
+            "--cgroup_mem_max", str(MEMORY_MB * 1024 * 1024),
+        ]
+        if warm:
+            args += ["--env", f"OW_WARM={result_w}", "--env", f"OW_PREIMPORT={PREIMPORT}"]
+        try:
+            self.proc = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                pass_fds=(result_w, jail_log_w),
+                start_new_session=True,
+            )
+        except BaseException:
+            for fd in (self.result_r, self.jail_log_r):
+                os.close(fd)
+            raise
+        finally:
+            os.close(result_w)
+            os.close(jail_log_w)
+
+    def wait_ready(self, timeout):
+        """Whether a warm jail said it's ready within `timeout` seconds."""
+        ready, _, _ = select.select([self.result_r], [], [], timeout)
+        return bool(ready) and os.read(self.result_r, 1) == READY
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    def jail_errors(self):
+        """nsjail's own errors, once the jail has ended (it couldn't start, or it was killed)."""
+        data = bytearray()
+        while len(data) < 65536:
+            ready, _, _ = select.select([self.jail_log_r], [], [], 0)
+            chunk = os.read(self.jail_log_r, 65536) if ready else b""
+            if not chunk:
+                break
+            data += chunk
+        return [line for line in data.decode("utf-8", "replace").splitlines() if line.startswith(("[E]", "[F]"))]
+
+    def kill(self):
+        if self.proc.poll() is None:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+            self.proc.wait()
+
+    def close(self):
+        """Kills the jail if it still runs and closes its pipes."""
+        self.kill()
+        for f in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+            try:
+                f.close()
+            except OSError:
+                pass
+        for fd in (self.result_r, self.jail_log_r):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+class Pool:
+    """Warm jails, started ahead so a run skips the jail's and the interpreter's start and PREIMPORT's imports.
+
+    Each serves one request and is never reused: nothing carries over between executions. A taken jail is replaced
+    in the background; one idle for WARM_MAX_IDLE_S is replaced too. Jails that fail to start back off."""
+
+    def __init__(self, size):
+        self.size = size
+        self.ready = collections.deque()
+        self.starting = 0
+        self.served = {"warm": 0, "cold": 0}
+        self.failures = 0
+        self.retry_at = 0.0
+        self.cond = threading.Condition()
+
+    def start(self):
+        if self.size > 0:
+            threading.Thread(target=self._maintain, daemon=True).start()
+
+    def take(self):
+        """A ready jail (the longest waiting), or None: the run starts a cold one."""
+        stale = []
+        with self.cond:
+            jail = None
+            while self.ready and jail is None:
+                candidate = self.ready.popleft()
+                if candidate.alive():
+                    jail = candidate
+                else:
+                    stale.append(candidate)
+            self.served["warm" if jail else "cold"] += 1
+            self.cond.notify()
+        for old in stale:
+            old.close()
+        return jail
+
+    def stats(self):
+        with self.cond:
+            return {"size": self.size, "ready": len(self.ready), "starting": self.starting, **self.served}
+
+    def _maintain(self):
+        while True:
+            with self.cond:
+                now = time.monotonic()
+                stale = [j for j in self.ready if now - j.born > WARM_MAX_IDLE_S or not j.alive()]
+                for jail in stale:
+                    self.ready.remove(jail)
+                wanted = self.size - len(self.ready) - self.starting
+                start = 0 if now < self.retry_at else max(0, min(wanted, WARM_START_PARALLEL - self.starting))
+                self.starting += start
+            for jail in stale:
+                jail.close()
+            for _ in range(start):
+                threading.Thread(target=self._start_one, daemon=True).start()
+            with self.cond:
+                self.cond.wait(timeout=1)
+
+    def _start_one(self):
+        jail = None
+        try:
+            jail = Jail(WARM_LIMIT_S, warm=True)
+            ok = jail.wait_ready(WARM_START_S)
+        except OSError:
+            ok = False
+        errors = []
+        if not ok and jail is not None:
+            jail.kill()
+            errors = jail.jail_errors()
+            jail.close()
+        with self.cond:
+            self.starting -= 1
+            if ok:
+                self.ready.append(jail)
+                self.failures = 0
+            else:
+                self.failures += 1
+                self.retry_at = time.monotonic() + min(60, 2**self.failures)
+            self.cond.notify()
+        if not ok:
+            log("warm_jail_failed", message="\n".join(errors)[-2000:] or "not ready in time")
+
+
+pool = Pool(WARM_JAILS)
 
 
 class Execution:
@@ -80,41 +259,26 @@ class Execution:
         self.result_too_big = False
         self.jail_log = bytearray()
 
-    def run(self, cancelled):
-        result_r, result_w = os.pipe()
-        jail_log_r, jail_log_w = os.pipe()
+    def run(self, cancelled, jail=None):
+        """Runs the request in `jail` (a warm one from the pool) or in a cold one started here."""
         seconds = max(1, -(-self.timeout_ms // 1000))  # whole seconds, rounded up
-        args = [
-            NSJAIL,
-            "--config", JAIL_CONFIG,
-            "--quiet",
-            "--log_fd", str(jail_log_w),
-            "--pass_fd", str(result_w),
-            "--time_limit", str(seconds + 1),
-            "--rlimit_cpu", str(seconds + 1),
-            "--cgroup_mem_max", str(MEMORY_MB * 1024 * 1024),
-        ]
         started = time.monotonic()
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            pass_fds=(result_w, jail_log_w),
-            start_new_session=True,
-        )
-        # The runner writes its outcome to the fd nsjail passes through.
-        payload = json.dumps({**self.request, "resultFd": result_w}, separators=(",", ":")).encode()
-        os.close(result_w)
-        os.close(jail_log_w)
+        if jail is None:
+            jail = Jail(seconds + 1)
+        proc = jail.proc
+        # The runner writes its outcome to the fd nsjail passes through, and limits its own CPU time from now (a
+        # warm jail's nsjail limits had to allow for its time in the pool).
+        payload = json.dumps(
+            {**self.request, "resultFd": jail.result_fd, "cpuSeconds": seconds + 1}, separators=(",", ":")
+        ).encode()
         killed = None
         try:
             threading.Thread(target=self._feed, args=(proc, payload), daemon=True).start()
             sel = selectors.DefaultSelector()
             sel.register(proc.stdout, selectors.EVENT_READ, "log")
             sel.register(proc.stderr, selectors.EVENT_READ, "error")
-            sel.register(result_r, selectors.EVENT_READ, "result")
-            sel.register(jail_log_r, selectors.EVENT_READ, "jail")
+            sel.register(jail.result_r, selectors.EVENT_READ, "result")
+            sel.register(jail.jail_log_r, selectors.EVENT_READ, "jail")
             # The timeout, exactly (nsjail's limits, in whole seconds and a second later, are the backstop): the
             # answer then carries what the code printed.
             deadline = started + self.timeout_ms / 1000
@@ -142,15 +306,10 @@ class Execution:
                 os.killpg(proc.pid, signal.SIGKILL)
             code = proc.wait()
         finally:
-            for fd in (result_r, jail_log_r):
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-        return self._outcome(code, killed, time.monotonic() - started)
+            jail.close()
+        outcome = self._outcome(code, killed, time.monotonic() - started)
+        outcome["warm"] = jail.warm
+        return outcome
 
     def _feed(self, proc, payload):
         try:
@@ -350,7 +509,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/health":
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
-        self.send_json(HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "packages": PACKAGES})
+        self.send_json(
+            HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "packages": PACKAGES, "pool": pool.stats()}
+        )
 
     def do_POST(self):
         if self.path not in ("/run", "/check"):
@@ -391,20 +552,30 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         try:
             emit = None
+            gone = False
             if stream:
-                self.start_stream()
+                try:
+                    self.start_stream()
+                except OSError:  # the caller hung up before its stream started
+                    gone = True
 
                 def emit(lines):
                     self.send_chunk([{"log": line} for line in lines])
 
-            outcome = Execution(request, timeout_ms, emit).run(self.client_gone)
-        except OSError:  # the caller hung up before its stream started
-            outcome = {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}}
+            if gone:
+                outcome = {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}}
+            else:
+                # Runs take a warm jail when one is ready; checks start their own (they have their own limits).
+                jail = pool.take() if self.path == "/run" else None
+                outcome = Execution(request, timeout_ms, emit).run(self.client_gone, jail)
         finally:
             slots.release()
         ms = round((time.monotonic() - started) * 1000)
         error = outcome.get("error")
-        log("execution", path=self.path, ms=ms, ok=outcome.get("ok"), error=error and error.get("kind"))
+        warm = outcome.pop("warm", False)
+        if self.path == "/run":
+            outcome["warm"] = warm
+        log("execution", path=self.path, ms=ms, ok=outcome.get("ok"), error=error and error.get("kind"), warm=warm)
         if error and error.get("kind") == "cancelled":
             self.close_connection = True
             return
@@ -442,9 +613,18 @@ def main():
     if not TOKEN or len(TOKEN) < 16:
         sys.exit("PYTHON_EXECUTOR_TOKEN must be set (16 characters or more)")
     PACKAGES = packages()
+    pool.start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
-    log("listening", port=PORT, max_concurrent=MAX_CONCURRENT, memory_mb=MEMORY_MB, packages=PACKAGES)
+    log(
+        "listening",
+        port=PORT,
+        max_concurrent=MAX_CONCURRENT,
+        memory_mb=MEMORY_MB,
+        warm_jails=WARM_JAILS,
+        preimport=PREIMPORT,
+        packages=PACKAGES,
+    )
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
     server.serve_forever()
 
