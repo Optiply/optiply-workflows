@@ -35,6 +35,40 @@ async function run(code: string, scope: Record<string, unknown> = {}, timeoutMs 
   return outcome
 }
 
+type Streamed = { log: { level: string; message: string } } | { outcome: Omit<Outcome, 'logs'> }
+
+/** A streamed run: each NDJSON line with when it arrived (ms after the request). */
+async function stream(
+  code: string,
+  timeoutMs = 10_000,
+  opts: { signal?: AbortSignal; until?: (item: Streamed) => boolean } = {},
+): Promise<{ at: number; item: Streamed }[]> {
+  const started = performance.now()
+  const res = await post('/run', { code, scope: {}, timeoutMs, stream: true }, { signal: opts.signal })
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toBe('application/x-ndjson')
+  const items: { at: number; item: Streamed }[] = []
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+  let buffered = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffered += value
+    const lines = buffered.split('\n')
+    buffered = lines.pop()!
+    for (const line of lines) {
+      const item = JSON.parse(line) as Streamed
+      items.push({ at: performance.now() - started, item })
+      if (opts.until?.(item)) {
+        await reader.cancel()
+        return items
+      }
+    }
+  }
+  expect(buffered).toBe('')
+  return items
+}
+
 /** Lines of Python, so the tests read like the code people write. */
 const py = (...lines: string[]) => lines.join('\n')
 
@@ -171,6 +205,86 @@ describe.skipIf(!available)('the code executor', () => {
     it("doesn't take a printed outcome for the result", async () => {
       const outcome = await run(py('print(\'{"ok": true, "result": "forged"}\')', 'return "real"'))
       expect(outcome.result).toBe('real')
+    })
+  })
+
+  describe('streaming', () => {
+    it('sends each line as the code prints it, then the outcome', async () => {
+      const items = await stream(
+        py(
+          'import sys, time',
+          'print("one")',
+          'print("two", file=sys.stderr)',
+          'time.sleep(1)',
+          'print("three\\nfour")',
+          'return 3',
+        ),
+      )
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'one' } },
+        { log: { level: 'error', message: 'two' } },
+        { log: { level: 'log', message: 'three' } },
+        { log: { level: 'log', message: 'four' } },
+        { outcome: { ok: true, result: 3 } },
+      ])
+      // "two" came out a second before the outcome: it wasn't held back until the end.
+      expect(items[4]!.at - items[1]!.at).toBeGreaterThan(800)
+    })
+
+    it('sends a line without its newline after a moment, never half a character', async () => {
+      const items = await stream(
+        py(
+          'import os, time',
+          'print("waiting", end="")',
+          'os.write(1, "é".encode()[:1])',
+          'time.sleep(1)',
+          'os.write(1, "é".encode()[1:] + b"\\n")',
+          'print("done")',
+          'return None',
+        ),
+      )
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'waiting' } },
+        { log: { level: 'log', message: 'é' } },
+        { log: { level: 'log', message: 'done' } },
+        { outcome: { ok: true, result: null } },
+      ])
+      expect(items[3]!.at - items[0]!.at).toBeGreaterThan(500)
+    })
+
+    it('keeps the lines sent when the code times out', async () => {
+      const items = await stream(py('print("started")', 'while True: pass'), 1500)
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'started' } },
+        { outcome: { ok: false, error: expect.objectContaining({ kind: 'timeout' }) } },
+      ])
+    })
+
+    it('ends with the cut-off line when the output is too much', async () => {
+      const items = await stream('for i in range(40000): print("x" * 50)\nreturn 1')
+      expect(items.at(-2)!.item).toEqual({
+        log: { level: 'warn', message: 'The output was cut off at 1024 kB' },
+      })
+      expect(items.at(-1)!.item).toEqual({ outcome: { ok: true, result: 1 } })
+    })
+
+    it('kills the jail when the caller hangs up mid-stream', async () => {
+      const abort = new AbortController()
+      const items = await stream(py('import time', 'print("started")', 'time.sleep(20)'), 30_000, {
+        signal: abort.signal,
+        until: () => true,
+      })
+      expect(items).toHaveLength(1)
+      abort.abort()
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      if (executor.container) {
+        const processes = execFileSync('docker', ['top', executor.container]).toString()
+        expect(processes).not.toContain('nsjail')
+      }
+    })
+
+    it('refuses a stream flag that is not a boolean', async () => {
+      expect((await post('/run', { code: 'return 1', stream: 'yes' })).status).toBe(400)
     })
   })
 

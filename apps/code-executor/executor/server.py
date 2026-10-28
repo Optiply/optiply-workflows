@@ -3,6 +3,8 @@ The code executor: runs Python code blocks for the workflow workers, each in a f
 
   POST /run    {"code": "...", "scope": {...}, "timeoutMs": 10000}
                -> {"ok": true, "result": ..., "logs": [...]} or {"ok": false, "error": {...}, "logs": [...]}
+               With "stream": true, NDJSON (chunked) instead: {"log": {"level", "message"}} per line as the code
+               prints it, then {"outcome": {"ok", "result" | "error"}} as the last line.
   POST /check  {"fields": [{"id": "...", "code": "..."}]} -> {"ok": true, "problems": [...]}
   GET  /health -> {"ok": true, "python": "3.12.x", "packages": {...}}
 
@@ -34,6 +36,8 @@ QUEUE_WAIT_S = float(os.environ.get("PYTHON_QUEUE_WAIT_SECONDS", "30"))
 MAX_REQUEST_BYTES = int(os.environ.get("PYTHON_MAX_REQUEST_MB", "64")) * 1024 * 1024
 MAX_RESULT_BYTES = 16 * 1024 * 1024
 MAX_LOG_BYTES = 1024 * 1024
+# When streaming, a line printed without its newline yet goes out after this long.
+PARTIAL_LINE_S = 0.25
 MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000
 CHECK_TIMEOUT_MS = 5000
 JAIL_CONFIG = os.path.join(HERE, "jail.cfg")
@@ -47,13 +51,28 @@ def log(event, **fields):
     print(json.dumps({"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}), flush=True)
 
 
-class Execution:
-    """One jail: the request on stdin, the outcome on its own pipe, the code's prints on stdout and stderr."""
+def utf8_complete(data):
+    """How much of `data` ends on a whole UTF-8 character (a line cut before its newline may end mid-character)."""
+    for k in range(1, min(4, len(data)) + 1):
+        byte = data[-k]
+        if byte & 0xC0 != 0x80:  # not a continuation byte: ASCII or a character's first byte
+            size = 1 if byte < 0x80 else 2 if byte >> 5 == 0b110 else 3 if byte >> 4 == 0b1110 else 4
+            return len(data) - k if size > k else len(data)
+    return len(data)
 
-    def __init__(self, request, timeout_ms):
+
+class Execution:
+    """One jail: the request on stdin, the outcome on its own pipe, the code's prints on stdout and stderr.
+
+    `emit`, when given, gets the log lines as they're printed (a list per read; the server streams them)."""
+
+    def __init__(self, request, timeout_ms, emit=None):
         self.request = request
         self.timeout_ms = timeout_ms
-        self.logs = []  # [level, bytearray], consecutive output of one level merged
+        self.emit = emit
+        self.lines = []  # the log lines so far, {"level", "message"}
+        self.unsent = 0  # how many of them `emit` hasn't had
+        self.partial = None  # [level, bytearray, since]: output of one level not ended by a newline yet
         self.frame = None  # in fd 1's tagged frames: None outside one, "?" before its tag, else the level
         self.log_bytes = 0
         self.logs_truncated = False
@@ -113,6 +132,12 @@ class Execution:
                         sel.unregister(key.fileobj)
                         continue
                     self._take(key.data, chunk)
+                if self.emit:
+                    if self.partial and time.monotonic() - self.partial[2] >= PARTIAL_LINE_S:
+                        self._end_partial(whole=False)
+                    if not self._send():
+                        killed = "cancelled"
+                        break
             if killed:
                 os.killpg(proc.pid, signal.SIGKILL)
             code = proc.wait()
@@ -172,23 +197,64 @@ class Execution:
 
     def _append(self, level, data):
         if self.log_bytes >= MAX_LOG_BYTES:
-            self.logs_truncated = True
+            if not self.logs_truncated:
+                self.logs_truncated = True
+                self._end_partial()
+                self.lines.append({"level": "warn", "message": f"The output was cut off at {MAX_LOG_BYTES // 1024} kB"})
             return
         data = data[: MAX_LOG_BYTES - self.log_bytes]
         self.log_bytes += len(data)
-        # Lines are split when the logs are returned.
-        if self.logs and self.logs[-1][0] == level:
-            self.logs[-1][1] += data
+        # Output of another level ends the line so far (consecutive output of one level is one text).
+        if self.partial and self.partial[0] != level:
+            self._end_partial()
+        if not self.partial:
+            self.partial = [level, bytearray(), time.monotonic()]
+        buf = self.partial[1]
+        buf += data
+        end = buf.rfind(b"\n")
+        if end >= 0:
+            for piece in bytes(buf[:end]).split(b"\n"):
+                self._add_lines(level, piece)
+            del buf[: end + 1]
+            if buf:
+                self.partial[2] = time.monotonic()
+            else:
+                self.partial = None
+
+    def _add_lines(self, level, data):
+        # splitlines, as for the whole text: "\r" and the other line breaks split too; an empty line stays one.
+        for line in data.decode("utf-8", "replace").splitlines() or [""]:
+            self.lines.append({"level": level, "message": line})
+
+    def _end_partial(self, whole=True):
+        """The output not ended by a newline as lines; `whole=False` keeps a character cut in two for later."""
+        if not self.partial:
+            return
+        level, buf, _ = self.partial
+        cut = len(buf) if whole else utf8_complete(buf)
+        if cut:
+            self._add_lines(level, bytes(buf[:cut]))
+            del buf[:cut]
+        if buf:
+            self.partial[2] = time.monotonic()
         else:
-            self.logs.append([level, bytearray(data)])
+            self.partial = None
+
+    def _send(self):
+        """Hands `emit` the lines it hasn't had; False when the caller is gone."""
+        if self.unsent < len(self.lines):
+            lines, self.unsent = self.lines[self.unsent :], len(self.lines)
+            try:
+                self.emit(lines)
+            except OSError:
+                return False
+        return True
 
     def _outcome(self, code, killed, elapsed):
-        logs = []
-        for level, data in self.logs:
-            for line in data.decode("utf-8", "replace").splitlines():
-                logs.append({"level": level, "message": line})
-        if self.logs_truncated:
-            logs.append({"level": "warn", "message": f"The output was cut off at {MAX_LOG_BYTES // 1024} kB"})
+        self._end_partial()
+        if self.emit and killed != "cancelled":
+            self._send()  # what came in after the last read, before the outcome
+        logs = self.lines
         if killed == "cancelled":
             return {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}, "logs": logs}
         if self.result_too_big:
@@ -206,7 +272,7 @@ class Execution:
         jail_errors = [
             line for line in self.jail_log.decode("utf-8", "replace").splitlines() if line.startswith(("[E]", "[F]"))
         ]
-        if jail_errors and not self.logs:
+        if jail_errors and not self.log_bytes:
             log("jail_failed", message="\n".join(jail_errors)[-2000:])
             reason = jail_errors[0].split("] ", 2)[-1] if "] " in jail_errors[0] else jail_errors[0]
             error = {"kind": "internal", "message": f"The executor couldn't start a jail: {reason}"}
@@ -239,6 +305,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
+
+    def start_stream(self):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        self.wfile.flush()
+
+    def send_chunk(self, items):
+        """NDJSON lines as one HTTP chunk (an OSError when the caller is gone)."""
+        data = b"".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode() + b"\n" for item in items)
+        self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+        self.wfile.flush()
 
     def refuse(self, status, message):
         # The body may not have been read: it would be taken for the next request on this connection.
@@ -284,9 +363,16 @@ class Handler(BaseHTTPRequestHandler):
             body = None
         if not isinstance(body, dict):
             return self.refuse(HTTPStatus.BAD_REQUEST, f"Send a JSON object of at most {MAX_REQUEST_BYTES // (1024 * 1024)} MB")
+        stream = False
         if self.path == "/run":
             code, scope, timeout_ms = body.get("code"), body.get("scope", {}), body.get("timeoutMs", 10000)
-            if not isinstance(code, str) or not isinstance(scope, dict) or not isinstance(timeout_ms, int):
+            stream = body.get("stream", False)
+            if (
+                not isinstance(code, str)
+                or not isinstance(scope, dict)
+                or not isinstance(timeout_ms, int)
+                or not isinstance(stream, bool)
+            ):
                 return self.refuse(HTTPStatus.BAD_REQUEST, "Expected code (a string), scope (an object), timeoutMs")
             timeout_ms = min(max(timeout_ms, 100), MAX_TIMEOUT_MS)
             request = {"mode": "run", "code": code, "scope": scope}
@@ -304,7 +390,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse(HTTPStatus.SERVICE_UNAVAILABLE, "The executor is busy; try again")
         started = time.monotonic()
         try:
-            outcome = Execution(request, timeout_ms).run(self.client_gone)
+            emit = None
+            if stream:
+                self.start_stream()
+
+                def emit(lines):
+                    self.send_chunk([{"log": line} for line in lines])
+
+            outcome = Execution(request, timeout_ms, emit).run(self.client_gone)
+        except OSError:  # the caller hung up before its stream started
+            outcome = {"ok": False, "error": {"kind": "cancelled", "message": "Cancelled"}}
         finally:
             slots.release()
         ms = round((time.monotonic() - started) * 1000)
@@ -313,7 +408,15 @@ class Handler(BaseHTTPRequestHandler):
         if error and error.get("kind") == "cancelled":
             self.close_connection = True
             return
-        self.send_json(HTTPStatus.OK, outcome)
+        if not stream:
+            return self.send_json(HTTPStatus.OK, outcome)
+        outcome.pop("logs", None)
+        try:
+            self.send_chunk([{"outcome": outcome}])
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except OSError:
+            self.close_connection = True
 
 
 def packages():
