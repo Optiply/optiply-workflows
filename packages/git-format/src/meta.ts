@@ -22,23 +22,26 @@ export function folderNames(path: string): string[] {
 export const objectMetaSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).optional(),
-  folder: folderPathSchema.optional(),
+  folder: folderPathSchema.nullable().optional(),
 })
 
 export interface ObjectMeta {
   name: string
   /** Null (or empty) leaves `description` out of the file. */
   description: string | null
-  /** The folder it's in on the instance (M22); left out at the top level. Not part of a definition's hash. */
-  folder?: string
+  /**
+   * The folder it's in on the instance (M22), null at the top level. Left out by files from before M22, whose
+   * objects a deploy leaves where they are. Not part of a definition's hash.
+   */
+  folder?: string | null
 }
 
 /** The name, description and folder as top-level keys of the object's JSON, beside the definition's. */
-export function metaFields(meta: ObjectMeta): { name: string; description?: string; folder?: string } {
+export function metaFields(meta: ObjectMeta): { name: string; description?: string; folder?: string | null } {
   return {
     name: meta.name,
     ...(meta.description ? { description: meta.description } : {}),
-    ...(meta.folder ? { folder: meta.folder } : {}),
+    ...(meta.folder !== undefined ? { folder: meta.folder } : {}),
   }
 }
 
@@ -68,7 +71,7 @@ export function splitMeta(
     meta: {
       name: parsed.data.name,
       description: parsed.data.description || null,
-      ...(parsed.data.folder ? { folder: parsed.data.folder } : {}),
+      ...(parsed.data.folder !== undefined ? { folder: parsed.data.folder } : {}),
     },
     rest,
     problems: [],

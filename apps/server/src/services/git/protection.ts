@@ -12,7 +12,7 @@ import { TRPCError } from '@trpc/server'
 import type { Config } from '../../config'
 import { GitError } from './cli'
 import { commitToBranch, GitConflictError } from './commit'
-import { folderPathOf } from './folders'
+import { gitFolderPath } from './folders'
 import { GitHubError, openGitHub, type PullRequestView } from './github'
 import { type GitObjectRow, liveOrDraft, setGitProtected } from './kinds'
 import type { GitAuthor, GitRepo } from './repo'
@@ -24,10 +24,14 @@ type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_
 export function repoObject(
   kind: ObjectKind,
   slug: string,
-  value: { name: string; description: string | null; folder?: string; definition: unknown },
+  value: { name: string; description: string | null; folder?: string | null; definition: unknown },
 ): RepoObject {
   const { name, description, folder, definition } = value
-  return { kind, slug, value: { name, description, ...(folder ? { folder } : {}), definition } } as RepoObject
+  return {
+    kind,
+    slug,
+    value: { name, description, ...(folder !== undefined ? { folder } : {}), definition },
+  } as RepoObject
 }
 
 /** Refuses changing a protected object's main version on the instance: that's done on a branch and merged. */
@@ -153,7 +157,7 @@ export async function protectObject(
   const meta = {
     name: object.name,
     description: object.description,
-    folder: await folderPathOf(db, object.folderId),
+    folder: await gitFolderPath(db, object.folderId),
   }
   const { dir, files, warnings } = encodeObjectDir(repoObject(kind, object.slug, { ...meta, definition }))
   return commitProtect(db, config, user, {

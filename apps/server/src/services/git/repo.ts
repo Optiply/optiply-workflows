@@ -18,6 +18,8 @@ export interface GitAuthor {
 
 const EMPTY_SHA = '0000000000000000000000000000000000000000'
 const SHA = /^[0-9a-f]{40}$/
+/** When this process last pushed to each cache directory's remote: what was read of its branches before is old. */
+const pushedAt = new Map<string, number>()
 
 /**
  * A branch name git and GitHub both take: letters, digits, `.`, `_`, `-` and `/` between parts, none of git's
@@ -339,8 +341,14 @@ export class GitRepo {
         throw new GitError('failed', `git push failed: ${result.stderr.trim() || result.stdout.trim()}`)
       }
       await this.git(['update-ref', `refs/remotes/origin/${name}`, commit])
+      pushedAt.set(this.dir, Date.now())
       return 'ok'
     })
+  }
+
+  /** When this process last pushed through this cache directory (0: not yet). */
+  lastPushAt(): number {
+    return pushedAt.get(this.dir) ?? 0
   }
 
   /** A fetched commit's subject line, body and author. */

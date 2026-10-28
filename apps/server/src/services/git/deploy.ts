@@ -27,7 +27,7 @@ import {
   settingsDir,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 import type { Config } from '../../config'
 import { deployAppFromGit } from '../apps'
@@ -136,7 +136,14 @@ export async function requestGitDeploy(
 export async function runGitDeploy(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force?: boolean; retry?: boolean; log?: DeployLogger },
+  opts: {
+    trigger: DeployTrigger
+    force?: boolean
+    retry?: boolean
+    /** Re-checks the deployed commit only, without reading the branch (the timed retry: polling may be off). */
+    retryOnly?: boolean
+    log?: DeployLogger
+  },
 ): Promise<DeployResult> {
   const claimed = await db
     .update(gitSettings)
@@ -154,8 +161,9 @@ export async function runGitDeploy(
   let held = true
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const retry = round === 0 && (opts.retry ?? false)
-      result = await deployOnce(db, config, { trigger, force, retry, log: opts.log })
+      const retryOnly = round === 0 && (opts.retryOnly ?? false)
+      const retry = retryOnly || (round === 0 && (opts.retry ?? false))
+      result = await deployOnce(db, config, { trigger, force, retry, retryOnly, log: opts.log })
       const next = await handBackLease(db)
       if (!next.again) {
         held = false
@@ -197,18 +205,23 @@ export async function handBackLease(db: Db): Promise<{ again: boolean; by: Deplo
 async function deployOnce(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force: boolean; retry: boolean; log?: DeployLogger },
+  opts: { trigger: DeployTrigger; force: boolean; retry: boolean; retryOnly?: boolean; log?: DeployLogger },
 ): Promise<DeployResult> {
   const opened = await openGitRepo(db, config)
   const [settings] = await db.select().from(gitSettings)
   if (!opened || !settings) return { status: 'not_configured' }
   const { repo, branch } = opened
+  // Only a read of the branch says it was checked (or why it couldn't be).
   const checked = (patch: Partial<typeof gitSettings.$inferInsert> = {}) =>
-    db.update(gitSettings).set({ checkedAt: sql`now()`, lastError: null, deployLeaseUntil: LEASE, ...patch })
+    db.update(gitSettings).set({
+      ...(opts.retryOnly ? {} : { checkedAt: sql`now()`, lastError: null }),
+      deployLeaseUntil: LEASE,
+      ...patch,
+    })
 
   let commit: string | null
   try {
-    commit = await repo.fetchBranch(branch)
+    commit = opts.retryOnly ? settings.deployedCommit : await repo.fetchBranch(branch)
   } catch (err) {
     if (!(err instanceof GitError)) throw err
     await checked({ lastError: err.message })
@@ -221,10 +234,11 @@ async function deployOnce(
   }
   // Every deploy re-checks the problem objects, so it takes the retry mark (a mark set from here on stays).
   const marked = await takeRetryMark(db)
-  // The deployed commit again for its problem objects (M22): asked for, or something they may need changed.
+  // The deployed commit again for its problem objects, and directories marked to deploy again (a cleared local
+  // value: Git's comes back) (M22): asked for, or something they may need changed.
   let retrying = false
   if (!opts.force && commit === settings.deployedCommit) {
-    if (!((opts.retry || marked) && (await hasProblemObjects(db)))) {
+    if (!((opts.retry || marked) && (await hasObjectsToRecheck(db)))) {
       await checked()
       return { status: 'up_to_date', commit }
     }
@@ -439,11 +453,16 @@ async function takeRetryMark(db: Db): Promise<boolean> {
   return taken.length > 0
 }
 
-async function hasProblemObjects(db: Db): Promise<boolean> {
+async function hasObjectsToRecheck(db: Db): Promise<boolean> {
   const [row] = await db
     .select({ id: gitObjects.id })
     .from(gitObjects)
-    .where(eq(gitObjects.status, 'problem'))
+    .where(
+      or(
+        eq(gitObjects.status, 'problem'),
+        and(eq(gitObjects.status, 'deployed'), isNull(gitObjects.treeSha)),
+      ),
+    )
     .limit(1)
   return Boolean(row)
 }

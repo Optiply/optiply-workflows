@@ -34,11 +34,25 @@ export function findRenames<D>(renamer: Renamer<D>, base: D, side: D): Rename[] 
     list.some((i) => i.group === group && i.name === name)
   const gone = before.filter((i) => !has(after, i.group, i.name))
   const added = after.filter((i) => !has(before, i.group, i.name))
+  if (gone.length === 0 || added.length === 0) return []
+  // Each gone item is renamed once to a probe name no item has; a new item can be it renamed only if the probe's
+  // JSON, the probe written as the new name, is the new item's. Only such pairs pay for the real rename below, so
+  // a merge does one whole-definition rename per gone item, not one per pair.
+  const names = new Set(before.map((i) => i.name))
+  let probe = 'owRenameProbe'
+  for (let n = 1; names.has(probe); n++) probe = `owRenameProbe${n}`
+  const texts = new Map(added.map((i) => [i, JSON.stringify(sorted(i.item))]))
   const used = new Set<string>()
   const renames: Rename[] = []
   for (const old of gone) {
+    if (!added.some((i) => i.group === old.group && !used.has(`${i.group}:${i.name}`))) continue
+    const probed = renamer.rename(base, old.group, old.name, probe)
+    const probeItem = probed && renamer.items(probed).find((i) => i.group === old.group && i.name === probe)
+    if (!probeItem) continue
+    const probeText = JSON.stringify(sorted(probeItem.item))
     for (const fresh of added) {
       if (fresh.group !== old.group || used.has(`${fresh.group}:${fresh.name}`)) continue
+      if (probeText.replaceAll(probe, fresh.name) !== texts.get(fresh)) continue
       const renamed = renamer.rename(base, old.group, old.name, fresh.name)
       const item =
         renamed && renamer.items(renamed).find((i) => i.group === old.group && i.name === fresh.name)
@@ -50,6 +64,18 @@ export function findRenames<D>(renamer: Renamer<D>, base: D, side: D): Rename[] 
     }
   }
   return renames
+}
+
+/** A value with its objects' keys in order, for comparing as JSON (`equal` ignores their order). */
+function sorted(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sorted)
+  if (value === null || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, sorted(record[key])]),
+  )
 }
 
 /** Workflows: blocks of the main graph and functions. */

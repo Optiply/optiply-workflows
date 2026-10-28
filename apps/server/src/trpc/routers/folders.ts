@@ -2,12 +2,19 @@ import { folders, permissions } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { holdsProtected } from '../../services/git/folders'
 import { loadAccess } from '../../services/permissions'
 import { uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
-const Name = z.string().trim().min(1).max(80)
+// Git keeps a folder as a path of names separated by / (M22), so a name can't hold one.
+const Name = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .refine((name) => !name.includes('/'), "A folder's name can't hold a /")
 /** What a folder holds: resources, workflows, apps or library queries (never a mix: a folder's grants mean one kind of access). */
 const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query', 'module'])
 type FolderType = z.infer<typeof FolderType>
@@ -46,6 +53,20 @@ async function folderById(ctx: AuthedContext, id: string) {
 
 const duplicate = 'A folder with that name already exists here'
 
+/** Refuses changing a folder whose objects (or its subfolders') are protected: Git keeps their folder by path. */
+async function assertNoProtected(
+  ctx: AuthedContext,
+  folder: { id: string; objectType: FolderType },
+  what: string,
+) {
+  if (await holdsProtected(ctx.db, folder.objectType, folder.id)) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: `This folder holds ${PLURAL[folder.objectType]} protected in Git, which keep their folder there: ${what} it through Git, or unprotect them first`,
+    })
+  }
+}
+
 export const foldersRouter = router({
   /** One type's folders (resources' when no type is given), and whether the caller may manage them. */
   list: authedProcedure
@@ -83,7 +104,9 @@ export const foldersRouter = router({
     }),
 
   rename: authedProcedure.input(z.object({ id: Id, name: Name })).mutation(async ({ ctx, input }) => {
-    await assertCanManage(ctx, (await folderById(ctx, input.id)).objectType)
+    const folder = await folderById(ctx, input.id)
+    await assertCanManage(ctx, folder.objectType)
+    await assertNoProtected(ctx, folder, 'rename')
     await uniqueOr(duplicate, () =>
       ctx.db.update(folders).set({ name: input.name }).where(eq(folders.id, input.id)),
     )
@@ -103,6 +126,7 @@ export const foldersRouter = router({
       .where(eq(folders.parentId, input.id))
       .limit(1)
     if (child) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Delete or move the subfolders first' })
+    await assertNoProtected(ctx, folder, 'move them out of')
     await ctx.db.transaction(async (tx) => {
       await tx
         .delete(permissions)

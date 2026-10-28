@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { auditEvents, folders, resources, workflows } from '@ow/db'
+import { auditEvents, folders, gitObjects, resources, workflows } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import {
   encodeObjectDir,
@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runGitDeploy } from '../src/services/git/deploy'
 import { folderPathOf } from '../src/services/git/folders'
 import { GitRepo } from '../src/services/git/repo'
+import { clearGitSettings } from '../src/services/git/settings'
 import { bareRepo, scratch } from './git-helpers'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -65,13 +66,14 @@ async function pushMain(message: string, objects: Array<RepoObject | SettingsObj
   expect(await seeder.push(commit!, 'main')).toBe('ok')
 }
 
-const workflow = (slug: string, folder?: string, code = 'return 1'): RepoObject => ({
+/** `folder` left out: a file from before M22, which names none; null: the top level. */
+const workflow = (slug: string, folder?: string | null, code = 'return 1'): RepoObject => ({
   kind: 'workflow',
   slug,
   value: {
     name: slug,
     description: null,
-    ...(folder ? { folder } : {}),
+    ...(folder !== undefined ? { folder } : {}),
     definition: {
       schemaVersion: 1,
       blocks: [
@@ -83,13 +85,13 @@ const workflow = (slug: string, folder?: string, code = 'return 1'): RepoObject 
   },
 })
 
-const resource = (slug: string, folder?: string): SettingsObject => ({
+const resource = (slug: string, folder?: string | null): SettingsObject => ({
   kind: 'resource',
   slug,
   value: {
     name: slug,
     description: null,
-    ...(folder ? { folder } : {}),
+    ...(folder !== undefined ? { folder } : {}),
     type: 'postgres',
     environments: { production: { config: { host: 'db', port: 5432, database: 'orders', user: 'app' } } },
   },
@@ -145,7 +147,7 @@ describe('folders from Git (M22)', () => {
       .where(and(eq(folders.name, 'Reports'), eq(folders.objectType, 'workflow')))
     expect(reports).toHaveLength(1)
 
-    await pushMain('To the top', [workflow('nightly', undefined, 'return 2'), resource('orders')])
+    await pushMain('To the top', [workflow('nightly', null, 'return 2'), resource('orders', null)])
     result = await deploy()
     expect(outcomeOf(result, 'workflow', 'nightly')).toMatchObject({
       outcome: 'released',
@@ -170,6 +172,20 @@ describe('folders from Git (M22)', () => {
     expect(await folderOf(workflows, 'hourly')).toBe('Ops')
   })
 
+  it('leaves an object where it is when its file names no folder (written before M22)', async () => {
+    await pushMain('Into Ops', [workflow('legacy', 'Ops')])
+    expect(outcomeOf(await deploy(), 'workflow', 'legacy')).toMatchObject({ outcome: 'created' })
+    // A pre-M22 instance commits a change: its file has no folder key.
+    await pushMain('An edit from before M22', [workflow('legacy', undefined, 'return 3')])
+    const result = await deploy()
+    expect(outcomeOf(result, 'workflow', 'legacy')).toMatchObject({ outcome: 'released' })
+    expect(outcomeOf(result, 'workflow', 'legacy')!.folder).toBeUndefined()
+    expect(await folderOf(workflows, 'legacy')).toBe('Ops')
+    // Deploy now redeploys every directory: still there.
+    await runGitDeploy(env.db, env.config, { trigger: 'manual', force: true })
+    expect(await folderOf(workflows, 'legacy')).toBe('Ops')
+  })
+
   it('leaves an object with problems where it is', async () => {
     const broken = workflow('hourly', 'Elsewhere')
     ;(broken.value.definition as WorkflowDefinition).edges = [
@@ -178,5 +194,23 @@ describe('folders from Git (M22)', () => {
     await pushMain('Break it', [broken])
     expect(outcomeOf(await deploy(), 'workflow', 'hourly')).toMatchObject({ outcome: 'problem' })
     expect(await folderOf(workflows, 'hourly')).toBe('Ops')
+  })
+})
+
+describe('the deploy state of objects that go (M22 review)', () => {
+  const rowsOf = async (slug: string) => env.db.select().from(gitObjects).where(eq(gitObjects.slug, slug))
+
+  it('goes with an object deleted on the instance, however it was deleted', async () => {
+    await pushMain('One to delete', [workflow('doomed', null)])
+    await deploy()
+    expect(await rowsOf('doomed')).toHaveLength(1)
+    await env.db.delete(workflows).where(eq(workflows.slug, 'doomed'))
+    expect(await rowsOf('doomed')).toHaveLength(0)
+  })
+
+  it('all goes when the Git settings are cleared', async () => {
+    expect((await env.db.select().from(gitObjects)).length).toBeGreaterThan(0)
+    expect(await clearGitSettings(env.db)).toBe(true)
+    expect(await env.db.select().from(gitObjects)).toEqual([])
   })
 })

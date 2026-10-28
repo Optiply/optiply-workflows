@@ -171,6 +171,14 @@ export function decryptConfigSecrets(keyring: Keyring, row: ResourceConfig): Rec
 /** An override's path: a config field, or one inside nested settings (`ssh.host`). */
 export const OVERRIDE_PATH = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/
 
+/** Keys a path never walks: they'd reach the prototype (an override of `__proto__.x` would change every object). */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** Whether `path` names a setting an override may set: `OVERRIDE_PATH`, no prototype keys. */
+export function isOverridePath(path: string): boolean {
+  return OVERRIDE_PATH.test(path) && !path.split('.').some((key) => UNSAFE_KEYS.has(key))
+}
+
 /**
  * `config` with this instance's overrides on top (M22): each value set at its path, making objects on the way (a
  * value that isn't an object there is replaced). `config` itself is left alone.
@@ -183,10 +191,12 @@ export function applyOverrides(
   if (paths.length === 0) return config
   const out = structuredClone(config)
   for (const path of paths.sort()) {
+    // Stored overrides were checked when saved; skipping unsafe ones here too keeps a bad row from reaching them.
+    if (!isOverridePath(path)) continue
     const keys = path.split('.')
     let target = out
     for (const key of keys.slice(0, -1)) {
-      const next = target[key]
+      const next = Object.hasOwn(target, key) ? target[key] : undefined
       if (typeof next !== 'object' || next === null || Array.isArray(next)) target[key] = {}
       target = target[key] as Record<string, unknown>
     }

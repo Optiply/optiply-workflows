@@ -298,7 +298,7 @@ function kindRenamer(kind: ObjectKind): Renamer<unknown> | undefined {
 }
 
 /** An object as a merge sees it: since M22 with the folder the repo keeps for it (undefined at the top level). */
-export type GitMergeObject = MergeObject<unknown> & { folder?: string }
+export type GitMergeObject = MergeObject<unknown> & { folder?: string | null }
 
 /**
  * A three-way merge of a kind's object (architecture §2.23), checked against the kind's schema: two sides' changes
@@ -329,5 +329,5 @@ export function mergeKindObject(
           )
     },
   })
-  return { ...result, merged: { ...result.merged, ...(folder ? { folder } : {}) } }
+  return { ...result, merged: { ...result.merged, ...(folder !== undefined ? { folder } : {}) } }
 }

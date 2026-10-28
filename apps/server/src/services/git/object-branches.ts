@@ -10,6 +10,31 @@ type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_
 /** Branches compared with the deploy branch for one object; more are listed without it. */
 const COMPARED = 100
 
+/**
+ * The branch picker asks often (each open editor, every 30 s), so this process reads the branches at most every
+ * `HEADS_MS` per repo (sooner after a push from here), and keeps each answer by the commits it was worked out from: a commit to the branch or the
+ * deploy branch makes a new key, so a kept answer is never stale.
+ */
+const HEADS_MS = 15_000
+const heads = new Map<string, { at: number; heads: Promise<Map<string, string>> }>()
+const answers = new Map<string, boolean>()
+const MAX_ANSWERS = 20_000
+
+function branchHeads(repo: {
+  dir: string
+  lastPushAt(): number
+  fetchAllBranches(): Promise<Map<string, string>>
+}) {
+  const cached = heads.get(repo.dir)
+  // A push from here (a commit, a new branch) is seen at once.
+  if (cached && Date.now() - cached.at < HEADS_MS && cached.at > repo.lastPushAt()) return cached.heads
+  const fetched = repo.fetchAllBranches()
+  heads.set(repo.dir, { at: Date.now(), heads: fetched })
+  // A failed read isn't kept: the next ask tries again.
+  fetched.catch(() => heads.delete(repo.dir))
+  return fetched
+}
+
 export interface ObjectBranch {
   name: string
   commit: string
@@ -38,19 +63,27 @@ export async function objectBranches(
   const withDraft = new Set(drafts.map((d) => d.branch))
   const dir = objectDir(target.kind, target.object.slug)
   try {
-    const heads = await repo.fetchAllBranches()
-    const main = heads.get(deployBranch)
-    const mainEntry = main ? await repo.entryAt(main, dir) : null
+    const tips = await branchHeads(repo)
+    const main = tips.get(deployBranch)
+    let mainEntry: Promise<string | null> | undefined
     let compared = 0
     const branches: ObjectBranch[] = []
-    for (const [name, commit] of heads) {
+    for (const [name, commit] of tips) {
       const deploy = name === deployBranch
       let changes = false
       if (!deploy && compared < COMPARED) {
         compared++
-        const base = main ? await repo.mergeBase(commit, main) : null
-        const before = base === main ? mainEntry : base ? await repo.entryAt(base, dir) : null
-        changes = (await repo.entryAt(commit, dir)) !== before
+        const key = `${repo.dir}\u0000${commit}\u0000${main ?? ''}\u0000${dir}`
+        const known = answers.get(key)
+        if (known !== undefined) changes = known
+        else {
+          const base = main ? await repo.mergeBase(commit, main) : null
+          mainEntry ??= main ? repo.entryAt(main, dir) : Promise.resolve(null)
+          const before = base === main ? await mainEntry : base ? await repo.entryAt(base, dir) : null
+          changes = (await repo.entryAt(commit, dir)) !== before
+          if (answers.size >= MAX_ANSWERS) answers.clear()
+          answers.set(key, changes)
+        }
       }
       branches.push({ name, commit, deploy, changes, draft: withDraft.has(name) })
     }

@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Keyring } from '@ow/crypto'
-import { type Db, type GitSettings, gitSettings, workflows } from '@ow/db'
+import { type Db, type GitSettings, gitObjects, gitSettings, workflows } from '@ow/db'
 import { checkManifest, KIND_ROOTS, MANIFEST_FILE, splitRepo } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { eq, sql } from 'drizzle-orm'
@@ -146,8 +146,12 @@ export async function saveGitSettings(
 }
 
 export async function clearGitSettings(db: Db): Promise<boolean> {
-  const deleted = await db.delete(gitSettings).returning({ id: gitSettings.id })
-  return deleted.length > 0
+  return db.transaction(async (tx) => {
+    const deleted = await tx.delete(gitSettings).returning({ id: gitSettings.id })
+    // What was deployed from that repo: another repo (or this one again) starts afresh (M22 review).
+    await tx.delete(gitObjects)
+    return deleted.length > 0
+  })
 }
 
 /** The repo through this process's cache, or null when no repo is set up. */

@@ -218,6 +218,13 @@
       "when": 1793115816677,
       "tag": "0030_git_health_notify",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1793185059502,
+      "tag": "0031_git_objects_cleanup",
+      "breakpoints": true
     }
   ]
 }

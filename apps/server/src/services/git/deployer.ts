@@ -10,7 +10,7 @@ interface DeployerLogger {
 /**
  * Deploys from Git in this process: every `pollMs` (workers; the first check soon after start), and when asked
  * (the API's push webhook). Every `retryMs` the last deploy's problem objects are re-checked without a new commit
- * (M22). Every process may poll; the lease in `git_settings` lets one deploy at a time.
+ * (M22), the branch not read: with polling off, new commits still wait for a webhook or Deploy now. Every process may poll; the lease in `git_settings` lets one deploy at a time.
  */
 export class GitDeployer {
   private timer: NodeJS.Timeout | undefined
@@ -39,7 +39,11 @@ export class GitDeployer {
     if (retryMs > 0 && !this.retryTimer) {
       const retry = () =>
         void this.track(
-          runGitDeploy(this.opts.db, this.opts.config, { trigger: 'poll', retry: true, log: this.opts.log }),
+          runGitDeploy(this.opts.db, this.opts.config, {
+            trigger: 'poll',
+            retryOnly: true,
+            log: this.opts.log,
+          }),
         )
       this.retryTimer = setInterval(retry, retryMs)
       this.retryTimer.unref()

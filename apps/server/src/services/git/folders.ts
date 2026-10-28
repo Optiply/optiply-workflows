@@ -9,7 +9,8 @@ import {
   workflows,
 } from '@ow/db'
 import { folderNames } from '@ow/git-format'
-import { and, eq, isNull } from 'drizzle-orm'
+import { TRPCError } from '@trpc/server'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 
 /**
@@ -33,9 +34,50 @@ const TABLES = {
   module: modules,
 }
 
-/** The folder's path from the top, `Finance/Reports`; undefined at the top level. */
-export async function folderPathOf(db: Db, folderId: string | null): Promise<string | undefined> {
-  if (!folderId) return undefined
+/**
+ * Whether a folder or any folder below it holds a protected object (M22): Git names their folders by path, so
+ * renaming or deleting one would leave them apart from Git with nothing to put them back.
+ */
+export async function holdsProtected(db: Db, kind: FolderKind, folderId: string): Promise<boolean> {
+  const ids = [folderId]
+  for (let i = 0; i < ids.length; i++) {
+    const children = await db.select({ id: folders.id }).from(folders).where(eq(folders.parentId, ids[i]!))
+    for (const child of children) if (!ids.includes(child.id)) ids.push(child.id)
+  }
+  const table = TABLES[kind]
+  const [row] = await db
+    .select({ id: table.id })
+    .from(table)
+    .where(and(inArray(table.folderId, ids), eq(table.gitProtected, true)))
+    .limit(1)
+  return Boolean(row)
+}
+
+/** The folder's path from the top, `Finance/Reports`; null at the top level. */
+export async function folderPathOf(db: Db, folderId: string | null): Promise<string | null> {
+  const names = await folderNamesOf(db, folderId)
+  return names.length > 0 ? names.join('/') : null
+}
+
+/**
+ * The folder's path as Git keeps it, for writing an object's files: refused when a folder's name holds a `/`
+ * (the path couldn't be read back as the same folders).
+ */
+export async function gitFolderPath(db: Db, folderId: string | null): Promise<string | null> {
+  const names = await folderNamesOf(db, folderId)
+  const slashed = names.find((name) => name.includes('/'))
+  if (slashed) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: `Rename the folder "${slashed}" first: Git separates folders with /`,
+    })
+  }
+  return names.length > 0 ? names.join('/') : null
+}
+
+/** The folder's names from the top; none at the top level. */
+async function folderNamesOf(db: Db, folderId: string | null): Promise<string[]> {
+  if (!folderId) return []
   const names: string[] = []
   const seen = new Set<string>()
   let id: string | null = folderId
@@ -49,7 +91,7 @@ export async function folderPathOf(db: Db, folderId: string | null): Promise<str
     names.unshift(folder.name)
     id = folder.parentId
   }
-  return names.length > 0 ? names.join('/') : undefined
+  return names
 }
 
 /**
@@ -59,7 +101,7 @@ export async function folderPathOf(db: Db, folderId: string | null): Promise<str
 export async function ensureFolderPath(
   db: Db,
   kind: FolderKind,
-  path: string | undefined,
+  path: string | null | undefined,
   git: { commit: string },
 ): Promise<string | null> {
   if (!path) return null
@@ -95,19 +137,21 @@ export async function ensureFolderPath(
 
 /**
  * Puts an object into the folder Git names (made when missing). Returns the move, or undefined when it was already
- * there.
+ * there or the file names none.
  */
 export async function moveToGitFolder(
   db: Db,
   kind: FolderKind,
   object: { id: string; folderId: string | null },
-  path: string | undefined,
+  path: string | null | undefined,
   git: { commit: string },
 ): Promise<FolderMove | undefined> {
+  // A file from before M22 doesn't say: the object stays where it is (null is the top level).
+  if (path === undefined) return undefined
   const folderId = await ensureFolderPath(db, kind, path, git)
   if (folderId === object.folderId) return undefined
   const table = TABLES[kind]
-  const from = (await folderPathOf(db, object.folderId)) ?? null
+  const from = await folderPathOf(db, object.folderId)
   await db.update(table).set({ folderId }).where(eq(table.id, object.id))
-  return { from, to: path ?? null }
+  return { from, to: path }
 }

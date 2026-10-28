@@ -44,8 +44,8 @@ import {
   decryptConfigSecrets,
   effectiveConfig,
   iapKeyInfo,
+  isOverridePath,
   maskSecrets,
-  OVERRIDE_PATH,
   patchedSecretFields,
   publicConfigVars,
   serverIdentityTarget,
@@ -467,7 +467,7 @@ export const resourcesRouter = router({
         environmentId: Id,
         overrides: z
           .record(
-            z.string().regex(OVERRIDE_PATH, "Expected a setting's path, such as host or ssh.host"),
+            z.string().refine(isOverridePath, "Expected a setting's path, such as host or ssh.host"),
             z.unknown(),
           )
           .refine((o) => Object.keys(o).length <= 50, 'At most 50 overrides'),
@@ -577,7 +577,15 @@ export const resourcesRouter = router({
         resourceId: resource.id,
         environmentId: input.environmentId,
         version: 'test',
-        config: input.config ?? (existing ? effectiveConfig(existing) : {}),
+        config:
+          input.config === undefined
+            ? existing
+              ? effectiveConfig(existing)
+              : {}
+            : // A protected resource runs here with this instance's overrides on Git's settings (M22): tested so too.
+              resource.gitProtected && existing && typeof input.config === 'object' && input.config !== null
+              ? applyOverrides(input.config as Record<string, unknown>, existing.overrides)
+              : input.config,
         secrets: applySecretPatch(
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,

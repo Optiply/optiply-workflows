@@ -14,7 +14,7 @@ import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch, GitConflictError } from './commit'
-import { folderPathOf } from './folders'
+import { folderPathOf, gitFolderPath } from './folders'
 import {
   definitionSchema,
   draftColumn,
@@ -133,11 +133,10 @@ export async function openBranchDraft(
   }
   let value: GitMergeObject
   if (!read.decoded) {
-    const folder = await folderPathOf(db, object.folderId)
     value = {
       name: object.name,
       description: object.description,
-      ...(folder ? { folder } : {}),
+      folder: await gitFolderPath(db, object.folderId),
       definition: await liveOrDraft(db, kind, object),
     }
   } else if (!read.decoded.ok) {
@@ -153,7 +152,8 @@ export async function openBranchDraft(
       definition: value.definition as GitBranchDraft['definition'],
       name: value.name,
       description: value.description,
-      folder: value.folder ?? null,
+      // A file from before M22 names no folder: the draft starts from where the object is.
+      folder: value.folder !== undefined ? value.folder : await gitFolderPath(db, object.folderId),
       baseCommit: base,
       branchExists,
       // The merge base until the draft's base commit has files for it (M20).
@@ -432,7 +432,7 @@ export async function updateDraftTo(
         definition: value.definition as GitBranchDraft['definition'],
         name: value.name,
         description: value.description,
-        folder: value.folder ?? null,
+        folder: value.folder !== undefined ? value.folder : draft.folder,
         baseCommit: tip,
         branchExists: opts.branchExists,
         // From here the base commit has the object's files (when the tip has them) and is the merge base.
@@ -473,7 +473,7 @@ export async function reloadDraft(db: Db, draft: GitBranchDraft): Promise<GitBra
 const objectValue = (draft: GitBranchDraft): GitMergeObject => ({
   name: draft.name,
   description: draft.description,
-  ...(draft.folder ? { folder: draft.folder } : {}),
+  folder: draft.folder,
   definition: draft.definition,
 })
 

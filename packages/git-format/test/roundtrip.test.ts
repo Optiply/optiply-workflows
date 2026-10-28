@@ -263,9 +263,10 @@ function jsonValue(r: Rng, depth = 0): unknown {
   return Object.fromEntries(names(r, 'k', r.int(4)).map((k) => [k, jsonValue(r, depth + 1)]))
 }
 
-/** No folder (the top level) half the time, else a path of awkward but valid names. */
-function folder(r: Rng): { folder?: string } {
-  if (r.chance(0.5)) return {}
+/** No folder (a file from before M22) or null (the top level) half the time, else a path of awkward but valid names. */
+function folder(r: Rng): { folder?: string | null } {
+  if (r.chance(0.25)) return {}
+  if (r.chance(0.33)) return { folder: null }
   const parts = Array.from({ length: 1 + r.int(3) }, () =>
     r.pick(['Finance', 'Reports 2026', 'é漢🙂', 'a.b', '"q"', 'x'.repeat(80), 'In  between']),
   )

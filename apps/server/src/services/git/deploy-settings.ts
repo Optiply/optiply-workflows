@@ -1,5 +1,13 @@
 import { getConnector } from '@ow/connectors'
-import { configVars, configVarValues, type Db, environments, resourceConfigs, resources } from '@ow/db'
+import {
+  configVars,
+  configVarValues,
+  type Db,
+  environments,
+  oauthTokens,
+  resourceConfigs,
+  resources,
+} from '@ow/db'
 import { canonicalJson } from '@ow/definition'
 import {
   type ConfigVarObject,
@@ -136,6 +144,20 @@ export async function deployConfigVar(
   }
 }
 
+/** Whether a resource config holds anything only this instance has: secrets, overrides or OAuth accounts. */
+async function holdsLocalSettings(
+  db: Pick<Db, 'select'>,
+  row: { id: string; secrets: unknown; overrides: Record<string, unknown> },
+): Promise<boolean> {
+  if (row.secrets || Object.keys(row.overrides).length > 0) return true
+  const [token] = await db
+    .select({ id: oauthTokens.id })
+    .from(oauthTokens)
+    .where(eq(oauthTokens.resourceConfigId, row.id))
+    .limit(1)
+  return Boolean(token)
+}
+
 /**
  * A resource from Git: created protected (no owner: admins grant access) when the instance has none by that slug,
  * or its name, description, folder (made when missing) and each environment's config written. Secrets, OAuth accounts (dropped when the sign-in
@@ -205,10 +227,14 @@ export async function deployResource(
     next.set(env.id, parsed.data as Record<string, unknown>)
   }
 
-  const folderId = await ensureFolderPath(db, 'resource', value.folder, git)
+  // A file without a folder leaves the resource where it is; null is the top level.
+  const folderId =
+    value.folder === undefined
+      ? (resource?.folderId ?? null)
+      : await ensureFolderPath(db, 'resource', value.folder, git)
   let folder: FolderMove | undefined
   if (resource && resource.folderId !== folderId) {
-    folder = { from: (await folderPathOf(db, resource.folderId)) ?? null, to: value.folder ?? null }
+    folder = { from: await folderPathOf(db, resource.folderId), to: value.folder ?? null }
   }
   let created = false
   let changed = false
@@ -244,7 +270,9 @@ export async function deployResource(
       const row = rows.find((r) => r.environmentId === env.id)
       const config = next.get(env.id)
       if (!config) {
-        if (row) {
+        // Git doesn't configure it here. A config holding only Git's settings goes; one with this instance's own
+        // secrets, overrides or OAuth accounts stays (another instance's environment slugs may simply differ).
+        if (row && !(await holdsLocalSettings(tx, row))) {
           await tx.delete(resourceConfigs).where(eq(resourceConfigs.id, row.id))
           changed = true
         }

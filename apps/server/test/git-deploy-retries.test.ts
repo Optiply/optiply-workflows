@@ -148,6 +148,14 @@ describe('deploy retries (M22)', () => {
       await vi.waitFor(async () => expect(await statusOf('depot-admin')).toBe('deployed'), {
         timeout: 10_000,
       })
+      // Polling is off: a new commit waits for a webhook or Deploy now, however often the timer re-checks (M22
+      // review).
+      const [before] = await env.db.select().from(gitSettings)
+      await pushMain('Not for the timer', [app('later-admin', 'depot')])
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      const [after] = await env.db.select().from(gitSettings)
+      expect(after!.deployedCommit).toBe(before!.deployedCommit)
+      expect(await statusOf('later-admin')).toBeUndefined()
     } finally {
       await deployer.stop()
     }

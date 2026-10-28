@@ -21,7 +21,7 @@ import { TRPCError } from '@trpc/server'
 import { and, eq } from 'drizzle-orm'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch } from './commit'
-import { folderPathOf } from './folders'
+import { gitFolderPath } from './folders'
 import {
   commitProtect,
   gitTrpcError,
@@ -63,14 +63,14 @@ export async function settingsObject(db: Db, kind: SettingsKind, row: SettingsRo
       .from(resourceConfigs)
       .innerJoin(environments, eq(environments.id, resourceConfigs.environmentId))
       .where(eq(resourceConfigs.resourceId, resource.id))
-    const folder = await folderPathOf(db, resource.folderId)
+    const folder = await gitFolderPath(db, resource.folderId)
     return {
       kind,
       slug: resource.slug,
       value: {
         name: resource.name,
         description: resource.description,
-        ...(folder ? { folder } : {}),
+        folder,
         type: resource.type,
         environments: Object.fromEntries(configs.map((c) => [c.env, { config: c.config }])),
       },
@@ -216,7 +216,7 @@ async function editedSettings(
       if (!parsed.success) throw invalidInput('configuration', parsed.error.issues)
       environmentsOut[slugOf(envId)] = { config: parsed.data as Record<string, unknown> }
     }
-    const folder = edit.folder === undefined ? start.value.folder : edit.folder || undefined
+    const folder = edit.folder === undefined ? start.value.folder : edit.folder || null
     const { folder: _f, ...rest } = start.value
     return {
       kind: 'resource',

@@ -275,6 +275,41 @@ describe('on main, protected (M22)', () => {
     expect(stored).toBeDefined()
   })
 
+  it('tests a protected resource with this instance’s overrides on Git’s settings (M22 review)', async () => {
+    const db = new URL(env.databaseUrl)
+    const gitConfig = {
+      host: 'unreachable.invalid',
+      port: Number(db.port),
+      database: db.pathname.slice(1),
+      user: decodeURIComponent(db.username),
+      ssl: 'disable',
+    }
+    const { id } = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Reachable', slug: 'reachable' }),
+    ) as { id: string }
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: id,
+        environmentId: prod(),
+        config: gitConfig,
+        secrets: { password: decodeURIComponent(db.password) },
+      }),
+    )
+    data(await admin.mutate('git.protectSettings', { kind: 'resource', id }))
+    data(
+      await admin.mutate('resources.setOverrides', {
+        resourceId: id,
+        environmentId: prod(),
+        overrides: { host: db.hostname },
+      }),
+    )
+    // The form sends Git's settings (read-only on main); the test reaches the overridden host, as runs do.
+    const tested = data(
+      await admin.mutate('resources.test', { resourceId: id, environmentId: prod(), config: gitConfig }),
+    ) as { ok: boolean }
+    expect(tested.ok).toBe(true)
+  })
+
   it('overrides single fields of a protected resource on this instance', async () => {
     data(
       await admin.mutate('resources.setOverrides', {
@@ -309,6 +344,19 @@ describe('on main, protected (M22)', () => {
         }),
       ),
     ).toBe('BAD_REQUEST')
+    // Paths reaching the prototype are refused before anything reads them.
+    for (const path of ['__proto__.polluted', 'constructor.prototype.polluted', 'ssh.__proto__']) {
+      expect(
+        code(
+          await admin.mutate('resources.setOverrides', {
+            resourceId,
+            environmentId: prod(),
+            overrides: { [path]: true },
+          }),
+        ),
+      ).toBe('BAD_REQUEST')
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
     data(await admin.mutate('resources.setOverrides', { resourceId, environmentId: prod(), overrides: {} }))
     expect((await getResource()).environments.find((e) => e.environmentId === prod())!.overrides).toEqual({})
   })
@@ -392,6 +440,17 @@ describe('applyOverrides', () => {
     })
     expect(config).toEqual({ host: 'a', ssh: { host: 'b', port: 22 }, list: [1] })
     expect(applyOverrides(config, {})).toBe(config)
+  })
+
+  it('never walks into the prototype, even for a stored path it would refuse now', () => {
+    const out = applyOverrides(
+      { host: 'a' },
+      { '__proto__.polluted': true, 'constructor.prototype.polluted': true },
+    )
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    expect(out).toEqual({ host: 'a' })
+    // An inherited property isn't walked either: `toString` here is a new object of the config's own.
+    expect(applyOverrides({}, { 'toString.x': 1 })).toEqual({ toString: { x: 1 } })
   })
 })
 

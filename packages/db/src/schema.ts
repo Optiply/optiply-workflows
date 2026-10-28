@@ -1270,7 +1270,7 @@ export const gitBranchDrafts = pgTable(
     baseValue: jsonb().$type<{
       name: string
       description: string | null
-      folder?: string
+      folder?: string | null
       definition: unknown
     }>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),

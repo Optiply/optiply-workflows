@@ -169,7 +169,9 @@ describe('deploying config vars (M22)', () => {
         value: null,
       }),
     )
-    const result = await deploy(true)
+    // The next poll, with no new commit: the clear marked a retry, and the directory deploys again (M22 review).
+    const result = await deploy()
+    expect(result).toMatchObject({ status: 'deployed' })
     expect(outcomes(result)['config_var:API_BASE']).toBe('updated')
     expect((await valuesOf('API_BASE')).values).toEqual({ staging: 'https://staging-2/' })
   })
@@ -306,6 +308,30 @@ describe('deploying resources (M22)', () => {
     expect(at('staging').config).toBeNull()
     const audits = await env.db.select().from(auditEvents).where(eq(auditEvents.action, 'resource.updated'))
     expect(audits.at(-1)!.metadata).toMatchObject({ slug: 'orders_db', source: 'git' })
+  })
+
+  it("keeps an environment's config Git left when it holds this instance's secrets (M22 review)", async () => {
+    const both = { production: { ...pg('db2.internal'), database: 'orders2' }, staging: pg('db.staging') }
+    await pushMain('Staging again', [resource('orders_db', both, { name: 'Orders' })])
+    await deploy()
+    const { view } = await resourceView('orders_db')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: view.id,
+        environmentId: envId('staging'),
+        config: pg('db.staging'),
+        secrets: { password: 'staging-only' },
+      }),
+    )
+    await pushMain('Staging gone', [
+      resource('orders_db', { production: both.production }, { name: 'Orders' }),
+    ])
+    await deploy()
+    // Kept with its secret (another instance may call this environment something else), Git's last config on it.
+    expect((await resourceView('orders_db')).at('staging')).toMatchObject({
+      config: pg('db.staging'),
+      secretsSet: true,
+    })
   })
 
   it('refuses a type change, a bad config, overrides that no longer fit, an unprotected one; the rest deploys', async () => {

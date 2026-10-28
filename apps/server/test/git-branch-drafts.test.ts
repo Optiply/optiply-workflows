@@ -13,7 +13,7 @@ import {
 import { deleteOldRuns } from '@ow/engine'
 import { encodeObjectDir } from '@ow/git-format'
 import { eq } from 'drizzle-orm'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   commitBranchDraft,
   loadBranchDraft,
@@ -1471,5 +1471,44 @@ describe('branches for one object (M22)', () => {
     expect(all.find((b) => b.name === 'touches-it')).toMatchObject({ changes: false })
     const unknown = { kind: 'workflow', id: '01a17de9-0000-7000-8000-000000000000' }
     expect(failure(await admin.query('git.branches', unknown)).code).toBe('NOT_FOUND')
+  })
+
+  it('asks the remote and git again only when something may have changed (M22 review)', async () => {
+    const fetches = vi.spyOn(GitRepo.prototype, 'fetchAllBranches')
+    const mergeBases = vi.spyOn(GitRepo.prototype, 'mergeBase')
+    try {
+      const list = async () =>
+        data(await admin.query('git.branches', { kind: 'workflow', id: flowId })) as { name: string }[]
+      const first = await list()
+      const [fetched, compared] = [fetches.mock.calls.length, mergeBases.mock.calls.length]
+      // Again right away: the branches read a moment ago, each answer kept.
+      expect(await list()).toEqual(first)
+      expect(fetches.mock.calls.length).toBe(fetched)
+      expect(mergeBases.mock.calls.length).toBe(compared)
+      // A push from this server: read again, the new branch listed.
+      const id = data(
+        await admin.mutate('branchDrafts.open', {
+          kind: 'workflow',
+          id: flowId,
+          branch: 'pushed-here',
+          create: true,
+        }),
+      ).id as string
+      const { revision } = data(await admin.query('branchDrafts.get', { id }))
+      data(
+        await admin.mutate('branchDrafts.save', {
+          id,
+          revision,
+          definition: flowDefinition('return "here"'),
+        }),
+      )
+      data(await admin.mutate('branchDrafts.commit', { id, revision: revision + 1, message: 'Here' }))
+      expect((await list()).map((b) => b.name)).toContain('pushed-here')
+      expect(fetches.mock.calls.length).toBeGreaterThan(fetched)
+      data(await admin.mutate('branchDrafts.discard', { id }))
+    } finally {
+      fetches.mockRestore()
+      mergeBases.mockRestore()
+    }
   })
 })

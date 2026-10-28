@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { auditEvents, workflows } from '@ow/db'
+import { auditEvents, folders, workflows } from '@ow/db'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runGitDeploy } from '../src/services/git/deploy'
@@ -394,5 +394,36 @@ describe('protecting again', () => {
     // Its own folder again, or no folder given: not a move.
     data(await admin.mutate('workflows.update', { id, folderId: reports.id, maxConcurrentRuns: 2 }))
     data(await admin.mutate('workflows.update', { id, maxConcurrentRuns: 3 }))
+    // Its folders, or the one above them, can't be renamed or deleted while it's protected (M22 review).
+    expect(code(await admin.mutate('folders.rename', { id: reports.id, name: 'Old reports' }))).toBe(
+      'PRECONDITION_FAILED',
+    )
+    expect(code(await admin.mutate('folders.rename', { id: finance.id, name: 'Money' }))).toBe(
+      'PRECONDITION_FAILED',
+    )
+    expect(code(await admin.mutate('folders.delete', { id: reports.id }))).toBe('PRECONDITION_FAILED')
+  })
+
+  it('writes the top level as null, and refuses folder names holding a / (M22 review)', async () => {
+    const id = await publishedWorkflow('top')
+    const result = data(await admin.mutate('git.protect', { kind: 'workflow', id })) as { branch: string }
+    const files = await reader.readFiles((await reader.fetchBranch(result.branch))!, ['workflows/'])
+    expect(JSON.parse(files['workflows/top/workflow.json']!).folder).toBeNull()
+
+    expect(code(await admin.mutate('folders.create', { name: 'Sales/EU', type: 'workflow' }))).toBe(
+      'BAD_REQUEST',
+    )
+    // One made before the rule: protecting what's in it is refused, naming it.
+    const [slashed] = await env.db
+      .insert(folders)
+      .values({ objectType: 'workflow', name: 'Sales/EU', parentId: null })
+      .returning()
+    const filed = await publishedWorkflow('slashed')
+    data(await admin.mutate('workflows.update', { id: filed, folderId: slashed!.id }))
+    const refused = await admin.mutate('git.protect', { kind: 'workflow', id: filed })
+    expect(code(refused)).toBe('PRECONDITION_FAILED')
+    expect(JSON.stringify(refused.body)).toContain('Rename the folder \\"Sales/EU\\" first')
+    // Folders without protected objects still change as before.
+    data(await admin.mutate('folders.rename', { id: slashed!.id, name: 'Sales EU' }))
   })
 })

@@ -8,6 +8,7 @@ import {
   findRenames,
   type MergeObject,
   mergeObject,
+  type Renamer,
   workflowRenamer,
   workflowSpec,
 } from '../src'
@@ -37,7 +38,7 @@ const renamed = (def: WorkflowDefinition, from: string, to: string) => {
 
 const blocks = (def: WorkflowDefinition) =>
   Object.fromEntries(
-    def.blocks.map((b) => [b.name, (b.config as { code?: string } | undefined)?.code ?? null]),
+    def.blocks.map((b) => [b.name, (b as { config?: { code?: string } }).config?.code ?? null]),
   )
 
 describe('renames in a merge (M22)', () => {
@@ -143,7 +144,7 @@ describe('renames in a merge (M22)', () => {
     const theirs: AppDefinition = {
       ...base,
       queries: base.queries.map((q, i) =>
-        i === 0 ? { ...q, run: q.run === 'auto' ? 'manual' : 'auto' } : q,
+        i === 0 ? { ...q, run: (q as { run?: string }).run === 'auto' ? 'manual' : 'auto' } : q,
       ),
     } as AppDefinition
     const result = mergeObject(appSpec, object(base), object(r.definition), object(theirs), {
@@ -151,7 +152,47 @@ describe('renames in a merge (M22)', () => {
     })
     expect(result.conflicts).toEqual([])
     const merged = result.merged.definition.queries.find((q) => q.name === `${query.name}Renamed`)
-    expect(merged?.run).toBe(theirs.queries[0]!.run)
+    expect((merged as { run?: string } | undefined)?.run).toBe((theirs.queries[0] as { run?: string }).run)
+  })
+
+  it('finds a rename of an item whose text names it as a plain word (a table named like the block)', () => {
+    const base = flow('return "select * from fetch"')
+    const ours = renamed(base, 'fetch', 'orders')
+    // Not a reference: the string keeps the word on the renamed side.
+    expect(JSON.stringify(ours)).toContain('from fetch')
+    expect(findRenames(workflowRenamer, base, ours)).toEqual([
+      { group: 'blocks', from: 'fetch', to: 'orders' },
+    ])
+  })
+
+  it('renames whole definitions only for likely pairs, however many items were replaced (M22 review)', () => {
+    const many = (prefix: string, n: number): WorkflowDefinition => ({
+      schemaVersion: 1,
+      blocks: [
+        { name: 'startTrigger', type: 'startTrigger' },
+        ...Array.from({ length: n }, (_, i) => ({
+          name: `${prefix}${i}`,
+          type: 'code' as const,
+          config: { code: `return "${prefix} ${i}"` },
+        })),
+      ],
+      edges: [],
+    })
+    const base = many('old', 60)
+    // Sixty blocks replaced by sixty others, and one of them renamed for real.
+    const side = { ...many('new', 60) }
+    side.blocks = [...side.blocks, { ...base.blocks[1]!, name: 'renamedOld0' }]
+    let calls = 0
+    const counting: Renamer<WorkflowDefinition> = {
+      items: workflowRenamer.items,
+      rename: (...args) => {
+        calls++
+        return workflowRenamer.rename(...args)
+      },
+    }
+    expect(findRenames(counting, base, side)).toEqual([{ group: 'blocks', from: 'old0', to: 'renamedOld0' }])
+    // One probe per gone item and one real rename for the match, not one per pair (3,600 before).
+    expect(calls).toBeLessThanOrEqual(61)
   })
 
   it('property: a rename on one side merged with random edits on the other is the edits renamed', () => {

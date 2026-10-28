@@ -342,13 +342,21 @@ describe('resources and config vars (M22)', () => {
 })
 
 describe('folders (M22)', () => {
-  it('sit beside the name, are left out at the top level, and leave the definition alone', () => {
+  it('sit beside the name, null at the top level, left out when unknown, and leave the definition alone', () => {
     const inFolder: RepoObject = { ...workflow, value: { ...workflow.value, folder: 'Finance/Reports' } }
-    const json = JSON.parse(encodeObject(inFolder).files['workflows/sync-orders/workflow.json']!)
-    expect(json.folder).toBe('Finance/Reports')
-    expect('folder' in JSON.parse(encodeObject(workflow).files['workflows/sync-orders/workflow.json']!)).toBe(
-      false,
-    )
+    const json = (object: RepoObject) =>
+      JSON.parse(encodeObject(object).files['workflows/sync-orders/workflow.json']!)
+    expect(json(inFolder).folder).toBe('Finance/Reports')
+    const top: RepoObject = { ...workflow, value: { ...workflow.value, folder: null } }
+    expect(json(top).folder).toBeNull()
+    // Files from before M22 have no folder: decoded without one, so deploys leave the object where it is.
+    expect('folder' in json(workflow)).toBe(false)
+    const old = decodeRepo({ [MANIFEST_FILE]: manifestFile(), ...encodeObject(workflow).files }).objects[0]!
+      .result
+    expect(old.ok && 'folder' in old.value.value).toBe(false)
+    const topDecoded = decodeRepo({ [MANIFEST_FILE]: manifestFile(), ...encodeObject(top).files }).objects[0]!
+      .result
+    expect(topDecoded.ok && topDecoded.value.value.folder).toBeNull()
     const decoded = decodeRepo({ [MANIFEST_FILE]: manifestFile(), ...encodeObject(inFolder).files })
     const result = decoded.objects[0]!.result
     expect(result.ok && result.value.value).toEqual({
