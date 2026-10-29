@@ -1,3 +1,4 @@
+export * from './diff'
 export * from './history'
 export * from './merge'
 export * from './protocol'
