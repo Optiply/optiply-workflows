@@ -480,3 +480,65 @@ export async function deleteUnusedBundles(db: Db, days = 7): Promise<number> {
     .returning({ hash: componentBundles.hash })
   return deleted.length
 }
+
+/** A library release as a page running an app needs it (`@ow/app-runtime`'s `ComponentLibraryRelease`). */
+export interface PlacedLibraryRelease {
+  releaseId: string
+  version: string
+  bundleHash: string
+  allowedOrigins: string[]
+  components: ReturnType<typeof componentLibraryInterface>
+}
+
+/**
+ * The library releases named by `slug@version` keys: pinned, or the live one for `latest`. Keys naming a library
+ * that doesn't exist, isn't `visible`, or has no such release are left out (those components don't run).
+ */
+export async function componentLibraryReleasesByKey(
+  db: Db,
+  keys: string[],
+  visible: (library: ComponentLibrary) => boolean = () => true,
+): Promise<Record<string, PlacedLibraryRelease>> {
+  const refs = [...new Set(keys)].flatMap((key) => {
+    const at = key.lastIndexOf('@')
+    return at > 0 ? [{ key, slug: key.slice(0, at), version: key.slice(at + 1) }] : []
+  })
+  if (!refs.length) return {}
+  const rows = (
+    await db
+      .select()
+      .from(componentLibraries)
+      .where(inArray(componentLibraries.slug, [...new Set(refs.map((r) => r.slug))]))
+  ).filter(visible)
+  if (!rows.length) return {}
+  const releases = await db
+    .select()
+    .from(componentLibraryReleases)
+    .where(
+      inArray(
+        componentLibraryReleases.componentLibraryId,
+        rows.map((l) => l.id),
+      ),
+    )
+  const found: Record<string, PlacedLibraryRelease> = {}
+  for (const ref of refs) {
+    const library = rows.find((l) => l.slug === ref.slug)
+    const release =
+      library &&
+      releases.find((r) =>
+        ref.version === 'latest'
+          ? r.id === library.liveReleaseId
+          : r.componentLibraryId === library.id && r.version === ref.version,
+      )
+    if (release) {
+      found[ref.key] = {
+        releaseId: release.id,
+        version: release.version,
+        bundleHash: release.bundleHash,
+        allowedOrigins: release.definition.allowedOrigins,
+        components: componentLibraryInterface(release.definition),
+      }
+    }
+  }
+  return found
+}

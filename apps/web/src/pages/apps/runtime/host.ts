@@ -3,6 +3,7 @@ import { type AppDefinition, instanceRelease, MAX_MODULE_DEPTH, runsAutomaticall
 import {
   type AppUrl,
   CONNECT_MESSAGE,
+  type ComponentLibraryReleases,
   type Effect,
   type HostMessage,
   type LogLevel,
@@ -12,6 +13,7 @@ import {
   type RuntimeGlobals,
   type SandboxMessage,
 } from '@ow/app-runtime'
+import type { FrameUtil } from '@ow/component-sdk/protocol'
 import { STDLIB_BUNDLE } from '@ow/sandbox/stdlib'
 import { TRPCClientError } from '@trpc/client'
 import { createStore, type StoreApi } from 'zustand/vanilla'
@@ -39,6 +41,8 @@ export interface AppHostState {
   errors: Record<string, string>
   /** The module releases the app's instances run (M14), for drawing them. */
   modules: ModuleReleases
+  /** The component library releases its custom components run (M25), for their frames. */
+  libraries: ComponentLibraryReleases
   /** Why the app couldn't start, or that a newer version is live. */
   problem: string | null
   /** The app's console, newest last (at most 500 lines). */
@@ -58,6 +62,8 @@ export interface AppHostOptions {
   definition: AppDefinition
   /** The module releases the app's instances run (M14), by `slug@version`; later changes go through `update`. */
   modules?: ModuleReleases
+  /** The component library releases its custom components run (M25), by `slug@version`; later through `update`. */
+  libraries?: ComponentLibraryReleases
   /**
    * `module`: a module's draft running on its own in its editor (M14). `appId` is then the module's id, its queries
    * run through `modules.runQuery`, and `inputs.<name>` are its inputs' test values.
@@ -99,6 +105,11 @@ const WATCHDOG = { intervalMs: 1000, stallMs: 5000 }
 /** Only these can be opened from an app. */
 const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 const DOWNLOAD_TYPES = new Set(['text/plain', 'text/csv', 'application/json'])
+
+/** A custom component's frame (M25), as the host reaches it: its methods. */
+export interface ComponentFrameHandle {
+  call(method: string, args: unknown[]): Promise<unknown>
+}
 
 function inlineScript(code: string): string {
   // `</script` would end the element early; `<\/script` means the same in JavaScript.
@@ -161,8 +172,16 @@ export class AppHost {
   private definition: AppDefinition
   /** The module releases the sandbox should run, like `definition`. */
   private modules: ModuleReleases
+  /** The component library releases, like `modules`. */
+  private libraries: ComponentLibraryReleases
+  /** Custom components' frames by (prefixed) component name. */
+  private readonly frames = new Map<string, ComponentFrameHandle>()
   /** What `start` sent; an edit made while the sandbox was starting follows as an update. */
-  private startedWith: { definition: AppDefinition; modules: ModuleReleases } | null = null
+  private startedWith: {
+    definition: AppDefinition
+    modules: ModuleReleases
+    libraries: ComponentLibraryReleases
+  } | null = null
   /** Where the app is: sent with `start` (a restart opens the same page), then as `navigate`. */
   private url: AppUrl
 
@@ -174,12 +193,14 @@ export class AppHost {
   constructor(private readonly options: AppHostOptions) {
     this.definition = options.definition
     this.modules = options.modules ?? {}
+    this.libraries = options.libraries ?? {}
     this.url = options.url ?? { page: null, params: {} }
     this.store = createStore<AppHostState>(() => ({
       status: 'loading',
       values: {},
       errors: {},
       modules: this.modules,
+      libraries: this.libraries,
       problem: null,
       logs: [],
       connections: [],
@@ -276,16 +297,28 @@ export class AppHost {
    * The editor changed the app: the sandbox switches to it, keeping what the user did. An app that stopped
    * responding starts again with the edit (likely the fix).
    */
-  update(definition: AppDefinition, modules: ModuleReleases = this.modules): void {
-    if (definition === this.definition && modules === this.modules) return
+  update(
+    definition: AppDefinition,
+    modules: ModuleReleases = this.modules,
+    libraries: ComponentLibraryReleases = this.libraries,
+  ): void {
+    if (definition === this.definition && modules === this.modules && libraries === this.libraries) return
     const modulesChanged = modules !== this.modules
+    const librariesChanged = libraries !== this.libraries
     this.definition = definition
     this.modules = modules
-    if (modulesChanged) this.store.setState({ modules })
+    this.libraries = libraries
+    if (modulesChanged || librariesChanged) this.store.setState({ modules, libraries })
     const { status } = this.store.getState()
     if (status === 'stopped') this.restart()
     else if (status !== 'loading') {
-      this.post({ type: 'update', definition, ...(modulesChanged && { modules }), ...this.testInputs() })
+      this.post({
+        type: 'update',
+        definition,
+        ...(modulesChanged && { modules }),
+        ...(librariesChanged && { libraries }),
+        ...this.testInputs(),
+      })
       // A page added or renamed with this edit: the navigation to it may have come first, when it didn't exist yet.
       this.post({ type: 'navigate', url: this.url })
     }
@@ -346,24 +379,30 @@ export class AppHost {
     if (this.destroyed || port !== this.port) return
     switch (message.type) {
       case 'ready':
-        this.startedWith = { definition: this.definition, modules: this.modules }
+        this.startedWith = { definition: this.definition, modules: this.modules, libraries: this.libraries }
         this.post({
           type: 'start',
           definition: this.definition,
           globals: this.options.globals,
           url: this.url,
           modules: this.modules,
+          libraries: this.libraries,
           ...this.testInputs(),
         })
         return
       case 'started': {
         this.store.setState({ status: 'ready' })
         const started = this.startedWith
-        if (this.definition !== started?.definition || this.modules !== started.modules) {
+        if (
+          this.definition !== started?.definition ||
+          this.modules !== started.modules ||
+          this.libraries !== started.libraries
+        ) {
           this.post({
             type: 'update',
             definition: this.definition,
             ...(this.modules !== started?.modules && { modules: this.modules }),
+            ...(this.libraries !== started?.libraries && { libraries: this.libraries }),
             ...this.testInputs(),
           })
         }
@@ -406,10 +445,69 @@ export class AppHost {
       case 'effect':
         this.effect(message.effect)
         return
+      case 'callComponent': {
+        const frame = this.frames.get(String(message.component))
+        const id = message.id
+        if (!frame) {
+          this.reply(port, {
+            type: 'componentResult',
+            id,
+            ok: false,
+            error: `${message.component} isn't showing, so it can't be called`,
+          })
+          return
+        }
+        try {
+          const value = await frame.call(
+            String(message.method),
+            Array.isArray(message.args) ? message.args : [],
+          )
+          this.reply(port, { type: 'componentResult', id, ok: true, value })
+        } catch (err) {
+          this.reply(port, {
+            type: 'componentResult',
+            id,
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+        return
+      }
       case 'log':
         this.log(message.level, String(message.message))
         return
     }
+  }
+
+  /**
+   * A custom component's frame shows (M25): the app's calls to its methods go to it. Returns the function that
+   * forgets it (a frame replaced by another under the same name keeps the newer one).
+   */
+  registerFrame(component: string, frame: ComponentFrameHandle): () => void {
+    this.frames.set(component, frame)
+    return () => {
+      if (this.frames.get(component) === frame) this.frames.delete(component)
+    }
+  }
+
+  /** What a custom component asks for, checked like the app's own `utils` (it's untrusted code too). */
+  componentUtil(util: FrameUtil): void {
+    switch (util.action) {
+      case 'notify':
+        this.effect({ type: 'notify', message: String(util.message), tone: util.tone ?? 'info' })
+        return
+      case 'openUrl':
+        this.effect({ type: 'openUrl', url: String(util.url), newTab: util.newTab === true })
+        return
+      case 'openPage':
+        this.effect({ type: 'openPage', page: String(util.page), params: util.params ?? {}, newTab: false })
+        return
+    }
+  }
+
+  /** A custom component's own error or warning, in the app's console under its name. */
+  componentLog(component: string, level: 'error' | 'warn', message: string): void {
+    this.log(level, `${component}: ${String(message).slice(0, 2000)}`)
   }
 
   /** A module's draft in its editor: its inputs' test values, as `inputs.<name>`. */

@@ -17,6 +17,7 @@ import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { fakeGitHub } from '../../server/test/fake-github'
+import { startTestRegistry } from '../../server/test/npm-registry'
 import { E2E_PORT } from '../playwright.config'
 
 const serverDir = fileURLToPath(new URL('../../server', import.meta.url))
@@ -149,6 +150,31 @@ export default async function globalSetup() {
   await new Promise<void>((r) => iapControl.listen(0, '127.0.0.1', r))
   process.env.E2E_IAP_CONTROL = `http://127.0.0.1:${(iapControl.address() as { port: number }).port}`
 
+  // Custom components (M25): an npm registry with a package to bundle, and two origins a component can fetch from
+  // (CORS open), one of which a spec allows. Specs read E2E_ORIGIN_ALLOWED and E2E_ORIGIN_OTHER.
+  const registry = await startTestRegistry([
+    {
+      name: 'tiny-format',
+      version: '1.0.0',
+      files: { 'index.js': 'module.exports = (n) => "#" + String(n).padStart(3, "0")' },
+    },
+  ])
+  const origins = await Promise.all(
+    ['allowed', 'other'].map(async (which) => {
+      const origin = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
+        res.end(JSON.stringify({ from: which }))
+      })
+      await new Promise<void>((resolve) => origin.listen(0, '127.0.0.1', resolve))
+      return origin
+    }),
+  )
+  const originUrl = (o: (typeof origins)[number]) =>
+    `http://127.0.0.1:${(o.address() as { port: number }).port}`
+  process.env.E2E_ORIGIN_ALLOWED = originUrl(origins[0]!)
+  process.env.E2E_ORIGIN_OTHER = originUrl(origins[1]!)
+  const componentBuilds = mkdtempSync(join(tmpdir(), 'ow-e2e-components-'))
+
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
     ...process.env,
@@ -174,6 +200,8 @@ export default async function globalSetup() {
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
+    NPM_REGISTRY_URL: registry.url,
+    COMPONENT_BUILD_DIR: componentBuilds,
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
     GOOGLE_PUBSUB_URL: pubsub.url,
@@ -251,6 +279,9 @@ export default async function globalSetup() {
     await iap.close()
     await pubsub.close()
     await google.stop()
+    await registry.stop()
+    for (const origin of origins) await new Promise((r) => origin.close(r))
+    rmSync(componentBuilds, { recursive: true, force: true })
     rmSync(gitRoot, { recursive: true, force: true })
   }
 }

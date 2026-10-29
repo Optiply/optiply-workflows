@@ -5,6 +5,8 @@ import {
   browserExpressions,
   type CodeRunner,
   containerViews,
+  customComponentSpec,
+  customInstanceInterface,
   type Entity,
   type EventHandler,
   entityPages,
@@ -21,7 +23,15 @@ import {
   sameValue,
   tableFilters,
 } from '@ow/app-definition'
-import type { Effect, LogLevel, ModuleReleases, QueryModule, QueryOutcome, StatePatch } from './protocol'
+import type {
+  ComponentLibraryReleases,
+  Effect,
+  LogLevel,
+  ModuleReleases,
+  QueryModule,
+  QueryOutcome,
+  StatePatch,
+} from './protocol'
 
 /**
  * Runs an app inside its sandbox: the reactive model, queries (automatic and manual, resource and JS), component
@@ -44,6 +54,11 @@ export interface HostBridge {
   /** Asks the user to confirm before a query runs. */
   confirm(message: string): Promise<boolean>
   effect(effect: Effect): void
+  /**
+   * Calls a custom component's method in its frame (M25) and resolves with what it answered; rejects with its error.
+   * Inside a module instance, `component` carries the instance's prefix (`picker1/chart1`).
+   */
+  callComponent?(component: string, method: string, args: unknown[]): Promise<unknown>
   /** What changed in the state, for the page to render. */
   publish(patch: StatePatch): void
   log(level: LogLevel, message: string): void
@@ -62,6 +77,11 @@ export interface AppRuntimeOptions {
    * release isn't here doesn't run, and takes any props.
    */
   modules?: ModuleReleases
+  /**
+   * The component library releases the app's custom components run (M25), by `slug@version`. A custom component
+   * whose release isn't here takes any props and has no methods.
+   */
+  libraries?: ComponentLibraryReleases
   /** In a module instance (M14): what `inputs.<name>` starts as. */
   inputs?: Record<string, unknown>
   /** In a module instance (M14): fires one of the module's events on the instance in the app. */
@@ -121,6 +141,21 @@ export class AppRuntime {
       ...(options.url && { url: options.url }),
       ...(options.inputs && { inputs: options.inputs }),
       specFor: (c) => {
+        if (c.type === 'custom') {
+          const libraries = options.libraries ?? {}
+          return customComponentSpec(
+            customInstanceInterface(c, (slug) => {
+              // The release the instance names, as the page resolved it: one version per key.
+              const prefix = `${slug}@`
+              const keys = Object.keys(libraries).filter((k) => k.startsWith(prefix))
+              if (!keys.length) return undefined
+              const versions = Object.fromEntries(
+                keys.map((k) => [k.slice(prefix.length), libraries[k]!.components]),
+              )
+              return { liveVersion: Object.hasOwn(versions, 'latest') ? 'latest' : null, versions }
+            }),
+          )
+        }
         const release = c.type === 'module' ? this.releaseOf(c) : undefined
         return release ? moduleComponentSpec(moduleInterface(release.definition)) : undefined
       },
@@ -132,6 +167,12 @@ export class AppRuntime {
     const ref = instanceRelease(component)
     const modules = this.options.modules
     return ref && modules && Object.hasOwn(modules, ref.key) ? { ...ref, ...modules[ref.key]! } : undefined
+  }
+
+  /** A custom component's method, through the page (M25). */
+  private callComponent(component: string, method: string, args: unknown[]): Promise<unknown> {
+    if (!this.bridge.callComponent) return Promise.reject(new Error('Custom components can’t be called here'))
+    return this.bridge.callComponent(component, method, args)
   }
 
   /** The page shown; null in an app without pages. */
@@ -240,6 +281,7 @@ export class AppRuntime {
         ...(this.options.runner && { runner: this.options.runner }),
         // Its own instances run from the same releases (M21: modules inside modules).
         ...(this.options.modules && { modules: this.options.modules }),
+        ...(this.options.libraries && { libraries: this.options.libraries }),
         autoRunDelayMs: this.autoRunDelayMs,
         inputs,
         onEvent: (event) => this.fire(name, event),
@@ -272,6 +314,7 @@ export class AppRuntime {
         ]),
       confirm: (text) => this.bridge.confirm(text),
       effect: (effect) => this.bridge.effect(effect),
+      callComponent: (component, method, args) => this.callComponent(`${name}/${component}`, method, args),
       log: (level, text) => this.bridge.log(level, `${name}/${text}`),
       publish: (patch) => this.fromInstance(name, patch),
     }
@@ -657,6 +700,14 @@ export class AppRuntime {
       case 'component': {
         const type = entity.component.type
         methods.setHidden = (hidden: unknown) => this.apply({ [key('hidden')]: truthy(hidden) })
+        if (type === 'custom') {
+          // Its declared methods run in its frame (M25), on the page.
+          for (const method of Object.keys(entity.spec?.methods ?? {})) {
+            if (method !== 'setHidden') {
+              methods[method] = (...args: unknown[]) => this.callComponent(name, method, args)
+            }
+          }
+        }
         if (entity.spec?.input) {
           methods.setValue = (value: unknown) => this.apply({ [key('value')]: value })
           methods.clearValue = () =>

@@ -5,6 +5,7 @@ import {
   canonicalizeApp,
   expressionSide,
   type InstanceStep,
+  usedComponentLibraries,
   usedLibraries,
   usedModules,
   validateApp,
@@ -15,6 +16,7 @@ import {
   type AppRelease,
   appReleases,
   apps,
+  type ComponentLibrary,
   type Db,
   environments,
   gitBranchDrafts,
@@ -26,6 +28,7 @@ import {
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
+import { componentLibraryInfos } from './component-libraries'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
 import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
@@ -55,14 +58,16 @@ export async function checkApp(
   resources: Resource[]
   libraries: LibraryQuery[]
   modules: Module[]
+  componentLibraries: ComponentLibrary[]
   errors: AppDiagnostic[]
   diagnostics: AppDiagnostic[]
 }> {
   const slugs = queriedResources(definition)
-  const [rows, libraries, placed] = await Promise.all([
+  const [rows, libraries, placed, components] = await Promise.all([
     slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
     libraryInfos(db, usedLibraries(definition)),
     moduleInfos(db, usedModules(definition)),
+    componentLibraryInfos(db, usedComponentLibraries(definition)),
   ])
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const { diagnostics } = validateApp(definition, {
@@ -72,12 +77,14 @@ export async function checkApp(
       return resource ? getConnector(resource.type) : undefined
     },
     resolveLibrary: (slug) => libraries.get(slug)?.info,
+    resolveComponentLibrary: (slug) => components.get(slug)?.info,
     ...(self && { self }),
   })
   return {
     resources: rows,
     libraries: [...libraries.values()].map((l) => l.query),
     modules: [...placed.values()].map((m) => m.module),
+    componentLibraries: [...components.values()].map((c) => c.library),
     errors: diagnostics.filter((d) => d.severity === 'error'),
     diagnostics,
   }
@@ -114,7 +121,13 @@ export async function checkVouched(
   /** A module's slug (M21; see `checkApp`). */
   self?: string,
 ): Promise<void> {
-  const { resources: used, libraries, modules: placed, errors } = await checkApp(db, definition, self)
+  const {
+    resources: used,
+    libraries,
+    modules: placed,
+    componentLibraries,
+    errors,
+  } = await checkApp(db, definition, self)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
     throw new TRPCError({
@@ -136,6 +149,14 @@ export async function checkVouched(
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to module "${module.slug}" to release this ${what}, which uses it`,
+      })
+    }
+  }
+  for (const library of componentLibraries) {
+    if (!atLeast(access.componentLibraryLevel(library), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to component library "${library.slug}" to release this ${what}, which uses it`,
       })
     }
   }

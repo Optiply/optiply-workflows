@@ -1,5 +1,5 @@
 import type { AppDefinition } from '@ow/app-definition'
-import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
+import type { AppUrl, ComponentLibraryReleases, ModuleReleases } from '@ow/app-runtime'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
 import { useEffect, useMemo } from 'react'
@@ -80,6 +80,7 @@ export function AppViewPage() {
         definition: app.data.release.definition,
       }}
       modules={app.data.modules}
+      libraries={app.data.libraries}
       environment={environment}
       environments={environments.data}
     />
@@ -95,11 +96,13 @@ interface RunningAppProps {
   release: { id: string; version: string; definition: AppDefinition }
   /** The module releases its instances run (M14). */
   modules: ModuleReleases
+  /** The component library releases its custom components run (M25). */
+  libraries: ComponentLibraryReleases
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
 }
 
-function RunningApp({ app, release, modules, environment, environments }: RunningAppProps) {
+function RunningApp({ app, release, modules, libraries, environment, environments }: RunningAppProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const router = useRouter()
@@ -128,6 +131,7 @@ function RunningApp({ app, release, modules, environment, environments }: Runnin
   const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {
     definition: release.definition,
     modules,
+    libraries,
     appId: app.id,
     releaseId: release.id,
     environmentId: environment.id,

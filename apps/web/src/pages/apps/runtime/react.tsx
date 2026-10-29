@@ -47,6 +47,10 @@ function scopedHost(host: AppHost, prefix: string): AppHost {
     fire: (owner: string, event: string) => host.fire(prefix + owner, event),
     call: (entity: string, method: string, args?: unknown[]) => host.call(prefix + entity, method, args),
     trigger: (query: string) => host.trigger(prefix + query),
+    registerFrame: (component: string, frame: Parameters<AppHost['registerFrame']>[1]) =>
+      host.registerFrame(prefix + component, frame),
+    componentLog: (component: string, level: 'error' | 'warn', message: string) =>
+      host.componentLog(prefix + component, level, message),
   }
   return new Proxy(host, {
     get(target, property) {

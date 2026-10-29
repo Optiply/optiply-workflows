@@ -3,6 +3,7 @@ import type { RendererProps } from '../renderer'
 import { ButtonRenderer, TextRenderer } from './basic'
 import { ChartRenderer } from './chart'
 import { ContainerRenderer, FormRenderer, ModalRenderer } from './containers'
+import { CustomRenderer } from './custom'
 import {
   CheckboxRenderer,
   DateInputRenderer,
@@ -30,4 +31,5 @@ export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = 
   chart: ChartRenderer,
   navigation: NavigationRenderer,
   module: ModuleRenderer,
+  custom: CustomRenderer,
 }

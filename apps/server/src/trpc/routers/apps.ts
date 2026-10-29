@@ -2,6 +2,7 @@ import {
   type AppDefinition,
   appDefinitionHash,
   appDefinitionSchema,
+  customInstanceKeys,
   emptyApp,
   instanceKeys,
   MAX_MODULE_DEPTH,
@@ -12,6 +13,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
+import { componentLibraryReleasesByKey } from '../../services/component-libraries'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import { instanceStepSchema, moduleReleaseTree } from '../../services/modules'
 import {
@@ -110,9 +112,9 @@ export const appsRouter = router({
     }),
 
   /**
-   * For people using the app: its live release, and the module releases its instances run (M14) by `slug@version`
-   * (the app's publisher vouched for them; an instance whose release is gone doesn't run). NOT_FOUND until the
-   * first release.
+   * For people using the app: its live release, the module releases its instances run (M14) and the component
+   * library releases its custom components run (M25, its modules' too), by `slug@version` (the app's publisher
+   * vouched for them; one whose release is gone doesn't run). NOT_FOUND until the first release.
    */
   open: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, input)
@@ -123,7 +125,7 @@ export const appsRouter = router({
     return {
       ...summary(app, access),
       release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
-      modules: await moduleReleaseTree(ctx.db, instanceKeys(live.definition)),
+      ...(await placedReleases(ctx.db, live.definition)),
     }
   }),
 
@@ -394,3 +396,10 @@ export const appsRouter = router({
       return outcome
     }),
 })
+
+/** The module releases a definition's instances run, and the library releases its custom components (and its modules') run. */
+async function placedReleases(db: Context['db'], definition: AppDefinition) {
+  const modules = await moduleReleaseTree(db, instanceKeys(definition))
+  const keys = [definition, ...Object.values(modules).map((m) => m.definition)].flatMap(customInstanceKeys)
+  return { modules, libraries: await componentLibraryReleasesByKey(db, keys) }
+}

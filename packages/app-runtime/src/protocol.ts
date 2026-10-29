@@ -1,4 +1,4 @@
-import type { AppDefinition, InstanceStep } from '@ow/app-definition'
+import type { AppDefinition, ComponentLibraryInterface, InstanceStep } from '@ow/app-definition'
 
 export type { InstanceStep }
 
@@ -58,6 +58,18 @@ export interface ModuleRelease {
 /** The module releases an app's instances run, by `slug@version` with the version as the instance names it (`latest` or a version). */
 export type ModuleReleases = Record<string, ModuleRelease>
 
+/** A component library release an app's custom components run (M25): their interfaces and the built bundle. */
+export interface ComponentLibraryRelease {
+  releaseId: string
+  version: string
+  bundleHash: string
+  allowedOrigins: string[]
+  components: ComponentLibraryInterface
+}
+
+/** The library releases an app's custom components run, by `slug@version` as they name it (`latest` or a version). */
+export type ComponentLibraryReleases = Record<string, ComponentLibraryRelease>
+
 /** Which module instance a query belongs to: the instances from the app to it, outermost first (M21). */
 export type QueryModule = InstanceStep[]
 
@@ -68,6 +80,8 @@ export type HostMessage =
       globals: RuntimeGlobals
       url: AppUrl
       modules?: ModuleReleases
+      /** The component library releases its custom components run (M25). */
+      libraries?: ComponentLibraryReleases
       /** A module run on its own, in its editor (M14): what `inputs.<name>` are (the inputs' test values). */
       inputs?: Record<string, unknown>
     }
@@ -75,7 +89,13 @@ export type HostMessage =
    * The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). Without
    * `modules`, its instances keep running the releases they ran; without `inputs`, a module keeps its inputs.
    */
-  | { type: 'update'; definition: AppDefinition; modules?: ModuleReleases; inputs?: Record<string, unknown> }
+  | {
+      type: 'update'
+      definition: AppDefinition
+      modules?: ModuleReleases
+      libraries?: ComponentLibraryReleases
+      inputs?: Record<string, unknown>
+    }
   /**
    * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once
    * it has them, so the page can ignore older values for those keys still on their way (no cursor jumps).
@@ -89,6 +109,9 @@ export type HostMessage =
   | { type: 'trigger'; query: string }
   | { type: 'queryResult'; id: number; outcome: QueryOutcome }
   | { type: 'confirmResult'; id: number; ok: boolean }
+  /** What a custom component's method answered (M25). */
+  | { type: 'componentResult'; id: number; ok: true; value: unknown }
+  | { type: 'componentResult'; id: number; ok: false; error: string }
   /** Asks whether the sandbox is still responding (the host's watchdog); answered with `pong`. */
   | { type: 'ping'; id: number }
   /** The page's URL changed (a link, `utils.openPage`, Back): show that page with those parameters. */
@@ -105,6 +128,8 @@ export type SandboxMessage =
   /** `module`: the query is a module instance's (M14). */
   | { type: 'runQuery'; id: number; query: string; values: Record<string, unknown>; module?: QueryModule }
   | { type: 'confirm'; id: number; message: string }
+  /** Calls a custom component's method in its frame (M25); `component` is prefixed inside a module instance. */
+  | { type: 'callComponent'; id: number; component: string; method: string; args: unknown[] }
   | { type: 'effect'; effect: Effect }
   | { type: 'log'; level: LogLevel; message: string }
   /** The app couldn't start. */

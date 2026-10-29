@@ -22,6 +22,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   componentLibraryInfos,
+  componentLibraryReleasesByKey,
   componentLibraryUsers,
   componentNames,
   publishComponentLibraryRelease,
@@ -34,6 +35,7 @@ import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
+  atLeast,
   checkFolderMove,
   checkFolderType,
   loadAccess,
@@ -437,6 +439,19 @@ export const componentLibrariesRouter = router({
               ? [slug, { id: library.id, name: library.name, ...info }]
               : [slug, { liveVersion: null, versions: {}, noUse: true }],
         ),
+      )
+    }),
+
+  /**
+   * The library releases named by `slug@version` keys, for running an app's or module's draft in its editor; only
+   * libraries the caller may use, others are left out (their components don't run).
+   */
+  instanceReleases: authedProcedure
+    .input(z.object({ keys: z.array(z.string().max(200)).max(200) }))
+    .query(async ({ ctx, input }) => {
+      const access = await loadAccess(ctx.db, ctx.user)
+      return componentLibraryReleasesByKey(ctx.db, input.keys, (l) =>
+        atLeast(access.componentLibraryLevel(l), 'use'),
       )
     }),
 
