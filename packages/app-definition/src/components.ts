@@ -203,7 +203,7 @@ const specs: ComponentSpec[] = [
     props: {
       data: { type: 'array', default: [], label: 'Data' },
       /**
-       * `{ key, label?, type?, editable?, hidden?, width?, value? }` per column, in order; empty shows every key of
+       * `{ key, label?, type?, editable?, hidden?, width?, value?, filterable? }` per column, in order; empty shows every key of
        * the first rows. A column's `value` (M24) computes it: a template evaluated once per row of `data`, with the
        * row as `currentRow` and its index as `i` (see `ROW_LOCALS`); such a column isn't editable.
        */
@@ -213,6 +213,8 @@ const specs: ComponentSpec[] = [
       emptyMessage: str('Empty message', 'No rows'),
       /** A search box above the rows; its text is `searchText`. */
       search: bool('Search box'),
+      /** A filter per column, set from its header (M24); they're `filters`. */
+      showFilters: bool('Column filters'),
       /**
        * `scroll`: every row, scrolled. `pages`: pages of `pageSize` rows. `server`: `data` is one page that a query
        * fetched with `pagination`, `sort` and `searchText` (the table neither sorts, searches nor pages it itself).
@@ -235,6 +237,11 @@ const specs: ComponentSpec[] = [
       /** `{ column, desc }`, or null when unsorted. */
       sort: { default: null },
       searchText: { default: '' },
+      /**
+       * `[{ column, op, value?, type? }]` (M24), ANDed: the table filters its rows by them, except with `server`
+       * paging, where a query reads them (`sql.where(table1.filters, [...])`). See `TABLE_FILTER_OPS`.
+       */
+      filters: { default: [] },
     },
     methods: {
       selectRow: { params: ['index'] },
@@ -248,8 +255,12 @@ const specs: ComponentSpec[] = [
       setSort: { params: ['column', 'desc'] },
       /** Sets `searchText`; back to the first page; fires `searchChange`. */
       setSearchText: { params: ['text'] },
+      /** Sets `filters` (entries that aren't filters are dropped); back to the first page; fires `filterChange`. */
+      setFilters: { params: ['filters'] },
+      /** No filters; back to the first page; fires `filterChange`. */
+      clearFilters: { params: [] },
     },
-    events: ['rowSelect', 'changeCell', 'save', 'pageChange', 'sortChange', 'searchChange'],
+    events: ['rowSelect', 'changeCell', 'save', 'pageChange', 'sortChange', 'searchChange', 'filterChange'],
     defaultSize: { w: 12, h: 20 },
   },
   {
@@ -323,6 +334,51 @@ export const COMPONENTS: Readonly<Record<string, ComponentSpec>> = Object.fromEn
     },
   ]),
 )
+
+/**
+ * The operators of a table's filters (M24), as `sql.where` takes them (`@ow/expressions` `FILTER_OPS`): `between`
+ * takes `[from, to]`, `empty` and `notEmpty` no value.
+ */
+export const TABLE_FILTER_OPS = [
+  'contains',
+  'equals',
+  'notEquals',
+  'empty',
+  'notEmpty',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'between',
+] as const
+export type TableFilterOp = (typeof TABLE_FILTER_OPS)[number]
+
+export interface TableFilter {
+  column: string
+  op: TableFilterOp
+  value?: JsonValue
+  /** The column's type when it was set (`number`, `date`…), for comparing and for `sql.where`'s binding. */
+  type?: string
+}
+
+/** Filters as `setFilters` keeps them: entries with a column and a known operator; anything else dropped. */
+export function tableFilters(value: unknown): TableFilter[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((f) => {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return []
+    const { column, op, value: v, type } = f as Record<string, unknown>
+    if (typeof column !== 'string' || !column) return []
+    if (typeof op !== 'string' || !(TABLE_FILTER_OPS as readonly string[]).includes(op)) return []
+    return [
+      {
+        column,
+        op: op as TableFilterOp,
+        ...(v !== undefined && { value: v as JsonValue }),
+        ...(typeof type === 'string' && { type }),
+      },
+    ]
+  })
+}
 
 /** A table's page size as the table and its `pagination` both use it: a whole number of rows, 50 when it isn't one. */
 export function pageSizeOf(value: unknown): number {

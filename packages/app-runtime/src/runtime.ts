@@ -18,6 +18,7 @@ import {
   runsAutomatically,
   type ServerAppQuery,
   sameValue,
+  tableFilters,
 } from '@ow/app-definition'
 import type { Effect, LogLevel, ModuleReleases, QueryModule, QueryOutcome, StatePatch } from './protocol'
 
@@ -694,6 +695,12 @@ export class AppRuntime {
             })
             return this.fire(name, 'searchChange')
           }
+          const setFilters = (filters: unknown) => {
+            this.apply({ [key('filters')]: tableFilters(filters), [key('page')]: 0 })
+            return this.fire(name, 'filterChange')
+          }
+          methods.setFilters = setFilters
+          methods.clearFilters = () => setFilters([])
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

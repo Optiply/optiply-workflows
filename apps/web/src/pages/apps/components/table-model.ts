@@ -3,7 +3,7 @@
  * the changeset an editable table collects, and turning typed text into values.
  */
 
-import { pageSizeOf } from '@ow/app-definition'
+import { pageSizeOf, type TableFilter, type TableFilterOp } from '@ow/app-definition'
 
 export type ColumnType = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'json'
 
@@ -15,6 +15,8 @@ export interface TableColumn {
   width: number | null
   /** Computed per row from its `value` template (M24): shown, sorted and searched, never edited. */
   computed: boolean
+  /** Has a filter in its header when the table's filters are on (M24); `filterable: false` turns it off. */
+  filterable: boolean
 }
 
 export type Row = Record<string, unknown>
@@ -70,6 +72,7 @@ export function tableColumns(config: unknown, rows: Row[]): TableColumn[] {
         editable: c.editable === true && typeof c.value !== 'string',
         width: typeof c.width === 'number' && c.width > 0 ? c.width : null,
         computed: typeof c.value === 'string',
+        filterable: c.filterable !== false,
       },
     ]
   })
@@ -191,12 +194,126 @@ export function parseCell(text: string, type: ColumnType): { value: unknown } | 
   }
 }
 
+/** The operators a column's filter offers, by its type, with how they read (M24). */
+export const FILTER_OPS_BY_TYPE: Record<ColumnType, readonly { op: TableFilterOp; label: string }[]> = {
+  text: [
+    { op: 'contains', label: 'contains' },
+    { op: 'equals', label: 'is' },
+    { op: 'notEquals', label: 'is not' },
+    { op: 'empty', label: 'is empty' },
+    { op: 'notEmpty', label: 'is not empty' },
+  ],
+  number: [
+    { op: 'equals', label: '=' },
+    { op: 'notEquals', label: '≠' },
+    { op: 'lt', label: '<' },
+    { op: 'lte', label: '≤' },
+    { op: 'gt', label: '>' },
+    { op: 'gte', label: '≥' },
+    { op: 'between', label: 'between' },
+    { op: 'empty', label: 'is empty' },
+  ],
+  boolean: [
+    { op: 'equals', label: 'is' },
+    { op: 'empty', label: 'is empty' },
+  ],
+  date: [
+    { op: 'equals', label: 'on' },
+    { op: 'lt', label: 'before' },
+    { op: 'gt', label: 'after' },
+    { op: 'between', label: 'between' },
+    { op: 'empty', label: 'is empty' },
+  ],
+  datetime: [
+    { op: 'lt', label: 'before' },
+    { op: 'gt', label: 'after' },
+    { op: 'between', label: 'between' },
+    { op: 'empty', label: 'is empty' },
+  ],
+  json: [
+    { op: 'contains', label: 'contains' },
+    { op: 'empty', label: 'is empty' },
+    { op: 'notEmpty', label: 'is not empty' },
+  ],
+}
+
+/** How a filter reads in its chip: `qty ≥ 3`, `name contains ada`, `day between 2026-01-01 and 2026-01-31`. */
+export function filterLabel(filter: TableFilter, label: string): string {
+  const type = (filter.type && filter.type in FILTER_OPS_BY_TYPE ? filter.type : 'text') as ColumnType
+  const word = FILTER_OPS_BY_TYPE[type].find((o) => o.op === filter.op)?.label ?? filter.op
+  if (filter.op === 'empty' || filter.op === 'notEmpty') return `${label} ${word}`
+  if (filter.op === 'between' && Array.isArray(filter.value)) {
+    return `${label} between ${String(filter.value[0])} and ${String(filter.value[1])}`
+  }
+  return `${label} ${word} ${String(filter.value ?? '')}`
+}
+
+const isEmptyCell = (v: unknown) => v === null || v === undefined || v === ''
+
+/** A value to order by for a column's type: numbers, times for dates, else text. */
+function ordinal(value: unknown, type: string | undefined): unknown {
+  if (type === 'number') return typeof value === 'number' ? value : Number(value)
+  if (type === 'date' || type === 'datetime') {
+    const t = Date.parse(String(value))
+    return Number.isNaN(t) ? String(value) : t
+  }
+  if (type === 'boolean') return value === true || value === 'true'
+  return value
+}
+
+/** Whether a cell passes one filter, as `sql.where` would have the database decide (text compared without case). */
+function passes(cell: unknown, filter: TableFilter, type: string | undefined): boolean {
+  const value = filter.value
+  switch (filter.op) {
+    case 'empty':
+      return isEmptyCell(cell)
+    case 'notEmpty':
+      return !isEmptyCell(cell)
+    case 'contains':
+      return (
+        !isEmptyCell(cell) &&
+        fold(formatCell(cell, (type as ColumnType) ?? 'text')).includes(fold(String(value ?? '')))
+      )
+    case 'notEquals':
+      return isEmptyCell(cell) || compare(ordinal(cell, type), ordinal(value, type)) !== 0
+    case 'between': {
+      if (isEmptyCell(cell) || !Array.isArray(value)) return false
+      const x = ordinal(cell, type)
+      return compare(x, ordinal(value[0], type)) >= 0 && compare(x, ordinal(value[1], type)) <= 0
+    }
+    default: {
+      if (isEmptyCell(cell)) return false
+      const c = compare(ordinal(cell, type), ordinal(value, type))
+      return filter.op === 'equals'
+        ? c === 0
+        : filter.op === 'lt'
+          ? c < 0
+          : filter.op === 'lte'
+            ? c <= 0
+            : filter.op === 'gt'
+              ? c > 0
+              : c >= 0
+    }
+  }
+}
+
+/** The positions of the rows passing every filter (a filter on a column the table doesn't have is ignored). */
+export function filterRows(rows: Row[], columns: TableColumn[], filters: TableFilter[]): number[] {
+  const active = filters.flatMap((f) => {
+    const column = columns.find((c) => c.key === f.column)
+    return column ? [{ filter: f, type: f.type ?? column.type }] : []
+  })
+  return rows.flatMap((row, index) =>
+    active.every(({ filter, type }) => passes(row?.[filter.column], filter, type)) ? [index] : [],
+  )
+}
+
 export type Paging = 'scroll' | 'pages' | 'server'
 
 export interface TableView {
   /** The rows to show, with their positions in the data. */
   rows: { row: Row; index: number }[]
-  /** Rows matching the search (before paging); with server paging, `totalRowCount` (null when not given). */
+  /** Rows matching the filters and the search (before paging); with server paging, `totalRowCount` (null when not given). */
   total: number | null
   /** The page shown, from 0, kept within the pages there are. */
   page: number
@@ -225,6 +342,7 @@ export function tableView(opts: {
   sort: { key: string; desc: boolean } | null
   searchText: string
   totalRowCount: number | null
+  filters?: TableFilter[]
 }): TableView {
   // The same as the table's `pagination` (AppModel), so the rows shown and the query's page always agree.
   const size = pageSizeOf(opts.pageSize)
@@ -239,13 +357,15 @@ export function tableView(opts: {
     }
   }
   const needle = fold(opts.searchText.trim())
-  const matching = needle
-    ? opts.rows.flatMap((row, index) =>
-        opts.columns.some((col) => fold(formatCell(row?.[col.key], col.type)).includes(needle))
-          ? [index]
-          : [],
-      )
+  // Filters first (M24), then the search, among what's left.
+  const filtered = opts.filters?.length
+    ? filterRows(opts.rows, opts.columns, opts.filters)
     : opts.rows.map((_, index) => index)
+  const matching = needle
+    ? filtered.filter((index) =>
+        opts.columns.some((col) => fold(formatCell(opts.rows[index]?.[col.key], col.type)).includes(needle)),
+      )
+    : filtered
   // `sortedRows` numbers the matching rows; map those back to positions in the data.
   const sorted = sortedRows(
     matching.map((i) => opts.rows[i]!),

@@ -1,8 +1,10 @@
 // biome-ignore-all lint/a11y/useSemanticElements: an ARIA grid on divs, so rows can be virtualized (absolutely positioned)
 // biome-ignore-all lint/a11y/useFocusableInteractive: the grid holds focus and points at the active cell (aria-activedescendant)
 // biome-ignore-all lint/a11y/useKeyWithClickEvents: rows and cells are clicked; the keyboard works on the grid (arrows, Enter, Space)
+
+import { type TableFilter, tableFilters } from '@ow/app-definition'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ListFilter, Search, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -10,8 +12,11 @@ import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
 import {
   applyEdit,
+  type ColumnType,
   changeFor,
   editText,
+  FILTER_OPS_BY_TYPE,
+  filterLabel,
   formatCell,
   type Paging,
   parseCell,
@@ -57,6 +62,11 @@ export function TableRenderer({ component }: RendererProps) {
   const page = useAppValue<number>(`${name}.page`) ?? 0
   const sortState = useAppValue<{ column?: unknown; desc?: unknown } | null>(`${name}.sort`)
   const searchText = useAppValue<string>(`${name}.searchText`) ?? ''
+  const showFilters = useAppValue<boolean>(`${name}.showFilters`) === true
+  const filtersValue = useAppValue<unknown>(`${name}.filters`)
+  const filters = useMemo(() => tableFilters(filtersValue), [filtersValue])
+  /** The column whose filter is being set, in the bar above the rows. */
+  const [filtering, setFiltering] = useState<string | null>(null)
 
   const rows = useMemo(() => (Array.isArray(shown) ? (shown as Row[]) : []), [shown])
   const columns = useMemo(() => tableColumns(columnsProp, rows), [columnsProp, rows])
@@ -78,8 +88,9 @@ export function TableRenderer({ component }: RendererProps) {
         sort,
         searchText: typeof searchText === 'string' ? searchText : '',
         totalRowCount: typeof totalRowCount === 'number' ? totalRowCount : null,
+        filters,
       }),
-    [rows, columns, paging, page, pageSize, sort, searchText, totalRowCount],
+    [rows, columns, paging, page, pageSize, sort, searchText, totalRowCount, filters],
   )
   const ordered = view.rows
   const [active, setActive] = useState<{ r: number; c: number } | null>(null)
@@ -229,6 +240,16 @@ export function TableRenderer({ component }: RendererProps) {
 
   const cellId = (r: number, c: number) => `${gridId}-${r}-${c}`
 
+  /** Sets the column's filter (one per column from the header; null removes it), as `setFilters` does. */
+  const setFilter = (column: string, filter: TableFilter | null) => {
+    setActive(null)
+    setFiltering(null)
+    const next = filters.filter((f) => f.column !== column)
+    host.call(name, 'setFilters', [filter ? [...next, filter] : next])
+    scrollRef.current?.scrollTo({ top: 0 })
+  }
+  const filteringColumn = filtering === null ? undefined : columns.find((c) => c.key === filtering)
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-surface text-sm">
       {showSearch && (
@@ -247,6 +268,52 @@ export function TableRenderer({ component }: RendererProps) {
               host.fire(name, 'searchChange')
             }}
           />
+        </div>
+      )}
+      {filteringColumn && (
+        <FilterBar
+          key={filteringColumn.key}
+          column={filteringColumn}
+          filter={filters.find((f) => f.column === filteringColumn.key)}
+          onApply={(filter) => setFilter(filteringColumn.key, filter)}
+          onCancel={() => setFiltering(null)}
+        />
+      )}
+      {filters.length > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5"
+          data-testid="filters"
+        >
+          {filters.map((f) => {
+            const label = columns.find((c) => c.key === f.column)?.label ?? f.column
+            return (
+              <span
+                key={f.column}
+                className="flex items-center gap-1 rounded-full bg-accent-soft py-0.5 pr-1 pl-2.5 text-xs text-accent"
+              >
+                <button type="button" onClick={() => setFiltering(f.column)} title="Change this filter">
+                  {filterLabel(f, label)}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove the filter on ${label}`}
+                  className="rounded-full p-0.5 hover:bg-surface"
+                  onClick={() => setFilter(f.column, null)}
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )
+          })}
+          {filters.length > 1 && (
+            <button
+              type="button"
+              className="text-xs text-muted hover:text-ink"
+              onClick={() => host.call(name, 'clearFilters')}
+            >
+              Clear all
+            </button>
+          )}
         </div>
       )}
       <div
@@ -274,7 +341,7 @@ export function TableRenderer({ component }: RendererProps) {
                   key={col.key}
                   role="columnheader"
                   aria-sort={sorted ? (sort.desc ? 'descending' : 'ascending') : 'none'}
-                  className="truncate"
+                  className="flex items-center truncate"
                 >
                   <button
                     type="button"
@@ -295,6 +362,23 @@ export function TableRenderer({ component }: RendererProps) {
                     {sorted &&
                       (sort.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
                   </button>
+                  {/* A computed column isn't in the database: a query can't filter by it. */}
+                  {showFilters && col.filterable && !(paging === 'server' && col.computed) && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label={`Filter ${col.label}`}
+                      className={cn(
+                        'mr-1 shrink-0 rounded p-1 hover:bg-canvas',
+                        filters.some((f) => f.column === col.key)
+                          ? 'text-accent'
+                          : 'text-muted hover:text-ink',
+                      )}
+                      onClick={() => setFiltering(filtering === col.key ? null : col.key)}
+                    >
+                      <ListFilter className="size-3.5" />
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -392,7 +476,10 @@ export function TableRenderer({ component }: RendererProps) {
         <RowCount
           view={view}
           rows={rows.length}
-          searching={paging !== 'server' && typeof searchText === 'string' && searchText.trim() !== ''}
+          searching={
+            paging !== 'server' &&
+            ((typeof searchText === 'string' && searchText.trim() !== '') || filters.length > 0)
+          }
         />
         {paging !== 'scroll' && (
           <div className="flex items-center gap-1">
@@ -446,7 +533,112 @@ export function TableRenderer({ component }: RendererProps) {
   )
 }
 
-/** "23 rows"; "5 of 23 rows" while searching; with server paging, the total when the app gives one. */
+/**
+ * Sets one column's filter (M24): an operator for its type and the value(s) it needs. Apply sets it, Remove drops
+ * it; a number typed is kept as a number.
+ */
+function FilterBar({
+  column,
+  filter,
+  onApply,
+  onCancel,
+}: {
+  column: TableColumn
+  filter: TableFilter | undefined
+  onApply: (filter: TableFilter | null) => void
+  onCancel: () => void
+}) {
+  const ops = FILTER_OPS_BY_TYPE[column.type]
+  const [op, setOp] = useState(filter && ops.some((o) => o.op === filter.op) ? filter.op : ops[0]!.op)
+  const initial = filter?.value
+  const [from, setFrom] = useState(
+    Array.isArray(initial) ? String(initial[0] ?? '') : initial === undefined ? '' : String(initial),
+  )
+  const [to, setTo] = useState(Array.isArray(initial) ? String(initial[1] ?? '') : '')
+  const inputType: Record<ColumnType, string> = {
+    text: 'text',
+    json: 'text',
+    number: 'number',
+    boolean: 'text',
+    date: 'date',
+    datetime: 'datetime-local',
+  }
+  const parse = (text: string) =>
+    column.type === 'number' && text.trim() !== '' && Number.isFinite(Number(text))
+      ? Number(text)
+      : column.type === 'boolean'
+        ? text === 'true'
+        : text
+  const apply = () => {
+    const base = { column: column.key, op, type: column.type }
+    if (op === 'empty' || op === 'notEmpty') return onApply(base)
+    if (op === 'between') return onApply({ ...base, value: [parse(from), parse(to)] })
+    onApply({ ...base, value: parse(column.type === 'boolean' && from === '' ? 'true' : from) })
+  }
+  const field = (value: string, set: (v: string) => void, label: string) =>
+    column.type === 'boolean' ? (
+      <select
+        aria-label={label}
+        value={value || 'true'}
+        onChange={(e) => set(e.target.value)}
+        className="h-7 rounded border border-border bg-surface px-1 text-xs"
+      >
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    ) : (
+      <input
+        aria-label={label}
+        type={inputType[column.type]}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && apply()}
+        className="h-7 min-w-0 flex-1 rounded border border-border bg-surface px-2 text-xs"
+      />
+    )
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 border-b border-border bg-canvas px-3 py-2 text-xs"
+      data-testid="filter-bar"
+    >
+      <span className="font-medium">{column.label}</span>
+      <select
+        aria-label="Operator"
+        value={op}
+        onChange={(e) => setOp(e.target.value as typeof op)}
+        className="h-7 rounded border border-border bg-surface px-1 text-xs"
+      >
+        {ops.map((o) => (
+          <option key={o.op} value={o.op}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {op !== 'empty' && op !== 'notEmpty' && field(from, setFrom, op === 'between' ? 'From' : 'Value')}
+      {op === 'between' && (
+        <>
+          <span>and</span>
+          {field(to, setTo, 'To')}
+        </>
+      )}
+      <span className="ml-auto flex gap-1">
+        <button type="button" className={buttonVariants({ variant: 'primary', size: 'sm' })} onClick={apply}>
+          Apply
+        </button>
+        {filter && (
+          <button type="button" className={buttonVariants({ size: 'sm' })} onClick={() => onApply(null)}>
+            Remove
+          </button>
+        )}
+        <button type="button" className={buttonVariants({ variant: 'ghost', size: 'sm' })} onClick={onCancel}>
+          Cancel
+        </button>
+      </span>
+    </div>
+  )
+}
+
+/** "23 rows"; "5 of 23 rows" while searching or filtering; with server paging, the total when the app gives one. */
 function RowCount({ view, rows, searching }: { view: TableView; rows: number; searching: boolean }) {
   const count = (n: number) => `${n} ${n === 1 ? 'row' : 'rows'}`
   if (view.total === null) return null

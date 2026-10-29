@@ -207,6 +207,12 @@ export function ColumnsEditor({
                       checked={column.hidden === true}
                       onChange={(e) => change(i, 'hidden', e.target.checked || undefined)}
                     />
+                    <Checkbox
+                      label="Filterable"
+                      title="A filter in its header, when the table's column filters are on"
+                      checked={column.filterable !== false}
+                      onChange={(e) => change(i, 'filterable', e.target.checked ? undefined : false)}
+                    />
                   </div>
                   <div className="flex flex-col gap-1">
                     <span>

@@ -386,6 +386,7 @@ describe('AppRuntime', () => {
               on('pageChange', { type: 'notify', message: 'page {{ t.page }}' }),
               on('sortChange', { type: 'notify', message: 'sort {{ t.sort?.column }}' }),
               on('searchChange', { type: 'notify', message: 'search {{ t.searchText }}' }),
+              on('filterChange', { type: 'notify', message: 'filters {{ t.filters.length }}' }),
             ],
           },
         ),
@@ -393,7 +394,7 @@ describe('AppRuntime', () => {
       queries: [
         sql(
           'page',
-          'select * from c where name ilike {{ t.searchText }} order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
+          'select * from c where name ilike {{ t.searchText }} and {{ t.filters.length }} >= 0 order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
         ),
       ],
     })
@@ -423,12 +424,25 @@ describe('AppRuntime', () => {
     expect(last()).toMatchObject({ ' t.searchText ': 'ada', ' t.pagination.offset ': 0 })
     await t.runtime.call('t', 'setSort', [null])
     expect(t.state['t.sort']).toBeNull()
+    // Filters (M24): kept normalized, back to the first page, an event; the query re-runs with them.
+    await t.runtime.call('t', 'setPage', [1])
+    await t.runtime.call('t', 'setFilters', [
+      [{ column: 'name', op: 'contains', value: 'a', type: 'text' }, { column: 'x', op: 'drop' }, 'junk'],
+    ])
+    await wait()
+    expect(t.state['t.filters']).toEqual([{ column: 'name', op: 'contains', value: 'a', type: 'text' }])
+    expect(last()).toMatchObject({ ' t.pagination.offset ': 0 })
+    await t.runtime.call('t', 'clearFilters')
+    expect(t.state['t.filters']).toEqual([])
     expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
       'page 2',
       'sort name',
       'page 1',
       'search ada',
       'sort ',
+      'page 1',
+      'filters 1',
+      'filters 0',
     ])
   })
 

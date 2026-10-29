@@ -1,5 +1,6 @@
+import { FILTER_OPS } from '@ow/expressions'
 import { describe, expect, it, vi } from 'vitest'
-import { AppModel, sameValue } from '../src'
+import { AppModel, sameValue, TABLE_FILTER_OPS, tableFilters } from '../src'
 import { app, comp, sqlQuery } from './helpers'
 
 const model = (def: Parameters<typeof app>[0], options = {}) => {
@@ -293,5 +294,28 @@ describe('AppModel', () => {
     expect(sameValue({ a: 1 }, { a: 2 })).toBe(false)
     expect(sameValue(Number.NaN, Number.NaN)).toBe(true)
     expect(sameValue(null, {})).toBe(false)
+  })
+})
+
+describe('table filters (M24)', () => {
+  it('has the operators sql.where takes', () => {
+    expect([...TABLE_FILTER_OPS]).toEqual([...FILTER_OPS])
+  })
+
+  it('keeps entries with a column and a known operator', () => {
+    expect(
+      tableFilters([
+        { column: 'a', op: 'between', value: [1, 2], type: 'number' },
+        { column: 'b', op: 'empty' },
+        { column: '', op: 'equals' },
+        { column: 'c', op: 'like' },
+        null,
+        ['a', 'equals'],
+      ]),
+    ).toEqual([
+      { column: 'a', op: 'between', value: [1, 2], type: 'number' },
+      { column: 'b', op: 'empty' },
+    ])
+    expect(tableFilters('a = 1')).toEqual([])
   })
 })
