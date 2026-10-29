@@ -14,6 +14,7 @@ import { ConfirmHost } from './components/confirm'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
+import { ComponentLibrariesPage } from './pages/component-libraries/list'
 import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
 import { LibraryPage } from './pages/library/list'
@@ -170,6 +171,23 @@ const moduleEditorRoute = createRoute({
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
 })
+/** Component libraries (M25): the list, and each one's editor in its own chunk (Monaco loads with it). */
+const componentLibrariesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/component-libraries',
+  validateSearch: folderSearch,
+  component: ComponentLibrariesPage,
+})
+const componentLibraryEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/component-libraries/$slug',
+  /** `branch` edits a protected library's draft on that Git branch. */
+  validateSearch: z.object({ branch: z.string().optional() }),
+  component: lazyRouteComponent(
+    () => import('./pages/component-libraries/editor'),
+    'ComponentLibraryEditorPage',
+  ),
+})
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/runs',
@@ -247,6 +265,8 @@ const routeTree = rootRoute.addChildren([
     libraryEditorRoute,
     modulesRoute,
     moduleEditorRoute,
+    componentLibrariesRoute,
+    componentLibraryEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

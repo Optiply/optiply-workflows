@@ -16,7 +16,7 @@ export function DroppedWarning({
   what,
 }: {
   impact: DroppedImpact | undefined
-  what: 'parameter' | 'input'
+  what: 'parameter' | 'input' | 'component or prop'
 }) {
   if (!impact || (!impact.uses.length && !impact.hidden)) return null
   const names = impact.dropped.map((n) => `“${n}”`).join(', ')

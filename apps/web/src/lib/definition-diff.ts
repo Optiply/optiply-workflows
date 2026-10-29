@@ -2,6 +2,7 @@ import {
   appRenamer,
   appSpec,
   type CollabSpec,
+  componentLibrarySpec,
   type DefinitionDiff,
   type DiffChange,
   diff,
@@ -16,13 +17,14 @@ import {
  * (components, queries, blocks…), each item with its field changes.
  */
 
-export type DefinitionKind = 'workflow' | 'app' | 'module' | 'library'
+export type DefinitionKind = 'workflow' | 'app' | 'module' | 'library' | 'components'
 
 const SPECS: Record<DefinitionKind, { spec: CollabSpec; renamer?: Renamer<never> }> = {
   workflow: { spec: workflowSpec, renamer: workflowRenamer as Renamer<never> },
   app: { spec: appSpec, renamer: appRenamer as Renamer<never> },
   module: { spec: appSpec, renamer: appRenamer as Renamer<never> },
   library: { spec: libraryQuerySpec },
+  components: { spec: componentLibrarySpec },
 }
 
 /** What changed from `before` to `after`, renames followed where the kind has them. */

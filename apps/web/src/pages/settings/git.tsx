@@ -425,6 +425,12 @@ function ObjectLink({ object }: { object: Status['objects'][number] }) {
             {label}
           </Link>
         )
+      case 'component_library':
+        return (
+          <Link to="/component-libraries/$slug" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
       case 'resource':
         return (
           <Link to="/resources/$resourceId" params={{ resourceId: object.objectId }} className={className}>

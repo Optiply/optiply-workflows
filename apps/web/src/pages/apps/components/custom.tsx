@@ -56,7 +56,7 @@ export function CustomRenderer({ component }: RendererProps) {
 /** The bundles fetched so far, by hash (they never change). */
 const bundles = new Map<string, Promise<{ js: string; css: string }>>()
 
-function fetchBundle(hash: string): Promise<{ js: string; css: string }> {
+export function fetchBundle(hash: string): Promise<{ js: string; css: string }> {
   let found = bundles.get(hash)
   if (!found) {
     const get = async (ext: string) => {

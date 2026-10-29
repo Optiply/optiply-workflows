@@ -246,7 +246,7 @@ function Cell({ value }: { value: unknown }) {
 }
 
 type Target = {
-  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module'
+  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module' | 'component_library'
   objectId: string | null
 }
 
