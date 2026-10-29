@@ -8,12 +8,15 @@ import {
   copyComponents,
   moveIntoReason,
   moveToParent,
+  moveView,
+  outermostOf,
   pasteComponents,
   placeComponents,
   removeView,
   renameView,
   rewriteCallArgs,
   setFrame,
+  setProp,
   slotOf,
   slotsOf,
   validateApp,
@@ -111,6 +114,17 @@ describe('slots', () => {
     ]).toEqual([8, 3, 2])
   })
 
+  it('finds the bottom of the slot a component lands in when none is named', () => {
+    // No slot in a container with views: its first view, where table1 and loose (no slot) end at row 8.
+    expect(bottomOf(tabs(), 'box', null, undefined)).toBe(8)
+    expect(bottomOf(tabs(), 'box', null, 'gone')).toBe(8)
+    expect(bottomOf(tabs(), 'box', null, 'details')).toBe(3)
+    const def = tabs()
+    const moved = moveToParent({ ...def, layout: { ...def.layout, form1: at(0, 20) } }, 'form1', 'box')
+    expect(slotOf(moved, moved.components.find((c) => c.name === 'form1')!)).toBe('list')
+    expect(moved.layout?.form1?.y).toBe(8)
+  })
+
   it('reports slots a parent doesn’t have, and views written wrong', () => {
     const def = tabs()
     def.components.push(
@@ -205,6 +219,29 @@ describe('views', () => {
     expect(renameView(tabs(), 'box', 'nope', 'x')).toEqual(tabs())
   })
 
+  it('keeps only the outermost of several components', () => {
+    expect(outermostOf(tabs(), ['table1', 'box', 'in_form', 'side'])).toEqual(['box', 'in_form', 'side'])
+    expect(outermostOf(tabs(), ['in_form', 'form1'])).toEqual(['form1'])
+  })
+
+  it('moves a view, keeping what sits in the first view where it is', () => {
+    const moved = moveView(tabs(), 'box', 'details', -1)
+    expect(containerViews(moved.components[0]!).map((v) => v.name)).toEqual(['details', 'list'])
+    // `loose` had no slot (so the first view): it stays in list rather than following the new first view.
+    expect(slotOf(moved, moved.components.find((c) => c.name === 'loose')!)).toBe('list')
+    expect(moved.components.find((c) => c.name === 'save')).toMatchObject({ slot: 'footer' })
+    expect(moveView(tabs(), 'box', 'list', -1)).toEqual(tabs())
+    // An entry the views list drops (here a bad one first) doesn't shift which one moves.
+    const def = tabs()
+    const odd = setProp(def, 'box', 'views', [
+      { name: 'footer' },
+      { name: 'list', label: 'List' },
+      { name: 'details' },
+    ])
+    const props = moveView(odd, 'box', 'list', 1).components[0]!.props
+    expect(props?.views).toEqual([{ name: 'footer' }, { name: 'details' }, { name: 'list', label: 'List' }])
+  })
+
   it('removes a view, moving what’s in it to another or removing it', () => {
     const moved = removeView(tabs(), 'box', 'details', 'list')
     expect(containerViews(moved.components[0]!).map((v) => v.name)).toEqual(['list'])
@@ -222,6 +259,8 @@ describe('views', () => {
     const def = app({
       components: [
         comp('t', 'text', { value: "{{ 'x' }} {{ utils.openPage('orders', { id: 1 }) }}" }),
+        // A `}}` inside the expression (a nested object) doesn't end it.
+        comp('n', 'text', { value: "{{ go ? utils.openPage('orders', { tab: { id: 1 }}) : null }}" }),
         comp(
           'b',
           'button',
@@ -237,10 +276,14 @@ describe('views', () => {
     const { definition, changed } = rewriteCallArgs(def, 'utils', 'openPage', 'orders', 'sales')
     expect(changed).toEqual([
       ['components', 0, 'props', 'value'],
-      ['components', 1, 'events', 0, 'action', 'code'],
+      ['components', 1, 'props', 'value'],
+      ['components', 2, 'events', 0, 'action', 'code'],
     ])
     expect(definition.components[0]!.props!.value).toBe("{{ 'x' }} {{ utils.openPage('sales', { id: 1 }) }}")
-    expect(definition.components[1]!.events![0]!.action).toMatchObject({ code: 'utils.openPage(`sales`)' })
+    expect(definition.components[1]!.props!.value).toBe(
+      "{{ go ? utils.openPage('sales', { tab: { id: 1 }}) : null }}",
+    )
+    expect(definition.components[2]!.events![0]!.action).toMatchObject({ code: 'utils.openPage(`sales`)' })
     expect(rewriteCallArgs(def, 'utils', 'openPage', 'nope', 'x').definition).toBe(def)
   })
 })

@@ -1,4 +1,4 @@
-import { stringArgCalls } from '@ow/expressions'
+import { findExpressionEnd, stringArgCalls } from '@ow/expressions'
 import { appFields } from './fields'
 import { setAt } from './rename'
 import { type AppComponent, type AppDefinition, appNameSchema } from './schema'
@@ -92,7 +92,8 @@ export function rewriteCallArgs(
     if (field.kind === 'template') {
       let at = field.source.indexOf('{{')
       while (at !== -1) {
-        const end = field.source.indexOf('}}', at + 2)
+        // JS-aware, as templates are read: a `}}` inside a string or an object literal doesn't end the expression.
+        const end = findExpressionEnd(field.source, at + 2)
         if (end === -1) break
         pieces.push({ code: field.source.slice(at + 2, end), offset: at + 2, kind: 'expression' })
         at = field.source.indexOf('{{', end + 2)

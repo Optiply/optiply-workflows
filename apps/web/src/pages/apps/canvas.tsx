@@ -9,7 +9,7 @@ import {
   slotOf,
 } from '@ow/app-definition'
 import { Menu as MenuIcon } from 'lucide-react'
-import { Fragment, type ReactNode, useContext, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
 import { Avatar } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
@@ -45,19 +45,26 @@ export function AppGrid({
   slot?: string
 }) {
   const scope = useAppScope()
+  // Worked out once per definition: the selector below runs on every change of any value.
+  const placed = useMemo(
+    () => placedChildren(definition, parent, page, slot),
+    [definition, parent, page, slot],
+  )
+  const containers = useMemo(
+    () => placed.flatMap(({ component: c }) => (c.type === 'container' ? [c.name] : [])),
+    [placed],
+  )
   // Folded containers (M24), by name: a string, so the grid re-renders only when one folds or unfolds.
   const foldedKey = useAppHostState((s) =>
-    placedChildren(definition, parent, page, slot)
+    containers
       .filter(
-        ({ component: c }) =>
-          c.type === 'container' &&
-          s.values[`${scope}${c.name}.collapsible`] === true &&
-          s.values[`${scope}${c.name}.expanded`] === false,
+        (name) =>
+          s.values[`${scope}${name}.collapsible`] === true && s.values[`${scope}${name}.expanded`] === false,
       )
-      .map(({ component: c }) => `${c.name}:${String(s.values[`${scope}${c.name}.padding`] ?? 'medium')}`)
+      .map((name) => `${name}:${String(s.values[`${scope}${name}.padding`] ?? 'medium')}`)
       .join(','),
   )
-  const children = foldedLayout(placedChildren(definition, parent, page, slot), foldedKey)
+  const children = foldedLayout(placed, foldedKey)
   return (
     <div
       className="grid gap-x-3"
@@ -137,6 +144,13 @@ function AppFrame({ definition, children }: { definition: AppDefinition; childre
   const frame = definition.frame!
   const { appName, user } = useContext(AppChromeContext)
   const [menuOpen, setMenuOpen] = useState(false)
+  // Open over the page (narrow screens): Escape, a click beside it or a link followed in it closes it.
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menuOpen])
   const title = frame.showTitle && appName && <span className="truncate text-lg font-bold">{appName}</span>
   const sidebar = frame.sidebar && <AppGrid definition={definition} page={null} slot="sidebar" />
   const menu = frame.sidebar && (
@@ -152,10 +166,21 @@ function AppFrame({ definition, children }: { definition: AppDefinition; childre
   )
   return (
     <div className="flex min-h-full gap-4">
+      {menuOpen && (
+        <button
+          type="button"
+          aria-label="Close the menu"
+          className="fixed inset-0 z-30 cursor-default bg-app/60 md:hidden"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
       {frame.sidebar && (
         <aside
           aria-label="Sidebar"
           data-frame="sidebar"
+          onClickCapture={(e) => {
+            if (menuOpen && e.target instanceof Element && e.target.closest('a')) setMenuOpen(false)
+          }}
           className={cn(
             'shrink-0 self-start border-border bg-surface',
             SIDEBAR_WIDTHS[frame.sidebar],

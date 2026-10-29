@@ -24,10 +24,23 @@ export function foldedLayout(
       ? []
       : [{ below: position.y + position.h, by: position.h - keep }]
   })
-  return children.map(({ component, position }) => {
+  // Top to bottom, so each one knows where what's above it ended up: nothing moves up into a component above it in
+  // the same columns (one beside the folded container that reaches further down keeps what's under it in place).
+  const moved = new Map<string, Position>()
+  const byRow = [...children].sort((a, b) => a.position.y - b.position.y)
+  for (const { component, position } of byRow) {
     const keep = rows.get(component.name)
     const up = gaps.filter((g) => position.y >= g.below).reduce((sum, g) => sum + g.by, 0)
     const h = keep !== undefined && keep < position.h ? keep : position.h
-    return { component, position: up || h !== position.h ? { ...position, y: position.y - up, h } : position }
-  })
+    let y = position.y - up
+    for (const other of byRow) {
+      const was = other.position
+      const now = moved.get(other.component.name)
+      if (!now || was.y + was.h > position.y) continue
+      if (was.x < position.x + position.w && position.x < was.x + was.w) y = Math.max(y, now.y + now.h)
+    }
+    y = Math.min(y, position.y)
+    moved.set(component.name, y !== position.y || h !== position.h ? { ...position, y, h } : position)
+  }
+  return children.map(({ component }) => ({ component, position: moved.get(component.name)! }))
 }

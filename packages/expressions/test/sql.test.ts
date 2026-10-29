@@ -391,9 +391,9 @@ describe('sql.where (M24)', () => {
     expect(one('contains', 'x', 'mysql')).toBe('(LOCATE(LOWER(?), LOWER(CAST(`c` AS CHAR))) > 0)')
     expect(one('notEmpty', null, 'mysql')).toBe("(NOT (`c` IS NULL OR CAST(`c` AS CHAR) = ''))")
     expect(one('contains', 'x', 'bigquery')).toBe('(STRPOS(LOWER(CAST(`c` AS STRING)), LOWER(@p1)) > 0)')
-    expect(one('gt', '2026-01-01', 'bigquery', 'date')).toBe('(`c` > CAST(@p1 AS DATE))')
+    expect(one('gt', '2026-01-01', 'bigquery', 'date')).toBe('(CAST(`c` AS DATE) > CAST(@p1 AS DATE))')
     expect(one('between', ['a', 'b'], 'bigquery', 'datetime')).toBe(
-      '(`c` BETWEEN CAST(@p1 AS TIMESTAMP) AND CAST(@p2 AS TIMESTAMP))',
+      '(CAST(`c` AS TIMESTAMP) BETWEEN CAST(@p1 AS TIMESTAMP) AND CAST(@p2 AS TIMESTAMP))',
     )
   })
 

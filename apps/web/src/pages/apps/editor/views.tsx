@@ -2,6 +2,7 @@ import {
   addView,
   containerViews,
   type JsonValue,
+  moveView,
   removeView,
   renameView,
   setProp,
@@ -38,13 +39,7 @@ export function ViewsEditor({ name }: { name: string }) {
         ),
       ),
     )
-  const move = (from: number, to: number) => {
-    if (to < 0 || to >= stored.length) return
-    const next = [...stored]
-    const [item] = next.splice(from, 1)
-    next.splice(to, 0, item!)
-    update((def) => setProp(def, name, 'views', next))
-  }
+  const move = (view: string, by: -1 | 1) => update((def) => moveView(def, name, view, by))
   return (
     <div className="flex flex-col gap-1" data-testid={`views-${name}`}>
       {views.length === 0 && (
@@ -73,10 +68,10 @@ export function ViewsEditor({ name }: { name: string }) {
                 />
                 {!readOnly && (
                   <>
-                    <Button size="icon" variant="ghost" title="Move up" onClick={() => move(i, i - 1)}>
+                    <Button size="icon" variant="ghost" title="Move up" onClick={() => move(view.name, -1)}>
                       <ChevronUp className="size-3.5" />
                     </Button>
-                    <Button size="icon" variant="ghost" title="Move down" onClick={() => move(i, i + 1)}>
+                    <Button size="icon" variant="ghost" title="Move down" onClick={() => move(view.name, 1)}>
                       <ChevronDown className="size-3.5" />
                     </Button>
                     <Button

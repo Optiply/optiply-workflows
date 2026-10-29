@@ -291,7 +291,20 @@ function ordinal(value: unknown, type: string | undefined): unknown {
   return value
 }
 
-/** Whether a cell passes one filter, as `sql.where` would have the database decide (text compared without case). */
+/**
+ * Filters compare as `sql.where` has the database do it, so a table filters alike in the browser and through its
+ * query: text exactly (`=`, `<`), but `contains` without case (`lower()` on both sides, accents kept); numbers,
+ * dates and booleans by value. Not the sort's collation, which ignores case and accents and orders `A2` before `A10`.
+ */
+function filterCompare(a: unknown, b: unknown): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1
+  const x = typeof a === 'object' && a !== null ? JSON.stringify(a) : String(a)
+  const y = typeof b === 'object' && b !== null ? JSON.stringify(b) : String(b)
+  return x < y ? -1 : x > y ? 1 : 0
+}
+
+/** Whether a cell passes one filter, as `sql.where` would have the database decide. */
 function passes(cell: unknown, filter: TableFilter, type: string | undefined): boolean {
   const value = filter.value
   switch (filter.op) {
@@ -302,18 +315,23 @@ function passes(cell: unknown, filter: TableFilter, type: string | undefined): b
     case 'contains':
       return (
         !isEmptyCell(cell) &&
-        fold(formatCell(cell, (type as ColumnType) ?? 'text')).includes(fold(String(value ?? '')))
+        formatCell(cell, (type as ColumnType) ?? 'text')
+          .toLowerCase()
+          .includes(String(value ?? '').toLowerCase())
       )
     case 'notEquals':
-      return isEmptyCell(cell) || compare(ordinal(cell, type), ordinal(value, type)) !== 0
+      return (
+        cell === null || cell === undefined || filterCompare(ordinal(cell, type), ordinal(value, type)) !== 0
+      )
     case 'between': {
-      if (isEmptyCell(cell) || !Array.isArray(value)) return false
+      // As in SQL, only a null drops out of a comparison ('' is text like any other).
+      if (cell === null || cell === undefined || !Array.isArray(value)) return false
       const x = ordinal(cell, type)
-      return compare(x, ordinal(value[0], type)) >= 0 && compare(x, ordinal(value[1], type)) <= 0
+      return filterCompare(x, ordinal(value[0], type)) >= 0 && filterCompare(x, ordinal(value[1], type)) <= 0
     }
     default: {
-      if (isEmptyCell(cell)) return false
-      const c = compare(ordinal(cell, type), ordinal(value, type))
+      if (cell === null || cell === undefined) return false
+      const c = filterCompare(ordinal(cell, type), ordinal(value, type))
       return filter.op === 'equals'
         ? c === 0
         : filter.op === 'lt'

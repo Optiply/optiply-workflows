@@ -63,10 +63,15 @@ test('drags components into, out of and between containers', async ({ page }) =>
         ['form1', null],
         ['form1', null],
       ])
+    // b, the one grabbed (picked second), lands in the drop's column, the form's first (a, kept at its offset from
+    // b, is held on the grid and may push b a row down); taken from a, b would have come in at a's offset, x 3.
+    const layout = (await draft()).layout as Record<string, { x: number; y: number }>
+    expect(layout.b!.x).toBe(0)
   })
 
   await test.step('back out to the page', async () => {
-    await page.getByTestId('frame-a').click()
+    // Near its top: b, just below a, has its handle bar over a's lower half.
+    await page.getByTestId('frame-a').click({ position: { x: 8, y: 4 } })
     await move(page, 'a', 'grid-page')
     await expect.poll(() => where('a')).toEqual([null, null])
   })
@@ -119,7 +124,8 @@ const sorted = (value: unknown): string =>
 async function move(page: Page, name: string, grid: string) {
   const frame = page.getByTestId(`frame-${name}`)
   await frame.evaluate((e) => e.scrollIntoView({ block: 'center' }))
-  await frame.hover()
+  // Near its top: the handle bar of a component just below can cover its lower half.
+  await frame.hover({ position: { x: 8, y: 4 } })
   const data = await page.evaluateHandle(() => new DataTransfer())
   const grip = page.getByTestId(`move-${name}`)
   await grip.dispatchEvent('dragstart', { dataTransfer: data })

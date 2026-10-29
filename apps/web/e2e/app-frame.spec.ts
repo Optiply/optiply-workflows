@@ -81,7 +81,12 @@ test('frames an app with a header bar and a sidebar', async ({ page }) => {
     await page.getByRole('button', { name: 'Menu' }).click()
     await expect(sidebar).toBeVisible()
     await expect(sidebar).toContainText('Side links')
+    // Over the page it covers the Menu button: a click beside it, or Escape, closes it.
+    await page.getByRole('button', { name: 'Close the menu' }).click({ position: { x: 500, y: 450 } })
+    await expect(sidebar).toBeHidden()
     await page.getByRole('button', { name: 'Menu' }).click()
+    await expect(sidebar).toBeVisible()
+    await page.keyboard.press('Escape')
     await expect(sidebar).toBeHidden()
   })
   expect(errors).toEqual([])

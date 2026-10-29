@@ -30,6 +30,25 @@ describe('foldedLayout (M24)', () => {
     ])
   })
 
+  it('never moves a component up into one above it beside the folded container', () => {
+    // A folds by 6; B beside it reaches row 10, so C under B stays; D under A moves up.
+    const out = foldedLayout(
+      [
+        placed('boxA', 0, 0, 6, 10),
+        placed('B', 6, 0, 6, 10),
+        placed('C', 6, 10, 6, 2),
+        placed('D', 0, 10, 6, 2),
+      ],
+      'boxA:medium',
+    )
+    expect(out.map((c) => [c.component.name, c.position.y])).toEqual([
+      ['boxA', 0],
+      ['B', 0],
+      ['C', 10],
+      ['D', 4],
+    ])
+  })
+
   it('leaves a container already shorter than its header alone', () => {
     const out = foldedLayout([placed('box1', 0, 0, 6, 3), placed('below', 0, 3, 6, 2)], 'box1:large')
     expect(out.map((c) => c.position.y)).toEqual([0, 3])

@@ -5,6 +5,7 @@ import {
   type JsonValue,
   MODULE_PROPS,
   moveToParent,
+  outermostOf,
   type PropSpec,
   removeComponent,
   removeComponents,
@@ -65,7 +66,8 @@ export function SelectionInspector({ names, onDuplicate }: { names: string[]; on
           value="-"
           onChange={(e) => {
             const to = e.target.value === '' ? undefined : e.target.value
-            update((def) => names.reduce((d, n) => moveToParent(d, n, to, { page }), def))
+            // Only the outermost: what's inside a selected container moves with it.
+            update((def) => outermostOf(def, names).reduce((d, n) => moveToParent(d, n, to, { page }), def))
           }}
         >
           <option value="-" disabled>

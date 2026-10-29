@@ -430,7 +430,7 @@ describe('sql.column and sql.direction', () => {
     ).catch(() => {})
     const { query } = insertBody().configuration
     expect(query.query).toBe(
-      'SELECT * FROM shop.orders WHERE (`day` >= CAST(@p1 AS DATE)) AND (STRPOS(LOWER(CAST(`name` AS STRING)), LOWER(@p2)) > 0) AND n > @p3',
+      'SELECT * FROM shop.orders WHERE (CAST(`day` AS DATE) >= CAST(@p1 AS DATE)) AND (STRPOS(LOWER(CAST(`name` AS STRING)), LOWER(@p2)) > 0) AND n > @p3',
     )
     expect(query.queryParameters.map((p: { name: string }) => p.name)).toEqual(['p1', 'p2', 'p3'])
     expect(query.queryParameters[0].parameterValue).toEqual({ value: '2026-01-01' })

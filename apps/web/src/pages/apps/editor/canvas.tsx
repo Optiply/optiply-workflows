@@ -252,7 +252,10 @@ export function EditGrid({
                     data-testid={`move-${component.name}`}
                     onDragStart={(e) => {
                       const { selection: chosen } = useAppEditor.getState()
-                      moving = chosen.includes(component.name) ? chosen : [component.name]
+                      // The grabbed one first: it lands under the pointer, the others at their offsets to it.
+                      moving = chosen.includes(component.name)
+                        ? [component.name, ...chosen.filter((n) => n !== component.name)]
+                        : [component.name]
                       e.dataTransfer.effectAllowed = 'move'
                       // Firefox only starts a drag that carries data.
                       e.dataTransfer.setData('text/plain', component.name)

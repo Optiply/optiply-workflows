@@ -217,8 +217,12 @@ describe('filters (M24)', () => {
     filterRows(rows, columns, filters).map((i) => rows[i]!.id)
 
   it('filters by each operator, the way sql.where has the database do it', () => {
-    expect(ids([{ column: 'name', op: 'contains', value: 'GO' }])).toEqual([3])
+    expect(ids([{ column: 'name', op: 'contains', value: 'GÓ' }])).toEqual([3])
+    // As in SQL: contains ignores case but not accents; equals and the order are exact.
+    expect(ids([{ column: 'name', op: 'contains', value: 'GO' }])).toEqual([])
     expect(ids([{ column: 'name', op: 'equals', value: 'Ada' }])).toEqual([1])
+    expect(ids([{ column: 'name', op: 'equals', value: 'ada' }])).toEqual([])
+    expect(ids([{ column: 'name', op: 'lt', value: 'B' }])).toEqual([1, 4])
     expect(ids([{ column: 'name', op: 'empty' }])).toEqual([4])
     expect(ids([{ column: 'qty', op: 'notEquals', value: '3' }])).toEqual([2, 3, 4])
     expect(ids([{ column: 'qty', op: 'gte', value: '7' }])).toEqual([2, 4])

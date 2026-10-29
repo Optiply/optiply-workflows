@@ -433,12 +433,18 @@ function whereSql(columns: readonly string[], value: unknown, dialect: SqlDialec
         return Number(v)
       return v ?? null
     }
+    // BigQuery compares only like with like: a date or datetime filter casts both sides, so DATE, DATETIME and
+    // TIMESTAMP columns all compare (a DATETIME column against a TIMESTAMP value is an error there).
+    const cast =
+      dialect === 'bigquery' && type === 'date'
+        ? 'DATE'
+        : dialect === 'bigquery' && type === 'datetime'
+          ? 'TIMESTAMP'
+          : null
+    const qc = cast ? `CAST(${q} AS ${cast})` : q
     const bind = (v: unknown) => {
       values.push(v)
-      if (dialect !== 'bigquery') return P
-      if (type === 'date') return `CAST(${P} AS DATE)`
-      if (type === 'datetime') return `CAST(${P} AS TIMESTAMP)`
-      return P
+      return cast ? `CAST(${P} AS ${cast})` : P
     }
     const asText =
       dialect === 'postgres'
@@ -459,15 +465,15 @@ function whereSql(columns: readonly string[], value: unknown, dialect: SqlDialec
       case 'notEmpty':
         return `NOT (${q} IS NULL OR ${asText} = '')`
       case 'notEquals':
-        return `${q} <> ${bind(scalar(raw))} OR ${q} IS NULL`
+        return `${qc} <> ${bind(scalar(raw))} OR ${q} IS NULL`
       case 'between': {
         if (!Array.isArray(raw) || raw.length !== 2) {
           return fail(`between on ${column} takes [from, to], got ${describe(raw)}`)
         }
-        return `${q} BETWEEN ${bind(scalar(raw[0]))} AND ${bind(scalar(raw[1]))}`
+        return `${qc} BETWEEN ${bind(scalar(raw[0]))} AND ${bind(scalar(raw[1]))}`
       }
       default:
-        return `${q} ${COMPARE[op as FilterOp]} ${bind(scalar(raw))}`
+        return `${qc} ${COMPARE[op as FilterOp]} ${bind(scalar(raw))}`
     }
   })
   return { text: parts.map((p) => `(${p})`).join(' AND '), values }

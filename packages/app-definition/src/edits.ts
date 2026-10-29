@@ -69,10 +69,19 @@ export function bottomOf(
   page: string | null = null,
   slot?: string,
 ): number {
+  // The slot as a component asking for it would land in (none named, or one that's gone: a container's first view).
+  const target = slotOf(def, {
+    name: '',
+    type: 'text',
+    props: {},
+    ...(parent !== undefined && { parent }),
+    ...(slot !== undefined && { slot }),
+    ...(page !== null && { page }),
+  })
   let bottom = 0
   for (const c of def.components) {
     const p = def.layout?.[c.name]
-    const sameGrid = (parent !== undefined || (c.page ?? null) === page) && slotOf(def, c) === slot
+    const sameGrid = (parent !== undefined || (c.page ?? null) === page) && slotOf(def, c) === target
     if (c.parent === parent && sameGrid && p) bottom = Math.max(bottom, p.y + p.h)
   }
   return bottom
@@ -253,6 +262,11 @@ export function moveIntoReason(
   return null
 }
 
+/** Those of `names` not inside another of them (M24): moving those takes the rest along. */
+export function outermostOf(def: AppDefinition, names: readonly string[]): string[] {
+  return names.filter((n) => !names.some((m) => m !== n && withDescendants(def, m).has(n)))
+}
+
 /**
  * Drops components onto another grid (M24): into `target`'s parent, slot and page, the first at `at` and the others
  * keeping their offsets to it, each kept on the grid. Those inside another dropped one come along with it. The same
@@ -266,7 +280,7 @@ export function placeComponents(
 ): AppDefinition {
   if (moveIntoReason(def, names, target.parent) !== null) return def
   // Only the outermost: what's inside a dropped component moves with it.
-  const roots = names.filter((n) => !names.some((m) => m !== n && withDescendants(def, m).has(n)))
+  const roots = outermostOf(def, names)
   if (!roots.length) return def
   // Offsets from the first; one without a position (it's placed below the rest) counts from the drop.
   const first = def.layout?.[roots[0]!] ?? at
@@ -313,6 +327,33 @@ export function addView(def: AppDefinition, container: string): { definition: Ap
     definition: setProp(def, container, 'views', [...storedViews(def, container), { name, label }]),
     name,
   }
+}
+
+/**
+ * Moves a view of `container` one place up (-1) or down (+1) among its views. Components with no slot, or one that's
+ * gone, sit in the first view: they're given the view they're in first, so a view moved to the front doesn't take
+ * them.
+ */
+export function moveView(def: AppDefinition, container: string, view: string, by: -1 | 1): AppDefinition {
+  const views = containerViews(def.components.find((c) => c.name === container))
+  const at = views.findIndex((v) => v.name === view)
+  const other = views[at + by]
+  if (at < 0 || !other) return def
+  const named = (name: string) => (v: JsonValue) =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) && v.name === name
+  const stored = [...storedViews(def, container)]
+  const i = stored.findIndex(named(view))
+  const j = stored.findIndex(named(other.name))
+  ;[stored[i], stored[j]] = [stored[j]!, stored[i]!]
+  const pinned: AppDefinition = {
+    ...def,
+    components: def.components.map((c) => {
+      if (c.parent !== container) return c
+      const slot = slotOf(def, c)
+      return slot !== undefined && slot !== c.slot ? { ...c, slot } : c
+    }),
+  }
+  return setProp(pinned, container, 'views', stored)
 }
 
 /** Why `name` can't be a view of `container` (besides `except`); null when it can. */
