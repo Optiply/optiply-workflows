@@ -6,6 +6,7 @@ import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
+import { deleteUnusedBundles } from '../services/component-libraries'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
 import { engineLibrary } from '../services/library-queries'
@@ -62,6 +63,7 @@ export async function startWorker(deps: {
     db,
     days: config.RUN_RETENTION_DAYS,
     log: log.child({ component: 'retention' }),
+    also: async () => ({ componentBundles: await deleteUnusedBundles(db) }),
   })
   retention.start()
   const git = new GitDeployer({

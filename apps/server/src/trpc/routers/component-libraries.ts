@@ -4,11 +4,13 @@ import {
   componentLibraryDefinitionSchema,
   componentLibraryHash,
   componentLibraryInterface,
+  customComponentSchema,
   emptyComponentLibrary,
   validateComponentLibrary,
 } from '@ow/app-definition'
 import {
   type ComponentLibrary,
+  type ComponentLibraryRelease,
   componentLibraries,
   componentLibraryReleases,
   permissions,
@@ -18,11 +20,18 @@ import { workflowSlugSchema } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { componentLibraryInfos, componentLibraryUsers } from '../../services/component-libraries'
+import {
+  componentLibraryInfos,
+  componentLibraryUsers,
+  componentNames,
+  publishComponentLibraryRelease,
+  setLiveComponentLibraryRelease,
+  uploadComponentLibraryBuild,
+} from '../../services/component-libraries'
 import { buildComponentLibrary, componentBuildConfig } from '../../services/components/build'
 import { inUseMessage, usedByView } from '../../services/dependents'
 import { branchDraftDefinition } from '../../services/git/branch-drafts'
-import { requireUnprotected } from '../../services/git/protection'
+import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
   checkFolderMove,
@@ -30,6 +39,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { droppedUses } from '../../services/publish-impact'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -68,6 +78,40 @@ const summary = (l: ComponentLibrary, access: Access) => ({
   updatedAt: l.updatedAt,
   level: access.componentLibraryLevel(l)!,
 })
+
+/** Audits a new release, and an origins change apart (admins look for those). */
+async function auditRelease(
+  ctx: AuthedContext,
+  libraryId: string,
+  release: ComponentLibraryRelease,
+  originsChanged: boolean,
+  extra: Record<string, unknown> = {},
+) {
+  await ctx.audit({
+    action: 'component_library.release_published',
+    objectType: 'component_library',
+    objectId: libraryId,
+    metadata: {
+      releaseId: release.id,
+      version: release.version,
+      definitionHash: release.definitionHash,
+      bundleHash: release.bundleHash,
+      ...extra,
+    },
+  })
+  if (originsChanged) {
+    await ctx.audit({
+      action: 'component_library.origins_changed',
+      objectType: 'component_library',
+      objectId: libraryId,
+      metadata: {
+        releaseId: release.id,
+        version: release.version,
+        allowedOrigins: release.definition.allowedOrigins,
+      },
+    })
+  }
+}
 
 /**
  * Component libraries (M25): React components written here, built on the server, placed in apps and modules.
@@ -248,6 +292,127 @@ export const componentLibrariesRouter = router({
           .where(eq(componentLibraries.id, library.id))
       }
       return outcome
+    }),
+
+  /**
+   * For the publish dialog: the components and props the live release has and the draft doesn't, and the apps and
+   * modules on `latest` placing or setting them (a warning), plus whether the allowed origins change (an admin's).
+   */
+  publishImpact: authedProcedure.input(z.object({ componentLibraryId: Id })).query(async ({ ctx, input }) => {
+    const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+    requireLevel(access.componentLibraryLevel(library), 'edit', 'this component library')
+    const [live] = library.liveReleaseId
+      ? await ctx.db
+          .select()
+          .from(componentLibraryReleases)
+          .where(eq(componentLibraryReleases.id, library.liveReleaseId))
+      : []
+    const impact = await droppedUses(
+      ctx.db,
+      access,
+      {
+        kind: 'components',
+        slug: library.slug,
+        live: live ? componentNames(live.definition) : null,
+        draft: componentNames(library.draftDefinition),
+      },
+      await componentLibraryUsers(ctx.db, library.slug),
+    )
+    const liveOrigins = live?.definition.allowedOrigins ?? []
+    const draftOrigins = library.draftDefinition.allowedOrigins
+    return {
+      ...impact,
+      originsChanged:
+        liveOrigins.length !== draftOrigins.length || liveOrigins.some((o) => !draftOrigins.includes(o)),
+    }
+  }),
+
+  /** Builds the draft at `draftRevision`, releases it and makes it live (`version`, or `bump`; first 1.0.0). */
+  publish: authedProcedure
+    .input(
+      z.object({
+        componentLibraryId: Id,
+        draftRevision: z.number().int().positive(),
+        version: z.string().max(40).optional(),
+        bump: z.enum(['major', 'minor', 'patch']).optional(),
+        notes: z.string().max(2000).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+      requireUnprotected(library, 'component_library', 'publish it')
+      const { release, originsChanged } = await publishComponentLibraryRelease(
+        ctx.db,
+        componentBuildConfig(ctx.config),
+        access,
+        ctx.user,
+        {
+          library,
+          draftRevision: input.draftRevision,
+          version: input.version,
+          bump: input.bump,
+          notes: input.notes,
+        },
+      )
+      await auditRelease(ctx, library.id, release, originsChanged)
+      return {
+        id: release.id,
+        version: release.version,
+        definitionHash: release.definitionHash,
+        bundleHash: release.bundleHash,
+      }
+    }),
+
+  /**
+   * A release from a bundle built elsewhere (a CLI): its JS, CSS and declared components. Edit; changing the allowed
+   * origins needs an admin, as for publishing.
+   */
+  uploadBuild: authedProcedure
+    .input(
+      z.object({
+        componentLibraryId: Id,
+        js: z.string().min(1),
+        css: z.string().default(''),
+        components: z.array(customComponentSchema).min(1).max(100),
+        allowedOrigins: z.array(z.string().max(300)).max(50).optional(),
+        version: z.string().max(40).optional(),
+        bump: z.enum(['major', 'minor', 'patch']).optional(),
+        notes: z.string().max(2000).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+      requireUnprotected(library, 'component_library', 'upload a build')
+      const { componentLibraryId: _, ...rest } = input
+      const { release, originsChanged } = await uploadComponentLibraryBuild(ctx.db, access, ctx.user, {
+        library,
+        ...rest,
+      })
+      await auditRelease(ctx, library.id, release, originsChanged, { uploaded: true })
+      return { id: release.id, version: release.version, bundleHash: release.bundleHash }
+    }),
+
+  /** Makes another release live (rollback, or forward again): apps following `latest` run it. */
+  setLive: authedProcedure
+    .input(z.object({ componentLibraryId: Id, releaseId: Id }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+      requireRollbackAllowed(library, 'component_library', ctx.user)
+      const release = await setLiveComponentLibraryRelease(ctx.db, access, {
+        library,
+        releaseId: input.releaseId,
+      })
+      await ctx.audit({
+        action: 'component_library.release_live',
+        objectType: 'component_library',
+        objectId: library.id,
+        metadata: {
+          releaseId: release.id,
+          version: release.version,
+          previousReleaseId: library.liveReleaseId,
+        },
+      })
+      return { id: release.id, version: release.version }
     }),
 
   /** The apps and modules placing its components: the ones the caller can see, and how many others. */

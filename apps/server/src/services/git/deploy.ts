@@ -1,6 +1,7 @@
-import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
+import type { AppDefinition, ComponentLibraryDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import {
   type App,
+  type ComponentLibrary,
   type Db,
   type GIT_DEPLOY_TRIGGERS,
   type GitObject,
@@ -31,6 +32,8 @@ import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 import type { Config } from '../../config'
 import { deployAppFromGit } from '../apps'
+import { deployComponentLibraryFromGit } from '../component-libraries'
+import { componentBuildConfig, DEFAULT_NPM_REGISTRY } from '../components/build'
 import { deployLibraryQueryFromGit } from '../library-queries'
 import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
@@ -91,7 +94,8 @@ export type DeployResult =
 type DeployConfig = Pick<
   Config,
   'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY' | 'PUBLIC_URL'
->
+> &
+  Partial<Pick<Config, 'NPM_REGISTRY_URL' | 'COMPONENT_BUILD_DIR'>>
 
 interface DeployLogger {
   info(obj: object, msg: string): void
@@ -107,9 +111,9 @@ const KEEP_DEPLOYS = 200
 
 /**
  * Audited changes a problem object may have been waiting for (M22): resources (secrets and overrides included),
- * config vars, library queries and modules. Running their queries changes nothing.
+ * config vars, library queries, modules and (M25) component libraries. Running their queries changes nothing.
  */
-const RETRY_ACTIONS = /^(resource|config_var|library_query|module)\.(?!query_run$)/
+const RETRY_ACTIONS = /^(resource|config_var|library_query|module|component_library)\.(?!query_run$)/
 
 /** Whether an audited action marks the last deploy's problem objects for a re-check. */
 export function asksForGitRetry(action: string): boolean {
@@ -363,7 +367,7 @@ async function deployOnce(
     for (;;) {
       const failed: Array<{ item: Pending; outcome: ObjectOutcome }> = []
       for (const item of remaining) {
-        const outcome = await deployObject(db, item, { commit, subject: releaseNotes(info) })
+        const outcome = await deployObject(db, config, item, { commit, subject: releaseNotes(info) })
         if (outcome.outcome === 'problem') failed.push({ item, outcome })
         else outcomes.push(outcome)
         await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
@@ -494,6 +498,7 @@ export function releaseNotes(info: { subject: string; body: string }): string {
 /** Creates or updates one object of any kind from its decoded files. Problems come back as an outcome. */
 async function deployObject(
   db: Db,
+  config: DeployConfig,
   item: {
     kind: ObjectKind
     slug: string
@@ -573,11 +578,18 @@ async function deployObject(
             definition: definition as AppDefinition,
           })
         case 'component_library':
-          // Built and released from the repo in M25 step 3b.
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Component libraries aren’t deployed from Git yet',
-          })
+          return deployComponentLibraryFromGit(
+            db,
+            componentBuildConfig({
+              NPM_REGISTRY_URL: config.NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY,
+              COMPONENT_BUILD_DIR: config.COMPONENT_BUILD_DIR,
+            }),
+            {
+              ...meta,
+              library: object as ComponentLibrary,
+              definition: definition as ComponentLibraryDefinition,
+            },
+          )
       }
     })()
     if (release) {
@@ -594,6 +606,21 @@ async function deployObject(
           commit: git.commit,
         },
       })
+      if ('originsChanged' in release && release.originsChanged) {
+        await recordAudit(db, {
+          actorUserId: null,
+          action: 'component_library.origins_changed',
+          objectType: kind,
+          objectId: object.id,
+          metadata: {
+            releaseId: release.id,
+            version: release.version,
+            allowedOrigins: (definition as ComponentLibraryDefinition).allowedOrigins,
+            source: 'git',
+            commit: git.commit,
+          },
+        })
+      }
     }
     // Into its Git folder once deployed: a directory with problems leaves the object where it is.
     const folder = await moveToGitFolder(db, kind, object, item.value.folder, git)

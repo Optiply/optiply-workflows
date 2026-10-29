@@ -260,6 +260,8 @@ export class RetentionJob {
       firstCheckMs?: number
       everyMs?: number
       log?: RetentionLogger
+      /** More clean-up on the same daily claim (the server's: unused component bundles, M25); its counts are logged. */
+      also?: () => Promise<Record<string, number>>
     } & Pick<RetentionOptions, 'batchRuns' | 'chunkRows' | 'pauseMs'>,
   ) {}
 
@@ -296,8 +298,9 @@ export class RetentionJob {
         pauseMs: this.opts.pauseMs,
         signal: this.stopping.signal,
       })
-      await finishMaintenanceJob(db, 'retention', { days: this.opts.days, ...result })
-      log?.info({ retention: result }, 'retention finished')
+      const more = (await this.opts.also?.()) ?? {}
+      await finishMaintenanceJob(db, 'retention', { days: this.opts.days, ...result, ...more })
+      log?.info({ retention: { ...result, ...more } }, 'retention finished')
       return result
     } catch (err) {
       log?.error({ err }, 'retention failed')

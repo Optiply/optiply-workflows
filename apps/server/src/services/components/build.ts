@@ -289,6 +289,9 @@ function confineTo(dir: string): Plugin {
   }
 }
 
+/** npm's public registry (`NPM_REGISTRY_URL`'s default). */
+export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/'
+
 /** The build settings from the server's config. */
 export function componentBuildConfig(config: { NPM_REGISTRY_URL: string; COMPONENT_BUILD_DIR?: string }) {
   return {

@@ -1,4 +1,4 @@
-import { type AppDefinition, instanceRelease } from '@ow/app-definition'
+import { type AppDefinition, CUSTOM_PROPS, customInstanceRelease, instanceRelease } from '@ow/app-definition'
 import { appReleases, type Db, moduleReleases, workflowReleases } from '@ow/db'
 import { allBlocks, libraryCall, type WorkflowDefinition } from '@ow/definition'
 import { inArray } from 'drizzle-orm'
@@ -19,12 +19,14 @@ export interface DroppedUse {
  * What publishing a library query's or module's draft would drop for those following it on `latest` (M21): the
  * parameters (or inputs) its live release declares and the draft doesn't, and the apps, modules and workflows
  * passing any of them (in their draft or live release), those the caller can see named, the others counted. A
- * warning for the publish dialog, not a refusal.
+ * warning for the publish dialog, not a refusal. For a component library (M25) the names are its components
+ * (`Chart`) and their props (`Chart.title`): an instance on `latest` placing a dropped component, or setting a
+ * dropped prop.
  */
 export async function droppedUses(
   db: Db,
   access: Access,
-  target: { kind: 'library' | 'module'; slug: string; live: string[] | null; draft: string[] },
+  target: { kind: 'library' | 'module' | 'components'; slug: string; live: string[] | null; draft: string[] },
   users: Dependent[],
 ): Promise<{ dropped: string[]; uses: DroppedUse[]; hidden: number }> {
   const dropped = (target.live ?? []).filter((name) => !target.draft.includes(name))
@@ -69,6 +71,16 @@ export async function droppedUses(
       for (const block of allBlocks(definition as WorkflowDefinition)) {
         const use = libraryCall(block)
         if (use && use.call.library === target.slug && use.call.version === 'latest') add(use.call.params)
+      }
+    } else if (target.kind === 'components') {
+      for (const c of (definition as AppDefinition).components) {
+        const ref = customInstanceRelease(c)
+        if (ref?.slug !== target.slug || ref.version !== 'latest') continue
+        if (dropped.includes(ref.component)) names.add(ref.component)
+        for (const prop of Object.keys(c.props ?? {})) {
+          const name = `${ref.component}.${prop}`
+          if (!(CUSTOM_PROPS as readonly string[]).includes(prop) && dropped.includes(name)) names.add(name)
+        }
       }
     } else if (target.kind === 'library') {
       for (const q of (definition as AppDefinition).queries) {
