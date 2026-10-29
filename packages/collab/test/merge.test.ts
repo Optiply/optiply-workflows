@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   appSpec,
   type CollabSpec,
+  componentLibrarySpec,
   composeText,
   libraryQuerySpec,
   type MergeConflict,
@@ -365,6 +366,31 @@ describe('mergeObject', () => {
       lines('select id, total', 'from orders', 'where id = {{ id }}', 'limit {{ limit }}'),
     )
     expect(merged.definition.params.map((p) => p.name)).toEqual(['id', 'limit'])
+  })
+
+  it('merges a component library: files line by line by path, components by name, props whole', () => {
+    const prop = (def: string) => ({ type: 'string', default: def, label: 'Name' })
+    const lib = (code: string, files: { path: string; content: string }[], props: Record<string, unknown>) =>
+      object({
+        schemaVersion: 1,
+        files: [{ path: 'src/A.tsx', content: code }, ...files],
+        components: [{ name: 'A', label: 'A', entry: 'src/A.tsx', props }],
+      })
+    const code = lines('import x from "x"', 'export default function A() {', '  return null', '}')
+    const { merged, conflicts } = mergeObject(
+      componentLibrarySpec,
+      lib(code, [], { name: prop('a') }),
+      lib(code.replace('return null', 'return <b />'), [{ path: 'src/b.css', content: 'b{}' }], {
+        name: prop('a'),
+      }),
+      lib(code.replace('import x from "x"', 'import y from "y"'), [], { name: prop('z'), size: prop('m') }),
+    )
+    expect(conflicts).toEqual([])
+    expect(merged.definition.files.map((f) => f.path)).toEqual(['src/A.tsx', 'src/b.css'])
+    expect(merged.definition.files[0]!.content).toBe(
+      lines('import y from "y"', 'export default function A() {', '  return <b />', '}'),
+    )
+    expect(merged.definition.components[0]!.props).toEqual({ name: prop('z'), size: prop('m') })
   })
 
   it('merges whole an item whose two sides’ changes don’t fit its schema together', () => {

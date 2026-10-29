@@ -1749,7 +1749,7 @@ M25 is planned (`architecture.md` §2.28 and the M25 row), on the local branch `
 6. **The app editor:** Add component → Custom, the inspector's declared props, completions, resolving releases; modules too.
 7. **Finish** — 7a: the done-when spec. 7b: a Docker image build (npm, esbuild) checked locally; the user's stack is rebuilt only when they say. 7c: docs. Then the review (`code-review`) and its fixes.
 
-**Progress:** step 0 written (`ae01b19`); 1a committed.
+**Progress:** step 0 written (`ae01b19`); 1a `178a60f`, 1b committed.
 
 ## 15. How to start the next session
 

@@ -156,3 +156,18 @@ export const libraryQuerySpec: CollabSpec = defineSpec({
   identity: [['params', byName]],
   text: queryText,
 })
+
+export const byPath = field('path')
+
+/**
+ * Component libraries (M25): files by path, their content text (merged as people type); components by name, each
+ * declared prop a value whole (its type and default must agree), and a component's default size whole.
+ */
+export const componentLibrarySpec: CollabSpec = defineSpec({
+  identity: [
+    ['files', byPath],
+    ['components', byName],
+  ],
+  text: ['files.*.content', 'components.*.description'],
+  atomic: ['components.*.props.*', 'components.*.defaultSize', 'components.*.methods.*'],
+})

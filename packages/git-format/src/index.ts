@@ -1,4 +1,5 @@
 export * from './app'
+export * from './component-library'
 export * from './files'
 export * from './library'
 export * from './meta'

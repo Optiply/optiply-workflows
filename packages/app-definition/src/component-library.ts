@@ -261,7 +261,7 @@ export function componentPathReason(path: string): string | null {
   if (parts.some((p) => !p || p === '.' || p === '..')) return 'A path can’t have empty, "." or ".." parts'
   if (parts.some((p) => !/^[A-Za-z0-9._@+-]+$/.test(p)))
     return 'Use letters, digits and . _ - @ + in file names'
-  if (parts[0] === 'node_modules' || path === 'package.json' || path === 'package-lock.json') {
+  if (parts[0] === 'node_modules' || ['package.json', 'package-lock.json', 'library.json'].includes(path)) {
     return `"${parts[0]}" is the build’s`
   }
   if (!COMPONENT_FILE_EXTENSIONS.some((e) => path.endsWith(e))) {
