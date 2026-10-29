@@ -89,6 +89,13 @@ const ConfigSchema = z
     /** The builder's bearer token (its PYTHON_BUILDER_TOKEN). */
     PYTHON_BUILDER_TOKEN: z.string().min(16).optional(),
     /**
+     * The npm registry component libraries' dependencies come from (M25). Builds run `npm install` without install
+     * scripts and without the server's own npm settings.
+     */
+    NPM_REGISTRY_URL: z.string().url().default('https://registry.npmjs.org/'),
+    /** Where component library builds and npm's download cache go; default a directory under the system's tmp. */
+    COMPONENT_BUILD_DIR: z.string().min(1).optional(),
+    /**
      * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
      * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
      * file, or the metadata server). Off by default; only admins can choose it for a resource.

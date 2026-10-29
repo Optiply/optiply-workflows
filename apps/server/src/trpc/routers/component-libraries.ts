@@ -19,7 +19,9 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { componentLibraryInfos, componentLibraryUsers } from '../../services/component-libraries'
+import { buildComponentLibrary, componentBuildConfig } from '../../services/components/build'
 import { inUseMessage, usedByView } from '../../services/dependents'
+import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
@@ -213,6 +215,39 @@ export const componentLibrariesRouter = router({
         draftHash: await componentLibraryHash(definition),
         diagnostics: validateComponentLibrary(definition).diagnostics,
       }
+    }),
+
+  /**
+   * Builds the draft (or a Git branch draft): Edit. The packages are installed from the lock the draft's last build
+   * left, which the build then replaces; a build of the same files, dependencies and lock is found, not redone.
+   * Problems come back with their file, line and column.
+   */
+  build: authedProcedure
+    .input(z.object({ componentLibraryId: Id, branchDraftId: Id.optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+      requireLevel(access.componentLibraryLevel(library), 'edit', 'this component library')
+      const definition = input.branchDraftId
+        ? ((await branchDraftDefinition(
+            ctx.db,
+            'component_library',
+            library.id,
+            input.branchDraftId,
+          )) as ComponentLibraryDefinition)
+        : library.draftDefinition
+      const outcome = await buildComponentLibrary(
+        ctx.db,
+        componentBuildConfig(ctx.config),
+        definition,
+        library.draftLock,
+      )
+      if (outcome.ok && !input.branchDraftId && outcome.lock !== library.draftLock) {
+        await ctx.db
+          .update(componentLibraries)
+          .set({ draftLock: outcome.lock })
+          .where(eq(componentLibraries.id, library.id))
+      }
+      return outcome
     }),
 
   /** The apps and modules placing its components: the ones the caller can see, and how many others. */
