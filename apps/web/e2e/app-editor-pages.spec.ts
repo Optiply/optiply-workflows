@@ -84,6 +84,16 @@ test('build a multipage app in the editor', async ({ page }) => {
   await expect(page.getByTestId('frame-text1')).toHaveCount(0)
   await expect(page.getByTestId('frame-navigation1')).toBeVisible()
 
+  // A component moved to another page from the inspector: the editor opens that page, the component still selected.
+  await page.getByTestId('frame-hello').click()
+  await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('detail')
+  await expect(pages.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
+  await expect(page.getByTestId('inspector-hello')).toBeVisible()
+  await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('page1')
+  await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
+
   // In the preview, the navigation moves between the pages.
   await page.getByRole('button', { name: 'Preview' }).click()
   const nav = page.getByRole('navigation', { name: 'navigation1' })

@@ -634,9 +634,11 @@ export function removePage(def: AppDefinition, page: string): AppDefinition {
  * the bottom of that page's grid. Components inside containers are on their container's page: unchanged.
  */
 export function setEntityPage(def: AppDefinition, name: string, page: string | null): AppDefinition {
-  const set = <T extends { name: string; page?: string }>(item: T): T => {
+  const set = <T extends { name: string; page?: string; slot?: string }>(item: T): T => {
     if (item.name !== name || (item.page ?? null) === page) return item
     const { page: _old, ...rest } = item
+    // The frame's sidebar holds components on every page only (M24): one moving to a page leaves it.
+    if (page !== null && rest.slot === 'sidebar') delete rest.slot
     return (page === null ? rest : { ...rest, page }) as T
   }
   const component = def.components.find((c) => c.name === name)

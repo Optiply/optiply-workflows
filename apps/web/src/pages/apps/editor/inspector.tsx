@@ -104,6 +104,7 @@ export function ComponentInspector({ name }: { name: string }) {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const page = useAppEditor((s) => s.url.page)
+  const setUrl = useAppEditor((s) => s.setUrl)
   const modules = useAppEditor((s) => s.modules)
   const index = definition.components.findIndex((c) => c.name === name)
   const component = definition.components[index]
@@ -212,7 +213,11 @@ export function ComponentInspector({ name }: { name: string }) {
       {definition.pages?.length && component.parent === undefined ? (
         <PageField
           value={component.page ?? null}
-          onChange={(to) => update((def) => setEntityPage(def, name, to))}
+          onChange={(to) => {
+            update((def) => setEntityPage(def, name, to))
+            // Moved to another page: open it, so the component stays in view (and selected).
+            if (to !== null) setUrl(to)
+          }}
         />
       ) : null}
 

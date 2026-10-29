@@ -315,6 +315,22 @@ describe('page edits', () => {
     )
     expect(setEntityPage(two, 'q1', null).queries[0]!.page).toBeUndefined()
     expect(setEntityPage(two, 'inner', 'page2')).toBe(two)
+    // Out of the frame's sidebar onto a page: the sidebar holds components on every page only.
+    const framed = { ...global, frame: { sidebar: 'medium' as const } }
+    const inSidebar = moveToParent(framed, 'table1', undefined, { slot: 'sidebar', page: null })
+    expect(inSidebar.components.find((c) => c.name === 'table1')!.slot).toBe('sidebar')
+    const onPage = setEntityPage(inSidebar, 'table1', 'page2').components.find((c) => c.name === 'table1')!
+    expect(onPage).toMatchObject({ page: 'page2' })
+    expect(onPage.slot).toBeUndefined()
+    const slots = (def: unknown) => validateApp(def).diagnostics.filter((d) => d.code === 'invalid_slot')
+    expect(slots(setEntityPage(inSidebar, 'table1', 'page2'))).toEqual([])
+    // As a sidebar slot left on a page component would be.
+    expect(
+      slots({
+        ...inSidebar,
+        components: inSidebar.components.map((c) => (c.name === 'table1' ? { ...c, page: 'page2' } : c)),
+      }),
+    ).not.toEqual([])
   })
 
   it('Navigation links must name pages', () => {
