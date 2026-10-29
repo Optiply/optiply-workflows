@@ -6,14 +6,17 @@ import {
   codeClipSchema,
   componentClipSchema,
   componentSpec,
+  containerViews,
   copyCode,
   copyComponents,
   pasteCode,
   pasteComponents,
   runsByItself,
+  slotOf,
 } from '@ow/app-definition'
 import { canonicalJson } from '@ow/definition'
 import { copiedHere, readClip, rememberCopy } from '@/lib/clipboard'
+import { shownViews } from '../grid-context'
 import type { Tone } from '../notifications'
 import { useAppEditor } from './store'
 
@@ -97,7 +100,16 @@ function targetFor(def: AppDefinition, clip: ComponentClip, opts: { duplicate?: 
   const into = chosen && componentSpec(chosen.type)?.container && !opts.duplicate && !isCopyOfIt
   const parent = into ? chosen.name : chosen?.parent
   const page = def.pages?.length ? (chosen && parent === undefined ? (chosen.page ?? null) : url.page) : null
-  return { ...(parent !== undefined && { parent }), page }
+  // Into the view a container shows, or beside the copied component in its slot (M24).
+  let slot: string | undefined
+  if (into) {
+    const views = containerViews(chosen).map((v) => v.name)
+    const shown = shownViews.get(chosen.name)
+    slot = views.length ? (shown && views.includes(shown) ? shown : views[0]) : undefined
+  } else if (chosen?.parent !== undefined) {
+    slot = slotOf(def, chosen)
+  }
+  return { ...(parent !== undefined && { parent }), page, ...(slot !== undefined && { slot }) }
 }
 
 function untrustedQuestion(clip: ComponentClip | CodeClip): string {

@@ -1,6 +1,7 @@
 import {
   type AppComponent,
   componentSpec,
+  containerViews,
   type JsonValue,
   MODULE_PROPS,
   moveToParent,
@@ -9,6 +10,7 @@ import {
   setEntityPage,
   setHandlers,
   setProp,
+  slotOf,
   withDescendants,
 } from '@ow/app-definition'
 import { Trash2 } from 'lucide-react'
@@ -21,6 +23,7 @@ import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParse
 import { HandlersEditor } from './handlers'
 import { ModuleInstanceFields } from './modules'
 import { specOf, useAppEditor } from './store'
+import { ViewsEditor } from './views'
 
 /** Everything about the selected component: name, parent, props and event handlers. */
 export function ComponentInspector({ name }: { name: string }) {
@@ -45,6 +48,8 @@ export function ComponentInspector({ name }: { name: string }) {
   }
   const inside = withDescendants(definition, name)
   const parents = definition.components.filter((c) => componentSpec(c.type)?.container && !inside.has(c.name))
+  // The views of the container it's in (M24), to pick its view.
+  const parentViews = containerViews(definition.components.find((c) => c.name === component.parent))
 
   return (
     <div className="flex flex-col gap-4 p-4" data-testid={`inspector-${name}`}>
@@ -77,6 +82,24 @@ export function ComponentInspector({ name }: { name: string }) {
             {parents.map((p) => (
               <option key={p.name} value={p.name}>
                 {p.name}
+              </option>
+            ))}
+          </Select>
+        </EditorField>
+      )}
+
+      {parentViews.length > 0 && (
+        <EditorField label="In view">
+          <Select
+            aria-label="In view"
+            value={slotOf(definition, component) ?? ''}
+            onChange={(e) =>
+              update((def) => moveToParent(def, name, component.parent, { slot: e.target.value }))
+            }
+          >
+            {parentViews.map((v) => (
+              <option key={v.name} value={v.name}>
+                {v.label || v.name}
               </option>
             ))}
           </Select>
@@ -192,6 +215,12 @@ function PropField({
         ))}
       </Select>
     )
+  } else if (
+    component.type === 'container' &&
+    prop === 'views' &&
+    (value === undefined || Array.isArray(value))
+  ) {
+    control = <ViewsEditor name={component.name} />
   } else if (columnsList && !asJson) {
     control = <ColumnsEditor name={component.name} index={index} columns={(value as JsonValue[]) ?? []} />
   } else {

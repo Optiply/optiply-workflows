@@ -6,6 +6,7 @@ import {
   entityPages,
   GRID_COLUMNS,
   type Position,
+  slotOf,
 } from '@ow/app-definition'
 import { Fragment, useContext, useMemo } from 'react'
 import { cn } from '@/lib/utils'
@@ -32,12 +33,15 @@ export function placedChildren(
   definition: AppDefinition,
   parent: string | undefined,
   page?: string | null,
+  slot?: string,
 ): { component: AppComponent; position: Position }[] {
   const children = definition.components.filter(
     (c) =>
       c.parent === parent &&
       !componentSpec(c.type)?.overlay &&
-      (parent !== undefined || page === undefined || (c.page ?? null) === page),
+      (parent !== undefined || page === undefined || (c.page ?? null) === page) &&
+      // Inside a container, each slot is a grid of its own (M24); the frame's slots come with the frame.
+      (parent === undefined || slotOf(definition, c) === slot),
   )
   const layout = definition.layout ?? {}
   let bottom = 0
@@ -62,12 +66,14 @@ export function AppGrid({
   definition,
   parent,
   page,
+  slot,
 }: {
   definition: AppDefinition
   parent?: string
   page?: string | null
+  slot?: string
 }) {
-  const children = placedChildren(definition, parent, page)
+  const children = placedChildren(definition, parent, page, slot)
   return (
     <div
       className="grid gap-x-3"

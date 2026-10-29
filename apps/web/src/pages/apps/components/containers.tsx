@@ -1,21 +1,75 @@
+import { containerViews } from '@ow/app-definition'
 import { X } from 'lucide-react'
-import { useContext } from 'react'
+import { useContext, useEffect } from 'react'
 import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import { ChildGrid, EditingContext, ShownModalContext } from '../grid-context'
+import { ChildGrid, EditingContext, ShownModalContext, shownViews } from '../grid-context'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
 
-/** A box holding other components on its own grid. */
+/**
+ * A box holding other components on its own grid; with views (M24), one grid per view, the shown one switched by
+ * tabs (or by `setView`): only its components render.
+ */
 export function ContainerRenderer({ component, definition }: RendererProps) {
-  const title = useAppValue<string>(`${component.name}.title`)
-  const border = useAppValue<boolean>(`${component.name}.showBorder`)
+  const host = useAppHostContext()
+  const editing = useContext(EditingContext)
+  const name = component.name
+  const title = useAppValue<string>(`${name}.title`)
+  const border = useAppValue<boolean>(`${name}.showBorder`)
+  const showTabs = useAppValue<boolean>(`${name}.showTabs`) !== false
+  // Names as written (children are placed in them by name); labels as evaluated (they may be templates).
+  const evaluated = useAppValue<unknown>(`${name}.views`)
+  const current = useAppValue<string>(`${name}.currentView`)
+  const views = containerViews(component)
+  const shown = views.length ? (views.some((v) => v.name === current) ? current : views[0]!.name) : undefined
+  useEffect(() => {
+    if (editing && shown) shownViews.set(name, shown)
+  })
+  const label = (view: string) => {
+    const found = Array.isArray(evaluated)
+      ? (evaluated as { name?: unknown; label?: unknown }[]).find((v) => v?.name === view)
+      : undefined
+    return typeof found?.label === 'string' && found.label ? found.label : view
+  }
+  const tabs = views.length > 0 && showTabs
   return (
     <div className={cn('flex h-full flex-col rounded-lg p-4', border && 'border border-border bg-surface')}>
-      {title && <h2 className="mb-2 text-base font-bold">{title}</h2>}
-      <div className="min-h-0 flex-1">
-        <ChildGrid definition={definition} parent={component.name} />
-      </div>
+      {(title || tabs) && (
+        <div className="mb-2 flex flex-wrap items-end gap-x-4 gap-y-1">
+          {title && <h2 className="text-base font-bold">{title}</h2>}
+          {tabs && (
+            <div role="tablist" aria-label={title || name} className="flex gap-1 border-b border-border">
+              {views.map((v) => (
+                <button
+                  key={v.name}
+                  type="button"
+                  role="tab"
+                  aria-selected={v.name === shown}
+                  className={cn(
+                    '-mb-px border-b-2 px-3 py-1.5 text-sm font-medium',
+                    v.name === shown
+                      ? 'border-accent text-accent'
+                      : 'border-transparent text-muted hover:text-ink',
+                  )}
+                  onClick={() => host.call(name, 'setView', [v.name])}
+                >
+                  {label(v.name)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {shown ? (
+        <div className="min-h-0 flex-1" role="tabpanel" aria-label={label(shown)}>
+          <ChildGrid key={shown} definition={definition} parent={name} slot={shown} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1">
+          <ChildGrid definition={definition} parent={name} />
+        </div>
+      )}
     </div>
   )
 }

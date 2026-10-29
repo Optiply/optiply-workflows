@@ -4,11 +4,13 @@ import {
   addComponent,
   COMPONENTS,
   componentSpec,
+  containerViews,
   defaultSpecFor,
   entityPages,
   type JsonValue,
   setPositions,
   setProp,
+  slotOf,
 } from '@ow/app-definition'
 import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
@@ -24,6 +26,7 @@ import {
   type EditorActions,
   EditorActionsContext,
   ShownModalContext,
+  shownViews,
 } from '../grid-context'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
@@ -53,7 +56,8 @@ const gridId = (parent: string | undefined, page: string | null | undefined) =>
   parent ?? (page === null ? 'frame' : 'page')
 
 /** A class per grid for its drag handles, so a container's handle never drags the grid outside it. */
-const handleClass = (parent: string | undefined, page?: string | null) => `ow-drag-${gridId(parent, page)}`
+const handleClass = (parent: string | undefined, page?: string | null, slot?: string) =>
+  `ow-drag-${gridId(parent, page)}${slot ? `-${slot}` : ''}`
 
 /**
  * One parent's children on a draggable, resizable grid. A top-level grid also takes drops from the palette: in an
@@ -63,10 +67,12 @@ export function EditGrid({
   definition,
   parent,
   page,
+  slot,
 }: {
   definition: AppDefinition
   parent?: string
   page?: string | null
+  slot?: string
 }) {
   const { width, containerRef, mounted } = useContainerWidth()
   const update = useAppEditor((s) => s.update)
@@ -74,7 +80,10 @@ export function EditGrid({
   const selected = useAppEditor((s) => s.selected)
   // Who else has a component selected (M16), by name: names are the app's, whatever page anyone is on.
   const peers = usePresence((s) => s.peers)
-  const children = useMemo(() => placedChildren(definition, parent, page), [definition, parent, page])
+  const children = useMemo(
+    () => placedChildren(definition, parent, page, slot),
+    [definition, parent, page, slot],
+  )
   const layout = useMemo(
     () => children.map(({ component, position }) => ({ i: component.name, ...position })),
     [children],
@@ -90,7 +99,7 @@ export function EditGrid({
         ),
       ),
     )
-  const handle = handleClass(parent, page)
+  const handle = handleClass(parent, page, slot)
 
   return (
     <div
@@ -99,7 +108,7 @@ export function EditGrid({
         'relative',
         parent === undefined ? 'min-h-[70vh]' : 'min-h-16 rounded-md border border-dashed border-border/70',
       )}
-      data-testid={`grid-${gridId(parent, page)}`}
+      data-testid={`grid-${gridId(parent, page)}${slot ? `-${slot}` : ''}`}
     >
       {mounted && (
         <ReactGridLayout
@@ -294,11 +303,21 @@ function GridCaption({ children, className }: { children: React.ReactNode; class
  * Where a component added from the palette goes: into the selected container, or at the bottom of the page being
  * edited (of the frame, with a global component selected).
  */
-export function placement(): { parent: string } | { page: string | null } {
+export function placement(): { parent: string; slot?: string } | { page: string | null } {
   const { definition, selected, url } = useAppEditor.getState()
   const target = definition.components.find((c) => c.name === selected)
-  const parent = target && componentSpec(target.type)?.container ? target.name : target?.parent
-  if (parent) return { parent }
+  if (target && componentSpec(target.type)?.container) {
+    // Into the view on screen (M24); a container without views has none.
+    const views = containerViews(target).map((v) => v.name)
+    const shown = shownViews.get(target.name)
+    const view = views.length ? (shown && views.includes(shown) ? shown : views[0]) : undefined
+    return { parent: target.name, ...(view !== undefined && { slot: view }) }
+  }
+  // Beside the selected component, in its slot.
+  if (target?.parent) {
+    const slot = slotOf(definition, target)
+    return { parent: target.parent, ...(slot !== undefined && { slot }) }
+  }
   return {
     page: definition.pages?.length ? (target ? (target.page ?? null) : url.page) : null,
   }
