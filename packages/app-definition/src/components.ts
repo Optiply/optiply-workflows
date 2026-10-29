@@ -215,6 +215,8 @@ const specs: ComponentSpec[] = [
       search: bool('Search box'),
       /** A filter per column, set from its header (M24); they're `filters`. */
       showFilters: bool('Column filters'),
+      /** An Add row button (M24): rows added and not saved yet are `newRows`. */
+      allowAddRow: bool('Add rows'),
       /**
        * `scroll`: every row, scrolled. `pages`: pages of `pageSize` rows. `server`: `data` is one page that a query
        * fetched with `pagination`, `sort` and `searchText` (the table neither sorts, searches nor pages it itself).
@@ -230,6 +232,8 @@ const specs: ComponentSpec[] = [
       selectedIndex: { default: null },
       /** Edited rows: the primary key plus the changed fields, for a bulk update query. */
       changesetArray: { default: [] },
+      /** Rows added in the table and not saved yet (M24), for an insert query; cleared with the changeset. */
+      newRows: { default: [] },
       /** The page shown, from 0. */
       page: { default: 0 },
       // `pagination` (`{ page, pageSize, offset }`) is derived from `page` and `pageSize`; see `appGraph`.
@@ -246,9 +250,15 @@ const specs: ComponentSpec[] = [
     methods: {
       selectRow: { params: ['index'] },
       clearSelection: { params: [] },
+      /** Drops the changeset and the new rows. */
       clearChangeset: { params: [] },
-      /** Fires `save`, then clears the changeset when every handler succeeded (the table's Save button). */
+      /**
+       * Fires `save`, then clears the changeset and the new rows when every handler succeeded (the table's Save
+       * button).
+       */
       saveChanges: { params: [] },
+      /** Adds a row to `newRows` (empty, or `row`'s fields); fires `addRow`. */
+      addRow: { params: ['row'] },
       /** Shows page `page` (from 0) and fires `pageChange`. */
       setPage: { params: ['page'] },
       /** Sorts by `column` (null for none), descending when `desc`; back to the first page; fires `sortChange`. */
@@ -260,7 +270,16 @@ const specs: ComponentSpec[] = [
       /** No filters; back to the first page; fires `filterChange`. */
       clearFilters: { params: [] },
     },
-    events: ['rowSelect', 'changeCell', 'save', 'pageChange', 'sortChange', 'searchChange', 'filterChange'],
+    events: [
+      'rowSelect',
+      'changeCell',
+      'save',
+      'pageChange',
+      'sortChange',
+      'searchChange',
+      'filterChange',
+      'addRow',
+    ],
     defaultSize: { w: 12, h: 20 },
   },
   {

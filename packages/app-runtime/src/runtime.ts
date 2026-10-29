@@ -669,11 +669,17 @@ export class AppRuntime {
               [key('selectedRows')]: [],
               [key('selectedIndex')]: null,
             })
-          methods.clearChangeset = () => this.apply({ [key('changesetArray')]: [] })
+          methods.clearChangeset = () => this.apply({ [key('changesetArray')]: [], [key('newRows')]: [] })
           methods.saveChanges = async () => {
             const ok = await this.fire(name, 'save')
-            if (ok) this.apply({ [key('changesetArray')]: [] })
+            if (ok) this.apply({ [key('changesetArray')]: [], [key('newRows')]: [] })
             return ok
+          }
+          methods.addRow = (row?: unknown) => {
+            const current = this.model.get(key('newRows'))
+            const added = row && typeof row === 'object' && !Array.isArray(row) ? { ...row } : {}
+            this.apply({ [key('newRows')]: [...(Array.isArray(current) ? current : []), added] })
+            return this.fire(name, 'addRow')
           }
           methods.setPage = (page: unknown) => {
             const n = Number(page)

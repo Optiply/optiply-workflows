@@ -480,6 +480,42 @@ describe('AppRuntime', () => {
     expect(t.state['t.changesetArray']).toEqual([])
   })
 
+  it('adds rows to newRows, saved and cleared with the changeset (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          't',
+          'table',
+          { data: customers },
+          {
+            events: [
+              on('save', { type: 'controlQuery', query: 'insert', method: 'trigger' }),
+              on('addRow', { type: 'notify', message: 'added {{ t.newRows.length }}' }),
+            ],
+          },
+        ),
+      ],
+      queries: [sql('insert', 'insert into c select * from {{ t.newRows }}', 'manual')],
+    })
+    await t.runtime.start()
+    await t.runtime.call('t', 'addRow')
+    await t.runtime.call('t', 'addRow', [{ name: 'Ada', id: 9 }])
+    await t.runtime.call('t', 'addRow', ['not a row'])
+    expect(t.state['t.newRows']).toEqual([{}, { name: 'Ada', id: 9 }, {}])
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
+      'added 1',
+      'added 2',
+      'added 3',
+    ])
+    t.runtime.set({ 't.changesetArray': [{ id: 2, name: 'Grace' }] })
+    await t.runtime.call('t', 'clearChangeset')
+    expect([t.state['t.newRows'], t.state['t.changesetArray']]).toEqual([[], []])
+    await t.runtime.call('t', 'addRow', [{ name: 'Lin' }])
+    expect(await t.runtime.call('t', 'saveChanges')).toBe(true)
+    expect(t.calls.at(-1)!.values).toEqual({ ' t.newRows ': [{ name: 'Lin' }] })
+    expect(t.state['t.newRows']).toEqual([])
+  })
+
   it('debounces handlers that ask for it', async () => {
     const t = setup({
       components: [

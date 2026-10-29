@@ -6,7 +6,9 @@ import {
   componentSpec,
   defaultSpecFor,
   entityPages,
+  type JsonValue,
   setPositions,
+  setProp,
 } from '@ow/app-definition'
 import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
@@ -15,7 +17,14 @@ import 'react-grid-layout/css/styles.css'
 import { sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ComponentView, placedChildren, ROW_HEIGHT } from '../canvas'
-import { ChildGridContext, EditingContext, ShownModalContext } from '../grid-context'
+import { withColumnWidth } from '../components/table-model'
+import {
+  ChildGridContext,
+  EditingContext,
+  type EditorActions,
+  EditorActionsContext,
+  ShownModalContext,
+} from '../grid-context'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
@@ -179,6 +188,17 @@ export function EditGrid({
  * The editor's canvas: the page grid with every component live, and the selected modal over it. In an app with
  * pages, the global components (on every page) have a grid of their own above the page's.
  */
+/** What renderers change in the definition from the canvas (M24). */
+const editorActions: EditorActions = {
+  setColumnWidth(table, key, width, shown) {
+    useAppEditor.getState().update((def) => {
+      const stored = def.components.find((c) => c.name === table)?.props?.columns as JsonValue | undefined
+      const next = withColumnWidth(stored, shown as never, key, width)
+      return next ? setProp(def, table, 'columns', next) : def
+    })
+  },
+}
+
 export function EditCanvas() {
   const definition = useAppEditor((s) => s.definition)
   const page = useAppEditor((s) => s.url.page)
@@ -202,41 +222,43 @@ export function EditCanvas() {
   return (
     <ChildGridContext.Provider value={EditGrid}>
       <EditingContext.Provider value={true}>
-        <ShownModalContext.Provider value={{ name: shownModal, close: () => select(null) }}>
-          {/* Clicking the empty canvas clears the selection. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer convenience; components are selected from the tree too */}
-          <div
-            className="relative pt-5"
-            // Where this editor's pointer is, for everyone else (M16): a fraction of the width, pixels down.
-            onMouseMove={(e) => {
-              const box = e.currentTarget.getBoundingClientRect()
-              sharePointer({ x: (e.clientX - box.left) / box.width, y: e.clientY - box.top })
-            }}
-            onMouseLeave={() => sharePointer(null)}
-            onMouseDown={(e) => {
-              if (
-                e.target === e.currentTarget ||
-                (e.target as HTMLElement).classList.contains('react-grid-layout')
-              )
-                select(null)
-            }}
-          >
-            {hasPages ? (
-              <>
-                <GridCaption>On every page</GridCaption>
-                <EditGrid definition={definition} page={null} />
-                <GridCaption className="mt-6">
-                  Page {definition.pages!.find((p) => p.name === page)?.title || page}
-                </GridCaption>
-                <EditGrid definition={definition} page={page} />
-              </>
-            ) : (
-              <EditGrid definition={definition} />
-            )}
-            <Pointers page={page} />
-          </div>
-          {modal && <ComponentView component={modal} definition={definition} />}
-        </ShownModalContext.Provider>
+        <EditorActionsContext.Provider value={editorActions}>
+          <ShownModalContext.Provider value={{ name: shownModal, close: () => select(null) }}>
+            {/* Clicking the empty canvas clears the selection. */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer convenience; components are selected from the tree too */}
+            <div
+              className="relative pt-5"
+              // Where this editor's pointer is, for everyone else (M16): a fraction of the width, pixels down.
+              onMouseMove={(e) => {
+                const box = e.currentTarget.getBoundingClientRect()
+                sharePointer({ x: (e.clientX - box.left) / box.width, y: e.clientY - box.top })
+              }}
+              onMouseLeave={() => sharePointer(null)}
+              onMouseDown={(e) => {
+                if (
+                  e.target === e.currentTarget ||
+                  (e.target as HTMLElement).classList.contains('react-grid-layout')
+                )
+                  select(null)
+              }}
+            >
+              {hasPages ? (
+                <>
+                  <GridCaption>On every page</GridCaption>
+                  <EditGrid definition={definition} page={null} />
+                  <GridCaption className="mt-6">
+                    Page {definition.pages!.find((p) => p.name === page)?.title || page}
+                  </GridCaption>
+                  <EditGrid definition={definition} page={page} />
+                </>
+              ) : (
+                <EditGrid definition={definition} />
+              )}
+              <Pointers page={page} />
+            </div>
+            {modal && <ComponentView component={modal} definition={definition} />}
+          </ShownModalContext.Provider>
+        </EditorActionsContext.Provider>
       </EditingContext.Provider>
     </ChildGridContext.Provider>
   )

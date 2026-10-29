@@ -3,7 +3,7 @@
  * the changeset an editable table collects, and turning typed text into values.
  */
 
-import { pageSizeOf, type TableFilter, type TableFilterOp } from '@ow/app-definition'
+import { type JsonValue, pageSizeOf, type TableFilter, type TableFilterOp } from '@ow/app-definition'
 
 export type ColumnType = 'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'json'
 
@@ -75,6 +75,36 @@ export function tableColumns(config: unknown, rows: Row[]): TableColumn[] {
         filterable: c.filterable !== false,
       },
     ]
+  })
+}
+
+/** The narrowest a column can be dragged. */
+export const MIN_COLUMN_WIDTH = 40
+
+/**
+ * A table's stored `columns` with `key`'s width set (M24, resizing in the editor): an inferred table lists its
+ * columns first (as From data does); a plain key string becomes `{ key, width }`. Null when `columns` is a template,
+ * which a drag can't change.
+ */
+export function withColumnWidth(
+  stored: JsonValue | undefined,
+  shown: readonly TableColumn[],
+  key: string,
+  width: number,
+): JsonValue[] | null {
+  const w = Math.max(MIN_COLUMN_WIDTH, Math.round(width))
+  const list: JsonValue[] =
+    stored === undefined || (Array.isArray(stored) && stored.length === 0)
+      ? shown.map((c) => ({ key: c.key }))
+      : Array.isArray(stored)
+        ? stored
+        : []
+  if (!Array.isArray(stored) && stored !== undefined) return null
+  return list.map((c) => {
+    const column = typeof c === 'string' ? { key: c } : c
+    return column && typeof column === 'object' && !Array.isArray(column) && column.key === key
+      ? { ...column, width: w }
+      : c
   })
 }
 

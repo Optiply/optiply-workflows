@@ -10,6 +10,7 @@ import {
   sortedRows,
   tableColumns,
   tableView,
+  withColumnWidth,
 } from './table-model'
 
 const rows = [
@@ -269,5 +270,26 @@ describe('filters (M24)', () => {
       'n between 1 and 2',
     )
     expect(filterLabel({ column: 'n', op: 'empty' }, 'n')).toBe('n is empty')
+  })
+})
+
+describe('withColumnWidth (M24)', () => {
+  const shown = tableColumns([], [{ id: 1, name: 'a' }])
+
+  it('sets one column’s width in the stored columns, listing inferred ones first', () => {
+    expect(withColumnWidth(undefined, shown, 'name', 181.6)).toEqual([
+      { key: 'id' },
+      { key: 'name', width: 182 },
+    ])
+    expect(withColumnWidth([], shown, 'id', 10)).toEqual([{ key: 'id', width: 40 }, { key: 'name' }])
+    expect(withColumnWidth(['id', { key: 'name', label: 'Name', width: 90 }], shown, 'name', 200)).toEqual([
+      'id',
+      { key: 'name', label: 'Name', width: 200 },
+    ])
+    expect(withColumnWidth(['id'], shown, 'id', 120)).toEqual([{ key: 'id', width: 120 }])
+  })
+
+  it('leaves columns written as a template alone', () => {
+    expect(withColumnWidth('{{ cols.value }}', shown, 'id', 120)).toBeNull()
   })
 })

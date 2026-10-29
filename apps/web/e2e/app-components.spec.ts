@@ -172,7 +172,7 @@ test('a CRUD app: search, edit cells and save, add with a form, delete', async (
   await page.getByRole('button', { name: 'Add' }).click()
   await expect(page.getByRole('alert').filter({ hasText: 'Fill in Name' })).toBeVisible()
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Barbara')
-  await page.getByLabel('City').selectOption('Delft')
+  await page.getByLabel('City', { exact: true }).selectOption('Delft')
   await page.getByRole('checkbox', { name: 'VIP', exact: true }).check()
   await page.getByRole('button', { name: 'Add' }).click()
   await expect(grid.getByRole('row')).toHaveCount(5)
