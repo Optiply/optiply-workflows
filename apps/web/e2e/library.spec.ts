@@ -51,6 +51,19 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await page.getByTestId('release-status').click()
   await page.getByTestId('releases').getByRole('button', { name: 'Make live' }).click()
   await expect(page.getByTestId('releases').locator('li').filter({ hasText: 'v1.0.0' })).toContainText('Live')
+  // Compare (M24): v1.1.0 against v1.0.0, the SQL line by line; closing goes back to the list.
+  await page
+    .getByTestId('releases')
+    .locator('li')
+    .filter({ hasText: 'v1.1.0' })
+    .getByRole('button', { name: 'Compare' })
+    .click()
+  const compare = page.getByRole('dialog', { name: 'Compare' }).getByTestId('compare')
+  await expect(compare.getByRole('region', { name: 'Query' }).getByTestId('file-diff')).toContainText(
+    '+select {{ n }}::int + 2 as x',
+  )
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('releases')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('library-used-by')).toContainText('Nothing uses it yet')
   await page.getByRole('link', { name: 'Library', exact: true }).first().click()

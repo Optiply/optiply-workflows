@@ -272,6 +272,18 @@ export const appsRouter = router({
     }))
   }),
 
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ appId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    const [release] = await ctx.db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.id, input.id), eq(appReleases.appId, app.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
+  }),
+
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */
   publish: authedProcedure
     .input(

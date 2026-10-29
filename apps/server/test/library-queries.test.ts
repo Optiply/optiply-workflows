@@ -127,6 +127,12 @@ describe('library queries', () => {
       ['1.0.0', false],
     ])
     expect(releases[0].params).toEqual([{ name: 'customerId' }, { name: 'status' }])
+    // One release's definition, for Compare (M24): Edit only (checked with the member below).
+    const one = data(
+      await admin.query('libraryQueries.release', { libraryQueryId: q.id, id: releases[1].id }),
+    )
+    expect(one).toMatchObject({ version: '1.0.0', definition: { resource: 'optiply_db' } })
+    expect(one.definition.params).toHaveLength(1)
 
     await admin.mutate('libraryQueries.setLive', { libraryQueryId: q.id, releaseId: v1.id })
     const list = data(await admin.query('libraryQueries.list'))
@@ -227,6 +233,9 @@ describe('library queries', () => {
       true,
     )
     expect(data(await member.query('libraryQueries.releases', { libraryQueryId: q.id }))).toEqual([])
+    expect(
+      failure(await member.query('libraryQueries.release', { libraryQueryId: q.id, id: q.id })).code,
+    ).toBe('FORBIDDEN')
     expect(failure(await member.query('libraryQueries.get', { id: q.id })).code).toBe('FORBIDDEN')
     expect(failure(await run()).code).toBe('FORBIDDEN')
 

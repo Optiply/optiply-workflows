@@ -392,6 +392,12 @@ describe('apps: releases', () => {
       ['1.1.0', false],
       ['1.0.0', true],
     ])
+    // One release's definition, for Compare (M24): Edit only; another app's release isn't found through this one.
+    const one = data(await admin.query('apps.release', { appId: app.id, id: v2.id }))
+    expect(one).toMatchObject({ id: v2.id, version: '1.1.0', definition: { layout: { search: { x: 1 } } } })
+    expect(failure(await member.query('apps.release', { appId: app.id, id: v2.id })).code).toBe('FORBIDDEN')
+    const other = await appWith('other_orders', crudApp())
+    expect(failure(await admin.query('apps.release', { appId: other.id, id: v2.id })).code).toBe('NOT_FOUND')
     expect(failure(await publish(admin, { version: '1.0.5' }))).toMatchObject({ code: 'CONFLICT' })
   })
 

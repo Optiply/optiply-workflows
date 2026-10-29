@@ -327,6 +327,18 @@ export const libraryQueriesRouter = router({
     }))
   }),
 
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ libraryQueryId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+    requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+    const [release] = await ctx.db
+      .select()
+      .from(libraryQueryReleases)
+      .where(and(eq(libraryQueryReleases.id, input.id), eq(libraryQueryReleases.libraryQueryId, query.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
+  }),
+
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */
   publish: authedProcedure
     .input(

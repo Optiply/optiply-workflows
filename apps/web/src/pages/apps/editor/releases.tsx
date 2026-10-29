@@ -1,8 +1,9 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { GitBranch, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
+import { GitBranch, GitCompare, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
+import { CompareReleasesDialog } from '@/components/compare-releases'
 import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
@@ -378,6 +379,25 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
   const canSetLive = !app.gitProtected || me.isAdmin
   const live = releases.data?.find((r) => r.live)
   const setLive = useMutation({ mutationFn: api.setLive, onSuccess: () => api.released() })
+  const draft = useAppEditor((s) => s.definition)
+  const [comparing, setComparing] = useState<string | null>(null)
+  if (comparing && releases.data) {
+    return (
+      <CompareReleasesDialog
+        kind={app.kind}
+        objectId={app.id}
+        releases={releases.data}
+        releaseId={comparing}
+        draft={draft}
+        loadRelease={(id) =>
+          app.kind === 'module'
+            ? trpcClient.modules.release.query({ moduleId: app.id, id })
+            : trpcClient.apps.release.query({ appId: app.id, id })
+        }
+        onClose={() => setComparing(null)}
+      />
+    )
+  }
   return (
     <Dialog title="Releases" onClose={onClose}>
       <ErrorNote error={releases.error ?? setLive.error} />
@@ -395,6 +415,16 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               <span className="font-mono text-sm font-semibold">v{r.version}</span>
               {r.live && <Badge tone="success">Live</Badge>}
               <span className="flex-1" />
+              {app.level !== 'use' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  title="What changed: against the release before it, another one or the draft"
+                  onClick={() => setComparing(r.id)}
+                >
+                  <GitCompare className="size-3.5" /> Compare
+                </Button>
+              )}
               {canSetLive && !r.live && (
                 <Button
                   size="sm"

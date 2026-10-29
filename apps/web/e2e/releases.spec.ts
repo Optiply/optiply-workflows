@@ -91,6 +91,21 @@ test('publish, call the webhook with an API key, and roll back', async ({ page, 
     await expect(page.getByTestId('release-status')).toContainText('Unpublished changes')
     expect(await greet(request, suffix, apiKey)).toEqual({ greeting: 'Hello Ada', lang: 'en' })
   })
+
+  await test.step('compare v1.1.0 with v1.0.0 (M24): the code block’s line diff', async () => {
+    const releases = page.getByTestId('releases')
+    await releases
+      .locator('li')
+      .filter({ hasText: 'v1.1.0' })
+      .getByRole('button', { name: 'Compare' })
+      .click()
+    const compare = page.getByRole('dialog', { name: 'Compare' }).getByTestId('compare')
+    const blocks = compare.getByRole('region', { name: 'Blocks' })
+    await expect(blocks).toContainText('greet')
+    await expect(blocks.getByTestId('file-diff')).toContainText('+return "Hi " + startTrigger.data.name')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Compare' })).toBeHidden()
+  })
 })
 
 /** Publishes from the header's Publish dialog, optionally picking a version choice by its label. */

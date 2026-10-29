@@ -336,6 +336,18 @@ export const modulesRouter = router({
     }))
   }),
 
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ moduleId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+    requireLevel(access.moduleLevel(module), 'edit', 'this module')
+    const [release] = await ctx.db
+      .select()
+      .from(moduleReleases)
+      .where(and(eq(moduleReleases.id, input.id), eq(moduleReleases.moduleId, module.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
+  }),
+
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */
   publish: authedProcedure
     .input(

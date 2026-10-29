@@ -2,10 +2,11 @@ import type { LibraryDiagnostic, LibraryParam, LibraryQueryDefinition } from '@o
 import { bumpVersion, compareVersions, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { GitBranch, History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lucide-react'
+import { GitBranch, GitCompare, History, Play, Plus, Rocket, Trash2, Undo2, Users } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import CodeField, { type FieldProblem } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
+import { CompareReleasesDialog } from '@/components/compare-releases'
 import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { GitBar } from '@/components/git-bar'
@@ -894,6 +895,21 @@ function ReleasesDialog({
         ]),
     }),
   )
+  const draft = useLibraryEditor((s) => s.definition)
+  const [comparing, setComparing] = useState<string | null>(null)
+  if (comparing && releases.data) {
+    return (
+      <CompareReleasesDialog
+        kind="library"
+        objectId={detail.id}
+        releases={releases.data}
+        releaseId={comparing}
+        draft={draft}
+        loadRelease={(id) => trpcClient.libraryQueries.release.query({ libraryQueryId: detail.id, id })}
+        onClose={() => setComparing(null)}
+      />
+    )
+  }
   return (
     <Dialog title="Releases" onClose={onClose}>
       <ErrorNote error={releases.error ?? setLive.error} />
@@ -913,6 +929,16 @@ function ReleasesDialog({
               <span className="flex-1 truncate font-mono text-xs text-muted">
                 {r.params.map((p) => p.name).join(', ')}
               </span>
+              {canEdit && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  title="What changed: against the release before it, another one or the draft"
+                  onClick={() => setComparing(r.id)}
+                >
+                  <GitCompare className="size-3.5" /> Compare
+                </Button>
+              )}
               {canEdit && !r.live && (
                 <Button
                   size="sm"
