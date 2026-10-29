@@ -3,6 +3,7 @@ import {
   apps,
   collabDocuments,
   collabUpdates,
+  componentLibraries,
   type Db,
   gitBranchDrafts,
   libraryQueries,
@@ -291,7 +292,9 @@ async function lockedDraft(tx: Tx, owner: CollabOwner): Promise<{ definition: un
           ? [apps, owner.appId]
           : 'libraryQueryId' in owner
             ? [libraryQueries, owner.libraryQueryId]
-            : [modules, owner.moduleId]
+            : 'componentLibraryId' in owner
+              ? [componentLibraries, owner.componentLibraryId]
+              : [modules, owner.moduleId]
     return (
       await tx
         .select({ definition: table.draftDefinition, revision: table.draftRevision })
@@ -323,5 +326,7 @@ async function writeDraft(
   else if ('appId' in owner) await tx.update(apps).set(values).where(eq(apps.id, owner.appId))
   else if ('libraryQueryId' in owner) {
     await tx.update(libraryQueries).set(values).where(eq(libraryQueries.id, owner.libraryQueryId))
+  } else if ('componentLibraryId' in owner) {
+    await tx.update(componentLibraries).set(values).where(eq(componentLibraries.id, owner.componentLibraryId))
   } else await tx.update(modules).set(values).where(eq(modules.id, owner.moduleId))
 }

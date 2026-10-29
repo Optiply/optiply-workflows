@@ -1,4 +1,4 @@
-import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
+import type { AppDefinition, ComponentLibraryDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import type { OpenTaskField, PythonLock, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -125,7 +125,14 @@ export const environments = pgTable(
 
 // ── Organisation ────────────────────────────────────────────────────────────
 
-export const FOLDER_OBJECT_TYPES = ['resource', 'workflow', 'app', 'library_query', 'module'] as const
+export const FOLDER_OBJECT_TYPES = [
+  'resource',
+  'workflow',
+  'app',
+  'library_query',
+  'module',
+  'component_library',
+] as const
 
 export const folders = pgTable(
   'folders',
@@ -143,7 +150,7 @@ export const folders = pgTable(
     unique('folders_name_uq').on(t.objectType, t.parentId, t.name).nullsNotDistinct(),
     check(
       'folders_object_type_ck',
-      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module')`,
+      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'component_library')`,
     ),
   ],
 )
@@ -154,6 +161,7 @@ export const PERMISSION_OBJECT_TYPES = [
   'app',
   'library_query',
   'module',
+  'component_library',
   'folder',
 ] as const
 /** Ordered lowest to highest: each level includes the ones before it. */
@@ -184,7 +192,7 @@ export const permissions = pgTable(
     index('permissions_object_idx').on(t.objectType, t.objectId),
     check(
       'permissions_object_type_ck',
-      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'folder')`,
+      sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'component_library', 'folder')`,
     ),
     check('permissions_level_ck', sql`${t.level} in ('use', 'edit', 'own')`),
   ],
@@ -1046,6 +1054,101 @@ export const moduleReleases = pgTable(
   ],
 )
 
+// ── Component libraries (M25) ───────────────────────────────────────────────
+
+/**
+ * Component libraries: React components apps place, written in the platform and built on the server (architecture
+ * §2.28), built like modules (a draft, releases, the live one).
+ */
+export const componentLibraries = pgTable(
+  'component_libraries',
+  {
+    id: id(),
+    /** How apps reference it (with a version or `latest`); renaming keeps it. */
+    slug: text().notNull(),
+    name: text().notNull(),
+    description: text(),
+    folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
+    /** Must match the schema but may otherwise be invalid. */
+    draftDefinition: jsonb().$type<ComponentLibraryDefinition>().notNull(),
+    draftRevision: integer().notNull().default(1),
+    /** The `package-lock.json` the draft's last build made or followed; the next build starts from it. */
+    draftLock: text(),
+    /** The release apps following `latest` run. Null until the first release. */
+    liveReleaseId: uuid().references((): AnyPgColumn => componentLibraryReleases.id, {
+      onDelete: 'set null',
+    }),
+    gitProtected: boolean().notNull().default(false),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('component_libraries_slug_uq').on(t.slug),
+    index('component_libraries_folder_idx').on(t.folderId),
+  ],
+)
+
+/**
+ * Built bundles (M25): one ESM file exporting each component by name and its CSS, by the SHA-256 of both (served at
+ * an immutable URL). `inputHash` (the files, dependencies and lock) finds a draft's earlier build; null for an
+ * uploaded bundle. Releases keep theirs; the others go after a while (retention).
+ */
+export const componentBundles = pgTable(
+  'component_bundles',
+  {
+    hash: text().primaryKey(),
+    inputHash: text(),
+    js: text().notNull(),
+    css: text().notNull(),
+    /** The lock the build installed from. */
+    lock: text(),
+    sizeBytes: integer().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('component_bundles_input_uq').on(t.inputHash),
+    check('component_bundles_hash_ck', sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+/** Published, immutable versions of a component library, with their build. */
+export const componentLibraryReleases = pgTable(
+  'component_library_releases',
+  {
+    id: id(),
+    componentLibraryId: uuid()
+      .notNull()
+      .references(() => componentLibraries.id, { onDelete: 'cascade' }),
+    version: text().notNull(),
+    /** Canonical form (`canonicalizeComponentLibrary`); an uploaded release has no files. */
+    definition: jsonb().$type<ComponentLibraryDefinition>().notNull(),
+    /** `componentLibraryHash`. */
+    definitionHash: text().notNull(),
+    bundleHash: text()
+      .notNull()
+      .references(() => componentBundles.hash, { onDelete: 'restrict' }),
+    lock: text(),
+    /** Made from a bundle built elsewhere (`componentLibraries.uploadBuild`), not from files. */
+    uploaded: boolean().notNull().default(false),
+    notes: text(),
+    gitCommit: text(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('component_library_releases_version_uq').on(t.componentLibraryId, t.version),
+    index('component_library_releases_library_idx').on(t.componentLibraryId, t.createdAt.desc()),
+    index('component_library_releases_bundle_idx').on(t.bundleHash),
+    check(
+      'component_library_releases_version_ck',
+      sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`,
+    ),
+    check('component_library_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
 // ── Audit ───────────────────────────────────────────────────────────────────
 
 export const auditEvents = pgTable(
@@ -1085,6 +1188,9 @@ export type LibraryQuery = typeof libraryQueries.$inferSelect
 export type LibraryQueryRelease = typeof libraryQueryReleases.$inferSelect
 export type Module = typeof modules.$inferSelect
 export type ModuleRelease = typeof moduleReleases.$inferSelect
+export type ComponentLibrary = typeof componentLibraries.$inferSelect
+export type ComponentLibraryRelease = typeof componentLibraryReleases.$inferSelect
+export type ComponentBundle = typeof componentBundles.$inferSelect
 export type OAuthToken = typeof oauthTokens.$inferSelect
 export type ConfigVar = typeof configVars.$inferSelect
 export type ConfigVarValue = typeof configVarValues.$inferSelect
@@ -1165,7 +1271,7 @@ export const gitSettings = pgTable(
 
 export type GitSettings = typeof gitSettings.$inferSelect
 
-export const GIT_OBJECT_KINDS = ['workflow', 'app', 'library_query', 'module'] as const
+export const GIT_OBJECT_KINDS = ['workflow', 'app', 'library_query', 'module', 'component_library'] as const
 /** Kept in Git beside them (M22), without drafts or releases. */
 export const GIT_SETTINGS_KINDS = ['resource', 'config_var'] as const
 export const GIT_OBJECT_STATUSES = ['deployed', 'problem', 'missing'] as const
@@ -1204,7 +1310,7 @@ export const gitObjects = pgTable(
     unique('git_objects_kind_slug_uq').on(t.kind, t.slug),
     check(
       'git_objects_kind_ck',
-      sql`${t.kind} in ('workflow', 'app', 'library_query', 'module', 'resource', 'config_var')`,
+      sql`${t.kind} in ('workflow', 'app', 'library_query', 'module', 'component_library', 'resource', 'config_var')`,
     ),
     check('git_objects_status_ck', sql`${t.status} in ('deployed', 'problem', 'missing')`),
   ],
@@ -1254,9 +1360,12 @@ export const gitBranchDrafts = pgTable(
     appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
     libraryQueryId: uuid().references(() => libraryQueries.id, { onDelete: 'cascade' }),
     moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
+    componentLibraryId: uuid().references(() => componentLibraries.id, { onDelete: 'cascade' }),
     branch: text().notNull(),
     /** A workflow, app, library query or module definition, as the object's kind says. */
-    definition: jsonb().$type<WorkflowDefinition | AppDefinition | LibraryQueryDefinition>().notNull(),
+    definition: jsonb()
+      .$type<WorkflowDefinition | AppDefinition | LibraryQueryDefinition | ComponentLibraryDefinition>()
+      .notNull(),
     name: text().notNull(),
     description: text(),
     /** The folder path the repo keeps for the object, `Finance/Reports` (M22); null at the top level. */
@@ -1293,9 +1402,12 @@ export const gitBranchDrafts = pgTable(
       .on(t.libraryQueryId, t.branch)
       .where(sql`${t.libraryQueryId} is not null`),
     uniqueIndex('git_branch_drafts_module_uq').on(t.moduleId, t.branch).where(sql`${t.moduleId} is not null`),
+    uniqueIndex('git_branch_drafts_component_library_uq')
+      .on(t.componentLibraryId, t.branch)
+      .where(sql`${t.componentLibraryId} is not null`),
     check(
       'git_branch_drafts_object_ck',
-      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.libraryQueryId}, ${t.moduleId}) = 1`,
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.libraryQueryId}, ${t.moduleId}, ${t.componentLibraryId}) = 1`,
     ),
   ],
 )
@@ -1317,6 +1429,8 @@ export const collabDocuments = pgTable(
     moduleId: uuid().references(() => modules.id, { onDelete: 'cascade' }),
     /** A library query's main draft (M21: the library query editor is multiplayer too). */
     libraryQueryId: uuid().references(() => libraryQueries.id, { onDelete: 'cascade' }),
+    /** A component library's main draft (M25). */
+    componentLibraryId: uuid().references(() => componentLibraries.id, { onDelete: 'cascade' }),
     branchDraftId: uuid().references(() => gitBranchDrafts.id, { onDelete: 'cascade' }),
     /** The document as one Yjs update, with `collab_updates` folded in so far. */
     state: bytea().notNull(),
@@ -1328,7 +1442,7 @@ export const collabDocuments = pgTable(
   (t) => [
     check(
       'collab_documents_object_ck',
-      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.moduleId}, ${t.libraryQueryId}, ${t.branchDraftId}) = 1`,
+      sql`num_nonnulls(${t.workflowId}, ${t.appId}, ${t.moduleId}, ${t.libraryQueryId}, ${t.componentLibraryId}, ${t.branchDraftId}) = 1`,
     ),
   ],
 )

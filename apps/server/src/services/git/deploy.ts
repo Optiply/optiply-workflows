@@ -47,14 +47,20 @@ export type DeployTrigger = (typeof GIT_DEPLOY_TRIGGERS)[number]
 const SETTINGS_ORDER: readonly SettingsKind[] = ['config_var', 'resource']
 
 /** The order a deploy goes in: what other objects use comes first. */
-const DEPLOY_ORDER: readonly ObjectKind[] = ['library_query', 'module', 'workflow', 'app']
+const DEPLOY_ORDER: readonly ObjectKind[] = [
+  'component_library',
+  'library_query',
+  'module',
+  'workflow',
+  'app',
+]
 
 /** What a deploy did with one object directory. */
 export interface ObjectOutcome {
   kind: ObjectKind | SettingsKind
   slug: string
   /**
-   * `created`: a new workflow, app, library query or module (and its first release, unless it has problems); `released`: a new live
+   * `created`: a new workflow, app, library query, module or component library (and its first release, unless it has problems); `released`: a new live
    * release; `updated`: a resource's or config var's settings changed, or an object moved to another folder without
    * a new release (M22); `unchanged`: the directory, or at least
    * its definition, is what's already live; `problem`: not deployed (the live release stays); `missing`: the
@@ -565,6 +571,12 @@ async function deployObject(
             ...meta,
             module: object as Module,
             definition: definition as AppDefinition,
+          })
+        case 'component_library':
+          // Built and released from the repo in M25 step 3b.
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Component libraries aren’t deployed from Git yet',
           })
       }
     })()

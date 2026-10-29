@@ -1,6 +1,11 @@
 import { canonicalJson, workflowSlugSchema } from '@ow/definition'
 import { type AppObject, decodeApp, decodeModule, encodeApp, encodeModule, type ModuleObject } from './app'
 import {
+  type ComponentLibraryObject,
+  decodeComponentLibrary,
+  encodeComponentLibrary,
+} from './component-library'
+import {
   caseCollisions,
   type Decoded,
   type Files,
@@ -24,14 +29,18 @@ import { decodeWorkflow, encodeWorkflow, type WorkflowObject } from './workflow'
 export const MANIFEST_FILE = 'ow.json'
 export const FORMAT_VERSION = 1
 
-export type ObjectKind = 'workflow' | 'app' | 'library_query' | 'module'
+export type ObjectKind = 'workflow' | 'app' | 'library_query' | 'module' | 'component_library'
 
-/** Where each kind lives: `workflows/<slug>/`, `apps/<slug>/`, `library/<slug>/`, `modules/<slug>/`. */
+/**
+ * Where each kind lives: `workflows/<slug>/`, `apps/<slug>/`, `library/<slug>/`, `modules/<slug>/`,
+ * `component-libraries/<slug>/` (M25).
+ */
 export const KIND_ROOTS: Record<ObjectKind, string> = {
   workflow: 'workflows',
   app: 'apps',
   library_query: 'library',
   module: 'modules',
+  component_library: 'component-libraries',
 }
 
 /** Each kind as people read it, for messages. */
@@ -40,6 +49,7 @@ export const KIND_LABELS: Record<ObjectKind, string> = {
   app: 'app',
   library_query: 'library query',
   module: 'module',
+  component_library: 'component library',
 }
 
 /** Every kind's slugs follow the same rule (workflows' and apps' appear in URLs). */
@@ -60,6 +70,7 @@ export interface KindValues {
   app: AppObject
   library_query: LibraryQueryObject
   module: ModuleObject
+  component_library: ComponentLibraryObject
 }
 
 export type RepoObject = {
@@ -77,6 +88,7 @@ const CODECS: {
   app: { encode: encodeApp, decode: decodeApp },
   library_query: { encode: encodeLibraryQuery, decode: decodeLibraryQuery },
   module: { encode: encodeModule, decode: decodeModule },
+  component_library: { encode: encodeComponentLibrary, decode: decodeComponentLibrary },
 }
 
 /** An object's directory and its files, keyed by their path inside it (what a commit replaces the directory with). */
@@ -135,6 +147,7 @@ const NAMES: Record<AnyKind, { safeParse(v: unknown): { success: boolean } }> = 
   app: objectSlugSchema,
   library_query: objectSlugSchema,
   module: objectSlugSchema,
+  component_library: objectSlugSchema,
   ...SETTINGS_NAMES,
 }
 const isSettingsKind = (kind: AnyKind): kind is SettingsKind => kind in SETTINGS_ROOTS
@@ -193,6 +206,7 @@ const NAME_RULES: Record<AnyKind, string> = {
   app: `isn't a valid app slug (2–63 ${SLUG_RULE})`,
   library_query: `isn't a valid library query slug (2–63 ${SLUG_RULE})`,
   module: `isn't a valid module slug (2–63 ${SLUG_RULE})`,
+  component_library: `isn't a valid component library slug (2–63 ${SLUG_RULE})`,
   resource: "isn't a valid resource slug (2–63 lowercase letters, digits or _, starting with a letter)",
   config_var: "isn't a valid config var name (letters, digits and _, not starting with a digit, up to 64)",
 }

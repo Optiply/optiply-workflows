@@ -2,16 +2,21 @@ import {
   type AppDefinition,
   appDefinitionHash,
   appDefinitionSchema,
+  type ComponentLibraryDefinition,
+  componentLibraryDefinitionSchema,
+  componentLibraryHash,
   type LibraryQueryDefinition,
   libraryQueryDefinitionSchema,
   libraryQueryHash,
   validateApp,
+  validateComponentLibrary,
   validateLibraryQuery,
 } from '@ow/app-definition'
 import {
   appRenamer,
   appSpec,
   type CollabSpec,
+  componentLibrarySpec,
   libraryQuerySpec,
   type MergeObject,
   type MergeResult,
@@ -25,6 +30,9 @@ import {
   type App,
   appReleases,
   apps,
+  type ComponentLibrary,
+  componentLibraries,
+  componentLibraryReleases,
   configVars,
   type Db,
   GIT_OBJECT_KINDS,
@@ -54,7 +62,8 @@ import type { z } from 'zod'
 import type { Access } from '../permissions'
 
 /**
- * What differs between the kinds Git sync keeps (workflows, apps, and since M14 library queries and modules): their
+ * What differs between the kinds Git sync keeps (workflows, apps, since M14 library queries and modules, since M25
+ * component libraries): their
  * tables, levels, releases and definitions. Protect, branch drafts and deploy go through these.
  */
 
@@ -64,7 +73,7 @@ export function isObjectKind(kind: string): kind is ObjectKind {
 }
 
 /** A row of any kind Git sync keeps; what they share is what Git needs. */
-export type GitObjectRow = Workflow | App | LibraryQuery | Module
+export type GitObjectRow = Workflow | App | LibraryQuery | Module | ComponentLibrary
 
 /** The object of a kind by id or slug. */
 export async function loadGitObject(
@@ -84,6 +93,8 @@ export async function loadGitObject(
       return (await db.select().from(libraryQueries).where(by(libraryQueries)))[0]
     case 'module':
       return (await db.select().from(modules).where(by(modules)))[0]
+    case 'component_library':
+      return (await db.select().from(componentLibraries).where(by(componentLibraries)))[0]
   }
 }
 
@@ -102,6 +113,8 @@ export function gitObjectLevel(
       return access.libraryQueryLevel(object)
     case 'module':
       return access.moduleLevel(object)
+    case 'component_library':
+      return access.componentLibraryLevel(object)
   }
 }
 
@@ -116,10 +129,21 @@ export async function setGitProtected(
   value: boolean,
   opts: { from?: boolean } = {},
 ): Promise<boolean> {
-  const table = { workflow: workflows, app: apps, library_query: libraryQueries, module: modules }[kind]
-  const where =
-    opts.from === undefined ? eq(table.id, id) : and(eq(table.id, id), eq(table.gitProtected, opts.from))
-  const updated = await db.update(table).set({ gitProtected: value }).where(where).returning({ id: table.id })
+  const table = {
+    workflow: workflows,
+    app: apps,
+    library_query: libraryQueries,
+    module: modules,
+    component_library: componentLibraries,
+  }[kind]
+  // biome-ignore lint/suspicious/noExplicitAny: the five tables share these columns
+  const t = table as any
+  const where = opts.from === undefined ? eq(t.id, id) : and(eq(t.id, id), eq(t.gitProtected, opts.from))
+  const updated: unknown[] = await db
+    .update(t)
+    .set({ gitProtected: value })
+    .where(where)
+    .returning({ id: t.id })
   return updated.length > 0
 }
 
@@ -137,6 +161,8 @@ export async function liveOrDraft(db: Db, kind: ObjectKind, object: GitObjectRow
         return db.select().from(libraryQueryReleases).where(eq(libraryQueryReleases.id, id))
       case 'module':
         return db.select().from(moduleReleases).where(eq(moduleReleases.id, id))
+      case 'component_library':
+        return db.select().from(componentLibraryReleases).where(eq(componentLibraryReleases.id, id))
     }
   })()
   return release?.definition ?? object.draftDefinition
@@ -149,6 +175,7 @@ export function draftColumn(kind: ObjectKind) {
     app: gitBranchDrafts.appId,
     library_query: gitBranchDrafts.libraryQueryId,
     module: gitBranchDrafts.moduleId,
+    component_library: gitBranchDrafts.componentLibraryId,
   }[kind]
 }
 
@@ -159,6 +186,7 @@ export function draftOwner(kind: ObjectKind, id: string) {
     app: { appId: id },
     library_query: { libraryQueryId: id },
     module: { moduleId: id },
+    component_library: { componentLibraryId: id },
   }[kind]
 }
 
@@ -168,10 +196,12 @@ export function draftTarget(draft: {
   appId: string | null
   libraryQueryId: string | null
   moduleId: string | null
+  componentLibraryId: string | null
 }): { kind: ObjectKind; id: string } {
   if (draft.workflowId) return { kind: 'workflow', id: draft.workflowId }
   if (draft.appId) return { kind: 'app', id: draft.appId }
   if (draft.libraryQueryId) return { kind: 'library_query', id: draft.libraryQueryId }
+  if (draft.componentLibraryId) return { kind: 'component_library', id: draft.componentLibraryId }
   return { kind: 'module', id: draft.moduleId! }
 }
 
@@ -182,6 +212,8 @@ export function definitionSchema(kind: ObjectKind): z.ZodType {
       return workflowDefinitionSchema
     case 'library_query':
       return libraryQueryDefinitionSchema
+    case 'component_library':
+      return componentLibraryDefinitionSchema
     case 'module':
       return appDefinitionSchema.refine((d) => d.module !== undefined, {
         path: ['module'],
@@ -199,6 +231,8 @@ export function kindDefinitionHash(kind: ObjectKind, definition: unknown): Promi
       return definitionHash(definition as WorkflowDefinition)
     case 'library_query':
       return libraryQueryHash(definition as LibraryQueryDefinition)
+    case 'component_library':
+      return componentLibraryHash(definition as ComponentLibraryDefinition)
     default:
       return appDefinitionHash(definition as AppDefinition)
   }
@@ -211,6 +245,8 @@ export function kindDiagnostics(kind: ObjectKind, definition: unknown) {
       return validateDefinition(definition as WorkflowDefinition, { checkBodySchema }).diagnostics
     case 'library_query':
       return validateLibraryQuery(definition).diagnostics
+    case 'component_library':
+      return validateComponentLibrary(definition).diagnostics
     default:
       return validateApp(definition).diagnostics
   }
@@ -225,7 +261,7 @@ export function kindTitle(kind: ObjectKind): string {
 /** Every protected object's id, of any kind (deploy skips their unchanged directories). */
 export async function protectedObjectIds(db: Db): Promise<Set<string>> {
   const rows = await Promise.all(
-    [workflows, apps, libraryQueries, modules, resources, configVars].map((table) =>
+    [workflows, apps, libraryQueries, modules, componentLibraries, resources, configVars].map((table) =>
       db.select({ id: table.id }).from(table).where(eq(table.gitProtected, true)),
     ),
   )
@@ -280,6 +316,14 @@ export async function insertGitObject(
           .onConflictDoNothing()
           .returning()
       )[0]
+    case 'component_library':
+      return (
+        await db
+          .insert(componentLibraries)
+          .values({ ...row, draftDefinition: values.definition as ComponentLibraryDefinition })
+          .onConflictDoNothing()
+          .returning()
+      )[0]
   }
 }
 
@@ -287,13 +331,14 @@ export async function insertGitObject(
 function kindSpec(kind: ObjectKind): CollabSpec {
   if (kind === 'workflow') return workflowSpec
   if (kind === 'library_query') return libraryQuerySpec
+  if (kind === 'component_library') return componentLibrarySpec
   return appSpec
 }
 
 /** How a kind's renames are followed in a merge (§2.25): blocks for workflows, components and queries for apps and modules. */
 function kindRenamer(kind: ObjectKind): Renamer<unknown> | undefined {
   if (kind === 'workflow') return workflowRenamer as Renamer<unknown>
-  if (kind === 'library_query') return undefined
+  if (kind === 'library_query' || kind === 'component_library') return undefined
   return appRenamer as Renamer<unknown>
 }
 

@@ -15,8 +15,8 @@ const Name = z
   .min(1)
   .max(80)
   .refine((name) => !name.includes('/'), "A folder's name can't hold a /")
-/** What a folder holds: resources, workflows, apps or library queries (never a mix: a folder's grants mean one kind of access). */
-const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query', 'module'])
+/** What a folder holds: resources, workflows, apps, library queries, modules or component libraries (never a mix: a folder's grants mean one kind of access). */
+const FolderType = z.enum(['resource', 'workflow', 'app', 'library_query', 'module', 'component_library'])
 type FolderType = z.infer<typeof FolderType>
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
@@ -27,6 +27,7 @@ const PLURAL: Record<FolderType, string> = {
   app: 'apps',
   library_query: 'library queries',
   module: 'modules',
+  component_library: 'component libraries',
 }
 
 /** Whether the person may manage folders of a type: whoever may create that type. */

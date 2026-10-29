@@ -11,7 +11,7 @@ import { AccessEditor } from '@/pages/resources/shared'
  * Folders for resources, workflows, apps and library queries: each kind has folders of its own (a folder's grants reach what's in
  * it, so it holds one kind only). Whoever can create a kind manages its folders; admins grant access to them.
  */
-export type FolderType = 'resource' | 'workflow' | 'app' | 'library_query' | 'module'
+export type FolderType = 'resource' | 'workflow' | 'app' | 'library_query' | 'module' | 'component_library'
 
 const PLURAL: Record<FolderType, string> = {
   resource: 'resources',
@@ -19,6 +19,7 @@ const PLURAL: Record<FolderType, string> = {
   app: 'apps',
   library_query: 'library queries',
   module: 'modules',
+  component_library: 'component libraries',
 }
 const appRoute = getRouteApi('/app')
 

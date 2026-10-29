@@ -1,5 +1,6 @@
 import {
   apps,
+  componentLibraries,
   type Db,
   environments,
   folders,
@@ -23,7 +24,15 @@ const Id = z.string().uuid()
 
 /** Grants on one resource, workflow, app or library query, on one folder, or (`objectId` null) on all objects of a type. */
 const Target = z.object({
-  objectType: z.enum(['resource', 'workflow', 'app', 'library_query', 'module', 'folder']),
+  objectType: z.enum([
+    'resource',
+    'workflow',
+    'app',
+    'library_query',
+    'module',
+    'component_library',
+    'folder',
+  ]),
   objectId: Id.nullable(),
 })
 
@@ -50,9 +59,15 @@ async function assertCanManage(ctx: AuthedContext, target: z.infer<typeof Target
   if (
     target.objectType === 'app' ||
     target.objectType === 'library_query' ||
-    target.objectType === 'module'
+    target.objectType === 'module' ||
+    target.objectType === 'component_library'
   ) {
-    const table = { app: apps, library_query: libraryQueries, module: modules }[target.objectType]
+    const table = {
+      app: apps,
+      library_query: libraryQueries,
+      module: modules,
+      component_library: componentLibraries,
+    }[target.objectType]
     const [object] = await ctx.db.select().from(table).where(eq(table.id, target.objectId)).limit(1)
     const access = await loadAccess(ctx.db, ctx.user)
     const label = KIND_LABELS[target.objectType]
@@ -78,7 +93,9 @@ function targetWhere(target: z.infer<typeof Target>) {
 
 async function describeTarget(db: Db, target: z.infer<typeof Target>): Promise<string> {
   if (target.objectId === null) {
-    return target.objectType === 'library_query' ? 'all library queries' : `all ${target.objectType}s`
+    if (target.objectType === 'library_query') return 'all library queries'
+    if (target.objectType === 'component_library') return 'all component libraries'
+    return `all ${target.objectType}s`
   }
   if (target.objectType === 'folder') {
     const [folder] = await db

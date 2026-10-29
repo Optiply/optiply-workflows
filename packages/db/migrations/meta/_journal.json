@@ -232,6 +232,13 @@
       "when": 1793196874467,
       "tag": "0032_python_envs",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793301305115,
+      "tag": "0033_component_libraries",
+      "breakpoints": true
     }
   ]
 }

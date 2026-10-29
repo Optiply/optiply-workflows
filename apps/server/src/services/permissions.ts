@@ -135,6 +135,19 @@ export class Access {
     return this.canCreate('module')
   }
 
+  /**
+   * The user's level on a component library (M25), or null for no access. Use = place its components in an app or
+   * module, Edit = change the draft, build it and publish, Own = delete and manage access.
+   */
+  componentLibraryLevel(library: { id: string; folderId: string | null }): PermissionLevel | null {
+    return this.objectLevel('component_library', library)
+  }
+
+  /** Creating component libraries needs Edit on all of them. */
+  get canCreateComponentLibraries(): boolean {
+    return this.canCreate('component_library')
+  }
+
   /** Creating objects of a kind needs Edit on all of them. */
   canCreate(type: ObjectKind): boolean {
     return (

@@ -1,5 +1,12 @@
-import { appDefinitionSchema } from '@ow/app-definition'
-import { appSpec, type CollabSpec, libraryQuerySpec, parseCollabKey, workflowSpec } from '@ow/collab'
+import { appDefinitionSchema, componentLibraryDefinitionSchema } from '@ow/app-definition'
+import {
+  appSpec,
+  type CollabSpec,
+  componentLibrarySpec,
+  libraryQuerySpec,
+  parseCollabKey,
+  workflowSpec,
+} from '@ow/collab'
 import type { Db } from '@ow/db'
 import { libraryQueryDefinitionSchema, workflowDefinitionSchema } from '@ow/definition'
 import type { ObjectKind } from '@ow/git-format'
@@ -14,6 +21,7 @@ export type CollabOwner =
   | { appId: string }
   | { moduleId: string }
   | { libraryQueryId: string }
+  | { componentLibraryId: string }
   | { branchDraftId: string }
 
 /** A draft someone opened for editing together, as they may use it. */
@@ -53,7 +61,12 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
       draft: { definition: draft.definition, revision: draft.revision },
     }
   }
-  const kind: ObjectKind = parsed.kind === 'library' ? 'library_query' : parsed.kind
+  const kind: ObjectKind =
+    parsed.kind === 'library'
+      ? 'library_query'
+      : parsed.kind === 'components'
+        ? 'component_library'
+        : parsed.kind
   const object = await loadGitObject(db, kind, { id: parsed.id })
   const level = object && gitObjectLevel(access, kind, object)
   if (!object || !level) return null
@@ -67,7 +80,9 @@ export async function resolveTarget(db: Db, user: SessionUser, key: string): Pro
           ? { appId: object.id }
           : kind === 'module'
             ? { moduleId: object.id }
-            : { libraryQueryId: object.id },
+            : kind === 'component_library'
+              ? { componentLibraryId: object.id }
+              : { libraryQueryId: object.id },
     readOnly: !atLeast(level, 'edit') || object.gitProtected,
     draft: { definition: object.draftDefinition, revision: object.draftRevision },
   }
@@ -80,7 +95,9 @@ function rules(kind: ObjectKind): Pick<CollabTarget, 'spec' | 'check'> {
       ? [workflowSpec, workflowDefinitionSchema]
       : kind === 'library_query'
         ? [libraryQuerySpec, libraryQueryDefinitionSchema]
-        : [appSpec, appDefinitionSchema]
+        : kind === 'component_library'
+          ? [componentLibrarySpec, componentLibraryDefinitionSchema]
+          : [appSpec, appDefinitionSchema]
   return {
     spec,
     check: (definition) => {

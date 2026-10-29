@@ -238,8 +238,8 @@ export function useUnprotect(kind: GitKind) {
   return useMutation(trpc.git.unprotect.mutationOptions({ onSuccess: () => refresh() }))
 }
 
-/** What Git sync keeps: workflows, apps, and since M14 library queries and modules. */
-export type GitKind = 'workflow' | 'app' | 'library_query' | 'module'
+/** What Git sync keeps: workflows, apps, since M14 library queries and modules, since M25 component libraries. */
+export type GitKind = 'workflow' | 'app' | 'library_query' | 'module' | 'component_library'
 
 /** Resources and config vars (M22): kept in Git without drafts or releases. */
 export type SettingsKind = 'resource' | 'config_var'
@@ -254,6 +254,7 @@ export const GIT_KIND_LABELS: Record<GitKind, string> = {
   app: 'app',
   library_query: 'library query',
   module: 'module',
+  component_library: 'component library',
 }
 
 /** Where each kind's directories are in the repo. */
@@ -262,6 +263,7 @@ export const GIT_KIND_ROOTS: Record<GitKind, string> = {
   app: 'apps',
   library_query: 'library',
   module: 'modules',
+  component_library: 'component-libraries',
 }
 
 /** Every kind as people read it, resources and config vars (M22) included. */
@@ -287,6 +289,7 @@ function useRefreshKind(kind: GitKind | SettingsKind) {
     app: [trpc.apps.list.queryKey(), trpc.apps.get.queryKey()],
     library_query: [trpc.libraryQueries.list.queryKey(), trpc.libraryQueries.get.queryKey()],
     module: [trpc.modules.list.queryKey(), trpc.modules.get.queryKey()],
+    component_library: [trpc.componentLibraries.list.queryKey(), trpc.componentLibraries.get.queryKey()],
     resource: [trpc.resources.list.queryKey(), trpc.resources.get.queryKey()],
     config_var: [trpc.configVars.list.queryKey()],
   }[kind]

@@ -1,5 +1,6 @@
 import {
   apps,
+  componentLibraries,
   type Db,
   type FOLDER_OBJECT_TYPES,
   folders,
@@ -32,6 +33,7 @@ const TABLES = {
   app: apps,
   library_query: libraryQueries,
   module: modules,
+  component_library: componentLibraries,
 }
 
 /**
