@@ -6,7 +6,11 @@ import { signIn, trpcMutate, trpcQuery } from './helpers'
  * browser, a server-paged table over 10k rows filtered through `sql.where`, a column resized in the editor, two
  * added rows reaching an insert query through `newRows`; (2) the canvas: three components dragged together, one
  * dragged into a container's second view, and undo giving back the exact starting definition; (3) a container's
- * tabs switched by a button's `setView`, folded and unfolded, what's below moving up.
+ * tabs switched by a button's `setView`, folded and unfolded, what's below moving up; (4) an app frame with a
+ * header and a sidebar holding a Navigation (an icon, a group, an outside link) whose page link opens that page from
+ * its address in a new tab; (5) a release compared with the draft after a component moved and a query's SQL
+ * changed, the SQL as a line diff; (6) a month of daily rows with a gap on a time axis, a page rename rewriting
+ * `utils.openPage('orders')`, and a folder's delete asking in the dialog.
  */
 
 type Def = { components: unknown[]; layout: Record<string, { x: number; y: number }> }
@@ -407,6 +411,241 @@ test('M24 done-when (3): tabs switched by setView, folded and unfolded, what’s
     await box.getByRole('button', { name: 'Unfold Orders' }).click()
     await expect(box).toContainText('One order')
     await expect.poll(top).toBe(before)
+  })
+  expect(errors).toEqual([])
+})
+
+test('M24 done-when (4): a header and a sidebar with a Navigation, a page link opened in a new tab', async ({
+  page,
+  context,
+}) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await signIn(page)
+  const slug = `m24-frame-${Date.now()}`
+  const text = (name: string, pageName: string, value: string) => ({
+    name,
+    type: 'text',
+    page: pageName,
+    props: { value },
+  })
+  const appId = await newApp(page, slug, {
+    schemaVersion: 1,
+    pages: [{ name: 'home', title: 'Home' }, { name: 'orders', title: 'Orders' }, { name: 'report' }],
+    frame: { header: true, sidebar: 'medium', showTitle: true },
+    components: [
+      { name: 'greeting', type: 'text', props: { value: 'In the header' } },
+      {
+        name: 'nav',
+        type: 'navigation',
+        slot: 'sidebar',
+        props: {
+          orientation: 'vertical',
+          items: [
+            { page: 'home', icon: 'home' },
+            {
+              label: 'Sales',
+              icon: 'cart',
+              items: [
+                { page: 'orders', params: { status: 'open' } },
+                { page: 'report', label: 'Report' },
+              ],
+            },
+            { url: 'https://example.com/docs', label: 'Docs', icon: 'external' },
+          ],
+        },
+      },
+      text('homeText', 'home', 'Welcome home'),
+      text('ordersText', 'orders', 'Orders: {{ url.params.status }}'),
+      text('reportText', 'report', 'The report'),
+    ],
+    queries: [],
+    transformers: [],
+    variables: [],
+    layout: {
+      greeting: { x: 0, y: 0, w: 6, h: 2 },
+      nav: { x: 0, y: 0, w: 12, h: 10 },
+      homeText: { x: 0, y: 0, w: 6, h: 2 },
+      ordersText: { x: 0, y: 0, w: 6, h: 2 },
+      reportText: { x: 0, y: 0, w: 6, h: 2 },
+    },
+  })
+  await publish(page, appId, slug)
+  await page.goto(`/apps/${slug}`)
+  const header = page.locator('[data-frame="header"]')
+  const sidebar = page.getByRole('complementary', { name: 'Sidebar' })
+  const nav = sidebar.getByRole('navigation', { name: 'nav' })
+
+  await test.step('the header and the sidebar, its Navigation with an icon, a group and an outside link', async () => {
+    await expect(header).toContainText(slug)
+    await expect(header).toContainText('In the header')
+    await expect(page.getByText('Welcome home')).toBeVisible()
+    const home = nav.getByRole('link', { name: 'Home' })
+    await expect(home).toHaveAttribute('aria-current', 'page')
+    await expect(home.locator('svg')).toBeVisible()
+    const docs = nav.getByRole('link', { name: 'Docs' })
+    await expect(docs).toHaveAttribute('href', 'https://example.com/docs')
+    await expect(docs).toHaveAttribute('target', '_blank')
+    await nav.getByRole('button', { name: 'Sales' }).click()
+    await expect(nav.getByRole('button', { name: 'Sales' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  await test.step('a page link opens that page from its address in a new tab', async () => {
+    const orders = nav.getByRole('link', { name: 'Orders' })
+    await expect(orders).toHaveAttribute('href', /\/orders\?status=open/)
+    const [tab] = await Promise.all([
+      context.waitForEvent('page'),
+      orders.click({ modifiers: ['ControlOrMeta'] }),
+    ])
+    await expect(tab).toHaveURL(new RegExp(`/apps/${slug}/orders\\?status=open`))
+    await expect(tab.getByText('Orders: open')).toBeVisible()
+    await expect(tab.getByRole('complementary', { name: 'Sidebar' })).toBeVisible()
+    await tab.close()
+    // The first tab stayed where it was.
+    await expect(page.getByText('Welcome home')).toBeVisible()
+  })
+  expect(errors).toEqual([])
+})
+
+test('M24 done-when (5): a release compared with the draft: a moved component, the SQL as a line diff', async ({
+  page,
+}) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await signIn(page)
+  const slug = `m24-compare-${Date.now()}`
+  const definition = (sql: string) => ({
+    schemaVersion: 1,
+    components: [
+      { name: 'title', type: 'text', props: { value: 'Orders' } },
+      { name: 'list', type: 'table', props: { data: '{{ orders.data }}' } },
+    ],
+    queries: [q('orders', sql, 'manual')],
+    transformers: [],
+    variables: [],
+    layout: { title: { x: 0, y: 0, w: 4, h: 2 }, list: { x: 0, y: 2, w: 12, h: 12 } },
+  })
+  const appId = await newApp(page, slug, definition('select 1 as id\nwhere true\norder by id'))
+  await publish(page, appId, slug)
+  // The query's middle line changed in the draft.
+  await trpcMutate(page, 'apps.saveDraft', {
+    id: appId,
+    revision: 2,
+    definition: definition('select 1 as id\nwhere 1 = 1\norder by id'),
+  })
+
+  await test.step('a component moved in the editor', async () => {
+    await page.goto(`/apps/${slug}/edit`)
+    await page.getByTestId('frame-title').click()
+    await page.keyboard.press('ArrowRight')
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+    await expect
+      .poll(async () => {
+        const got = await trpcQuery<{ draftDefinition: Def }>(page, 'apps.get', { slug })
+        return got.draftDefinition.layout.title!.x
+      })
+      .toBe(1)
+  })
+
+  await test.step('Compare: the release against the draft shows both', async () => {
+    await page.getByRole('button', { name: 'Releases' }).first().click()
+    await page
+      .getByTestId('releases')
+      .getByRole('listitem')
+      .filter({ hasText: 'v1.0.0' })
+      .getByRole('button', { name: 'Compare' })
+      .click()
+    const dialog = page.getByRole('dialog', { name: 'Compare' })
+    await expect(dialog.getByLabel('To')).toHaveValue('draft')
+    const compare = dialog.getByTestId('compare')
+    await expect(compare).toContainText('2 changed')
+    await expect(compare.getByRole('region', { name: 'Layout' })).toContainText('title')
+    const lines = compare.getByRole('region', { name: 'Queries' }).getByTestId('file-diff')
+    await expect(lines).toContainText('−where true')
+    await expect(lines).toContainText('+where 1 = 1')
+    await expect(lines).not.toContainText('−select 1 as id')
+  })
+  expect(errors).toEqual([])
+})
+
+test('M24 done-when (6): a time axis, a page rename following utils.openPage, a folder delete asking', async ({
+  page,
+}) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await signIn(page)
+  const stamp = Date.now()
+  const slug = `m24-polish-${stamp}`
+  // A month of daily rows with a gap from the 11th to the 19th.
+  const days = Array.from({ length: 31 }, (_, i) => i + 1)
+    .filter((d) => d <= 10 || d >= 20)
+    .map((d) => ({ day: `2026-03-${String(d).padStart(2, '0')}`, orders: d % 7 }))
+  const appId = await newApp(page, slug, {
+    schemaVersion: 1,
+    pages: [{ name: 'orders' }, { name: 'start' }],
+    components: [
+      {
+        name: 'trend',
+        type: 'chart',
+        page: 'orders',
+        props: { title: 'Orders a day', chartType: 'line', data: days, xKey: 'day', series: ['orders'] },
+      },
+      {
+        name: 'go',
+        type: 'button',
+        page: 'start',
+        props: { text: 'To orders' },
+        events: [
+          { id: 'g', event: 'click', action: { type: 'runScript', code: "utils.openPage('orders')" } },
+        ],
+      },
+    ],
+    queries: [],
+    transformers: [],
+    variables: [],
+    layout: { trend: { x: 0, y: 0, w: 12, h: 18 }, go: { x: 0, y: 0, w: 3, h: 2 } },
+  })
+
+  await test.step('a month of daily rows with a gap draws a time axis', async () => {
+    await publish(page, appId, slug)
+    await page.goto(`/apps/${slug}`)
+    const chart = page.locator('[data-component="trend"]')
+    await expect(chart.locator('canvas')).toBeVisible()
+    await expect(chart.locator('[data-x-axis]')).toHaveAttribute('data-x-axis', 'time')
+    await expect(chart.locator('[data-x-axis]')).toHaveAttribute('data-time-unit', 'week')
+  })
+
+  await test.step('renaming the page rewrites utils.openPage', async () => {
+    await page.goto(`/apps/${slug}/edit`)
+    const pages = page.getByRole('region', { name: 'Pages' })
+    await pages.getByRole('button', { name: 'orders' }).click()
+    await pages.getByLabel('Page name').fill('sales')
+    await pages.getByLabel('Page name').press('Enter')
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+    await expect
+      .poll(async () => {
+        const got = await trpcQuery<{
+          draftDefinition: { components: { name: string; events?: { action: { code?: string } }[] }[] }
+        }>(page, 'apps.get', { slug })
+        return got.draftDefinition.components.find((c) => c.name === 'go')?.events?.[0]?.action.code
+      })
+      .toBe("utils.openPage('sales')")
+  })
+
+  await test.step('deleting a folder asks in the dialog', async () => {
+    const name = `M24 folder ${stamp}`
+    await trpcMutate(page, 'folders.create', { name, type: 'app' })
+    await page.goto('/apps')
+    const row = page.getByRole('listitem', { name: `Subfolder ${name}` })
+    await row.getByTitle(`Delete folder ${name}`).click()
+    const asked = page.getByRole('dialog', { name: 'Are you sure?' })
+    await expect(asked).toContainText(`Delete folder "${name}"? Its apps move to the top level.`)
+    // Cancel keeps it; confirming deletes it.
+    await asked.getByTestId('confirm-cancel').click()
+    await expect(row).toBeVisible()
+    await row.getByTitle(`Delete folder ${name}`).click()
+    await page.getByRole('dialog', { name: 'Are you sure?' }).getByTestId('confirm-ok').click()
+    await expect(row).toHaveCount(0)
   })
   expect(errors).toEqual([])
 })

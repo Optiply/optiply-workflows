@@ -288,7 +288,12 @@ export default function ChartCanvas({
   )
 
   return (
-    <div className="relative h-full w-full">
+    // The x axis's kind and tick unit, for tests: what's drawn on the canvas can't be read.
+    <div
+      className="relative h-full w-full"
+      data-x-axis={model.time ? 'time' : 'category'}
+      data-time-unit={model.time?.unit}
+    >
       <canvas ref={canvasRef} role="img" aria-label={label} />
     </div>
   )
