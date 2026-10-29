@@ -19,6 +19,7 @@
     "@ow/app-definition": "workspace:*",
     "@ow/app-runtime": "workspace:*",
     "@ow/collab": "workspace:*",
+    "@ow/component-sdk": "workspace:*",
     "@ow/connectors": "workspace:*",
     "@ow/definition": "workspace:*",
     "@ow/sandbox": "workspace:*",
