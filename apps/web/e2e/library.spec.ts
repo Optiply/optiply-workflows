@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
  * parameter edited, run with the test value, published twice and rolled back.
  */
 test('create, run, publish and roll back a library query', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const name = `Plus one ${Date.now()}`
 
@@ -139,7 +139,7 @@ test('use a library query in an app', async ({ page }) => {
 
 /** In Git (M14 step 7d): a library query protected from its editor, edited and run on a branch, committed. */
 test('protect a library query and edit it on a branch', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const repoUrl = process.env.E2E_GIT_REPO_URL!
   const repoDir = process.env.E2E_GIT_REPO_DIR ?? new URL(repoUrl).pathname

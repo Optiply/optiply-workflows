@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-router'
 import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-react-query'
 import { z } from 'zod'
+import { ConfirmHost } from './components/confirm'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
@@ -37,7 +38,17 @@ export interface RouterContext {
   trpc: TRPCOptionsProxy<AppRouter>
 }
 
-const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Outlet })
+/** Every page: what it shows, and the confirmation dialog anything on it may ask (M24). */
+function Root() {
+  return (
+    <>
+      <Outlet />
+      <ConfirmHost />
+    </>
+  )
+}
+
+const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Root })
 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,

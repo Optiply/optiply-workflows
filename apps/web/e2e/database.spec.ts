@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate } from './helpers'
+import { acceptConfirms, signIn, trpcMutate } from './helpers'
 
 /** A tRPC query as the signed-in user, returning its data. */
 async function trpcQuery<T>(page: Page, path: string, input?: unknown): Promise<T> {
@@ -144,7 +144,7 @@ test('browse and edit a managed table in the grid', async ({ page }) => {
   await test.step('selected rows are deleted', async () => {
     const row = page.getByTestId('grid-row').filter({ hasText: 'banana' })
     await row.getByRole('checkbox', { name: 'Select row' }).check()
-    page.once('dialog', (d) => void d.accept())
+    await acceptConfirms(page)
     await page.getByRole('button', { name: 'Delete 1' }).click()
     await expect(page.getByTestId('row-count')).toHaveText('3 rows')
     await expect(page.getByTestId('grid-row').filter({ hasText: 'banana' })).toHaveCount(0)
@@ -236,7 +236,7 @@ test('make and change a table, and import CSV files into it', async ({ page }) =
     await expect(page.getByTestId('schema-column-score')).toContainText('Decimal')
     await expect(page.getByTestId('schema-column-score')).toContainText('default 0')
 
-    page.once('dialog', (d) => void d.accept())
+    await acceptConfirms(page)
     await schema().getByRole('button', { name: 'Delete joined' }).click()
     await expect(page.getByTestId('schema-column-joined')).toHaveCount(0)
 
@@ -305,7 +305,7 @@ test('make and change a table, and import CSV files into it', async ({ page }) =
       .getByRole('link', { name: `${name}_v2` })
       .click()
     await page.getByRole('button', { name: 'Table', exact: true }).click()
-    page.once('dialog', (d) => void d.accept())
+    await acceptConfirms(page)
     await schema().getByRole('button', { name: 'Delete table' }).click()
     await expect(
       page.getByRole('navigation', { name: 'Tables' }).getByRole('link', { name: `${name}_v2` }),

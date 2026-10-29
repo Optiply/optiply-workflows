@@ -4,6 +4,7 @@ import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { GitBranch, GitCompare, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
 import { CompareReleasesDialog } from '@/components/compare-releases'
+import { confirmDialog } from '@/components/confirm'
 import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
@@ -435,8 +436,9 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
                       ? `Emergency rollback: it stays until the ${app.kind}’s next change in Git (or Deploy now)`
                       : 'Make this release live again'
                   }
-                  onClick={() => {
-                    if (confirm(api.liveHelp(r.version, live?.version ?? null))) setLive.mutate(r.id)
+                  onClick={async () => {
+                    if (await confirmDialog(api.liveHelp(r.version, live?.version ?? null)))
+                      setLive.mutate(r.id)
                   }}
                 >
                   <Undo2 className="size-3.5" /> Make live
@@ -488,8 +490,8 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               variant="danger"
               className="mr-auto"
               loading={remove.isPending}
-              onClick={() => {
-                if (confirm(api.deleteHelp)) remove.mutate()
+              onClick={async () => {
+                if (await confirmDialog(api.deleteHelp)) remove.mutate()
               }}
             >
               <Trash2 className="size-3.5" /> Delete {api.noun}
@@ -550,7 +552,9 @@ function GitProtection({ app }: { app: EditorApp }) {
             size="sm"
             variant="danger"
             loading={unprotect.isPending}
-            onClick={() => confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: app.kind, id: app.id })}
+            onClick={async () =>
+              (await confirmDialog(UNPROTECT_CONFIRM)) && unprotect.mutate({ kind: app.kind, id: app.id })
+            }
           >
             Unprotect
           </Button>

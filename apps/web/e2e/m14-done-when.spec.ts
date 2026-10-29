@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN, E2E_MEMBER_EMAIL } from './global-setup'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M14's done-when (architecture §2.7):
@@ -88,7 +88,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
   test.setTimeout(240_000)
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const stamp = Date.now()
   const librarySlug = `customer_email_${stamp}`
@@ -148,7 +148,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
     await grant('app', latestApp.id, 'edit')
     const context = await browser.newContext()
     const viewer = await context.newPage()
-    viewer.on('dialog', (d) => void d.accept())
+    await acceptConfirms(viewer)
     await signIn(viewer, E2E_MEMBER_EMAIL)
     await viewer.goto(`/apps/${pinnedSlug}`)
     await expect(viewer.locator('[data-component="email"]')).toHaveText('Email: ada@example.com')

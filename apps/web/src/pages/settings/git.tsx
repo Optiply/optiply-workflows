@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, GitBranch, GitPullRequest, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { CommitLink, GIT_ALL_ROOTS, PullRequestLink } from '@/components/git'
 import {
   Badge,
@@ -204,10 +205,11 @@ function RepoForm({ settings }: { settings: Settings }) {
               <Button
                 variant="danger"
                 loading={clear.isPending}
-                onClick={() => {
+                onClick={async () => {
                   if (
-                    confirm(
+                    await confirmDialog(
                       'Disconnect the repo? Deploys stop. Protected workflows and apps stay protected until unprotected.',
+                      { danger: true, confirm: 'Disconnect' },
                     )
                   ) {
                     clear.mutate()

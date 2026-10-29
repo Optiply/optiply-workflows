@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
 import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
@@ -158,7 +159,7 @@ export function DraftLoader({
     try {
       await ensureSaved()
     } catch (err) {
-      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+      if (!(await confirmDialog(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`))) return
     }
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.

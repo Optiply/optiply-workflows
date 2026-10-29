@@ -11,6 +11,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { folderPath, useFolders } from '@/components/folders'
 import { CommitLink, GIT_KIND_LABELS, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
 import { type ConflictGroup, MergeDialog } from '@/components/merge-dialog'
@@ -337,8 +338,13 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
         variant="ghost"
         title="Close this draft (what's committed stays on the branch)"
         loading={discard.isPending}
-        onClick={() => {
-          if (confirm(`Close the draft on ${branch}? Changes that aren't committed are lost.`)) {
+        onClick={async () => {
+          if (
+            await confirmDialog(`Close the draft on ${branch}? Changes that aren't committed are lost.`, {
+              danger: true,
+              confirm: 'Close',
+            })
+          ) {
             discard.mutate({ id: draft.id })
           }
         }}
@@ -369,8 +375,13 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
             merging.from === 'branch'
               ? {
                   label: 'Discard mine, take the branch’s',
-                  onClick: () => {
-                    if (confirm("Replace your changes that aren't committed with the branch's?")) {
+                  onClick: async () => {
+                    if (
+                      await confirmDialog("Replace your changes that aren't committed with the branch's?", {
+                        danger: true,
+                        confirm: 'Replace',
+                      })
+                    ) {
                       update.mutate({ id: draft.id, discardChanges: true })
                     }
                   },

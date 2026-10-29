@@ -115,11 +115,12 @@ test('build a multipage app in the editor', async ({ page }) => {
   // Deleting a page takes what's on it.
   await page.goto(`/apps/${slug}/edit`)
   await pages.getByRole('button', { name: /Details/ }).click()
-  page.once('dialog', (d) => {
-    expect(d.message()).toBe('Delete page detail and the 2 components, queries and transformers on it?')
-    void d.accept()
-  })
   await pages.getByRole('button', { name: 'Delete the page' }).click()
+  const asked = page.getByRole('dialog', { name: 'Are you sure?' })
+  await expect(asked).toContainText(
+    'Delete page detail and the 2 components, queries and transformers on it?',
+  )
+  await asked.getByTestId('confirm-ok').click()
   await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveCount(0)
   await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10_000 })

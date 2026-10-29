@@ -118,17 +118,14 @@ test('copy, paste and duplicate components and code between apps', async ({ page
       transformers: [],
       variables: [],
     })
-    let asked = ''
-    page.once('dialog', (dialog) => {
-      asked = dialog.message()
-      void dialog.dismiss()
-    })
     await page.evaluate((t) => {
       const data = new DataTransfer()
       data.setData('text/plain', t)
       document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }))
     }, crafted)
-    await expect.poll(() => asked).toContain('sneaky would run straight away')
+    const asked = page.getByRole('dialog', { name: 'Paste from elsewhere?' })
+    await expect(asked).toContainText('sneaky would run straight away')
+    await asked.getByTestId('confirm-cancel').click()
     await page.waitForTimeout(1000)
     expect((await draftOf(page, target)).queries.map((q) => q.name)).toEqual(['greet'])
   })

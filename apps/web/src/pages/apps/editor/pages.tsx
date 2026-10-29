@@ -11,6 +11,7 @@ import {
 } from '@ow/app-definition'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { EditorField } from './fields'
@@ -139,11 +140,17 @@ function PageSettings({ page }: { page: string }) {
     update((def) => renamePage(def, page, name))
     setUrl(name)
   }
-  const remove = () => {
+  const remove = async () => {
     const goes = onPage(definition, page).size
     const what =
       goes === 1 ? '1 component, query or transformer' : `${goes} components, queries and transformers`
-    if (!confirm(`Delete page ${page}${goes ? ` and the ${what} on it` : ''}?`)) return
+    if (
+      !(await confirmDialog(`Delete page ${page}${goes ? ` and the ${what} on it` : ''}?`, {
+        danger: true,
+        confirm: 'Delete',
+      }))
+    )
+      return
     update((def) => removePage(def, page))
   }
   if (index === -1) return null

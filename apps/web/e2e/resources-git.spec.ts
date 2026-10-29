@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { e2eRepo, mergeOpenPulls, readRepoFile, useE2eRepo } from './git-helpers'
-import { signIn, trpcMutate } from './helpers'
+import { acceptConfirms, signIn, trpcMutate } from './helpers'
 
 /**
  * M22 in the browser: a resource protected from its page, its settings read-only on main apart from secrets, a
@@ -74,7 +74,7 @@ test('protect a resource and save its settings to a branch', async ({ page }) =>
   await page.getByRole('button', { name: 'Cancel' }).click()
 
   // Unprotected: saved here again.
-  page.once('dialog', (dialog) => dialog.accept())
+  await acceptConfirms(page)
   await page.getByRole('button', { name: 'Unprotect' }).click()
   await expect(page.getByText('In Git', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible()

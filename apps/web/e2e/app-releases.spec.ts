@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * An app's life cycle through the UI: created from the Apps page, published as v1.0.0, changed and published as
  * v1.1.0, seen by its viewer, rolled back to v1.0.0, shared with a group, and renamed.
  */
 test('create, publish, roll back and share an app', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const name = `Release check ${Date.now()}`
   const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: `Viewers ${Date.now()}` })

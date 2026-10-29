@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, X } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Avatar, Badge, Button, Card, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AdminOnly } from './layout'
@@ -76,8 +77,9 @@ function GroupDetail() {
             variant="danger"
             size="sm"
             loading={remove.isPending}
-            onClick={() => {
-              if (confirm(`Delete group "${group.name}"?`)) remove.mutate({ id: group.id })
+            onClick={async () => {
+              if (await confirmDialog(`Delete group "${group.name}"?`, { danger: true, confirm: 'Delete' }))
+                remove.mutate({ id: group.id })
             }}
           >
             Delete group

@@ -1,5 +1,5 @@
 import { type APIRequestContext, expect, type Page, test } from '@playwright/test'
-import { block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, block, field, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M4 end to end: turn on a workflow's webhook in the editor, publish v1.0.0, create an API key in Settings and call
@@ -7,7 +7,7 @@ import { block, field, signIn, trpcMutate, typeInto } from './helpers'
  * answer with it; roll back to v1.0.0 from the Releases tab and see the old answer again.
  */
 test('publish, call the webhook with an API key, and roll back', async ({ page, request }) => {
-  page.on('dialog', (dialog) => dialog.accept())
+  await acceptConfirms(page)
   const suffix = Date.now().toString(36)
   let workflowId = ''
   let apiKey = ''

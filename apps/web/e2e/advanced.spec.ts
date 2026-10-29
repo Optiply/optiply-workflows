@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, block, field, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M5 end to end: a workflow whose loop calls a function that doesn't exist yet. Create the function in the
@@ -7,7 +7,7 @@ import { block, field, signIn, trpcMutate, typeInto } from './helpers'
  * the run pause at a Wait, and cancel it from the run panel.
  */
 test('functions, loops, a wait and cancel in the editor', async ({ page }) => {
-  page.on('dialog', (dialog) => dialog.accept())
+  await acceptConfirms(page)
   const suffix = Date.now().toString(36)
   let workflowId = ''
 

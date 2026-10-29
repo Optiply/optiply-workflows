@@ -7,6 +7,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Button, ErrorNote, Field, Input, Spinner, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -241,8 +242,9 @@ function GitProtection({ workflow }: { workflow: Workflow }) {
             size="sm"
             variant="danger"
             loading={unprotect.isPending}
-            onClick={() =>
-              confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'workflow', id: workflow.id })
+            onClick={async () =>
+              (await confirmDialog(UNPROTECT_CONFIRM)) &&
+              unprotect.mutate({ kind: 'workflow', id: workflow.id })
             }
           >
             Unprotect

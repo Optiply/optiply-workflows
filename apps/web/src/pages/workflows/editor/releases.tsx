@@ -4,6 +4,7 @@ import { getRouteApi } from '@tanstack/react-router'
 import { Clock, GitCompare, Rocket, Undo2, Webhook } from 'lucide-react'
 import { useState } from 'react'
 import { CompareReleasesDialog } from '@/components/compare-releases'
+import { confirmDialog } from '@/components/confirm'
 import { ReleaseAuthor, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -344,13 +345,13 @@ function ReleaseRow({
                 ? 'Emergency rollback: it stays until the workflow’s next change in Git (or Deploy now)'
                 : 'Make this release live again'
             }
-            onClick={() => {
+            onClick={async () => {
               const current = workflow.liveRelease ? ` instead of v${workflow.liveRelease.version}` : ''
               const emergency = workflow.gitProtected
                 ? ' This workflow is protected: this stays until its next change in Git (or Deploy now).'
                 : ''
               if (
-                confirm(
+                await confirmDialog(
                   `Make v${release.version} live? Its webhook and schedules will run${current}.${emergency}`,
                 )
               ) {

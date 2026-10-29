@@ -14,6 +14,7 @@ import {
   Plus,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
 import { Avatar, Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
@@ -113,7 +114,7 @@ export function WorkflowEditorPage() {
     try {
       await ensureSaved()
     } catch (err) {
-      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+      if (!(await confirmDialog(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`))) return
     }
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { e2eRepo, readRepoFile, useE2eRepo } from './git-helpers'
-import { signIn, trpcMutate } from './helpers'
+import { acceptConfirms, signIn, trpcMutate } from './helpers'
 
 /**
  * M22: a config var protected from Settings → Config vars; a value set here only (local, kept by deploys), one saved
@@ -78,7 +78,7 @@ test('protect a config var, set a local value and save one to a branch', async (
   await row.getByRole('button', { name: 'Clear', exact: true }).click()
   await expect(row.getByText('local', { exact: true })).toHaveCount(0)
 
-  page.once('dialog', (dialog) => dialog.accept())
+  await acceptConfirms(page)
   await row.getByTitle(`Unprotect ${name}`).click()
   await expect(row.getByText('In Git', { exact: true })).toHaveCount(0)
   expect((await listed()).gitProtected).toBe(false)

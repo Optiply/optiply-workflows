@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, GitBranch, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { SaveToBranchDialog } from '@/components/settings-git'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
@@ -240,8 +241,13 @@ export function SettingsPanel({
                 variant="danger"
                 className="ml-auto"
                 loading={remove.isPending}
-                onClick={() => {
-                  if (confirm('Remove this environment’s settings and credentials?')) {
+                onClick={async () => {
+                  if (
+                    await confirmDialog('Remove this environment’s settings and credentials?', {
+                      danger: true,
+                      confirm: 'Remove',
+                    })
+                  ) {
                     remove.mutate({ resourceId: resource.id, environmentId })
                   }
                 }}

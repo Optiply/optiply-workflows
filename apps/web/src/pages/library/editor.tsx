@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react'
 import CodeField, { type FieldProblem } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
 import { CompareReleasesDialog } from '@/components/compare-releases'
+import { confirmDialog } from '@/components/confirm'
 import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { GitBar } from '@/components/git-bar'
@@ -224,7 +225,8 @@ function Editor({
             try {
               await ensureLibrarySaved()
             } catch (err) {
-              if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+              if (!(await confirmDialog(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)))
+                return
             }
             git.onSwitch(next)
           }}
@@ -739,8 +741,9 @@ function GitProtectionButton({ detail }: { detail: Detail }) {
           variant="ghost"
           loading={unprotect.isPending}
           title="Edit it here again; its files stay in the repo"
-          onClick={() =>
-            confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: 'library_query', id: detail.id })
+          onClick={async () =>
+            (await confirmDialog(UNPROTECT_CONFIRM)) &&
+            unprotect.mutate({ kind: 'library_query', id: detail.id })
           }
         >
           Unprotect
@@ -944,9 +947,9 @@ function ReleasesDialog({
                   size="sm"
                   variant="ghost"
                   loading={setLive.isPending && setLive.variables?.releaseId === r.id}
-                  onClick={() => {
+                  onClick={async () => {
                     if (
-                      confirm(
+                      await confirmDialog(
                         `Make v${r.version} live? Apps following the latest release run it${live ? ` instead of v${live.version}` : ''}.`,
                       )
                     ) {

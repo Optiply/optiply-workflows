@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Button, Checkbox, Dialog, ErrorNote, Field, Input, Select } from '@/components/ui'
 import { errorMessage, useTRPC } from '@/lib/trpc'
 import { type Column, type TableInfo, TYPE_LABELS } from './cells'
@@ -436,8 +437,13 @@ export function SchemaDialog({
                       size="icon"
                       variant="ghost"
                       title={`Delete ${c.name}`}
-                      onClick={() => {
-                        if (confirm(`Delete the column ${c.name} and every value in it?`)) {
+                      onClick={async () => {
+                        if (
+                          await confirmDialog(`Delete the column ${c.name} and every value in it?`, {
+                            danger: true,
+                            confirm: 'Delete',
+                          })
+                        ) {
                           dropColumn.mutate({ environmentId, table: table.name, column: c.name })
                         }
                       }}
@@ -457,8 +463,14 @@ export function SchemaDialog({
           <Button
             variant="danger"
             loading={drop.isPending}
-            onClick={() => {
-              if (!confirm(`Delete the table ${table.name} and all its rows?`)) return
+            onClick={async () => {
+              if (
+                !(await confirmDialog(`Delete the table ${table.name} and all its rows?`, {
+                  danger: true,
+                  confirm: 'Delete',
+                }))
+              )
+                return
               drop.mutate({ environmentId, table: table.name }, { onSuccess: onDropped })
             }}
           >

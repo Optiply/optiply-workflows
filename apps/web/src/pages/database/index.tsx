@@ -14,6 +14,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Button, buttonVariants, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
 import { trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -332,9 +333,14 @@ function TableView({
             size="sm"
             variant="danger"
             loading={remove.isPending}
-            onClick={() => {
+            onClick={async () => {
               const n = selected.size
-              if (!confirm(`Delete ${n} row${n === 1 ? '' : 's'} from ${table.name}? This can't be undone.`))
+              if (
+                !(await confirmDialog(
+                  `Delete ${n} row${n === 1 ? '' : 's'} from ${table.name}? This can't be undone.`,
+                  { danger: true, confirm: 'Delete' },
+                ))
+              )
                 return
               remove.mutate([...selected])
             }}

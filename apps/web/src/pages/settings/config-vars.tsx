@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { GitBranch, GitBranchMinus, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import {
   ProtectDialog,
   ProtectedBadge,
@@ -99,8 +100,14 @@ export function ConfigVarsPage() {
                           size="icon"
                           variant="ghost"
                           title="Delete variable"
-                          onClick={() => {
-                            if (confirm(`Delete ${v.name} in every environment?`)) remove.mutate({ id: v.id })
+                          onClick={async () => {
+                            if (
+                              await confirmDialog(`Delete ${v.name} in every environment?`, {
+                                danger: true,
+                                confirm: 'Delete',
+                              })
+                            )
+                              remove.mutate({ id: v.id })
                           }}
                         >
                           <Trash2 className="size-4" />
@@ -262,8 +269,9 @@ function GitActions({ variable }: { variable: ConfigVar }) {
           variant="ghost"
           title={`Unprotect ${variable.name}`}
           loading={unprotect.isPending}
-          onClick={() =>
-            confirm(UNPROTECT_SETTINGS_CONFIRM) && unprotect.mutate({ kind: 'config_var', id: variable.id })
+          onClick={async () =>
+            (await confirmDialog(UNPROTECT_SETTINGS_CONFIRM)) &&
+            unprotect.mutate({ kind: 'config_var', id: variable.id })
           }
         >
           <GitBranchMinus className="size-4" />

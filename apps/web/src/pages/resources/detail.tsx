@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, GitBranch } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { folderPath, useFolders } from '@/components/folders'
 import {
   ProtectDialog,
@@ -257,8 +258,9 @@ function GitActions({ resource }: { resource: ResourceDetail }) {
         <Button
           size="sm"
           loading={unprotect.isPending}
-          onClick={() =>
-            confirm(UNPROTECT_SETTINGS_CONFIRM) && unprotect.mutate({ kind: 'resource', id: resource.id })
+          onClick={async () =>
+            (await confirmDialog(UNPROTECT_SETTINGS_CONFIRM)) &&
+            unprotect.mutate({ kind: 'resource', id: resource.id })
           }
         >
           Unprotect
@@ -292,9 +294,12 @@ function DeleteResource({ resource }: { resource: ResourceDetail }) {
         variant="danger"
         size="sm"
         loading={remove.isPending}
-        onClick={() => {
+        onClick={async () => {
           if (
-            confirm(`Delete "${resource.name}" and its settings in every environment? This can't be undone.`)
+            await confirmDialog(
+              `Delete "${resource.name}" and its settings in every environment? This can't be undone.`,
+              { danger: true, confirm: 'Delete' },
+            )
           ) {
             remove.mutate({ id: resource.id })
           }

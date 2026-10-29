@@ -15,6 +15,7 @@ import {
   slotOf,
 } from '@ow/app-definition'
 import { canonicalJson } from '@ow/definition'
+import { confirmDialog } from '@/components/confirm'
 import { copiedHere, readClip, rememberCopy } from '@/lib/clipboard'
 import { shownViews } from '../grid-context'
 import type { Tone } from '../notifications'
@@ -53,7 +54,14 @@ export function pasteText(text: string, notify: Notify): boolean {
     notify(read.error, 'error')
     return true
   }
-  if (!copiedHere(text) && !confirm(untrustedQuestion(read.clip))) return true
+  // Taken either way (the browser mustn't paste it elsewhere meanwhile); from elsewhere, pasted once confirmed.
+  if (!copiedHere(text)) {
+    const clip = read.clip
+    void confirmDialog(untrustedQuestion(clip), { title: 'Paste from elsewhere?', confirm: 'Paste' }).then(
+      (ok) => ok && paste(clip, notify),
+    )
+    return true
+  }
   paste(read.clip, notify)
   return true
 }

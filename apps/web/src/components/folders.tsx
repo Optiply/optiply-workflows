@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { Folder, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Button, Card, ErrorNote, Input, Select, sectionLabelClass } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AccessEditor } from '@/pages/resources/shared'
@@ -149,8 +150,13 @@ export function FolderSections<T extends { id: string; folderId: string | null }
                   size="icon"
                   variant="ghost"
                   title="Delete folder"
-                  onClick={() => {
-                    if (confirm(`Delete folder "${folder.name}"? Its ${PLURAL[type]} move out of it.`)) {
+                  onClick={async () => {
+                    if (
+                      await confirmDialog(
+                        `Delete folder "${folder.name}"? Its ${PLURAL[type]} move out of it.`,
+                        { danger: true, confirm: 'Delete' },
+                      )
+                    ) {
                       remove.mutate({ id: folder.id })
                     }
                   }}

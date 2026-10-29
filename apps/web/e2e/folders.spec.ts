@@ -58,14 +58,13 @@ test('folders on the workflows and apps lists', async ({ page }) => {
 
   // Deleting a folder leaves what it held at the top.
   await page.goto('/workflows')
-  page.once('dialog', (d) => {
-    expect(d.message()).toBe(`Delete folder "${flows}"? Its workflows move out of it.`)
-    void d.accept()
-  })
   await page
     .getByRole('region', { name: `Folder ${flows}` })
     .getByTitle('Delete folder')
     .click()
+  const asked = page.getByRole('dialog', { name: 'Are you sure?' })
+  await expect(asked).toContainText(`Delete folder "${flows}"? Its workflows move out of it.`)
+  await asked.getByTestId('confirm-ok').click()
   await expect(page.getByRole('region', { name: `Folder ${flows}` })).toHaveCount(0)
   await expect(page.getByTestId(`workflow-fold-${stamp}`)).toBeVisible()
 

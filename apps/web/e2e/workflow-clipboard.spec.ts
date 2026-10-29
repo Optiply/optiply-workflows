@@ -123,18 +123,15 @@ test('copy, paste and duplicate blocks between workflows', async ({ page }) => {
         data.setData('text/plain', t)
         document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }))
       }, text)
-    let asked = ''
-    page.once('dialog', (dialog) => {
-      asked = dialog.message()
-      void dialog.dismiss()
-    })
     await clickEmptyCanvas(page)
     await pasteEvent(crafted)
-    await expect.poll(() => asked).toContain("weren't copied in this browser")
+    const asked = page.getByRole('dialog', { name: 'Paste from elsewhere?' })
+    await expect(asked).toContainText("weren't copied in this browser")
+    await asked.getByTestId('confirm-cancel').click()
     await expect(block(page, 'planted')).toHaveCount(0)
 
-    page.once('dialog', (dialog) => void dialog.accept())
     await pasteEvent(crafted)
+    await asked.getByTestId('confirm-ok').click()
     await expect(block(page, 'planted')).toBeVisible()
     // Plain text isn't blocks: nothing happens, nothing is asked.
     await pasteEvent('select 1')

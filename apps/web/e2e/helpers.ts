@@ -123,3 +123,17 @@ export const fakePubSub = {
       acked: boolean
     }[],
 }
+
+/**
+ * Confirms each confirmation the platform asks (M24: its dialog took the place of the browser's `confirm()`, which
+ * `page.on('dialog', …)` used to accept): from now on in this page, and after it navigates.
+ */
+export async function acceptConfirms(page: Page): Promise<void> {
+  const watch = () => {
+    const click = () => document.querySelector<HTMLButtonElement>('[data-testid="confirm-ok"]')?.click()
+    // The document itself: in an init script its root element may not exist yet.
+    new MutationObserver(click).observe(document, { childList: true, subtree: true })
+  }
+  await page.addInitScript(watch)
+  await page.evaluate(watch)
+}

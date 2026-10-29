@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import {
   Badge,
   Button,
@@ -119,8 +120,13 @@ function ApiKeys() {
                     <Button
                       size="sm"
                       variant="danger"
-                      onClick={() => {
-                        if (confirm(`Revoke "${k.name}"? Calls with it stop working at once.`)) {
+                      onClick={async () => {
+                        if (
+                          await confirmDialog(`Revoke "${k.name}"? Calls with it stop working at once.`, {
+                            danger: true,
+                            confirm: 'Revoke',
+                          })
+                        ) {
                           revoke.mutate({ id: k.id })
                         }
                       }}
