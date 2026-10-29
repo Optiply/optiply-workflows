@@ -1,6 +1,7 @@
 import { checkLibraryReference, type LibraryInfo, type QueryValidator } from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
+import { type ComponentLibraryInfo, customComponentSpec, customInstanceInterface } from './component-library'
 import {
   constantFits,
   type JsonValue,
@@ -77,6 +78,10 @@ export type AppDiagnosticCode =
   | 'not_in_module'
   | 'unknown_module'
   | 'unpublished_module'
+  /** A custom component's library (M25) isn't known, or has no live release, or lacks the component. */
+  | 'unknown_component_library'
+  | 'unpublished_component_library'
+  | 'unknown_custom_component'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -107,6 +112,11 @@ export interface AppValidateOptions {
   resolveModule?: (slug: string) => ModuleInfo | undefined
   /** The slug of the module being checked (M21): an instance reaching it back is a cycle. */
   self?: string
+  /**
+   * The component libraries the app may use (M25), by slug; undefined for none with that slug. Without it, custom
+   * components take any props and events (their library isn't known).
+   */
+  resolveComponentLibrary?: (slug: string) => ComponentLibraryInfo | undefined
 }
 
 /** How deep modules nest below an app (M21): an app holds a module holding a module holding a module, no deeper. */
@@ -246,10 +256,13 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   checkNames(def, report)
   const resolveModule = options.resolveModule
+  const resolveLibrary = options.resolveComponentLibrary
   const specFor: SpecFor = (c) =>
     c.type === 'module' && resolveModule
       ? moduleComponentSpec(instanceInterface(c, resolveModule))
-      : defaultSpecFor(c)
+      : c.type === 'custom' && resolveLibrary
+        ? customComponentSpec(customInstanceInterface(c, resolveLibrary))
+        : defaultSpecFor(c)
   const graph = buildAppGraph(def, { specFor })
   const { entities } = graph
   const pages = entityPages(def)
@@ -260,6 +273,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     const at = { entity: c.name }
     const spec = specFor(c)
     if (c.type === 'module') checkModuleInstance(def, c, ['components', i], options, report)
+    if (c.type === 'custom') checkCustomInstance(c, ['components', i], options, report)
     if (!spec) {
       report({
         code: 'unknown_type',
@@ -598,14 +612,15 @@ function checkHandlers(
         const method = Object.hasOwn(target.spec.methods, a.method)
           ? target.spec.methods[a.method]
           : undefined
-        if (!method) {
+        // An instance whose release isn't known yet (a module or custom component) can't tell its methods.
+        if (!method && !target.spec.openProps) {
           report({
             code: 'unknown_method',
             message: `${target.spec.label} has no method "${a.method}"`,
             path: [...path, 'action', 'method'],
             ...at,
           })
-        } else if ((a.args?.length ?? 0) > method.params.length) {
+        } else if (method && (a.args?.length ?? 0) > method.params.length) {
           report({
             severity: 'warning',
             code: 'invalid_args',
@@ -821,6 +836,85 @@ function checkModuleInstance(
           ? `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep, and this module adds one`
           : `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep`,
         path: [...base, 'props', 'module'],
+        ...at,
+      })
+    }
+  }
+}
+
+/**
+ * A custom component (M25): it names a library, a release and a component by plain strings (no templates), and
+ * with `resolve`, ones that exist.
+ */
+function checkCustomInstance(
+  c: AppComponent,
+  base: (string | number)[],
+  { resolveComponentLibrary: resolve }: AppValidateOptions,
+  report: Report,
+) {
+  const at = { entity: c.name }
+  const slug = c.props?.library
+  const version = c.props?.version ?? 'latest'
+  const component = c.props?.component
+  const plain = (v: unknown): v is string => typeof v === 'string' && v !== '' && !v.includes('{{')
+  if (!plain(slug)) {
+    report({
+      code: 'unknown_component_library',
+      message: 'Pick a component library: its slug, not a {{ }} template',
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+    return
+  }
+  if (!plain(component)) {
+    report({
+      code: 'unknown_custom_component',
+      message: 'Pick a component: its name, not a {{ }} template',
+      path: [...base, 'props', 'component'],
+      ...at,
+    })
+    return
+  }
+  if (!resolve) return
+  const info = resolve(slug)
+  if (!info) {
+    report({
+      code: 'unknown_component_library',
+      message: `No component library has the slug "${slug}"`,
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+  } else if (info.noUse) {
+    report({
+      code: 'no_use_access',
+      message: `You need use access to component library "${slug}"`,
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+  } else if (version === 'latest' && info.liveVersion === null) {
+    report({
+      code: 'unpublished_component_library',
+      message: `Component library "${slug}" has no live release yet`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
+  } else if (
+    typeof version !== 'string' ||
+    (version !== 'latest' && !Object.hasOwn(info.versions, version))
+  ) {
+    report({
+      code: 'unknown_version',
+      message: `Component library "${slug}" has no release ${String(version)}`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
+  } else {
+    const release = version === 'latest' ? info.liveVersion! : version
+    if (!Object.hasOwn(info.versions[release] ?? {}, component)) {
+      report({
+        code: 'unknown_custom_component',
+        message: `Component library "${slug}" v${release} has no component "${component}"`,
+        path: [...base, 'props', 'component'],
         ...at,
       })
     }

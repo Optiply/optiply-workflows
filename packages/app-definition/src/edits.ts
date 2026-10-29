@@ -1,3 +1,4 @@
+import { customComponentSpec } from './component-library'
 import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
@@ -104,7 +105,12 @@ export function addComponent(
     slot?: string
   } = {},
 ): { definition: AppDefinition; name: string } {
-  const spec = type === 'module' ? moduleComponentSpec(null) : componentSpec(type)
+  const spec =
+    type === 'module'
+      ? moduleComponentSpec(null)
+      : type === 'custom'
+        ? customComponentSpec(null)
+        : componentSpec(type)
   if (!spec) throw new Error(`Unknown component type "${type}"`)
   const name = nextName(def, opts.base ?? type)
   const parent = spec.overlay ? undefined : opts.parent
@@ -782,6 +788,31 @@ export function addModuleInstance(
       components: added.definition.components.map((c) =>
         c.name === added.name ? { ...c, props: { module: slug } } : c,
       ),
+    },
+  }
+}
+
+/**
+ * Places a custom component (M25): `library`, `version` and `component` set, named after the component, sized by
+ * its declared default size when known.
+ */
+export function addCustomInstance(
+  def: AppDefinition,
+  ref: { library: string; version: string; component: string; defaultSize?: { w: number; h: number } },
+  opts: { parent?: string; position?: Partial<Position>; page?: string | null; slot?: string } = {},
+): { definition: AppDefinition; name: string } {
+  const base = ref.component.charAt(0).toLowerCase() + ref.component.slice(1).replace(/[^A-Za-z0-9_]/g, '_')
+  const added = addComponent(def, 'custom', {
+    ...opts,
+    base: base || 'custom',
+    position: { ...ref.defaultSize, ...opts.position },
+  })
+  const props = { library: ref.library, version: ref.version, component: ref.component }
+  return {
+    name: added.name,
+    definition: {
+      ...added.definition,
+      components: added.definition.components.map((c) => (c.name === added.name ? { ...c, props } : c)),
     },
   }
 }

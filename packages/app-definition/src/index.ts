@@ -1,4 +1,5 @@
 export * from './canonical'
+export * from './component-library'
 export * from './components'
 export * from './edits'
 export * from './evaluate'
