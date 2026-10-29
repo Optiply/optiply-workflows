@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { compileSql, TemplateError } from '@ow/expressions'
+import { compileSql, paramValue, TemplateError } from '@ow/expressions'
 import { Agent, fetch } from 'undici'
 import { z } from 'zod'
 import {
@@ -191,7 +191,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
   const plan = await resolveFragments(compileSql(query.sql, 'bigquery'), 'bigquery', ctx.evaluate)
   const queryParameters: unknown[] = []
   for (const [i, param] of plan.params.entries()) {
-    queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await ctx.evaluate(param.code)) })
+    queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await paramValue(param, ctx.evaluate)) })
   }
 
   const statementTimeout = AbortSignal.timeout(Math.min(ctx.timeoutMs, config.statementTimeoutMs))

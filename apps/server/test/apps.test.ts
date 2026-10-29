@@ -251,6 +251,28 @@ describe('apps: running queries', () => {
     await app.save(crudApp())
   })
 
+  it('filters by the table filters the browser sends, only on the columns in the stored query (M24)', async () => {
+    const where = " sql.where(table1.filters, ['name']) "
+    await app.save(
+      crudApp({
+        queries: [sqlQuery('filtered', `select name from customers where {{${where}}} order by id`)],
+      }),
+    )
+    const names = async (filters: unknown) => data(await run(admin, app.id, 'filtered', { [where]: filters }))
+    expect((await names([])).data).toHaveLength(2)
+    expect((await names([{ column: 'name', op: 'contains', value: 'ad' }])).data).toEqual([{ name: 'Ada' }])
+    for (const hostile of [
+      [{ column: 'owner', op: 'equals', value: 'x' }],
+      [{ column: 'name', op: 'or 1=1' }],
+    ]) {
+      expect(await names(hostile)).toMatchObject({
+        ok: false,
+        error: { code: 'expression', message: expect.stringContaining('sql.where') },
+      })
+    }
+    await app.save(crudApp())
+  })
+
   it('evaluates current_user on the server, whatever the browser sends', async () => {
     const who = data(await run(admin, app.id, 'whoami', { ' current_user.email ': 'ceo@optiply.nl' }))
     expect(who).toMatchObject({ ok: true, data: [{ email: 'admin@optiply.nl' }] })

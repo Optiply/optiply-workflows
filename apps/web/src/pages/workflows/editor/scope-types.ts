@@ -207,7 +207,7 @@ function docComment(text: string): string {
 
 /** The `sql` helpers, for workflows and apps alike. */
 export const SQL_HELPERS = `
-/** For SQL queries: a sort column and direction chosen at run time, from a list written in the query. */
+/** For SQL queries: a sort column and direction, and a table's filters, chosen at run time, from a list written in the query. */
 declare const sql: {
   /**
    * One of \`columns\` (or \`fallback\` when \`value\` is empty), quoted into the SQL as a column name:
@@ -217,6 +217,12 @@ declare const sql: {
   column(value: any, columns: string[], fallback?: string): string
   /** \`DESC\` for true or "desc", \`ASC\` for false, "asc" or nothing: \`{{ sql.direction(table1.sort?.desc) }}\`. */
   direction(value: any): 'ASC' | 'DESC'
+  /**
+   * A table's filters as a condition, each value bound: \`WHERE {{ sql.where(table1.filters, ['name', 'total']) }}\`
+   * (\`TRUE\` without filters). Must be the whole {{ }}, with the columns written as strings; the server checks each
+   * filter's column against them.
+   */
+  where(filters: any, columns: string[]): { column: string; op: string; value?: any; type?: string }[]
 }
 `
 

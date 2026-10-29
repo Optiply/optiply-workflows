@@ -294,3 +294,56 @@ describe('sql.column and sql.direction', () => {
     expect(err.code).toBe('invalid_query')
   })
 })
+
+describe('sql.where (M24)', () => {
+  const sql =
+    "select id from customers where {{ sql.where(t.filters, ['id', 'email', 'profile']) }} and id <= {{ n }} order by id"
+  const filtered = (filters: unknown) =>
+    runQuery(
+      pool,
+      postgresConnector,
+      pgResource(),
+      { sql },
+      { evaluate: codeEvaluator({ n: 25, "sql.where(t.filters, ['id', 'email', 'profile'])": filters }) },
+    )
+  const ids = async (filters: unknown) =>
+    ((await filtered(filters)).data as { id: number }[]).map((r) => r.id)
+
+  it('filters by the listed columns, each value bound, the values around it still bound', async () => {
+    expect(await ids([])).toHaveLength(25)
+    expect(await ids([{ column: 'email', op: 'contains', value: 'USER2' }])).toEqual([
+      2, 20, 21, 22, 23, 24, 25,
+    ])
+    expect(
+      await ids([
+        { column: 'id', op: 'between', value: ['3', 9], type: 'number' },
+        { column: 'id', op: 'notEquals', value: 5 },
+      ]),
+    ).toEqual([3, 4, 6, 7, 8, 9])
+    expect(await ids([{ column: 'id', op: 'gte', value: 24 }])).toEqual([24, 25])
+    expect(await ids([{ column: 'profile', op: 'notEmpty' }])).toEqual([])
+    expect(
+      await ids([
+        { column: 'profile', op: 'empty' },
+        { column: 'id', op: 'lt', value: 3 },
+      ]),
+    ).toEqual([1, 2])
+    // Wildcards and quotes in a value are just characters.
+    expect(await ids([{ column: 'email', op: 'contains', value: "%' or '1'='1" }])).toEqual([])
+    expect(await ids([{ column: 'email', op: 'contains', value: '_' }])).toEqual([])
+  })
+
+  it('refuses what the query doesn’t list, before the database sees a thing', async () => {
+    for (const hostile of [
+      [{ column: 'id; drop table customers', op: 'equals', value: 1 }],
+      [{ column: 'id', op: '= 1 or 1=1 --', value: 1 }],
+      [{ column: 'id', op: 'equals', value: { toString: 'x' } }],
+      'id = 1',
+    ]) {
+      const err = await failure(filtered(hostile))
+      expect(err.code).toBe('expression')
+      expect(err.message).toMatch(/sql.where/)
+    }
+    expect(await countRows()).toBe(30)
+  })
+})

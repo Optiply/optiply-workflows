@@ -1,4 +1,4 @@
-import { type CompiledSql, compileSql, TemplateError } from '@ow/expressions'
+import { type CompiledSql, compileSql, paramValue, TemplateError } from '@ow/expressions'
 import mysql from 'mysql2'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
@@ -120,7 +120,7 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   async execute(client, query, ctx): Promise<QueryResult> {
     const plan = await resolveFragments(compileSql(query.sql, 'mysql'), 'mysql', ctx.evaluate)
     const values: unknown[] = []
-    for (const param of plan.params) values.push(await ctx.evaluate(param.code))
+    for (const param of plan.params) values.push(await paramValue(param, ctx.evaluate))
     const { text, params } = expandParams(plan, values)
     return runStatement(client, text, params, {
       signal: ctx.signal,

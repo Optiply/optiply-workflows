@@ -1,4 +1,4 @@
-import { compileSql, TemplateError } from '@ow/expressions'
+import { compileSql, paramValue, TemplateError } from '@ow/expressions'
 import postgres from 'postgres'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
@@ -129,7 +129,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         const statement = await tx.unsafe(plan.text, [], opts).describe()
         const values: unknown[] = []
         for (const [i, param] of plan.params.entries()) {
-          values.push(toParam(await ctx.evaluate(param.code), statement.types[i]))
+          values.push(toParam(await paramValue(param, ctx.evaluate), statement.types[i]))
         }
 
         if (statement.columns.length === 0) {
