@@ -10,7 +10,7 @@ import {
 } from '@ow/app-definition'
 import { componentBundles, type Db } from '@ow/db'
 import { canonicalJson } from '@ow/definition'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { build, type Message, type Plugin } from 'esbuild'
 import { DEFAULT_INSTALL_LIMITS, type InstallLimits, installDependencies } from './install'
 
@@ -111,15 +111,16 @@ export async function buildComponentLibrary(
       problems: [{ file: null, line: null, column: null, message: 'Add a component to build' }],
     }
   }
-  const inputHash = buildInputHash(def, lock)
+  // Found again, its age starts over: retention removes bundles unused for a while, not one about to be released.
   const [cached] = await db
-    .select({
+    .update(componentBundles)
+    .set({ createdAt: sql`now()` })
+    .where(eq(componentBundles.inputHash, buildInputHash(def, lock)))
+    .returning({
       hash: componentBundles.hash,
       lock: componentBundles.lock,
       sizeBytes: componentBundles.sizeBytes,
     })
-    .from(componentBundles)
-    .where(eq(componentBundles.inputHash, inputHash))
   if (cached)
     return { ok: true, bundleHash: cached.hash, lock: cached.lock, sizeBytes: cached.sizeBytes, cached: true }
 
@@ -130,6 +131,9 @@ export async function buildComponentLibrary(
       const outcome = await buildIn(dir, config, def, lock)
       if (!outcome.ok) return outcome
       const bundleHash = bundleHashOf(outcome.js, outcome.css)
+      // Kept under the lock the build ended with: the draft's next build starts from that lock (the one it started
+      // from was older, or none). A bundle built before under other inputs now answers to these.
+      const inputHash = buildInputHash(def, outcome.lock)
       await db
         .insert(componentBundles)
         .values({
@@ -140,7 +144,11 @@ export async function buildComponentLibrary(
           lock: outcome.lock,
           sizeBytes: outcome.sizeBytes,
         })
-        .onConflictDoNothing()
+        .onConflictDoUpdate({ target: componentBundles.hash, set: { inputHash, createdAt: sql`now()` } })
+        .catch((err: unknown) => {
+          // Another process stored these inputs at the same moment: theirs serves.
+          if ((err as { code?: string }).code !== '23505') throw err
+        })
       return { ok: true, bundleHash, lock: outcome.lock, sizeBytes: outcome.sizeBytes, cached: false }
     } finally {
       await rm(dir, { recursive: true, force: true })

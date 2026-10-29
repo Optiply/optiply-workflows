@@ -439,6 +439,16 @@ function ReleaseControls({
 
 type Release = RouterOutputs['componentLibraries']['releases'][number]
 
+/**
+ * What another release going live changes besides the list: this library's live release (its origins, which the
+ * Allowed origins card compares with), and what app and module editors resolved of it.
+ */
+const releasedKeys = (trpc: ReturnType<typeof useTRPC>) => [
+  trpc.componentLibraries.get.queryKey(),
+  trpc.componentLibraries.resolve.pathKey(),
+  trpc.componentLibraries.instanceReleases.pathKey(),
+]
+
 /** Owners protect the library in Git, or unprotect it; nothing until Git sync is set up. */
 function GitProtectionButton({ detail }: { detail: Detail }) {
   const { data: git } = useGitInfo()
@@ -531,6 +541,7 @@ function PublishDialog({
               queryKey: trpc.componentLibraries.releases.queryKey({ componentLibraryId: detail.id }),
             }),
             queryClient.invalidateQueries({ queryKey: trpc.componentLibraries.list.queryKey() }),
+            ...releasedKeys(trpc).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
           ])
           onClose()
         },
@@ -616,6 +627,7 @@ function ReleasesDialog({
             queryKey: trpc.componentLibraries.releases.queryKey({ componentLibraryId: detail.id }),
           }),
           queryClient.invalidateQueries({ queryKey: trpc.componentLibraries.list.queryKey() }),
+          ...releasedKeys(trpc).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
         ]),
     }),
   )

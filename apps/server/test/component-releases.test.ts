@@ -187,6 +187,42 @@ describe('component library releases', () => {
     })
   })
 
+  it('warns about events with handlers and methods called, by apps on latest', async () => {
+    const lib = await library('impacted-members')
+    await lib.save((def) => {
+      def.components[0]!.methods = { highlight: { params: ['id'] }, reset: { params: [] } }
+    })
+    data(await lib.publish())
+    const app = data(await admin.mutate('apps.create', { slug: 'members-app', name: 'Members app' }))
+    data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [
+            {
+              name: 'hello1',
+              type: 'custom',
+              props: { library: 'impacted-members', component: 'Hello' },
+              events: [{ id: 'c1', event: 'click', action: { type: 'notify', message: 'hi' } }],
+            },
+          ],
+          queries: [{ name: 'q1', kind: 'js', code: 'return hello1.highlight(2)' }],
+        },
+      }),
+    )
+    await lib.save((def) => {
+      def.components[0]!.events = []
+      def.components[0]!.methods = {}
+    })
+    const impact = data(await admin.query('componentLibraries.publishImpact', { componentLibraryId: lib.id }))
+    expect([...impact.dropped].sort()).toEqual(['Hello.highlight()', 'Hello.reset()', 'Hello:click'])
+    expect(impact.uses).toEqual([
+      expect.objectContaining({ slug: 'members-app', passes: ['Hello.highlight()', 'Hello:click'] }),
+    ])
+  })
+
   it('makes a release from an uploaded build', async () => {
     const lib = await library('uploaded')
     const js = 'export const Badge = () => null'
@@ -259,6 +295,21 @@ describe('component libraries in Git', () => {
         }),
       ),
     ).toMatchObject({ code: 'PRECONDITION_FAILED' })
+  })
+
+  it('protects a library whose live release was uploaded with its draft (an upload has no files)', async () => {
+    const lib = await library('git-uploaded')
+    data(
+      await admin.mutate('componentLibraries.uploadBuild', {
+        componentLibraryId: lib.id,
+        js: 'export const Badge = () => null',
+        components: [{ name: 'Badge', label: 'Badge', entry: 'dist/badge.js' }],
+      }),
+    )
+    const protectedOne = data(await admin.mutate('git.protect', { kind: 'component_library', id: lib.id }))
+    const tip = (await other.fetchBranch(protectedOne.branch))!
+    const files = await other.readFiles(tip, ['component-libraries/'])
+    expect(Object.keys(files)).toContain('component-libraries/git-uploaded/src/Hello.tsx')
   })
 
   it('creates and builds a library merged to main, before an app placing it', async () => {

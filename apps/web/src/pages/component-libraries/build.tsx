@@ -1,13 +1,13 @@
 import type { ComponentLibraryDefinition, CustomComponentDefinition } from '@ow/app-definition'
-import { CONNECT_MESSAGE, type FromFrame, type ToFrame } from '@ow/component-sdk/protocol'
+import type { FromFrame } from '@ow/component-sdk/protocol'
 import { useMutation } from '@tanstack/react-query'
 import { Hammer, Play } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Card, ErrorNote, Field, Input, SectionLabel, Select } from '@/components/ui'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
-import { currentTheme, fetchBundle } from '../apps/components/custom'
-import { componentFrameDocument } from '../apps/runtime/component-frame'
+import { currentTheme } from '../apps/components/custom'
+import { type MountedFrame, mountComponentFrame } from '../apps/runtime/frame-mount'
 import { useComponentLibraryEditor } from './store'
 
 type Detail = RouterOutputs['componentLibraries']['get']
@@ -126,7 +126,8 @@ export function BuildCard({
             </Select>
           </Field>
           <Preview
-            key={`${built.bundleHash}:${shown.name}`}
+            // Origins or the component's declaration changed with the same bundle: a new frame all the same.
+            key={`${built.bundleHash}:${JSON.stringify(definition.allowedOrigins)}:${JSON.stringify(shown)}`}
             bundleHash={built.bundleHash}
             origins={definition.allowedOrigins}
             component={shown}
@@ -154,7 +155,7 @@ function Preview({
   component: CustomComponentDefinition
 }) {
   const container = useRef<HTMLDivElement>(null)
-  const port = useRef<MessagePort | null>(null)
+  const port = useRef<MountedFrame | null>(null)
   const [entries, setEntries] = useState<Entry[]>([])
   const [state, setState] = useState<Record<string, unknown>>(() =>
     Object.fromEntries(Object.entries(component.state).map(([n, s]) => [n, s.default])),
@@ -166,16 +167,9 @@ function Preview({
   const add = (text: string, tone: Entry['tone'] = 'info') =>
     setEntries((list) => [...list.slice(-49), { id: nextId.current++, text, tone }])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: one frame per bundle and component (the key)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one frame per bundle, origins and component (the key)
   useEffect(() => {
-    let loads = 0
-    const iframe = document.createElement('iframe')
-    iframe.setAttribute('sandbox', 'allow-scripts')
-    iframe.title = `Preview of ${component.name}`
-    iframe.className = 'size-full border-0'
-    iframe.srcdoc = componentFrameDocument(origins)
-    const onMessage = (event: MessageEvent<FromFrame>) => {
-      const m = event.data
+    const onMessage = (m: FromFrame) => {
       switch (m.type) {
         case 'ready':
           setReady(true)
@@ -203,44 +197,33 @@ function Preview({
         }
         case 'error':
         case 'log':
-          add(m.message, 'error')
+          add(String(m.message), 'error')
           return
       }
     }
-    iframe.addEventListener('load', () => {
-      if (++loads > 1) {
-        iframe.remove()
-        add('The component navigated its frame away, so it was stopped', 'error')
-        return
-      }
-      const channel = new MessageChannel()
-      port.current = channel.port1
-      channel.port1.onmessage = onMessage
-      iframe.contentWindow?.postMessage(CONNECT_MESSAGE, '*', [channel.port2])
-      fetchBundle(bundleHash).then(
-        ({ js, css }) =>
-          port.current?.postMessage({
-            type: 'init',
-            js,
-            css,
-            component: component.name,
-            props: Object.fromEntries(
-              Object.entries(component.props).map(([n, p]) => [
-                n,
-                p.testValue !== undefined ? p.testValue : p.default,
-              ]),
-            ),
-            state,
-            theme: currentTheme(),
-          } satisfies ToFrame),
-        (err: Error) => add(err.message, 'error'),
-      )
+    const frame = mountComponentFrame(container.current!, {
+      title: `Preview of ${component.name}`,
+      bundleHash,
+      origins,
+      init: () => ({
+        component: component.name,
+        props: Object.fromEntries(
+          Object.entries(component.props).map(([n, p]) => [
+            n,
+            p.testValue !== undefined ? p.testValue : p.default,
+          ]),
+        ),
+        state,
+        theme: currentTheme(),
+      }),
+      onMessage,
+      onError: (message) => add(message, 'error'),
+      onLeft: () => add('The component navigated its frame away, so it was stopped', 'error'),
     })
-    container.current?.appendChild(iframe)
+    port.current = frame
     return () => {
-      port.current?.close()
+      frame.close()
       port.current = null
-      iframe.remove()
     }
   }, [])
 
@@ -257,7 +240,7 @@ function Preview({
     }
     const id = nextId.current++
     pending.current.set(id, method)
-    port.current?.postMessage({ type: 'call', id, method, args: parsed } satisfies ToFrame)
+    port.current?.post({ type: 'call', id, method, args: parsed })
   }
 
   return (

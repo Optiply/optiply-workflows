@@ -120,8 +120,12 @@ export async function resolveComponentLibraryRelease(db: Db, slug: string, versi
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-const sameOrigins = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && [...a].sort().every((o, i) => o === [...b].sort()[i])
+/** Whether two lists of allowed origins differ (as sets): publishing such a change needs an admin. */
+export function originsChanged(a: readonly string[], b: readonly string[]): boolean {
+  const left = new Set(a)
+  const right = new Set(b)
+  return left.size !== right.size || [...left].some((o) => !right.has(o))
+}
 
 /**
  * What making a release live takes: Edit on the library, a valid definition, and, when its allowed origins differ
@@ -151,15 +155,15 @@ function checkReleasable(
       message: `The component library isn't valid: ${errors[0]!.message}${more}`,
     })
   }
-  const originsChanged = !sameOrigins(definition.allowedOrigins, liveOrigins)
-  if (originsChanged && access && !access.isAdmin) {
+  const changed = originsChanged(definition.allowedOrigins, liveOrigins)
+  if (changed && access && !access.isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message:
         'The allowed origins changed: only an admin can publish that (they decide where components may send data)',
     })
   }
-  return { originsChanged }
+  return { originsChanged: changed }
 }
 
 const changedSince = (revision: number) =>
@@ -170,12 +174,20 @@ const changedSince = (revision: number) =>
 
 /** The live release's origins and lock (none before the first release). */
 async function liveOf(db: Db | Tx, library: ComponentLibrary) {
-  if (!library.liveReleaseId) return { origins: [] as string[], lock: null }
+  if (!library.liveReleaseId) return { origins: [] as string[], lock: null, hash: null }
   const [live] = await db
-    .select({ definition: componentLibraryReleases.definition, lock: componentLibraryReleases.lock })
+    .select({
+      definition: componentLibraryReleases.definition,
+      lock: componentLibraryReleases.lock,
+      hash: componentLibraryReleases.definitionHash,
+    })
     .from(componentLibraryReleases)
     .where(eq(componentLibraryReleases.id, library.liveReleaseId))
-  return { origins: live?.definition.allowedOrigins ?? [], lock: live?.lock ?? null }
+  return {
+    origins: live?.definition.allowedOrigins ?? [],
+    lock: live?.lock ?? null,
+    hash: live?.hash ?? null,
+  }
 }
 
 const buildFailed = (outcome: Extract<BuildOutcome, { ok: false }>) => {
@@ -339,8 +351,12 @@ export async function deployComponentLibraryFromGit(
   const live = await liveOf(db, library)
   const { originsChanged } = checkReleasable(null, library, definition, live.origins)
   const hash = await componentLibraryHash(definition)
-  const built = await buildComponentLibrary(db, build, definition, live.lock ?? library.draftLock)
-  if (!built.ok) throw buildFailed(built)
+  // What's live already (a commit changing only the name or folder): no build, no release.
+  const built =
+    hash === live.hash
+      ? null
+      : await buildComponentLibrary(db, build, definition, live.lock ?? library.draftLock)
+  if (built && !built.ok) throw buildFailed(built)
   return db.transaction(async (tx) => {
     const [locked] = await tx
       .select()
@@ -355,12 +371,13 @@ export async function deployComponentLibraryFromGit(
       .set({
         name: opts.name,
         description: opts.description,
-        draftLock: built.lock,
+        ...(built && { draftLock: built.lock }),
         ...(draftChanged
           ? { draftDefinition: definition, draftRevision: locked.draftRevision + 1, updatedBy: null }
           : {}),
       })
       .where(eq(componentLibraries.id, locked.id))
+    if (!built) return null
     const release = await insertRelease(tx, locked, definition, hash, {
       bundleHash: built.bundleHash,
       lock: built.lock,
@@ -457,12 +474,23 @@ export async function setLiveComponentLibraryRelease(
   return release
 }
 
-/** The names `droppedUses` compares for a library: each component, and each component's props (`Chart.title`). */
+/**
+ * The names `droppedUses` compares for a library: each component, its props (`Chart.title`), events (`Chart:select`)
+ * and methods (`Chart.highlight()`).
+ */
 export function componentNames(def: Pick<ComponentLibraryDefinition, 'components'>): string[] {
-  return def.components.flatMap((c) => [c.name, ...Object.keys(c.props).map((p) => `${c.name}.${p}`)])
+  return def.components.flatMap((c) => [
+    c.name,
+    ...Object.keys(c.props).map((p) => `${c.name}.${p}`),
+    ...c.events.map((e) => `${c.name}:${e}`),
+    ...Object.keys(c.methods).map((m) => `${c.name}.${m}()`),
+  ])
 }
 
-/** Bundles no release keeps and no build made in the last `days` (drafts' builds): retention removes them. */
+/**
+ * Bundles no release keeps and no build made or found in the last `days` (drafts' builds): retention removes them.
+ * One a publish took meanwhile stays (the release's reference refuses the delete): nothing is removed this time.
+ */
 export async function deleteUnusedBundles(db: Db, days = 7): Promise<number> {
   const deleted = await db
     .delete(componentBundles)
@@ -478,6 +506,10 @@ export async function deleteUnusedBundles(db: Db, days = 7): Promise<number> {
       ),
     )
     .returning({ hash: componentBundles.hash })
+    .catch((err: unknown) => {
+      if ((err as { code?: string }).code === '23503') return []
+      throw err
+    })
   return deleted.length
 }
 

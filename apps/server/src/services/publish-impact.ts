@@ -81,6 +81,21 @@ export async function droppedUses(
           const name = `${ref.component}.${prop}`
           if (!(CUSTOM_PROPS as readonly string[]).includes(prop) && dropped.includes(name)) names.add(name)
         }
+        // Its events with handlers, and its methods called (by a handler, or by name in code and templates).
+        for (const handler of c.events ?? []) {
+          const name = `${ref.component}:${handler.event}`
+          if (dropped.includes(name)) names.add(name)
+        }
+        const text = JSON.stringify(definition)
+        for (const name of dropped) {
+          const method =
+            name.startsWith(`${ref.component}.`) && name.endsWith('()')
+              ? name.slice(ref.component.length + 1, -2)
+              : null
+          if (method && calls(text, c.name, method)) {
+            names.add(name)
+          }
+        }
       }
     } else if (target.kind === 'library') {
       for (const q of (definition as AppDefinition).queries) {
@@ -113,4 +128,12 @@ export async function droppedUses(
     }
   }
   return { dropped, uses, hidden: affected.length - uses.length }
+}
+
+/** Whether a definition's text calls `instance.method(…)` in code or templates, or a handler calls it. */
+function calls(text: string, instance: string, method: string): boolean {
+  const esc = (v: string) => v.replace(/[$]/g, '\\$')
+  return new RegExp(
+    `(^|[^\\w$])${esc(instance)}\\.${esc(method)}\\s*\\(|"component":"${esc(instance)}","method":"${esc(method)}"`,
+  ).test(text)
 }

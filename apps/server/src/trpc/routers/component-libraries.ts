@@ -25,6 +25,7 @@ import {
   componentLibraryReleasesByKey,
   componentLibraryUsers,
   componentNames,
+  originsChanged,
   publishComponentLibraryRelease,
   setLiveComponentLibraryRelease,
   uploadComponentLibraryBuild,
@@ -320,12 +321,12 @@ export const componentLibrariesRouter = router({
       },
       await componentLibraryUsers(ctx.db, library.slug),
     )
-    const liveOrigins = live?.definition.allowedOrigins ?? []
-    const draftOrigins = library.draftDefinition.allowedOrigins
     return {
       ...impact,
-      originsChanged:
-        liveOrigins.length !== draftOrigins.length || liveOrigins.some((o) => !draftOrigins.includes(o)),
+      originsChanged: originsChanged(
+        library.draftDefinition.allowedOrigins,
+        live?.definition.allowedOrigins ?? [],
+      ),
     }
   }),
 

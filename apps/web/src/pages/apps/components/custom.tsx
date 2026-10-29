@@ -1,10 +1,11 @@
 import { type CustomComponentInterface, customInstanceRelease } from '@ow/app-definition'
 import type { ComponentLibraryRelease } from '@ow/app-runtime'
-import { CONNECT_MESSAGE, type FrameTheme, type FromFrame, type ToFrame } from '@ow/component-sdk/protocol'
+import type { FrameTheme, FromFrame } from '@ow/component-sdk/protocol'
 import { Blocks, RotateCcw } from 'lucide-react'
 import { useContext, useEffect, useRef, useState } from 'react'
 import { EditingContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
+import { fetchBundle, type MountedFrame, mountComponentFrame } from '../runtime/frame-mount'
 import { useAppHostContext, useAppHostState, useAppScope } from '../runtime/react'
 
 /**
@@ -44,7 +45,8 @@ export function CustomRenderer({ component }: RendererProps) {
   }
   return (
     <CustomFrame
-      key={`${release.bundleHash}:${ref.component}:${attempt}`}
+      // A release changing only its origins or the component's interface keeps its bundle: a new frame all the same.
+      key={`${release.bundleHash}:${ref.component}:${JSON.stringify(release.allowedOrigins)}:${JSON.stringify(iface)}:${attempt}`}
       name={component.name}
       component={ref.component}
       release={release}
@@ -54,23 +56,7 @@ export function CustomRenderer({ component }: RendererProps) {
   )
 }
 
-/** The bundles fetched so far, by hash (they never change). */
-const bundles = new Map<string, Promise<{ js: string; css: string }>>()
-
-export function fetchBundle(hash: string): Promise<{ js: string; css: string }> {
-  let found = bundles.get(hash)
-  if (!found) {
-    const get = async (ext: string) => {
-      const res = await fetch(`/api/component-bundles/${hash}.${ext}`, { credentials: 'same-origin' })
-      if (!res.ok) throw new Error(`The component library's bundle didn't load (${res.status})`)
-      return res.text()
-    }
-    found = Promise.all([get('js'), get('css')]).then(([js, css]) => ({ js, css }))
-    found.catch(() => bundles.delete(hash))
-    bundles.set(hash, found)
-  }
-  return found
-}
+export { fetchBundle }
 
 /** The Optiply tokens a component sees (`--ow-<name>`), from the page's own variables. */
 export function currentTheme(): FrameTheme {
@@ -133,7 +119,7 @@ function CustomFrame({
   const host = useAppHostContext()
   const scope = useAppScope()
   const container = useRef<HTMLDivElement>(null)
-  const portRef = useRef<MessagePort | null>(null)
+  const portRef = useRef<MountedFrame | null>(null)
   const [status, setStatus] = useState<FrameStatus>({ kind: 'loading' })
   const propNames = Object.keys(iface.props)
   // The declared props the app evaluated, as one string so a change of any re-sends them all.
@@ -147,10 +133,9 @@ function CustomFrame({
   const editing = useContext(EditingContext)
   const [using, setUsing] = useState(false)
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the frame is made once per bundle and component (its key); props follow below.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the frame is made once per release and component (its key); props follow below.
   useEffect(() => {
     let disposed = false
-    let loads = 0
     let lastPong = performance.now()
     let ping = 0
     let callId = 0
@@ -161,17 +146,18 @@ function CustomFrame({
     const fail = (message: string) => {
       if (!disposed) setStatus({ kind: 'failed', message })
     }
+    const settleAll = (why: string) => {
+      for (const call of calls.values()) {
+        window.clearTimeout(call.timer)
+        call.reject(new Error(why))
+      }
+      calls.clear()
+    }
+    // Calls to it fail at once once it's gone (stuck, left), rather than waiting for their timeout.
+    let unregister = () => {}
 
-    const iframe = document.createElement('iframe')
-    // No allow-same-origin: an opaque origin, so it reads neither this page nor its cookies.
-    iframe.setAttribute('sandbox', 'allow-scripts')
-    iframe.title = component
-    iframe.className = 'size-full border-0 bg-transparent'
-    const send = (message: ToFrame) => portRef.current?.postMessage(message)
-
-    const onMessage = (event: MessageEvent<FromFrame>) => {
-      const message = event.data
-      if (disposed || !message || typeof message !== 'object') return
+    const onMessage = (message: FromFrame) => {
+      if (disposed) return
       switch (message.type) {
         case 'ready':
           setStatus({ kind: 'ready' })
@@ -211,11 +197,38 @@ function CustomFrame({
       }
     }
 
-    const unregister = host.registerFrame(name, {
+    const frame = mountComponentFrame(container.current!, {
+      title: component,
+      bundleHash: release.bundleHash,
+      origins: release.allowedOrigins,
+      init: () => ({
+        component,
+        props: JSON.parse(latestProps.current),
+        state: Object.fromEntries(
+          Object.keys(iface.state).map((s) => [
+            s,
+            host.store.getState().values[`${scope}${name}.${s}`] ?? iface.state[s]!.default,
+          ]),
+        ),
+        theme: currentTheme(),
+      }),
+      onMessage,
+      onError: fail,
+      onLeft: () => {
+        unregister()
+        settleAll(`${name} was stopped`)
+        fail('The component tried to leave its frame, so it was stopped')
+        host.componentLog(name, 'error', 'The component navigated its frame away, so it was stopped')
+      },
+    })
+    portRef.current = frame
+
+    unregister = host.registerFrame(name, {
       call(method, args) {
-        if (!Object.hasOwn(iface.methods, method))
+        if (!Object.hasOwn(iface.methods, method)) {
           return Promise.reject(new Error(`${component} has no method "${method}"`))
-        if (!portRef.current) return Promise.reject(new Error(`${name} isn't ready yet`))
+        }
+        if (!frame.open) return Promise.reject(new Error(`${name} isn't ready yet`))
         return new Promise((resolve, reject) => {
           const id = ++callId
           const timer = window.setTimeout(() => {
@@ -223,69 +236,27 @@ function CustomFrame({
             reject(new Error(`${name}.${method} didn't answer in ${STUCK_MS / 1000} s`))
           }, STUCK_MS)
           calls.set(id, { resolve, reject, timer })
-          send({ type: 'call', id, method, args })
+          frame.post({ type: 'call', id, method, args })
         })
       },
     })
 
-    iframe.addEventListener('load', () => {
-      loads++
-      if (loads > 1) {
-        // Its document was replaced: it navigated (to send data somewhere?). Stopped and reported.
-        iframe.remove()
-        portRef.current?.close()
-        portRef.current = null
-        fail('The component tried to leave its frame, so it was stopped')
-        host.componentLog(name, 'error', 'The component navigated its frame away, so it was stopped')
-        return
-      }
-      const channel = new MessageChannel()
-      portRef.current = channel.port1
-      channel.port1.onmessage = onMessage
-      iframe.contentWindow?.postMessage(CONNECT_MESSAGE, '*', [channel.port2])
-      void fetchBundle(release.bundleHash).then(
-        ({ js, css }) => {
-          if (disposed) return
-          const state = Object.fromEntries(
-            Object.keys(iface.state).map((s) => [
-              s,
-              host.store.getState().values[`${scope}${name}.${s}`] ?? iface.state[s]!.default,
-            ]),
-          )
-          send({
-            type: 'init',
-            js,
-            css,
-            component,
-            props: JSON.parse(latestProps.current),
-            state,
-            theme: currentTheme(),
-          })
-        },
-        (err: Error) => fail(err.message),
-      )
-    })
-
-    void import('../runtime/component-frame').then(({ componentFrameDocument }) => {
-      if (disposed) return
-      iframe.srcdoc = componentFrameDocument(release.allowedOrigins)
-      container.current?.appendChild(iframe)
-    })
-
     const pinger = window.setInterval(() => {
-      if (!portRef.current) return
+      if (!frame.open) return
       if (performance.now() - lastPong > STUCK_MS) {
         window.clearInterval(pinger)
-        iframe.remove()
+        frame.close()
+        unregister()
+        settleAll(`${name} stopped responding`)
         if (!disposed) setStatus({ kind: 'stuck' })
         host.componentLog(name, 'error', `It stopped answering for ${STUCK_MS / 1000} s, so it was stopped`)
         return
       }
-      send({ type: 'ping', n: ++ping })
+      frame.post({ type: 'ping', n: ++ping })
     }, PING_MS)
 
     // The theme follows the page's light/dark switch.
-    const observer = new MutationObserver(() => send({ type: 'theme', theme: currentTheme() }))
+    const observer = new MutationObserver(() => frame.post({ type: 'theme', theme: currentTheme() }))
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 
     return () => {
@@ -293,20 +264,15 @@ function CustomFrame({
       window.clearInterval(pinger)
       observer.disconnect()
       unregister()
-      for (const call of calls.values()) {
-        window.clearTimeout(call.timer)
-        call.reject(new Error(`${name} is gone`))
-      }
-      portRef.current?.close()
+      settleAll(`${name} is gone`)
+      frame.close()
       portRef.current = null
-      iframe.remove()
     }
   }, [])
 
   // Props the app re-evaluated go in as they change.
   useEffect(() => {
-    if (status.kind === 'ready')
-      portRef.current?.postMessage({ type: 'props', props: JSON.parse(propsJson) } satisfies ToFrame)
+    if (status.kind === 'ready') portRef.current?.post({ type: 'props', props: JSON.parse(propsJson) })
   }, [propsJson, status.kind])
 
   return (

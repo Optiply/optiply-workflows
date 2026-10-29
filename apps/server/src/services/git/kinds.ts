@@ -165,6 +165,8 @@ export async function liveOrDraft(db: Db, kind: ObjectKind, object: GitObjectRow
         return db.select().from(componentLibraryReleases).where(eq(componentLibraryReleases.id, id))
     }
   })()
+  // A component library's release made from an uploaded build has no files (M25): its draft is what Git can keep.
+  if (release && 'uploaded' in release && release.uploaded) return object.draftDefinition
   return release?.definition ?? object.draftDefinition
 }
 

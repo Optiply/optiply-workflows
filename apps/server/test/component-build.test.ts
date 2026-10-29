@@ -107,6 +107,9 @@ describe('building component libraries', () => {
     expect(JSON.stringify(mod.Hello())).toContain('HI!')
     const draft = data(await admin.query('componentLibraries.get', { id }))
     expect(JSON.parse(draft.draftLock).packages['node_modules/shout'].version).toBe('1.2.0')
+    // Built again from the lock it left: found, not rebuilt (review: it used to miss every time).
+    const again = data(await admin.mutate('componentLibraries.build', { componentLibraryId: id }))
+    expect(again).toMatchObject({ ok: true, bundleHash: outcome.bundleHash, cached: true })
   }, 60_000)
 
   it('points at the file, line and column of a mistake', async () => {
