@@ -3,9 +3,12 @@ import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
 import {
   constantFits,
+  type JsonValue,
   MODULE_PROPS,
   type ModuleInterface,
   moduleComponentSpec,
+  NAV_ICONS,
+  NAV_URL,
   QUERY_EVENTS,
 } from './components'
 import {
@@ -310,17 +313,7 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     const events = spec.openProps ? null : spec.events
     checkHandlers(def, c.events, ['components', i, 'events'], events, at.entity, entities, pages, report)
     if (c.type === 'navigation' && Array.isArray(c.props?.items)) {
-      c.props.items.forEach((item, n) => {
-        const page = item && typeof item === 'object' && !Array.isArray(item) ? item.page : undefined
-        if (typeof page === 'string' && !page.includes('{{') && !def.pages?.some((p) => p.name === page)) {
-          report({
-            code: 'unknown_page',
-            message: `No page is named "${page}"`,
-            path: ['components', i, 'props', 'items', n, 'page'],
-            ...at,
-          })
-        }
-      })
+      checkNavItems(def, c.props.items, ['components', i, 'props', 'items'], 0, at, report)
     }
   })
 
@@ -832,6 +825,53 @@ function checkModuleInstance(
       })
     }
   }
+}
+
+/** Navigation items (M24): pages that exist, outside links that are web or mail, known icons, one level of groups. */
+function checkNavItems(
+  def: AppDefinition,
+  items: readonly JsonValue[],
+  path: (string | number)[],
+  depth: number,
+  at: { entity: string },
+  report: Report,
+) {
+  items.forEach((item, n) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return
+    const where = [...path, n]
+    const { page, url, icon, items: sub } = item
+    if (typeof page === 'string' && !page.includes('{{') && !def.pages?.some((p) => p.name === page)) {
+      report({ code: 'unknown_page', message: `No page is named "${page}"`, path: [...where, 'page'], ...at })
+    }
+    if (typeof url === 'string' && !url.includes('{{') && !NAV_URL.test(url.trim())) {
+      report({
+        code: 'invalid_prop',
+        message: 'A link opens a web page or an email: http://, https:// or mailto:',
+        path: [...where, 'url'],
+        ...at,
+      })
+    }
+    if (typeof icon === 'string' && !(NAV_ICONS as readonly string[]).includes(icon)) {
+      report({
+        severity: 'warning',
+        code: 'invalid_prop',
+        message: `No icon is named "${icon}": it shows without one`,
+        path: [...where, 'icon'],
+        ...at,
+      })
+    }
+    if (Array.isArray(sub)) {
+      if (depth > 0) {
+        report({
+          severity: 'warning',
+          code: 'invalid_prop',
+          message: 'A group holds links, not groups: these aren’t shown',
+          path: [...where, 'items'],
+          ...at,
+        })
+      } else checkNavItems(def, sub, [...where, 'items'], depth + 1, at, report)
+    }
+  })
 }
 
 /** A component's `slot` (M24): one its parent has (a container's view, header or footer; the frame's). */

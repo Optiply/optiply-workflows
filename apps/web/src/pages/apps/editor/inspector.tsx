@@ -22,6 +22,7 @@ import { ColumnsEditor } from './columns'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
 import { ModuleInstanceFields } from './modules'
+import { NavItemsEditor } from './nav-items'
 import { specOf, useAppEditor } from './store'
 import { ViewsEditor } from './views'
 
@@ -209,10 +210,22 @@ function PropField({
   const path = ['components', index, 'props', prop]
   const set = (next: JsonValue | undefined) => update((def) => setProp(def, component.name, prop, next))
   const multiLine = spec.type === 'array' || spec.type === 'object'
-  // A table's columns as a list (M24), or as JSON on request; a template is always text.
+  // A table's columns and a Navigation's links as lists (M24), or as JSON on request; a template is always text.
   const [asJson, setAsJson] = useState(false)
+  const listable = (value === undefined || Array.isArray(value)) && !asJson
   const columnsList =
     component.type === 'table' && prop === 'columns' && (value === undefined || Array.isArray(value))
+  const itemsList =
+    component.type === 'navigation' && prop === 'items' && (value === undefined || Array.isArray(value))
+  const jsonToggle = (columnsList || itemsList) && (
+    <button
+      type="button"
+      className="rounded px-1 text-[11px] text-accent hover:underline"
+      onClick={() => setAsJson(!asJson)}
+    >
+      {asJson ? 'Edit as list' : 'Edit as JSON'}
+    </button>
+  )
   const fx = (
     <button
       type="button"
@@ -251,8 +264,10 @@ function PropField({
     (value === undefined || Array.isArray(value))
   ) {
     control = <ViewsEditor name={component.name} />
-  } else if (columnsList && !asJson) {
+  } else if (columnsList && listable) {
     control = <ColumnsEditor name={component.name} index={index} columns={(value as JsonValue[]) ?? []} />
+  } else if (itemsList && listable) {
+    control = <NavItemsEditor name={component.name} items={(value as JsonValue[]) ?? []} />
   } else {
     control = (
       <ParsedField
@@ -271,16 +286,10 @@ function PropField({
   ) : component.type === 'table' && prop === 'columns' ? (
     <span className="flex items-center gap-1">
       <ColumnsFromData name={component.name} />
-      {columnsList && (
-        <button
-          type="button"
-          className="rounded px-1 text-[11px] text-accent hover:underline"
-          onClick={() => setAsJson(!asJson)}
-        >
-          {asJson ? 'Edit as list' : 'Edit as JSON'}
-        </button>
-      )}
+      {jsonToggle}
     </span>
+  ) : itemsList ? (
+    jsonToggle
   ) : undefined
   return (
     <EditorField

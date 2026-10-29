@@ -376,7 +376,17 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
       <div ref={ref} className="hidden" />
       {host ? (
         <AppHostProvider host={host}>
-          <AppChromeContext.Provider value={{ appName: app.name, user: { name: me.name, email: me.email } }}>
+          <AppChromeContext.Provider
+            value={{
+              appName: app.name,
+              user: { name: me.name, email: me.email },
+              // Where the app is used: a link opened in a new tab goes there, not into the editor.
+              pageHref: (page, params) => {
+                const query = new URLSearchParams(params).toString()
+                return `/apps/${encodeURIComponent(app.slug)}/${encodeURIComponent(page)}${query ? `?${query}` : ''}`
+              },
+            }}
+          >
             <ScopeSync />
             <div className="flex min-h-0 flex-1 gap-2">
               {!preview && (

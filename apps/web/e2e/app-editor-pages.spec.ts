@@ -87,8 +87,9 @@ test('build a multipage app in the editor', async ({ page }) => {
   // In the preview, the navigation moves between the pages.
   await page.getByRole('button', { name: 'Preview' }).click()
   const nav = page.getByRole('navigation', { name: 'navigation1' })
-  await expect(nav.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
-  await nav.getByRole('button', { name: 'Details' }).click()
+  // Navigation's links are links since M24.
+  await expect(nav.getByRole('link', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
+  await nav.getByRole('link', { name: 'Details' }).click()
   await expect(page.locator('[data-component="text1"]')).toContainText('On detail for')
   await expect(page.locator('[data-component="hello"]')).toHaveCount(0)
   await page.getByRole('button', { name: 'Edit', exact: true }).click()
@@ -106,7 +107,7 @@ test('build a multipage app in the editor', async ({ page }) => {
   await page.goto(`/apps/${slug}`)
   await expect(page.locator('[data-component="hello"]')).toContainText('Hello from the start')
   await expect(page).toHaveTitle('page1 · Paged')
-  await page.getByRole('navigation', { name: 'navigation1' }).getByRole('button', { name: 'Details' }).click()
+  await page.getByRole('navigation', { name: 'navigation1' }).getByRole('link', { name: 'Details' }).click()
   await expect(page).toHaveURL(new RegExp(`/apps/${slug}/detail$`))
   await expect(page).toHaveTitle('Details · Paged')
   await expect(page.locator('[data-component="text1"]')).toContainText('On detail for')

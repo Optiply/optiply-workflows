@@ -35,6 +35,8 @@ export const shownViews = new Map<string, string>()
 export const AppChromeContext = createContext<{
   appName: string
   user: { name: string; email: string } | null
+  /** A page's address with its params (M24: Navigation's links), where the app is used. */
+  pageHref?: (page: string, params: Record<string, string>) => string
 }>({
   appName: '',
   user: null,

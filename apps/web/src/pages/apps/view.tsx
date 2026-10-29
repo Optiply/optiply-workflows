@@ -193,7 +193,11 @@ function RunningApp({ app, release, modules, environment, environments }: Runnin
         {host && (
           <AppHostProvider host={host}>
             <AppChromeContext.Provider
-              value={{ appName: app.name, user: { name: me.name, email: me.email } }}
+              value={{
+                appName: app.name,
+                user: { name: me.name, email: me.email },
+                pageHref: (to, params) => router.buildLocation(pageLocation(to, params)).href,
+              }}
             >
               <AppBody definition={release.definition} appName={app.name} />
             </AppChromeContext.Provider>

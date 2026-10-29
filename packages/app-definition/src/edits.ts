@@ -474,18 +474,23 @@ export function renamePage(def: AppDefinition, from: string, to: string): AppDef
   }
 }
 
-/** Navigation links to page `from` point at `to` instead, or with `to` null are dropped. */
+/** Navigation links to page `from` point at `to` instead, or with `to` null are dropped; in groups too (M24). */
 function relinkNavigation(components: AppComponent[], from: string, to: string | null): AppComponent[] {
+  const relink = (items: JsonValue[]): JsonValue[] =>
+    items.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [item]
+      let next = item as Record<string, JsonValue>
+      if (Array.isArray(next.items)) next = { ...next, items: relink(next.items) }
+      if (next.page !== from) return [next]
+      return to === null ? [] : [{ ...next, page: to }]
+    })
   return components.map((c) => {
     const items = c.type === 'navigation' ? c.props?.items : undefined
     if (!Array.isArray(items)) return c
-    const links = (item: JsonValue) =>
-      !!item && typeof item === 'object' && !Array.isArray(item) && item.page === from
-    if (!items.some(links)) return c
-    const relinked = items.flatMap((item) =>
-      !links(item) ? [item] : to === null ? [] : [{ ...(item as Record<string, JsonValue>), page: to }],
-    )
-    return { ...c, props: { ...c.props, items: relinked } }
+    const relinked = relink(items)
+    return JSON.stringify(relinked) === JSON.stringify(items)
+      ? c
+      : { ...c, props: { ...c.props, items: relinked } }
   })
 }
 

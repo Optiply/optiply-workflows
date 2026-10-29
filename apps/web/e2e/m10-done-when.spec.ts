@@ -210,7 +210,7 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   await expect(viewer).toHaveTitle(`Item · Items ${stamp}`)
 
   // Back to the list through the navigation: the search is still there.
-  await viewer.getByRole('navigation', { name: 'nav' }).getByRole('button', { name: 'Items' }).click()
+  await viewer.getByRole('navigation', { name: 'nav' }).getByRole('link', { name: 'Items' }).click()
   await expect(grid.getByRole('searchbox', { name: 'Search items' })).toHaveValue('item 4242')
   await viewer.goBack()
   await expect(detail).toContainText(`item 42425 costs ${42425 % 997}`)

@@ -106,7 +106,12 @@ const specs: ComponentSpec[] = [
     type: 'navigation',
     label: 'Navigation',
     props: {
-      /** `{ page, label? }` per link, in order (the label a template); empty links every page, by title. */
+      /**
+       * Per link, in order (M24): `{ page, params?, url?, label?, icon?, hidden?, items? }`: a page of the app (with
+       * URL params) or an outside `url` (http, https or mailto; opens in a new tab), an icon from `NAV_ICONS`, `hidden`
+       * a template, and `items`: one level of sub-links (a group). Labels, params and `hidden` may be templates. Empty
+       * links every page, by title.
+       */
       items: { type: 'array', default: [], label: 'Links' },
       orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
     },
@@ -391,6 +396,52 @@ export const COMPONENTS: Readonly<Record<string, ComponentSpec>> = Object.fromEn
     },
   ]),
 )
+
+/** The icons a Navigation link can have (M24): lucide's, by these names (the web app maps them). */
+export const NAV_ICONS = [
+  'home',
+  'dashboard',
+  'list',
+  'table',
+  'chart',
+  'users',
+  'user',
+  'settings',
+  'search',
+  'inbox',
+  'mail',
+  'bell',
+  'calendar',
+  'clock',
+  'file',
+  'folder',
+  'box',
+  'truck',
+  'cart',
+  'tag',
+  'star',
+  'bookmark',
+  'database',
+  'layers',
+  'map',
+  'globe',
+  'building',
+  'briefcase',
+  'phone',
+  'info',
+  'help',
+  'alert',
+  'check',
+  'plus',
+  'edit',
+  'trash',
+  'link',
+  'external',
+] as const
+export type NavIcon = (typeof NAV_ICONS)[number]
+
+/** An outside link a Navigation item may open (M24): web and mail only, never `javascript:` or `data:`. */
+export const NAV_URL = /^(https?:\/\/|mailto:)/i
 
 /**
  * The operators of a table's filters (M24), as `sql.where` takes them (`@ow/expressions` `FILTER_OPS`): `between`
