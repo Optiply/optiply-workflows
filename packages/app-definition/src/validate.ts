@@ -693,6 +693,13 @@ function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, 
       path: ['pages'],
     })
   }
+  if (def.frame) {
+    report({
+      code: 'module_pages',
+      message: "A module has no frame; it sits inside the app's",
+      path: ['frame'],
+    })
+  }
   const owned = entities.get('inputs')
   if (owned && owned.kind !== 'inputs') {
     report({
@@ -846,6 +853,22 @@ function checkSlot(
       report({
         code: 'invalid_slot',
         message: `At the top, a component is in the frame's ${FRAME_SLOTS.join(' or ')}, not "${c.slot}"`,
+        path,
+        ...at,
+      })
+    } else if (c.slot === 'sidebar' && c.page !== undefined) {
+      report({
+        code: 'invalid_slot',
+        message: 'Only components on every page sit in the sidebar',
+        path,
+        ...at,
+      })
+    } else if (c.slot === 'sidebar' && !def.frame?.sidebar) {
+      // Shown in the header meanwhile: a warning, as turning the sidebar off and on again shouldn't break the app.
+      report({
+        severity: 'warning',
+        code: 'invalid_slot',
+        message: 'The app has no sidebar: this shows with the other components on every page',
         path,
         ...at,
       })

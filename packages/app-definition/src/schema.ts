@@ -247,6 +247,19 @@ export const moduleSpecSchema = z.strictObject({
   events: z.array(moduleEventSchema).max(20),
 })
 
+/**
+ * The app frame (M24, architecture §2.27): a header bar fixed at the top and/or a sidebar at the left, around every
+ * page. Components on every page sit in the header (the default) or the sidebar (`slot: 'sidebar'`).
+ */
+export const frameSchema = z.strictObject({
+  header: z.boolean().optional(),
+  sidebar: z.enum(['narrow', 'medium', 'wide']).optional(),
+  /** The app's name in the header (in the sidebar without a header). */
+  showTitle: z.boolean().optional(),
+  /** The signed-in person in the header. */
+  showUser: z.boolean().optional(),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
   /** In order; the first opens by default. An app without pages is one page, holding everything. */
@@ -259,10 +272,13 @@ export const appDefinitionSchema = z.strictObject({
   layout: z.record(appNameSchema, positionSchema).optional(),
   /** Present on a module's definition (M14), never on an app's. */
   module: moduleSpecSchema.optional(),
+  /** A header bar and/or a sidebar around every page (M24); without it, global components sit above each page. */
+  frame: frameSchema.optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>
 export type AppPage = z.infer<typeof pageSchema>
+export type AppFrame = z.infer<typeof frameSchema>
 export type HandlerAction = z.infer<typeof handlerActionSchema>
 export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>

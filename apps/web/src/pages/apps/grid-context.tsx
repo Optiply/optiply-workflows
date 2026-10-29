@@ -31,6 +31,15 @@ export function ChildGrid({
  */
 export const shownViews = new Map<string, string>()
 
+/** What the app frame shows besides components (M24): the app's name and the signed-in person. */
+export const AppChromeContext = createContext<{
+  appName: string
+  user: { name: string; email: string } | null
+}>({
+  appName: '',
+  user: null,
+})
+
 /** True in the editor: hidden components still show (faded), and modals open while selected. */
 export const EditingContext = createContext(false)
 

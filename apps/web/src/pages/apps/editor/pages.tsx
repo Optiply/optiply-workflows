@@ -1,15 +1,17 @@
 import {
+  type AppFrame,
   addPage,
   movePage,
   onPage,
   pageNameReason,
   removePage,
   renamePage,
+  setFrame,
   setPageTitle,
 } from '@ow/app-definition'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Button, Input, sectionLabelClass } from '@/components/ui'
+import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { EditorField } from './fields'
 import { useAppEditor } from './store'
@@ -67,7 +69,57 @@ export function PagesPanel() {
         </ul>
       )}
       {current && pages.length > 0 && <PageSettings key={current} page={current} />}
+      <FrameSettings />
     </section>
+  )
+}
+
+/**
+ * The app frame (M24): a header bar and/or a sidebar around every page, holding the components on every page (in
+ * the header, or the sidebar picked in their Area), with the app's name and the signed-in person if wanted.
+ */
+function FrameSettings() {
+  const frame = useAppEditor((s) => s.definition.frame) ?? {}
+  const update = useAppEditor((s) => s.update)
+  const readOnly = useAppEditor((s) => s.readOnly)
+  const set = (part: Partial<AppFrame>) => update((def) => setFrame(def, { ...def.frame, ...part }))
+  return (
+    <fieldset disabled={readOnly} className="mt-4 flex flex-col gap-2" aria-label="Frame">
+      <h2 className={sectionLabelClass}>Frame</h2>
+      <Checkbox
+        label="Header bar"
+        checked={frame.header === true}
+        onChange={(e) => set({ header: e.target.checked })}
+      />
+      <EditorField label="Sidebar">
+        <Select
+          aria-label="Sidebar"
+          value={frame.sidebar ?? ''}
+          onChange={(e) => set({ sidebar: (e.target.value || undefined) as AppFrame['sidebar'] })}
+        >
+          <option value="">None</option>
+          <option value="narrow">Narrow</option>
+          <option value="medium">Medium</option>
+          <option value="wide">Wide</option>
+        </Select>
+      </EditorField>
+      {(frame.header || frame.sidebar) && (
+        <>
+          <Checkbox
+            label="Show the app's name"
+            checked={frame.showTitle === true}
+            onChange={(e) => set({ showTitle: e.target.checked })}
+          />
+          {frame.header && (
+            <Checkbox
+              label="Show who's signed in"
+              checked={frame.showUser === true}
+              onChange={(e) => set({ showUser: e.target.checked })}
+            />
+          )}
+        </>
+      )}
+    </fieldset>
   )
 }
 

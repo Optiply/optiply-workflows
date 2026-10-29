@@ -7,6 +7,7 @@ import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
+import { AppChromeContext } from './grid-context'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from './runtime/react'
 import { AppStopped } from './stopped'
@@ -191,7 +192,11 @@ function RunningApp({ app, release, modules, environment, environments }: Runnin
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-4">
         {host && (
           <AppHostProvider host={host}>
-            <AppBody definition={release.definition} appName={app.name} />
+            <AppChromeContext.Provider
+              value={{ appName: app.name, user: { name: me.name, email: me.email } }}
+            >
+              <AppBody definition={release.definition} appName={app.name} />
+            </AppChromeContext.Provider>
           </AppHostProvider>
         )}
       </div>

@@ -11,6 +11,7 @@ import {
   removeView,
   renameView,
   rewriteCallArgs,
+  setFrame,
   slotOf,
   slotsOf,
   validateApp,
@@ -56,6 +57,7 @@ const tabs = (): AppDefinition =>
     queries: [{ name: 'go', kind: 'js', code: 'await box.setView("details")\nreturn 1' }],
     // Something else with a setView, whose calls a rename leaves alone.
     variables: [{ name: 'other' }],
+    frame: { sidebar: 'narrow' },
     layout: {
       box: at(0, 0, 12, 10),
       table1: at(0, 0, 12, 6),
@@ -238,5 +240,44 @@ describe('views', () => {
     expect(definition.components[0]!.props!.value).toBe("{{ 'x' }} {{ utils.openPage('sales', { id: 1 }) }}")
     expect(definition.components[1]!.events![0]!.action).toMatchObject({ code: 'utils.openPage(`sales`)' })
     expect(rewriteCallArgs(def, 'utils', 'openPage', 'nope', 'x').definition).toBe(def)
+  })
+})
+
+describe('the frame (M24)', () => {
+  it('puts components on every page in the sidebar only when the app has one', () => {
+    const def = tabs()
+    const side = def.components.find((c) => c.name === 'side')!
+    expect(slotOf(def, side)).toBe('sidebar')
+    const without = setFrame(def, { sidebar: undefined })
+    expect(without.frame).toBeUndefined()
+    expect(slotOf(without, side)).toBeUndefined()
+    expect(slotsOf(without, undefined)).toEqual([undefined])
+    expect(validateApp(without).diagnostics.filter((d) => d.code === 'invalid_slot')).toEqual([
+      expect.objectContaining({ severity: 'warning', message: expect.stringMatching(/no sidebar/) }),
+    ])
+    // A component on one page never sits in the frame.
+    const paged = {
+      ...def,
+      pages: [{ name: 'home' }],
+      components: def.components.map((c) => (c.name === 'side' ? { ...c, page: 'home' } : c)),
+    }
+    expect(slotOf(paged as AppDefinition, paged.components.find((c) => c.name === 'side')!)).toBeUndefined()
+    expect(
+      validateApp(paged)
+        .diagnostics.filter((d) => d.code === 'invalid_slot')
+        .map((d) => d.message),
+    ).toEqual(['Only components on every page sit in the sidebar'])
+  })
+
+  it('keeps only the parts that are on, and refuses a frame in a module', () => {
+    expect(setFrame(app(), { header: true, showTitle: false, sidebar: 'wide' }).frame).toEqual({
+      header: true,
+      sidebar: 'wide',
+    })
+    expect(setFrame(app(), { header: false }).frame).toBeUndefined()
+    const module = { ...app(), module: { inputs: [], outputs: [], events: [] }, frame: { header: true } }
+    expect(validateApp(module).diagnostics.map((d) => d.message)).toContain(
+      "A module has no frame; it sits inside the app's",
+    )
   })
 })

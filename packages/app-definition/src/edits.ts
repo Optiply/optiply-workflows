@@ -5,6 +5,7 @@ import { renameModuleInputReads } from './rename'
 import {
   type AppComponent,
   type AppDefinition,
+  type AppFrame,
   type AppQuery,
   appNameSchema,
   type EventHandler,
@@ -209,6 +210,13 @@ export function moveToParent(
     ...moved,
     layout: { ...moved.layout, [name]: { ...position, x: 0, y: bottomOf(def, parent, page, opts.slot) } },
   }
+}
+
+/** The app frame (M24): set, or with every part off removed (an app without a frame looks as before). */
+export function setFrame(def: AppDefinition, frame: AppFrame): AppDefinition {
+  const kept = Object.fromEntries(Object.entries(frame).filter(([, v]) => v !== undefined && v !== false))
+  const { frame: _old, ...rest } = def
+  return Object.keys(kept).length ? { ...rest, frame: kept as AppFrame } : rest
 }
 
 /** A container's views as stored (M24): its `views` prop when that's a list, else none. */

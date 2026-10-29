@@ -116,6 +116,26 @@ export function ComponentInspector({ name }: { name: string }) {
         </EditorField>
       )}
 
+      {component.parent === undefined &&
+        !spec.overlay &&
+        definition.frame?.sidebar &&
+        component.page === undefined && (
+          <EditorField label="Area">
+            <Select
+              aria-label="Area"
+              value={component.slot === 'sidebar' ? 'sidebar' : ''}
+              onChange={(e) =>
+                update((def) =>
+                  moveToParent(def, name, undefined, { slot: e.target.value || undefined, page: null }),
+                )
+              }
+            >
+              <option value="">{definition.frame.header ? 'Header' : 'Above the page'}</option>
+              <option value="sidebar">Sidebar</option>
+            </Select>
+          </EditorField>
+        )}
+
       {definition.pages?.length && component.parent === undefined ? (
         <PageField
           value={component.page ?? null}

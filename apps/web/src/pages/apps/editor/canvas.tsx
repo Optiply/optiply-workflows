@@ -134,6 +134,7 @@ export function EditGrid({
             const added = addComponent(useAppEditor.getState().definition, type, {
               position: { x: item.x, y: item.y },
               ...(page !== undefined && { page }),
+              ...(slot !== undefined && { slot }),
             })
             update(() => added.definition)
             select(added.name)
@@ -251,18 +252,34 @@ export function EditCanvas() {
                   select(null)
               }}
             >
-              {hasPages ? (
-                <>
-                  <GridCaption>On every page</GridCaption>
-                  <EditGrid definition={definition} page={null} />
-                  <GridCaption className="mt-6">
-                    Page {definition.pages!.find((p) => p.name === page)?.title || page}
-                  </GridCaption>
-                  <EditGrid definition={definition} page={page} />
-                </>
-              ) : (
-                <EditGrid definition={definition} />
-              )}
+              {/* With a sidebar (M24): its grid at the left, the rest beside it. */}
+              <div className={cn(definition.frame?.sidebar && 'flex gap-4')}>
+                {definition.frame?.sidebar && (
+                  <div className="w-56 shrink-0" data-testid="frame-sidebar">
+                    <GridCaption>Sidebar</GridCaption>
+                    <EditGrid definition={definition} page={hasPages ? null : undefined} slot="sidebar" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  {hasPages ? (
+                    <>
+                      <GridCaption>
+                        {definition.frame?.header ? 'Header · on every page' : 'On every page'}
+                      </GridCaption>
+                      <EditGrid definition={definition} page={null} />
+                      <GridCaption className="mt-6">
+                        Page {definition.pages!.find((p) => p.name === page)?.title || page}
+                      </GridCaption>
+                      <EditGrid definition={definition} page={page} />
+                    </>
+                  ) : (
+                    <>
+                      {definition.frame?.sidebar && <GridCaption>Page</GridCaption>}
+                      <EditGrid definition={definition} />
+                    </>
+                  )}
+                </div>
+              </div>
               <Pointers page={page} />
             </div>
             {modal && <ComponentView component={modal} definition={definition} />}

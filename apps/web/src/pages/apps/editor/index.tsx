@@ -12,6 +12,7 @@ import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trp
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
+import { AppChromeContext } from '../grid-context'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
@@ -375,48 +376,50 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
       <div ref={ref} className="hidden" />
       {host ? (
         <AppHostProvider host={host}>
-          <ScopeSync />
-          <div className="flex min-h-0 flex-1 gap-2">
-            {!preview && (
-              <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
-                {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
-                {!readOnly && (
-                  <section>
-                    <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
-                    <Palette />
-                    {/* Modules inside modules too (M21), as deep as the limit allows. */}
-                    <div className="mt-1.5">
-                      <AddModule />
-                    </div>
-                  </section>
-                )}
-                <section>
-                  <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
-                  <ComponentTree />
-                </section>
-              </aside>
-            )}
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              {/* On the page background, as people see the app. */}
-              <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
-                <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
-              </div>
+          <AppChromeContext.Provider value={{ appName: app.name, user: { name: me.name, email: me.email } }}>
+            <ScopeSync />
+            <div className="flex min-h-0 flex-1 gap-2">
               {!preview && (
-                <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
-                  <CodePanel key={epoch} />
+                <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
+                  {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
+                  {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
+                  {!readOnly && (
+                    <section>
+                      <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
+                      <Palette />
+                      {/* Modules inside modules too (M21), as deep as the limit allows. */}
+                      <div className="mt-1.5">
+                        <AddModule />
+                      </div>
+                    </section>
+                  )}
+                  <section>
+                    <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
+                    <ComponentTree />
+                  </section>
+                </aside>
+              )}
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                {/* On the page background, as people see the app. */}
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
+                  <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
                 </div>
+                {!preview && (
+                  <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
+                    <CodePanel key={epoch} />
+                  </div>
+                )}
+              </div>
+              {!preview && selected && (
+                <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
+                  {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
+                  <fieldset disabled={readOnly} className="contents" data-testid="inspector">
+                    <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                  </fieldset>
+                </aside>
               )}
             </div>
-            {!preview && selected && (
-              <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
-                {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
-                <fieldset disabled={readOnly} className="contents" data-testid="inspector">
-                  <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
-                </fieldset>
-              </aside>
-            )}
-          </div>
+          </AppChromeContext.Provider>
         </AppHostProvider>
       ) : (
         <Centered>

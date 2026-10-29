@@ -45,7 +45,12 @@ export function containerViews(container: AppComponent | undefined): ContainerVi
  * `sidebar`, or undefined for the frame's header (the default). Inside a form or modal, always undefined.
  */
 export function slotOf(def: AppDefinition, component: AppComponent): string | undefined {
-  if (component.parent === undefined) return component.slot === 'sidebar' ? 'sidebar' : undefined
+  // The sidebar holds components on every page, in an app that has one; otherwise they stay in view (the header).
+  if (component.parent === undefined) {
+    return component.slot === 'sidebar' && def.frame?.sidebar && component.page === undefined
+      ? 'sidebar'
+      : undefined
+  }
   const parent = def.components.find((c) => c.name === component.parent)
   if (!parent || parent.type !== 'container') return undefined
   if ((CONTAINER_SLOTS as readonly string[]).includes(component.slot ?? '')) return component.slot
@@ -56,7 +61,7 @@ export function slotOf(def: AppDefinition, component: AppComponent): string | un
 
 /** The slots `parent` offers (undefined is its body or the frame's header); empty for one that has none. */
 export function slotsOf(def: AppDefinition, parent: string | undefined): (string | undefined)[] {
-  if (parent === undefined) return [undefined, 'sidebar']
+  if (parent === undefined) return def.frame?.sidebar ? [undefined, 'sidebar'] : [undefined]
   const container = def.components.find((c) => c.name === parent)
   if (container?.type !== 'container') return [undefined]
   const views = containerViews(container)

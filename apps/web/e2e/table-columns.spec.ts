@@ -4,11 +4,15 @@ import { signIn, trpcMutate, typeInto } from './helpers'
 /** The third column's computed value field. */
 const valueField = (page: Page) => page.locator('[data-testid$="/props/columns/2/value"]')
 
-/** A table's cells, row by row, as text. */
-const cells = async (table: Locator) =>
-  (await table.getByRole('row').all())
-    .slice(1)
-    .map(async (row) => await row.getByRole('gridcell').allInnerTexts())
+/** A table's cells, row by row, as text (read at once, so a table re-rendering meanwhile can't hang it). */
+const cells = (table: Locator) =>
+  table
+    .locator('[data-row]')
+    .evaluateAll((rows) =>
+      rows.map((r) =>
+        [...r.querySelectorAll('[role="gridcell"]')].map((c) => (c as HTMLElement).innerText.trim()),
+      ),
+    )
 
 /**
  * The columns list editor and computed columns (M24): columns added, configured and reordered in the inspector; a
@@ -59,20 +63,24 @@ test('edits a table’s columns as a list, with a computed column', async ({ pag
     await column.getByLabel('Column label').fill('Total')
     await typeInto(page, valueField(page), '{{ currentRow.qty * currentRow.price * vat.value }}')
     await expect(table.getByRole('columnheader')).toHaveText(['item', 'qty', 'Total'])
-    expect(await Promise.all(await cells(table))).toEqual([
-      ['Apples', '2', '6'],
-      ['Pears', '5', '5'],
-    ])
+    await expect
+      .poll(() => cells(table))
+      .toEqual([
+        ['Apples', '2', '6'],
+        ['Pears', '5', '5'],
+      ])
     // Editable is off for a computed column.
     await expect(column.getByLabel('Editable')).toBeDisabled()
   })
 
   await test.step('it follows what it reads', async () => {
     await page.locator('[data-component="vat"]').getByRole('spinbutton').fill('2')
-    expect(await Promise.all(await cells(table))).toEqual([
-      ['Apples', '2', '12'],
-      ['Pears', '5', '10'],
-    ])
+    await expect
+      .poll(() => cells(table))
+      .toEqual([
+        ['Apples', '2', '12'],
+        ['Pears', '5', '10'],
+      ])
   })
 
   await test.step('a name it doesn’t know is a problem; currentRow is fine', async () => {
@@ -103,10 +111,12 @@ test('edits a table’s columns as a list, with a computed column', async ({ pag
     await page.goto(`/apps/${slug}`)
     const live = page.locator('[data-component="lines"]')
     await expect(live.getByRole('columnheader')).toHaveText(['Total', 'qty'])
-    expect(await Promise.all(await cells(live))).toEqual([
-      ['6', '2'],
-      ['5', '5'],
-    ])
+    await expect
+      .poll(() => cells(live))
+      .toEqual([
+        ['6', '2'],
+        ['5', '5'],
+      ])
   })
   expect(errors).toEqual([])
 })
