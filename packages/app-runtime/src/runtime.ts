@@ -736,6 +736,14 @@ export class AppRuntime {
           }
           methods.nextView = () => step(1)
           methods.previousView = () => step(-1)
+          const fold = (expanded: boolean) => {
+            if ((this.model.get(key('expanded')) !== false) === expanded) return true
+            this.apply({ [key('expanded')]: expanded })
+            return this.fire(name, expanded ? 'expand' : 'collapse')
+          }
+          methods.expand = () => fold(true)
+          methods.collapse = () => fold(false)
+          methods.toggle = () => fold(this.model.get(key('expanded')) === false)
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

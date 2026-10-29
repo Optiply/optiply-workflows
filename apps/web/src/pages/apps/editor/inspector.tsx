@@ -48,8 +48,10 @@ export function ComponentInspector({ name }: { name: string }) {
   }
   const inside = withDescendants(definition, name)
   const parents = definition.components.filter((c) => componentSpec(c.type)?.container && !inside.has(c.name))
-  // The views of the container it's in (M24), to pick its view.
-  const parentViews = containerViews(definition.components.find((c) => c.name === component.parent))
+  // The container it's in (M24): its views, header and footer to pick from.
+  const holder = definition.components.find((c) => c.name === component.parent)
+  const inContainer = holder?.type === 'container'
+  const parentViews = containerViews(holder)
 
   return (
     <div className="flex flex-col gap-4 p-4" data-testid={`inspector-${name}`}>
@@ -88,20 +90,28 @@ export function ComponentInspector({ name }: { name: string }) {
         </EditorField>
       )}
 
-      {parentViews.length > 0 && (
-        <EditorField label="In view">
+      {inContainer && (
+        <EditorField label="Area">
           <Select
-            aria-label="In view"
+            aria-label="Area"
             value={slotOf(definition, component) ?? ''}
             onChange={(e) =>
-              update((def) => moveToParent(def, name, component.parent, { slot: e.target.value }))
+              update((def) =>
+                moveToParent(def, name, component.parent, { slot: e.target.value || undefined }),
+              )
             }
           >
-            {parentViews.map((v) => (
-              <option key={v.name} value={v.name}>
-                {v.label || v.name}
-              </option>
-            ))}
+            {parentViews.length ? (
+              parentViews.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.label || v.name}
+                </option>
+              ))
+            ) : (
+              <option value="">Body</option>
+            )}
+            <option value="header">Header</option>
+            <option value="footer">Footer</option>
           </Select>
         </EditorField>
       )}

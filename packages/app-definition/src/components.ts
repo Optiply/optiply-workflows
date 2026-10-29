@@ -314,10 +314,20 @@ const specs: ComponentSpec[] = [
       showTabs: bool('Show tabs', true),
       /** The view shown first; the first view when empty. */
       defaultView: str('Default view'),
+      /** A button in the header folds it to its header (M24); what's below moves up. */
+      collapsible: bool('Collapsible'),
+      defaultExpanded: bool('Expanded at first', true),
+      /** The content scrolls inside the container's height instead of overflowing it (M24). */
+      scroll: bool('Scroll the content', true),
+      /** `surface`, `canvas` or `accent` (the theme's, so dark mode works), or a color (`#fef3c7`, `rgb(…)`). */
+      background: str('Background'),
+      padding: oneOf('Padding', ['none', 'small', 'medium', 'large'], 'medium'),
     },
     state: {
       /** The view shown (M24): `defaultView` until `setView`; read it with the first view as the fallback. */
       currentView: { from: 'defaultView' },
+      /** Unfolded (M24); only a collapsible container folds. */
+      expanded: { from: 'defaultExpanded' },
     },
     methods: {
       /** Shows the view named `view`; fires `viewChange`. */
@@ -326,8 +336,14 @@ const specs: ComponentSpec[] = [
       nextView: { params: [] },
       /** The previous view, staying on the first one; fires `viewChange` when it moves. */
       previousView: { params: [] },
+      /** Unfolds it; fires `expand`. */
+      expand: { params: [] },
+      /** Folds it to its header (a collapsible container); fires `collapse`. */
+      collapse: { params: [] },
+      /** Folds or unfolds it. */
+      toggle: { params: [] },
     },
-    events: ['viewChange'],
+    events: ['viewChange', 'expand', 'collapse'],
     defaultSize: { w: 6, h: 12 },
   },
   {

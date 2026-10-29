@@ -11,6 +11,7 @@ import {
 import { Fragment, useContext, useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
+import { foldedLayout } from './folded'
 import { ChildGridContext, EditingContext } from './grid-context'
 import type { RendererProps } from './renderer'
 import { useAppHostState, useAppScope, useAppValue } from './runtime/react'
@@ -73,7 +74,20 @@ export function AppGrid({
   page?: string | null
   slot?: string
 }) {
-  const children = placedChildren(definition, parent, page, slot)
+  const scope = useAppScope()
+  // Folded containers (M24), by name: a string, so the grid re-renders only when one folds or unfolds.
+  const foldedKey = useAppHostState((s) =>
+    placedChildren(definition, parent, page, slot)
+      .filter(
+        ({ component: c }) =>
+          c.type === 'container' &&
+          s.values[`${scope}${c.name}.collapsible`] === true &&
+          s.values[`${scope}${c.name}.expanded`] === false,
+      )
+      .map(({ component: c }) => `${c.name}:${String(s.values[`${scope}${c.name}.padding`] ?? 'medium')}`)
+      .join(','),
+  )
+  const children = foldedLayout(placedChildren(definition, parent, page, slot), foldedKey)
   return (
     <div
       className="grid gap-x-3"

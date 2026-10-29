@@ -81,7 +81,7 @@ test('switches, edits and renames a container’s views', async ({ page }) => {
     await page.getByTestId('frame-box').click({ position: { x: 20, y: 30 } })
     await page.getByRole('button', { name: 'Button', exact: true }).click()
     await expect(page.getByTestId('inspector-button1')).toBeVisible()
-    await expect(page.getByTestId('inspector-button1').getByLabel('In view')).toHaveValue('details')
+    await expect(page.getByTestId('inspector-button1').getByLabel('Area')).toHaveValue('details')
     await expect(box.getByRole('tabpanel')).toContainText('Button')
   })
 

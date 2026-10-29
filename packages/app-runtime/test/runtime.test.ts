@@ -541,6 +541,32 @@ describe('AppRuntime', () => {
     expect(t.effects.map((e) => (e as { message: string }).message)).toEqual(['now c', 'now a'])
   })
 
+  it('folds and unfolds a container, firing only when it changes (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'box',
+          'container',
+          { collapsible: true, defaultExpanded: false },
+          {
+            events: [
+              on('expand', { type: 'notify', message: 'open' }),
+              on('collapse', { type: 'notify', message: 'shut' }),
+            ],
+          },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    expect(t.state['box.expanded']).toBe(false)
+    await t.runtime.call('box', 'collapse')
+    await t.runtime.call('box', 'toggle')
+    await t.runtime.call('box', 'expand')
+    await t.runtime.call('box', 'toggle')
+    expect(t.state['box.expanded']).toBe(false)
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual(['open', 'shut'])
+  })
+
   it('debounces handlers that ask for it', async () => {
     const t = setup({
       components: [
