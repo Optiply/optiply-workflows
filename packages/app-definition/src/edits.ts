@@ -13,6 +13,7 @@ import {
   type Transformer,
   type Variable,
 } from './schema'
+import { CONTAINER_SLOTS, containerViews, rewriteCallArgs, slotOf } from './slots'
 
 /**
  * The editor's changes to an app, as pure functions: each returns a new definition and leaves its input alone.
@@ -56,12 +57,20 @@ export function withDescendants(def: AppDefinition, name: string): Set<string> {
   return out
 }
 
-/** The first free row below `parent`'s children (at the top, those on `page`: each page has a grid of its own). */
-export function bottomOf(def: AppDefinition, parent: string | undefined, page: string | null = null): number {
+/**
+ * The first free row below `parent`'s children in `slot` (M24; each slot is a grid of its own, as is each page at
+ * the top).
+ */
+export function bottomOf(
+  def: AppDefinition,
+  parent: string | undefined,
+  page: string | null = null,
+  slot?: string,
+): number {
   let bottom = 0
   for (const c of def.components) {
     const p = def.layout?.[c.name]
-    const sameGrid = parent !== undefined || (c.page ?? null) === page
+    const sameGrid = (parent !== undefined || (c.page ?? null) === page) && slotOf(def, c) === slot
     if (c.parent === parent && sameGrid && p) bottom = Math.max(bottom, p.y + p.h)
   }
   return bottom
@@ -76,25 +85,33 @@ export function bottomOf(def: AppDefinition, parent: string | undefined, page: s
 export function addComponent(
   def: AppDefinition,
   type: string,
-  opts: { parent?: string; position?: Partial<Position>; page?: string | null; base?: string } = {},
+  opts: {
+    parent?: string
+    position?: Partial<Position>
+    page?: string | null
+    base?: string
+    slot?: string
+  } = {},
 ): { definition: AppDefinition; name: string } {
   const spec = type === 'module' ? moduleComponentSpec(null) : componentSpec(type)
   if (!spec) throw new Error(`Unknown component type "${type}"`)
   const name = nextName(def, opts.base ?? type)
   const parent = spec.overlay ? undefined : opts.parent
   const page = parent === undefined ? (opts.page ?? null) : null
+  const slot = spec.overlay ? undefined : opts.slot
   const component: AppComponent = {
     name,
     type,
     ...(parent !== undefined && { parent }),
     ...(page !== null && { page }),
+    ...(slot !== undefined && { slot }),
   }
   const layout = { ...def.layout }
   if (!spec.overlay) {
     const w = Math.min(opts.position?.w ?? spec.defaultSize.w, 12)
     layout[name] = {
       x: Math.min(opts.position?.x ?? 0, 12 - w),
-      y: opts.position?.y ?? bottomOf(def, parent, page),
+      y: opts.position?.y ?? bottomOf(def, parent, page, slot),
       w,
       h: opts.position?.h ?? spec.defaultSize.h,
     }
@@ -165,10 +182,10 @@ export function moveToParent(
   def: AppDefinition,
   name: string,
   parent: string | undefined,
-  opts: { page?: string | null } = {},
+  opts: { page?: string | null; slot?: string } = {},
 ): AppDefinition {
   const component = def.components.find((c) => c.name === name)
-  if (!component || component.parent === parent) return def
+  if (!component || (component.parent === parent && component.slot === opts.slot)) return def
   if (parent !== undefined) {
     const target = def.components.find((c) => c.name === parent)
     if (!target || !componentSpec(target.type)?.container || withDescendants(def, name).has(parent))
@@ -178,9 +195,11 @@ export function moveToParent(
   const moved = updateComponent(def, name, (c) => {
     const next = { ...c }
     delete next.page
+    delete next.slot
     if (parent === undefined) delete next.parent
     else next.parent = parent
     if (page !== null) next.page = page
+    if (opts.slot !== undefined) next.slot = opts.slot
     return next
   })
   const position = def.layout?.[name]
@@ -188,8 +207,114 @@ export function moveToParent(
   // Below the new parent's children, counted before the move (the component's old place doesn't count).
   return {
     ...moved,
-    layout: { ...moved.layout, [name]: { ...position, x: 0, y: bottomOf(def, parent, page) } },
+    layout: { ...moved.layout, [name]: { ...position, x: 0, y: bottomOf(def, parent, page, opts.slot) } },
   }
+}
+
+/** A container's views as stored (M24): its `views` prop when that's a list, else none. */
+function storedViews(def: AppDefinition, container: string): JsonValue[] {
+  const raw = def.components.find((c) => c.name === container)?.props?.views
+  return Array.isArray(raw) ? raw : []
+}
+
+/** Adds a view to a container (`view1`, `view2`…, the first free); its name. */
+export function addView(def: AppDefinition, container: string): { definition: AppDefinition; name: string } {
+  const taken = new Set(containerViews(def.components.find((c) => c.name === container)).map((v) => v.name))
+  let n = taken.size + 1
+  while (taken.has(`view${n}`)) n++
+  const name = `view${n}`
+  const label = `View ${n}`
+  return {
+    definition: setProp(def, container, 'views', [...storedViews(def, container), { name, label }]),
+    name,
+  }
+}
+
+/** Why `name` can't be a view of `container` (besides `except`); null when it can. */
+export function viewNameReason(
+  def: AppDefinition,
+  container: string,
+  name: string,
+  except?: string,
+): string | null {
+  if (!appNameSchema.safeParse(name).success) return 'A view name is a letter, then letters, digits or _'
+  if ((CONTAINER_SLOTS as readonly string[]).includes(name)) return `"${name}" is the container's ${name}`
+  const views = containerViews(def.components.find((c) => c.name === container))
+  if (name !== except && views.some((v) => v.name === name))
+    return `"${container}" has a view "${name}" already`
+  return null
+}
+
+/**
+ * Renames a view: its children's slots follow, and so do the container's `defaultView`, `setView('…')` written in
+ * code (`container1.setView('details')`) and event handlers calling `setView` with it. Unchanged when `to` is taken
+ * or invalid.
+ */
+export function renameView(def: AppDefinition, container: string, from: string, to: string): AppDefinition {
+  if (from === to || viewNameReason(def, container, to) !== null) return def
+  if (!containerViews(def.components.find((c) => c.name === container)).some((v) => v.name === from))
+    return def
+  let next = setProp(
+    def,
+    container,
+    'views',
+    storedViews(def, container).map((v) =>
+      v && typeof v === 'object' && !Array.isArray(v) && v.name === from ? { ...v, name: to } : v,
+    ),
+  )
+  const props = next.components.find((c) => c.name === container)?.props
+  if (props?.defaultView === from) next = setProp(next, container, 'defaultView', to)
+  next = {
+    ...next,
+    components: next.components.map((c) => {
+      const moved = c.parent === container && c.slot === from ? { ...c, slot: to } : c
+      if (!moved.events?.length) return moved
+      return { ...moved, events: moved.events.map((h) => relinkSetView(h, container, from, to)) }
+    }),
+    queries: next.queries.map((q) =>
+      q.events?.length ? { ...q, events: q.events.map((h) => relinkSetView(h, container, from, to)) } : q,
+    ),
+  }
+  return rewriteCallArgs(next, container, 'setView', from, to).definition
+}
+
+/** A handler calling `container.setView` with `from` as its plain argument, calling it with `to`. */
+function relinkSetView(h: EventHandler, container: string, from: string, to: string): EventHandler {
+  const a = h.action
+  if (a.type !== 'controlComponent' || a.component !== container || a.method !== 'setView') return h
+  if (a.args?.[0] !== from) return h
+  return { ...h, action: { ...a, args: [to, ...a.args.slice(1)] } }
+}
+
+/**
+ * Removes a view. What's in it goes to `moveTo` (another view, below what's there), or is removed with what's
+ * inside it when `moveTo` is null.
+ */
+export function removeView(
+  def: AppDefinition,
+  container: string,
+  view: string,
+  moveTo: string | null,
+): AppDefinition {
+  const target = def.components.find((c) => c.name === container)
+  if (!containerViews(target).some((v) => v.name === view)) return def
+  const inView = def.components
+    .filter((c) => c.parent === container && slotOf(def, c) === view)
+    .map((c) => c.name)
+  let next = setProp(
+    def,
+    container,
+    'views',
+    storedViews(def, container).filter(
+      (v) => !(v && typeof v === 'object' && !Array.isArray(v) && v.name === view),
+    ),
+  )
+  if (target?.props?.defaultView === view) next = setProp(next, container, 'defaultView', undefined)
+  for (const name of inView) {
+    next =
+      moveTo === null ? removeComponent(next, name) : moveToParent(next, name, container, { slot: moveTo })
+  }
+  return next
 }
 
 /** Adds a query: a resource query (manual unless it reads, `auto`) or a JS query. */

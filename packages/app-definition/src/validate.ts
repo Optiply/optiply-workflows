@@ -23,9 +23,11 @@ import {
   type AppComponent,
   type AppDefinition,
   appDefinitionSchema,
+  appNameSchema,
   type EventHandler,
   type LibraryAppQuery,
 } from './schema'
+import { CONTAINER_SLOTS, containerViews, FRAME_SLOTS } from './slots'
 
 export type AppDiagnosticCode =
   | 'schema'
@@ -36,6 +38,8 @@ export type AppDiagnosticCode =
   | 'invalid_prop'
   | 'unknown_parent'
   | 'invalid_parent'
+  /** A slot its parent doesn't have (M24), or a container's views written wrong. */
+  | 'invalid_slot'
   | 'invalid_layout'
   | 'unknown_event'
   | 'unknown_query'
@@ -298,6 +302,10 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
       } else if (insideItself(def, c.name)) {
         report({ code: 'invalid_parent', message: `"${c.name}" would end up inside itself`, path, ...at })
       }
+    }
+    if (c.slot !== undefined) checkSlot(def, c, spec, ['components', i, 'slot'], at, report)
+    if (c.type === 'container' && c.props?.views !== undefined) {
+      checkViews(c.props.views, ['components', i, 'props', 'views'], at, report)
     }
     const events = spec.openProps ? null : spec.events
     checkHandlers(def, c.events, ['components', i, 'events'], events, at.entity, entities, pages, report)
@@ -817,6 +825,83 @@ function checkModuleInstance(
       })
     }
   }
+}
+
+/** A component's `slot` (M24): one its parent has (a container's view, header or footer; the frame's). */
+function checkSlot(
+  def: AppDefinition,
+  c: AppComponent,
+  spec: { overlay?: boolean },
+  path: (string | number)[],
+  at: { entity: string },
+  report: Report,
+) {
+  const parent = c.parent === undefined ? undefined : def.components.find((p) => p.name === c.parent)
+  if (spec.overlay) {
+    report({ code: 'invalid_slot', message: 'A modal opens over the page; it has no slot', path, ...at })
+    return
+  }
+  if (c.parent === undefined) {
+    if (!(FRAME_SLOTS as readonly string[]).includes(c.slot!)) {
+      report({
+        code: 'invalid_slot',
+        message: `At the top, a component is in the frame's ${FRAME_SLOTS.join(' or ')}, not "${c.slot}"`,
+        path,
+        ...at,
+      })
+    }
+    return
+  }
+  if (parent?.type !== 'container') {
+    if (parent) report({ code: 'invalid_slot', message: `"${c.parent}" has no slots`, path, ...at })
+    return
+  }
+  const allowed = [...CONTAINER_SLOTS, ...containerViews(parent).map((v) => v.name)]
+  if (!allowed.includes(c.slot!)) {
+    report({
+      code: 'invalid_slot',
+      message: `"${c.parent}" has no view or slot "${c.slot}": it has ${allowed.join(', ')}`,
+      path,
+      ...at,
+    })
+  }
+}
+
+/** A container's `views` (M24): a list of `{ name, label? }`, names valid, unused, not a slot's. */
+function checkViews(views: unknown, path: (string | number)[], at: { entity: string }, report: Report) {
+  if (!Array.isArray(views)) {
+    report({
+      code: 'invalid_slot',
+      message:
+        'Views are written as a list of { name, label }, not computed: components are placed in them by name',
+      path,
+      ...at,
+    })
+    return
+  }
+  const seen = new Set<string>()
+  views.forEach((v, n) => {
+    const name = v && typeof v === 'object' && !Array.isArray(v) ? (v as { name?: unknown }).name : undefined
+    const where = [...path, n]
+    if (typeof name !== 'string' || !appNameSchema.safeParse(name).success) {
+      report({
+        code: 'invalid_slot',
+        message: 'A view needs a name: a letter, then letters, digits or _',
+        path: where,
+        ...at,
+      })
+    } else if ((CONTAINER_SLOTS as readonly string[]).includes(name)) {
+      report({
+        code: 'invalid_slot',
+        message: `"${name}" is the container's ${name}, not a view`,
+        path: where,
+        ...at,
+      })
+    } else if (seen.has(name)) {
+      report({ code: 'invalid_slot', message: `Two views are named "${name}"`, path: where, ...at })
+    }
+    if (typeof name === 'string') seen.add(name)
+  })
 }
 
 /** Walking up from `name` through parents comes back to it. */

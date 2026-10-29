@@ -102,6 +102,8 @@ export interface ComponentTarget {
   page: string | null
   /** The first row to use in the target grid; below what's there when missing. */
   y?: number
+  /** The slot of the target to paste into (M24): a container's view, header or footer, or the frame's sidebar. */
+  slot?: string
 }
 
 /**
@@ -125,7 +127,7 @@ export function pasteComponents(
   // pasted component's name, and renaming that one mustn't rewrite the reference to the target's.
   const loose = clip.components.map((c): AppComponent => {
     if (!roots.has(c.name)) return c
-    const { parent: _p, page: _g, ...rest } = c
+    const { parent: _p, page: _g, slot: _s, ...rest } = c
     return rest
   })
   const scratch = renamedApart(def, { schemaVersion: 1, components: loose, queries: [], layout: clip.layout })
@@ -134,9 +136,16 @@ export function pasteComponents(
     ...scratch.definition,
     components: scratch.definition.components.map((c): AppComponent => {
       if (!roots.has(originalOf(c.name, renamed))) return c
-      const into = componentSpec(c.type)?.overlay ? undefined : parent
+      const overlay = componentSpec(c.type)?.overlay
+      const into = overlay ? undefined : parent
       const page = into === undefined ? target.page : null
-      return { ...c, ...(into !== undefined && { parent: into }), ...(page !== null && { page }) }
+      const slot = overlay || target.slot === undefined ? undefined : target.slot
+      return {
+        ...c,
+        ...(into !== undefined && { parent: into }),
+        ...(page !== null && { page }),
+        ...(slot !== undefined && { slot }),
+      }
     }),
   }
 
@@ -146,7 +155,7 @@ export function pasteComponents(
     .filter((c) => roots.has(originalOf(c.name, renamed)) && pasted.layout?.[c.name])
     .map((c) => pasted.layout![c.name]!)
   const top = rootLayout.length ? Math.min(...rootLayout.map((p) => p.y)) : 0
-  const start = target.y ?? bottomOf(def, parent, parent === undefined ? target.page : null)
+  const start = target.y ?? bottomOf(def, parent, parent === undefined ? target.page : null, target.slot)
   for (const c of pasted.components) {
     const at = pasted.layout?.[c.name]
     if (!at || componentSpec(c.type)?.overlay) continue

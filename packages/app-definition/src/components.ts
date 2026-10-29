@@ -302,10 +302,32 @@ const specs: ComponentSpec[] = [
     type: 'container',
     label: 'Container',
     container: true,
-    props: { title: str('Title'), showBorder: bool('Show border', true) },
-    state: {},
-    methods: {},
-    events: [],
+    props: {
+      title: str('Title'),
+      showBorder: bool('Show border', true),
+      /**
+       * `{ name, label? }` per view, in order (M24): each child is in one (its `slot`), and only the shown view's
+       * render. Written as a list (the names are the definition's); empty is one grid, as before.
+       */
+      views: { type: 'array', default: [], label: 'Views' },
+      /** Tabs above the views; without them, `setView` switches. */
+      showTabs: bool('Show tabs', true),
+      /** The view shown first; the first view when empty. */
+      defaultView: str('Default view'),
+    },
+    state: {
+      /** The view shown (M24): `defaultView` until `setView`; read it with the first view as the fallback. */
+      currentView: { from: 'defaultView' },
+    },
+    methods: {
+      /** Shows the view named `view`; fires `viewChange`. */
+      setView: { params: ['view'] },
+      /** The next view, staying on the last one (for steps); fires `viewChange` when it moves. */
+      nextView: { params: [] },
+      /** The previous view, staying on the first one; fires `viewChange` when it moves. */
+      previousView: { params: [] },
+    },
+    events: ['viewChange'],
     defaultSize: { w: 6, h: 12 },
   },
   {

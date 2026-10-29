@@ -4,6 +4,7 @@ import {
   type AppQuery,
   browserExpressions,
   type CodeRunner,
+  containerViews,
   type Entity,
   type EventHandler,
   entityPages,
@@ -707,6 +708,34 @@ export class AppRuntime {
           }
           methods.setFilters = setFilters
           methods.clearFilters = () => setFilters([])
+        }
+        if (type === 'container') {
+          const views = () => containerViews(entity.component).map((v) => v.name)
+          const shown = () => {
+            const current = this.model.get(key('currentView'))
+            return views().includes(current as string) ? (current as string) : (views()[0] ?? null)
+          }
+          const show = (view: string) => {
+            if (view === shown()) return true
+            this.apply({ [key('currentView')]: view })
+            return this.fire(name, 'viewChange')
+          }
+          methods.setView = (view: unknown) => {
+            if (typeof view !== 'string' || !views().includes(view)) {
+              throw new Error(
+                `${name} has no view ${JSON.stringify(view)}: it has ${views().join(', ') || 'none'}`,
+              )
+            }
+            return show(view)
+          }
+          const step = (by: 1 | -1) => {
+            const list = views()
+            const at = list.indexOf(shown() ?? '')
+            const next = list[Math.max(0, Math.min(list.length - 1, at + by))]
+            return next === undefined ? true : show(next)
+          }
+          methods.nextView = () => step(1)
+          methods.previousView = () => step(-1)
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

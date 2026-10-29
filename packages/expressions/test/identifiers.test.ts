@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { freeIdentifierRefs, freeIdentifiers, TemplateError } from '../src'
+import { freeIdentifierRefs, freeIdentifiers, stringArgCalls, TemplateError } from '../src'
 
 describe('freeIdentifiers (expressions)', () => {
   it.each([
@@ -129,5 +129,23 @@ describe('freeIdentifiers (function bodies)', () => {
     const body = 'return foo'
     const [ref] = freeIdentifierRefs(body, 'function-body')
     expect(body.slice(ref!.start, ref!.end)).toBe('foo')
+  })
+})
+
+describe('stringArgCalls (M24)', () => {
+  it('finds object.method calls with a string literal first, where the literal is', () => {
+    const code = `await c1.setView('details'); c1?.setView("list", 1); other.setView('x'); c1.setView(next); c1['setView']('y')`
+    const calls = stringArgCalls(code, 'function-body', 'c1', 'setView')
+    expect(calls.map((c) => [c.value, code.slice(c.start, c.end)])).toEqual([
+      ['details', "'details'"],
+      ['list', '"list"'],
+    ])
+    expect(stringArgCalls("utils.openPage('orders', { id: 1 })", 'expression', 'utils', 'openPage')).toEqual([
+      { value: 'orders', start: 15, end: 23 },
+    ])
+  })
+
+  it('finds nothing in code that doesn’t parse', () => {
+    expect(stringArgCalls("c1.setView('a'", 'expression', 'c1', 'setView')).toEqual([])
   })
 })

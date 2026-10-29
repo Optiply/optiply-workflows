@@ -516,6 +516,31 @@ describe('AppRuntime', () => {
     expect(t.state['t.newRows']).toEqual([])
   })
 
+  it('switches a container’s views, firing viewChange only when the view changes (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'box',
+          'container',
+          { views: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], defaultView: 'b' },
+          { events: [on('viewChange', { type: 'notify', message: 'now {{ box.currentView }}' })] },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    expect(t.state['box.currentView']).toBe('b')
+    await t.runtime.call('box', 'nextView')
+    await t.runtime.call('box', 'nextView')
+    expect(t.state['box.currentView']).toBe('c')
+    await t.runtime.call('box', 'setView', ['a'])
+    await t.runtime.call('box', 'setView', ['a'])
+    await t.runtime.call('box', 'previousView')
+    await expect(t.runtime.call('box', 'setView', ['nope'])).rejects.toThrow(
+      'box has no view "nope": it has a, b, c',
+    )
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual(['now c', 'now a'])
+  })
+
   it('debounces handlers that ask for it', async () => {
     const t = setup({
       components: [

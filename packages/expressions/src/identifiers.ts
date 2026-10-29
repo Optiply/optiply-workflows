@@ -166,3 +166,64 @@ function syntaxError(message: string, pos: number, length: number): TemplateErro
   const start = Math.max(0, Math.min(pos, length))
   return new TemplateError(`Syntax error: ${clean}`, start, Math.min(start + 1, length))
 }
+
+/** A string literal passed as the first argument of a call such as `container1.setView('details')` (M24). */
+export interface StringArgCall {
+  value: string
+  /** Offsets of the literal, quotes included, into the code passed in. */
+  start: number
+  end: number
+}
+
+/**
+ * The calls `object.method('…', …)` in `code` whose first argument is a string literal, with where that literal is:
+ * to rewrite a page or view name written in code when it's renamed. A computed name (`setView(next)`) isn't one.
+ * Code that doesn't parse has none.
+ */
+export function stringArgCalls(
+  code: string,
+  kind: Exclude<CodeKind, 'python-body'>,
+  object: string,
+  method: string,
+): StringArgCall[] {
+  const [prefix, suffix] = WRAP[kind]
+  let root: Node
+  try {
+    root = parseExpressionAt(prefix + code + suffix, 0, ACORN)
+  } catch {
+    return []
+  }
+  const offset = prefix.length
+  const found: StringArgCall[] = []
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const n of node) visit(n)
+      return
+    }
+    const n = node as ESTree.Node & { start: number; end: number }
+    if (n.type === 'CallExpression') {
+      const callee = n.callee.type === 'ChainExpression' ? n.callee.expression : n.callee
+      const arg = n.arguments[0] as (ESTree.Node & { start: number; end: number }) | undefined
+      if (
+        callee.type === 'MemberExpression' &&
+        !callee.computed &&
+        callee.object.type === 'Identifier' &&
+        callee.object.name === object &&
+        callee.property.type === 'Identifier' &&
+        callee.property.name === method &&
+        arg &&
+        ((arg.type === 'Literal' && typeof arg.value === 'string') ||
+          (arg.type === 'TemplateLiteral' && arg.expressions.length === 0))
+      ) {
+        const value = arg.type === 'Literal' ? (arg.value as string) : (arg.quasis[0]?.value.cooked ?? '')
+        found.push({ value, start: arg.start - offset, end: arg.end - offset })
+      }
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key !== 'loc' && key !== 'range' && typeof value === 'object') visit(value)
+    }
+  }
+  visit(root)
+  return found.sort((a, b) => a.start - b.start)
+}

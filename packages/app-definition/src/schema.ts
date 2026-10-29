@@ -112,6 +112,12 @@ export const componentSchema = z.strictObject({
    * component inside another is on its container's page.
    */
   page: appNameSchema.optional(),
+  /**
+   * Where it sits in its parent (M24): inside a container, one of its views (by name) or its `header` or `footer`;
+   * at the top, the app frame's `sidebar` (or `header`, the default). Missing: the parent's body (a container's
+   * first view when it has views). See `slotOf`.
+   */
+  slot: appNameSchema.optional(),
   /** Prop values by prop name, sparse: a missing prop takes the registry's default. */
   props: z.record(z.string().max(64), z.json()).optional(),
   events: handlersSchema.optional(),

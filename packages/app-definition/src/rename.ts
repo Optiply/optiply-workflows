@@ -79,7 +79,8 @@ export function renameAppEntity(def: AppDefinition, from: string, to: string): A
   return { ok: true, definition: next, changed, skipped }
 }
 
-function setAt(target: unknown, path: (string | number)[], value: string) {
+/** Sets the string at `path` inside `target` (a copy the caller owns). */
+export function setAt(target: unknown, path: (string | number)[], value: string) {
   let node = target as Record<string | number, unknown>
   for (const key of path.slice(0, -1)) node = node[key] as Record<string | number, unknown>
   node[path.at(-1)!] = value
