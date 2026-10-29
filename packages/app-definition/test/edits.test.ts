@@ -13,6 +13,7 @@ import {
   pageNameReason,
   removeCode,
   removeComponent,
+  removeComponents,
   removePage,
   renamePage,
   setEntityPage,
@@ -227,6 +228,26 @@ describe('page edits', () => {
       ['error', '3.items.0.page', 'No page is named "nope"'],
       ['warning', '3.items.1.items', 'A group holds links, not groups: these aren’t shown'],
     ])
+  })
+
+  it('removes several components with what is inside them (M24)', () => {
+    const def = app({
+      components: [
+        comp('a', 'text'),
+        comp('b', 'text'),
+        comp('box', 'container'),
+        comp('in', 'text', {}, { parent: 'box' }),
+      ],
+      layout: {
+        a: { x: 0, y: 0, w: 4, h: 2 },
+        b: { x: 4, y: 0, w: 2, h: 2 },
+        box: { x: 0, y: 2, w: 6, h: 6 },
+        in: { x: 0, y: 0, w: 6, h: 2 },
+      },
+    })
+    const gone = removeComponents(def, ['box', 'a'])
+    expect(gone.components.map((c) => c.name)).toEqual(['b'])
+    expect(Object.keys(gone.layout ?? {})).toEqual(['b'])
   })
 
   it('new things go on the page given; moves follow the page', () => {

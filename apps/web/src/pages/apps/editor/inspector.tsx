@@ -7,6 +7,7 @@ import {
   moveToParent,
   type PropSpec,
   removeComponent,
+  removeComponents,
   setEntityPage,
   setHandlers,
   setProp,
@@ -25,6 +26,77 @@ import { ModuleInstanceFields } from './modules'
 import { NavItemsEditor } from './nav-items'
 import { specOf, useAppEditor } from './store'
 import { ViewsEditor } from './views'
+
+/**
+ * Several components selected (M24): how many and which (a name selects just it), and what applies to all of them:
+ * delete, duplicate, move into a container (or out to the page).
+ */
+export function SelectionInspector({ names, onDuplicate }: { names: string[]; onDuplicate: () => void }) {
+  const definition = useAppEditor((s) => s.definition)
+  const update = useAppEditor((s) => s.update)
+  const select = useAppEditor((s) => s.select)
+  const page = useAppEditor((s) => s.url.page)
+  const inside = new Set(names.flatMap((n) => [...withDescendants(definition, n)]))
+  const targets = definition.components.filter((c) => componentSpec(c.type)?.container && !inside.has(c.name))
+  return (
+    <div className="flex flex-col gap-4 p-4" data-testid="inspector-selection">
+      <div>
+        <div className="text-sm font-medium">{names.length} components selected</div>
+        <div className="mt-0.5 text-xs text-muted">
+          Shift- or ⌘-click adds and removes; the arrow keys move them.
+        </div>
+      </div>
+      <ul className="flex flex-wrap gap-1">
+        {names.map((n) => (
+          <li key={n}>
+            <button
+              type="button"
+              className="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs hover:bg-accent-soft"
+              onClick={() => select(n)}
+            >
+              {n}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <EditorField label="Move into">
+        <Select
+          aria-label="Move into"
+          value="-"
+          onChange={(e) => {
+            const to = e.target.value === '' ? undefined : e.target.value
+            update((def) => names.reduce((d, n) => moveToParent(d, n, to, { page }), def))
+          }}
+        >
+          <option value="-" disabled>
+            Pick a place
+          </option>
+          <option value="">{definition.pages?.length ? `Page ${page}` : 'The page'}</option>
+          {targets.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </EditorField>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onDuplicate}>
+          Duplicate
+        </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => {
+            update((def) => removeComponents(def, names))
+            select(null)
+          }}
+        >
+          <Trash2 className="size-3.5" /> Delete {names.length}
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 /** Everything about the selected component: name, parent, props and event handlers. */
 export function ComponentInspector({ name }: { name: string }) {

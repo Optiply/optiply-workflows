@@ -127,6 +127,11 @@ export function removeComponent(def: AppDefinition, name: string): AppDefinition
   return { ...def, components: def.components.filter((c) => !gone.has(c.name)), layout }
 }
 
+/** Removes several components with everything inside them (M24: a selection). */
+export function removeComponents(def: AppDefinition, names: readonly string[]): AppDefinition {
+  return names.reduce((d, name) => removeComponent(d, name), def)
+}
+
 /** Replaces one component (by name) with `edit`'s result. */
 export function updateComponent(
   def: AppDefinition,

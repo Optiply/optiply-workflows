@@ -29,6 +29,8 @@ export type PanelTab = 'code' | 'state' | 'problems' | 'console'
 /** What was showing when an edit was made: undoing it shows it again. */
 export interface AppEditorView {
   selected: string | null
+  /** Every component selected (M24); `selected` is the last one picked. */
+  selection?: string[]
   openCode: string | null
   page: string | null
 }
@@ -63,8 +65,10 @@ interface AppEditorState {
   saveError: string | null
   /** From the browser's validator (connector checks come with publishing). */
   diagnostics: AppDiagnostic[]
-  /** The component selected on the canvas. */
+  /** The component selected on the canvas: the last one picked (the inspector's). */
   selected: string | null
+  /** Every component selected (M24): shift- or cmd-click adds and removes; `selected` is among them. */
+  selection: string[]
   /** The query, transformer or variable open in the bottom panel. */
   openCode: string | null
   /** What was chosen last, for copy and duplicate: the selected component, or the open code item. */
@@ -123,6 +127,10 @@ interface AppEditorState {
   /** Makes the last undone edit again. */
   redo(): void
   select(name: string | null): void
+  /** Adds a component to the selection, or takes it out (shift- or cmd-click, M24). */
+  toggleSelect(name: string): void
+  /** Selects these components (cmd+A, M24); the last is the inspector's. */
+  selectMany(names: string[]): void
   openCodeItem(name: string | null): void
   setPanelTab(tab: PanelTab): void
   /** Edits another page (without parameters), or follows `utils.openPage` (with them). */
@@ -148,6 +156,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   saveError: null,
   diagnostics: [],
   selected: null,
+  selection: [],
   openCode: null,
   focus: 'component',
   panelTab: 'code',
@@ -178,6 +187,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
         slug: opts.kind === 'module' ? (opts.slug ?? null) : null,
       }),
       selected: null,
+      selection: [],
       openCode: definition.queries[0]?.name ?? null,
       focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
@@ -278,7 +288,25 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   // A new selection, code item or page ends the step being typed: the next edit is undone on its own.
   select: (selected) => {
     get().history?.seal()
-    set({ selected, ...(selected !== null && { focus: 'component' as const }) })
+    set({
+      selected,
+      selection: selected === null ? [] : [selected],
+      ...(selected !== null && { focus: 'component' as const }),
+    })
+  },
+  toggleSelect: (name) => {
+    get().history?.seal()
+    const { selection } = get()
+    const next = selection.includes(name) ? selection.filter((n) => n !== name) : [...selection, name]
+    set({ selection: next, selected: next.at(-1) ?? null, focus: 'component' as const })
+  },
+  selectMany: (names) => {
+    get().history?.seal()
+    set({
+      selection: names,
+      selected: names.at(-1) ?? null,
+      ...(names.length && { focus: 'component' as const }),
+    })
   },
   openCodeItem: (openCode) => {
     get().history?.seal()
@@ -306,7 +334,24 @@ const undoable = (history: SharedHistory<AppDefinition, AppEditorView>) => ({
 })
 
 function viewOf(state: AppEditorState): AppEditorView {
-  return { selected: state.selected, openCode: state.openCode, page: state.url.page }
+  return {
+    selected: state.selected,
+    selection: state.selection,
+    openCode: state.openCode,
+    page: state.url.page,
+  }
+}
+
+/** What was selected in `view` that `definition` still has; the inspector's the last of it when its own is gone. */
+function restoredSelection(
+  definition: AppDefinition,
+  view: AppEditorView,
+): Pick<AppEditorState, 'selection' | 'selected'> {
+  const exists = (n: string) => definition.components.some((c) => c.name === n)
+  const selection = (view.selection ?? (view.selected ? [view.selected] : [])).filter(exists)
+  const selected =
+    view.selected !== null && exists(view.selected) ? view.selected : (selection.at(-1) ?? null)
+  return { selection, selected }
 }
 
 /**
@@ -348,11 +393,14 @@ function applied(
     definition,
     ...(page !== url.page && { url: { page, params: {} } }),
     diagnostics: validate(definition, state),
+    // What's selected and gone (someone else deleted it) leaves the selection.
+    ...(!view &&
+      state.selection.some((n) => !names.has(n)) && {
+        selection: state.selection.filter((n) => names.has(n)),
+        selected: state.selected !== null && names.has(state.selected) ? state.selected : null,
+      }),
+    ...(view && restoredSelection(definition, view)),
     ...(view && {
-      selected:
-        view.selected !== null && definition.components.some((c) => c.name === view.selected)
-          ? view.selected
-          : null,
       // The code item shown then, or the one open now; one that's gone (an undone query) gives way to the first.
       openCode:
         [view.openCode, state.openCode].find((n) => n !== null && names.has(n)) ??

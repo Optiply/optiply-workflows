@@ -11,6 +11,7 @@ import {
   setPositions,
   setProp,
   slotOf,
+  slotsOf,
 } from '@ow/app-definition'
 import { GripVertical } from 'lucide-react'
 import { useMemo } from 'react'
@@ -28,6 +29,7 @@ import {
   ShownModalContext,
   shownViews,
 } from '../grid-context'
+import { moveItems } from './layout'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
@@ -77,7 +79,9 @@ export function EditGrid({
   const { width, containerRef, mounted } = useContainerWidth()
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
+  const toggleSelect = useAppEditor((s) => s.toggleSelect)
   const selected = useAppEditor((s) => s.selected)
+  const selection = useAppEditor((s) => s.selection)
   // Who else has a component selected (M16), by name: names are the app's, whatever page anyone is on.
   const peers = usePresence((s) => s.peers)
   const children = useMemo(
@@ -120,7 +124,18 @@ export function EditGrid({
           dropConfig={
             parent === undefined ? { enabled: true, defaultItem: { w: 4, h: 4 } } : { enabled: false }
           }
-          onDragStop={commit}
+          onDragStop={(next, before, after) => {
+            // Several selected (M24): the others on this grid move by the same offset, in the same edit, and the
+            // grid settles as the canvas settles a drag.
+            const { selection: chosen } = useAppEditor.getState()
+            const others =
+              before && after && chosen.length > 1 && chosen.includes(after.i)
+                ? children.map((c) => c.component.name).filter((n) => n !== after.i && chosen.includes(n))
+                : []
+            if (!others.length) return commit(next)
+            const placed = next.filter((l) => l.i !== '__dropping-elem__')
+            commit(moveItems(placed, others, after!.x - before!.x, after!.y - before!.y))
+          }}
           onResizeStop={commit}
           onDropDragOver={() => {
             const spec = dragging ? componentSpec(dragging) : undefined
@@ -148,12 +163,17 @@ export function EditGrid({
                 data-testid={`frame-${component.name}`}
                 className={cn(
                   'group rounded-md',
-                  selected === component.name
+                  selection.includes(component.name)
                     ? 'outline-2 outline-accent'
                     : 'hover:outline hover:outline-accent/40',
                   watchers[0] && `ow-peer-ring ow-presence-${watchers[0].colour}`,
                 )}
-                onMouseDownCapture={() => select(component.name)}
+                onMouseDownCapture={(e) => {
+                  // Shift or cmd adds and removes (M24); a selected one keeps the others, to drag them along.
+                  if (e.shiftKey || e.metaKey || e.ctrlKey) toggleSelect(component.name)
+                  else if (!selection.includes(component.name)) select(component.name)
+                  else if (selected !== component.name) useAppEditor.setState({ selected: component.name })
+                }}
               >
                 {watchers.length > 0 && (
                   <div
@@ -386,8 +406,9 @@ export function ComponentTree() {
   const pages = useMemo(() => entityPages(definition), [definition])
   const hasPages = !!definition.pages?.length
   const shown = (name: string) => !hasPages || [null, page].includes(pages.get(name) ?? null)
-  const selected = useAppEditor((s) => s.selected)
+  const selection = useAppEditor((s) => s.selection)
   const select = useAppEditor((s) => s.select)
+  const toggleSelect = useAppEditor((s) => s.toggleSelect)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   // Selected as-is and derived here: a selector building a new Set would re-render forever.
   const problems = useMemo(
@@ -396,11 +417,14 @@ export function ComponentTree() {
   )
   const rows: { name: string; label: string; depth: number; everyPage: boolean }[] = []
   const walk = (parent: string | undefined, depth: number) => {
-    for (const { component } of placedChildren(definition, parent)) {
-      if (!shown(component.name)) continue
-      const everyPage = hasPages && parent === undefined && component.page === undefined
-      rows.push({ name: component.name, label: labelOf(component), depth, everyPage })
-      if (componentSpec(component.type)?.container) walk(component.name, depth + 1)
+    // Every slot of the parent (M24): a container's header, views and footer; the frame's sidebar.
+    for (const slot of slotsOf(definition, parent)) {
+      for (const { component } of placedChildren(definition, parent, undefined, slot)) {
+        if (!shown(component.name)) continue
+        const everyPage = hasPages && parent === undefined && component.page === undefined
+        rows.push({ name: component.name, label: labelOf(component), depth, everyPage })
+        if (componentSpec(component.type)?.container) walk(component.name, depth + 1)
+      }
     }
   }
   walk(undefined, 0)
@@ -415,11 +439,14 @@ export function ComponentTree() {
         <li key={r.name}>
           <button
             type="button"
-            onClick={() => select(r.name)}
+            aria-pressed={selection.includes(r.name)}
+            onClick={(e) => (e.shiftKey || e.metaKey || e.ctrlKey ? toggleSelect(r.name) : select(r.name))}
             style={{ paddingLeft: 8 + r.depth * 12 }}
             className={cn(
               'flex w-full items-center gap-2 rounded py-1 pr-2 text-left font-mono text-xs',
-              selected === r.name ? 'bg-accent-soft text-ink' : 'text-muted hover:bg-canvas hover:text-ink',
+              selection.includes(r.name)
+                ? 'bg-accent-soft text-ink'
+                : 'text-muted hover:bg-canvas hover:text-ink',
             )}
           >
             <span className="min-w-0 flex-1 truncate">{r.name}</span>

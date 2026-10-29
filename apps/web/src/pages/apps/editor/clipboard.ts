@@ -24,8 +24,9 @@ type Notify = (message: string, tone: Tone) => void
 
 /** What was chosen last as clipboard content: the selected component (with what's inside it), or the open code item. */
 function chosenClip(): ComponentClip | CodeClip | null {
-  const { definition, focus, selected, openCode } = useAppEditor.getState()
-  if (focus === 'component') return selected ? copyComponents(definition, [selected]) : null
+  const { definition, focus, selection, openCode } = useAppEditor.getState()
+  // Every selected component (M24), with what's inside each.
+  if (focus === 'component') return selection.length ? copyComponents(definition, selection) : null
   return openCode ? copyCode(definition, [openCode]) : null
 }
 

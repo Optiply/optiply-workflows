@@ -208,3 +208,36 @@ describe('modules in the app editor (M14)', () => {
     expect(editor().moduleReleases).toBe(releases)
   })
 })
+
+describe('several components selected (M24)', () => {
+  it('adds and removes with toggleSelect, selects many at once, and a plain select starts over', () => {
+    editor().select('title')
+    editor().toggleSelect('body')
+    expect([editor().selection, editor().selected]).toEqual([['title', 'body'], 'body'])
+    editor().toggleSelect('body')
+    expect([editor().selection, editor().selected]).toEqual([['title'], 'title'])
+    editor().selectMany(['body', 'title'])
+    expect([editor().selection, editor().selected]).toEqual([['body', 'title'], 'title'])
+    editor().select(null)
+    expect([editor().selection, editor().selected]).toEqual([[], null])
+  })
+
+  it('brings the selection back with undo, and drops what someone else deleted', () => {
+    editor().selectMany(['title', 'body'])
+    editor().update((d) =>
+      setPositions(d, { title: { x: 2, y: 0, w: 6, h: 2 }, body: { x: 2, y: 0, w: 6, h: 2 } }),
+    )
+    editor().select(null)
+    editor().undo()
+    expect(editor().selection).toEqual(['title', 'body'])
+    // Someone else deletes one: it leaves the selection.
+    const shared = editor().shared!
+    const theirs = new SharedDefinition<AppDefinition>(new Y.Doc(), appSpec)
+    Y.applyUpdate(theirs.doc, Y.encodeStateAsUpdate(shared.doc))
+    theirs.set({ ...theirs.value, components: theirs.value.components.filter((c) => c.name !== 'body') })
+    Y.applyUpdate(shared.doc, Y.encodeStateAsUpdate(theirs.doc))
+    editor().remote()
+    expect(editor().selection).toEqual(['title'])
+    expect(editor().selected).toBe('title')
+  })
+})

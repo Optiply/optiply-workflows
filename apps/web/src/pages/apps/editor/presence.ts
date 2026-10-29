@@ -13,11 +13,11 @@ export const sharePointer = presence.sharePointer
 export const trackPresence = (awareness: Parameters<typeof presence.track>[0]) =>
   presence.track(awareness, {
     read: () => {
-      const { selected, url } = useAppEditor.getState()
-      return { selection: selected ? [selected] : [], area: url.page }
+      const { selection, url } = useAppEditor.getState()
+      return { selection, area: url.page }
     },
     subscribe: (changed) =>
       useAppEditor.subscribe((state, before) => {
-        if (state.selected !== before.selected || state.url.page !== before.url.page) changed()
+        if (state.selection !== before.selection || state.url.page !== before.url.page) changed()
       }),
   })

@@ -17,11 +17,12 @@ import { Notifications, useConfirmations, useNotifications } from '../notificati
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
+import { useCanvasKeys } from './canvas-keys'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
 import { closeSession, ensureSaved, openSession } from './collab'
 import { ScopeSync } from './fields'
-import { ComponentInspector } from './inspector'
+import { ComponentInspector, SelectionInspector } from './inspector'
 import { useLibrarySync } from './library'
 import { ModulePanel } from './module-panel'
 import { AddModule, useModuleSync } from './modules'
@@ -251,6 +252,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
   const status = useAppEditor((s) => s.status)
   const peers = usePresence((s) => s.peers)
   const selected = useAppEditor((s) => s.selected)
+  const selection = useAppEditor((s) => s.selection)
   const definition = useAppEditor((s) => s.definition)
 
   const readOnly = useAppEditor((s) => s.readOnly)
@@ -267,6 +269,8 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     copy: () => (preview ? null : copyText()),
     paste: (text) => pasteText(text, notify),
   })
+  // Escape, ⌘A, Delete and the arrow keys on the canvas's selection (M24); not in Preview.
+  useCanvasKeys(!preview)
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     modules: useAppEditor.getState().moduleReleases,
@@ -424,7 +428,11 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
                 <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
                   {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
                   <fieldset disabled={readOnly} className="contents" data-testid="inspector">
-                    <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                    {selection.length > 1 ? (
+                      <SelectionInspector names={selection} onDuplicate={() => duplicateChosen(notify)} />
+                    ) : (
+                      <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                    )}
                   </fieldset>
                 </aside>
               )}
