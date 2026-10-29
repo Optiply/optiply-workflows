@@ -114,6 +114,55 @@ export const foldersRouter = router({
   }),
 
   /**
+   * Into another folder of its kind, or to the top (`parentId` null); never into itself or a folder inside it. What
+   * it holds comes along, and its grants then reach it from the new parent's too.
+   */
+  move: authedProcedure
+    .input(z.object({ id: Id, parentId: Id.nullable() }))
+    .mutation(async ({ ctx, input }) => {
+      const folder = await folderById(ctx, input.id)
+      await assertCanManage(ctx, folder.objectType)
+      if (folder.parentId === input.parentId) return
+      await assertNoProtected(ctx, folder, 'move')
+      await uniqueOr(duplicate, () =>
+        ctx.db.transaction(async (tx) => {
+          // Every folder of the kind locked, so two moves at once can't make a loop between them.
+          const all = await tx
+            .select({ id: folders.id, parentId: folders.parentId })
+            .from(folders)
+            .where(eq(folders.objectType, folder.objectType))
+            .for('update')
+          const parents = new Map(all.map((f) => [f.id, f.parentId]))
+          if (input.parentId !== null && !parents.has(input.parentId)) {
+            throw new TRPCError({
+              code: 'BAD_REQUEST',
+              message: `No ${folder.objectType} folder has that id`,
+            })
+          }
+          for (
+            let at: string | null = input.parentId, steps = 0;
+            at && steps <= all.length;
+            at = parents.get(at) ?? null, steps++
+          ) {
+            if (at === folder.id) {
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message: "A folder can't move into itself or a folder inside it",
+              })
+            }
+          }
+          await tx.update(folders).set({ parentId: input.parentId }).where(eq(folders.id, input.id))
+        }),
+      )
+      await ctx.audit({
+        action: 'folder.moved',
+        objectType: 'folder',
+        objectId: input.id,
+        metadata: { from: folder.parentId, to: input.parentId },
+      })
+    }),
+
+  /**
    * What's in the folder moves to the top level (and loses the folder's grants); a folder with subfolders can't be
    * deleted.
    */

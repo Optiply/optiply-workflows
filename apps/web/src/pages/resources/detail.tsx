@@ -3,7 +3,7 @@ import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, GitBranch } from 'lucide-react'
 import { useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { folderPath, useFolders } from '@/components/folders'
+import { FolderSelect, folderPath, useFolders } from '@/components/folders'
 import {
   ProtectDialog,
   ProtectedBadge,
@@ -198,14 +198,11 @@ function GeneralCard({ resource }: { resource: ResourceDetail }) {
           />
         </Field>
         <Field label="Folder">
-          <Select value={form.folderId} onChange={(e) => setForm({ ...form, folderId: e.target.value })}>
-            <option value="">None</option>
-            {folders?.folders.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </Select>
+          <FolderSelect
+            type="resource"
+            value={form.folderId || null}
+            onChange={(folderId) => setForm({ ...form, folderId: folderId ?? '' })}
+          />
         </Field>
       </div>
       <ErrorNote error={update.error} />

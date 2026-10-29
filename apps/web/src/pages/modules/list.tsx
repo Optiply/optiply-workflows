@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plus, Puzzle } from 'lucide-react'
 import { useState } from 'react'
-import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
@@ -57,9 +57,9 @@ export function ModulesPage() {
           access.
         </EmptyState>
       ) : (
-        <FolderSections type="module" items={data} listKey={trpc.modules.list.queryKey()}>
+        <FolderBrowser type="module" items={data} listKey={trpc.modules.list.queryKey()}>
           {(m) => <ModuleRow key={m.id} module={m} hasFolders={!!folders?.folders.length} />}
-        </FolderSections>
+        </FolderBrowser>
       )}
     </>
   )
@@ -126,7 +126,8 @@ function NewModuleForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
-  const [folderId, setFolderId] = useState<string | null>(null)
+  // In the folder open in the list, to begin with.
+  const [folderId, setFolderId] = useState<string | null>(useOpenFolder('module').id)
   const { data: folders } = useFolders('module')
   const create = useMutation(
     trpc.modules.create.mutationOptions({

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, GitBranch, Plus, Workflow } from 'lucide-react'
 import { useState } from 'react'
-import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
   Badge,
@@ -66,9 +66,9 @@ export function WorkflowsPage() {
           Create one to start building. If you expected to see workflows here, ask an admin for access.
         </EmptyState>
       ) : (
-        <FolderSections type="workflow" items={data} listKey={trpc.workflows.list.queryKey()}>
+        <FolderBrowser type="workflow" items={data} listKey={trpc.workflows.list.queryKey()}>
           {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={!!folders?.folders.length} />}
-        </FolderSections>
+        </FolderBrowser>
       )}
     </>
   )
@@ -138,7 +138,8 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
-  const [folderId, setFolderId] = useState<string | null>(null)
+  // In the folder open in the list, to begin with.
+  const [folderId, setFolderId] = useState<string | null>(useOpenFolder('workflow').id)
   const [inGit, setInGit] = useState(false)
   const { data: folders } = useFolders('workflow')
   const { data: git } = useGitInfo()

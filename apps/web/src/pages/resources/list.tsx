@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plug, Plus, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
-import { FolderSections, NewFolderForm, useFolders } from '@/components/folders'
+import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import { ProtectedBadge } from '@/components/git'
 import {
   Badge,
@@ -85,9 +85,9 @@ export function ResourcesPage() {
             : 'Nothing has been shared with you yet. Ask an admin for access to a resource.'}
         </EmptyState>
       ) : (
-        <FolderSections type="resource" items={data.resources} listKey={trpc.resources.list.queryKey()}>
+        <FolderBrowser type="resource" items={data.resources} listKey={trpc.resources.list.queryKey()}>
           {(r) => <ResourceRow key={r.id} resource={r} environments={environments ?? []} />}
-        </FolderSections>
+        </FolderBrowser>
       )}
     </>
   )
@@ -141,8 +141,9 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { data: types } = useQuery(trpc.resources.types.queryOptions())
-  const { data: folders } = useFolders('resource')
-  const [form, setForm] = useState({ type: 'postgres', name: '', slug: '', folderId: '' })
+  const openFolder = useOpenFolder('resource').id
+  // In the folder open in the list, to begin with.
+  const [form, setForm] = useState({ type: 'postgres', name: '', slug: '', folderId: openFolder ?? '' })
   const [slugTouched, setSlugTouched] = useState(false)
   const create = useMutation(
     trpc.resources.create.mutationOptions({
@@ -191,14 +192,11 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
           />
         </Field>
         <Field label="Folder">
-          <Select value={form.folderId} onChange={(e) => setForm({ ...form, folderId: e.target.value })}>
-            <option value="">None</option>
-            {folders?.folders.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </Select>
+          <FolderSelect
+            type="resource"
+            value={form.folderId || null}
+            onChange={(folderId) => setForm({ ...form, folderId: folderId ?? '' })}
+          />
         </Field>
       </div>
       <ErrorNote error={create.error} />

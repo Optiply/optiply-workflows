@@ -77,9 +77,12 @@ const indexRoute = createRoute({
   },
 })
 
+/** The lists (workflows, resources, apps, library queries, modules) open one folder at a time: `folder` is its id. */
+const folderSearch = z.object({ folder: z.string().uuid().optional() })
 const workflowsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows',
+  validateSearch: folderSearch,
   component: WorkflowsPage,
 })
 /** The editor (canvas, validator, later Monaco) is its own chunk, loaded when a workflow is opened. */
@@ -94,6 +97,7 @@ const workflowEditorRoute = createRoute({
 const resourcesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/resources',
+  validateSearch: folderSearch,
   component: ResourcesPage,
 })
 const resourceDetailRoute = createRoute({
@@ -112,6 +116,7 @@ const databaseRoute = createRoute({
 const appsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps',
+  validateSearch: folderSearch,
   component: AppsPage,
 })
 /**
@@ -140,6 +145,7 @@ const appEditorRoute = createRoute({
 const libraryRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/library',
+  validateSearch: folderSearch,
   component: LibraryPage,
 })
 const libraryEditorRoute = createRoute({
@@ -153,6 +159,7 @@ const libraryEditorRoute = createRoute({
 const modulesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/modules',
+  validateSearch: folderSearch,
   component: ModulesPage,
 })
 const moduleEditorRoute = createRoute({

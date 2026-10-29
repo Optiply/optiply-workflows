@@ -130,7 +130,8 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   await page.getByRole('button', { name: 'New folder' }).click()
   await page.getByLabel('Folder name').fill(folderName)
   await page.getByRole('button', { name: 'Create', exact: true }).click()
-  await expect(page.getByRole('region', { name: `Folder ${folderName}` })).toBeVisible()
+  const folderRow = page.getByRole('listitem', { name: `Subfolder ${folderName}` })
+  await expect(folderRow).toBeVisible()
 
   // The member isn't an admin: before the folder's grant, the app isn't theirs to see or open.
   const context = await browser.newContext()
@@ -156,24 +157,29 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
 
   // The admin moves the app into the folder and grants the group Use on it.
-  const folder = page.getByRole('region', { name: `Folder ${folderName}` })
   await page.getByLabel(`Folder of Items ${stamp}`).selectOption({ label: folderName })
+  await expect(folderRow).toContainText('1 app')
+  await folderRow.getByRole('link', { name: folderName }).click()
+  const folder = page.getByRole('region', { name: `Folder ${folderName}` })
   await expect(folder.getByTestId(`app-${slug}`)).toBeVisible()
-  await folder.getByRole('button', { name: 'Access' }).click()
-  await page.getByLabel('Group').selectOption({ label: groupName })
-  await expect(page.getByLabel('Environment')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Grant' }).click()
-  await expect(folder).toContainText(groupName)
+  // Open, its Access sits beside its path.
+  await page.getByRole('button', { name: 'Access' }).click()
+  const access = page.getByRole('dialog', { name: `Access to ${folderName}` })
+  await access.getByLabel('Group').selectOption({ label: groupName })
+  await expect(access.getByLabel('Environment')).toHaveCount(0)
+  await access.getByRole('button', { name: 'Grant' }).click()
+  await expect(access).toContainText(groupName)
+  await page.keyboard.press('Escape')
 
   // Through the folder, the app is theirs to use.
   await viewer.goto('/apps')
-  await expect(
-    viewer.getByRole('region', { name: `Folder ${folderName}` }).getByTestId(`app-${slug}`),
-  ).toBeVisible()
   await viewer
-    .getByRole('region', { name: `Folder ${folderName}` })
-    .getByText(`Items ${stamp}`)
+    .getByRole('listitem', { name: `Subfolder ${folderName}` })
+    .getByRole('link', { name: folderName })
     .click()
+  const viewerFolder = viewer.getByRole('region', { name: `Folder ${folderName}` })
+  await expect(viewerFolder.getByTestId(`app-${slug}`)).toBeVisible()
+  await viewerFolder.getByText(`Items ${stamp}`).click()
   await expect(viewer).toHaveURL(new RegExp(`/apps/${slug}$`))
 
   // The list page: 100,000 rows, fetched 25 at a time.

@@ -493,6 +493,50 @@ describe('apps: folders', () => {
     expect(deleted!.metadata).toEqual({ name: 'Sales', type: 'app' })
   })
 
+  it('moves folders into others of their kind, never into themselves, with grants reaching down', async () => {
+    const top = data(await admin.mutate('folders.create', { name: 'Ops', type: 'app' }))
+    const mid = data(await admin.mutate('folders.create', { name: 'Reports', type: 'app', parentId: top.id }))
+    const leaf = data(await admin.mutate('folders.create', { name: 'Weekly', type: 'app', parentId: mid.id }))
+    const other = data(await admin.mutate('folders.create', { name: 'Flows', type: 'workflow' }))
+    const loop = { code: 'BAD_REQUEST', message: "A folder can't move into itself or a folder inside it" }
+    expect(failure(await admin.mutate('folders.move', { id: top.id, parentId: top.id }))).toMatchObject(loop)
+    expect(failure(await admin.mutate('folders.move', { id: top.id, parentId: leaf.id }))).toMatchObject(loop)
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: other.id }))).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'No app folder has that id',
+    })
+    expect(failure(await member.mutate('folders.move', { id: leaf.id, parentId: null }))).toMatchObject({
+      code: 'FORBIDDEN',
+    })
+
+    // A grant on the top folder reaches an app two folders down; moving the branch out takes it away.
+    const app = await appWith('deep', crudApp())
+    data(await admin.mutate('apps.update', { id: app.id, folderId: leaf.id }))
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'folder',
+        objectId: top.id,
+        groupId: memberGroupId,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    expect(data(await member.query('apps.list')).map((a: { id: string }) => a.id)).toContain(app.id)
+    data(await admin.mutate('folders.move', { id: mid.id, parentId: null }))
+    expect(data(await member.query('apps.list')).map((a: { id: string }) => a.id)).not.toContain(app.id)
+    // Moving it back under a folder now inside it would be a loop; a name taken in the target is a conflict.
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: leaf.id }))).toMatchObject(loop)
+    data(await admin.mutate('folders.create', { name: 'Reports', type: 'app', parentId: top.id }))
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: top.id }))).toMatchObject({
+      code: 'CONFLICT',
+    })
+    const [moved] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'folder.moved'), eq(auditEvents.objectId, mid.id)))
+    expect(moved!.metadata).toEqual({ from: top.id, to: null })
+  })
+
   it('needs Own to move an app between folders, and only into app folders', async () => {
     const app = await appWith('foldered', crudApp())
     const [resourceFolder] = await env.db

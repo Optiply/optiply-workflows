@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Library, Plus } from 'lucide-react'
 import { useState } from 'react'
-import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
@@ -67,9 +67,9 @@ export function LibraryPage() {
           Create one to share a query between apps. If you expected to see some here, ask an admin for access.
         </EmptyState>
       ) : (
-        <FolderSections type="library_query" items={data} listKey={trpc.libraryQueries.list.queryKey()}>
+        <FolderBrowser type="library_query" items={data} listKey={trpc.libraryQueries.list.queryKey()}>
           {(q) => <LibraryRow key={q.id} query={q} hasFolders={!!folders?.folders.length} />}
-        </FolderSections>
+        </FolderBrowser>
       )}
     </>
   )
@@ -136,7 +136,8 @@ function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
-  const [folderId, setFolderId] = useState<string | null>(null)
+  // In the folder open in the list, to begin with.
+  const [folderId, setFolderId] = useState<string | null>(useOpenFolder('library_query').id)
   const { data: folders } = useFolders('library_query')
   const create = useMutation(
     trpc.libraryQueries.create.mutationOptions({
