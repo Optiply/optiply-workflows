@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { counterLibrary, publishedApp, publishedLibrary } from './custom-component-helpers'
-import { signIn, trpcQuery } from './helpers'
+import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * Custom components at run time (M25 step 4b): a library's component, built with an npm package from the test
@@ -99,4 +99,39 @@ test('a custom component runs in a published app', async ({ page }) => {
       .id,
   })
   expect(releases[0]!.bundleHash).toMatch(/^[0-9a-f]{64}$/)
+})
+
+test('a custom component is placed and set in the app editor', async ({ page }) => {
+  await signIn(page)
+  await publishedLibrary(page, 'e2e-editor-counters', counterLibrary())
+  await trpcMutate(page, 'apps.create', { slug: 'custom-edit-app', name: 'Custom edit app' })
+  await page.goto('/apps/custom-edit-app/edit')
+  await page.getByRole('button', { name: 'Add a custom component' }).click()
+  await page
+    .getByTestId('custom-picker')
+    .getByRole('button', { name: /e2e-editor-counters/ })
+    .click()
+  await expect(page.getByLabel('Library')).toHaveValue('e2e-editor-counters')
+  await expect(page.getByLabel('Component', { exact: true })).toHaveValue('Counter')
+  await typeInto(page, page.locator('[data-testid$="/components/0/props/label"]'), 'From the editor')
+
+  const frame = page.frameLocator('[data-custom-component="Counter"] iframe')
+  await expect(frame.getByTestId('label')).toHaveText('From the editor')
+  // A click on it selects it; a double-click lets it be used.
+  await page.getByTestId('custom-editor-cover').dblclick()
+  await frame.getByRole('button').click()
+  await expect(frame.getByRole('button')).toHaveText('#001')
+
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  const app = await trpcQuery<{ id: string; draftRevision: number; diagnostics: unknown[] }>(
+    page,
+    'apps.get',
+    {
+      slug: 'custom-edit-app',
+    },
+  )
+  expect(app.diagnostics).toEqual([])
+  await trpcMutate(page, 'apps.publish', { appId: app.id, draftRevision: app.draftRevision })
+  await page.goto('/apps/custom-edit-app')
+  await expect(frame.getByTestId('label')).toHaveText('From the editor')
 })

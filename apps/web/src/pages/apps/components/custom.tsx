@@ -2,7 +2,8 @@ import { type CustomComponentInterface, customInstanceRelease } from '@ow/app-de
 import type { ComponentLibraryRelease } from '@ow/app-runtime'
 import { CONNECT_MESSAGE, type FrameTheme, type FromFrame, type ToFrame } from '@ow/component-sdk/protocol'
 import { Blocks, RotateCcw } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
+import { EditingContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppHostState, useAppScope } from '../runtime/react'
 
@@ -141,6 +142,10 @@ function CustomFrame({
   )
   const latestProps = useRef(propsJson)
   latestProps.current = propsJson
+  // In the editor, a click on the frame selects the component (a frame keeps its clicks); a double-click lets the
+  // component be used until the pointer leaves it.
+  const editing = useContext(EditingContext)
+  const [using, setUsing] = useState(false)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the frame is made once per bundle and component (its key); props follow below.
   useEffect(() => {
@@ -305,12 +310,23 @@ function CustomFrame({
   }, [propsJson, status.kind])
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only, ends the editor's "use it here" (below)
     <div
       className="relative size-full overflow-hidden"
       data-custom-component={component}
       data-frame-status={status.kind}
+      onMouseLeave={() => setUsing(false)}
     >
       <div ref={container} className="size-full" />
+      {editing && !using && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: a mouse affordance in the editor; keyboard focus reaches the frame
+        <div
+          className="absolute inset-0"
+          title="Double-click to use it here"
+          data-testid="custom-editor-cover"
+          onDoubleClick={() => setUsing(true)}
+        />
+      )}
       {(status.kind === 'failed' || status.kind === 'stuck') && (
         <div className="absolute inset-0 flex flex-col items-start gap-2 overflow-auto rounded-md border border-danger bg-surface p-2 text-xs">
           <span className="font-medium text-danger">

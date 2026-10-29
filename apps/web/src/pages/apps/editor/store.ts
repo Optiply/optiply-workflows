@@ -3,17 +3,21 @@ import {
   type AppDefinition,
   type AppDiagnostic,
   type AppValidateOptions,
+  type ComponentLibraryInfo,
   type ComponentSpec,
   componentSpec,
+  customComponentSpec,
+  customInstanceInterface,
   instanceInterface,
   type ModuleInfo,
   moduleComponentSpec,
   resolvePage,
+  usedComponentLibraries,
   usedLibraries,
   usedModules,
   validateApp,
 } from '@ow/app-definition'
-import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
+import type { AppUrl, ComponentLibraryReleases, ModuleReleases } from '@ow/app-runtime'
 import { equal, type SharedDefinition, SharedHistory } from '@ow/collab'
 import type * as Y from 'yjs'
 import { create } from 'zustand'
@@ -39,6 +43,9 @@ export type { LibraryRef }
 
 /** A module the app places, as the server described it (`modules.resolve`). */
 export type ModuleRef = ModuleInfo & { id?: string; name?: string }
+
+/** A component library the app's custom components use (M25), as the server described it. */
+export type ComponentLibraryRef = ComponentLibraryInfo & { id?: string; name?: string }
 
 interface AppEditorState {
   /** Whose draft is edited: an app's, or a module's (M14; same editor, saved and run as the module's). */
@@ -97,6 +104,10 @@ interface AppEditorState {
   modules: Record<string, ModuleRef | null>
   /** The module releases the running draft's instances run, by `slug@version` (`modules.instanceReleases`). */
   moduleReleases: ModuleReleases
+  /** Likewise for the component libraries its custom components use (M25, `componentLibraries.resolve`). */
+  componentLibraries: Record<string, ComponentLibraryRef | null>
+  /** The library releases the running draft's custom components run (`componentLibraries.instanceReleases`). */
+  libraryReleases: ComponentLibraryReleases
 
   load(
     appId: string,
@@ -140,6 +151,8 @@ interface AppEditorState {
   /** Adds what the server said about modules, and validates again. */
   setModules(modules: Record<string, ModuleRef | null>): void
   setModuleReleases(releases: ModuleReleases): void
+  setComponentLibraries(libraries: Record<string, ComponentLibraryRef | null>): void
+  setLibraryReleases(releases: ComponentLibraryReleases): void
 }
 
 export const useAppEditor = create<AppEditorState>((set, get) => ({
@@ -168,6 +181,8 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   libraries: {},
   modules: {},
   moduleReleases: {},
+  componentLibraries: {},
+  libraryReleases: {},
 
   load: (appId, definition, revision, draftHash, opts = {}) =>
     set({
@@ -242,6 +257,15 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   setModuleReleases: (moduleReleases) => {
     // The running draft restarts its instances on a change; the same releases again aren't one.
     if (JSON.stringify(moduleReleases) !== JSON.stringify(get().moduleReleases)) set({ moduleReleases })
+  },
+
+  setComponentLibraries: (found) => {
+    const componentLibraries = { ...get().componentLibraries, ...found }
+    set({ componentLibraries, diagnostics: validate(get().definition, { ...get(), componentLibraries }) })
+  },
+
+  setLibraryReleases: (libraryReleases) => {
+    if (JSON.stringify(libraryReleases) !== JSON.stringify(get().libraryReleases)) set({ libraryReleases })
   },
 
   update: (edit) => {
@@ -360,7 +384,12 @@ function restoredSelection(
  */
 function validate(
   definition: AppDefinition,
-  { libraries, modules, slug }: Pick<AppEditorState, 'libraries' | 'modules' | 'slug'>,
+  {
+    libraries,
+    modules,
+    componentLibraries,
+    slug,
+  }: Pick<AppEditorState, 'libraries' | 'modules' | 'componentLibraries' | 'slug'>,
 ): AppDiagnostic[] {
   const options: AppValidateOptions = slug ? { self: slug } : {}
   if (usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))) {
@@ -368,6 +397,9 @@ function validate(
   }
   if (usedModules(definition).every((slug) => Object.hasOwn(modules, slug))) {
     options.resolveModule = (slug) => modules[slug] ?? undefined
+  }
+  if (usedComponentLibraries(definition).every((slug) => Object.hasOwn(componentLibraries, slug))) {
+    options.resolveComponentLibrary = (slug) => componentLibraries[slug] ?? undefined
   }
   return validateApp(definition, options).diagnostics
 }
@@ -412,12 +444,18 @@ function applied(
 
 /**
  * A component's spec; a module instance's from the interface of the release it names, once the editor knows its
- * module (M14), open until then.
+ * module (M14), open until then; a custom component's likewise from its library (M25).
  */
 export function specOf(
   component: AppComponent,
   modules: Record<string, ModuleRef | null>,
+  componentLibraries: Record<string, ComponentLibraryRef | null> = {},
 ): ComponentSpec | undefined {
+  if (component.type === 'custom') {
+    return customComponentSpec(
+      customInstanceInterface(component, (slug) => componentLibraries[slug] ?? undefined),
+    )
+  }
   if (component.type !== 'module') return componentSpec(component.type)
   return moduleComponentSpec(instanceInterface(component, (slug) => modules[slug] ?? undefined))
 }

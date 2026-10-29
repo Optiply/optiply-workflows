@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useTRPC } from '@/lib/trpc'
 import { DraftLoader } from '../apps/editor'
+import { useComponentLibrarySync } from '../apps/editor/custom'
 import { useLibrarySync } from '../apps/editor/library'
 import { useModuleSync } from '../apps/editor/modules'
 
@@ -26,6 +27,7 @@ export function ModuleEditorPage() {
   useLibrarySync()
   // The modules it holds (M21): checked against their releases, and run in the draft.
   useModuleSync()
+  useComponentLibrarySync()
   return (
     <DraftLoader
       kind="module"

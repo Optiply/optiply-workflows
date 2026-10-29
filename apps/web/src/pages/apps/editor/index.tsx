@@ -22,6 +22,7 @@ import { useCanvasKeys } from './canvas-keys'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
 import { closeSession, ensureSaved, openSession } from './collab'
+import { AddCustomComponent, useComponentLibrarySync } from './custom'
 import { ScopeSync } from './fields'
 import { ComponentInspector, SelectionInspector } from './inspector'
 import { useLibrarySync } from './library'
@@ -56,6 +57,7 @@ export function AppEditorPage() {
   })
   useLibrarySync()
   useModuleSync()
+  useComponentLibrarySync()
   return (
     <DraftLoader
       kind="app"
@@ -275,6 +277,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     modules: useAppEditor.getState().moduleReleases,
+    libraries: useAppEditor.getState().libraryReleases,
     kind: app.kind,
     appId: app.id,
     releaseId: null,
@@ -305,11 +308,16 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     if (!host) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = useAppEditor.subscribe((state, before) => {
-      if (state.definition === before.definition && state.moduleReleases === before.moduleReleases) return
+      if (
+        state.definition === before.definition &&
+        state.moduleReleases === before.moduleReleases &&
+        state.libraryReleases === before.libraryReleases
+      )
+        return
       clearTimeout(timer)
       timer = setTimeout(() => {
-        const { definition, moduleReleases } = useAppEditor.getState()
-        host.update(definition, moduleReleases)
+        const { definition, moduleReleases, libraryReleases } = useAppEditor.getState()
+        host.update(definition, moduleReleases, libraryReleases)
       }, UPDATE_DELAY_MS)
     })
     return () => {
@@ -405,6 +413,9 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
                       {/* Modules inside modules too (M21), as deep as the limit allows. */}
                       <div className="mt-1.5">
                         <AddModule />
+                      </div>
+                      <div className="mt-1.5">
+                        <AddCustomComponent />
                       </div>
                     </section>
                   )}

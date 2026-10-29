@@ -1,5 +1,6 @@
 import {
   type AppComponent,
+  CUSTOM_PROPS,
   componentSpec,
   containerViews,
   type JsonValue,
@@ -21,6 +22,7 @@ import { Button, Checkbox, Select, sectionLabelClass } from '@/components/ui'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
 import { ColumnsEditor } from './columns'
+import { CustomInstanceFields } from './custom'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
 import { ModuleInstanceFields } from './modules'
@@ -108,11 +110,13 @@ export function ComponentInspector({ name }: { name: string }) {
   const page = useAppEditor((s) => s.url.page)
   const setUrl = useAppEditor((s) => s.setUrl)
   const modules = useAppEditor((s) => s.modules)
+  const componentLibraries = useAppEditor((s) => s.componentLibraries)
   const index = definition.components.findIndex((c) => c.name === name)
   const component = definition.components[index]
   if (!component) return null
-  const spec = specOf(component, modules)
+  const spec = specOf(component, modules, componentLibraries)
   const instance = component.type === 'module'
+  const custom = component.type === 'custom'
   const base = ['components', index]
 
   if (!spec) {
@@ -224,11 +228,16 @@ export function ComponentInspector({ name }: { name: string }) {
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <h3 className={sectionLabelClass}>{instance ? 'Module' : 'Properties'}</h3>
+        <h3 className={sectionLabelClass}>
+          {instance ? 'Module' : custom ? 'Custom component' : 'Properties'}
+        </h3>
         {instance && <ModuleInstanceFields component={component} index={index} />}
+        {custom && <CustomInstanceFields component={component} index={index} />}
         {Object.entries(spec.props)
-          // An instance's module and version have their own fields; the rest are the module's inputs.
+          // An instance's module and version have their own fields; the rest are the module's inputs. A custom
+          // component's library, component and version likewise (M25); the rest are its declared props.
           .filter(([prop]) => !instance || !(MODULE_PROPS as readonly string[]).includes(prop))
+          .filter(([prop]) => !custom || !(CUSTOM_PROPS as readonly string[]).includes(prop))
           .map(([prop, propSpec]) => (
             <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
           ))}
