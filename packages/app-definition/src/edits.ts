@@ -534,21 +534,24 @@ export function addPage(def: AppDefinition): { definition: AppDefinition; name: 
 }
 
 /**
- * Renames a page: what's on it follows, and Navigation links to it too (`utils.openPage('…')` in code is left for
- * the person to change). Unchanged when the name can't be used (see `pageNameReason`).
+ * Renames a page: what's on it follows, Navigation links to it too, and `utils.openPage('…')` written with its name
+ * in templates and code (M24; a name computed at run time can't be followed). Unchanged when the name can't be used
+ * (see `pageNameReason`).
  */
 export function renamePage(def: AppDefinition, from: string, to: string): AppDefinition {
   if (from === to || !def.pages?.some((p) => p.name === from) || pageNameReason(def, to, from)) return def
   const follow = <T extends { page?: string }>(item: T): T =>
     item.page === from ? { ...item, page: to } : item
   const components = relinkNavigation(def.components.map(follow), from, to)
-  return {
+  const renamed = {
     ...def,
     pages: def.pages.map((p) => (p.name === from ? { ...p, name: to } : p)),
     components,
     queries: def.queries.map(follow),
     ...(def.transformers && { transformers: def.transformers.map(follow) }),
   }
+  // `utils.openPage('from', …)` in templates and code follows too (M24); a computed name can't be followed.
+  return rewriteCallArgs(renamed, 'utils', 'openPage', from, to).definition
 }
 
 /** Navigation links to page `from` point at `to` instead, or with `to` null are dropped; in groups too (M24). */

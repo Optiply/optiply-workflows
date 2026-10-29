@@ -374,6 +374,8 @@ const specs: ComponentSpec[] = [
       chartType: oneOf('Chart type', ['bar', 'line', 'area', 'pie'], 'bar'),
       data: { type: 'array', default: [], label: 'Data' },
       xKey: str('X axis key'),
+      /** `time` places line and area charts' points by their date (M24); `auto` does when every x is a date. */
+      xAxis: oneOf('X axis', ['auto', 'category', 'time'], 'auto'),
       /** Keys of the numeric series to plot; empty plots every number column but the x key. */
       series: { type: 'array', default: [], label: 'Series' },
       stacked: bool('Stacked'),

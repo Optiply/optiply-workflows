@@ -197,6 +197,42 @@ describe('page edits', () => {
     expect(validateApp(without).diagnostics.filter((d) => d.code === 'unknown_page')).toEqual([])
   })
 
+  it('rewrites utils.openPage of a renamed page in templates and code, not computed names (M24)', () => {
+    const two = addPage(single).definition
+    const withCode = {
+      ...two,
+      components: [
+        ...two.components,
+        comp(
+          'go',
+          'button',
+          { text: "{{ url.page === 'page2' ? 'Here' : 'Go' }}" },
+          {
+            events: [
+              {
+                id: 'a',
+                event: 'click',
+                action: {
+                  type: 'runScript',
+                  code: "utils.openPage('page2', { id: 1 }); utils.openPage(target)",
+                },
+              },
+            ],
+          },
+        ),
+      ],
+      queries: [...two.queries, { name: 'nav', kind: 'js' as const, code: 'utils.openPage("page2")' }],
+    }
+    const renamed = renamePage(withCode, 'page2', 'orders')
+    const go = renamed.components.find((c) => c.name === 'go')!
+    expect(go.events![0]!.action).toMatchObject({
+      code: "utils.openPage('orders', { id: 1 }); utils.openPage(target)",
+    })
+    expect(renamed.queries.find((q) => q.name === 'nav')).toMatchObject({ code: 'utils.openPage("orders")' })
+    // A comparison with the name isn't a call: left as written.
+    expect(go.props!.text).toBe("{{ url.page === 'page2' ? 'Here' : 'Go' }}")
+  })
+
   it('follows page renames and removals into Navigation groups, and checks links (M24)', () => {
     const two = addPage(single).definition
     const nav = addComponent(two, 'navigation').definition
