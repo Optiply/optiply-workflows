@@ -183,7 +183,13 @@ export async function startFakePubSub(
     return s.entries.find((e) => e.out?.ackId === ackId && e.out.until > now)
   }
 
-  const handle = async (method: string, path: string, body: Record<string, unknown>) => {
+  const handle = async (
+    method: string,
+    path: string,
+    body: Record<string, unknown>,
+    /** The caller hung up (an aborted pull): nothing is delivered to it, as Pub/Sub delivers to no one gone. */
+    gone: { closed: boolean; onClose?: () => void } = { closed: false },
+  ) => {
     const list = /^\/v1\/projects\/([^/]+)\/topics$/.exec(path)
     if (list && method === 'GET') {
       calls.push(`list projects/${list[1]}/topics`)
@@ -290,8 +296,9 @@ export async function startFakePubSub(
             }
             const timer = setTimeout(wake, pullWaitMs)
             waiting.add(wake)
+            gone.onClose = wake
           })
-          taken = take(s, max)
+          taken = gone.closed ? [] : take(s, max)
         }
         return {
           status: 200,
@@ -342,6 +349,12 @@ export async function startFakePubSub(
   }
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const gone: { closed: boolean; onClose?: () => void } = { closed: false }
+    res.on('close', () => {
+      if (res.writableEnded) return
+      gone.closed = true
+      gone.onClose?.()
+    })
     let raw = ''
     req.on('data', (c) => (raw += c))
     req.on('end', async () => {
@@ -358,7 +371,13 @@ export async function startFakePubSub(
                 },
               },
             }
-          : await handle(req.method ?? 'GET', (req.url ?? '/').split('?')[0]!, raw ? JSON.parse(raw) : {})
+          : await handle(
+              req.method ?? 'GET',
+              (req.url ?? '/').split('?')[0]!,
+              raw ? JSON.parse(raw) : {},
+              gone,
+            )
+      if (gone.closed) return
       res.writeHead(answer.status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(answer.json))
     })

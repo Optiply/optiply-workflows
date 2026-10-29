@@ -183,3 +183,31 @@ describe('PubSubClient', () => {
     expect(asked).toEqual([false, true])
   })
 })
+
+describe('the fake, a pull whose caller hung up', () => {
+  it('delivers nothing to it: the next pull gets the message (as Pub/Sub would)', async () => {
+    const fake = await startFakePubSub({ tokens: ['good'], pullWaitMs: 2_000 })
+    try {
+      fake.createTopic('hung')
+      fake.createSubscription('hung-sub', { topic: 'hung' })
+      const c = new PubSubClient({
+        project: 'fake-project',
+        tokens: { token: async () => 'good' },
+        url: fake.url,
+      })
+      const abort = new AbortController()
+      const pulled = c.pull('hung-sub', 1, abort.signal).catch((err: Error) => err)
+      await new Promise((r) => setTimeout(r, 100))
+      abort.abort()
+      expect(await pulled).toBeInstanceOf(Error)
+      await new Promise((r) => setTimeout(r, 50))
+      const id = fake.publish('hung', '{}')
+      await new Promise((r) => setTimeout(r, 100))
+      expect(fake.messages('hung-sub').find((m) => m.messageId === id)?.deliveries).toBe(0)
+      const next = await c.pull('hung-sub', 1, AbortSignal.timeout(5_000))
+      expect(next.map((m) => m.message.messageId)).toEqual([id])
+    } finally {
+      await fake.close()
+    }
+  })
+})
