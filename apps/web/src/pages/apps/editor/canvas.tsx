@@ -8,13 +8,15 @@ import {
   defaultSpecFor,
   entityPages,
   type JsonValue,
+  moveIntoReason,
+  placeComponents,
   setPositions,
   setProp,
   slotOf,
   slotsOf,
 } from '@ow/app-definition'
-import { GripVertical } from 'lucide-react'
-import { useMemo } from 'react'
+import { GripVertical, Move } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
 import { sectionLabelClass } from '@/components/ui'
@@ -29,12 +31,14 @@ import {
   ShownModalContext,
   shownViews,
 } from '../grid-context'
-import { moveItems } from './layout'
+import { moveItems, settleAfterMove } from './layout'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
 /** What the palette is dragging (DataTransfer can't be read until the drop). */
 let dragging: string | null = null
+/** The components being dragged to another grid (M24), by name; null otherwise. */
+let moving: string[] | null = null
 
 /** The component types in the palette, in this order. */
 const PALETTE = [
@@ -104,26 +108,42 @@ export function EditGrid({
       ),
     )
   const handle = handleClass(parent, page, slot)
+  // A drag over this grid from elsewhere (M24): it lights up while one could land here.
+  const [over, setOver] = useState(false)
 
   return (
+    // Grids nest (a container's in the page's): the innermost under the pointer takes the drag, not those around it.
+    // biome-ignore lint/a11y/noStaticElementInteractions: a drop target for dragging; components also move from the inspector
     <div
       ref={containerRef}
       className={cn(
         'relative',
         parent === undefined ? 'min-h-[70vh]' : 'min-h-16 rounded-md border border-dashed border-border/70',
+        over && 'bg-accent-soft/40 outline-2 outline-accent/60',
       )}
       data-testid={`grid-${gridId(parent, page)}${slot ? `-${slot}` : ''}`}
+      onDragOver={(e) => {
+        e.stopPropagation()
+        if (moving && !over && moveIntoReason(useAppEditor.getState().definition, moving, parent) === null)
+          setOver(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false)
+      }}
+      onDrop={(e) => {
+        e.stopPropagation()
+        setOver(false)
+      }}
     >
       {mounted && (
         <ReactGridLayout
           width={width}
           layout={layout}
           gridConfig={{ cols: 12, rowHeight: ROW_HEIGHT, margin: [12, 0], containerPadding: [0, 0] }}
-          dragConfig={{ handle: `.${handle}` }}
+          dragConfig={{ handle: `.${handle}`, cancel: '.ow-move' }}
           resizeConfig={{ handles: ['se', 'e', 's'] }}
-          dropConfig={
-            parent === undefined ? { enabled: true, defaultItem: { w: 4, h: 4 } } : { enabled: false }
-          }
+          // Every grid takes drops (M24): a type from the palette, or components from another grid.
+          dropConfig={{ enabled: true, defaultItem: { w: 4, h: 4 } }}
           onDragStop={(next, before, after) => {
             // Several selected (M24): the others on this grid move by the same offset, in the same edit, and the
             // grid settles as the canvas settles a drag.
@@ -138,18 +158,38 @@ export function EditGrid({
           }}
           onResizeStop={commit}
           onDropDragOver={() => {
+            if (moving) {
+              const def = useAppEditor.getState().definition
+              if (moveIntoReason(def, moving, parent) !== null) return false
+              const first = def.layout?.[moving[0]!]
+              return { w: first?.w ?? 4, h: first?.h ?? 4 }
+            }
             const spec = dragging ? componentSpec(dragging) : undefined
             if (!spec || spec.overlay) return false
             return { w: spec.defaultSize.w, h: spec.defaultSize.h }
           }}
           onDrop={(_layout, item) => {
+            const names = moving
             const type = dragging
+            moving = null
             dragging = null
-            if (!type || !item) return
-            const added = addComponent(useAppEditor.getState().definition, type, {
-              position: { x: item.x, y: item.y },
+            if (!item) return
+            const target = {
+              ...(parent !== undefined && { parent }),
               ...(page !== undefined && { page }),
               ...(slot !== undefined && { slot }),
+            }
+            if (names) {
+              // Into this grid, then both grids settled as the canvas settles a drag.
+              update((def) =>
+                settleAfterMove(def, placeComponents(def, names, target, { x: item.x, y: item.y }), names),
+              )
+              return
+            }
+            if (!type) return
+            const added = addComponent(useAppEditor.getState().definition, type, {
+              position: { x: item.x, y: item.y },
+              ...target,
             })
             update(() => added.definition)
             select(added.name)
@@ -203,6 +243,26 @@ export function EditGrid({
                 >
                   <GripVertical className="size-3" />
                   {component.name}
+                  {/* Into, out of or between containers (M24): a drag the browser carries to any grid. */}
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: a drag source; the inspector's Inside moves too */}
+                  <span
+                    draggable
+                    className="ow-move -mr-1 ml-1 flex cursor-grab items-center rounded px-0.5 hover:bg-white/20"
+                    title="Drag into another place: a container, a form, the page"
+                    data-testid={`move-${component.name}`}
+                    onDragStart={(e) => {
+                      const { selection: chosen } = useAppEditor.getState()
+                      moving = chosen.includes(component.name) ? chosen : [component.name]
+                      e.dataTransfer.effectAllowed = 'move'
+                      // Firefox only starts a drag that carries data.
+                      e.dataTransfer.setData('text/plain', component.name)
+                    }}
+                    onDragEnd={() => {
+                      moving = null
+                    }}
+                  >
+                    <Move className="size-3" />
+                  </span>
                 </div>
                 <ComponentView component={component} definition={definition} />
               </div>

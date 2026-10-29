@@ -26,8 +26,10 @@ export function moveItems(layout: Layout, names: readonly string[], dx: number, 
 }
 
 /** Every grid the named components sit on (their parent, slot and page): their children, as the canvas places them. */
-function gridsOf(def: AppDefinition, names: readonly string[]) {
-  const grids = new Map<string, { parent?: string; page?: string | null; slot?: string }>()
+type Grid = { parent?: string; page?: string | null; slot?: string }
+
+function gridsOf(def: AppDefinition, names: readonly string[]): Grid[] {
+  const grids = new Map<string, Grid>()
   for (const c of def.components) {
     if (!names.includes(c.name)) continue
     const page = c.parent === undefined && def.pages?.length ? (c.page ?? null) : undefined
@@ -52,6 +54,32 @@ export function nudgeOnCanvas(
     }))
     const moved = moveItems(layout, names, dx, dy)
     next = setPositions(next, Object.fromEntries(moved.map((l) => [l.i, { x: l.x, y: l.y, w: l.w, h: l.h }])))
+  }
+  return next
+}
+
+/**
+ * After components moved to another grid (M24): the grids they left and the ones they joined, compacted upward as
+ * the canvas compacts them, so no gap or overlap is saved that the editor wouldn't show.
+ */
+export function settleAfterMove(
+  before: AppDefinition,
+  after: AppDefinition,
+  names: readonly string[],
+): AppDefinition {
+  const grids = new Map<string, Grid>()
+  for (const g of [...gridsOf(before, names), ...gridsOf(after, names)]) grids.set(JSON.stringify(g), g)
+  let next = after
+  for (const grid of grids.values()) {
+    const layout = placedChildren(next, grid.parent, grid.page, grid.slot).map(({ component, position }) => ({
+      i: component.name,
+      ...position,
+    }))
+    const settled = verticalCompactor.compact(layout, COLS)
+    next = setPositions(
+      next,
+      Object.fromEntries(settled.map((l) => [l.i, { x: l.x, y: l.y, w: l.w, h: l.h }])),
+    )
   }
   return next
 }

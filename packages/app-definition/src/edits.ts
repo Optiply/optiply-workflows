@@ -9,6 +9,7 @@ import {
   type AppQuery,
   appNameSchema,
   type EventHandler,
+  GRID_COLUMNS,
   type ModuleSpec,
   type Position,
   type Transformer,
@@ -222,6 +223,77 @@ export function setFrame(def: AppDefinition, frame: AppFrame): AppDefinition {
   const kept = Object.fromEntries(Object.entries(frame).filter(([, v]) => v !== undefined && v !== false))
   const { frame: _old, ...rest } = def
   return Object.keys(kept).length ? { ...rest, frame: kept as AppFrame } : rest
+}
+
+/**
+ * Why `names` can't be dragged into `parent` (undefined: the top of the app); null when they can (M24). Refused: a
+ * modal (it has no grid), into one of the dragged components or what's inside them, a form into a form.
+ */
+export function moveIntoReason(
+  def: AppDefinition,
+  names: readonly string[],
+  parent: string | undefined,
+): string | null {
+  const moved = def.components.filter((c) => names.includes(c.name))
+  if (moved.some((c) => componentSpec(c.type)?.overlay))
+    return 'A modal opens over the page: it has no place on a grid'
+  if (parent === undefined) return null
+  const target = def.components.find((c) => c.name === parent)
+  if (!target || !componentSpec(target.type)?.container) return `"${parent}" can't hold components`
+  if (moved.some((c) => withDescendants(def, c.name).has(parent))) return "A component can't go inside itself"
+  const holdsForm = moved.some((c) =>
+    [...withDescendants(def, c.name)].some((n) => def.components.find((d) => d.name === n)?.type === 'form'),
+  )
+  if (holdsForm) {
+    const byName = new Map(def.components.map((c) => [c.name, c]))
+    for (let at: AppComponent | undefined = target; at; at = at.parent ? byName.get(at.parent) : undefined) {
+      if (at.type === 'form') return "A form can't go inside another form"
+    }
+  }
+  return null
+}
+
+/**
+ * Drops components onto another grid (M24): into `target`'s parent, slot and page, the first at `at` and the others
+ * keeping their offsets to it, each kept on the grid. Those inside another dropped one come along with it. The same
+ * definition when they can't go there (`moveIntoReason`).
+ */
+export function placeComponents(
+  def: AppDefinition,
+  names: readonly string[],
+  target: { parent?: string; slot?: string; page?: string | null },
+  at: { x: number; y: number },
+): AppDefinition {
+  if (moveIntoReason(def, names, target.parent) !== null) return def
+  // Only the outermost: what's inside a dropped component moves with it.
+  const roots = names.filter((n) => !names.some((m) => m !== n && withDescendants(def, m).has(n)))
+  if (!roots.length) return def
+  // Offsets from the first; one without a position (it's placed below the rest) counts from the drop.
+  const first = def.layout?.[roots[0]!] ?? at
+  let next = def
+  for (const name of roots) {
+    const c = next.components.find((x) => x.name === name)
+    if (!c) continue
+    if (c.parent !== target.parent || slotOf(next, c) !== target.slot) {
+      next = moveToParent(next, name, target.parent, {
+        ...(target.page !== undefined && { page: target.page }),
+        ...(target.slot !== undefined && { slot: target.slot }),
+      })
+    } else if (target.parent === undefined && target.page !== undefined && (c.page ?? null) !== target.page) {
+      next = setEntityPage(next, name, target.page)
+    }
+  }
+  const positions: Record<string, Position> = {}
+  for (const name of roots) {
+    const was = def.layout?.[name]
+    if (!was) continue
+    positions[name] = {
+      ...was,
+      x: Math.max(0, Math.min(GRID_COLUMNS - was.w, at.x + was.x - first.x)),
+      y: Math.max(0, at.y + was.y - first.y),
+    }
+  }
+  return setPositions(next, positions)
 }
 
 /** A container's views as stored (M24): its `views` prop when that's a list, else none. */

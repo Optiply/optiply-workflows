@@ -6,8 +6,10 @@ import {
   bottomOf,
   containerViews,
   copyComponents,
+  moveIntoReason,
   moveToParent,
   pasteComponents,
+  placeComponents,
   removeView,
   renameView,
   rewriteCallArgs,
@@ -279,5 +281,54 @@ describe('the frame (M24)', () => {
     expect(validateApp(module).diagnostics.map((d) => d.message)).toContain(
       "A module has no frame; it sits inside the app's",
     )
+  })
+})
+
+describe('dragging onto another grid (M24)', () => {
+  it('says why components can’t go somewhere', () => {
+    const def = tabs()
+    def.components.push(comp('m', 'modal'), comp('f2', 'form', {}, { parent: 'form1' }))
+    expect(moveIntoReason(def, ['table1'], 'form1')).toBeNull()
+    expect(moveIntoReason(def, ['table1'], undefined)).toBeNull()
+    expect(moveIntoReason(def, ['m'], 'box')).toMatch(/modal/)
+    expect(moveIntoReason(def, ['box'], 'box')).toMatch(/inside itself/)
+    expect(moveIntoReason(def, ['form1'], 'box')).toBeNull()
+    expect(moveIntoReason(def, ['form1'], 'f2')).toMatch(/inside itself/)
+    expect(moveIntoReason(tabs(), ['save'], 'next')).toMatch(/can't hold/)
+    const forms = app({
+      components: [
+        comp('outer', 'form'),
+        comp('inner', 'form'),
+        comp('c', 'container', {}, { parent: 'outer' }),
+      ],
+    })
+    expect(moveIntoReason(forms, ['inner'], 'c')).toMatch(/inside another form/)
+  })
+
+  it('places them at the drop, keeping their offsets, into the target’s slot and page', () => {
+    const def = tabs()
+    // From the page into the container's footer, and out again into the frame's sidebar.
+    const into = placeComponents(def, ['next'], { parent: 'box', slot: 'footer' }, { x: 3, y: 1 })
+    expect(into.components.find((c) => c.name === 'next')).toMatchObject({ parent: 'box', slot: 'footer' })
+    expect(into.layout?.next).toBeUndefined()
+    const withPosition = { ...def, layout: { ...def.layout, next: at(0, 20) } }
+    const moved = placeComponents(withPosition, ['next'], { parent: 'box', slot: 'footer' }, { x: 3, y: 1 })
+    expect(moved.layout?.next).toEqual({ x: 3, y: 1, w: 4, h: 2 })
+    // Two together: their offsets kept; something inside a dropped one comes along, not placed itself.
+    const two = placeComponents(def, ['table1', 'text1', 'save'], { parent: 'form1' }, { x: 2, y: 0 })
+    expect(two.components.filter((c) => c.parent === 'form1').map((c) => c.name)).toEqual([
+      'table1',
+      'text1',
+      'save',
+      'in_form',
+    ])
+    expect([two.layout?.table1, two.layout?.text1]).toEqual([
+      { x: 0, y: 0, w: 12, h: 6 },
+      { x: 2, y: 0, w: 6, h: 3 },
+    ])
+    expect(placeComponents(def, ['box'], { parent: 'box' }, { x: 0, y: 0 })).toBe(def)
+    // Within the top: to the sidebar.
+    const side = placeComponents(withPosition, ['next'], { slot: 'sidebar' }, { x: 0, y: 4 })
+    expect(slotOf(side, side.components.find((c) => c.name === 'next')!)).toBe('sidebar')
   })
 })
