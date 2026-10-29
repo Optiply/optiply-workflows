@@ -289,6 +289,8 @@ export class AppModel {
           const at = typeof page === 'number' && Number.isInteger(page) && page >= 0 ? page : 0
           return this.write(node.key, { page: at, pageSize, offset: at * pageSize })
         }
+        case 'rows':
+          return this.computeRows(node)
         case 'transformer':
           if (entity.kind !== 'transformer') return false
           return this.write(node.key, this.runFunctionBody(entity.transformer.code))
@@ -322,10 +324,54 @@ export class AppModel {
     const props = entity.component.props
     if (!props || !Object.hasOwn(props, node.property))
       return this.write(node.key, structuredClone(spec.default))
-    const result = coerceProp(spec, this.evaluateValue(props[node.property]))
+    const raw = props[node.property]
+    const value =
+      entity.component.type === 'table' && node.property === 'columns' && Array.isArray(raw)
+        ? raw.map((column) => {
+            // A column's `value` is evaluated per row, into `$rows`; the prop keeps it as written.
+            if (!column || typeof column !== 'object' || Array.isArray(column) || !('value' in column)) {
+              return this.evaluateValue(column)
+            }
+            const { value, ...rest } = column as Record<string, unknown>
+            return { ...(this.evaluateValue(rest) as Record<string, unknown>), value }
+          })
+        : this.evaluateValue(raw)
+    const result = coerceProp(spec, value)
     return 'error' in result
       ? this.write(node.key, structuredClone(spec.default), result.error)
       : this.write(node.key, result.value)
+  }
+
+  /**
+   * A table's rows as it shows them (M24): `data`, each row with its computed columns' cells (a column with a key
+   * and a `value` template, evaluated with `currentRow` and `i`). The same array when nothing is computed. A cell
+   * that fails is null, and the first failure is the node's error.
+   */
+  private computeRows(node: GraphNode): boolean {
+    const data = this.values.get(`${node.entity}.data`)
+    const rows = Array.isArray(data) ? data : []
+    const columns = this.values.get(`${node.entity}.columns`)
+    const computed = (Array.isArray(columns) ? columns : []).flatMap((c) =>
+      c && typeof c === 'object' && typeof c.key === 'string' && c.key && typeof c.value === 'string'
+        ? [{ key: c.key as string, value: c.value as string }]
+        : [],
+    )
+    if (!computed.length) return this.write(node.key, rows)
+    let error: string | undefined
+    const out = rows.map((row, i) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return row
+      const next: Record<string, unknown> = { ...row }
+      for (const column of computed) {
+        try {
+          next[column.key] = this.evaluateTemplate(column.value, { currentRow: row, i })
+        } catch (err) {
+          next[column.key] = null
+          error ??= `Column ${column.key}, row ${i}: ${(err as Error)?.message ?? String(err)}`
+        }
+      }
+      return next
+    })
+    return this.write(node.key, out, error)
   }
 
   private propSpec(node: GraphNode, entity: Entity): PropSpec | undefined {

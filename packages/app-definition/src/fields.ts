@@ -22,6 +22,29 @@ export interface AppField {
 /** Locals of a query's `transform`. */
 export const TRANSFORM_LOCALS = ['data']
 
+/** Locals of a table column's `value` (M24): the row it computes a cell of, and the row's index in `data`. */
+export const ROW_LOCALS = ['currentRow', 'i']
+
+/**
+ * Whether `path` (under a component's `base`) is a table column's `value`: a template evaluated per row into the
+ * table's `$rows`, not with its `columns` prop.
+ */
+export function isColumnValue(
+  type: string,
+  base: readonly (string | number)[],
+  path: readonly (string | number)[],
+) {
+  const n = base.length
+  return (
+    type === 'table' &&
+    path.length === n + 4 &&
+    path[n] === 'props' &&
+    path[n + 1] === 'columns' &&
+    typeof path[n + 2] === 'number' &&
+    path[n + 3] === 'value'
+  )
+}
+
 /** The node key for `name.key`. */
 export const nodeKey = (name: string, key: string) => `${name}.${key}`
 
@@ -32,7 +55,16 @@ export function appFields(def: AppDefinition): AppField[] {
     const base = ['components', i]
     for (const prop of Object.keys(c.props ?? {}).sort()) {
       templateStrings(c.props![prop], [...base, 'props', prop], (path, source) => {
-        fields.push({ path, kind: 'template', source, owner: c.name, node: nodeKey(c.name, prop) })
+        if (isColumnValue(c.type, base, path)) {
+          fields.push({
+            path,
+            kind: 'template',
+            source,
+            owner: c.name,
+            node: nodeKey(c.name, '$rows'),
+            locals: ROW_LOCALS,
+          })
+        } else fields.push({ path, kind: 'template', source, owner: c.name, node: nodeKey(c.name, prop) })
       })
     }
     handlerFields(c.events, [...base, 'events'], c.name, fields)

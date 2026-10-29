@@ -52,8 +52,11 @@ export async function addBlock(page: Page, kind: string) {
 export async function typeInto(page: Page, editor: Locator, text: string) {
   const monaco = editor.locator('.monaco-editor')
   await expect(async () => {
-    // Near the top-left corner: with more lines than fit, the lines' middle is below the field, over the next one.
-    await monaco.locator('.view-lines').click({ position: { x: 4, y: 4 } })
+    // On the first visible line, in the field's middle: the lines can be taller and wider than the field (they
+    // scroll inside it), so a point on them can be outside it, under the next field or a header; the field's own
+    // box can't.
+    const box = await monaco.boundingBox()
+    await monaco.click({ position: { x: (box?.width ?? 40) / 2, y: Math.min(10, (box?.height ?? 20) / 2) } })
     await expect(monaco).toHaveClass(/focused/, { timeout: 1000 })
     await page.keyboard.press('ControlOrMeta+A')
     await page.keyboard.press('Backspace')

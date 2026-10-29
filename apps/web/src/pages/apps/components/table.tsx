@@ -41,6 +41,8 @@ export function TableRenderer({ component }: RendererProps) {
   const gridId = useId()
   const name = component.name
   const data = useAppValue<unknown>(`${name}.data`)
+  // What it shows: `data` with its computed columns (M24); `data` itself until the runtime has it.
+  const shown = useAppValue<unknown>(`${name}.$rows`) ?? data
   const columnsProp = useAppValue<unknown>(`${name}.columns`)
   const primaryKey = useAppValue<string>(`${name}.primaryKey`) || 'id'
   const selection = useAppValue<'none' | 'single' | 'multiple'>(`${name}.rowSelection`)
@@ -56,7 +58,7 @@ export function TableRenderer({ component }: RendererProps) {
   const sortState = useAppValue<{ column?: unknown; desc?: unknown } | null>(`${name}.sort`)
   const searchText = useAppValue<string>(`${name}.searchText`) ?? ''
 
-  const rows = useMemo(() => (Array.isArray(data) ? (data as Row[]) : []), [data])
+  const rows = useMemo(() => (Array.isArray(shown) ? (shown as Row[]) : []), [shown])
   const columns = useMemo(() => tableColumns(columnsProp, rows), [columnsProp, rows])
   const sort = useMemo(
     () =>
@@ -141,9 +143,11 @@ export function TableRenderer({ component }: RendererProps) {
     }
     const key = selectionKey(row, primaryKey)
     const already = selectedRows.some((r) => selectionKey(r, primaryKey) === key)
+    // The row as `data` has it (as `selectRow` sets it), without computed columns.
+    const dataRow = Array.isArray(data) ? ((data[index] as Row | undefined) ?? row) : row
     const next = already
       ? selectedRows.filter((r) => selectionKey(r, primaryKey) !== key)
-      : [...selectedRows, row]
+      : [...selectedRows, dataRow]
     host.set({
       [`${name}.selectedRows`]: next,
       [`${name}.selectedRow`]: next.at(-1) ?? null,

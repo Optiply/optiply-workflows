@@ -97,6 +97,26 @@ describe('validateApp', () => {
     ])
   })
 
+  it('reads currentRow and i in a table column’s value, and nowhere else (M24)', () => {
+    const def = app({
+      components: [
+        comp('t', 'table', {
+          columns: [
+            { key: 'total', value: '{{ currentRow.qty * i * rate.value }}' },
+            { key: 'bad', value: '{{ nope }}', label: '{{ currentRow.qty }}' },
+          ],
+        }),
+        comp('rate', 'numberInput', {}),
+        comp('x', 'text', { value: '{{ currentRow }}' }),
+      ],
+    })
+    expect(codes(def)).toEqual([
+      ['unknown_identifier', 'components.0.props.columns.1.label', 'error'],
+      ['unknown_identifier', 'components.0.props.columns.1.value', 'error'],
+      ['unknown_identifier', 'components.2.props.value', 'error'],
+    ])
+  })
+
   it('checks component types and props', () => {
     const def = app({
       components: [

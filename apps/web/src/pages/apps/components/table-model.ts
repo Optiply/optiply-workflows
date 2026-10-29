@@ -13,6 +13,8 @@ export interface TableColumn {
   type: ColumnType
   editable: boolean
   width: number | null
+  /** Computed per row from its `value` template (M24): shown, sorted and searched, never edited. */
+  computed: boolean
 }
 
 export type Row = Record<string, unknown>
@@ -65,8 +67,9 @@ export function tableColumns(config: unknown, rows: Row[]): TableColumn[] {
         key: c.key,
         label: typeof c.label === 'string' && c.label ? c.label : c.key,
         type,
-        editable: c.editable === true,
+        editable: c.editable === true && typeof c.value !== 'string',
         width: typeof c.width === 'number' && c.width > 0 ? c.width : null,
+        computed: typeof c.value === 'string',
       },
     ]
   })

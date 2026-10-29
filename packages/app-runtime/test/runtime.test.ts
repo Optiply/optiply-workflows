@@ -97,7 +97,8 @@ describe('AppRuntime', () => {
     )
     await t.runtime.start()
     expect(t.patches[0]!.values).toMatchObject({ 'search.value': 'a', 'table1.data': [], 'list.data': null })
-    expect(Object.keys(t.patches[0]!.values).some((k) => k.includes('$'))).toBe(false)
+    // Of the internal values, only a table's rows (M24), which its renderer reads.
+    expect(Object.keys(t.patches[0]!.values).filter((k) => k.includes('$'))).toEqual(['table1.$rows'])
     // current_user is evaluated on the server, so the browser doesn't send it.
     expect(t.calls).toEqual([
       { query: 'list', values: { " '%' + search.value + '%' ": '%a%' } },

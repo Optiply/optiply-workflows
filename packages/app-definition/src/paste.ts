@@ -272,7 +272,9 @@ function outsideNames(def: AppDefinition, pasted: AppDefinition): AppPasteResult
   const there = usedNames(def)
   const names = new Set<string>()
   for (const field of appFields(pasted)) {
+    const locals = new Set(field.locals)
     for (const ref of fieldRefs(field).refs) {
+      if (locals.has(ref.name)) continue
       if (!own.has(ref.name) && !isAppGlobalName(ref.name) && appNameSchema.safeParse(ref.name).success) {
         names.add(ref.name)
       }

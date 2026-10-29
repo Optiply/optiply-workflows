@@ -203,8 +203,9 @@ const specs: ComponentSpec[] = [
     props: {
       data: { type: 'array', default: [], label: 'Data' },
       /**
-       * `{ key, label?, type?, editable?, hidden?, width? }` per column, in order; empty shows every key of the
-       * first rows.
+       * `{ key, label?, type?, editable?, hidden?, width?, value? }` per column, in order; empty shows every key of
+       * the first rows. A column's `value` (M24) computes it: a template evaluated once per row of `data`, with the
+       * row as `currentRow` and its index as `i` (see `ROW_LOCALS`); such a column isn't editable.
        */
       columns: { type: 'array', default: [], label: 'Columns' },
       primaryKey: str('Primary key column', 'id'),

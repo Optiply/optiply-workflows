@@ -12,9 +12,11 @@ import {
   withDescendants,
 } from '@ow/app-definition'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { Button, Checkbox, Select, sectionLabelClass } from '@/components/ui'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
+import { ColumnsEditor } from './columns'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
 import { ModuleInstanceFields } from './modules'
@@ -154,6 +156,10 @@ function PropField({
   const path = ['components', index, 'props', prop]
   const set = (next: JsonValue | undefined) => update((def) => setProp(def, component.name, prop, next))
   const multiLine = spec.type === 'array' || spec.type === 'object'
+  // A table's columns as a list (M24), or as JSON on request; a template is always text.
+  const [asJson, setAsJson] = useState(false)
+  const columnsList =
+    component.type === 'table' && prop === 'columns' && (value === undefined || Array.isArray(value))
   const fx = (
     <button
       type="button"
@@ -186,6 +192,8 @@ function PropField({
         ))}
       </Select>
     )
+  } else if (columnsList && !asJson) {
+    control = <ColumnsEditor name={component.name} index={index} columns={(value as JsonValue[]) ?? []} />
   } else {
     control = (
       <ParsedField
@@ -202,7 +210,18 @@ function PropField({
   const aside = fixedKind ? (
     fx
   ) : component.type === 'table' && prop === 'columns' ? (
-    <ColumnsFromData name={component.name} />
+    <span className="flex items-center gap-1">
+      <ColumnsFromData name={component.name} />
+      {columnsList && (
+        <button
+          type="button"
+          className="rounded px-1 text-[11px] text-accent hover:underline"
+          onClick={() => setAsJson(!asJson)}
+        >
+          {asJson ? 'Edit as list' : 'Edit as JSON'}
+        </button>
+      )}
+    </span>
   ) : undefined
   return (
     <EditorField

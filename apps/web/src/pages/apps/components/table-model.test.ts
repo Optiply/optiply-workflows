@@ -33,12 +33,15 @@ describe('table model', () => {
           { key: 'score', label: 'Score', editable: true, width: 90 },
           { key: 'id', hidden: true },
           { label: 'no key' },
+          { key: 'double', value: '{{ currentRow.score * 2 }}', editable: true, type: 'number' },
         ],
         rows,
       ),
     ).toEqual([
-      { key: 'name', label: 'name', type: 'text', editable: false, width: null },
-      { key: 'score', label: 'Score', type: 'number', editable: true, width: 90 },
+      { key: 'name', label: 'name', type: 'text', editable: false, width: null, computed: false },
+      { key: 'score', label: 'Score', type: 'number', editable: true, width: 90, computed: false },
+      // A computed column (M24) isn't editable, whatever it says.
+      { key: 'double', label: 'double', type: 'number', editable: false, width: null, computed: true },
     ])
   })
 

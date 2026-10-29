@@ -191,7 +191,9 @@ export class AppRuntime {
     const loading = this.startInstances(previous)
     const values: Record<string, unknown> = {}
     for (const key of this.model.graph.order) {
-      if (!this.model.graph.nodes.get(key)!.property.startsWith('$')) values[key] = this.model.get(key)
+      // Of the internal values, only what renderers read: a table's `$rows` (M24).
+      const node = this.model.graph.nodes.get(key)!
+      if (!node.property.startsWith('$') || node.kind === 'rows') values[key] = this.model.get(key)
     }
     this.publish({ ...values, ...this.early })
     this.early = null

@@ -69,6 +69,24 @@ describe('renameAppEntity', () => {
     expect(def.components[0]!.name).toBe('box')
   })
 
+  it('rewrites references in a table column’s value, leaving its locals alone (M24)', () => {
+    const def = app({
+      components: [
+        comp('t', 'table', { columns: [{ key: 'total', value: '{{ currentRow.qty * rate.value + i }}' }] }),
+        comp('rate', 'numberInput', {}),
+      ],
+    })
+    const renamed = renameAppEntity(def, 'rate', 'vat')
+    expect(renamed.ok && renamed.definition.components[0]!.props!.columns).toEqual([
+      { key: 'total', value: '{{ currentRow.qty * vat.value + i }}' },
+    ])
+    // A name a column's value uses for its row is taken there.
+    expect(renameAppEntity(def, 'rate', 'currentRow')).toMatchObject({
+      ok: false,
+      error: '"currentRow" is already a variable in the code of "t"; pick another name',
+    })
+  })
+
   it('refuses names that are taken, invalid, or captured by a local', () => {
     expect(renameAppEntity(def, 'nope', 'x')).toEqual({ ok: false, error: 'Nothing is named "nope"' })
     expect(renameAppEntity(def, 'q', 'btn')).toEqual({
