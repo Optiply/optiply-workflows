@@ -1,5 +1,6 @@
 import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
+import { graphqlConnector } from './graphql'
 import { kafkaConnector } from './kafka/connector'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
@@ -37,6 +38,7 @@ export {
   type ServerIdentityOptions,
   serverIdentity,
 } from './google-auth'
+export { type GraphqlQuery, graphqlConnector, graphqlIntrospect } from './graphql'
 export {
   buildBody,
   createHttpClient,
@@ -129,7 +131,7 @@ export {
   restSecretsSchema,
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
-export { type RunOptions, runQuery, testResource } from './run'
+export { type RunOptions, runOperation, runQuery, testResource } from './run'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
@@ -167,6 +169,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
   [restApiConnector.type]: restApiConnector,
+  [graphqlConnector.type]: graphqlConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,

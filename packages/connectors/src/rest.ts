@@ -307,12 +307,12 @@ export function responseMetadata(res: HttpResponse): Record<string, unknown> {
 
 /** The query's headers, rendered; a multipart body's Content-Type is left to fetch (it carries the boundary). */
 export async function renderHeaders(
-  query: Pick<Query, 'headers' | 'body'>,
+  query: Pick<Query, 'headers'> & { body?: { type: string } },
   ctx: QueryContext,
 ): Promise<[string, string][]> {
   const headers: [string, string][] = []
   for (const { key, value } of query.headers) {
-    if (query.body.type === 'multipart' && key.toLowerCase() === 'content-type') continue
+    if (query.body?.type === 'multipart' && key.toLowerCase() === 'content-type') continue
     if (key) headers.push([key, await renderText(value, ctx.evaluate)])
   }
   return headers

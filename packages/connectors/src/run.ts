@@ -66,6 +66,30 @@ export async function runQuery(
 }
 
 /**
+ * Runs something other than a query against a resource's pooled client (M27: a GraphQL schema, HubSpot's properties),
+ * time-limited, with its credentials, and scrubbed of secrets and tokens like a query's results and errors.
+ */
+export async function runOperation<T>(
+  pool: PoolManager,
+  connector: AnyConnector,
+  resource: ResolvedResource,
+  operation: (client: unknown, ctx: { signal: AbortSignal; credentials?: CredentialSource }) => Promise<T>,
+  opts: { timeoutMs?: number; credentials?: CredentialSource } = {},
+): Promise<T> {
+  const { credentials, secrets } = scrubbing(resource, opts.credentials)
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const signal = AbortSignal.timeout(timeoutMs)
+  try {
+    const result = await pool.withClient(connector, resource, (client) =>
+      operation(client, { signal, ...(credentials && { credentials }) }),
+    )
+    return scrubSecretsDeep(result, secrets) as T
+  } catch (err) {
+    throw toConnectorError(err, { timedOut: signal.aborted, timeoutMs, aborted: signal.aborted, secrets })
+  }
+}
+
+/**
  * Tests a configuration with a fresh client (not the pool), so unsaved settings can be tried from the editor.
  */
 export async function testResource(

@@ -2,9 +2,13 @@ import {
   ConnectorError,
   connectors,
   getConnector,
+  graphqlConnector,
+  graphqlIntrospect,
+  type HttpClient,
   type KafkaConfig,
   type KafkaSecrets,
   kafkaSettingsProblem,
+  runOperation,
   runQuery,
   SshSettingsError,
   testResource,
@@ -812,4 +816,59 @@ export const resourcesRouter = router({
       })
       return outcome
     }),
+
+  /**
+   * A GraphQL resource's schema (M27), by introspection through the resource, for the editor's completions and
+   * checks. Needs Use; kept 10 minutes per settings version (and per person, where each connects their own account).
+   */
+  graphqlSchema: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, refresh: z.boolean().default(false) }))
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== graphqlConnector.type) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only GraphQL resources have a schema' })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
+      const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
+      const cached = graphqlSchemas.get(key)
+      if (cached && !input.refresh && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, schema: cached.schema }
+      }
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
+        resolved,
+        ctx.user.id,
+      )
+      try {
+        const schema = toJson(
+          await runOperation(
+            ctx.services.pool,
+            graphqlConnector,
+            resolved,
+            (client, opts) => graphqlIntrospect(client as HttpClient, opts),
+            { ...(credentials && { credentials }) },
+          ),
+        )
+        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
+        graphqlSchemas.set(key, { at: Date.now(), schema })
+        return { ok: true as const, schema }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
 })
+
+const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000
+/** Introspection results by config row, settings version and (per-user accounts) person; oldest dropped past 200. */
+const graphqlSchemas = new Map<string, { at: number; schema: unknown }>()

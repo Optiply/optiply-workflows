@@ -117,6 +117,9 @@ importers:
       fastify:
         specifier: 5.12.5
         version: 5.12.5
+      graphql:
+        specifier: 16.14.2
+        version: 16.14.2
       isolated-vm:
         specifier: 7.0.1
         version: 7.0.1(patch_hash=dfb090c7d2c26b6de16e83eea4e35755a5d038afc171444018c14863901f51dc)
@@ -414,6 +417,9 @@ importers:
       '@smithy/signature-v4':
         specifier: 5.7.5
         version: 5.7.5
+      graphql:
+        specifier: 16.14.2
+        version: 16.14.2
       mysql2:
         specifier: 3.24.5
         version: 3.24.5(@types/node@24.19.2)
@@ -2181,6 +2187,10 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
+
+  graphql@16.14.2:
+    resolution: {integrity: sha512-Chq1s4CY7jmh8gO2qvLIJyfCDIN+EHLFW/9iShnp1z8FjBQMoodWP1kDC36VAMXXIvAjj4ARa7ntfAV2BrjsbA==}
+    engines: {node: ^12.22.0 || ^14.16.0 || ^16.0.0 || >=17.0.0}
 
   help-me@5.0.0:
     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
@@ -4489,6 +4499,8 @@ snapshots:
       path-scurry: 2.0.2
 
   graceful-fs@4.2.11: {}
+
+  graphql@16.14.2: {}
 
   help-me@5.0.0: {}
 
