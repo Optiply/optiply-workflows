@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +12,15 @@ import {
   startTestIndex,
   testEnvsVolume,
 } from '@ow/code-executor/testing'
-import { startFakePubSub, startTestIapServer } from '@ow/connectors/testing'
+import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestIapServer,
+  startTestKafka,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
@@ -120,7 +128,59 @@ export default async function globalSetup() {
       ...(topic === 'slow' && { ackDeadlineSeconds: 2 }),
     })
   }
+  // SQS (M26): a fake AWS (STS and SQS, signatures checked) with a queue per spec part: `m26-flaky` moves a message to
+  // `m26-dlq` after 2 receives, `m26-slow` hides one for 2 s, `m26-groups.fifo` deduplicates by content. Specs sign in
+  // with E2E_AWS_KEY_ID / E2E_AWS_SECRET (or assume E2E_AWS_ROLE with external id `optiply-e2e`), and send and look
+  // through E2E_IAP_CONTROL's /sqs routes. The server's own credentials are a fake user's, never the developer's.
+  const aws = await startFakeAws()
+  const awsUser = aws.addUser('e2e')
+  const awsServer = aws.addUser('server')
+  const awsRole = aws.addRole('m26-reader', { trusted: [awsUser.arn], externalId: 'optiply-e2e' })
+  aws.sqs.createQueue('m26-dlq')
+  for (const queue of ['orders', 'm26', 'm26-busy', 'm26-sent']) aws.sqs.createQueue(queue)
+  aws.sqs.createQueue('m26-slow', { visibilityTimeout: 2 })
+  aws.sqs.createQueue('m26-flaky', { redrive: { deadLetterQueue: 'm26-dlq', maxReceiveCount: 2 } })
+  aws.sqs.createQueue('m26-groups.fifo', { contentBasedDeduplication: true })
+  process.env.E2E_AWS_KEY_ID = awsUser.accessKeyId
+  process.env.E2E_AWS_SECRET = awsUser.secretAccessKey
+  process.env.E2E_AWS_ROLE = awsRole.arn
+  process.env.E2E_AWS_SERVER_ARN = awsServer.arn
+  process.env.E2E_AWS_USER_ARN = awsUser.arn
+
+  // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
+  // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
+  let kafka: TestKafka | undefined
+  if (kafkaAvailable()) {
+    kafka = await startTestKafka()
+    for (const topic of [
+      'kafka-ui',
+      'm26-keys',
+      'm26-retry',
+      'm26-retry-dlt',
+      'm26-takeover',
+      'm26-produced',
+    ])
+      await kafka.createTopic(topic)
+    process.env.E2E_KAFKA = kafka.plaintext
+    process.env.E2E_KAFKA_SCRAM = JSON.stringify({
+      broker: kafka.saslSsl,
+      ...kafka.users.scram256,
+      ca: kafka.ca,
+      clientCertificate: kafka.clientCertificate,
+      clientKey: kafka.clientKey,
+      mtls: kafka.mtls,
+    })
+  }
+  const kafkaPlain = () =>
+    kafkaClient({ brokers: [kafka!.plaintext], auth: 'none', tls: false, identity: 'key' }, {})
+
   const iapControl = createServer((req, res) => {
+    control(req, res).catch((err: unknown) => {
+      if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' })
+      res.end(String(err))
+    })
+  })
+  async function control(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x')
     const json = (body: unknown) => {
       res.writeHead(200, { 'content-type': 'application/json' })
@@ -132,6 +192,56 @@ export default async function globalSetup() {
         messageId: pubsub.publish(param('topic'), param('data'), JSON.parse(param('attributes') || '{}')),
       })
     if (url.pathname === '/pubsub/messages') return json(pubsub.messages(param('subscription')))
+    if (url.pathname === '/sqs/send' && req.method === 'POST')
+      return json({
+        messageId: aws.sqs.send(param('queue'), param('body'), {
+          attributes: JSON.parse(param('attributes') || '{}'),
+          ...(param('groupId') ? { groupId: param('groupId') } : {}),
+        }),
+      })
+    if (url.pathname === '/sqs/messages') return json(aws.sqs.messages(param('queue')))
+    if (url.pathname === '/kafka/produce' && req.method === 'POST') {
+      const client = kafkaPlain()
+      try {
+        await produceTo(
+          client,
+          param('topic'),
+          [
+            {
+              ...(param('key') ? { key: param('key') } : {}),
+              value: param('value'),
+              headers: JSON.parse(param('headers') || '{}'),
+            },
+          ],
+          AbortSignal.timeout(10_000),
+        )
+      } finally {
+        await client.close()
+      }
+      return json({})
+    }
+    if (url.pathname === '/kafka/read') {
+      // A topic from its beginning, by a group of its own: what was produced to it (dead letters).
+      const client = kafkaPlain()
+      const consumer = await kafkaConsumer(client, {
+        groupId: `e2e-reader-${randomBytes(4).toString('hex')}`,
+        topics: [param('topic')],
+        startAt: 'earliest',
+        onAssign() {},
+        onRevoke() {},
+      })
+      const got: { key: string | null; value: string | null; headers: Record<string, string> }[] = []
+      try {
+        const deadline = Date.now() + 10_000
+        while (got.length < Number(param('count') || 1) && Date.now() < deadline)
+          for (const m of await consumer.consume(10, 500))
+            got.push({ key: m.key, value: m.value?.toString() ?? null, headers: m.headers })
+      } finally {
+        await consumer.close()
+        await client.close()
+      }
+      return json(got)
+    }
     if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
     if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
       pubsub.redeliver(param('subscription'), param('messageId'))
@@ -146,7 +256,7 @@ export default async function globalSetup() {
     }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ connects: iap.connects.length, reconnects: iap.reconnects.length }))
-  })
+  }
   await new Promise<void>((r) => iapControl.listen(0, '127.0.0.1', r))
   process.env.E2E_IAP_CONTROL = `http://127.0.0.1:${(iapControl.address() as { port: number }).port}`
 
@@ -208,6 +318,14 @@ export default async function globalSetup() {
     GOOGLE_TOKEN_URL: google.tokenUrl,
     // The server's identity is the fake metadata server's, never the developer's own gcloud login.
     GOOGLE_APPLICATION_CREDENTIALS: '',
+    AWS_SERVER_IDENTITY: 'allow',
+    AWS_STS_URL: aws.url,
+    AWS_SQS_URL: aws.url,
+    // The server's own AWS credentials: the fake's `server` user, never the developer's.
+    AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
+    AWS_SECRET_ACCESS_KEY: awsServer.secretAccessKey,
+    AWS_SESSION_TOKEN: '',
+    AWS_PROFILE: '',
     HOME: gitRoot,
     GCE_METADATA_HOST: google.metadataHost,
   }
@@ -278,6 +396,8 @@ export default async function globalSetup() {
     await new Promise((r) => iapControl.close(r))
     await iap.close()
     await pubsub.close()
+    await aws.close()
+    await kafka?.stop()
     await google.stop()
     await registry.stop()
     for (const origin of origins) await new Promise((r) => origin.close(r))

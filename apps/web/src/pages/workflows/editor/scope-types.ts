@@ -251,6 +251,30 @@ interface OwPubSubMessage {
   /** The data's bytes, for binary payloads. */
   dataBase64: string
 }
+/** An SQS trigger's message (runs an SQS trigger started); its body is \`startTrigger.data\`. */
+interface OwSqsMessage {
+  messageId: string
+  /** The queue's URL. */
+  queue: string
+  /** SQS's own attributes (SentTimestamp, ApproximateReceiveCount, …). */
+  attributes: Record<string, string>
+  /** The sender's message attributes, as text. */
+  messageAttributes: Record<string, string>
+  /** How many times SQS has handed it out, counting this one. */
+  receiveCount: number
+  sentAt: string
+  groupId?: string; deduplicationId?: string; sequenceNumber?: string
+}
+/** A Kafka trigger's message (runs a Kafka trigger started); its value is \`startTrigger.data\`. */
+interface OwKafkaMessage {
+  topic: string; partition: number; offset: string
+  key: string | null
+  headers: Record<string, string>
+  timestamp: string
+  /** This run's attempt at the message, counting from 1. */
+  attempt: number
+  groupId: string
+}
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean
   headers: { get(name: string): string | null; has(name: string): boolean }
@@ -272,7 +296,11 @@ export function scopeDeclarations(
   inFunction?: FunctionDefinition,
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
+  /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
+  queues: readonly ('pubsub' | 'sqs' | 'kafka')[] = [],
 ): { dts: string; sample: Record<string, unknown> } {
+  const MESSAGE_TYPES = { pubsub: 'OwPubSubMessage', sqs: 'OwSqsMessage', kafka: 'OwKafkaMessage' } as const
+  const messageType = queues.length ? queues.map((k) => MESSAGE_TYPES[k]).join(' | ') : 'OwPubSubMessage'
   const lines = [GLOBALS]
   for (const fn of functions) {
     const args = (fn.params ?? []).map((p) => `${p.name}?: any`).join(', ')
@@ -304,7 +332,7 @@ export function scopeDeclarations(
           : 'unknown'
     const extra =
       block.type === 'startTrigger'
-        ? ' headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: OwPubSubMessage;'
+        ? ` headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: ${messageType};`
         : ''
     lines.push(
       `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; [key: string]: unknown };${extra} }`,

@@ -92,6 +92,54 @@ export async function clickEmptyCanvas(page: Page) {
 }
 
 /** Global setup's fake Pub/Sub (`orders` and `refunds`, each with a `<topic>-sub`), through its control routes. */
+/** The fake SQS (M26), through the setup's control routes. */
+export const fakeSqs = {
+  send: async (
+    queue: string,
+    body: string,
+    opts: { attributes?: Record<string, string>; groupId?: string } = {},
+  ) =>
+    (
+      await (
+        await fetch(
+          `${process.env.E2E_IAP_CONTROL}/sqs/send?${new URLSearchParams({
+            queue,
+            body,
+            attributes: JSON.stringify(opts.attributes ?? {}),
+            groupId: opts.groupId ?? '',
+          })}`,
+          { method: 'POST' },
+        )
+      ).json()
+    ).messageId as string,
+  messages: async (queue: string) =>
+    (await (await fetch(`${process.env.E2E_IAP_CONTROL}/sqs/messages?queue=${queue}`)).json()) as {
+      messageId: string
+      body: string
+      receiveCount: number
+      deleted: boolean
+      movedFrom?: string
+    }[],
+}
+
+/** The Kafka broker (M26), through the setup's control routes; specs skip without E2E_KAFKA. */
+export const testKafka = {
+  produce: async (topic: string, value: string, key?: string, headers: Record<string, string> = {}) => {
+    await fetch(
+      `${process.env.E2E_IAP_CONTROL}/kafka/produce?${new URLSearchParams({ topic, value, key: key ?? '', headers: JSON.stringify(headers) })}`,
+      { method: 'POST' },
+    )
+  },
+  read: async (topic: string, count = 1) =>
+    (await (
+      await fetch(`${process.env.E2E_IAP_CONTROL}/kafka/read?topic=${topic}&count=${count}`)
+    ).json()) as {
+      key: string | null
+      value: string | null
+      headers: Record<string, string>
+    }[],
+}
+
 export const fakePubSub = {
   publish: async (topic: string, data: string, attributes: Record<string, string> = {}) =>
     (

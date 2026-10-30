@@ -28,7 +28,9 @@ export default function WorkflowCodeField({ text: at, removeEmpty, ...props }: W
     const functions = definition.functions ?? []
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
     const bodySchema = open ? undefined : definition.triggers?.webhook?.bodySchema
-    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open, bodySchema)
+    const t = definition.triggers
+    const queues = (['pubsub', 'sqs', 'kafka'] as const).filter((kind) => !!t?.[kind]?.length)
+    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open, bodySchema, queues)
   }, [definition, samples, fn])
   // Looked up again as the definition changes: the text appears with the field's first value, and is replaced when
   // its block or field is.

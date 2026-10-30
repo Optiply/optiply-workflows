@@ -152,6 +152,17 @@ describe('scopeDeclarations', () => {
       'declare const startTrigger: { data: { other: number };',
     )
   })
+
+  it("types startTrigger.message as the workflow's queue triggers' messages (M26)", () => {
+    const blocks = [{ name: 'startTrigger', type: 'startTrigger' }] as never
+    expect(scopeDeclarations(blocks, {}).dts).toContain('message?: OwPubSubMessage;')
+    expect(scopeDeclarations(blocks, {}, [], undefined, undefined, ['sqs']).dts).toContain(
+      'message?: OwSqsMessage;',
+    )
+    const both = scopeDeclarations(blocks, {}, [], undefined, undefined, ['sqs', 'kafka']).dts
+    expect(both).toContain('message?: OwSqsMessage | OwKafkaMessage;')
+    expect(both).toContain('interface OwKafkaMessage {')
+  })
 })
 
 describe('draftSchema', () => {
