@@ -41,6 +41,8 @@ x-app: &app
     PYTHON_BUILDER_TOKEN: ${PYTHON_BUILDER_TOKEN:-}
     # Google Cloud IAP for SSH tunnels (M18): `allow` lets admins pick the server's own Google identity.
     GOOGLE_SERVER_IDENTITY: ${GOOGLE_SERVER_IDENTITY:-}
+    # The built-in REST API resource (M27) reaches public addresses only; these private hosts too (comma-separated).
+    REST_API_PRIVATE_HOSTS: ${REST_API_PRIVATE_HOSTS:-}
 
 services:
   postgres:
