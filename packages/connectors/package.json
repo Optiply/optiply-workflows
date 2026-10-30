@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./oauth-presets": "./src/oauth-presets.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./actions": "./src/services/actions.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

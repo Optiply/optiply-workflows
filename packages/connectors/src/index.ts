@@ -8,6 +8,7 @@ import { pubsubConnector } from './pubsub/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
+import { slackConnector } from './services/slack'
 import type { AnyConnector } from './types'
 
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
@@ -132,6 +133,8 @@ export {
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { type RunOptions, runOperation, runQuery, testResource } from './run'
+export { configureServiceUrls, type ServiceUrls } from './services/common'
+export { slackConnector } from './services/slack'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
@@ -170,6 +173,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [restConnector.type]: restConnector,
   [restApiConnector.type]: restApiConnector,
   [graphqlConnector.type]: graphqlConnector,
+  [slackConnector.type]: slackConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
