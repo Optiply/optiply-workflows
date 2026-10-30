@@ -22,6 +22,7 @@ import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
+import { useGraphqlSchema } from '@/lib/graphql-schema'
 import {
   defaultQuery,
   isMessageKind,
@@ -530,7 +531,14 @@ function QueryEditor({
           This query's resource isn't there: its query is kept as it is until you choose another resource.
         </p>
       ) : kind === 'graphql' ? (
-        <GraphqlQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
+        <GraphqlQueryForm
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          resource={current}
+        />
       ) : (
         <RestQueryForm
           query={query}
@@ -601,13 +609,16 @@ function GraphqlQueryForm({
   ctx,
   at,
   models,
+  resource,
 }: {
   query: Record<string, unknown>
   setQuery: (patch: Record<string, unknown>) => void
   ctx: FormContext
   at: (string | number)[]
   models: string
+  resource: Parameters<typeof useGraphqlSchema>[0]
 }) {
+  const schema = useGraphqlSchema(resource)
   return (
     <div className="flex flex-col gap-4">
       <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
@@ -615,6 +626,7 @@ function GraphqlQueryForm({
           path={ctx.modelPath(`${models}query.query`)}
           language="graphql"
           height={200}
+          graphqlSchema={schema}
           value={String(query.query ?? '')}
           problems={ctx.problemsAt(...at, 'query', 'query')}
           text={ctx.text(...at, 'query', 'query')}

@@ -27,6 +27,7 @@ import {
 import { type ReactNode, useState } from 'react'
 import { ActionQueryForm } from '@/components/action-query'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
+import { useGraphqlSchema } from '@/lib/graphql-schema'
 import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -292,6 +293,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
   // M27: a service's action form, or GraphQL's query and variables; other HTTP queries are edited as JSON.
   const kind = resource ? queryKind(resource.type) : null
+  const graphqlSchema = useGraphqlSchema(kind === 'graphql' ? resource : undefined)
   const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
     edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
   /** Sets or (empty) removes an optional field. */
@@ -419,6 +421,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
                 path={[...base, 'query', 'query']}
                 language="graphql"
                 height={160}
+                graphqlSchema={graphqlSchema}
                 value={String(query.query.query ?? '')}
                 problems={problemsAt(diagnostics, [...base, 'query', 'query'])}
                 onChange={(text) => editResourceQuery((q) => ({ ...q, query: text }))}

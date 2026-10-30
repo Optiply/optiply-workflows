@@ -182,3 +182,61 @@ test('a HubSpot query in the workflow inspector, and a GraphQL query in the app 
     await expect(panel.locator('[data-testid$="/queries/0/query/variables"]')).toBeVisible()
   })
 })
+
+test('the GraphQL editor completes fields from the schema and marks unknown ones', async ({ page }) => {
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const prod = await production(page)
+  const shop = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type: 'graphql',
+    name: 'Shop',
+    slug: `gql_${stamp}`,
+  })
+  await trpcMutate(page, 'resources.saveConfig', {
+    resourceId: shop.id,
+    environmentId: prod,
+    config: { baseUrl: graphql.url, allowPrivateNetwork: true, auth: { type: 'bearer' } },
+    secrets: { bearerToken: graphql.token },
+  })
+  const flow = await trpcMutate<{ id: string }>(page, 'workflows.create', {
+    slug: `gql-${stamp}`,
+    name: 'GQL',
+  })
+  await trpcMutate(page, 'workflows.saveDraft', {
+    id: flow.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      blocks: [
+        { name: 'startTrigger', type: 'startTrigger' },
+        {
+          name: 'orders',
+          type: 'resourceQuery',
+          config: {
+            resource: `gql_${stamp}`,
+            query: { query: '{ order(id: "1") { nope } }', variables: '' },
+          },
+        },
+      ],
+      edges: [{ from: 'startTrigger', port: 'out', to: 'orders' }],
+    },
+  })
+  await page.goto(`/workflows/${flow.id}`)
+  await block(page, 'orders').click()
+  const editor = page.locator('[data-testid$="/orders/query.query"]')
+  await expect(editor).toBeVisible()
+
+  await test.step('an unknown field is marked, with the schema’s message', async () => {
+    await expect(editor.locator('.squiggly-error')).toBeVisible()
+    await editor.locator('.view-line span', { hasText: 'nope' }).last().hover()
+    await expect(page.getByText('Cannot query field "nope" on type "Order".')).toBeVisible()
+  })
+
+  await test.step('completions offer the type’s fields', async () => {
+    await editor.locator('.view-line').first().click()
+    await page.keyboard.press('ControlOrMeta+A')
+    await page.keyboard.type('{ order(id: "1") { cu')
+    await page.keyboard.press('Control+Space')
+    await expect(page.locator('.suggest-widget').getByText('customer')).toBeVisible()
+  })
+})
