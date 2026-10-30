@@ -1,15 +1,17 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { type FakeSqs, type FakeSqsOptions, fakeSqs } from './fake-sqs'
 
 /**
- * A fake AWS for tests (M26): STS (`GetCallerIdentity`, `AssumeRole`) and, from step 2b, SQS, on one local port.
+ * A fake AWS for tests (M26): STS (`GetCallerIdentity`, `AssumeRole`) and SQS (`fake-sqs.ts`), on one local port.
  * Every request's SigV4 signature is checked against the key it names, so a test proves the right secret (or the
  * assumed role's session) signed it. Not AWS: one account, no policies beyond who may assume which role.
  */
 export interface FakeAwsOptions {
   /** The account every identity is in. */
   account?: string
+  sqs?: FakeSqsOptions
 }
 
 export interface FakeAwsKey {
@@ -42,8 +44,9 @@ export interface FakeAws {
   /** Makes the next `count` calls to `action` fail with `code` (an AWS error name) and HTTP `status`. */
   fail(action: string, code: string, status?: number, count?: number): void
   close(): Promise<void>
-  /** Service handlers added by later parts (SQS). */
+  /** Service handlers by signed service name. */
   readonly handlers: Map<string, ServiceHandler>
+  sqs: FakeSqs
 }
 
 export type ServiceHandler = (req: SignedRequest, res: ServerResponse) => void | Promise<void>
@@ -153,10 +156,13 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
+  const url = `http://127.0.0.1:${port}`
+  const sqs = fakeSqs(handlers, account, () => url, opts.sqs)
 
   return {
-    url: `http://127.0.0.1:${port}`,
+    url,
     account,
+    sqs,
     calls,
     handlers,
     addUser(name) {

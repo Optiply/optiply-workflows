@@ -113,13 +113,11 @@ export async function describeAws(
   region: string,
   credentials: AwsCredentialIdentityProvider,
   signal: AbortSignal,
+  /** A resource's own endpoint (LocalStack answers STS there too); else the configured or real STS. */
+  endpoint?: string,
 ): Promise<string> {
-  const sts = new STSClient({
-    region,
-    credentials,
-    maxAttempts: 2,
-    ...(defaults.stsEndpoint ? { endpoint: defaults.stsEndpoint } : {}),
-  })
+  const at = endpoint ?? defaults.stsEndpoint
+  const sts = new STSClient({ region, credentials, maxAttempts: 2, ...(at ? { endpoint: at } : {}) })
   try {
     const who = await sts.send(new GetCallerIdentityCommand({}), { abortSignal: signal })
     return who.Arn ?? 'an unnamed identity'

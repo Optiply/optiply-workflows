@@ -3,12 +3,13 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startFakePubSub, startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
+import { startFakeAws, startFakePubSub, startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureAwsServer } from '../src/services/aws'
 import { configureGoogle } from '../src/services/google'
 import { saveTokens } from '../src/services/oauth-tokens'
 import { logSshTunnels } from '../src/services/ssh-log'
@@ -1152,6 +1153,87 @@ describe('Pub/Sub resources (M19)', () => {
     expect(
       (await save(member, other, { identity: 'key' }, { serviceAccountKey: google.keyJson })).status,
     ).toBe(200)
+  })
+})
+
+describe('SQS resources (M26)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  let user: ReturnType<Awaited<ReturnType<typeof startFakeAws>>['addUser']>
+  let id: string
+  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    aws = await startFakeAws({ sqs: { secondMs: 50 } })
+    user = aws.addUser('workflows')
+    SECRETS.push(user.secretAccessKey)
+    aws.sqs.createQueue('orders')
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+    id = data(await admin.mutate('resources.create', { type: 'sqs', name: 'Queues', slug: 'queues_m26' })).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'SQS editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    await admin.mutate('permissions.set', {
+      objectType: 'resource',
+      objectId: id,
+      groupId,
+      environmentId: prodId,
+      level: 'edit',
+    })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws.close()
+  })
+
+  it('saves an access key (the secret masked), tests the connection as its user, and sends', async () => {
+    const config = { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId }
+    expect((await save(admin, id, config)).body.error?.message).toBe('Add the secret access key')
+    const saved = await save(admin, id, config, { secretAccessKey: user.secretAccessKey })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ secretAccessKey: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({ ok: true, message: `SQS in eu-west-1 as ${user.arn}` })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { queue: 'orders', messages: '{"body": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
+    expect(aws.sqs.messages('orders').at(-1)).toMatchObject({ body: '42' })
+  })
+
+  it("lets only admins choose the server's credentials, change their role, or set an endpoint", async () => {
+    const server = { region: 'eu-west-1', identity: 'server' }
+    expect((await save(admin, id, server)).body.error?.message).toMatch(
+      /doesn't let resources use its own AWS/,
+    )
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'allow', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+    expect((await save(member, id, server)).body.error?.message).toBe(
+      "Only admins can use this server's own AWS credentials, or change the region or role used with them",
+    )
+    expect((await save(admin, id, server)).status).toBe(200)
+    expect((await save(member, id, server)).status).toBe(200)
+    const role = { ...server, roleArn: 'arn:aws:iam::123456789012:role/other' }
+    expect((await save(member, id, role)).status).toBe(403)
+    const endpoint = {
+      region: 'eu-west-1',
+      identity: 'key',
+      accessKeyId: user.accessKeyId,
+      endpoint: aws.url,
+    }
+    expect(
+      (await save(member, id, endpoint, { secretAccessKey: user.secretAccessKey })).body.error?.message,
+    ).toBe('Only admins can point an SQS resource at another endpoint')
+    expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
+    // Kept as it is by an editor, yes.
+    expect((await save(member, id, endpoint)).status).toBe(200)
   })
 })
 

@@ -1,3 +1,4 @@
+import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
@@ -17,6 +18,7 @@ export {
   configureAws,
   describeAws,
 } from './aws/credentials'
+export { type SqsReceived, type SqsResourceClient, sqsClient, sqsConnector } from './aws/sqs'
 export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
   CodeFetcher,
@@ -110,6 +112,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
   [pubsubConnector.type]: pubsubConnector,
+  [sqsConnector.type]: sqsConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

@@ -20,7 +20,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
-import { awsIdentityView } from '../../services/aws'
+import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
 import {
@@ -82,8 +82,9 @@ function sshSettled<T>(settle: () => T): T {
 }
 
 /**
- * Settings that open Google IAP with the server's own identity (M18) to a VM other than the stored settings' need an
- * admin: editors may keep such settings (and change the rest), not choose or move them. Returns the new target.
+ * Settings that use the server's own Google identity (M18, M19) or AWS credentials (M26) somewhere other than the
+ * stored settings' need an admin, as does an SQS endpoint: editors may keep such settings (and change the rest), not
+ * choose or move them. Returns the new target.
  */
 function requireAdminForServerIdentity(
   user: { isAdmin: boolean },
@@ -91,6 +92,13 @@ function requireAdminForServerIdentity(
   stored: unknown,
   next: unknown,
 ): string | null {
+  // An SQS resource's own endpoint (M26) receives signed requests and the queues' messages: admins choose it.
+  const endpoint = (c: unknown) => (c as { endpoint?: unknown } | null)?.endpoint ?? null
+  if (type === 'sqs' && endpoint(next) && endpoint(next) !== endpoint(stored) && !user.isAdmin)
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Only admins can point an SQS resource at another endpoint',
+    })
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
     throw new TRPCError({
@@ -409,8 +417,11 @@ export const resourcesRouter = router({
         settled.config,
       )
       const secrets = settled.secrets
-      if (resource.type === 'pubsub') {
-        const problem = pubsubSettingsProblem(settled.config, secrets)
+      if (resource.type === 'pubsub' || resource.type === 'sqs') {
+        const problem =
+          resource.type === 'pubsub'
+            ? pubsubSettingsProblem(settled.config, secrets)
+            : awsSettingsProblem(settled.config, secrets)
         if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
       }
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
