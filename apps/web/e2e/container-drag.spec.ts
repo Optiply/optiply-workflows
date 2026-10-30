@@ -54,8 +54,10 @@ test('drags components into, out of and between containers', async ({ page }) =>
   })
 
   await test.step('a selection into a form, from two grids at once', async () => {
-    await page.getByTestId('frame-a').click()
-    await page.getByTestId('frame-b').click({ modifiers: ['Shift'] })
+    // Near the top: a dropped component stays where it lands (session 33), and the move handle of one pushed below
+    // it covers its lower half.
+    await page.getByTestId('frame-a').click({ position: { x: 8, y: 4 } })
+    await page.getByTestId('frame-b').click({ modifiers: ['Shift'], position: { x: 8, y: 4 } })
     await move(page, 'b', 'grid-form1')
     await expect
       .poll(async () => [await where('a'), await where('b')])

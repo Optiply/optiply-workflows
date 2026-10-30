@@ -17,7 +17,7 @@ import {
 } from '@ow/app-definition'
 import { GripVertical, Move } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
+import ReactGridLayout, { type Layout, noCompactor, useContainerWidth } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
 import { sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -31,7 +31,7 @@ import {
   ShownModalContext,
   shownViews,
 } from '../grid-context'
-import { moveItems, settleAfterMove } from './layout'
+import { makeRoom, moveItems, settleAfterMove } from './layout'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
@@ -140,6 +140,9 @@ export function EditGrid({
           width={width}
           layout={layout}
           gridConfig={{ cols: 12, rowHeight: ROW_HEIGHT, margin: [12, 0], containerPadding: [0, 0] }}
+          // Components stay where they're put (session 33): nothing floats up into a gap; one dropped on another
+          // pushes it down.
+          compactor={noCompactor}
           dragConfig={{ handle: `.${handle}`, cancel: '.ow-move' }}
           resizeConfig={{ handles: ['se', 'e', 's'] }}
           // Every grid takes drops (M24): a type from the palette, or components from another grid.
@@ -152,11 +155,21 @@ export function EditGrid({
               before && after && chosen.length > 1 && chosen.includes(after.i)
                 ? children.map((c) => c.component.name).filter((n) => n !== after.i && chosen.includes(n))
                 : []
-            if (!others.length) return commit(next)
             const placed = next.filter((l) => l.i !== '__dropping-elem__')
+            // What it was dropped on makes room (pushed down, on through what's below): nothing overlaps.
+            if (!others.length) return commit(after ? makeRoom(placed, [after.i]) : placed)
             commit(moveItems(placed, others, after!.x - before!.x, after!.y - before!.y))
           }}
-          onResizeStop={commit}
+          onResizeStop={(next, _before, after) =>
+            commit(
+              after
+                ? makeRoom(
+                    next.filter((l) => l.i !== '__dropping-elem__'),
+                    [after.i],
+                  )
+                : next,
+            )
+          }
           onDropDragOver={() => {
             if (moving) {
               const def = useAppEditor.getState().definition
@@ -191,7 +204,8 @@ export function EditGrid({
               position: { x: item.x, y: item.y },
               ...target,
             })
-            update(() => added.definition)
+            // Dropped on others: they make room, as for a move.
+            update((def) => settleAfterMove(def, added.definition, [added.name]))
             select(added.name)
           }}
         >

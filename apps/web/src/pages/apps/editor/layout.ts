@@ -1,16 +1,16 @@
 import { type AppDefinition, setPositions, slotOf } from '@ow/app-definition'
-import { type Layout, moveElement, verticalCompactor } from 'react-grid-layout'
+import type { Layout } from 'react-grid-layout'
 import { placedChildren } from '../placed'
 
 const COLS = 12
 
 /**
  * `names` in `layout` moved by `dx` columns and `dy` rows, the way the canvas moves a dragged item (M24): each one
- * pushes what it lands on out of the way, then the grid is compacted upward as the canvas compacts it, so what's
- * saved is what the editor shows (and the app places).
+ * pushes what it lands on out of the way (down). Nothing floats up afterwards (session 33): components stay where
+ * they're put, gaps included, as the canvas keeps them and the app places them.
  */
 export function moveItems(layout: Layout, names: readonly string[], dx: number, dy: number): Layout {
-  let next = layout.map((l) => ({ ...l }))
+  const next = layout.map((l) => ({ ...l }))
   // Those furthest along the move go first, so the others don't push into them.
   const moving = next
     .filter((l) => names.includes(l.i))
@@ -20,9 +20,33 @@ export function moveItems(layout: Layout, names: readonly string[], dx: number, 
     const item = next.find((l) => l.i === name)!
     const x = Math.max(0, Math.min(COLS - item.w, item.x + dx))
     const y = Math.max(0, item.y + dy)
-    next = moveElement(next, item, x, y, true, false, 'vertical', COLS) as typeof next
+    item.x = x
+    item.y = y
   }
-  return verticalCompactor.compact(next, COLS) as Layout
+  return makeRoom(next, moving)
+}
+
+/**
+ * The named items kept where they are; every other one that now overlaps something is pushed down just below it,
+ * top to bottom, so pushes carry on through what's underneath. Nothing moves up (session 33: components stay where
+ * they're put), and the others keep their order.
+ */
+export function makeRoom(layout: Layout, names: readonly string[]): Layout {
+  const items = layout.map((l) => ({ ...l }))
+  const overlaps = (a: (typeof items)[number], b: (typeof items)[number]) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+  // The named ones first, in the order given (a move's leading item keeps its place if the grid's edge squeezes them
+  // together), then the rest from the top.
+  const named = names.flatMap((n) => items.filter((l) => l.i === n))
+  const rest = items.filter((l) => !names.includes(l.i)).sort((a, b) => a.y - b.y || a.x - b.x)
+  const placed: typeof items = []
+  for (const item of [...named, ...rest]) {
+    for (let hit = placed.find((p) => overlaps(p, item)); hit; hit = placed.find((p) => overlaps(p, item))) {
+      item.y = hit.y + hit.h
+    }
+    placed.push(item)
+  }
+  return items as Layout
 }
 
 /** Every grid the named components sit on (their parent, slot and page): their children, as the canvas places them. */
@@ -59,8 +83,8 @@ export function nudgeOnCanvas(
 }
 
 /**
- * After components moved to another grid (M24): the grids they left and the ones they joined, compacted upward as
- * the canvas compacts them, so no gap or overlap is saved that the editor wouldn't show.
+ * After components moved to another grid (M24): where they landed on others, those are pushed down out of the way,
+ * so no overlap is saved. Gaps stay (session 33: components stay where they're put).
  */
 export function settleAfterMove(
   before: AppDefinition,
@@ -75,7 +99,7 @@ export function settleAfterMove(
       i: component.name,
       ...position,
     }))
-    const settled = verticalCompactor.compact(layout, COLS)
+    const settled = makeRoom(layout, names)
     next = setPositions(
       next,
       Object.fromEntries(settled.map((l) => [l.i, { x: l.x, y: l.y, w: l.w, h: l.h }])),
