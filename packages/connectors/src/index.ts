@@ -9,6 +9,7 @@ import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
 import { hubspotConnector } from './services/hubspot'
+import { sendgridConnector } from './services/sendgrid'
 import { slackConnector } from './services/slack'
 import type { AnyConnector } from './types'
 
@@ -136,6 +137,7 @@ export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi
 export { type RunOptions, runOperation, runQuery, testResource } from './run'
 export { configureServiceUrls, type ServiceUrls } from './services/common'
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
+export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
@@ -177,6 +179,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [graphqlConnector.type]: graphqlConnector,
   [slackConnector.type]: slackConnector,
   [hubspotConnector.type]: hubspotConnector,
+  [sendgridConnector.type]: sendgridConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,

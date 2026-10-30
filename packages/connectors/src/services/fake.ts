@@ -8,9 +8,17 @@ import type { AddressInfo } from 'node:net'
 export interface FakeServices {
   url: string
   /** Base URLs to give the server (`SLACK_API_URL` and so on). */
-  urls: { slack: string; hubspot: string; sendgrid: string; sheets: string; drive: string }
+  urls: {
+    slack: string
+    hubspot: string
+    sendgrid: string
+    sendgridEu: string
+    sheets: string
+    drive: string
+  }
   slack: FakeSlack
   hubspot: FakeHubSpot
+  sendgrid: FakeSendGrid
   calls: {
     service: string
     method: string
@@ -48,6 +56,14 @@ export interface FakeHubSpot {
   associations: { fromType: string; fromId: string; toType: string; toId: string }[]
 }
 
+export interface FakeSendGrid {
+  key: string
+  /** What `/v3/scopes` lists; without `mail.send`, sending is refused. */
+  scopes: string[]
+  /** Mails accepted, with the host they came to. */
+  mails: { region: 'global' | 'eu'; mail: Record<string, unknown> }[]
+}
+
 type Handler = (
   req: IncomingMessage,
   url: URL,
@@ -55,7 +71,7 @@ type Handler = (
 ) => Promise<{ status: number; json?: unknown; headers?: Record<string, string> }>
 
 export async function startFakeServices(
-  opts: { slackToken?: string; hubspotToken?: string } = {},
+  opts: { slackToken?: string; hubspotToken?: string; sendgridKey?: string } = {},
 ): Promise<FakeServices> {
   const calls: FakeServices['calls'] = []
   const slack: FakeSlack = {
@@ -429,9 +445,55 @@ export async function startFakeServices(
     return error(405, 'VALIDATION_ERROR', 'Method not allowed')
   }
 
+  const sendgrid: FakeSendGrid = {
+    key: opts.sendgridKey ?? 'SG.fake-key',
+    scopes: ['mail.send', 'scopes.read', 'suppression.read'],
+    mails: [],
+  }
+  let messageId = 0
+  const sendgridHandler: Handler = async (req, url, body) => {
+    const region = url.pathname.startsWith('/sendgrid-eu/') ? 'eu' : 'global'
+    const path = url.pathname.replace(/^\/sendgrid(-eu)?/, '')
+    const fail = (status: number, message: string, field: string | null = null) => ({
+      status,
+      json: { errors: [{ message, field, help: null }] },
+    })
+    if (req.headers.authorization !== `Bearer ${sendgrid.key}`) {
+      return fail(401, 'The provided authorization grant is invalid, expired, or revoked')
+    }
+    if (path === '/v3/scopes' && req.method === 'GET')
+      return { status: 200, json: { scopes: sendgrid.scopes } }
+    if (path === '/v3/mail/send' && req.method === 'POST') {
+      if (!sendgrid.scopes.includes('mail.send')) return fail(403, 'access forbidden')
+      const mail = JSON.parse(body.toString())
+      const personalizations = mail.personalizations as { to?: { email: string }[] }[] | undefined
+      if (!personalizations?.length || personalizations.some((p) => !p.to?.length)) {
+        return fail(400, 'The to array is required for all personalization objects', 'personalizations.0.to')
+      }
+      if (!mail.from?.email)
+        return fail(400, 'The from object must be provided for every email send.', 'from')
+      if (!mail.template_id && !mail.content?.length) {
+        return fail(
+          400,
+          'Unless a valid template_id is provided, the content parameter is required.',
+          'content',
+        )
+      }
+      if (!mail.template_id && !mail.subject) return fail(400, 'The subject is required.', 'subject')
+      sendgrid.mails.push({ region, mail })
+      return { status: 202, headers: { 'x-message-id': `msg-${++messageId}` } }
+    }
+    if (path === '/v3/suppression/bounces' && req.method === 'GET') {
+      return { status: 200, json: [{ email: 'gone@example.com', reason: '550', created: 1700000000 }] }
+    }
+    return fail(404, 'not found')
+  }
+
   const routes: [string, string, Handler][] = [
     ['/slack/api/', 'slack', slackHandler],
     ['/hubspot/', 'hubspot', hubspotHandler],
+    ['/sendgrid/', 'sendgrid', sendgridHandler],
+    ['/sendgrid-eu/', 'sendgrid', sendgridHandler],
   ]
 
   const server = createServer(async (req, res: ServerResponse) => {
@@ -473,11 +535,13 @@ export async function startFakeServices(
       slack: `${origin}/slack/api`,
       hubspot: `${origin}/hubspot`,
       sendgrid: `${origin}/sendgrid`,
+      sendgridEu: `${origin}/sendgrid-eu`,
       sheets: `${origin}/sheets/v4/spreadsheets`,
       drive: `${origin}/drive`,
     },
     slack,
     hubspot,
+    sendgrid,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),
   }

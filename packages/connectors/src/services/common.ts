@@ -20,6 +20,7 @@ export interface ServiceUrls {
   slack?: string
   hubspot?: string
   sendgrid?: string
+  sendgridEu?: string
   sheets?: string
   drive?: string
 }

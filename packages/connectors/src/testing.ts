@@ -115,6 +115,7 @@ export {
 } from './pubsub/fake'
 export {
   type FakeHubSpot,
+  type FakeSendGrid,
   type FakeServices,
   type FakeSlack,
   startFakeServices,
