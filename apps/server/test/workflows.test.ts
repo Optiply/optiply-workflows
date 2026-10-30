@@ -449,6 +449,36 @@ describe('run block', () => {
   })
 })
 
+describe('run block with problems elsewhere (M28)', () => {
+  it('runs a block while a sibling is broken, and a block nothing connects to; not a broken one', async () => {
+    const wf = await workflowWith(
+      'block-runs-scoped',
+      [code('good', 'return 1 + 1'), code('broken', 'return ('), code('loose', 'return "alone"')],
+      [
+        ['startTrigger', 'good'],
+        ['startTrigger', 'broken'],
+      ],
+    )
+    // The whole workflow can't run.
+    expect((await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})).status).toBe(400)
+
+    const good = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/good/runs`, {})
+    expect(good.status).toBe(202)
+    expect((await waitForRun(good.body.run.id)).status).toBe('succeeded')
+    expect((await rest(adminCookie, 'GET', `/runs/${good.body.run.id}/blocks/good`)).body.block.data).toBe(2)
+
+    const loose = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/loose/runs`, {})
+    expect(loose.status).toBe(202)
+    expect((await waitForRun(loose.body.run.id)).status).toBe('succeeded')
+    expect((await rest(adminCookie, 'GET', `/runs/${loose.body.run.id}/blocks/loose`)).body.block.data).toBe(
+      'alone',
+    )
+
+    const broken = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/broken/runs`, {})
+    expect(broken.status).toBe(400)
+  })
+})
+
 /** Reads server-sent events until `end` (or the timeout), returning `[name, data]` pairs. */
 async function readEvents(url: string, cookie: string, timeoutMs = 15_000) {
   const res = await fetch(url, { headers: { cookie }, signal: AbortSignal.timeout(timeoutMs) })

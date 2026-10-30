@@ -20,6 +20,7 @@ import {
   workflows,
 } from '@ow/db'
 import {
+  blockingErrors,
   buildGraph,
   calledWorkflows,
   type Diagnostic,
@@ -114,7 +115,11 @@ export async function startBlockRun(
     branchDraftId?: string
   },
 ): Promise<WorkflowRun> {
-  const { definition, source } = await prepareRun(db, access, user, { ...opts, version: 'draft' })
+  const { definition, source } = await prepareRun(db, access, user, {
+    ...opts,
+    version: 'draft',
+    targets: [opts.block],
+  })
   if (!definition.blocks.some((b) => b.name === opts.block)) {
     throw new RunRequestError(404, 'not_found', `The draft has no block named "${opts.block}"`)
   }
@@ -167,7 +172,14 @@ async function prepareRun(
   db: Db,
   access: Access,
   user: { id: string },
-  opts: { workflow: Workflow; environmentId: string; version: RunVersion; branchDraftId?: string },
+  opts: {
+    workflow: Workflow
+    environmentId: string
+    version: RunVersion
+    branchDraftId?: string
+    /** A block run's blocks: only errors they depend on count. */
+    targets?: string[]
+  },
 ): Promise<{
   definition: WorkflowDefinition
   source: { releaseId: string } | { draftSnapshotId: string }
@@ -205,10 +217,17 @@ async function prepareRun(
     libraries,
     errors,
   } = await checkDefinition(db, definition, 'run', version === 'draft')
-  if (errors.length) {
-    throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
-      diagnostics: errors satisfies Diagnostic[],
-    })
+  // A block run needs only that block, its ancestors and what they call to be valid (M28).
+  const blocking = blockingErrors(definition, errors, opts.targets)
+  if (blocking.length) {
+    throw new RunRequestError(
+      400,
+      'invalid_definition',
+      `The workflow isn't valid: ${blocking[0]!.message}`,
+      {
+        diagnostics: blocking satisfies Diagnostic[],
+      },
+    )
   }
   // A draft run starts its child workflows as the person pressing Run (a release was vouched for when published).
   if (version === 'draft') {

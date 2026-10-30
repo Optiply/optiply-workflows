@@ -2,6 +2,7 @@ import { scrubSecrets } from '@ow/crypto'
 import type { LogLevel } from '@ow/db'
 import {
   type Block,
+  blockingErrors,
   buildGraph,
   type FunctionDefinition,
   functionReturnBlock,
@@ -64,8 +65,11 @@ const ITERATION_KEY = /^(.+)\[(\d+)\]$/
  */
 export async function executeRun(opts: ExecuteRunOptions): Promise<RunOutcome> {
   const validation = validateDefinition(opts.definition)
-  if (!validation.ok) {
-    const errors = validation.diagnostics.filter((d) => d.severity === 'error')
+  // Running some blocks (`only`) needs only them, their ancestors and what they call to be valid (M28).
+  const errors = validation.definition
+    ? blockingErrors(validation.definition, validation.diagnostics, opts.only)
+    : validation.diagnostics.filter((d) => d.severity === 'error')
+  if (errors.length) {
     return {
       status: 'failed',
       error: {
@@ -238,6 +242,8 @@ class RunExecution {
       const fired =
         block.type === 'startTrigger' ||
         (this.isFunction && incoming.length === 0) ||
+        // Running some blocks (M28): a block of theirs nothing connects into starts on its own, as in a function.
+        (this.opts.only !== undefined && this.phase === 'main' && incoming.length === 0) ||
         incoming.some((edge) => this.results.get(edge.from)!.port === edge.port)
       if (fired) {
         this.queued.add(name)

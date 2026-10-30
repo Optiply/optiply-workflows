@@ -60,7 +60,6 @@ export function RunPanel() {
   const [height, setHeight] = useState(storedHeight)
   const [maximized, setMaximized] = useState(false)
   const [tab, setTab] = useState<DetailTab>('data')
-  const [chosen, setChosen] = useState<string>(GLOBAL)
   const panel = useRef<HTMLElement>(null)
 
   const startResize = (e: React.PointerEvent) => {
@@ -116,7 +115,7 @@ export function RunPanel() {
             <Spinner />
           </div>
         ) : (
-          <RunDetail run={run} chosen={chosen} setChosen={setChosen} tab={tab} setTab={setTab} />
+          <RunDetail key={run.id} run={run} tab={tab} setTab={setTab} />
         )}
         <div className="flex shrink-0 flex-col gap-1 border-l border-border p-1">
           <Button
@@ -198,19 +197,9 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: 'bg-muted/50',
 }
 
-function RunDetail({
-  run,
-  chosen,
-  setChosen,
-  tab,
-  setTab,
-}: {
-  run: RunView
-  chosen: string
-  setChosen: (key: string) => void
-  tab: DetailTab
-  setTab: (tab: DetailTab) => void
-}) {
+function RunDetail({ run, tab, setTab }: { run: RunView; tab: DetailTab; setTab: (tab: DetailTab) => void }) {
+  // A block run opens on its block; otherwise on the run as a whole.
+  const [chosen, setChosen] = useState<string>(run.targetBlocks?.[0] ?? GLOBAL)
   const live = useRun((s) => s.blocks)
   const progress = useRun((s) => s.iterations)
   // Select the definition itself: a selector returning a new array each time would re-render forever.

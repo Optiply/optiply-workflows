@@ -527,6 +527,27 @@ describe('run block (only)', () => {
     expect([fake.count('c'), fake.count('other')]).toEqual([0, 0])
   })
 
+  it('runs a chain nothing connects to the start trigger, and ignores a broken block elsewhere (M28)', async () => {
+    const loose = wf(
+      [
+        fakeQ('x', { value: '{{ 3 }}' }),
+        fakeQ('y', { value: '{{ x.data * 2 }}' }),
+        { name: 'bad', type: 'code', config: { code: 'return (' } },
+      ],
+      [
+        ['x', 'y'],
+        ['startTrigger', 'bad'],
+      ],
+    )
+    const { outcome, statuses, data } = await run(services, loose, { only: ['y'] })
+    expect(outcome.error).toBeNull()
+    expect(outcome.status).toBe('succeeded')
+    expect(statuses).toEqual({ x: 'succeeded', y: 'succeeded' })
+    expect(data('y')).toBe(6)
+    // A whole run still refuses the broken block.
+    expect((await run(services, loose, {})).outcome.error?.code).toBe('invalid_definition')
+  })
+
   it('reuses checkpointed ancestors instead of running them again', async () => {
     const first = await run(services, graph(), { input: { data: 1 } })
     t.reset()

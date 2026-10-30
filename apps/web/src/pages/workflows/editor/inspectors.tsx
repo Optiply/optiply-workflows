@@ -3,6 +3,7 @@ import {
   type Block,
   type BlockOf,
   type BlockSettings,
+  blockingErrors,
   DEFAULT_BLOCK_SETTINGS,
   DEFAULT_LOOP_BATCH_SIZE,
   DEFAULT_LOOP_CONCURRENCY,
@@ -200,14 +201,19 @@ function NameField({ name }: { name: string }) {
 /** Runs just this block, reusing the results of the blocks before it from the latest run. */
 function RunBlockButton({ name }: { name: string }) {
   const starting = useRun((s) => s.starting)
-  const errors = useEditor((s) => s.diagnostics.some((d) => d.severity === 'error'))
+  // Only problems in this block, the blocks before it and what they call stop it (M28).
+  const errors = useEditor((s) => blockingErrors(s.definition, s.diagnostics, [name]).length > 0)
   return (
     <Button
       size="icon"
       variant="ghost"
       loading={starting}
       disabled={errors}
-      title={errors ? 'Fix the problems first' : 'Run this block (earlier results are reused)'}
+      title={
+        errors
+          ? 'Fix the problems in this block or the blocks before it first'
+          : 'Run this block (earlier results are reused)'
+      }
       onClick={() => runBlock(name)}
     >
       {!starting && <Play className="size-4" />}
