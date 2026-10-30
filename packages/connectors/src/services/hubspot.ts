@@ -27,10 +27,10 @@ const configSchema = z.object({ auth: tokenOrOAuthSchema(oauthPresets.hubspot) }
 type Config = z.output<typeof configSchema>
 
 function httpConfig(config: Config) {
-  return serviceRestConfig(
-    serviceBase('hubspot', 'https://api.hubapi.com'),
-    restAuthFor(config.auth, oauthPresets.hubspot),
-  )
+  const base = serviceBase('hubspot', 'https://api.hubapi.com')
+  // HubSpot's token endpoint is on its API host: a test's fake answers both.
+  const tokenUrl = base.overridden ? `${base.url}/oauth/v1/token` : oauthPresets.hubspot.tokenUrl
+  return serviceRestConfig(base, restAuthFor(config.auth, oauthPresets.hubspot, tokenUrl))
 }
 
 type Ctx = { signal: AbortSignal; credentials?: CredentialSource | undefined }

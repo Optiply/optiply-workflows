@@ -64,13 +64,17 @@ export type ServiceSecrets = z.output<typeof serviceSecretsSchema>
 type ServiceAuth = z.output<ReturnType<typeof tokenOrOAuthSchema>>
 
 /** REST's auth for a service's sign-in: a bearer token, or M9's authorization code with the provider's preset. */
-export function restAuthFor(auth: ServiceAuth, preset: OAuthProviderPreset): RestAuth {
+export function restAuthFor(
+  auth: ServiceAuth,
+  preset: OAuthProviderPreset,
+  tokenUrl = preset.tokenUrl,
+): RestAuth {
   if (auth.type === 'token') return { type: 'bearer' }
   return {
     type: 'oauth2AuthorizationCode',
     provider: preset.id,
     authorizeUrl: preset.authorizeUrl,
-    tokenUrl: preset.tokenUrl,
+    tokenUrl,
     clientId: auth.clientId,
     scope: auth.scope,
     authorizeParams: preset.authorizeParams,

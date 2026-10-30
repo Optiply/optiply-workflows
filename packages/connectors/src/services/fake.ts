@@ -276,7 +276,26 @@ export async function startFakeServices(
     ],
   }
   let hubspotId = 1000
+  let hubspotTokens = 0
   const hubspotHandler: Handler = async (req, url, body) => {
+    if (url.pathname === '/hubspot/oauth/v1/token' && req.method === 'POST') {
+      // OAuth (M9's flow): any code or refresh token from the client `hubspot-client` with its secret.
+      const form = new URLSearchParams(body.toString())
+      if (form.get('client_id') !== 'hubspot-client' || form.get('client_secret') !== 'hubspot-secret') {
+        return { status: 400, json: { status: 'BAD_CLIENT_ID', message: 'Invalid client' } }
+      }
+      const issued = `hub-oauth-${++hubspotTokens}`
+      hubspot.acceptTokens.add(issued)
+      return {
+        status: 200,
+        json: {
+          access_token: issued,
+          refresh_token: `hub-refresh-${hubspotTokens}`,
+          expires_in: 1800,
+          token_type: 'bearer',
+        },
+      }
+    }
     const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
     const error = (status: number, category: string, message: string) => ({
       status,
@@ -721,6 +740,15 @@ export async function startFakeServices(
           ),
           sendgrid: sendgrid.mails,
           sheets: Object.fromEntries(sheets.spreadsheets),
+          calls: calls
+            .filter((c) => !/^\/_fake\/(state|sheets)/.test(c.path))
+            .slice(-200)
+            .map((c) => ({
+              service: c.service,
+              method: c.method,
+              path: c.path,
+              authorization: c.headers.authorization ?? null,
+            })),
         },
       }
     }
