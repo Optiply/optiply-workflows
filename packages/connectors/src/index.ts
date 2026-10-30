@@ -1,5 +1,6 @@
 import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
+import { kafkaConnector } from './kafka/connector'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
 import { pubsubConnector } from './pubsub/connector'
@@ -34,6 +35,30 @@ export {
   type ServerIdentityOptions,
   serverIdentity,
 } from './google-auth'
+export {
+  type KafkaAdmin,
+  type KafkaClientExtras,
+  type KafkaProducer,
+  type KafkaResourceClient,
+  kafkaClient,
+  kafkaError,
+  type RdkafkaSettings,
+  withSignal,
+} from './kafka/client'
+export {
+  type KafkaAuth,
+  type KafkaConfig,
+  type KafkaSecrets,
+  kafkaSettingsProblem,
+  usesTls,
+} from './kafka/config'
+export {
+  kafkaConnector,
+  kafkaResourceClient,
+  type OutgoingKafkaMessage,
+  produceTo,
+  setKafkaClientFactory,
+} from './kafka/connector'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export {
@@ -113,6 +138,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [restConnector.type]: restConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
+  [kafkaConnector.type]: kafkaConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

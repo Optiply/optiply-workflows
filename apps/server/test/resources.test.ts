@@ -3,7 +3,15 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startFakeAws, startFakePubSub, startTestIapServer, startTestSshServer } from '@ow/connectors/testing'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestIapServer,
+  startTestKafka,
+  startTestSshServer,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
@@ -1235,6 +1243,57 @@ describe('SQS resources (M26)', () => {
     // Kept as it is by an editor, yes.
     expect((await save(member, id, endpoint)).status).toBe(200)
   })
+})
+
+describe.skipIf(!kafkaAvailable())('Kafka resources (M26)', () => {
+  let kafka: TestKafka
+  let id: string
+  const save = (config: object, secrets?: object) =>
+    admin.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    kafka = await startTestKafka()
+    await kafka.createTopic('orders')
+    SECRETS.push(kafka.users.scram256.password)
+    id = data(
+      await admin.mutate('resources.create', { type: 'kafka', name: 'Cluster', slug: 'cluster_m26' }),
+    ).id
+  }, 120_000)
+  afterAll(async () => {
+    await kafka?.stop()
+  })
+
+  it('saves SCRAM over TLS (the password masked), tests the connection as its user, and produces', async () => {
+    const config = {
+      brokers: [kafka.saslSsl],
+      auth: 'scram-sha-256',
+      tls: true,
+      username: kafka.users.scram256.username,
+      caCertificate: kafka.ca,
+    }
+    expect((await save(config)).body.error?.message).toBe('Add the password')
+    const saved = await save(config, { password: kafka.users.scram256.password })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ password: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('as bob (SCRAM-SHA-256 over TLS)'),
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { topic: 'orders', messages: '{"key": "k", "value": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ partition: 0, baseOffset: '0' }] })
+  }, 60_000)
 })
 
 describe('no secret in any API response', () => {

@@ -2,6 +2,9 @@ import {
   ConnectorError,
   connectors,
   getConnector,
+  type KafkaConfig,
+  type KafkaSecrets,
+  kafkaSettingsProblem,
   runQuery,
   SshSettingsError,
   testResource,
@@ -79,6 +82,23 @@ function sshSettled<T>(settle: () => T): T {
     if (err instanceof SshSettingsError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
     throw err
   }
+}
+
+/**
+ * Why a queue resource's settings couldn't sign in, checked on save (M19, M26): Pub/Sub's key or project, SQS's AWS
+ * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity). Null when fine, or for other types.
+ */
+function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
+  if (type === 'pubsub') return pubsubSettingsProblem(config, secrets)
+  if (type === 'sqs') return awsSettingsProblem(config, secrets)
+  if (type === 'kafka') {
+    const c = (config ?? {}) as KafkaConfig
+    return (
+      kafkaSettingsProblem(c, secrets as KafkaSecrets) ??
+      (c.auth === 'aws-msk-iam' ? awsSettingsProblem(config, secrets) : null)
+    )
+  }
+  return null
 }
 
 /**
@@ -417,13 +437,8 @@ export const resourcesRouter = router({
         settled.config,
       )
       const secrets = settled.secrets
-      if (resource.type === 'pubsub' || resource.type === 'sqs') {
-        const problem =
-          resource.type === 'pubsub'
-            ? pubsubSettingsProblem(settled.config, secrets)
-            : awsSettingsProblem(settled.config, secrets)
-        if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
-      }
+      const problem = settingsProblem(resource.type, settled.config, secrets)
+      if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {
         throw invalidInput('credentials', parsedSecrets.error.issues, { pathsOnly: true })

@@ -16,6 +16,7 @@
     "@aws-sdk/client-sqs": "3.1152.0",
     "@aws-sdk/client-sts": "3.1152.0",
     "@aws-sdk/credential-providers": "3.1152.0",
+    "@confluentinc/kafka-javascript": "1.11.0",
     "@ow/crypto": "workspace:*",
     "@ow/expressions": "workspace:*",
     "mysql2": "3.24.5",
