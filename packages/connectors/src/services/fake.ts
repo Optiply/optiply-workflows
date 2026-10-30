@@ -1,3 +1,4 @@
+import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
@@ -15,10 +16,13 @@ export interface FakeServices {
     sendgridEu: string
     sheets: string
     drive: string
+    /** Google's token endpoint, for the service account key's JWTs. */
+    googleToken: string
   }
   slack: FakeSlack
   hubspot: FakeHubSpot
   sendgrid: FakeSendGrid
+  sheets: FakeSheets
   calls: {
     service: string
     method: string
@@ -62,6 +66,23 @@ export interface FakeSendGrid {
   scopes: string[]
   /** Mails accepted, with the host they came to. */
   mails: { region: 'global' | 'eu'; mail: Record<string, unknown> }[]
+}
+
+export interface FakeSpreadsheet {
+  title: string
+  /** Who may open it besides OAuth and the server's identity (a service account must be shared with). */
+  sharedWith: string[]
+  sheets: { sheetId: number; title: string; values: unknown[][] }[]
+}
+
+export interface FakeSheets {
+  /** A service account key whose JWTs the fake's token endpoint (`urls.googleToken`) accepts. */
+  serviceAccountKey: string
+  serviceAccountEmail: string
+  /** Access tokens accepted, with whose they are (`any` sees every spreadsheet: OAuth, the server's identity). */
+  acceptTokens: Map<string, string>
+  spreadsheets: Map<string, FakeSpreadsheet>
+  shares: { spreadsheetId: string; email: string; role: string }[]
 }
 
 type Handler = (
@@ -489,11 +510,204 @@ export async function startFakeServices(
     return fail(404, 'not found')
   }
 
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const saEmail = 'sheets@fake-project.iam.gserviceaccount.com'
+  const sheets: FakeSheets = {
+    serviceAccountKey: JSON.stringify({
+      type: 'service_account',
+      project_id: 'fake-project',
+      private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+      client_email: saEmail,
+      token_uri: 'https://evil.example.com/token',
+    }),
+    serviceAccountEmail: saEmail,
+    acceptTokens: new Map(),
+    spreadsheets: new Map(),
+    shares: [],
+  }
+  let tokens = 0
+  let sheetIds = 100
+  const googleTokenHandler: Handler = async (_req, _url, body) => {
+    const form = Object.fromEntries(new URLSearchParams(body.toString()))
+    const [header, claims, signature] = (form.assertion ?? '').split('.')
+    const valid = createVerify('RSA-SHA256')
+      .update(`${header}.${claims}`)
+      .verify(publicKey, signature ?? '', 'base64url')
+    const c = valid ? JSON.parse(Buffer.from(claims!, 'base64url').toString()) : {}
+    if (!valid || c.aud !== `${origin}/google/token` || !String(c.scope).includes('spreadsheets')) {
+      return { status: 400, json: { error: 'invalid_grant', error_description: 'Invalid JWT Signature.' } }
+    }
+    const token = `ya29.sa-${++tokens}`
+    sheets.acceptTokens.set(token, c.iss)
+    return { status: 200, json: { access_token: token, expires_in: 3599, token_type: 'Bearer' } }
+  }
+  const sheetsHandler: Handler = async (req, url, body) => {
+    const fail = (status: number, message: string, reason: string) => ({
+      status,
+      json: { error: { code: status, message, status: reason } },
+    })
+    const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
+    if (!sheets.acceptTokens.has(token)) {
+      return fail(401, 'Request had invalid authentication credentials.', 'UNAUTHENTICATED')
+    }
+    const caller = sheets.acceptTokens.get(token)!
+    const json = body.length ? JSON.parse(body.toString()) : {}
+    if (url.pathname.startsWith('/drive/')) {
+      const m = /^\/drive\/drive\/v3\/files\/([\w-]+)\/permissions$/.exec(url.pathname)
+      if (!m || req.method !== 'POST') return fail(404, 'Not found', 'NOT_FOUND')
+      const doc = sheets.spreadsheets.get(m[1]!)
+      if (!doc) return fail(404, 'File not found', 'NOT_FOUND')
+      doc.sharedWith.push(json.emailAddress)
+      sheets.shares.push({ spreadsheetId: m[1]!, email: json.emailAddress, role: json.role })
+      return { status: 200, json: { id: `perm-${sheets.shares.length}`, role: json.role, type: json.type } }
+    }
+    const path = decodeURIComponent(url.pathname.replace(/^\/sheets\/v4\/spreadsheets/, ''))
+    if (path === '' && req.method === 'POST') {
+      const id = `sheet-${sheets.spreadsheets.size + 1}`
+      const titles = (json.sheets as { properties: { title: string } }[] | undefined)?.map(
+        (s) => s.properties.title,
+      ) ?? ['Sheet1']
+      const doc: FakeSpreadsheet = {
+        title: json.properties?.title ?? 'Untitled',
+        sharedWith: caller === 'any' ? [] : [caller],
+        sheets: titles.map((title) => ({ sheetId: sheetIds++, title, values: [] })),
+      }
+      sheets.spreadsheets.set(id, doc)
+      return {
+        status: 200,
+        json: { spreadsheetId: id, spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${id}/edit` },
+      }
+    }
+    const m = /^\/([\w-]+)(?:(:batchUpdate)|\/values(:batchUpdate)|\/values\/(.+?)(:append|:clear)?)?$/.exec(
+      path,
+    )
+    if (!m) return fail(404, 'Requested entity was not found.', 'NOT_FOUND')
+    const doc = sheets.spreadsheets.get(m[1]!)
+    if (!doc) return fail(404, 'Requested entity was not found.', 'NOT_FOUND')
+    if (caller !== 'any' && !doc.sharedWith.includes(caller)) {
+      return fail(403, 'The caller does not have permission', 'PERMISSION_DENIED')
+    }
+    const userEntered = url.searchParams.get('valueInputOption') !== 'RAW'
+    const store = (v: unknown) =>
+      userEntered && typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : v
+    if (!m[2] && !m[3] && !m[4] && req.method === 'GET') {
+      return {
+        status: 200,
+        json: {
+          spreadsheetId: m[1],
+          spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${m[1]}/edit`,
+          properties: { title: doc.title },
+          sheets: doc.sheets.map((s, index) => ({
+            properties: {
+              sheetId: s.sheetId,
+              title: s.title,
+              index,
+              gridProperties: { rowCount: Math.max(1000, s.values.length), columnCount: 26 },
+            },
+          })),
+        },
+      }
+    }
+    if (m[2]) {
+      const replies = []
+      for (const r of json.requests ?? []) {
+        if (r.addSheet) {
+          const title = r.addSheet.properties.title
+          if (doc.sheets.some((s) => s.title === title)) {
+            return fail(
+              400,
+              `Invalid requests[0].addSheet: A sheet with the name "${title}" already exists.`,
+              'INVALID_ARGUMENT',
+            )
+          }
+          const sheet = { sheetId: sheetIds++, title, values: [] }
+          doc.sheets.push(sheet)
+          replies.push({
+            addSheet: { properties: { sheetId: sheet.sheetId, title, index: doc.sheets.length - 1 } },
+          })
+        } else if (r.deleteSheet) {
+          doc.sheets = doc.sheets.filter((s) => s.sheetId !== r.deleteSheet.sheetId)
+          replies.push({})
+        }
+      }
+      return { status: 200, json: { spreadsheetId: m[1], replies } }
+    }
+    const resolve = (range: string) => {
+      const a1 = parseA1(range)
+      const sheet = doc.sheets.find((s) => s.title === (a1.sheet ?? doc.sheets[0]?.title))
+      return sheet ? { sheet, a1 } : null
+    }
+    const write = (range: string, rows: unknown[][]) => {
+      const target = resolve(range)
+      if (!target) return null
+      const { sheet, a1 } = target
+      for (const [i, row] of rows.entries()) {
+        for (const [j, v] of row.entries()) {
+          const r = a1.r1 + i
+          const c = a1.c1 + j
+          while (sheet.values.length <= r) sheet.values.push([])
+          const line = sheet.values[r]!
+          while (line.length <= c) line.push('')
+          line[c] = store(v)
+        }
+      }
+      return `${sheet.title}!${colName(a1.c1)}${a1.r1 + 1}:${colName(a1.c1 + Math.max(0, ...rows.map((r) => r.length)) - 1)}${a1.r1 + rows.length}`
+    }
+    if (m[3] && req.method === 'POST') {
+      let total = 0
+      for (const d of json.data ?? []) {
+        if (!write(d.range, d.values))
+          return fail(400, `Unable to parse range: ${d.range}`, 'INVALID_ARGUMENT')
+        total += d.values.length
+      }
+      return { status: 200, json: { spreadsheetId: m[1], totalUpdatedRows: total } }
+    }
+    const range = m[4]!
+    const target = resolve(range)
+    if (!target) return fail(400, `Unable to parse range: ${range}`, 'INVALID_ARGUMENT')
+    const { sheet, a1 } = target
+    if (m[5] === ':append' && req.method === 'POST') {
+      let last = sheet.values.length - 1
+      while (last >= 0 && sheet.values[last]!.every((v) => v === '' || v === undefined)) last--
+      const at = `${sheet.title}!${colName(a1.c1)}${last + 2}`
+      const updatedRange = write(at, json.values)
+      return { status: 200, json: { updates: { updatedRange, updatedRows: json.values.length } } }
+    }
+    if (m[5] === ':clear' && req.method === 'POST') {
+      for (let r = a1.r1; r <= Math.min(a1.r2, sheet.values.length - 1); r++) {
+        const line = sheet.values[r]!
+        for (let c = a1.c1; c <= Math.min(a1.c2, line.length - 1); c++) line[c] = ''
+      }
+      return { status: 200, json: { clearedRange: range } }
+    }
+    if (req.method === 'PUT') {
+      const updatedRange = write(range, json.values)
+      return { status: 200, json: { updatedRange, updatedRows: json.values.length } }
+    }
+    if (req.method === 'GET') {
+      const formatted = url.searchParams.get('valueRenderOption') !== 'UNFORMATTED_VALUE'
+      const rows = sheet.values.slice(a1.r1, a1.r2 + 1).map((line) => {
+        const cells = line
+          .slice(a1.c1, a1.c2 + 1)
+          .map((v) => (formatted && typeof v === 'number' ? String(v) : v))
+        // As Sheets does: a row's trailing empty cells are left out.
+        while (cells.length && (cells.at(-1) === '' || cells.at(-1) === undefined)) cells.pop()
+        return cells
+      })
+      while (rows.length && rows.at(-1)!.length === 0) rows.pop()
+      return { status: 200, json: { range, majorDimension: 'ROWS', ...(rows.length && { values: rows }) } }
+    }
+    return fail(405, 'Method not allowed', 'INVALID_ARGUMENT')
+  }
+
   const routes: [string, string, Handler][] = [
     ['/slack/api/', 'slack', slackHandler],
     ['/hubspot/', 'hubspot', hubspotHandler],
     ['/sendgrid/', 'sendgrid', sendgridHandler],
     ['/sendgrid-eu/', 'sendgrid', sendgridHandler],
+    ['/google/token', 'google', googleTokenHandler],
+    ['/sheets/', 'sheets', sheetsHandler],
+    ['/drive/', 'drive', sheetsHandler],
   ]
 
   const server = createServer(async (req, res: ServerResponse) => {
@@ -538,10 +752,12 @@ export async function startFakeServices(
       sendgridEu: `${origin}/sendgrid-eu`,
       sheets: `${origin}/sheets/v4/spreadsheets`,
       drive: `${origin}/drive`,
+      googleToken: `${origin}/google/token`,
     },
     slack,
     hubspot,
     sendgrid,
+    sheets,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),
   }
@@ -556,4 +772,35 @@ function multipartFile(req: IncomingMessage, body: Buffer): Buffer {
   const headerEnd = body.indexOf('\r\n\r\n', start)
   const end = body.indexOf(Buffer.concat([Buffer.from('\r\n'), marker]), headerEnd)
   return body.subarray(headerEnd + 4, end)
+}
+
+/** `Orders!B2:D`, `'My sheet'!1:1`, `Orders`, `A1:C3` → a sheet (null: the first) and 0-based bounds. */
+function parseA1(range: string): { sheet: string | null; r1: number; c1: number; r2: number; c2: number } {
+  const bang = range.lastIndexOf('!')
+  const looksLikeCells = /^[A-Z]*\d*(:[A-Z]*\d*)?$/.test(range)
+  const sheet = bang >= 0 ? range.slice(0, bang) : looksLikeCells ? null : range
+  const cells = bang >= 0 ? range.slice(bang + 1) : looksLikeCells ? range : ''
+  const [from = '', to = from] = cells ? cells.split(':') : []
+  const parse = (ref: string, end: boolean) => {
+    const m = /^([A-Z]*)(\d*)$/.exec(ref) ?? ['', '', '']
+    const col = m[1] ? [...m[1]].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1 : end ? 1_000 : 0
+    const row = m[2] ? Number(m[2]) - 1 : end ? 100_000 : 0
+    return { row, col }
+  }
+  const a = parse(from, false)
+  const b = cells ? parse(to, true) : { row: 100_000, col: 1_000 }
+  return {
+    sheet: sheet === null ? null : sheet.replace(/^'(.*)'$/, '$1').replace(/''/g, "'"),
+    r1: a.row,
+    c1: a.col,
+    r2: b.row,
+    c2: b.col,
+  }
+}
+
+function colName(index: number): string {
+  let s = ''
+  for (let i = index + 1; i > 0; i = Math.floor((i - 1) / 26))
+    s = String.fromCharCode(65 + ((i - 1) % 26)) + s
+  return s
 }

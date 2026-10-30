@@ -117,7 +117,9 @@ export {
   type FakeHubSpot,
   type FakeSendGrid,
   type FakeServices,
+  type FakeSheets,
   type FakeSlack,
+  type FakeSpreadsheet,
   startFakeServices,
 } from './services/fake'
 export {

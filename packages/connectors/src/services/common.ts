@@ -185,6 +185,8 @@ export interface ServiceCall {
   json?: unknown
   body?: string | FormData
   contentType?: string
+  /** Credentials sent with this call only (a Google token), dropped on a redirect to another origin. */
+  authorization?: string
 }
 
 /** One call to a service's API; a 429 is waited out once (up to 30 s, as `Retry-After` says), then answered. */
@@ -209,6 +211,10 @@ export async function call(
         method: request.method,
         url,
         params,
+        ...(request.authorization && {
+          headers: [['authorization', request.authorization]] as [string, string][],
+          sensitive: ['authorization'],
+        }),
         ...(request.json !== undefined
           ? { body: JSON.stringify(request.json), contentType: 'application/json; charset=utf-8' }
           : request.body !== undefined

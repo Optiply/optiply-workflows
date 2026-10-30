@@ -8,6 +8,7 @@ import { pubsubConnector } from './pubsub/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
+import { googleSheetsConnector } from './services/googlesheets'
 import { hubspotConnector } from './services/hubspot'
 import { sendgridConnector } from './services/sendgrid'
 import { slackConnector } from './services/slack'
@@ -136,6 +137,14 @@ export {
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { type RunOptions, runOperation, runQuery, testResource } from './run'
 export { configureServiceUrls, type ServiceUrls } from './services/common'
+export {
+  configureSheets,
+  googleSheetsConnector,
+  SHEETS_SCOPE,
+  type SheetsClient,
+  type SheetsDefaults,
+  spreadsheetId,
+} from './services/googlesheets'
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
 export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
@@ -180,6 +189,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [slackConnector.type]: slackConnector,
   [hubspotConnector.type]: hubspotConnector,
   [sendgridConnector.type]: sendgridConnector,
+  [googleSheetsConnector.type]: googleSheetsConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
