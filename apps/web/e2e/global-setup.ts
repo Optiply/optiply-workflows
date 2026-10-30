@@ -17,6 +17,8 @@ import {
   kafkaAvailable,
   startFakeAws,
   startFakePubSub,
+  startFakeServices,
+  startTestGraphql,
   startTestIapServer,
   startTestKafka,
   type TestKafka,
@@ -146,6 +148,27 @@ export default async function globalSetup() {
   process.env.E2E_AWS_ROLE = awsRole.arn
   process.env.E2E_AWS_SERVER_ARN = awsServer.arn
   process.env.E2E_AWS_USER_ARN = awsUser.arn
+
+  // M27: fakes of Slack, HubSpot, SendGrid and Google Sheets (with Drive) on one server, and a GraphQL endpoint. Sheets
+  // also takes the fake Google's tokens (`sa-…` for E2E_IAP_KEY's service account, `md-…` the server's identity).
+  // Specs read state and seed spreadsheets through E2E_SERVICES's /_fake routes; the built-in REST API may reach
+  // 127.0.0.1 (REST_API_PRIVATE_HOSTS), so specs call E2E_SERVICES's /_fake/echo with it.
+  const services = await startFakeServices({
+    sheetsTrust: (token) =>
+      /^sa-\d+$/.test(token)
+        ? 'tunnel@fake-project.iam.gserviceaccount.com'
+        : /^md-\d+$/.test(token)
+          ? 'any'
+          : null,
+  })
+  const graphql = await startTestGraphql()
+  process.env.E2E_SERVICES = services.url
+  process.env.E2E_SERVICES_TOKENS = JSON.stringify({
+    slack: services.slack.token,
+    hubspot: services.hubspot.token,
+    sendgrid: services.sendgrid.key,
+  })
+  process.env.E2E_GRAPHQL = JSON.stringify({ url: graphql.url, token: graphql.token })
 
   // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
   // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
@@ -321,6 +344,13 @@ export default async function globalSetup() {
     AWS_SERVER_IDENTITY: 'allow',
     AWS_STS_URL: aws.url,
     AWS_SQS_URL: aws.url,
+    SLACK_API_URL: services.urls.slack,
+    HUBSPOT_API_URL: services.urls.hubspot,
+    SENDGRID_API_URL: services.urls.sendgrid,
+    SENDGRID_EU_API_URL: services.urls.sendgridEu,
+    GOOGLE_SHEETS_API_URL: services.urls.sheets,
+    GOOGLE_DRIVE_API_URL: services.urls.drive,
+    REST_API_PRIVATE_HOSTS: '127.0.0.1',
     // The server's own AWS credentials: the fake's `server` user, never the developer's.
     AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
     AWS_SECRET_ACCESS_KEY: awsServer.secretAccessKey,
@@ -399,6 +429,8 @@ export default async function globalSetup() {
     await aws.close()
     await kafka?.stop()
     await google.stop()
+    await services.stop()
+    await graphql.stop()
     await registry.stop()
     for (const origin of origins) await new Promise((r) => origin.close(r))
     rmSync(componentBuilds, { recursive: true, force: true })

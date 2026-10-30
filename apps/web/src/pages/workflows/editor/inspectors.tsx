@@ -1,3 +1,4 @@
+import { isServiceType } from '@ow/connectors/actions'
 import {
   type Block,
   type BlockOf,
@@ -18,6 +19,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
+import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import {
@@ -25,6 +27,7 @@ import {
   isMessageKind,
   MESSAGE_QUERIES,
   type MessageKind,
+  type QueryKind,
   queryKind,
 } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -435,13 +438,22 @@ function QueryEditor({
   const resources = data?.resources ?? []
   const current = resources.find((r) => r.slug === resource)
   // Without the resource (deleted, or not visible): guessed from the query's own fields.
-  const guessed =
-    typeof query.messages === 'string' ? (typeof query.queue === 'string' ? 'sqs' : 'pubsub') : null
-  const messageKind = current
-    ? isMessageKind(queryKind(current.type))
-      ? (queryKind(current.type) as MessageKind)
-      : null
-    : guessed
+  const kind: QueryKind | null = current
+    ? queryKind(current.type)
+    : typeof query.sql === 'string'
+      ? 'sql'
+      : typeof query.messages === 'string'
+        ? typeof query.queue === 'string'
+          ? 'sqs'
+          : 'pubsub'
+        : typeof query.action === 'string'
+          ? null
+          : typeof query.url === 'string'
+            ? 'restapi'
+            : typeof query.query === 'string'
+              ? 'graphql'
+              : 'rest'
+  const messageKind = kind !== null && isMessageKind(kind) ? kind : null
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
@@ -473,7 +485,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {(current ? queryKind(current.type) === 'sql' : typeof query.sql === 'string') ? (
+      {kind === 'sql' ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -494,8 +506,40 @@ function QueryEditor({
           at={at}
           models={models}
         />
+      ) : kind === 'service' && current && isServiceType(current.type) ? (
+        <ActionQueryForm
+          type={current.type}
+          query={query}
+          onChange={(patch, replace) =>
+            onChange({ resource, query: replace ? patch : { ...query, ...patch } })
+          }
+          code={({ field, value, onChange: set, language, height }) => (
+            <Code
+              path={ctx.modelPath(`${models}query.${field.key}`)}
+              language={language}
+              height={height}
+              value={value}
+              problems={ctx.problemsAt(...at, 'query', field.key)}
+              text={ctx.text(...at, 'query', field.key)}
+              onChange={set}
+            />
+          )}
+        />
+      ) : kind === null ? (
+        <p className="text-sm text-muted">
+          This query's resource isn't there: its query is kept as it is until you choose another resource.
+        </p>
+      ) : kind === 'graphql' ? (
+        <GraphqlQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       ) : (
-        <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
+        <RestQueryForm
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          builtIn={kind === 'restapi'}
+        />
       )}
     </div>
   )
@@ -547,7 +591,11 @@ function MessageQueryForm({
   )
 }
 
-function RestQueryForm({
+/**
+ * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
+ * the operation to run when there are several, and headers.
+ */
+function GraphqlQueryForm({
   query,
   setQuery,
   ctx,
@@ -560,6 +608,63 @@ function RestQueryForm({
   at: (string | number)[]
   models: string
 }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
+        <Code
+          path={ctx.modelPath(`${models}query.query`)}
+          language="graphql"
+          height={200}
+          value={String(query.query ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'query')}
+          text={ctx.text(...at, 'query', 'query')}
+          onChange={(text) => setQuery({ query: text })}
+        />
+      </EditorField>
+      <EditorField label="Variables" hint='JSON with {{ }}, e.g. {"id": {{ startTrigger.data.id }}}'>
+        <Code
+          path={ctx.modelPath(`${models}query.variables`)}
+          language="plaintext"
+          height={100}
+          value={String(query.variables ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'variables')}
+          text={ctx.text(...at, 'query', 'variables')}
+          onChange={(variables) => setQuery({ variables })}
+        />
+      </EditorField>
+      <Field label="Operation name" hint="Only when the query has several operations.">
+        <Input
+          className="font-mono"
+          value={String(query.operationName ?? '')}
+          onChange={(e) => setQuery({ operationName: e.target.value })}
+        />
+      </Field>
+      <KeyValues
+        label="Headers"
+        rows={(query.headers as KeyValue[]) ?? []}
+        onChange={(headers) => setQuery({ headers })}
+      />
+    </div>
+  )
+}
+
+/** A REST query; the built-in REST API's (M27) has a full URL instead of a path, and its own sign-in. */
+function RestQueryForm({
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+  builtIn = false,
+}: {
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+  builtIn?: boolean
+}) {
+  const urlKey = builtIn ? 'url' : 'path'
   const body = (query.body ?? { type: 'none' }) as {
     type: string
     json?: string
@@ -576,13 +681,24 @@ function RestQueryForm({
           ))}
         </Select>
         <Input
-          aria-label="Path"
+          aria-label={builtIn ? 'URL' : 'Path'}
           className="font-mono"
-          placeholder="/orders/{{ startTrigger.data.id }}"
-          value={String(query.path ?? '')}
-          onChange={(e) => setQuery({ path: e.target.value })}
+          placeholder={
+            builtIn
+              ? 'https://api.example.com/orders/{{ startTrigger.data.id }}'
+              : '/orders/{{ startTrigger.data.id }}'
+          }
+          value={String(query[urlKey] ?? '')}
+          onChange={(e) => setQuery({ [urlKey]: e.target.value })}
         />
       </div>
+      {builtIn && (
+        <RequestAuthFields
+          auth={query.auth as Parameters<typeof RequestAuthFields>[0]['auth']}
+          onChange={(auth) => setQuery({ auth })}
+          secretsHint="Read secrets from secret config vars, e.g. {{ configVars.API_TOKEN }}: they reach live runs only, and are kept out of logs."
+        />
+      )}
       <KeyValues
         label="Query parameters"
         rows={(query.params as KeyValue[]) ?? []}

@@ -10,6 +10,7 @@ import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OverridesCard } from './overrides'
 import { KafkaFields, SqsFields } from './queue-settings'
+import { GoogleSheetsFields, HubSpotFields, SendGridFields, SlackFields } from './service-settings'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -62,6 +63,19 @@ const DEFAULTS: Record<string, Config> = {
     labels: {},
   },
   pubsub: { identity: 'key' },
+  slack: { auth: { type: 'token' } },
+  hubspot: { auth: { type: 'token' } },
+  sendgrid: { region: 'global' },
+  googlesheets: { auth: { type: 'serviceAccount' } },
+  graphql: {
+    baseUrl: '',
+    headers: [],
+    params: [],
+    auth: { type: 'none' },
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    maxResponseBytes: 10 * 1024 * 1024,
+  },
   sqs: { region: 'eu-west-1', identity: 'key' },
   kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
@@ -204,10 +218,18 @@ export function SettingsPanel({
           <SqsFields {...props} />
         ) : resource.type === 'kafka' ? (
           <KafkaFields {...props} />
+        ) : resource.type === 'slack' ? (
+          <SlackFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'hubspot' ? (
+          <HubSpotFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'sendgrid' ? (
+          <SendGridFields {...props} />
+        ) : resource.type === 'googlesheets' ? (
+          <GoogleSheetsFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
-          <RestFields {...props} resourceId={resource.id} />
+          <RestFields {...props} resourceId={resource.id} graphql={resource.type === 'graphql'} />
         )}
       </Card>
       {fromGit && stored?.config && (
@@ -638,8 +660,9 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields(props: FieldsProps & { resourceId: string }) {
-  const { config, set, secrets, edits, setEdit, disabled, resourceId } = props
+/** A REST resource's settings, and GraphQL's (M27), whose base URL is the endpoint queries are posted to. */
+function RestFields(props: FieldsProps & { resourceId: string; graphql?: boolean }) {
+  const { config, set, secrets, edits, setEdit, disabled, resourceId, graphql } = props
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -665,12 +688,16 @@ function RestFields(props: FieldsProps & { resourceId: string }) {
   return (
     <>
       <Field
-        label="Base URL"
-        hint="Queries add a path to this; they can't reach other hosts unless allowed below."
+        label={graphql ? 'Endpoint URL' : 'Base URL'}
+        hint={
+          graphql
+            ? 'Queries are posted here as JSON. Test connection fetches the schema for the editor.'
+            : "Queries add a path to this; they can't reach other hosts unless allowed below."
+        }
       >
         <Input
           value={String(config.baseUrl ?? '')}
-          placeholder="https://api.example.com/v1"
+          placeholder={graphql ? 'https://api.example.com/graphql' : 'https://api.example.com/v1'}
           disabled={disabled}
           onChange={(e) => set('baseUrl', e.target.value)}
         />

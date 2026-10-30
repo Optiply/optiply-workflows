@@ -92,7 +92,13 @@ type Handler = (
 ) => Promise<{ status: number; json?: unknown; headers?: Record<string, string> }>
 
 export async function startFakeServices(
-  opts: { slackToken?: string; hubspotToken?: string; sendgridKey?: string } = {},
+  opts: {
+    slackToken?: string
+    hubspotToken?: string
+    sendgridKey?: string
+    /** Tokens issued elsewhere that Sheets takes all the same (another fake Google's), with whose they are. */
+    sheetsTrust?: (token: string) => string | null
+  } = {},
 ): Promise<FakeServices> {
   const calls: FakeServices['calls'] = []
   const slack: FakeSlack = {
@@ -547,10 +553,10 @@ export async function startFakeServices(
       json: { error: { code: status, message, status: reason } },
     })
     const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
-    if (!sheets.acceptTokens.has(token)) {
+    if (!sheets.acceptTokens.has(token) && !opts.sheetsTrust?.(token)) {
       return fail(401, 'Request had invalid authentication credentials.', 'UNAUTHENTICATED')
     }
-    const caller = sheets.acceptTokens.get(token)!
+    const caller = (sheets.acceptTokens.get(token) ?? opts.sheetsTrust?.(token))!
     const json = body.length ? JSON.parse(body.toString()) : {}
     if (url.pathname.startsWith('/drive/')) {
       const m = /^\/drive\/drive\/v3\/files\/([\w-]+)\/permissions$/.exec(url.pathname)
@@ -700,7 +706,46 @@ export async function startFakeServices(
     return fail(405, 'Method not allowed', 'INVALID_ARGUMENT')
   }
 
+  // For tests in another process (Playwright's specs): what the fakes hold, and a spreadsheet to start from.
+  const controlHandler: Handler = async (req, url, body) => {
+    if (url.pathname === '/_fake/state' && req.method === 'GET') {
+      return {
+        status: 200,
+        json: {
+          slack: {
+            messages: slack.messages,
+            files: slack.files.map(({ bytes, ...f }) => ({ ...f, size: bytes.length })),
+          },
+          hubspot: Object.fromEntries(
+            [...hubspot.records].map(([type, records]) => [type, [...records.values()]]),
+          ),
+          sendgrid: sendgrid.mails,
+          sheets: Object.fromEntries(sheets.spreadsheets),
+        },
+      }
+    }
+    if (url.pathname.startsWith('/_fake/echo')) {
+      return {
+        status: 200,
+        json: {
+          method: req.method,
+          path: url.pathname,
+          query: Object.fromEntries(url.searchParams),
+          authorization: req.headers.authorization ?? null,
+          body: body.toString(),
+        },
+      }
+    }
+    const seed = /^\/_fake\/sheets\/([\w-]+)$/.exec(url.pathname)
+    if (seed && req.method === 'POST') {
+      sheets.spreadsheets.set(seed[1]!, JSON.parse(body.toString()) as FakeSpreadsheet)
+      return { status: 204 }
+    }
+    return { status: 404, json: { error: 'no such control' } }
+  }
+
   const routes: [string, string, Handler][] = [
+    ['/_fake/', 'control', controlHandler],
     ['/slack/api/', 'slack', slackHandler],
     ['/hubspot/', 'hubspot', hubspotHandler],
     ['/sendgrid/', 'sendgrid', sendgridHandler],

@@ -1,9 +1,12 @@
+import { defaultActionQuery, isServiceType } from '@ow/connectors/actions'
 import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
+import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import {
+  DEFAULT_GRAPHQL_QUERY,
   DEFAULT_PUBSUB_QUERY,
   isMessageKind,
   MESSAGE_QUERIES,
@@ -28,6 +31,11 @@ interface Draft {
   pubsub: { topic: string; messages: string }
   sqs: { queue: string; messages: string }
   kafka: { topic: string; messages: string }
+  /** The built-in REST API's request (M27): a full URL and its own sign-in. */
+  restapi: Draft['rest'] & { url: string; auth: { type: string; [key: string]: string } }
+  graphql: { query: string; variables: string; operationName: string; headers: KeyValue[] }
+  /** A service's action query (M27), per type. */
+  services: Record<string, Record<string, unknown>>
   scope: string
 }
 
@@ -37,6 +45,17 @@ const EMPTY: Draft = {
   pubsub: DEFAULT_PUBSUB_QUERY,
   sqs: { queue: '', messages: MESSAGE_QUERIES.sqs.messages },
   kafka: { topic: '', messages: MESSAGE_QUERIES.kafka.messages },
+  restapi: {
+    method: 'GET',
+    path: '',
+    url: 'https://',
+    params: [],
+    headers: [],
+    body: { type: 'none' },
+    auth: { type: 'none' },
+  },
+  graphql: { ...DEFAULT_GRAPHQL_QUERY, headers: [] },
+  services: {},
   scope: '{\n  \n}',
 }
 
@@ -77,7 +96,18 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
 
   const execute = () => {
     if (!scope) return
-    const query = kind === 'sql' ? { sql: draft.sql } : isMessageKind(kind) ? draft[kind] : draft.rest
+    const query =
+      kind === 'sql'
+        ? { sql: draft.sql }
+        : isMessageKind(kind)
+          ? draft[kind]
+          : kind === 'restapi'
+            ? (({ path: _path, ...rest }) => rest)(draft.restapi)
+            : kind === 'graphql'
+              ? draft.graphql
+              : kind === 'service'
+                ? serviceQuery
+                : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -88,6 +118,12 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
   }
   const setRest = (patch: Partial<Draft['rest']>) =>
     setDraft((d) => ({ ...d, rest: { ...d.rest, ...patch } }))
+  const setRestApi = (patch: Partial<Draft['restapi']>) =>
+    setDraft((d) => ({ ...d, restapi: { ...d.restapi, ...patch } }))
+  const serviceQuery =
+    kind === 'service' && isServiceType(resource.type)
+      ? (draft.services[resource.type] ?? defaultActionQuery(resource.type))
+      : {}
 
   if (!configured) {
     return (
@@ -117,6 +153,53 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
             </Field>
           ) : isMessageKind(kind) ? (
             <MessageDraft kind={kind} draft={draft} setDraft={setDraft} onKeyDown={onKeyDown} />
+          ) : kind === 'service' && isServiceType(resource.type) ? (
+            <ActionQueryForm
+              type={resource.type}
+              query={serviceQuery}
+              lookup={{ resourceId: resource.id, environmentId }}
+              onChange={(patch, replace) =>
+                setDraft((d) => ({
+                  ...d,
+                  services: {
+                    ...d.services,
+                    [resource.type]: replace ? patch : { ...serviceQuery, ...patch },
+                  },
+                }))
+              }
+              code={({ field, value, onChange, height }) => (
+                <Textarea
+                  rows={Math.max(3, Math.round(height / 24))}
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                  value={value}
+                  data-testid={`query-field-${field.key}`}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) => onChange(e.target.value)}
+                />
+              )}
+            />
+          ) : kind === 'graphql' ? (
+            <GraphqlDraft
+              graphql={draft.graphql}
+              setGraphql={(patch) => setDraft((d) => ({ ...d, graphql: { ...d.graphql, ...patch } }))}
+              onKeyDown={onKeyDown}
+            />
+          ) : kind === 'restapi' ? (
+            <>
+              <RestQueryEditor
+                rest={{ ...draft.restapi, path: draft.restapi.url }}
+                setRest={({ path, ...patch }) =>
+                  setRestApi({ ...patch, ...(path !== undefined && { url: path }) })
+                }
+                onKeyDown={onKeyDown}
+                placeholder="https://api.example.com/orders/{{ id }}"
+              />
+              <RequestAuthFields
+                auth={draft.restapi.auth}
+                onChange={(auth) => setRestApi({ auth: auth as Draft['restapi']['auth'] })}
+              />
+            </>
           ) : (
             <RestQueryEditor rest={draft.rest} setRest={setRest} onKeyDown={onKeyDown} />
           )}
@@ -179,14 +262,61 @@ function Summary({ metadata }: { metadata: Record<string, unknown> }) {
   return <span className="text-muted">{parts.join(' · ')}</span>
 }
 
+/** A GraphQL query to try (M27): the operation, its variables, and which operation. */
+function GraphqlDraft({
+  graphql,
+  setGraphql,
+  onKeyDown,
+}: {
+  graphql: Draft['graphql']
+  setGraphql: (patch: Partial<Draft['graphql']>) => void
+  onKeyDown: (e: KeyboardEvent) => void
+}) {
+  return (
+    <>
+      <Field label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
+        <Textarea
+          rows={10}
+          spellCheck={false}
+          className="font-mono text-[13px]"
+          value={graphql.query}
+          data-testid="graphql-query"
+          onKeyDown={onKeyDown}
+          onChange={(e) => setGraphql({ query: e.target.value })}
+        />
+      </Field>
+      <Field label="Variables" hint='JSON with {{ }}, e.g. {"id": {{ id }}}'>
+        <Textarea
+          rows={3}
+          spellCheck={false}
+          className="font-mono text-[13px]"
+          value={graphql.variables}
+          data-testid="graphql-variables"
+          onKeyDown={onKeyDown}
+          onChange={(e) => setGraphql({ variables: e.target.value })}
+        />
+      </Field>
+      <Field label="Operation name" hint="Only when the query has several operations.">
+        <Input
+          className="font-mono"
+          value={graphql.operationName}
+          onChange={(e) => setGraphql({ operationName: e.target.value })}
+        />
+      </Field>
+    </>
+  )
+}
+
 function RestQueryEditor({
   rest,
   setRest,
   onKeyDown,
+  placeholder = '/orders/{{ id }}',
 }: {
   rest: Draft['rest']
   setRest: (patch: Partial<Draft['rest']>) => void
   onKeyDown: (e: KeyboardEvent) => void
+  placeholder?: string
 }) {
   const body = rest.body
   const hasBody = rest.method !== 'GET' && rest.method !== 'HEAD'
@@ -208,7 +338,8 @@ function RestQueryEditor({
         </Select>
         <Input
           className="font-mono"
-          placeholder="/orders/{{ id }}"
+          placeholder={placeholder}
+          data-testid="request-url"
           value={rest.path}
           onKeyDown={onKeyDown}
           onChange={(e) => setRest({ path: e.target.value })}

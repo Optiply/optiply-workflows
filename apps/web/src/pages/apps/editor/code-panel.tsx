@@ -12,6 +12,7 @@ import {
   updateTransformer,
   updateVariable,
 } from '@ow/app-definition'
+import { isServiceType } from '@ow/connectors/actions'
 import { useQuery } from '@tanstack/react-query'
 import {
   Braces,
@@ -24,8 +25,9 @@ import {
   Variable as VariableIcon,
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { ActionQueryForm } from '@/components/action-query'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
-import { isSqlType } from '@/lib/resource-types'
+import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/react'
@@ -288,6 +290,10 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const resource =
     query.kind === 'resource' ? resources.data?.resources.find((r) => r.slug === query.resource) : undefined
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
+  // M27: a service's action form, or GraphQL's query and variables; other HTTP queries are edited as JSON.
+  const kind = resource ? queryKind(resource.type) : null
+  const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
+    edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
   /** Sets or (empty) removes an optional field. */
   const optional = <K extends 'confirm' | 'disabled' | 'transform'>(key: K, value: string) =>
     edit((q) => {
@@ -309,7 +315,22 @@ function QueryEditor({ query }: { query: AppQuery }) {
               disabled={readOnly}
               className="w-56"
               value={query.resource}
-              onChange={(e) => edit((q) => ({ ...q, resource: e.target.value }))}
+              onChange={(e) => {
+                const next = resources.data?.resources.find((r) => r.slug === e.target.value)
+                // Another kind of resource starts a fresh query (as the workflow inspector does).
+                edit((q) =>
+                  q.kind !== 'resource'
+                    ? q
+                    : {
+                        ...q,
+                        resource: e.target.value,
+                        query:
+                          next && resource && queryShape(next.type) !== queryShape(resource.type)
+                            ? (defaultQuery(next.type) as Record<string, JsonValue>)
+                            : q.query,
+                      },
+                )
+              }}
             >
               {!resources.data?.resources.some((r) => r.slug === query.resource) && (
                 <option value={query.resource}>{query.resource}</option>
@@ -368,8 +389,55 @@ function QueryEditor({ query }: { query: AppQuery }) {
               edit((q) => (q.kind === 'resource' ? { ...q, query: { ...q.query, sql: text } } : q))
             }
           />
+        ) : kind === 'service' && resource && isServiceType(resource.type) ? (
+          <ActionQueryForm
+            type={resource.type}
+            query={query.query}
+            disabled={readOnly}
+            onChange={(patch, replace) =>
+              editResourceQuery((q) =>
+                replace
+                  ? (patch as Record<string, JsonValue>)
+                  : { ...q, ...(patch as Record<string, JsonValue>) },
+              )
+            }
+            code={({ field, value, onChange, language, height }) => (
+              <AppCodeField
+                path={[...base, 'query', field.key]}
+                language={language}
+                height={height}
+                value={value}
+                problems={problemsAt(diagnostics, [...base, 'query', field.key])}
+                onChange={onChange}
+              />
+            )}
+          />
+        ) : kind === 'graphql' ? (
+          <>
+            <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
+              <AppCodeField
+                path={[...base, 'query', 'query']}
+                language="graphql"
+                height={160}
+                value={String(query.query.query ?? '')}
+                problems={problemsAt(diagnostics, [...base, 'query', 'query'])}
+                onChange={(text) => editResourceQuery((q) => ({ ...q, query: text }))}
+              />
+            </EditorField>
+            <EditorField label="Variables" hint='JSON with {{ }}, e.g. {"id": {{ table1.selectedRow.id }}}'>
+              <AppCodeField
+                path={[...base, 'query', 'variables']}
+                language="plaintext"
+                height={80}
+                value={String(query.query.variables ?? '')}
+                problems={problemsAt(diagnostics, [...base, 'query', 'variables'])}
+                onChange={(text) => editResourceQuery((q) => ({ ...q, variables: text }))}
+              />
+            </EditorField>
+          </>
         ) : (
           <JsonQueryField
+            builtIn={kind === 'restapi'}
             query={query}
             path={[...base, 'query']}
             onChange={(next) => edit((q) => (q.kind === 'resource' ? { ...q, query: next } : q))}
@@ -478,12 +546,17 @@ function QueryEditor({ query }: { query: AppQuery }) {
   )
 }
 
-/** A non-SQL connector's query (REST) as JSON; strings in it are templates. */
+/** What a resource's queries look like: its kind, or for a service (M27) its type, whose actions are its own. */
+const queryShape = (type: string) => (queryKind(type) === 'service' ? type : queryKind(type))
+
+/** A non-SQL connector's query (REST, the built-in REST API) as JSON; strings in it are templates. */
 function JsonQueryField({
   query,
   path,
   onChange,
+  builtIn = false,
 }: {
+  builtIn?: boolean
   query: Extract<AppQuery, { kind: 'resource' }>
   path: (string | number)[]
   onChange: (next: Record<string, JsonValue>) => void
@@ -494,7 +567,11 @@ function JsonQueryField({
   return (
     <EditorField
       label="Request"
-      hint='The connector’s query as JSON, e.g. {"method": "GET", "path": "/orders/{{ id.value }}"}'
+      hint={
+        builtIn
+          ? 'The request as JSON, e.g. {"method": "GET", "url": "https://api.example.com/orders/{{ id.value }}", "auth": {"type": "bearer", "token": "…"}}. Type the host out: values fill only its path and parameters.'
+          : 'The connector’s query as JSON, e.g. {"method": "GET", "path": "/orders/{{ id.value }}"}'
+      }
     >
       <AppCodeField
         path={path}

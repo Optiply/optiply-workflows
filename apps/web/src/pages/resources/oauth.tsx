@@ -189,34 +189,49 @@ export function OAuthCodeFields({
           label="Use PKCE"
         />
       </div>
-      <div className="space-y-1.5">
-        <p className="text-sm font-medium">Redirect URI</p>
-        <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface px-3 py-2 text-xs">
-            {data?.redirectUri ?? '…'}
-          </code>
-          {data && <CopyButton text={data.redirectUri} label="Copy the redirect URI" />}
-        </div>
-        <p className="text-xs text-muted">
-          Register it with the provider’s OAuth app
-          {preset && (
-            <>
-              {' '}
-              (
-              <a
-                href={preset.consoleUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-0.5 text-accent hover:underline"
-              >
-                {preset.label} <ExternalLink className="size-3" />
-              </a>
-              )
-            </>
-          )}
-          . It’s the same for every resource.
-        </p>
+      <RedirectUri resourceId={resourceId} preset={preset} />
+    </div>
+  )
+}
+
+/** Where the provider sends people back after consent, to register with the OAuth app (M9; M27's services too). */
+export function RedirectUri({
+  resourceId,
+  preset,
+}: {
+  resourceId: string
+  preset?: { label: string; consoleUrl: string } | undefined
+}) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.resources.oauthConnections.queryOptions({ resourceId }))
+  return (
+    <div className="space-y-1.5">
+      <p className="text-sm font-medium">Redirect URI</p>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface px-3 py-2 text-xs">
+          {data?.redirectUri ?? '…'}
+        </code>
+        {data && <CopyButton text={data.redirectUri} label="Copy the redirect URI" />}
       </div>
+      <p className="text-xs text-muted">
+        Register it with the provider’s OAuth app
+        {preset && (
+          <>
+            {' '}
+            (
+            <a
+              href={preset.consoleUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-0.5 text-accent hover:underline"
+            >
+              {preset.label} <ExternalLink className="size-3" />
+            </a>
+            )
+          </>
+        )}
+        . It’s the same for every resource.
+      </p>
     </div>
   )
 }
