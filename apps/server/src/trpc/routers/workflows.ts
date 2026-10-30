@@ -24,6 +24,7 @@ import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { dependents, inUseMessage } from '../../services/dependents'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
@@ -389,9 +390,23 @@ export const workflowsRouter = router({
     }),
 
   /** Deletes the workflow with its releases and run history. */
+  /**
+   * Deletes the workflow with its releases, runs and grants. Refused while it's kept in Git (unprotect it first) or
+   * another workflow calls it (a Workflow block or loop, in its draft, live release or a Git branch draft).
+   */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
+    if (workflow.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This workflow is kept in Git: unprotect it before deleting it',
+      })
+    }
+    const callers = (await workflowCallers(ctx.db, workflow.slug)).filter((d) => d.object.id !== workflow.id)
+    if (callers.length) {
+      throw new TRPCError({ code: 'CONFLICT', message: inUseMessage(access, callers, 'workflow') })
+    }
     await ctx.db.transaction(async (tx) => {
       await tx.delete(workflows).where(eq(workflows.id, input.id))
       // Grants reference objects polymorphically, so they're removed here rather than by a foreign key.
@@ -407,7 +422,72 @@ export const workflowsRouter = router({
     })
     return { ok: true }
   }),
+
+  /**
+   * A copy of a workflow's draft under a new slug and name: no releases, not in Git, and **every trigger turned off**,
+   * so the copy doesn't fire schedules or webhooks, or share a queue subscription with the original, until someone
+   * turns them on. Needs Use on the original (whoever can open it can copy it) and the right to create workflows.
+   */
+  duplicate: authedProcedure
+    .input(z.object({ id: Id, slug: Slug, name: Name, folderId: Id.nullish() }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.id)
+      requireLevel(access.workflowLevel(workflow), 'use', 'this workflow')
+      if (!access.canCreateWorkflows) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You need edit access to all workflows to create one',
+        })
+      }
+      const folderId = input.folderId === undefined ? workflow.folderId : input.folderId
+      await checkFolderType(ctx.db, 'workflow', folderId)
+      const [copy] = await uniqueOr('A workflow with that slug already exists', () =>
+        ctx.db
+          .insert(workflows)
+          .values({
+            slug: input.slug,
+            name: input.name,
+            description: workflow.description,
+            folderId,
+            draftDefinition: withTriggersOff(workflow.draftDefinition),
+            maxConcurrentRuns: workflow.maxConcurrentRuns,
+            createdBy: ctx.user.id,
+            updatedBy: ctx.user.id,
+          })
+          .returning(),
+      )
+      await ctx.audit({
+        action: 'workflow.created',
+        objectType: 'workflow',
+        objectId: copy!.id,
+        metadata: { slug: input.slug, duplicateOf: { id: workflow.id, slug: workflow.slug } },
+      })
+      return summary(copy!, access)
+    }),
 })
+
+/** The definition with every trigger (schedules, webhooks, Pub/Sub, SQS, Kafka) turned off. */
+function withTriggersOff(definition: WorkflowDefinition): WorkflowDefinition {
+  if (!definition.triggers) return definition
+  const off = (t: unknown) =>
+    t && typeof t === 'object' && 'enabled' in t ? { ...(t as Record<string, unknown>), enabled: false } : t
+  const triggers = Object.fromEntries(
+    Object.entries(definition.triggers).map(([kind, value]) => [
+      kind,
+      Array.isArray(value) ? value.map(off) : off(value),
+    ]),
+  )
+  return { ...definition, triggers } as WorkflowDefinition
+}
+
+/** The workflows calling one by its slug: a Workflow block or a loop's workflow runner (both name it `workflow`). */
+const workflowCallers = (db: Context['db'], slug: string) =>
+  dependents(
+    db,
+    (column) =>
+      sql`jsonb_path_exists(${column}, '$.** ? (@.workflow == $slug)', jsonb_build_object('slug', ${slug}::text))`,
+    { modules: false, workflows: true },
+  ).then((found) => found.filter((d) => d.kind === 'workflow'))
 
 /** `python_envs`' row for these requirements, as the editor shows it. */
 async function pythonEnvState(db: Context['db'], requirements: string[]) {

@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FolderPlus, GitBranch, Plus, Workflow } from 'lucide-react'
+import { Copy, FolderPlus, GitBranch, Plus, Trash2, Workflow } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
@@ -9,6 +10,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
@@ -80,11 +82,10 @@ function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasF
   const queryClient = useQueryClient()
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
-  const move = useMutation(
-    trpc.workflows.update.mutationOptions({
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() }),
-    }),
-  )
+  const [duplicating, setDuplicating] = useState(false)
+  const refresh = () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() })
+  const move = useMutation(trpc.workflows.update.mutationOptions({ onSuccess: refresh }))
+  const remove = useMutation(trpc.workflows.delete.mutationOptions({ onSuccess: refresh }))
   return (
     <div
       className="flex items-center gap-3 px-4 py-3 hover:bg-canvas"
@@ -117,6 +118,37 @@ function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasF
         </Button>
       )}
       {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}
+      <Button
+        size="icon"
+        variant="ghost"
+        title={`Duplicate ${workflow.name}`}
+        data-testid={`duplicate-${workflow.slug}`}
+        onClick={() => setDuplicating(true)}
+      >
+        <Copy className="size-4" />
+      </Button>
+      {duplicating && <DuplicateDialog workflow={workflow} onClose={() => setDuplicating(false)} />}
+      {workflow.level === 'own' && !workflow.gitProtected && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Delete ${workflow.name}`}
+          data-testid={`delete-${workflow.slug}`}
+          loading={remove.isPending}
+          onClick={async () => {
+            if (
+              await confirmDialog(
+                `Delete ${workflow.name} with its releases and runs? Its schedules, webhooks and queue triggers stop at once. This can't be undone.`,
+                { danger: true, confirm: 'Delete' },
+              )
+            ) {
+              remove.mutate({ id: workflow.id })
+            }
+          }}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      )}
       {hasFolders && workflow.level === 'own' && (
         <FolderSelect
           type="workflow"
@@ -126,8 +158,65 @@ function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasF
           onChange={(folderId) => move.mutate({ id: workflow.id, folderId })}
         />
       )}
-      <ErrorNote error={move.error} />
+      <ErrorNote error={move.error ?? remove.error} />
     </div>
+  )
+}
+
+/**
+ * A copy of the workflow's draft under a new name and slug, then opened. Its triggers come along turned off, so it
+ * doesn't fire (or share a queue with the original) until they're turned on.
+ */
+function DuplicateDialog({ workflow, onClose }: { workflow: WorkflowSummary; onClose: () => void }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [name, setName] = useState(`${workflow.name} (copy)`)
+  const [slug, setSlug] = useState(`${workflow.slug}-copy`)
+  const duplicate = useMutation(
+    trpc.workflows.duplicate.mutationOptions({
+      onSuccess: async (copy) => {
+        await queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() })
+        onClose()
+        await navigate({ to: '/workflows/$workflowId', params: { workflowId: copy.id } })
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Duplicate ${workflow.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            loading={duplicate.isPending}
+            disabled={!name || !slug}
+            data-testid="duplicate-confirm"
+            onClick={() => duplicate.mutate({ id: workflow.id, name, slug })}
+          >
+            Duplicate
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          The copy has the draft, with its triggers turned off: turn them on in the copy's start block when it
+          should run on its own. Releases and run history stay with the original.
+        </p>
+        <Field label="Name">
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Slug" hint="Used in webhook URLs. It can't change later.">
+          <Input value={slug} className="font-mono" onChange={(e) => setSlug(e.target.value)} />
+        </Field>
+        <ErrorNote error={duplicate.error} />
+      </div>
+    </Dialog>
   )
 }
 
