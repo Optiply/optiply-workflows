@@ -56,8 +56,41 @@ export interface RunInput {
   headers?: Record<string, string>
   pathParams?: Record<string, string>
   urlParams?: Record<string, string>
-  /** A Pub/Sub trigger's message (M19): `data` holds its data, this the rest (`startTrigger.message`). */
-  message?: PubSubRunMessage
+  /**
+   * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
+   * (`startTrigger.message`).
+   */
+  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage
+}
+
+/** What an SQS-triggered run sees of its message, besides its body (M26). */
+export interface SqsRunMessage {
+  messageId: string
+  /** The queue's URL. */
+  queue: string
+  /** SQS's own attributes (`SentTimestamp`, `ApproximateReceiveCount`, …), as SQS names them. */
+  attributes: Record<string, string>
+  /** The sender's message attributes, as text (binary ones as base64). */
+  messageAttributes: Record<string, string>
+  /** How many times SQS has handed it out, counting this one. */
+  receiveCount: number
+  sentAt: string
+  groupId?: string
+  deduplicationId?: string
+  sequenceNumber?: string
+}
+
+/** What a Kafka-triggered run sees of its message, besides its value (M26). */
+export interface KafkaRunMessage {
+  topic: string
+  partition: number
+  offset: string
+  key: string | null
+  headers: Record<string, string>
+  timestamp: string
+  /** This run's attempt at the message, counting from 1. */
+  attempt: number
+  groupId: string
 }
 
 /** What a Pub/Sub-triggered run sees of its message, besides its data. */
