@@ -126,13 +126,13 @@ test('Pub/Sub triggers: a run per message, acked on success, redelivered on fail
     }
     await release({ pubsub: pubsub() })
     const pulling = async () => {
-      const triggers = await call<{ kind: string; pubsub?: { worker: string | null } }[]>(
+      const triggers = await call<{ kind: string; queue?: { worker: string | null } }[]>(
         page,
         'workflows.triggers',
         { id: flow.id },
         'query',
       )
-      return triggers.find((t) => t.kind === 'pubsub')?.pubsub?.worker ?? null
+      return triggers.find((t) => t.kind === 'pubsub')?.queue?.worker ?? null
     }
     await expect.poll(pulling, { timeout: 30_000 }).not.toBeNull()
     const runs = async () => {
