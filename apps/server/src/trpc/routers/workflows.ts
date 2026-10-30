@@ -130,21 +130,23 @@ export const workflowsRouter = router({
       .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
       .where(eq(workflowTriggers.workflowId, workflow.id))
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
-    // Pub/Sub triggers (M19): their last day's messages, from what the consumer recorded.
-    const pubsubIds = rows.filter((r) => r.trigger.kind === 'pubsub').map((r) => r.trigger.id)
+    // Queue triggers (Pub/Sub M19, SQS and Kafka M26): their last day's messages, from what the consumer recorded.
+    const isQueue = (kind: string) => kind === 'pubsub' || kind === 'sqs' || kind === 'kafka'
+    const queueIds = rows.filter((r) => isQueue(r.trigger.kind)).map((r) => r.trigger.id)
     const counts = new Map(
-      (pubsubIds.length
+      (queueIds.length
         ? await ctx.db
             .select({
               triggerId: queueDeliveries.triggerId,
               messages: sql<number>`count(*)::int`,
               succeeded: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'succeeded')::int`,
-              failed: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'failed')::int`,
+              failed: sql<number>`count(*) filter (where ${queueDeliveries.outcome} in ('failed', 'dead_lettered', 'dropped'))::int`,
+              deadLettered: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'dead_lettered')::int`,
             })
             .from(queueDeliveries)
             .where(
               and(
-                inArray(queueDeliveries.triggerId, pubsubIds),
+                inArray(queueDeliveries.triggerId, queueIds),
                 gt(queueDeliveries.updatedAt, sql`now() - interval '1 day'`),
               ),
             )
@@ -163,8 +165,8 @@ export const workflowsRouter = router({
       releaseId: trigger.releaseId,
       nextFireAt: trigger.nextFireAt,
       lastFiredAt: trigger.lastFiredAt,
-      ...(trigger.kind === 'pubsub' && {
-        pubsub: {
+      ...(isQueue(trigger.kind) && {
+        queue: {
           // Only a lease still current: a worker gone without a goodbye isn't pulling.
           worker:
             trigger.leaseOwner && trigger.leaseExpiresAt && trigger.leaseExpiresAt.getTime() > now
@@ -175,6 +177,7 @@ export const workflowsRouter = router({
             messages: counts.get(trigger.id)?.messages ?? 0,
             succeeded: counts.get(trigger.id)?.succeeded ?? 0,
             failed: counts.get(trigger.id)?.failed ?? 0,
+            deadLettered: counts.get(trigger.id)?.deadLettered ?? 0,
           },
         },
       }),

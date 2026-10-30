@@ -493,7 +493,7 @@ function PubSubCard({
       }),
     }))
   const projected = live?.find((t) => t.kind === 'pubsub' && t.name === trigger.name)
-  const state = projected && 'pubsub' in projected ? projected.pubsub : undefined
+  const state = projected && 'queue' in projected ? projected.queue : undefined
   const number = (value: string, max: number) =>
     value === '' ? undefined : Math.min(max, Math.max(1, Math.round(Number(value) || 1)))
 

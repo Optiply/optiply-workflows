@@ -1,13 +1,21 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startFakePubSub } from '@ow/connectors/testing'
+import { kafkaClient, produceTo } from '@ow/connectors'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestKafka,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { createDb, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureAwsServer } from '../src/services/aws'
 import { configureGoogle } from '../src/services/google'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
@@ -700,11 +708,173 @@ describe('Pub/Sub triggers on the worker (M19)', () => {
     expect(trigger).toMatchObject({
       kind: 'pubsub',
       environment: 'production',
-      pubsub: {
+      queue: {
         worker: worker.dispatcher.workerId,
         state: { inFlight: 0, lastMessageAt: expect.any(String), lastError: null },
-        lastDay: { messages: 1, succeeded: 1, failed: 0 },
+        lastDay: { messages: 1, succeeded: 1, failed: 0, deadLettered: 0 },
       },
     })
   })
+})
+
+describe('SQS triggers on the worker (M26)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  beforeAll(async () => {
+    aws = await startFakeAws({ sqs: { secondMs: 50 } })
+    aws.sqs.createQueue('jobs')
+    // Process-wide, so the worker's consumer receives from the fake.
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws?.close()
+  })
+
+  it('runs the live release per message, deletes it, and the editor sees the trigger receiving', async () => {
+    const user = aws.addUser('worker')
+    const { id: queuesId } = data(
+      await admin.mutate('resources.create', { type: 'sqs', name: 'Live queues', slug: 'queues_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: queuesId,
+        environmentId: prodId,
+        config: { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId },
+        secrets: { secretAccessKey: user.secretAccessKey },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_jobs',
+      definition(
+        [
+          code(
+            'seen',
+            'return { doubled: startTrigger.data.n * 2, count: startTrigger.message.receiveCount }',
+          ),
+        ],
+        {
+          triggers: { sqs: [{ name: 'jobs', enabled: true, resource: 'queues_live', queue: 'jobs' }] },
+        },
+      ),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'sqs',
+      config: { queue: 'jobs', maxInFlight: 4, maxHoldMinutes: 60 },
+    })
+    await worker.queues.tick()
+    const messageId = aws.sqs.send('jobs', '{"n": 21}')
+
+    await expect.poll(() => aws.sqs.messages('jobs')[0]?.deleted ?? false, { timeout: 15_000 }).toBe(true)
+    const listed = await env.app.inject({
+      method: 'GET',
+      url: '/api/v1/workflows/on_jobs/runs',
+      headers: { cookie: adminCookie },
+    })
+    const [run] = listed.json().runs
+    expect(run).toMatchObject({ triggerType: 'sqs', status: 'succeeded', version: 'live' })
+    expect(run.input).toMatchObject({ data: { n: 21 }, message: { messageId, receiveCount: 1 } })
+    await worker.queues.tick()
+    const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id }))
+    expect(trigger).toMatchObject({
+      kind: 'sqs',
+      queue: { worker: worker.dispatcher.workerId, lastDay: { messages: 1, succeeded: 1, failed: 0 } },
+    })
+  })
+})
+
+describe.skipIf(!kafkaAvailable())('Kafka triggers on the worker (M26)', () => {
+  let kafka: TestKafka
+  beforeAll(async () => {
+    kafka = await startTestKafka()
+    await kafka.createTopic('events')
+  }, 120_000)
+  afterAll(async () => {
+    await kafka?.stop()
+  })
+
+  it('projects the defaults, runs the live release per message, and commits past it', async () => {
+    const { id: clusterId } = data(
+      await admin.mutate('resources.create', { type: 'kafka', name: 'Live cluster', slug: 'cluster_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: clusterId,
+        environmentId: prodId,
+        config: { brokers: [kafka.plaintext], auth: 'none' },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_events',
+      definition([code('seen', 'return { key: startTrigger.message.key, n: startTrigger.data.n }')], {
+        triggers: {
+          kafka: [
+            {
+              name: 'events',
+              enabled: true,
+              resource: 'cluster_live',
+              topics: ['events'],
+              startAt: 'earliest',
+            },
+          ],
+        },
+      }),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'kafka',
+      config: {
+        topics: ['events'],
+        groupId: `ow-${wf.id}-events`,
+        startAt: 'earliest',
+        maxAttempts: 3,
+        retryBackoffSeconds: 10,
+        maxInFlight: 4,
+      },
+    })
+    const producer = kafkaClient(
+      { brokers: [kafka.plaintext], auth: 'none', tls: false, identity: 'key' },
+      {},
+    )
+    await produceTo(producer, 'events', [{ key: 'order-7', value: '{"n": 7}' }], AbortSignal.timeout(10_000))
+    await producer.close()
+    await worker.queues.tick()
+
+    let run: { status: string; triggerType: string; id: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_events/runs',
+            headers: { cookie: adminCookie },
+          })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'kafka' })
+    const block = await env.app.inject({
+      method: 'GET',
+      url: `/api/v1/runs/${run!.id}/blocks/seen`,
+      headers: { cookie: adminCookie },
+    })
+    expect(block.json().block.data).toEqual({ key: 'order-7', n: 7 })
+    await expect
+      .poll(
+        async () => {
+          await worker.queues.tick()
+          const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id })) as {
+            queue?: { lastDay: { succeeded: number } }
+          }[]
+          return trigger?.queue?.lastDay.succeeded
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(1)
+  }, 90_000)
 })
