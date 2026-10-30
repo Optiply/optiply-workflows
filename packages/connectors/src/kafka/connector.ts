@@ -1,8 +1,16 @@
 import { parseTemplate, renderJson, renderText, TemplateError } from '@ow/expressions'
 import { z } from 'zod'
+import { awsCredentials, describeAws } from '../aws/credentials'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from '../types'
 import { type KafkaResourceClient, kafkaClient, kafkaError, withSignal } from './client'
-import { type KafkaConfig, type KafkaSecrets, kafkaConfigSchema, kafkaSecretsSchema } from './config'
+import {
+  type KafkaConfig,
+  type KafkaSecrets,
+  kafkaConfigSchema,
+  kafkaSecretsSchema,
+  kafkaSettingsProblem,
+} from './config'
+import { mskIamToken } from './msk-iam'
 
 /**
  * Produces to a topic: `messages` is JSON with `{{ }}` (as a REST body is) giving one message or an array of them,
@@ -18,17 +26,27 @@ type Query = z.output<typeof querySchema>
 /** At most this many messages per produce query. */
 const MAX_MESSAGES = 1000
 
-/** Makes a resource's client; MSK IAM's token comes in step 3b through `configureKafkaAws`. */
-let makeClient: (config: KafkaConfig, secrets: KafkaSecrets) => KafkaResourceClient = (config, secrets) =>
-  kafkaClient(config, secrets)
-
-export function setKafkaClientFactory(factory: typeof makeClient): void {
-  makeClient = factory
-}
-
-/** The client of a Kafka resource's settings (M26); also what the trigger's consumer starts from. */
+/**
+ * The client of a Kafka resource's settings (M26); also what the trigger's consumer starts from. MSK IAM signs in
+ * with a token librdkafka asks for before the last one expires, presigned with the AWS identity's credentials.
+ */
 export function kafkaResourceClient(config: KafkaConfig, secrets: KafkaSecrets): KafkaResourceClient {
-  return makeClient(config, secrets)
+  if (config.auth !== 'aws-msk-iam') return kafkaClient(config, secrets)
+  const problem = kafkaSettingsProblem(config, secrets)
+  if (problem) throw new ConnectorError('invalid_config', problem)
+  const region = config.region ?? ''
+  const credentials = awsCredentials({
+    region,
+    identity: config.identity,
+    accessKeyId: config.accessKeyId,
+    roleArn: config.roleArn,
+    externalId: config.externalId,
+    secretAccessKey: secrets.secretAccessKey,
+  })
+  return kafkaClient(config, secrets, {
+    settings: { oauthbearer_token_refresh_cb: () => mskIamToken(region, credentials) },
+    who: async (signal) => `${await describeAws(region, credentials, signal)} (MSK IAM)`,
+  })
 }
 
 export const kafkaConnector: Connector<KafkaConfig, KafkaSecrets, Query, KafkaResourceClient> = {

@@ -57,8 +57,8 @@ export {
   kafkaResourceClient,
   type OutgoingKafkaMessage,
   produceTo,
-  setKafkaClientFactory,
 } from './kafka/connector'
+export { type MskIamToken, mskIamToken } from './kafka/msk-iam'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export {

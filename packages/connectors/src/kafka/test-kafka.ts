@@ -17,7 +17,10 @@ const FIXTURES = new URL('../../test/fixtures/kafka/', import.meta.url)
 export interface TestKafka {
   /** `127.0.0.1:port` of each listener (the server certificate names that IP and localhost). */
   plaintext: string
-  /** SASL over TLS: PLAIN for `plain`, SCRAM-SHA-256 for `scram256`, SCRAM-SHA-512 for `scram512`. */
+  /**
+   * SASL over TLS: PLAIN for `plain`, SCRAM-SHA-256 for `scram256`, SCRAM-SHA-512 for `scram512`, and OAUTHBEARER
+   * with any unsigned JWT.
+   */
   saslSsl: string
   /** TLS with client certificates required. */
   mtls: string
@@ -75,7 +78,9 @@ export async function startTestKafka(): Promise<TestKafka> {
       'listener.security.protocol.map=PLAINTEXT:PLAINTEXT,SASL_SSL:SASL_SSL,SSL:SSL,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT',
       'inter.broker.listener.name=INTERNAL',
       'controller.listener.names=CONTROLLER',
-      'sasl.enabled.mechanisms=PLAIN,SCRAM-SHA-256,SCRAM-SHA-512',
+      'sasl.enabled.mechanisms=PLAIN,SCRAM-SHA-256,SCRAM-SHA-512,OAUTHBEARER',
+      // Kafka's own unsecured validator: any unsigned JWT, so a test can check a token callback is called.
+      'listener.name.sasl_ssl.oauthbearer.sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;',
       `listener.name.sasl_ssl.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required user_${users.plain.username}="${users.plain.password}";`,
       'listener.name.sasl_ssl.scram-sha-256.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;',
       'listener.name.sasl_ssl.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;',

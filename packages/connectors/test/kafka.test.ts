@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { kafkaClient } from '../src/kafka/client'
 import { kafkaConnector } from '../src/kafka/connector'
 import { kafkaAvailable, startTestKafka, type TestKafka } from '../src/kafka/test-kafka'
 import { PoolManager } from '../src/pool'
@@ -131,4 +132,41 @@ describe.skipIf(!available)('kafka resource', () => {
       'the partition is a number from 0',
     )
   })
+
+  it("signs in with OAUTHBEARER tokens from the client's callback, as MSK IAM does", async () => {
+    const unsigned = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
+    let calls = 0
+    const client = kafkaClient(
+      {
+        brokers: [kafka.saslSsl],
+        auth: 'aws-msk-iam',
+        tls: true,
+        identity: 'key',
+        region: 'eu-west-1',
+        caCertificate: kafka.ca,
+      },
+      {},
+      {
+        settings: {
+          oauthbearer_token_refresh_cb: async () => {
+            calls++
+            const now = Math.floor(Date.now() / 1000)
+            return {
+              tokenValue: `${unsigned({ alg: 'none' })}.${unsigned({ sub: 'dave', iat: now, exp: now + 900 })}.`,
+              lifetime: (now + 900) * 1000,
+              principal: 'dave',
+            }
+          },
+        },
+        who: async () => 'dave',
+      },
+    )
+    try {
+      const admin = await client.admin()
+      expect(await admin.listTopics()).toContain('orders')
+      expect(calls).toBeGreaterThanOrEqual(1)
+    } finally {
+      await client.close()
+    }
+  }, 60_000)
 })
