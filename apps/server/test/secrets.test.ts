@@ -110,12 +110,13 @@ describe('rekeyAll', () => {
       { table: 'oauth_tokens', rekeyed: 0, failed: [] },
       { table: 'git_settings', rekeyed: 1, failed: [] },
     ])
-    const afterDry = await db.select().from(resourceConfigs)
+    // The built-in REST API resource's configs (M27) have no secrets.
+    const afterDry = (await db.select().from(resourceConfigs)).filter((r) => r.secrets !== null)
     expect(afterDry.every((r) => keyVersionOf(r.secrets!) === 'v1')).toBe(true)
 
     expect(await rekeyAll(db, rotated, { batchSize: 3 })).toEqual(dry)
 
-    for (const row of await db.select().from(resourceConfigs)) {
+    for (const row of (await db.select().from(resourceConfigs)).filter((r) => r.secrets !== null)) {
       if (row.id === swapped.id) {
         expect(keyVersionOf(row.secrets!)).toBe('v1')
         continue

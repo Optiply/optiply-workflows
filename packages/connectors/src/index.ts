@@ -6,6 +6,7 @@ import { postgresConnector } from './postgres'
 import { pubsubConnector } from './pubsub/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
+import { restApiConnector } from './restapi'
 import type { AnyConnector } from './types'
 
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
@@ -127,6 +128,7 @@ export {
   restQuerySchema,
   restSecretsSchema,
 } from './rest'
+export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { type RunOptions, runQuery, testResource } from './run'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
@@ -164,6 +166,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [mysqlConnector.type]: mysqlConnector,
   [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
+  [restApiConnector.type]: restApiConnector,
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,

@@ -17,6 +17,7 @@ import { Metrics, metricsAllowed } from '../metrics'
 import { configureAwsServer } from '../services/aws'
 import { CollabHub } from '../services/collab/rooms'
 import { CollabStore } from '../services/collab/store'
+import { configureConnectors } from '../services/connectors'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
@@ -70,6 +71,7 @@ export async function buildApp(deps: {
   if (pythonWarning) app.log.warn(pythonWarning)
   configureGoogle(config)
   configureAwsServer(config)
+  configureConnectors(config)
   const runner = new InlineRunner({
     db,
     pool: services.pool,

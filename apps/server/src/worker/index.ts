@@ -8,6 +8,7 @@ import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { configureAwsServer } from '../services/aws'
 import { deleteUnusedBundles } from '../services/component-libraries'
+import { configureConnectors } from '../services/connectors'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
 import { engineLibrary } from '../services/library-queries'
@@ -40,6 +41,7 @@ export async function startWorker(deps: {
   if (pythonWarning) log.warn(pythonWarning)
   configureGoogle(config)
   configureAwsServer(config)
+  configureConnectors(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,

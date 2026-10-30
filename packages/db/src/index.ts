@@ -1,3 +1,3 @@
 export { createDb, type Db } from './client'
-export { runMigrations } from './migrate'
+export { REST_API_RESOURCE_SLUG, runMigrations } from './migrate'
 export * from './schema'

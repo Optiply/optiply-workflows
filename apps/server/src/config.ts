@@ -114,6 +114,19 @@ const ConfigSchema = z
     /** STS's and SQS's endpoints: for tests against the fake AWS. */
     AWS_STS_URL: z.string().url().optional(),
     AWS_SQS_URL: z.string().url().optional(),
+    /**
+     * Private hosts the built-in REST API resource (M27) may reach all the same, comma-separated (`*.internal.example`
+     * patterns allowed); every other private address stays refused.
+     */
+    REST_API_PRIVATE_HOSTS: z
+      .string()
+      .default('')
+      .transform((v) =>
+        v
+          .split(',')
+          .map((h) => h.trim())
+          .filter(Boolean),
+      ),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

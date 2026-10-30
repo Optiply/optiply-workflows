@@ -388,7 +388,10 @@ describe('permissions', () => {
   let groupId: string
 
   it('hides resources from users without a grant', async () => {
-    expect(data(await member.query('resources.list'))).toEqual({ resources: [], canCreate: false })
+    // Only the built-in REST API resource (M27), which All Users may use.
+    const visible = data(await member.query('resources.list'))
+    expect(visible.canCreate).toBe(false)
+    expect(visible.resources.map((r: { slug: string }) => r.slug)).toEqual(['rest_api'])
     expect((await member.query('resources.get', { id: pgId })).status).toBe(404)
     expect(
       (
@@ -417,6 +420,7 @@ describe('permissions', () => {
     expect(grant.status).toBe(200)
 
     const list = data(await member.query('resources.list'))
+    list.resources = list.resources.filter((r: { systemKind: string | null }) => !r.systemKind)
     expect(list.resources).toHaveLength(1)
     expect(list.resources[0].environments).toEqual(
       expect.arrayContaining([

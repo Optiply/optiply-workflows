@@ -3,7 +3,7 @@ import { connect as tlsConnect } from 'node:tls'
 import { renderJson, renderTemplate, renderText } from '@ow/expressions'
 import { Agent, type buildConnector, FormData, fetch, Headers, type Response } from 'undici'
 import { networkError, readBody } from './http'
-import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
+import { guardedLookup, guardedLookupExcept, hostMatches, isPrivateAddress } from './net-guard'
 import { clientCredentialsToken } from './oauth'
 import type { RestConfig, RestQuery, RestSecrets } from './rest'
 import { sshConnectionError, tunnelFor } from './ssh/client'
@@ -27,6 +27,8 @@ export interface HttpClient {
   tunnel?: SshTunnel
   /** Any public host may be reached, not just the base URL's and `allowedHosts` (the built-in REST API resource). */
   anyPublicHost?: boolean
+  /** Private hosts reachable all the same, by name (patterns as `hostMatches`). */
+  privateHosts?: readonly string[]
 }
 
 const MAX_REDIRECTS = 5
@@ -36,12 +38,14 @@ const ERROR_BODY_PREVIEW = 2000
 export function createHttpClient(
   config: Config,
   secrets: Secrets,
-  opts: { anyPublicHost?: boolean } = {},
+  opts: { anyPublicHost?: boolean; privateHosts?: readonly string[] } = {},
 ): HttpClient {
   const tunnel = tunnelFor(config, secrets)
+  const privateHosts = opts.privateHosts ?? []
+  const lookup = privateHosts.length ? guardedLookupExcept(privateHosts) : guardedLookup
   const agent = new Agent({
     connections: 32,
-    connect: tunnel ? tunnelConnector(tunnel) : config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
+    connect: tunnel ? tunnelConnector(tunnel) : config.allowPrivateNetwork ? {} : { lookup },
   })
   return {
     config,
@@ -49,6 +53,7 @@ export function createHttpClient(
     agent,
     ...(tunnel ? { tunnel } : {}),
     ...(opts.anyPublicHost ? { anyPublicHost: true } : {}),
+    ...(privateHosts.length ? { privateHosts } : {}),
   }
 }
 
@@ -66,6 +71,8 @@ export interface HttpRequest {
   body?: string | FormData
   /** Used unless a header sets one. */
   contentType?: string
+  /** Headers carrying credentials, dropped when a redirect leaves the origin (as the resource's own are). */
+  sensitive?: string[]
 }
 
 export interface HttpResponse {
@@ -101,7 +108,7 @@ export async function httpRequest(
         ...(request.body !== undefined ? { body: request.body } : {}),
       },
       ctx.signal,
-      attempt.sensitive,
+      [...attempt.sensitive, ...(request.sensitive ?? [])],
     )
   }
   let res = await send1()
@@ -272,7 +279,10 @@ function tunnelConnector(tunnel: SshTunnel): buildConnector.connector {
  * Queries may only reach the base URL's host and `allowedHosts` (or any public host, for the built-in REST API), over
  * http(s).
  */
-export function checkHost(client: Pick<HttpClient, 'config' | 'anyPublicHost'>, url: URL): void {
+export function checkHost(
+  client: Pick<HttpClient, 'config' | 'anyPublicHost' | 'privateHosts'>,
+  url: URL,
+): void {
   const { config } = client
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new ConnectorError('blocked', `Only http and https URLs are allowed (got ${url.protocol})`)
@@ -289,7 +299,11 @@ export function checkHost(client: Pick<HttpClient, 'config' | 'anyPublicHost'>, 
     )
   }
   // IP literals skip DNS, so the connect-time guard never sees them.
-  if (!privateNetworkAllowed(config) && isPrivateAddress(url.hostname)) {
+  if (
+    !privateNetworkAllowed(config) &&
+    isPrivateAddress(url.hostname) &&
+    !client.privateHosts?.some((p) => hostMatches(url.hostname, p))
+  ) {
     throw new ConnectorError('blocked', `${url.hostname} is a private address`)
   }
 }
