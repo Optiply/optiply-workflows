@@ -1898,7 +1898,7 @@ M28 is planned (`architecture.md` §2.31 and the M28 row), on the local branch `
 7. **Rail, panels, side editor, status bar** — 7a: the icon rail and its panels (Blocks palette with drag to add, Outline, Functions, Triggers, Releases, Settings, Problems), one click to open/close, remembered. 7b: the side editor panel (open in panel, tabs, toggle), Code search, the status bar, the top bar's chip and Publish release menu, the canvas toolbar (zoom %, fit, minimap, collapse/expand) bottom-left.
 8. **Finish:** the done-when spec (`m28-done-when.spec.ts`), existing e2e moved to the new layout (selectors: `side-panel`, `block-*`), screenshots light and dark, docs; the user's stack only when they say.
 
-**Progress:** step 0 (this plan) written, not committed yet.
+**Progress:** step 0 `9c7d621`. Step 1 (session 34): `editor/result-model.ts` (`shapeOf`: table/list/object/scalar, columns from the first 50 rows in first-seen order; `typeLabel`, `cellText`, `childSummary`, `pathExpression`, `expandablePaths` capped at 2000) with 8 tests; `editor/result-view.tsx` (`DataTab`: `array (n)` heading, copy/download, a virtualized table (`@tanstack/react-virtual`, 24 px rows, 144 px columns), key/value rows, scalars as JSON under `data-testid="json"` so older specs still read them; `JsonTree`: counts, expand/collapse per node and all, copy a node's expression, 100 children at a time; `ResultTabs`); the run panel's block result uses `ResultTabs`. Screens: `scratchpad/step1/03b-result-data.png`, `03c-result-json.png`.
 
 ## 15. How to start the next session
 

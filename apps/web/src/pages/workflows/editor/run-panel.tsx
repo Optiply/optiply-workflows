@@ -14,6 +14,7 @@ import {
   runsApi,
 } from '@/lib/runs-api'
 import { cn } from '@/lib/utils'
+import { ResultTabs } from './result-view'
 import { cancelOpenRun, isFinal, useRun } from './run-state'
 import { useEditor } from './store'
 
@@ -222,7 +223,9 @@ function BlockResult({
           </Link>
         </p>
       )}
-      {block.status === 'succeeded' && <Json value={block.data} />}
+      {block.status === 'succeeded' && (
+        <ResultTabs value={block.data} name={name} root={`${name}.data`} className="h-64" />
+      )}
       {isLoop && <Iterations runId={runId} loop={name} runStatus={runStatus} />}
     </div>
   )
