@@ -20,7 +20,13 @@ import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } 
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
-import { defaultQuery, queryKind } from '@/lib/resource-types'
+import {
+  defaultQuery,
+  isMessageKind,
+  MESSAGE_QUERIES,
+  type MessageKind,
+  queryKind,
+} from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -428,6 +434,14 @@ function QueryEditor({
   const { data } = useQuery(trpc.resources.list.queryOptions())
   const resources = data?.resources ?? []
   const current = resources.find((r) => r.slug === resource)
+  // Without the resource (deleted, or not visible): guessed from the query's own fields.
+  const guessed =
+    typeof query.messages === 'string' ? (typeof query.queue === 'string' ? 'sqs' : 'pubsub') : null
+  const messageKind = current
+    ? isMessageKind(queryKind(current.type))
+      ? (queryKind(current.type) as MessageKind)
+      : null
+    : guessed
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
@@ -471,8 +485,15 @@ function QueryEditor({
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
-      ) : (current ? queryKind(current.type) === 'pubsub' : typeof query.messages === 'string') ? (
-        <PubSubQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
+      ) : messageKind ? (
+        <MessageQueryForm
+          kind={messageKind}
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+        />
       ) : (
         <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       )}
@@ -480,36 +501,38 @@ function QueryEditor({
   )
 }
 
-/** A Pub/Sub resource's query (M19): publish to a topic, messages as JSON with `{{ }}`. */
-function PubSubQueryForm({
+/**
+ * A message resource's query (Pub/Sub M19, SQS and Kafka M26): send to a topic or queue, messages as JSON with
+ * `{{ }}`.
+ */
+function MessageQueryForm({
+  kind,
   query,
   setQuery,
   ctx,
   at,
   models,
 }: {
+  kind: MessageKind
   query: Record<string, unknown>
   setQuery: (patch: Record<string, unknown>) => void
   ctx: FormContext
   at: (string | number)[]
   models: string
 }) {
+  const q = MESSAGE_QUERIES[kind]
   return (
     <div className="flex flex-col gap-4">
-      <Field label="Topic" hint="Its id in the resource's project, or projects/…/topics/….">
+      <Field label={q.label} hint={q.hint}>
         <Input
           className="font-mono"
           placeholder="orders"
-          value={String(query.topic ?? '')}
-          onChange={(e) => setQuery({ topic: e.target.value })}
+          data-testid={`query-${q.target}`}
+          value={String(query[q.target] ?? '')}
+          onChange={(e) => setQuery({ [q.target]: e.target.value })}
         />
       </Field>
-      <EditorField
-        label="Messages"
-        hint={
-          'One message or an array of them: {"data": …, "attributes": {…}, "orderingKey": "…"}. Data that isn’t a string is sent as JSON.'
-        }
-      >
+      <EditorField label="Messages" hint={q.messagesHint}>
         <Code
           path={ctx.modelPath(`${models}messages`)}
           language="plaintext"

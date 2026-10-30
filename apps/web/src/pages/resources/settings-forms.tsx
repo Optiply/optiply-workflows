@@ -9,6 +9,7 @@ import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OverridesCard } from './overrides'
+import { KafkaFields, SqsFields } from './queue-settings'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -28,8 +29,8 @@ import {
 
 type Config = Record<string, unknown>
 /** Secret edits by field; nested records nest (`headers: { name: edit }`, `ssh: { hopId: { privateKey: edit } }`). */
-type SecretEdits = { [key: string]: SecretEdit | SecretEdits }
-type Mask = Record<string, unknown> | null
+export type SecretEdits = { [key: string]: SecretEdit | SecretEdits }
+export type Mask = Record<string, unknown> | null
 
 const DEFAULTS: Record<string, Config> = {
   postgres: {
@@ -61,6 +62,8 @@ const DEFAULTS: Record<string, Config> = {
     labels: {},
   },
   pubsub: { identity: 'key' },
+  sqs: { region: 'eu-west-1', identity: 'key' },
+  kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
     headers: [],
@@ -197,6 +200,10 @@ export function SettingsPanel({
           <BigQueryFields {...props} />
         ) : resource.type === 'pubsub' ? (
           <PubSubFields {...props} />
+        ) : resource.type === 'sqs' ? (
+          <SqsFields {...props} />
+        ) : resource.type === 'kafka' ? (
+          <KafkaFields {...props} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
@@ -304,14 +311,14 @@ export function SettingsPanel({
   )
 }
 
-const isSet = (secrets: Mask, key: string) => !!secrets && key in secrets
+export const isSet = (secrets: Mask, key: string) => !!secrets && key in secrets
 const num = (v: string) => (v === '' ? undefined : Number(v))
 
-function Grid({ children }: { children: ReactNode }) {
+export function Grid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>
 }
 
-function Checkbox({
+export function Checkbox({
   checked,
   onChange,
   disabled,

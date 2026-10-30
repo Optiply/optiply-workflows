@@ -3,7 +3,14 @@ import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
-import { DEFAULT_PUBSUB_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
+import {
+  DEFAULT_PUBSUB_QUERY,
+  isMessageKind,
+  MESSAGE_QUERIES,
+  type MessageKind,
+  PLACEHOLDERS,
+  queryKind,
+} from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -17,8 +24,10 @@ type RestBody =
 interface Draft {
   sql: string
   rest: { method: string; path: string; params: KeyValue[]; headers: KeyValue[]; body: RestBody }
-  /** A Pub/Sub resource's publish (M19). */
+  /** A message resource's send: Pub/Sub's publish (M19), SQS's send and Kafka's produce (M26), by kind. */
   pubsub: { topic: string; messages: string }
+  sqs: { queue: string; messages: string }
+  kafka: { topic: string; messages: string }
   scope: string
 }
 
@@ -26,6 +35,8 @@ const EMPTY: Draft = {
   sql: 'select * from information_schema.tables limit 10',
   rest: { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
   pubsub: DEFAULT_PUBSUB_QUERY,
+  sqs: { queue: '', messages: MESSAGE_QUERIES.sqs.messages },
+  kafka: { topic: '', messages: MESSAGE_QUERIES.kafka.messages },
   scope: '{\n  \n}',
 }
 
@@ -44,6 +55,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
   const [draft, setDraft] = useState<Draft>(() => loadDraft(resource.id))
   const run = useMutation(trpc.resources.run.mutationOptions())
   const configured = !!resource.environments.find((e) => e.environmentId === environmentId)?.config
+  const kind = queryKind(resource.type)
 
   useEffect(() => {
     try {
@@ -65,8 +77,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
 
   const execute = () => {
     if (!scope) return
-    const kind = queryKind(resource.type)
-    const query = kind === 'sql' ? { sql: draft.sql } : kind === 'pubsub' ? draft.pubsub : draft.rest
+    const query = kind === 'sql' ? { sql: draft.sql } : isMessageKind(kind) ? draft[kind] : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -90,7 +101,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="space-y-4 p-4 lg:col-span-2">
-          {queryKind(resource.type) === 'sql' ? (
+          {kind === 'sql' ? (
             <Field
               label="SQL"
               hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
@@ -104,33 +115,8 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
                 onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
               />
             </Field>
-          ) : queryKind(resource.type) === 'pubsub' ? (
-            <>
-              <Field label="Topic" hint="Its id in the resource's project, or projects/…/topics/….">
-                <Input
-                  className="font-mono"
-                  placeholder="orders"
-                  value={draft.pubsub.topic}
-                  onKeyDown={onKeyDown}
-                  onChange={(e) => setDraft({ ...draft, pubsub: { ...draft.pubsub, topic: e.target.value } })}
-                />
-              </Field>
-              <Field
-                label="Messages"
-                hint='One message or an array: {"data": …, "attributes": {…}, "orderingKey": "…"}. Publishing sends them for real.'
-              >
-                <Textarea
-                  rows={8}
-                  spellCheck={false}
-                  className="font-mono text-[13px]"
-                  value={draft.pubsub.messages}
-                  onKeyDown={onKeyDown}
-                  onChange={(e) =>
-                    setDraft({ ...draft, pubsub: { ...draft.pubsub, messages: e.target.value } })
-                  }
-                />
-              </Field>
-            </>
+          ) : isMessageKind(kind) ? (
+            <MessageDraft kind={kind} draft={draft} setDraft={setDraft} onKeyDown={onKeyDown} />
           ) : (
             <RestQueryEditor rest={draft.rest} setRest={setRest} onKeyDown={onKeyDown} />
           )}
@@ -307,6 +293,46 @@ function RestQueryEditor({
           </div>
         </Field>
       )}
+    </>
+  )
+}
+
+/** A message resource's playground query: where to, and the messages (sent for real). */
+function MessageDraft({
+  kind,
+  draft,
+  setDraft,
+  onKeyDown,
+}: {
+  kind: MessageKind
+  draft: Draft
+  setDraft: (draft: Draft) => void
+  onKeyDown: (e: KeyboardEvent) => void
+}) {
+  const q = MESSAGE_QUERIES[kind]
+  const current = draft[kind] as Record<string, string>
+  const update = (patch: Record<string, string>) => setDraft({ ...draft, [kind]: { ...current, ...patch } })
+  return (
+    <>
+      <Field label={q.label} hint={q.hint}>
+        <Input
+          className="font-mono"
+          placeholder="orders"
+          value={current[q.target] ?? ''}
+          onKeyDown={onKeyDown}
+          onChange={(e) => update({ [q.target]: e.target.value })}
+        />
+      </Field>
+      <Field label="Messages" hint={`${q.messagesHint} Running sends them for real.`}>
+        <Textarea
+          rows={8}
+          spellCheck={false}
+          className="font-mono text-[13px]"
+          value={current.messages ?? ''}
+          onKeyDown={onKeyDown}
+          onChange={(e) => update({ messages: e.target.value })}
+        />
+      </Field>
     </>
   )
 }
