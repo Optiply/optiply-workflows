@@ -96,12 +96,12 @@ test("a Python block's prints show in the run view while it runs", async ({ page
 
 /** Runs the workflow and waits for this run (not an earlier one) to reply with `text`. */
 async function runAndExpect(page: Page, text: string) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
-  await expect(picker).not.toHaveValue('')
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
+  await expect(picker).not.toHaveAttribute('data-run-id', '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded')
   await panel.getByRole('button', { name: 'output' }).click()
   await expect(panel.getByTestId('run-output')).toContainText(text)

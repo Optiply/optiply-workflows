@@ -216,7 +216,7 @@ function EditorLayout({
         <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
         {git}
         <div className="flex min-h-0 flex-1 gap-2">
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
               {editable && <Toolbar />}

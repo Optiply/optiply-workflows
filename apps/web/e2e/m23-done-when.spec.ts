@@ -136,11 +136,11 @@ async function saved(page: Page) {
 
 /** Runs the draft from the editor and waits for this run (not an earlier one) to succeed. */
 async function run(page: Page, timeout = 30_000) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded', { timeout })
   return panel
 }

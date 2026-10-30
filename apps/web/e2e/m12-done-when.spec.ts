@@ -147,12 +147,12 @@ test("M12's done-when", async ({ page }) => {
 
 /** Runs the open workflow and waits for this run (not an earlier one) to succeed; returns the run panel. */
 async function run(page: Page) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
-  await expect(picker).not.toHaveValue('')
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
+  await expect(picker).not.toHaveAttribute('data-run-id', '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded')
   return panel
 }
