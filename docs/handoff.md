@@ -1800,7 +1800,7 @@ M26 is planned (`architecture.md` §2.29 and the M26 row), on the local branch `
    - 5b: the triggers form's SQS and Kafka sections (a queue section per kind) with live lines, the run page's line, `startTrigger.message` types; e2e.
 6. **Finish** — 6a: the done-when spec (`m26-done-when.spec.ts`; the fake SQS and a Kafka container in the e2e setup), M19's done-when re-run. 6b: a Docker image build (the Kafka client's native library if it is the Confluent one) checked locally; the Compose check on the user's stack only when they say (SQS on AWS or LocalStack, a local Kafka). 6c: docs, runbooks. Then the review (`code-review`) and its fixes.
 
-**Progress:** step 0 written (session 32, not committed yet). **Next: step 1a.**
+**Progress:** step 0 `ccc608c` (the user said go, then away mode: build, test, review and fix, then ask before rebuilding their stack). 1a done: `packages/engine/src/queue-consumer.ts` (`QueueConsumer`, `QueueAdapter`, `startDelivery` with `attempt`, `queueStats` per kind, Kafka's `fail` outcomes `retried`/`dead_lettered`/`dropped`, the run's error passed to `fail`), `queue-adapters/pubsub.ts` (M19's calls unchanged) and `index.ts` (`createAdapter`); migration `0034_queue_triggers` written by hand (a table rename needs drizzle-kit's prompt; the snapshot derived from 0033's and `drizzle-kit generate` then finds no changes); metrics `ow_queue_*{kind}`; the worker's log component `queue` (the Pub/Sub runbook still says `pubsub`: fix in 6c). **Next: step 1b.**
 
 ## 15. How to start the next session
 

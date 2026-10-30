@@ -3,7 +3,7 @@ import { type FakePubSub, startFakePubSub } from '@ow/connectors/testing'
 import {
   type Db,
   environments,
-  pubsubDeliveries,
+  queueDeliveries,
   workflowReleases,
   workflowRuns,
   workflows,
@@ -12,7 +12,7 @@ import {
 import { startTestDatabase } from '@ow/db/testing'
 import { asc, sql as dsql, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { PubSubConsumer, type PubSubConsumerOptions, pubsubStats, type ResourceProvider } from '../src'
+import { QueueConsumer, type QueueConsumerOptions, queueStats, type ResourceProvider } from '../src'
 import { connect, wf } from './pg-harness'
 
 // The consumer (M19 step 3a) against Postgres and the fake Pub/Sub, where a second lasts 50 ms (a subscription's 10 s
@@ -21,7 +21,7 @@ let db: Db
 let prodId: string
 let stopDb: () => Promise<void>
 let pubsub: FakePubSub
-const consumers: PubSubConsumer[] = []
+const consumers: QueueConsumer[] = []
 
 /** The `events` resource, signed in as a stand-in for the server's identity. */
 const resources: ResourceProvider = {
@@ -110,8 +110,8 @@ async function subscribed(config: { maxInFlight?: number; maxHoldMinutes?: numbe
   }
 }
 
-function consumer(workerId = 'w1', over: Partial<PubSubConsumerOptions> = {}) {
-  const c = new PubSubConsumer({
+function consumer(workerId = 'w1', over: Partial<QueueConsumerOptions> = {}) {
+  const c = new QueueConsumer({
     db,
     resources,
     workerId,
@@ -136,7 +136,7 @@ const triggerRow = async (id: string) =>
   (await db.select().from(workflowTriggers).where(eq(workflowTriggers.id, id)))[0]!
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-describe('PubSubConsumer', () => {
+describe('QueueConsumer: Pub/Sub', () => {
   it('leases the trigger and starts a run per message, with its data and the message', async () => {
     const { trigger, publish, subscription } = await subscribed()
     const first = publish('{"order": 1}', { kind: 'created' })
@@ -202,13 +202,13 @@ describe('PubSubConsumer', () => {
       [done, 'succeeded'],
       [failed, 'failed'],
     ] as const)
-      await db.insert(pubsubDeliveries).values({ triggerId: trigger.id, messageId, runs: 1, outcome })
+      await db.insert(queueDeliveries).values({ triggerId: trigger.id, messageId, runs: 1, outcome })
     consumer().start()
     await expect.poll(() => pubsub.messages(subscription).find((m) => m.messageId === done)!.acked).toBe(true)
     await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(1)
     const [rerun] = await runsOf(trigger.id)
     expect(rerun!.idempotencyKey).toBe(`pubsub:${trigger.id}:${failed}:2`)
-    const [delivery] = await db.select().from(pubsubDeliveries).where(eq(pubsubDeliveries.messageId, failed))
+    const [delivery] = await db.select().from(queueDeliveries).where(eq(queueDeliveries.messageId, failed))
     expect(delivery).toMatchObject({ runs: 2, lastRunId: rerun!.id, outcome: null })
   })
 
@@ -269,7 +269,7 @@ describe('PubSubConsumer', () => {
       .set({ config: dsql`config || '{"subscription": "missing-sub"}'::jsonb` })
       .where(eq(workflowTriggers.id, trigger.id))
     const warnings: { obj: Record<string, unknown>; msg?: string }[] = []
-    const c = new PubSubConsumer({
+    const c = new QueueConsumer({
       db,
       resources,
       workerId: 'w9',
@@ -301,7 +301,7 @@ describe('PubSubConsumer', () => {
 const end = (runId: string, status: 'succeeded' | 'failed' | 'cancelled') =>
   db.update(workflowRuns).set({ status, finishedAt: new Date() }).where(eq(workflowRuns.id, runId))
 const delivery = async (messageId: string) =>
-  (await db.select().from(pubsubDeliveries).where(eq(pubsubDeliveries.messageId, messageId)))[0]!
+  (await db.select().from(queueDeliveries).where(eq(queueDeliveries.messageId, messageId)))[0]!
 
 describe('holding messages until their runs end (3b)', () => {
   it('acks when the run succeeds; nacks when it fails or is cancelled, and Pub/Sub delivers it again', async () => {
@@ -309,7 +309,7 @@ describe('holding messages until their runs end (3b)', () => {
     const ok = publish('fine')
     const bad = publish('breaks')
     const stopped = publish('cancelled')
-    const before = { ...pubsubStats }
+    const before = { ...queueStats.pubsub }
     consumer().start()
     await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(3)
     const runFor = async (messageId: string) =>
@@ -326,8 +326,8 @@ describe('holding messages until their runs end (3b)', () => {
     await expect.poll(async () => (await runsOf(trigger.id)).length).toBe(5)
     expect(message(bad).deliveries).toBe(2)
     expect(await delivery(bad)).toMatchObject({ runs: 2, outcome: null })
-    expect(pubsubStats.acked - before.acked).toBe(1)
-    expect(pubsubStats.nacked - before.nacked).toBe(2)
+    expect(queueStats.pubsub.acked - before.acked).toBe(1)
+    expect(queueStats.pubsub.nacked - before.nacked).toBe(2)
   })
 
   it("keeps a message whose run outlasts the subscription's deadline: no redelivery", async () => {

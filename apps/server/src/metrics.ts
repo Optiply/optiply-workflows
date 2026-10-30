@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { pubsubStats, type RunObserver, type ScheduleFire } from '@ow/engine'
+import { QUEUE_KINDS, QUEUE_OUTCOMES, queueStats, type RunObserver, type ScheduleFire } from '@ow/engine'
 import { pythonStats } from '@ow/sandbox'
 import { sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
@@ -121,33 +121,37 @@ export class Metrics {
       },
     })
 
-    // Pub/Sub triggers (M19), as this process's consumer counts them.
+    // Queue triggers (Pub/Sub M19, SQS and Kafka M26), as this process's consumer counts them, per kind.
     new client.Counter({
-      name: 'ow_pubsub_messages_total',
-      help: 'Pub/Sub messages this process finished with, by outcome (acked, nacked, duplicate, released past the hold)',
-      labelNames: ['outcome'],
+      name: 'ow_queue_messages_total',
+      help:
+        'Queue trigger messages this process finished with, by kind and outcome (acked, nacked, retried, ' +
+        'dead_lettered, dropped, duplicate, released past the hold)',
+      labelNames: ['kind', 'outcome'],
       registers,
       collect() {
         this.reset()
-        for (const outcome of ['acked', 'nacked', 'duplicate', 'released'] as const)
-          this.inc({ outcome }, pubsubStats[outcome])
+        for (const kind of QUEUE_KINDS)
+          for (const outcome of QUEUE_OUTCOMES) this.inc({ kind, outcome }, queueStats[kind][outcome])
       },
     })
     new client.Gauge({
-      name: 'ow_pubsub_in_flight',
-      help: 'Pub/Sub messages this process holds now, their runs under way',
+      name: 'ow_queue_in_flight',
+      help: 'Queue trigger messages this process holds now, their runs under way, by kind',
+      labelNames: ['kind'],
       registers,
       collect() {
-        this.set(pubsubStats.inFlight)
+        for (const kind of QUEUE_KINDS) this.set({ kind }, queueStats[kind].inFlight)
       },
     })
     new client.Counter({
-      name: 'ow_pubsub_pull_errors_total',
-      help: "Pulls of this process's Pub/Sub triggers that failed (no access, a missing subscription, Pub/Sub down)",
+      name: 'ow_queue_pull_errors_total',
+      help: "Receives of this process's queue triggers that failed (no access, a missing queue, the service down), by kind",
+      labelNames: ['kind'],
       registers,
       collect() {
         this.reset()
-        this.inc(pubsubStats.pullErrors)
+        for (const kind of QUEUE_KINDS) this.inc({ kind }, queueStats[kind].pullErrors)
       },
     })
 

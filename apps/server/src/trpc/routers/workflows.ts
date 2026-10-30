@@ -1,8 +1,8 @@
 import {
   environments,
   permissions,
-  pubsubDeliveries,
   pythonEnvs,
+  queueDeliveries,
   type Workflow,
   webhookRejections,
   workflowReleases,
@@ -136,19 +136,19 @@ export const workflowsRouter = router({
       (pubsubIds.length
         ? await ctx.db
             .select({
-              triggerId: pubsubDeliveries.triggerId,
+              triggerId: queueDeliveries.triggerId,
               messages: sql<number>`count(*)::int`,
-              succeeded: sql<number>`count(*) filter (where ${pubsubDeliveries.outcome} = 'succeeded')::int`,
-              failed: sql<number>`count(*) filter (where ${pubsubDeliveries.outcome} = 'failed')::int`,
+              succeeded: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'succeeded')::int`,
+              failed: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'failed')::int`,
             })
-            .from(pubsubDeliveries)
+            .from(queueDeliveries)
             .where(
               and(
-                inArray(pubsubDeliveries.triggerId, pubsubIds),
-                gt(pubsubDeliveries.updatedAt, sql`now() - interval '1 day'`),
+                inArray(queueDeliveries.triggerId, pubsubIds),
+                gt(queueDeliveries.updatedAt, sql`now() - interval '1 day'`),
               ),
             )
-            .groupBy(pubsubDeliveries.triggerId)
+            .groupBy(queueDeliveries.triggerId)
         : []
       ).map((c) => [c.triggerId, c]),
     )

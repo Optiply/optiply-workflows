@@ -311,7 +311,7 @@ describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
       values (gen_random_uuid(), ${workflowId}, ${releaseId}, 'pubsub', 'orders') returning id`)
     const deliver = (messageId: string, outcome: string | null, daysAgo: number) =>
       db.execute(dsql`
-        insert into pubsub_deliveries (trigger_id, message_id, runs, outcome, updated_at)
+        insert into queue_deliveries (trigger_id, message_id, runs, outcome, updated_at)
         values (${trigger!.id}, ${messageId}, 1, ${outcome}, now() - make_interval(days => ${daysAgo}))`)
     await deliver('old-done', 'succeeded', PUBSUB_DELIVERY_DAYS + 1)
     await deliver('old-failed', 'failed', PUBSUB_DELIVERY_DAYS + 1)
@@ -319,9 +319,9 @@ describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
     await deliver('recent', 'succeeded', PUBSUB_DELIVERY_DAYS - 1)
     // `days` is the runs' horizon: deliveries keep their own.
     const result = await deleteOldRuns(db, { days: 1, pauseMs: 0 })
-    expect(result.pubsubDeliveries).toBe(2)
+    expect(result.queueDeliveries).toBe(2)
     const left = await db.execute<{ message_id: string }>(dsql`
-      select message_id from pubsub_deliveries where trigger_id = ${trigger!.id} order by message_id`)
+      select message_id from queue_deliveries where trigger_id = ${trigger!.id} order by message_id`)
     expect(left.map((r) => r.message_id)).toEqual(['old-running', 'recent'])
   })
 })

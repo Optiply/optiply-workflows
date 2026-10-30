@@ -71,9 +71,11 @@ describe('/metrics', () => {
       expect(value(text, 'ow_ssh_tunnels_open')).toBe(2)
       expect(value(text, 'ow_ssh_tunnel_reconnects_total')).toBe(5)
       expect(value(text, 'ow_iap_resumes_total')).toBe(3)
-      expect(text).toContain('ow_pubsub_messages_total{outcome="acked"}')
-      expect(value(text, 'ow_pubsub_in_flight')).toBe(0)
-      expect(value(text, 'ow_pubsub_pull_errors_total')).toBe(0)
+      for (const kind of ['pubsub', 'sqs', 'kafka']) {
+        expect(text).toContain(`ow_queue_messages_total{kind="${kind}",outcome="acked"}`)
+        expect(value(text, `ow_queue_in_flight{kind="${kind}"}`)).toBe(0)
+        expect(value(text, `ow_queue_pull_errors_total{kind="${kind}"}`)).toBe(0)
+      }
     } finally {
       Object.assign(sshTunnelStats, before)
     }

@@ -12,15 +12,23 @@ export { InlineRunner, type InlineRunnerOptions } from './inline'
 export { MemoryRunStore, type StoreEvent } from './memory-store'
 export { executeRun } from './orchestrator'
 export { PgRunStore } from './pg-store'
-export {
-  type HeldMessage,
-  PubSubConsumer,
-  type PubSubConsumerOptions,
-  type PubSubLogger,
-  pubsubStats,
-  startDelivery,
-} from './pubsub-consumer'
 export * from './queue'
+export { textOrJson } from './queue-adapters/pubsub'
+export {
+  type AdapterContext,
+  type HeldMessage,
+  QUEUE_KINDS,
+  QUEUE_OUTCOMES,
+  type QueueAdapter,
+  QueueConsumer,
+  type QueueConsumerOptions,
+  type QueueKind,
+  type QueueLogger,
+  type QueueMessage,
+  type QueueOutcome,
+  queueStats,
+  startDelivery,
+} from './queue-consumer'
 export {
   claimMaintenanceJob,
   deleteOldRuns,

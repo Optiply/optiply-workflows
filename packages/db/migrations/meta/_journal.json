@@ -239,6 +239,13 @@
       "when": 1793301305115,
       "tag": "0033_component_libraries",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793348908031,
+      "tag": "0034_queue_triggers",
+      "breakpoints": true
     }
   ]
 }

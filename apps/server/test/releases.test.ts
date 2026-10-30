@@ -668,7 +668,7 @@ describe('Pub/Sub triggers on the worker (M19)', () => {
       ),
     )
     data(await publish(wf))
-    await worker.pubsub.tick()
+    await worker.queues.tick()
     const messageId = pubsub.publish('orders', '{"n": 21}', { kind: 'created' })
 
     await expect.poll(() => pubsub.messages('orders-live')[0]?.acked ?? false, { timeout: 15_000 }).toBe(true)
@@ -695,7 +695,7 @@ describe('Pub/Sub triggers on the worker (M19)', () => {
     })
     expect(block.json().block.data).toEqual({ doubled: 42, kind: 'created' })
 
-    await worker.pubsub.tick()
+    await worker.queues.tick()
     const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id }))
     expect(trigger).toMatchObject({
       kind: 'pubsub',

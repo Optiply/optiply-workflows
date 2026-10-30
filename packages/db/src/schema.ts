@@ -503,10 +503,10 @@ export const workflowReleases = pgTable(
   ],
 )
 
-export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub'] as const
+export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka'] as const
 
-/** A Pub/Sub trigger's runtime state, as its consumer reports it (`workflow_triggers.state`). */
-export interface PubSubTriggerState {
+/** A queue trigger's runtime state (Pub/Sub, SQS, Kafka), as its consumer reports it (`workflow_triggers.state`). */
+export interface QueueTriggerState {
   inFlight: number
   lastMessageAt: string | null
   lastPullAt: string | null
@@ -530,12 +530,12 @@ export const workflowTriggers = pgTable(
       .notNull()
       .references(() => workflowReleases.id, { onDelete: 'cascade' }),
     kind: text({ enum: TRIGGER_KINDS }).notNull(),
-    /** The schedule's or Pub/Sub trigger's name from the definition; `webhook` for the webhook. */
+    /** The schedule's or queue trigger's name from the definition; `webhook` for the webhook. */
     name: text().notNull(),
     enabled: boolean().notNull().default(true),
     /** The trigger's settings from the definition (cron or interval, timezone, overlap). */
     config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
-    /** Schedules and Pub/Sub triggers: the environment their runs start in. */
+    /** Schedules and queue triggers: the environment their runs start in. */
     environmentId: uuid().references(() => environments.id, { onDelete: 'cascade' }),
     /**
      * An enabled webhook's alias with every param as `:` (`orders/:/refunds`). Unique, so two live webhooks can't
@@ -545,14 +545,14 @@ export const workflowTriggers = pgTable(
     nextFireAt: timestamp({ withTimezone: true }),
     /** The fire time of the schedule's latest run; interval schedules keep to its grid. */
     lastFiredAt: timestamp({ withTimezone: true }),
-    /** Pub/Sub triggers (M19): the worker pulling for it now, until its lease lapses (renewed while it pulls). */
+    /** Queue triggers (Pub/Sub, SQS, Kafka): the worker receiving for it now, until its lease lapses (renewed meanwhile). */
     leaseOwner: text(),
     leaseExpiresAt: timestamp({ withTimezone: true }),
     /**
-     * Pub/Sub triggers: what the worker pulling for it last reported (each lease tick), for the editor: messages in
+     * Queue triggers: what the worker receiving for it last reported (each lease tick), for the editor: messages in
      * flight, the last one, the last pull error and when it happened, when a pull last succeeded.
      */
-    state: jsonb().$type<PubSubTriggerState>(),
+    state: jsonb().$type<QueueTriggerState>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -560,7 +560,7 @@ export const workflowTriggers = pgTable(
     uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
     uniqueIndex('workflow_triggers_alias_uq').on(t.aliasShape).where(sql`${t.aliasShape} is not null`),
     index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
-    check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule', 'pubsub')`),
+    check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule', 'pubsub', 'sqs', 'kafka')`),
   ],
 )
 
@@ -609,12 +609,13 @@ export const webhookRejections = pgTable(
 )
 
 /**
- * Pub/Sub messages a trigger has seen (M19, architecture §2.22): how many runs they started (each delivery is one,
- * idempotency key `pubsub:<trigger>:<message>:<n>`), the latest, and how it ended. A redelivery of a message whose run
- * succeeded is acked without a run; one whose run is still going is held, not run again. Retention prunes old ones.
+ * Messages a queue trigger has seen (Pub/Sub M19, SQS and Kafka M26; architecture §2.22, §2.29): how many runs they
+ * started (each delivery is one, idempotency key `<kind>:<trigger>:<message>:<n>`), the latest, and how it ended. A
+ * redelivery of a message whose run succeeded is answered without a run; one whose run is still going is held, not run
+ * again. The message id is Pub/Sub's or SQS's, or Kafka's `<topic>/<partition>/<offset>`. Retention prunes old ones.
  */
-export const pubsubDeliveries = pgTable(
-  'pubsub_deliveries',
+export const queueDeliveries = pgTable(
+  'queue_deliveries',
   {
     triggerId: uuid()
       .notNull()
@@ -622,15 +623,21 @@ export const pubsubDeliveries = pgTable(
     messageId: text().notNull(),
     runs: integer().notNull().default(0),
     lastRunId: uuid().references(() => workflowRuns.id, { onDelete: 'set null' }),
-    /** Null while the latest run is under way; `released` when it was acked past `maxHoldMinutes`. */
-    outcome: text({ enum: ['succeeded', 'failed', 'released'] }),
+    /**
+     * Null while the latest run is under way; `released` when it was acked past `maxHoldMinutes`; Kafka's
+     * `dead_lettered` (sent to the dead-letter topic) and `dropped` (no dead-letter topic) after its last attempt.
+     */
+    outcome: text({ enum: ['succeeded', 'failed', 'released', 'dead_lettered', 'dropped'] }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     primaryKey({ columns: [t.triggerId, t.messageId] }),
-    index('pubsub_deliveries_updated_idx').on(t.updatedAt),
-    check('pubsub_deliveries_outcome_ck', sql`${t.outcome} in ('succeeded', 'failed', 'released')`),
+    index('queue_deliveries_updated_idx').on(t.updatedAt),
+    check(
+      'queue_deliveries_outcome_ck',
+      sql`${t.outcome} in ('succeeded', 'failed', 'released', 'dead_lettered', 'dropped')`,
+    ),
   ],
 )
 
@@ -639,7 +646,16 @@ export const pubsubDeliveries = pgTable(
 /** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
 export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
 /** `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. */
-export const RUN_TRIGGER_TYPES = ['manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git'] as const
+export const RUN_TRIGGER_TYPES = [
+  'manual',
+  'webhook',
+  'schedule',
+  'workflow',
+  'pubsub',
+  'git',
+  'sqs',
+  'kafka',
+] as const
 export const BLOCK_STATUSES = [
   'pending',
   'running',
@@ -744,7 +760,7 @@ export const workflowRuns = pgTable(
     ),
     check(
       'workflow_runs_trigger_type_ck',
-      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git')`,
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka')`,
     ),
     check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
     check(

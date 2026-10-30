@@ -36,7 +36,7 @@ export interface RetentionResult {
   /** Webhook rejections older than 7 days, or beyond the latest 200 of their webhook. */
   rejections: number
   /** Finished Pub/Sub deliveries past Pub/Sub's longest message retention (M19). */
-  pubsubDeliveries: number
+  queueDeliveries: number
   /** The longest single statement, in ms: each one is its own short transaction. */
   longestStatementMs: number
   durationMs: number
@@ -69,7 +69,7 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
     snapshots: 0,
     rateWindows: 0,
     rejections: 0,
-    pubsubDeliveries: 0,
+    queueDeliveries: 0,
     longestStatementMs: 0,
     durationMs: 0,
     stopped: false,
@@ -192,13 +192,13 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
           limit ${chunk})
         returning 1`,
     )
-    // Kept while Pub/Sub could still redeliver the message (31 days at most): a redelivery of one whose run
+    // Kept while Pub/Sub could still redeliver the message (31 days at most; SQS 14 days): a redelivery of one whose run
     // succeeded must still be recognised.
-    result.pubsubDeliveries = await drain(
-      'pubsub_deliveries',
+    result.queueDeliveries = await drain(
+      'queue_deliveries',
       () => sql`
-        delete from pubsub_deliveries where (trigger_id, message_id) in (
-          select trigger_id, message_id from pubsub_deliveries
+        delete from queue_deliveries where (trigger_id, message_id) in (
+          select trigger_id, message_id from queue_deliveries
           where outcome is not null
             and updated_at < ${now}::timestamptz - interval '${sql.raw(String(PUBSUB_DELIVERY_DAYS))} days'
           limit ${chunk})
