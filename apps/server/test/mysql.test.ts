@@ -80,7 +80,11 @@ afterAll(async () => {
 
 describe.skipIf(!available)('MySQL resources', () => {
   it('is offered as a type, saves settings with a write-only password and tests the connection', async () => {
-    expect(data(await admin.query('resources.types'))).toContainEqual({ type: 'mysql', label: 'MySQL' })
+    expect(data(await admin.query('resources.types'))).toContainEqual({
+      type: 'mysql',
+      label: 'MySQL',
+      group: 'Databases',
+    })
     resourceId = data(
       await admin.mutate('resources.create', { type: 'mysql', name: 'Shop', slug: 'shop' }),
     ).id

@@ -326,10 +326,11 @@ function QueryEditor({ query }: { query: AppQuery }) {
                     : {
                         ...q,
                         resource: e.target.value,
+                        // Kept only when both are known and alike; the old resource gone, its shape is unknown.
                         query:
-                          next && resource && queryShape(next.type) !== queryShape(resource.type)
-                            ? (defaultQuery(next.type) as Record<string, JsonValue>)
-                            : q.query,
+                          next && resource && queryShape(next.type) === queryShape(resource.type)
+                            ? q.query
+                            : (defaultQuery(next?.type) as Record<string, JsonValue>),
                       },
                 )
               }}

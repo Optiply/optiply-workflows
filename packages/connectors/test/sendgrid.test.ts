@@ -179,11 +179,30 @@ describe('SendGrid resources', () => {
     }
   })
 
+  it('keep a quoted name with a comma in one address', async () => {
+    await run({
+      action: 'send',
+      from: 'a@example.com',
+      to: '"Doe, John" <john@example.com>, b@example.com',
+      subject: 's',
+      text: 't',
+    })
+    expect(fake.sendgrid.mails.at(-1)?.mail).toMatchObject({
+      personalizations: [
+        { to: [{ email: 'john@example.com', name: 'Doe, John' }, { email: 'b@example.com' }] },
+      ],
+    })
+  })
+
   it('call any /v3 endpoint, and only those', async () => {
     const bounces = await run({ action: 'api', method: 'GET', path: '/v3/suppression/bounces' })
     expect(bounces.data).toEqual([{ email: 'gone@example.com', reason: '550', created: 1700000000 }])
     const away = await failure(run({ action: 'api', method: 'GET', path: '/v2/../v3/x' }))
     expect(away.code).toBe('invalid_query')
+    const encoded = await failure(run({ action: 'api', method: 'GET', path: '/v3/%2e%2e/admin' }))
+    expect(encoded.code).toBe('invalid_query')
+    const getBody = await failure(run({ action: 'api', method: 'GET', path: '/v3/scopes', body: '{}' }))
+    expect(getBody.message).toBe("GET requests can't have a body")
     expect(JSON.stringify(bounces)).not.toContain(fake.sendgrid.key)
   })
 })

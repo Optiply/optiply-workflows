@@ -288,6 +288,8 @@ export const restConnector: Connector<Config, Secrets, Query, HttpClient> = {
       },
       ctx,
     )
+    // A HEAD query answers its status whatever it is (whether a URL exists), as before the HTTP core.
+    if (query.method === 'HEAD') return { data: null, metadata: responseMetadata(res) }
     if (!res.ok) throw httpError(res)
     return { data: res.data, metadata: responseMetadata(res) }
   },
@@ -324,15 +326,7 @@ async function buildUrl(
   query: Query,
   ctx: QueryContext,
 ): Promise<{ url: URL; params: [string, string][] }> {
-  // Untrusted values can't climb out of their segment (`../admin`) or start a query string: each is encoded.
-  const evaluate: QueryContext['evaluate'] = ctx.untrustedValues
-    ? async (code) => {
-        const value = await ctx.evaluate(code)
-        if (value === null || value === undefined) return value
-        return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
-      }
-    : ctx.evaluate
-  const path = (await renderText(query.path, evaluate)).trim()
+  const path = (await renderText(query.path, urlEvaluate(ctx))).trim()
   let url: URL
   if (/^https?:\/\//i.test(path)) {
     url = new URL(path)
@@ -341,9 +335,29 @@ async function buildUrl(
     url = new URL(path ? `${base}/${path.replace(/^\/+/, '')}` : base)
   }
   checkHost(client, url)
-  const params: [string, string][] = []
-  for (const { key, value } of query.params) {
-    if (key) params.push([key, await renderText(value, ctx.evaluate)])
+  return { url, params: await renderParams(query.params, ctx) }
+}
+
+/**
+ * How a URL's `{{ }}` are evaluated: as they are, or for an app's viewer (`untrustedValues`) each encoded as one
+ * segment, so a value can't climb out of its segment (`../admin`) or start a query string. REST and the built-in REST
+ * API both build URLs with it.
+ */
+export function urlEvaluate(ctx: QueryContext): QueryContext['evaluate'] {
+  if (!ctx.untrustedValues) return ctx.evaluate
+  return async (code) => {
+    const value = await ctx.evaluate(code)
+    if (value === null || value === undefined) return value
+    return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
   }
-  return { url, params }
+}
+
+/** A query's parameters, rendered (empty names left out). */
+export async function renderParams(
+  params: readonly { key: string; value: string }[],
+  ctx: QueryContext,
+): Promise<[string, string][]> {
+  const out: [string, string][] = []
+  for (const { key, value } of params) if (key) out.push([key, await renderText(value, ctx.evaluate)])
+  return out
 }

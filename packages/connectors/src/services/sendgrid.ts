@@ -5,6 +5,8 @@ import { type Connector, ConnectorError, type CredentialSource, type QueryResult
 import {
   type ActionQuery,
   actionQuerySchema,
+  answer,
+  apiCall,
   call,
   fieldReader,
   fileOf,
@@ -58,6 +60,31 @@ function address(text: string, field: string): { email: string; name?: string } 
   return name ? { email, name } : { email }
 }
 
+/**
+ * A recipients field: an array (`{{ }}`), or text split on commas and new lines outside quotes and angle brackets, so
+ * `"Doe, John" <john@example.com>` stays one address.
+ */
+async function recipients(f: ReturnType<typeof fieldReader>, key: string): Promise<string[]> {
+  const value = await f.value(key)
+  if (value === undefined || value === null || value === '') return []
+  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter(Boolean)
+  const out: string[] = []
+  let current = ''
+  let quoted = false
+  let angled = false
+  for (const ch of String(value)) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === '<' && !quoted) angled = true
+    else if (ch === '>' && !quoted) angled = false
+    if ((ch === ',' || ch === '\n') && !quoted && !angled) {
+      out.push(current)
+      current = ''
+    } else current += ch
+  }
+  out.push(current)
+  return out.map((s) => s.trim()).filter(Boolean)
+}
+
 /** Seconds since 1970, from a number or a date. */
 function sendAt(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
@@ -96,32 +123,15 @@ export const sendgridConnector: Connector<Config, ServiceSecrets, ActionQuery, H
   async execute(client, query, ctx): Promise<QueryResult> {
     const f = fieldReader('sendgrid', query, ctx)
     if (query.action === 'api') {
-      const path = await f.required('path')
-      if (!path.startsWith('/v3/') || path.includes('..')) {
-        throw new ConnectorError('invalid_query', 'The path starts with /v3/ and stays under the API')
-      }
-      const params = await f.object('query')
-      const body = await f.json('body')
-      const res = await sendgrid(
-        client,
-        {
-          method: (await f.text('method')) ?? 'GET',
-          path,
-          ...(params && {
-            query: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-          }),
-          ...(body !== undefined && { json: body }),
-        },
-        ctx,
-      )
-      return { data: res.data, metadata: responseMetadata(res) }
+      const res = await sendgrid(client, await apiCall(f, '/v3/', 'the API'), ctx)
+      return answer(res.data, res)
     }
     if (query.action !== 'send') throw new ConnectorError('invalid_query', `Unknown action "${query.action}"`)
 
-    const to = (await f.list('to')).map((a) => address(a, 'To'))
+    const to = (await recipients(f, 'to')).map((a) => address(a, 'To'))
     if (to.length === 0) throw new ConnectorError('invalid_query', 'To is empty')
-    const cc = (await f.list('cc')).map((a) => address(a, 'Cc'))
-    const bcc = (await f.list('bcc')).map((a) => address(a, 'Bcc'))
+    const cc = (await recipients(f, 'cc')).map((a) => address(a, 'Cc'))
+    const bcc = (await recipients(f, 'bcc')).map((a) => address(a, 'Bcc'))
     const templateId = await f.text('templateId')
     const templateData = await f.object('templateData')
     const text = await f.text('text')

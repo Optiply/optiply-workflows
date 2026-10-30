@@ -1,12 +1,13 @@
 import { parseTemplate, renderJson, renderTemplate, renderText, TemplateError } from '@ow/expressions'
 import type { FormData } from 'undici'
 import { z } from 'zod'
-import { type HttpClient, type HttpResponse, httpRequest } from '../http-core'
+import { fileValue, type HttpClient, type HttpResponse, httpRequest } from '../http-core'
 import type { OAuthProviderPreset } from '../oauth-presets'
 import {
   type RestAuth,
   type RestConfig,
   type RestSecrets,
+  responseMetadata,
   restConfigSchema,
   restSecretsSchema,
 } from '../rest'
@@ -231,16 +232,17 @@ export async function call(
   if (res.status !== 429) return res
   const wait = Number(res.headers['retry-after'] ?? '1')
   if (!(wait >= 0 && wait <= 30)) return res
+  ctx.signal.throwIfAborted()
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, wait * 1000)
-    ctx.signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        reject(ctx.signal.reason)
-      },
-      { once: true },
-    )
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(ctx.signal.reason)
+    }
+    const timer = setTimeout(() => {
+      ctx.signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, wait * 1000)
+    ctx.signal.addEventListener('abort', onAbort, { once: true })
   })
   return send()
 }
@@ -256,23 +258,55 @@ export function limitOf(max: number | undefined, cap = 10_000, fallback = 1000):
   return Math.max(1, Math.min(cap, Math.floor(max)))
 }
 
-/** A file from base64 text or a webhook's file object (`{ base64, filename?, contentType? }`). */
+/** A file from base64 text or a webhook's file object (`fileValue`), or the query's error naming the field. */
 export function fileOf(
   value: unknown,
   what: string,
 ): { bytes: Buffer; filename?: string; contentType?: string } {
-  const object = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
-  const base64 = typeof value === 'string' ? value : object?.base64
-  const text = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : null
-  if (text === null || !/^[A-Za-z0-9+/_-]*={0,2}$/.test(text)) {
+  const file = fileValue(value)
+  if (!file) {
     throw new ConnectorError(
       'invalid_query',
       `${what} needs base64 text or a file object ({ base64, filename, contentType })`,
     )
   }
-  return {
-    bytes: Buffer.from(text, 'base64'),
-    ...(typeof object?.filename === 'string' && { filename: object.filename }),
-    ...(typeof object?.contentType === 'string' && { contentType: object.contentType }),
+  return file
+}
+
+type FieldReader = ReturnType<typeof fieldReader>
+
+/**
+ * A service's "Call any …" action (HubSpot, SendGrid, Google Sheets): a method, a path under `prefix` that can't
+ * climb out of it (`..`, encoded or not), parameters and a JSON body.
+ */
+export async function apiCall(f: FieldReader, prefix: string, where: string): Promise<ServiceCall> {
+  const path = await f.required('path')
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(path)
+  } catch {
+    decoded = path
   }
+  if (!path.startsWith(prefix) || decoded.includes('..') || decoded.includes('\\') || /^\/\//.test(path)) {
+    throw new ConnectorError('invalid_query', `The path starts with ${prefix} and stays under ${where}`)
+  }
+  const method = ((await f.text('method')) ?? 'GET').toUpperCase()
+  if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    throw new ConnectorError('invalid_query', `"${method}" isn't a method this action sends`)
+  }
+  const params = await f.object('query')
+  const body = await f.json('body')
+  if (body !== undefined && method === 'GET')
+    throw new ConnectorError('invalid_query', "GET requests can't have a body")
+  return {
+    method,
+    path,
+    ...(params && { query: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) }),
+    ...(body !== undefined && { json: body }),
+  }
+}
+
+/** A service query's result: the data, and the response's metadata with anything the action adds. */
+export function answer(data: unknown, res: HttpResponse, extra: Record<string, unknown> = {}) {
+  return { data, metadata: { ...responseMetadata(res), ...extra } }
 }

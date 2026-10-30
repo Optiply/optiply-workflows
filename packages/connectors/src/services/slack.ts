@@ -7,6 +7,7 @@ import { type Connector, ConnectorError, type CredentialSource, type QueryResult
 import {
   type ActionQuery,
   actionQuerySchema,
+  answer,
   call,
   fieldReader,
   fileOf,
@@ -145,10 +146,7 @@ export const slackConnector: Connector<Config, ServiceSecrets, ActionQuery, Http
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const f = fieldReader('slack', query, ctx)
-    const done = (data: unknown, res: HttpResponse, extra: Record<string, unknown> = {}) => ({
-      data,
-      metadata: { ...responseMetadata(res), ...extra },
-    })
+    const done = answer
     switch (query.action) {
       case 'postMessage': {
         const text = await f.text('text')

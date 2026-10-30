@@ -34,6 +34,8 @@ beforeAll(async () => {
         query: url.search,
         headers: req.headers,
         body,
+        // What arrived, without echoing it (the connector redacts its own credentials from results).
+        bearerOk: req.headers.authorization === 'Bearer tok-123',
       }),
     )
   })
@@ -120,7 +122,8 @@ describe('the built-in REST API resource', () => {
     expect(posted.data.method).toBe('POST')
     expect(posted.data.path).toBe('/orders/7')
     expect(posted.data.query).toBe('?expand=lines')
-    expect(posted.data.headers.authorization).toBe('Bearer tok-123')
+    expect(posted.data).toMatchObject({ bearerOk: true })
+    expect(posted.data.headers.authorization).toBe('Bearer [REDACTED]')
     expect(posted.data.headers['x-trace']).toBe('t1')
     expect(JSON.parse(posted.data.body)).toEqual({ qty: 3 })
 
@@ -130,7 +133,7 @@ describe('the built-in REST API resource', () => {
     })) as {
       data: { headers: Record<string, string> }
     }
-    expect(basic.data.headers.authorization).toBe(`Basic ${Buffer.from('u:p').toString('base64')}`)
+    expect(basic.data.headers.authorization).toBe('Basic [REDACTED]')
 
     const keyed = (await run({
       url: `${origin}/k`,
@@ -189,6 +192,31 @@ describe('the built-in REST API resource', () => {
     }
     expect(ok.data.path).toBe('/files/..%2Fadmin%3Fx%3D1')
     expect(ok.data.query).toBe('')
+  })
+
+  it('keeps its own credentials out of what comes back, an API key in the URL included', async () => {
+    configureRestApi({ privateHosts: ['127.0.0.1'] })
+    const out = await runQuery(
+      pool,
+      restApiConnector,
+      builtIn('f'),
+      { url: `${origin}/k`, auth: { type: 'apiKey', in: 'query', name: 'api_key', value: '{{ key }}' } },
+      { evaluate: scopeEvaluator({ key: 'Secret-Key-77' }) },
+    )
+    expect(JSON.stringify(out)).not.toContain('Secret-Key-77')
+    expect(String(out.metadata.url)).toContain('api_key=')
+    const failed = await failure(
+      runQuery(
+        pool,
+        restApiConnector,
+        builtIn('f'),
+        { url: `${origin}/fail`, auth: { type: 'bearer', token: 'Bearer-Secret-88' } },
+        { evaluate: scopeEvaluator({}) },
+      ),
+    )
+    expect(JSON.stringify({ message: failed.message, details: failed.details })).not.toContain(
+      'Bearer-Secret-88',
+    )
   })
 
   it('flags template errors and a GET with a body', () => {

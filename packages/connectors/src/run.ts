@@ -38,9 +38,10 @@ const DEFAULT_TIMEOUT_MS = 120_000
  */
 export const queryStats = new Map<string, number>()
 
-function countQuery(type: string, rawQuery: unknown, outcome: string): void {
-  const action = (rawQuery as { action?: unknown } | null)?.action
-  const key = `${type}\t${typeof action === 'string' ? action.slice(0, 40) : ''}\t${outcome}`
+/** Counted by the parsed query's action (a service's are an enum), so a query that doesn't parse adds no labels. */
+function countQuery(type: string, query: unknown, outcome: string): void {
+  const action = (query as { action?: unknown } | null | undefined)?.action
+  const key = `${type}\t${typeof action === 'string' ? action : ''}\t${outcome}`
   queryStats.set(key, (queryStats.get(key) ?? 0) + 1)
 }
 
@@ -56,8 +57,9 @@ export async function runQuery(
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
 
+  let query: unknown
   try {
-    const query = parseQuery(connector, rawQuery)
+    query = parseQuery(connector, rawQuery)
     const result = await pool.withClient(connector, resource, (client) =>
       connector.execute(client, query, {
         evaluate: wrapEvaluate(opts.evaluate),
@@ -68,7 +70,7 @@ export async function runQuery(
         ...(credentials && { credentials }),
       }),
     )
-    countQuery(connector.type, rawQuery, 'ok')
+    countQuery(connector.type, query, 'ok')
     return {
       data: connector.scrubResultData ? scrubSecretsDeep(result.data, secrets) : result.data,
       metadata: scrubSecretsDeep(result.metadata, secrets),
@@ -80,7 +82,7 @@ export async function runQuery(
       aborted: signal.aborted,
       secrets,
     })
-    countQuery(connector.type, rawQuery, error instanceof ConnectorError ? error.code : 'error')
+    countQuery(connector.type, query, error instanceof ConnectorError ? error.code : 'error')
     throw error
   }
 }

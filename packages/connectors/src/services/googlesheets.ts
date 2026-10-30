@@ -14,6 +14,8 @@ import { type Connector, ConnectorError, type CredentialSource, type QueryResult
 import {
   type ActionQuery,
   actionQuerySchema,
+  answer,
+  apiCall,
   call,
   fieldReader,
   type ServiceCall,
@@ -303,12 +305,12 @@ export const googleSheetsConnector: Connector<Config, Secrets, ActionQuery, Shee
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const f = fieldReader('googlesheets', query, ctx)
-    const done = (data: unknown, res: HttpResponse, extra: Record<string, unknown> = {}) => ({
-      data,
-      metadata: { ...responseMetadata(res), ...extra },
-    })
+    const done = answer
     const id = async () => spreadsheetId(await f.required('spreadsheet'))
     /** The range given, or the first sheet's name. */
+    /** The sheet a range names, or (a bare cell range, or none) the spreadsheet's first sheet. */
+    const sheetFor = async (sid: string, range: string | undefined) =>
+      (range && sheetOf(range)) ?? (await info(client, sid, ctx)).sheets[0]?.title ?? 'Sheet1'
     const rangeOr = async (sid: string) =>
       (await f.text('range')) ?? quoteSheet((await info(client, sid, ctx)).sheets[0]?.title ?? 'Sheet1')
     const valueInput = async () => {
@@ -350,14 +352,8 @@ export const googleSheetsConnector: Connector<Config, Secrets, ActionQuery, Shee
         const rows = await rowsOf()
         let table: unknown[][]
         if (rows.every(isObjectRow)) {
-          const sheet = sheetOf(range)
-          const { rows: head } = await values(
-            client,
-            sid,
-            `${quoteSheet(sheet ?? 'Sheet1')}!1:1`,
-            'FORMATTED_VALUE',
-            ctx,
-          )
+          const sheet = await sheetFor(sid, range)
+          const { rows: head } = await values(client, sid, `${quoteSheet(sheet)}!1:1`, 'FORMATTED_VALUE', ctx)
           const headers = headerNames(head[0] ?? [])
           const unknown = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter(
             (k) => !headers.includes(k),
@@ -420,7 +416,7 @@ export const googleSheetsConnector: Connector<Config, Secrets, ActionQuery, Shee
         }
         if (!rows.every(isObjectRow))
           throw new ConnectorError('invalid_query', 'With a key column, rows are objects')
-        const sheet = sheetOf(await rangeOr(sid)) ?? 'Sheet1'
+        const sheet = await sheetFor(sid, await f.text('range'))
         const { rows: table } = await values(client, sid, quoteSheet(sheet), 'FORMATTED_VALUE', ctx)
         const headers = headerNames(table[0] ?? [])
         const key = headers.indexOf(keyColumn)
@@ -539,24 +535,7 @@ export const googleSheetsConnector: Connector<Config, Secrets, ActionQuery, Shee
         )
       }
       case 'api': {
-        const path = await f.required('path')
-        if (!path.startsWith('/') || path.includes('..')) {
-          throw new ConnectorError('invalid_query', 'The path starts with / and stays under the Sheets API')
-        }
-        const params = await f.object('query')
-        const body = await f.json('body')
-        const res = await sheets(
-          client,
-          {
-            method: (await f.text('method')) ?? 'GET',
-            path,
-            ...(params && {
-              query: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-            }),
-            ...(body !== undefined && { json: body }),
-          },
-          ctx,
-        )
+        const res = await sheets(client, await apiCall(f, '/', 'the Sheets API'), ctx)
         return done(res.data, res)
       }
     }

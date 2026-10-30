@@ -1,3 +1,4 @@
+import { scrubSecrets, scrubSecretsDeep } from '@ow/crypto'
 import { parseTemplate, renderText, TemplateError } from '@ow/expressions'
 import { z } from 'zod'
 import {
@@ -11,11 +12,13 @@ import {
 import {
   type RestConfig,
   renderHeaders,
+  renderParams,
   responseMetadata,
   restConfigSchema,
   restQuerySchema,
   restQueryTemplates,
   restSecretsSchema,
+  urlEvaluate,
 } from './rest'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
 
@@ -114,21 +117,25 @@ export const restApiConnector: Connector<Record<string, never>, Record<string, n
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const url = await buildUrl(query.url, ctx)
-    const params: [string, string][] = []
-    for (const { key, value } of query.params) {
-      if (key) params.push([key, await renderText(value, ctx.evaluate)])
-    }
+    const params = await renderParams(query.params, ctx)
     const headers = await renderHeaders(query, ctx)
     const sensitive: string[] = []
+    // The request's own credentials: kept out of what comes back (a resource's secrets are scrubbed by `runQuery`;
+    // these aren't the resource's), e.g. an API key in the URL `metadata.url` reports.
+    const credentials: string[] = []
     const auth = query.auth
     if (auth.type === 'bearer') {
-      headers.push(['authorization', `Bearer ${await renderText(auth.token, ctx.evaluate)}`])
+      const token = await renderText(auth.token, ctx.evaluate)
+      headers.push(['authorization', `Bearer ${token}`])
       sensitive.push('authorization')
+      credentials.push(token)
     } else if (auth.type === 'basic') {
       const user = await renderText(auth.username, ctx.evaluate)
       const password = await renderText(auth.password, ctx.evaluate)
-      headers.push(['authorization', `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`])
+      const basic = Buffer.from(`${user}:${password}`).toString('base64')
+      headers.push(['authorization', `Basic ${basic}`])
       sensitive.push('authorization')
+      credentials.push(password, basic)
     } else if (auth.type === 'apiKey') {
       const name = (await renderText(auth.name, ctx.evaluate)).trim()
       if (!name) throw new ConnectorError('invalid_query', 'Name the API key’s header or parameter')
@@ -138,14 +145,31 @@ export const restApiConnector: Connector<Record<string, never>, Record<string, n
         headers.push([name, value])
         sensitive.push(name)
       }
+      credentials.push(
+        value,
+        encodeURIComponent(value),
+        new URLSearchParams({ k: value }).toString().slice(2),
+      )
     }
-    const res = await httpRequest(
-      client,
-      { method: query.method, url, params, headers, sensitive, ...(await buildBody(query, ctx)) },
-      ctx,
-    )
-    if (!res.ok) throw httpError(res)
-    return { data: res.data, metadata: responseMetadata(res) }
+    const secrets = credentials.filter((c) => c.length >= 4)
+    try {
+      const res = await httpRequest(
+        client,
+        { method: query.method, url, params, headers, sensitive, ...(await buildBody(query, ctx)) },
+        ctx,
+      )
+      if (query.method === 'HEAD')
+        return scrubSecretsDeep({ data: null, metadata: responseMetadata(res) }, secrets)
+      if (!res.ok) throw httpError(res)
+      return scrubSecretsDeep({ data: res.data, metadata: responseMetadata(res) }, secrets) as QueryResult
+    } catch (err) {
+      if (!(err instanceof ConnectorError)) throw err
+      throw new ConnectorError(
+        err.code,
+        scrubSecrets(err.message, secrets),
+        err.details && (scrubSecretsDeep(err.details, secrets) as Record<string, unknown>),
+      )
+    }
   },
 }
 
@@ -163,14 +187,7 @@ async function buildUrl(template: string, ctx: QueryContext): Promise<URL> {
       )
     }
   }
-  const evaluate: QueryContext['evaluate'] = ctx.untrustedValues
-    ? async (code) => {
-        const value = await ctx.evaluate(code)
-        if (value === null || value === undefined) return value
-        return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
-      }
-    : ctx.evaluate
-  const text = (await renderText(template, evaluate)).trim()
+  const text = (await renderText(template, urlEvaluate(ctx))).trim()
   if (!/^https?:\/\//i.test(text)) {
     throw new ConnectorError('invalid_query', 'Enter a full URL, starting with https:// or http://')
   }

@@ -6,6 +6,8 @@ import { type Connector, ConnectorError, type CredentialSource, type QueryResult
 import {
   type ActionQuery,
   actionQuerySchema,
+  answer,
+  apiCall,
   call,
   fieldReader,
   limitOf,
@@ -142,10 +144,7 @@ export const hubspotConnector: Connector<Config, ServiceSecrets, ActionQuery, Ht
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const f = fieldReader('hubspot', query, ctx)
-    const done = (data: unknown, res: HttpResponse, extra: Record<string, unknown> = {}) => ({
-      data,
-      metadata: { ...responseMetadata(res), ...extra },
-    })
+    const done = answer
     const objects = async (key = 'objectType') =>
       `/crm/v3/objects/${segment(objectType(await f.required(key)))}`
     const idQuery = async () => {
@@ -286,24 +285,7 @@ export const hubspotConnector: Connector<Config, ServiceSecrets, ActionQuery, Ht
         return done(res.data, res)
       }
       case 'api': {
-        const path = await f.required('path')
-        if (!path.startsWith('/') || path.includes('..')) {
-          throw new ConnectorError('invalid_query', 'The path starts with / and stays under api.hubapi.com')
-        }
-        const params = await f.object('query')
-        const body = await f.json('body')
-        const res = await hubspot(
-          client,
-          {
-            method: (await f.text('method')) ?? 'GET',
-            path,
-            ...(params && {
-              query: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-            }),
-            ...(body !== undefined && { json: body }),
-          },
-          ctx,
-        )
+        const res = await hubspot(client, await apiCall(f, '/', 'api.hubapi.com'), ctx)
         return done(res.data, res)
       }
     }

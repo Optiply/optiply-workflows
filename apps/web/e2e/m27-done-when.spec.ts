@@ -42,7 +42,12 @@ async function production(page: Page): Promise<string> {
 }
 
 async function resourceOf(page: Page, type: string, slug: string, config: unknown, secrets: unknown) {
-  const created = await trpcMutate<{ id: string }>(page, 'resources.create', { type, name: slug, slug })
+  // Named to sort after the setup's Shop DB: new query blocks in other specs take the first resource.
+  const created = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type,
+    name: `Test ${slug}`,
+    slug,
+  })
   await trpcMutate(page, 'resources.saveConfig', {
     resourceId: created.id,
     environmentId: await production(page),

@@ -130,7 +130,8 @@ export async function httpRequest(
     ok: res.ok,
     headers: Object.fromEntries(res.headers),
     url: res.url || request.url.toString(),
-    durationMs: 0,
+    // Time to the response's headers, as REST queries have always reported it.
+    durationMs: Math.round(performance.now() - started),
     data: null as unknown,
   }
   if (request.method === 'HEAD') {
@@ -143,7 +144,6 @@ export async function httpRequest(
     response.data = decoded.value
     if (decoded.base64) Object.assign(response, { base64: true })
   }
-  response.durationMs = Math.round(performance.now() - started)
   return response
 }
 
@@ -219,24 +219,32 @@ export async function buildBody(
 const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
 
 /** A file part's value: base64 text, or a webhook's file object (`{ base64, filename?, contentType? }`). */
-export function multipartFile(
-  key: string,
-  value: unknown,
-): { bytes: Buffer; filename?: string; contentType?: string } {
+/** A file value: base64 text, or a webhook's file object (`{ base64, filename?, contentType? }`); null otherwise. */
+export function fileValue(value: unknown): { bytes: Buffer; filename?: string; contentType?: string } | null {
   const object = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
   const base64 = typeof value === 'string' ? value : object?.base64
   const text = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : null
-  if (text === null || !BASE64.test(text)) {
-    throw new ConnectorError(
-      'query',
-      `File part "${key}" needs base64 text or a file object ({ base64, filename, contentType }), like a webhook's upload`,
-    )
-  }
+  if (text === null || !BASE64.test(text)) return null
   return {
     bytes: Buffer.from(text, 'base64'),
     ...(typeof object?.filename === 'string' && { filename: object.filename }),
     ...(typeof object?.contentType === 'string' && { contentType: object.contentType }),
   }
+}
+
+/** A multipart file part's value (`fileValue`), or the query's error. */
+export function multipartFile(
+  key: string,
+  value: unknown,
+): { bytes: Buffer; filename?: string; contentType?: string } {
+  const file = fileValue(value)
+  if (!file) {
+    throw new ConnectorError(
+      'query',
+      `File part "${key}" needs base64 text or a file object ({ base64, filename, contentType }), like a webhook's upload`,
+    )
+  }
+  return file
 }
 
 /**

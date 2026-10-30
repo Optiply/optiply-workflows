@@ -100,7 +100,12 @@ test('the built-in REST API resource: no settings, a full URL and its own auth',
   await page.getByRole('button', { name: 'Run' }).click()
   await expect(page.getByText('Success')).toBeVisible()
   await expect(page.getByText('/_fake/echo/orders/7')).toBeVisible()
-  await expect(page.getByText('Bearer tok-7')).toBeVisible()
+  // The request's own token reached the API, and isn't shown back (an echoing API's answer is redacted).
+  await expect(page.getByText('Bearer [REDACTED]')).toBeVisible()
+  const state = (await (await fetch(`${services}/_fake/state`)).json()) as {
+    calls: { path: string; authorization: string | null }[]
+  }
+  expect(state.calls.findLast((c) => c.path === '/_fake/echo/orders/7')?.authorization).toBe('Bearer tok-7')
 })
 
 test('a HubSpot query in the workflow inspector, and a GraphQL query in the app editor', async ({ page }) => {
@@ -109,7 +114,8 @@ test('a HubSpot query in the workflow inspector, and a GraphQL query in the app 
   const prod = await production(page)
   const crm = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'hubspot',
-    name: 'CRM',
+    // Named to sort after the setup's Shop DB: new query blocks in other specs take the first resource.
+    name: 'Test CRM',
     slug: `crm_${stamp}`,
   })
   await trpcMutate(page, 'resources.saveConfig', {
@@ -120,7 +126,7 @@ test('a HubSpot query in the workflow inspector, and a GraphQL query in the app 
   })
   const shop = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'graphql',
-    name: 'Shop',
+    name: 'Test shop',
     slug: `shop_${stamp}`,
   })
   await trpcMutate(page, 'resources.saveConfig', {
@@ -154,8 +160,11 @@ test('a HubSpot query in the workflow inspector, and a GraphQL query in the app 
     await page.goto(`/workflows/${flow.id}`)
     await block(page, 'find').click()
     await expect(page.getByTestId('request-auth')).toBeVisible()
-    await page.getByRole('combobox', { name: 'Resource' }).selectOption(`crm_${stamp}`)
-    await expect(page.getByTestId('action-query-hubspot')).toBeVisible()
+    // Right after the editor opens, its shared document may still replace the draft: pick again until it holds.
+    await expect(async () => {
+      await page.getByRole('combobox', { name: 'Resource' }).selectOption(`crm_${stamp}`)
+      await expect(page.getByTestId('action-query-hubspot')).toBeVisible({ timeout: 2000 })
+    }).toPass()
     await expect(page.getByTestId('query-action')).toHaveValue('search')
     await page.getByTestId('query-action').selectOption('create')
     await expect(page.getByTestId('query-field-objectType')).toHaveValue('contacts')
@@ -189,7 +198,7 @@ test('the GraphQL editor completes fields from the schema and marks unknown ones
   const prod = await production(page)
   const shop = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'graphql',
-    name: 'Shop',
+    name: 'Test shop',
     slug: `gql_${stamp}`,
   })
   await trpcMutate(page, 'resources.saveConfig', {
