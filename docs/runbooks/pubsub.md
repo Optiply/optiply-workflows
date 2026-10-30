@@ -77,7 +77,7 @@ Publishing from a workflow: a resource query on the Pub/Sub resource, with the t
 
 ## When it fails
 
-The trigger card shows the last error; the same goes to the worker's log (`component: pubsub`).
+The trigger card shows the last error; the same goes to the worker's log (`component: queue`, since M26).
 
 | It says | What to do |
 |---|---|
@@ -93,16 +93,17 @@ on the next try. Messages aren't lost meanwhile: Pub/Sub keeps them (7 days by d
 
 ## Watching it
 
-- Metrics (`/metrics` of each worker): `ow_pubsub_messages_total{outcome}` (`acked`, `nacked`, `duplicate`,
-  `released` past the hold), `ow_pubsub_in_flight`, `ow_pubsub_pull_errors_total`. Many nacks: runs failing; many
-  `released`: runs longer than "Hold up to".
-- Log lines (`component: pubsub`): `pubsub trigger leased` (info), `pubsub pull failed` (warn, with Pub/Sub's message),
+- Metrics (`/metrics` of each worker), with `kind="pubsub"` (M26 renamed them from `ow_pubsub_*` when SQS and Kafka
+  joined): `ow_queue_messages_total{kind,outcome}` (`acked`, `nacked`, `duplicate`, `released` past the hold),
+  `ow_queue_in_flight{kind}`, `ow_queue_pull_errors_total{kind}`. Many nacks: runs failing; many `released`: runs
+  longer than "Hold up to".
+- Log lines (`component: queue`): `pubsub trigger leased` (info), `pubsub pull failed` (warn, with Pub/Sub's message),
   `pubsub message nacked: its run failed`, `pubsub message held past maxHoldMinutes: acked, its run goes on`.
-- The delivery records (`pubsub_deliveries`) are kept 32 days (Pub/Sub keeps an unacked message 31 days at most), then
+- The delivery records (`queue_deliveries`, shared with SQS and Kafka since M26) are kept 32 days (Pub/Sub keeps an unacked message 31 days at most), then
   pruned by retention.
 
 ## Not supported
 
-Push subscriptions; SQS and Kafka (later, as more kinds of the same trigger); Pub/Sub's exactly-once delivery
+Push subscriptions (SQS and Kafka are their own triggers: `docs/runbooks/sqs.md`, `docs/runbooks/kafka.md`); Pub/Sub's exactly-once delivery
 subscriptions (our duplicate check covers acked messages); several messages per run; several workers sharing one
 trigger's messages (one pulls at a time).

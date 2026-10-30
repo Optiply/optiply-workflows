@@ -1,0 +1,24 @@
+# Optional (M26): lets SQS resources and Kafka's MSK IAM use this server's own AWS credentials, taken from the host's
+# ~/.aws (mounted read-only; `aws configure` or `aws sso login`; AWS_PROFILE picks a profile). Only admins can choose
+# those credentials for a resource (docs/runbooks/sqs.md).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d
+#
+# or, to keep it for every docker compose command, in .env (with others, separated by colons):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.aws.yml
+#
+# On AWS (ECS, EC2, EKS), leave the file out: the task or instance role is found without a mount (set only
+# AWS_SERVER_IDENTITY=allow).
+x-aws-identity: &aws-identity
+  environment:
+    AWS_SERVER_IDENTITY: allow
+    AWS_PROFILE: ${AWS_PROFILE:-default}
+  volumes:
+    # The image runs as `node`: the SDK reads ~/.aws there, its SSO token cache (sso/cache) included. Read-only, so an
+    # expired SSO login is renewed on the host (`aws sso login`).
+    - ${AWS_DIR:-${HOME}/.aws}:/home/node/.aws:ro
+
+services:
+  api: *aws-identity
+  worker: *aws-identity
