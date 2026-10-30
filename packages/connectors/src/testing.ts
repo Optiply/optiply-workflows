@@ -113,7 +113,12 @@ export {
   type FakeSubscriptionSettings,
   startFakePubSub,
 } from './pubsub/fake'
-export { type FakeServices, type FakeSlack, startFakeServices } from './services/fake'
+export {
+  type FakeHubSpot,
+  type FakeServices,
+  type FakeSlack,
+  startFakeServices,
+} from './services/fake'
 export {
   startTestIapServer,
   startTestSshServer,
