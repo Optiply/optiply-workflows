@@ -246,3 +246,127 @@ describe('Pub/Sub triggers (M19)', () => {
     expect(codes).toMatchObject([{ code: 'schema', path: ['triggers', 'pubsub', 0, 'maxInFlight'] }])
   })
 })
+
+describe('SQS and Kafka triggers (M26)', () => {
+  const resources: Record<string, { type: string }> = {
+    queue: { type: 'sqs' },
+    cluster: { type: 'kafka' },
+    events: { type: 'pubsub' },
+  }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a queue by name or URL, and topics with a group, retries and a dead-letter topic', () => {
+    expect(
+      check({
+        sqs: [
+          { name: 'orders', enabled: true, resource: 'queue', queue: 'orders.fifo', maxHoldMinutes: 720 },
+          {
+            name: 'other',
+            enabled: true,
+            resource: 'queue',
+            queue: 'https://sqs.eu-west-1.amazonaws.com/123456789012/other',
+          },
+        ],
+        kafka: [
+          {
+            name: 'orders',
+            enabled: true,
+            resource: 'cluster',
+            topics: ['orders', 'orders.v2'],
+            groupId: 'billing',
+            startAt: 'earliest',
+            maxAttempts: 5,
+            retryBackoffSeconds: 30,
+            deadLetterTopic: 'orders.dlt',
+          },
+        ],
+      }),
+    ).toEqual([])
+  })
+
+  it('refuses duplicates, resources of another kind, a bad queue, bad topics and a dead-letter topic it reads', () => {
+    expect(
+      check({
+        sqs: [
+          { name: 'a', enabled: true, resource: 'queue', queue: 'ok' },
+          { name: 'a', enabled: true, resource: 'events', queue: 'has space' },
+        ],
+        kafka: [
+          {
+            name: 'k',
+            enabled: true,
+            resource: 'queue',
+            topics: ['ok', 'ok', 'bad topic', '..'],
+            groupId: ' padded',
+            deadLetterTopic: 'ok',
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        code: 'duplicate_sqs',
+        message: 'Another SQS trigger is already named "a"',
+        path: ['triggers', 'sqs', 1, 'name'],
+      },
+      {
+        code: 'invalid_sqs',
+        message: 'SQS trigger "a": "events" isn\'t an SQS resource',
+        path: ['triggers', 'sqs', 1, 'resource'],
+      },
+      {
+        code: 'invalid_sqs',
+        message: 'SQS trigger "a": "has space" isn\'t a queue name or URL',
+        path: ['triggers', 'sqs', 1, 'queue'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": "queue" isn\'t a Kafka resource',
+        path: ['triggers', 'kafka', 0, 'resource'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": "bad topic" isn\'t a topic name',
+        path: ['triggers', 'kafka', 0, 'topics', 2],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": ".." isn\'t a topic name',
+        path: ['triggers', 'kafka', 0, 'topics', 3],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k" names a topic twice',
+        path: ['triggers', 'kafka', 0, 'topics'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": the group id can\'t start or end with a space',
+        path: ['triggers', 'kafka', 0, 'groupId'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": the dead-letter topic can\'t be one it reads',
+        path: ['triggers', 'kafka', 0, 'deadLetterTopic'],
+      },
+    ])
+  })
+
+  it('bounds the limits in the schema: SQS holds at most 12 hours, Kafka at most 20 attempts', () => {
+    expect(
+      check({
+        sqs: [{ name: 'a', enabled: true, resource: 'queue', queue: 'q', maxHoldMinutes: 721 }],
+        kafka: [{ name: 'b', enabled: true, resource: 'cluster', topics: ['t'], maxAttempts: 21 }],
+      }),
+    ).toMatchObject([
+      { code: 'schema', path: ['triggers', 'sqs', 0, 'maxHoldMinutes'] },
+      { code: 'schema', path: ['triggers', 'kafka', 0, 'maxAttempts'] },
+    ])
+    expect(check({ kafka: [{ name: 'b', enabled: true, resource: 'cluster', topics: [] }] })).toMatchObject([
+      { code: 'schema', path: ['triggers', 'kafka', 0, 'topics'] },
+    ])
+  })
+})

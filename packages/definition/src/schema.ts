@@ -516,10 +516,67 @@ export const pubsubTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
 })
 
+/** SQS keeps a message invisible for 12 hours at most: a hold can't outlast that. */
+export const MAX_SQS_HOLD_MINUTES = 12 * 60
+
+/**
+ * An SQS queue of the live release (M26, architecture §2.29): each message starts a run in `environment` (default: the
+ * default environment), through the `sqs` resource `resource`'s settings there; the message is deleted when its run
+ * succeeds and made visible again when it fails (the queue's redrive policy applies).
+ */
+export const sqsTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of an `sqs` resource. */
+  resource: z.string().max(63),
+  /** The queue's URL, or its name in the resource's region and account. */
+  queue: z.string().min(1).max(300),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's deleted and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_SQS_HOLD_MINUTES).optional(),
+})
+
+export const MAX_KAFKA_ATTEMPTS = 20
+export const MAX_KAFKA_BACKOFF_SECONDS = 15 * 60
+
+/**
+ * Kafka topics of the live release (M26, architecture §2.29), read as one member of the consumer group `groupId`
+ * (default `ow-<workflow id>-<name>`): each message starts a run in `environment`; a key's messages run one at a time,
+ * in order. A run that fails is retried after `retryBackoffSeconds` (doubling) up to `maxAttempts` runs, then the
+ * message goes to `deadLetterTopic` (or is dropped without one) and its partition moves on.
+ */
+export const kafkaTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `kafka` resource. */
+  resource: z.string().max(63),
+  topics: z.array(z.string().min(1).max(249)).min(1).max(10),
+  groupId: z.string().min(1).max(255).optional(),
+  /** Where a group with no committed offsets starts: new messages only (default) or the topics' beginning. */
+  startAt: z.enum(['latest', 'earliest']).optional(),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** Runs per message before it is dead-lettered (default 3). */
+  maxAttempts: z.number().int().min(1).max(MAX_KAFKA_ATTEMPTS).optional(),
+  /** The wait before the first retry (default 10), doubling, at most 15 minutes. */
+  retryBackoffSeconds: z.number().int().min(1).max(MAX_KAFKA_BACKOFF_SECONDS).optional(),
+  /** Where a message goes after its last failed attempt; without one it is dropped (logged and counted). */
+  deadLetterTopic: z.string().min(1).max(249).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's settled and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const triggersSchema = z.strictObject({
   webhook: webhookTriggerSchema.optional(),
   schedules: z.array(scheduleTriggerSchema).max(20).optional(),
   pubsub: z.array(pubsubTriggerSchema).max(20).optional(),
+  sqs: z.array(sqsTriggerSchema).max(20).optional(),
+  kafka: z.array(kafkaTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -575,6 +632,8 @@ export type WebhookAuth = z.output<typeof webhookAuthSchema>
 export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
+export type SqsTrigger = z.output<typeof sqsTriggerSchema>
+export type KafkaTrigger = z.output<typeof kafkaTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>
 export type LoopRunner = z.output<typeof loopRunnerSchema>

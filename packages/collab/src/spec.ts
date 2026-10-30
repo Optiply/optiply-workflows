@@ -87,6 +87,8 @@ export const workflowSpec: CollabSpec = defineSpec({
     ['functions.*.params', byName],
     ['triggers.schedules', byName],
     ['triggers.pubsub', byName],
+    ['triggers.sqs', byName],
+    ['triggers.kafka', byName],
     ...blockPatterns(['config.conditions']).map((p) => [p, byId] as const),
     ...blockPatterns(['config.fields']).map((p) => [p, byName] as const),
     ...blockPatterns(['config.outcomes']).map((p) => [p, byId] as const),

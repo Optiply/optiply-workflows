@@ -29,11 +29,13 @@ type Triggers = NonNullable<WorkflowDefinition['triggers']>
 function updateTriggers(edit: (triggers: Triggers) => Triggers) {
   useEditor.getState().update((def) => {
     const next = edit(def.triggers ?? {})
-    const { webhook, schedules, pubsub } = next
+    const { webhook, schedules, pubsub, sqs, kafka } = next
     const sparse: Triggers = {
       ...(webhook && { webhook }),
       ...(schedules?.length && { schedules }),
       ...(pubsub?.length && { pubsub }),
+      ...(sqs?.length && { sqs }),
+      ...(kafka?.length && { kafka }),
     }
     const { triggers: _, ...rest } = def
     return Object.keys(sparse).length ? { ...rest, triggers: sparse } : rest

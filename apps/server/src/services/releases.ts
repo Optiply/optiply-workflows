@@ -228,8 +228,8 @@ export async function setLiveRelease(
 interface ReleasePlan {
   /** Schedule name → environment id. */
   scheduleEnvironments: Map<string, string>
-  /** Pub/Sub trigger name → environment id. */
-  pubsubEnvironments: Map<string, string>
+  /** Queue trigger (`<kind>:<name>`: Pub/Sub, SQS, Kafka) → environment id. */
+  queueEnvironments: Map<string, string>
   aliasShape: string | null
   /** The Python packages' lock (M23), installed: null without packages or Python. */
   pythonLock: PythonLock | null
@@ -338,32 +338,29 @@ async function checkReleasable(
     }
     scheduleEnvironments.set(schedule.name, env.id)
   }
-  const pubsubEnvironments = new Map<string, string>()
-  for (const trigger of definition.triggers?.pubsub ?? []) {
+  const queueEnvironments = new Map<string, string>()
+  for (const { kind, trigger } of queueTriggers(definition)) {
+    const label = QUEUE_LABELS[kind]
     const env = trigger.environment ? envs.find((e) => e.slug === trigger.environment) : defaultEnv
     if (!env) {
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: `Pub/Sub trigger "${trigger.name}" runs in environment "${trigger.environment}", which doesn't exist`,
+        message: `${label} trigger "${trigger.name}" runs in environment "${trigger.environment}", which doesn't exist`,
       })
     }
-    pubsubEnvironments.set(trigger.name, env.id)
-  }
-  // A trigger pulls with its resource's settings in its environment: they must be there, or every pull would fail.
-  for (const trigger of definition.triggers?.pubsub ?? []) {
+    queueEnvironments.set(`${kind}:${trigger.name}`, env.id)
+    // A trigger receives with its resource's settings in its environment: they must be there, or every pull would
+    // fail.
     const resource = resources.find((r) => r.slug === trigger.resource)
     if (!resource) continue
-    const environmentId = pubsubEnvironments.get(trigger.name)!
     const [configured] = await db
       .select({ id: resourceConfigs.id })
       .from(resourceConfigs)
-      .where(
-        and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, environmentId)),
-      )
+      .where(and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, env.id)))
     if (!configured) {
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: `Pub/Sub trigger "${trigger.name}" runs in environment "${envs.find((e) => e.id === environmentId)!.slug}", where resource "${trigger.resource}" isn't configured`,
+        message: `${label} trigger "${trigger.name}" runs in environment "${env.slug}", where resource "${trigger.resource}" isn't configured`,
       })
     }
   }
@@ -400,7 +397,7 @@ async function checkReleasable(
     if (!(err instanceof BlockFailure)) throw err
     throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
   }
-  return { scheduleEnvironments, pubsubEnvironments, aliasShape, pythonLock }
+  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock }
 }
 
 /**
@@ -513,15 +510,15 @@ async function projectTriggers(
     })
   }
 
-  for (const trigger of triggers?.pubsub ?? []) {
+  for (const { kind, trigger } of queueTriggers({ triggers })) {
     rows.push({
       workflowId,
       releaseId: release.id,
-      kind: 'pubsub',
+      kind,
       name: trigger.name,
       enabled: trigger.enabled,
-      config: { maxInFlight: 4, maxHoldMinutes: 60, ...trigger },
-      environmentId: plan.pubsubEnvironments.get(trigger.name)!,
+      config: { ...queueDefaults(kind, workflowId, trigger.name), ...trigger },
+      environmentId: plan.queueEnvironments.get(`${kind}:${trigger.name}`)!,
       aliasShape: null,
       nextFireAt: null,
     })
@@ -540,5 +537,37 @@ async function projectTriggers(
     const current = find(row.kind, row.name)
     if (current) await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
     else await tx.insert(workflowTriggers).values(row)
+  }
+}
+
+const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+
+/** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
+function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
+  const t = definition.triggers
+  return [
+    ...(t?.pubsub ?? []).map((trigger) => ({ kind: 'pubsub' as const, trigger })),
+    ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
+    ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
+  ]
+}
+
+/**
+ * What a queue trigger leaves out, as its consumer reads it. Kafka's group is named after the workflow's id, so a
+ * renamed workflow keeps its offsets.
+ */
+function queueDefaults(
+  kind: 'pubsub' | 'sqs' | 'kafka',
+  workflowId: string,
+  name: string,
+): Record<string, unknown> {
+  const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
+  if (kind !== 'kafka') return shared
+  return {
+    ...shared,
+    startAt: 'latest',
+    maxAttempts: 3,
+    retryBackoffSeconds: 10,
+    groupId: `ow-${workflowId}-${name}`,
   }
 }

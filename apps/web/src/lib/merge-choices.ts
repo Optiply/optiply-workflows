@@ -23,6 +23,8 @@ const SINGULAR: Record<string, string> = {
   events: 'Event handler',
   schedules: 'Schedule',
   pubsub: 'Pub/Sub trigger',
+  sqs: 'SQS trigger',
+  kafka: 'Kafka trigger',
   inputs: 'Input',
   outputs: 'Output',
   conditions: 'Condition',

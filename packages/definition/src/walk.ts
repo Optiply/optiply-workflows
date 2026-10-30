@@ -40,9 +40,10 @@ export function queriedResources(def: WorkflowDefinition): string[] {
   return [...slugs]
 }
 
-/** Slugs of the resources the definition's triggers use (M19: Pub/Sub triggers pull through one). */
+/** Slugs of the resources the definition's triggers use (Pub/Sub, SQS and Kafka triggers receive through one). */
 export function triggerResources(def: WorkflowDefinition): string[] {
-  return [...new Set((def.triggers?.pubsub ?? []).map((t) => t.resource))]
+  const t = def.triggers
+  return [...new Set([...(t?.pubsub ?? []), ...(t?.sqs ?? []), ...(t?.kafka ?? [])].map((q) => q.resource))]
 }
 
 /** Slugs of every workflow the definition calls: Workflow blocks and loop workflow runners, functions included. */
