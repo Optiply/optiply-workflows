@@ -1,4 +1,5 @@
 import type { AdapterContext, QueueAdapter } from '../queue-consumer'
+import { kafkaAdapter } from './kafka'
 import { pubsubAdapter } from './pubsub'
 import { sqsAdapter } from './sqs'
 
@@ -9,6 +10,8 @@ export function createAdapter(ctx: AdapterContext): QueueAdapter {
       return pubsubAdapter(ctx)
     case 'sqs':
       return sqsAdapter(ctx)
+    case 'kafka':
+      return kafkaAdapter(ctx)
     default:
       throw new Error(`no queue adapter for "${ctx.trigger.kind}"`)
   }

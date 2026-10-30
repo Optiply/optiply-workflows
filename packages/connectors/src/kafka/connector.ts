@@ -101,7 +101,7 @@ export const kafkaConnector: Connector<KafkaConfig, KafkaSecrets, Query, KafkaRe
 
 export interface OutgoingKafkaMessage {
   key?: string
-  value: string | null
+  value: string | Buffer | null
   headers?: Record<string, string>
   partition?: number
 }

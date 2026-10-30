@@ -58,6 +58,13 @@ export {
   type OutgoingKafkaMessage,
   produceTo,
 } from './kafka/connector'
+export {
+  type KafkaConsumerHandle,
+  type KafkaConsumerOptions,
+  type KafkaPartition,
+  type KafkaReceived,
+  kafkaConsumer,
+} from './kafka/consumer'
 export { type MskIamToken, mskIamToken } from './kafka/msk-iam'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'

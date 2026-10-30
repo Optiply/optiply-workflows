@@ -107,7 +107,11 @@ export function kafkaClient(
         : null
     },
     async close() {
-      await Promise.all([admin, producer].map((p) => p?.then((c) => c.disconnect()).catch(() => {})))
+      // Forgotten first: a later call connects afresh rather than using a disconnected one.
+      const open = [admin, producer]
+      admin = undefined
+      producer = undefined
+      await Promise.all(open.map((p) => p?.then((c) => c.disconnect()).catch(() => {})))
     },
   }
 }

@@ -94,9 +94,11 @@ export interface QueueMessage {
   id: string
   /** What answers this delivery: Pub/Sub's ack id, SQS's receipt handle (new on each delivery); Kafka's id. */
   handle: string
-  /** The run's input: `startTrigger.data` and `startTrigger.message`. */
-  input: { data: unknown; message: object }
+  /** The run's input: `startTrigger.data` and `startTrigger.message`; given the delivery's attempt where it says so. */
+  input: RunInputOf | ((attempt: number) => RunInputOf)
 }
+
+type RunInputOf = { data: unknown; message: object }
 
 /** A delivery whose run is under way: its message is held (not answered) until the run ends. */
 export interface HeldMessage {
@@ -588,7 +590,7 @@ export async function startDelivery(
       triggerType: trigger.kind,
       triggerId: trigger.id,
       idempotencyKey: `${trigger.kind}:${trigger.id}:${message.id}:${n}`,
-      input: message.input,
+      input: typeof message.input === 'function' ? message.input(n) : message.input,
     })
     await tx
       .update(queueDeliveries)
