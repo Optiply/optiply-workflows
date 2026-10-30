@@ -260,6 +260,14 @@
 .react-flow .ow-handle.ow-handle-error {
   background: var(--color-danger);
 }
+.react-flow .react-flow__edge .react-flow__edge-path {
+  stroke-width: 1.5;
+}
+.react-flow .react-flow__edge:hover .react-flow__edge-path,
+.react-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
 .react-flow .react-flow__edge.ow-edge-error .react-flow__edge-path {
   stroke: var(--color-danger);
   stroke-dasharray: 5 4;

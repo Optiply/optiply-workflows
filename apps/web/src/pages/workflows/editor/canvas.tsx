@@ -2,10 +2,15 @@ import { type Block, blockPorts, type Diagnostic, isTrigger } from '@ow/definiti
 import {
   applyNodeChanges,
   Background,
+  BaseEdge,
   type Connection,
+  ConnectionLineType,
   ControlButton,
   Controls,
+  EdgeLabelRenderer,
+  type EdgeProps,
   type Edge as FlowEdge,
+  getBezierPath,
   Handle,
   MiniMap,
   type Node,
@@ -17,8 +22,8 @@ import {
   ViewportPortal,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, Map as MapIcon } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { AlertCircle, Map as MapIcon, X } from 'lucide-react'
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { kindOf, summary } from './catalog'
@@ -31,6 +36,7 @@ type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock }
 type BlockNode = Node<BlockNodeData, 'block'>
 
 const nodeTypes = { block: memo(BlockNodeView) }
+const edgeTypes = { workflow: WorkflowEdge }
 
 const NO_LIVE: Record<string, LiveBlock> = {}
 
@@ -119,6 +125,19 @@ export function Canvas() {
     )
   }, [])
 
+  // Dragging an edge's end onto another block or port moves it there (M28).
+  const onReconnect = useCallback((old: FlowEdge, next: Connection) => {
+    if (!next.source || !next.target || next.source === next.target) return
+    const moved = { from: next.source, port: next.sourceHandle ?? 'out', to: next.target }
+    updateGraph((g) => {
+      const edges = g.edges.filter((e) => edgeId(e) !== old.id)
+      return edges.some((e) => edgeId(e) === edgeId(moved))
+        ? { ...g, edges }
+        : { ...g, edges: [...edges, moved] }
+    })
+  }, [])
+  const hover = useEdgeHover()
+
   const onNodeDragStop = useCallback((_: unknown, _node: BlockNode, dragged: BlockNode[]) => {
     updateGraph((g) => {
       const blocks = { ...positionsFor(g) }
@@ -139,54 +158,141 @@ export function Canvas() {
   )
 
   return (
-    <ReactFlow<BlockNode, FlowEdge>
-      // A fresh view per graph, fitted to its blocks.
-      key={fn ?? ''}
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      onNodesChange={onNodesChange}
-      onConnect={onConnect}
-      onNodeDragStop={onNodeDragStop}
-      onDelete={onDelete}
-      // A click shows the block; React Flow keeps the selection (several with ⌘/Ctrl-click or a box), for copying.
-      onNodeClick={(_, node) => useEditor.getState().inspect(node.id)}
-      onPaneClick={() => select(null)}
-      nodesDraggable={editable}
-      nodesConnectable={editable}
-      deleteKeyCode={editable ? ['Backspace', 'Delete'] : null}
-      fitView
-      fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
-      minZoom={0.2}
-      proOptions={{ hideAttribution: true }}
-      // Where this editor's pointer is, for everyone else (M16): in flow coordinates.
-      onMouseMove={(e) => sharePointer(screenToFlowPosition({ x: e.clientX, y: e.clientY }))}
-      onMouseLeave={() => sharePointer(null)}
-    >
-      <Background gap={20} size={1} />
-      <ViewportPortal>
-        <Pointers graph={fn} />
-      </ViewportPortal>
-      <Controls showInteractive={false}>
-        <ControlButton
-          onClick={toggleMinimap}
-          title={minimap ? 'Hide the minimap' : 'Show the minimap'}
-          aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
-          aria-pressed={minimap}
-        >
-          <MapIcon />
-        </ControlButton>
-      </Controls>
-      {minimap && (
-        <MiniMap
-          pannable
-          zoomable
-          className="!bg-surface"
-          style={{ width: 140, height: 96 }}
-          nodeStrokeWidth={3}
-        />
+    <EdgeHover.Provider value={hover}>
+      <ReactFlow<BlockNode, FlowEdge>
+        // A fresh view per graph, fitted to its blocks.
+        key={fn ?? ''}
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
+        onConnect={onConnect}
+        onReconnect={onReconnect}
+        edgesReconnectable={editable}
+        connectionLineType={ConnectionLineType.Bezier}
+        onEdgeMouseEnter={(_, edge) => hover.enter(edge.id)}
+        onEdgeMouseLeave={() => hover.leave()}
+        onNodeDragStop={onNodeDragStop}
+        onDelete={onDelete}
+        // A click shows the block; React Flow keeps the selection (several with ⌘/Ctrl-click or a box), for copying.
+        onNodeClick={(_, node) => useEditor.getState().inspect(node.id)}
+        onPaneClick={() => select(null)}
+        nodesDraggable={editable}
+        nodesConnectable={editable}
+        deleteKeyCode={editable ? ['Backspace', 'Delete'] : null}
+        fitView
+        fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
+        minZoom={0.2}
+        proOptions={{ hideAttribution: true }}
+        // Where this editor's pointer is, for everyone else (M16): in flow coordinates.
+        onMouseMove={(e) => sharePointer(screenToFlowPosition({ x: e.clientX, y: e.clientY }))}
+        onMouseLeave={() => sharePointer(null)}
+      >
+        <Background gap={20} size={1} />
+        <ViewportPortal>
+          <Pointers graph={fn} />
+        </ViewportPortal>
+        <Controls showInteractive={false}>
+          <ControlButton
+            onClick={toggleMinimap}
+            title={minimap ? 'Hide the minimap' : 'Show the minimap'}
+            aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
+            aria-pressed={minimap}
+          >
+            <MapIcon />
+          </ControlButton>
+        </Controls>
+        {minimap && (
+          <MiniMap
+            pannable
+            zoomable
+            className="!bg-surface"
+            style={{ width: 140, height: 96 }}
+            nodeStrokeWidth={3}
+          />
+        )}
+      </ReactFlow>
+    </EdgeHover.Provider>
+  )
+}
+
+/** Which edge the pointer is on; leaving waits a moment so the pointer can reach the edge's × button. */
+interface EdgeHoverState {
+  hovered: string | null
+  enter(id: string): void
+  leave(): void
+}
+
+const EdgeHover = createContext<EdgeHoverState>({ hovered: null, enter: () => {}, leave: () => {} })
+
+function useEdgeHover(): EdgeHoverState {
+  const [hovered, setHovered] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  return useMemo(
+    () => ({
+      hovered,
+      enter: (id: string) => {
+        clearTimeout(timer.current)
+        setHovered(id)
+      },
+      leave: () => {
+        clearTimeout(timer.current)
+        timer.current = setTimeout(() => setHovered(null), 150)
+      },
+    }),
+    [hovered],
+  )
+}
+
+/**
+ * A connection as Retool draws it: a bezier curve, easy to hit, and on hover a × at its middle that removes it
+ * with one click (undoable like any edit). Read-only drafts show no ×.
+ */
+function WorkflowEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style,
+  markerEnd,
+  selected,
+}: EdgeProps<FlowEdge>) {
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  })
+  const { hovered, enter, leave } = useContext(EdgeHover)
+  const editable = !useEditor((s) => s.readOnly)
+  const shown = editable && (hovered === id || selected)
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={22} />
+      {shown && (
+        <EdgeLabelRenderer>
+          <button
+            type="button"
+            className="nodrag nopan pointer-events-auto absolute flex size-5 cursor-pointer items-center justify-center rounded-full border-2 border-surface bg-danger text-white shadow-sm hover:brightness-110"
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+            title="Remove this connection"
+            aria-label="Remove this connection"
+            data-testid={`edge-remove-${id}`}
+            onMouseEnter={() => enter(id)}
+            onMouseLeave={leave}
+            onClick={() => updateGraph((g) => removeFrom(g, new Set(), new Set([id])))}
+          >
+            <X className="size-3" strokeWidth={3} />
+          </button>
+        </EdgeLabelRenderer>
       )}
-    </ReactFlow>
+    </>
   )
 }
 
@@ -248,7 +354,7 @@ function toEdges(
     source: e.from,
     sourceHandle: e.port,
     target: e.to,
-    type: 'smoothstep',
+    type: 'workflow',
     // The connections the open run took (their source finished on that port).
     animated: live[e.to]?.status === 'running' && live[e.from]?.port === e.port,
     className: cn(
