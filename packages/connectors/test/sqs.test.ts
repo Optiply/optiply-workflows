@@ -174,4 +174,46 @@ describe('the SQS client the trigger receives with', () => {
       client.close()
     }
   })
+
+  it("refuses a queue URL on another host than this resource's SQS (review fix)", async () => {
+    await expect(send(keyed(), 'https://attacker.example/123456789012/q', '{"body": 1}')).rejects.toThrow(
+      "The queue URL's host (attacker.example) isn't this resource's SQS",
+    )
+    const client = sqsClient(
+      { region, identity: 'key', accessKeyId: user.accessKeyId },
+      { secretAccessKey: user.secretAccessKey },
+    )
+    try {
+      await expect(client.queueUrl('https://sqs.us-east-1.amazonaws.com/1/q', signal())).rejects.toThrow(
+        /isn't this resource's SQS/,
+      )
+    } finally {
+      client.close()
+    }
+  })
+
+  it('extends every batch even when an earlier one has a stale handle (review fix)', async () => {
+    const client = sqsClient(
+      { region, identity: 'key', accessKeyId: user.accessKeyId },
+      { secretAccessKey: user.secretAccessKey },
+    )
+    try {
+      aws.sqs.createQueue('many')
+      const url = await client.queueUrl('many', signal())
+      for (let i = 0; i < 12; i++) aws.sqs.send('many', `m${i}`)
+      const got = [
+        ...(await client.receive(url, 10, 0, signal())),
+        ...(await client.receive(url, 10, 0, signal())),
+      ]
+      expect(got).toHaveLength(12)
+      const before = Date.now()
+      await expect(
+        client.changeVisibility(url, ['stale', ...got.map((m) => m.receiptHandle)], 600, signal()),
+      ).rejects.toThrow("SQS didn't change 1 message(s)' visibility: MessageNotInflight")
+      // All twelve were extended (600 s of 50 ms seconds: 30 s), the last batch's included.
+      expect(aws.sqs.messages('many').every((m) => m.visibleAt >= before + 25_000)).toBe(true)
+    } finally {
+      client.close()
+    }
+  })
 })

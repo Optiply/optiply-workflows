@@ -122,9 +122,20 @@ export function serverIdentityTarget(config: unknown, type?: string): string | n
   if (type === 'sqs' || type === 'kafka') {
     // M26: the server's own AWS credentials, for SQS or Kafka's MSK IAM: the region and any role assumed with them
     // (they may be allowed to assume roles no one's key is).
-    const c = config as { identity?: unknown; auth?: unknown; region?: unknown; roleArn?: unknown } | null
+    const c = config as {
+      identity?: unknown
+      auth?: unknown
+      region?: unknown
+      roleArn?: unknown
+      brokers?: unknown
+    } | null
     if (type === 'kafka' && c?.auth !== 'aws-msk-iam') return null
-    return c?.identity === 'server' ? `aws:${String(c.region ?? '')}:${String(c.roleArn ?? '')}` : null
+    if (c?.identity !== 'server') return null
+    const target = `aws:${String(c.region ?? '')}:${String(c.roleArn ?? '')}`
+    // MSK IAM sends its signed token to the brokers: where they are is the admin's choice too.
+    return type === 'kafka'
+      ? `${target}:${[...((c.brokers as string[] | undefined) ?? [])].sort().join(',')}`
+      : target
   }
   if (type === 'pubsub') {
     const c = config as { identity?: unknown; project?: unknown } | null

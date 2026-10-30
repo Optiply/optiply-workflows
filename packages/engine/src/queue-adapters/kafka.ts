@@ -59,6 +59,8 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
   let client: KafkaResourceClient | undefined
   let consumer: KafkaConsumerHandle | undefined
   let starting: Promise<KafkaConsumerHandle> | undefined
+  /** Bumped by each reset: a replaced consumer's late rebalance callbacks (it leaves in the background) are ignored. */
+  let generation = 0
   let pumping: Promise<void> | undefined
   let pumpError: Error | undefined
   let stopped = false
@@ -95,17 +97,20 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
   /** The consumer, joined on first use and after a reset; its poll and commit loops start with it. */
   function start(): Promise<KafkaConsumerHandle> {
     starting ??= (async () => {
+      const mine = generation
       const made = await kafkaConsumer(await resourceClient(), {
         groupId: config.groupId,
         topics: config.topics,
         startAt: config.startAt,
         onAssign(assigned) {
+          if (mine !== generation) return
           for (const p of assigned)
             if (!partitions.has(pkey(p)))
               partitions.set(pkey(p), { pending: [], settled: new Set(), commitAt: null, dirty: false })
           ctx.log('info', { partitions: assigned.map(pkey) }, 'partitions assigned')
         },
         onRevoke(revoked) {
+          if (mine !== generation) return
           commit(true, revoked)
           forget(revoked)
           ctx.log('info', { partitions: revoked.map(pkey) }, 'partitions revoked')
@@ -134,7 +139,9 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
           if (!state) continue // revoked meanwhile
           state.pending.push(received.offset)
           buffer.push({
-            id: `${received.topic}/${received.partition}/${received.offset}`,
+            // With its timestamp: a topic made again restarts its offsets, and an old record mustn't answer for a new
+            // message at the same offset (a redelivery of this one has the same timestamp).
+            id: `${received.topic}/${received.partition}/${received.offset}@${received.timestamp}`,
             received,
             keyId: received.key === null ? null : `${pkey(received)}/${received.key}`,
           })
@@ -298,6 +305,7 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
       if (stopped || outstanding.get(entry.id) !== entry) return
       try {
         await deadLetter(entry, held, error, AbortSignal.timeout(30_000))
+        await ctx.settled(held, 'dead_lettered').catch(() => {})
         settle(entry.id)
         ctx.log('info', { messageId: entry.id }, 'message dead-lettered on a later try')
       } catch (err) {
@@ -355,6 +363,11 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
           await deadLetter(entry, held, error, signal)
         } catch (err) {
           // Not sent (the topic missing, no access): sent again later without another run; its partition waits.
+          ctx.log(
+            'warn',
+            { messageId: held.id, err: (err as Error).message },
+            'dead letter failed: sent again later',
+          )
           retryDeadLetter(entry, held, error)
           throw err
         }
@@ -380,8 +393,16 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
       await client?.close()
       client = undefined
     },
+    undelivered(message) {
+      // Its run didn't start: offered again after the backoff (its key stays busy meanwhile, keeping the order).
+      if (outstanding.has(message.id)) {
+        retries.set(message.id, Date.now() + config.retryBackoffSeconds * secondMs)
+        notify()
+      }
+    },
     reset() {
       // Leaves the group (what was handed out is held on; its partitions may come back) and joins afresh next pull.
+      generation++
       const c = consumer
       consumer = undefined
       starting = undefined

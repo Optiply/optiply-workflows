@@ -612,7 +612,7 @@ export const webhookRejections = pgTable(
  * Messages a queue trigger has seen (Pub/Sub M19, SQS and Kafka M26; architecture §2.22, §2.29): how many runs they
  * started (each delivery is one, idempotency key `<kind>:<trigger>:<message>:<n>`), the latest, and how it ended. A
  * redelivery of a message whose run succeeded is answered without a run; one whose run is still going is held, not run
- * again. The message id is Pub/Sub's or SQS's, or Kafka's `<topic>/<partition>/<offset>`. Retention prunes old ones.
+ * again. The message id is Pub/Sub's or SQS's, or Kafka's `<topic>/<partition>/<offset>@<timestamp>`. Retention prunes old ones.
  */
 export const queueDeliveries = pgTable(
   'queue_deliveries',

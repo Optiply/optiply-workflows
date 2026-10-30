@@ -81,10 +81,12 @@ const MAX_MESSAGES = 1000
 export function sqsClient(config: Config, secrets: Secrets): SqsResourceClient {
   const credentials = awsCredentials({ ...config, ...secrets })
   const endpoint = config.endpoint ?? awsDefaults().sqsEndpoint
+  // Requests go to the resource's endpoint, never a queue URL's own host (the SDK would follow it by default).
   const sqs = new SQSClient({
     region: config.region,
     credentials,
     maxAttempts: 3,
+    useQueueUrlAsEndpoint: false,
     ...(endpoint ? { endpoint } : {}),
   })
   const urls = new Map<string, string>()
@@ -93,7 +95,19 @@ export function sqsClient(config: Config, secrets: Secrets): SqsResourceClient {
     sqs,
     describe: (signal) => describeAws(config.region, credentials, signal, config.endpoint),
     async queueUrl(queue, signal) {
-      if (/^https?:\/\//.test(queue)) return queue
+      if (/^https?:\/\//.test(queue)) {
+        // A URL must be one this resource reaches: AWS's SQS in its region, or its own endpoint (admins set it).
+        const host = new URL(queue).host
+        const allowed = endpoint
+          ? [new URL(endpoint).host]
+          : [`sqs.${config.region}.amazonaws.com`, `${config.region}.queue.amazonaws.com`]
+        if (!allowed.includes(host) || (!endpoint && !queue.startsWith('https://')))
+          throw new ConnectorError(
+            'invalid_query',
+            `The queue URL's host (${host}) isn't this resource's SQS (${allowed.join(' or ')}): use the queue's name, or its URL there`,
+          )
+        return queue
+      }
       const known = urls.get(queue)
       if (known) return known
       try {
@@ -152,9 +166,10 @@ export function sqsClient(config: Config, secrets: Secrets): SqsResourceClient {
       }
     },
     async changeVisibility(queueUrl, receiptHandles, seconds, signal) {
+      // Every batch is sent, whatever an earlier one's failures (one stale handle mustn't leave the rest unextended).
+      const failed: { Code?: string | undefined; Message?: string | undefined }[] = []
       for (let i = 0; i < receiptHandles.length; i += 10) {
         const batch = receiptHandles.slice(i, i + 10)
-        let failed: { Code?: string | undefined; Message?: string | undefined }[]
         try {
           const res = await sqs.send(
             new ChangeMessageVisibilityBatchCommand({
@@ -167,17 +182,17 @@ export function sqsClient(config: Config, secrets: Secrets): SqsResourceClient {
             }),
             { abortSignal: signal },
           )
-          failed = res.Failed ?? []
+          failed.push(...(res.Failed ?? []))
         } catch (err) {
           throw awsError(err, "change messages' visibility")
         }
-        if (failed.length)
-          throw new ConnectorError(
-            'query',
-            `SQS didn't change ${failed.length} message(s)' visibility: ${failed.map((f) => f.Code).join(', ')}`,
-            { failed: failed.map((f) => ({ code: f.Code, message: f.Message })) },
-          )
       }
+      if (failed.length)
+        throw new ConnectorError(
+          'query',
+          `SQS didn't change ${failed.length} message(s)' visibility: ${failed.map((f) => f.Code).join(', ')}`,
+          { failed: failed.map((f) => ({ code: f.Code, message: f.Message })) },
+        )
     },
     close() {
       sqs.destroy()

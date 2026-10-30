@@ -10,7 +10,7 @@ import {
   workflowTriggers,
 } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
-import { asc, sql as dsql, eq } from 'drizzle-orm'
+import { asc, sql as dsql, eq, like } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { QueueConsumer, type QueueConsumerOptions, queueStats, type ResourceProvider } from '../src'
 import type { KafkaRunMessage } from '../src/types'
@@ -203,7 +203,11 @@ describe.skipIf(!available)('QueueConsumer: Kafka', () => {
     await expect.poll(async () => (await values(trigger.id)).length, poll).toBe(3)
     expect(await values(trigger.id)).toEqual([{ n: 'a1' }, { n: 'b1' }, 'no key'])
     const [a1] = await runsOf(trigger.id)
-    expect(a1).toMatchObject({ triggerType: 'kafka', idempotencyKey: `kafka:${trigger.id}:${topic}/0/0:1` })
+    // The id carries the message's timestamp, so a topic made again isn't taken for the old one.
+    expect(a1).toMatchObject({
+      triggerType: 'kafka',
+      idempotencyKey: expect.stringMatching(new RegExp(`^kafka:${trigger.id}:${topic}/0/0@\\d+:1$`)),
+    })
     expect(messageOf(a1!)).toMatchObject({
       topic,
       partition: 0,
@@ -263,7 +267,7 @@ describe.skipIf(!available)('QueueConsumer: Kafka', () => {
     const [delivery] = await db
       .select()
       .from(queueDeliveries)
-      .where(eq(queueDeliveries.messageId, `${letter!.headers['ow-source-topic']}/0/0`))
+      .where(like(queueDeliveries.messageId, `${letter!.headers['ow-source-topic']}/0/0@%`))
     expect(delivery).toMatchObject({ outcome: 'dead_lettered', runs: 2 })
   }, 90_000)
 
@@ -305,5 +309,40 @@ describe.skipIf(!available)('QueueConsumer: Kafka', () => {
     expect(await runsOf(trigger.id)).toHaveLength(1)
     await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
     await expect.poll(async () => (await values(trigger.id)).length, poll).toBe(2)
+  }, 90_000)
+
+  it("offers a message again when its run couldn't start (review fix): its key isn't stuck", async () => {
+    const { trigger, send } = await subscribed()
+    await send({ key: 'k', value: 'first' }, { key: 'k', value: 'second' })
+    // The database refuses the delivery records for a moment: the first delivery fails.
+    await db.execute(dsql`alter table queue_deliveries rename to queue_deliveries_away`)
+    const warnings: string[] = []
+    consumer('w1', { log: { info: () => {}, warn: (_o, msg) => warnings.push(msg ?? '') } }).start()
+    await expect.poll(() => warnings.includes('kafka delivery failed'), poll).toBe(true)
+    await db.execute(dsql`alter table queue_deliveries_away rename to queue_deliveries`)
+    await expect.poll(async () => (await values(trigger.id)).length, poll).toBe(1)
+    await end((await runsOf(trigger.id))[0]!.id, 'succeeded')
+    await expect.poll(async () => (await values(trigger.id)).at(-1), poll).toBe('second')
+  }, 90_000)
+
+  it('records a dead letter sent on a later try (review fix)', async () => {
+    const dlt = `dlt-late-${n + 1}`
+    const { trigger, send } = await subscribed({ maxAttempts: 1, deadLetterTopic: dlt })
+    await send({ key: 'k', value: 'broken' })
+    consumer().start()
+    await expect.poll(async () => (await values(trigger.id)).length, poll).toBe(1)
+    // The dead-letter topic doesn't exist yet: the first send fails, a later one goes.
+    await end((await runsOf(trigger.id))[0]!.id, 'failed', 'boom')
+    await new Promise((r) => setTimeout(r, 300))
+    await kafka.createTopic(dlt)
+    await expect
+      .poll(
+        async () =>
+          (await db.select().from(queueDeliveries).where(eq(queueDeliveries.triggerId, trigger.id)))[0]
+            ?.outcome,
+        poll,
+      )
+      .toBe('dead_lettered')
+    expect((await readAll(dlt, 1))[0]).toMatchObject({ key: 'k' })
   }, 90_000)
 })

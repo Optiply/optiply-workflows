@@ -134,6 +134,11 @@ export interface QueueAdapter {
   close(held: HeldMessage[]): Promise<void>
   /** After a failed pull: the next call makes a new client, so settings fixed meanwhile are picked up. */
   reset(): void
+  /**
+   * A pulled message whose run couldn't start (the database went away). Pub/Sub and SQS hand it out again after its
+   * deadline; Kafka, which has none, offers it again later itself.
+   */
+  undelivered?(message: QueueMessage): void
 }
 
 export interface AdapterContext {
@@ -141,6 +146,8 @@ export interface AdapterContext {
   resources: ResourceProvider
   opts: QueueConsumerOptions
   log: (level: 'info' | 'warn', obj: object, msg: string) => void
+  /** Records a held message's final outcome reached later than its `fail` (Kafka's dead letter sent on a later try). */
+  settled(held: HeldMessage, outcome: 'dead_lettered' | 'dropped'): Promise<void>
 }
 
 export class QueueConsumer {
@@ -272,6 +279,10 @@ class Subscriber {
       opts,
       log: (level, obj, msg) =>
         opts.log?.[level]({ triggerId: trigger.id, ...obj }, `${trigger.kind} ${msg}`),
+      settled: async (held, outcome) => {
+        this.stats[outcome]++
+        await this.record(held, outcome)
+      },
     })
   }
 
@@ -371,6 +382,7 @@ class Subscriber {
           await this.deliver(message)
         } catch (err) {
           // The run couldn't start (the database went away): the queue hands it out again after its deadline.
+          this.adapter.undelivered?.(message)
           this.opts.log?.warn(
             { triggerId: this.trigger.id, messageId: message.id, err: describe(err) },
             `${this.kind} delivery failed`,

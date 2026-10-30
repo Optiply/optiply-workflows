@@ -1224,7 +1224,7 @@ describe('SQS resources (M26)', () => {
     )
     configureAwsServer({ AWS_SERVER_IDENTITY: 'allow', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
     expect((await save(member, id, server)).body.error?.message).toBe(
-      "Only admins can use this server's own AWS credentials, or change the region or role used with them",
+      "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them",
     )
     expect((await save(admin, id, server)).status).toBe(200)
     expect((await save(member, id, server)).status).toBe(200)

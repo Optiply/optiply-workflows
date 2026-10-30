@@ -18,7 +18,7 @@ import {
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Clock, Inbox, Plus, Trash2, Webhook } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Badge, Button, Checkbox, CopyButton, Field, Input, linkClass, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -580,7 +580,8 @@ function QueueCard({
         placeholder={placeholder}
         data-testid={`${kind}-${field}`}
         value={String((trigger as unknown as Record<string, unknown>)[field] ?? '')}
-        onChange={(e) => patch({ [field]: e.target.value || undefined })}
+        // Required: kept even when emptied (the validator says so), so the card keeps its kind's fields.
+        onChange={(e) => patch({ [field]: e.target.value })}
       />
       <Problems problems={at(field)} />
     </Field>
@@ -649,17 +650,17 @@ function QueueCard({
           <Problems problems={at('environment')} />
         </Field>
       </div>
-      {'subscription' in trigger ? (
+      {kind === 'pubsub' ? (
         <Field label="Subscription" hint="Its id in the resource's project, or projects/…/subscriptions/….">
           <Input
             className={cn('font-mono', at('subscription').length && 'border-danger')}
             placeholder="orders-workflow"
-            value={trigger.subscription}
+            value={(trigger as PubSubTrigger).subscription ?? ''}
             onChange={(e) => patch({ subscription: e.target.value })}
           />
           <Problems problems={at('subscription')} />
         </Field>
-      ) : 'queue' in trigger ? (
+      ) : kind === 'sqs' ? (
         text(
           'queue',
           'Queue',
@@ -667,7 +668,7 @@ function QueueCard({
           'orders',
         )
       ) : (
-        <KafkaFields trigger={trigger} patch={patch} at={at} number={number} />
+        <KafkaFields trigger={trigger as KafkaTrigger} patch={patch} at={at} number={number} />
       )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="At once" hint="Messages whose runs may be under way together.">
@@ -727,6 +728,14 @@ function QueueCard({
   )
 }
 
+/** Topics as typed: comma-separated, blanks dropped. */
+function parseTopics(text: string): string[] {
+  return text
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+}
+
 /** A Kafka trigger's own settings (M26): topics, its consumer group, where a new group starts, retries, dead letters. */
 function KafkaFields({
   trigger,
@@ -739,7 +748,13 @@ function KafkaFields({
   at: (field: string) => Diagnostic[]
   number: (value: string, max: number) => number | undefined
 }) {
-  const [topics, setTopics] = useState(() => trigger.topics.join(', '))
+  const stored = (trigger.topics ?? []).join(', ')
+  const [topics, setTopics] = useState(stored)
+  // The text is the card's own (so a trailing comma survives typing), but follows the trigger when it changes
+  // elsewhere: another card removed above this one, undo, a collaborator.
+  useEffect(() => {
+    setTopics((text) => (parseTopics(text).join(', ') === stored ? text : stored))
+  }, [stored])
   return (
     <>
       <Field label="Topics" hint="One or more, separated by commas.">
@@ -750,12 +765,7 @@ function KafkaFields({
           value={topics}
           onChange={(e) => {
             setTopics(e.target.value)
-            patch({
-              topics: e.target.value
-                .split(',')
-                .map((t) => t.trim())
-                .filter(Boolean),
-            })
+            patch({ topics: parseTopics(e.target.value) })
           }}
         />
         <Problems problems={at('topics')} />

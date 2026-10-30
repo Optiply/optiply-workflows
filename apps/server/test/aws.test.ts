@@ -46,9 +46,13 @@ describe('serverIdentityTarget for AWS', () => {
     expect(serverIdentityTarget({ identity: 'server', region: 'eu-west-1', roleArn: role }, 'sqs')).toBe(
       `aws:eu-west-1:${role}`,
     )
+    // MSK IAM's brokers too: its signed token goes to them (review fix).
     expect(
-      serverIdentityTarget({ auth: 'aws-msk-iam', identity: 'server', region: 'us-east-1' }, 'kafka'),
-    ).toBe('aws:us-east-1:')
+      serverIdentityTarget(
+        { auth: 'aws-msk-iam', identity: 'server', region: 'us-east-1', brokers: ['b-2:9098', 'b-1:9098'] },
+        'kafka',
+      ),
+    ).toBe('aws:us-east-1::b-1:9098,b-2:9098')
     // Only MSK IAM signs with AWS: a leftover identity under another auth mode doesn't count.
     expect(serverIdentityTarget({ auth: 'plain', identity: 'server', region: 'us-east-1' }, 'kafka')).toBe(
       null,

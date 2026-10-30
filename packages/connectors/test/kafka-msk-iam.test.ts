@@ -57,6 +57,22 @@ describe('mskIamToken', () => {
     expect(url.searchParams.get('X-Amz-Expires')).toBe('300')
     expect(token.lifetime).toBe(now.getTime() + 300_000)
   })
+
+  it('expires in whole seconds, at least one, however the credentials end (review fix)', async () => {
+    const now = new Date('2026-10-30T09:00:00Z')
+    const soon = { ...key, expiration: new Date(now.getTime() + 812_347) }
+    expect(
+      decode((await mskIamToken('us-east-1', async () => soon, now)).tokenValue).searchParams.get(
+        'X-Amz-Expires',
+      ),
+    ).toBe('812')
+    const gone = { ...key, expiration: new Date(now.getTime() - 5_000) }
+    expect(
+      decode((await mskIamToken('us-east-1', async () => gone, now)).tokenValue).searchParams.get(
+        'X-Amz-Expires',
+      ),
+    ).toBe('1')
+  })
 })
 
 describe('a Kafka resource on MSK IAM', () => {

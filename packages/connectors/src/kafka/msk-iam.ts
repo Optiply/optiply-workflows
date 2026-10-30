@@ -51,8 +51,12 @@ export async function mskIamToken(
 ): Promise<MskIamToken> {
   const identity = await credentials()
   const hostname = `kafka.${region}.amazonaws.com`
+  // Whole seconds (X-Amz-Expires), at least one: credentials about to expire are renewed by the SDK on the next call.
   const ttl = identity.expiration
-    ? Math.min((identity.expiration.getTime() - signingDate.getTime()) / 1000, EXPIRY_SECONDS)
+    ? Math.max(
+        1,
+        Math.min(Math.floor((identity.expiration.getTime() - signingDate.getTime()) / 1000), EXPIRY_SECONDS),
+      )
     : EXPIRY_SECONDS
   const signer = new SignatureV4({
     service: 'kafka-cluster',

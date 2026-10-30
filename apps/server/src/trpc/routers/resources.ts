@@ -127,7 +127,7 @@ function requireAdminForServerIdentity(
         type === 'pubsub'
           ? "Only admins can use this server's own Google identity for a Pub/Sub project"
           : target.startsWith('aws:')
-            ? "Only admins can use this server's own AWS credentials, or change the region or role used with them"
+            ? "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them"
             : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
     })
   }
