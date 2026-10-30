@@ -338,3 +338,52 @@ describe('Python code', () => {
     ])
   })
 })
+
+describe('GraphQL queries and email HTML (M27)', () => {
+  const definition = workflowDefinitionSchema.parse({
+    schemaVersion: 1,
+    blocks: [
+      { name: 'startTrigger', type: 'startTrigger' },
+      {
+        name: 'orders',
+        type: 'resourceQuery',
+        config: {
+          resource: 'shop_gql',
+          query: { query: 'query($id: ID!) {\n  order(id: $id) { id }\n}', variables: '{"id": 1}' },
+        },
+      },
+      {
+        name: 'mail',
+        type: 'resourceQuery',
+        config: {
+          resource: 'sendgrid',
+          query: { action: 'send', to: 'a@example.com', html: '<p>Hi {{ name }}</p>\n' },
+        },
+      },
+      {
+        name: 'find',
+        type: 'resourceQuery',
+        config: { resource: 'crm', query: { action: 'search', objectType: 'contacts', query: 'acme' } },
+      },
+    ],
+    edges: [],
+  })
+  const object = { name: 'Mixed', definition }
+
+  it('go into .graphql and .html files; a service query’s own `query` stays in the JSON', () => {
+    const { files } = encodeWorkflow(object)
+    expect(files['blocks/orders.graphql']).toBe('query($id: ID!) {\n  order(id: $id) { id }\n}\n')
+    // Text files end in one newline more than the value: reading strips it.
+    expect(files['blocks/mail.html']).toBe('<p>Hi {{ name }}</p>\n\n')
+    expect(Object.keys(files).filter((f) => f.startsWith('blocks/find'))).toEqual([])
+    expect(files['workflow.json']).toContain('"query": "acme"')
+    expect(files['workflow.json']).not.toContain('order(id')
+  })
+
+  it('read back into the same workflow', () => {
+    expect(decodeWorkflow(encodeWorkflow(object).files)).toEqual({
+      ok: true,
+      value: { name: 'Mixed', description: null, definition: workflowForGit(definition) },
+    })
+  })
+})

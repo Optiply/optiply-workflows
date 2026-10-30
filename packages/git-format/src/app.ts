@@ -13,6 +13,7 @@ import {
   type Warning,
 } from './files'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
+import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots, namedRecords } from './slots'
 
 export const APP_FILE = 'app.json'
@@ -101,7 +102,7 @@ function decodeAppFiles(main: string, files: Files): Decoded<AppObject> {
     if (query.kind === 'js') {
       slots.take(`queries/${query.name}.js`, query, 'code', { required: true, what })
     } else if (query.kind === 'resource') {
-      slots.take(`queries/${query.name}.sql`, query.query, 'sql', { required: false, what })
+      takeQueryText(slots, `queries/${query.name}`, query.query, what)
     }
     slots.take(`queries/${query.name}.transform.js`, query, 'transform', { required: false, what })
   }
@@ -141,11 +142,7 @@ function moveQueryOut(query: AppQuery, files: Files): AppQuery {
     const { code: _code, ...rest } = out
     out = rest as AppQuery
   } else if (out.kind === 'resource') {
-    const { sql, ...rest } = out.query
-    if (typeof sql === 'string') {
-      files[`queries/${out.name}.sql`] = textFile(sql)
-      out = { ...out, query: rest }
-    }
+    out = { ...out, query: moveQueryText(out.query, `queries/${out.name}`, files) }
   }
   if (out.transform !== undefined) {
     files[`queries/${out.name}.transform.js`] = textFile(out.transform)

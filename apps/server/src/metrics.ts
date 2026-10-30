@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import { sshTunnelStats } from '@ow/connectors'
+import { queryStats, sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { QUEUE_KINDS, QUEUE_OUTCOMES, queueStats, type RunObserver, type ScheduleFire } from '@ow/engine'
 import { pythonStats } from '@ow/sandbox'
@@ -106,6 +106,21 @@ export class Metrics {
       collect() {
         this.reset()
         this.inc(sshTunnelStats.iapResumes)
+      },
+    })
+
+    // Resource queries (M27), as this process's connectors count them.
+    new client.Counter({
+      name: 'ow_connector_queries_total',
+      help: 'Resource queries this process ran, by connector type, action (service queries) and outcome (ok or the error code)',
+      labelNames: ['type', 'action', 'outcome'],
+      registers,
+      collect() {
+        this.reset()
+        for (const [key, n] of queryStats) {
+          const [type = '', action = '', outcome = ''] = key.split('\t')
+          this.inc({ type, action, outcome }, n)
+        }
       },
     })
 

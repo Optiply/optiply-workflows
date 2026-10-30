@@ -118,6 +118,13 @@ const ConfigSchema = z
      * Private hosts the built-in REST API resource (M27) may reach all the same, comma-separated (`*.internal.example`
      * patterns allowed); every other private address stays refused.
      */
+    /** The services' API endpoints (M27): for tests against `startFakeServices`. Never a resource setting. */
+    SLACK_API_URL: z.string().url().optional(),
+    HUBSPOT_API_URL: z.string().url().optional(),
+    SENDGRID_API_URL: z.string().url().optional(),
+    SENDGRID_EU_API_URL: z.string().url().optional(),
+    GOOGLE_SHEETS_API_URL: z.string().url().optional(),
+    GOOGLE_DRIVE_API_URL: z.string().url().optional(),
     REST_API_PRIVATE_HOSTS: z
       .string()
       .default('')

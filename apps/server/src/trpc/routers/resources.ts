@@ -5,9 +5,13 @@ import {
   graphqlConnector,
   graphqlIntrospect,
   type HttpClient,
+  type HubSpotProperty,
+  hubspotConnector,
+  hubspotProperties,
   type KafkaConfig,
   type KafkaSecrets,
   kafkaSettingsProblem,
+  restApiConnector,
   runOperation,
   runQuery,
   SshSettingsError,
@@ -18,6 +22,7 @@ import {
   environments,
   oauthTokens,
   permissions,
+  REST_API_RESOURCE_SLUG,
   type Resource,
   resourceConfigs,
   resources,
@@ -29,7 +34,7 @@ import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
-import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
+import { pubsubSettingsProblem, serverIdentityView, sheetsSettingsProblem } from '../../services/google'
 import {
   type AccountKind,
   connectTarget,
@@ -89,11 +94,18 @@ function sshSettled<T>(settle: () => T): T {
 }
 
 /**
- * Why a queue resource's settings couldn't sign in, checked on save (M19, M26): Pub/Sub's key or project, SQS's AWS
- * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity). Null when fine, or for other types.
+ * Why a resource's settings couldn't sign in, checked on save (M19, M26, M27): Pub/Sub's key or project, SQS's AWS
+ * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity), a service's token or OAuth client secret, Google
+ * Sheets' key or the server's identity. Null when fine, or for other types.
  */
 function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
   if (type === 'pubsub') return pubsubSettingsProblem(config, secrets)
+  if (type === 'googlesheets') return sheetsSettingsProblem(config, secrets)
+  if (type === 'slack' || type === 'hubspot' || type === 'sendgrid') {
+    const auth = ((config ?? {}) as { auth?: { type?: string } }).auth?.type ?? 'token'
+    if (auth === 'token' && !secrets.token) return type === 'sendgrid' ? 'Add the API key' : 'Add the token'
+    if (auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
+  }
   if (type === 'sqs') return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
@@ -217,8 +229,11 @@ function levelsByEnv(access: Access, resource: Resource, envIds: string[]) {
 
 export const resourcesRouter = router({
   /** Connector types a resource can have. */
+  /** The types people can create, grouped for the picker (M27); the built-in REST API's isn't one of them. */
   types: authedProcedure.query(() =>
-    Object.values(connectors).map((c) => ({ type: c.type, label: c.label })),
+    Object.values(connectors)
+      .filter((c) => c.type !== restApiConnector.type)
+      .map((c) => ({ type: c.type, label: c.label, group: TYPE_GROUPS[c.type] ?? 'APIs' })),
   ),
 
   list: authedProcedure.query(async ({ ctx }) => {
@@ -324,6 +339,12 @@ export const resourcesRouter = router({
         })
       }
       connectorFor(input.type)
+      if (input.type === restApiConnector.type) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `The REST API resource is built in: use ${REST_API_RESOURCE_SLUG}`,
+        })
+      }
       const [resource] = await uniqueOr('A resource with that slug already exists', () =>
         ctx.db
           .insert(resources)
@@ -867,8 +888,83 @@ export const resourcesRouter = router({
         return { ok: false as const, error: errorView(err) }
       }
     }),
+  /**
+   * A HubSpot object type's properties (M27), for the query forms' pickers. Needs Use; kept like a GraphQL schema.
+   */
+  hubspotProperties: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        objectType: z
+          .string()
+          .regex(/^[\w-]+$/)
+          .max(100),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== hubspotConnector.type) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only HubSpot resources have properties' })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
+      const key = `hubspot:${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}:${input.objectType}`
+      const cached = graphqlSchemas.get(key)
+      if (cached && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, properties: cached.schema as HubSpotProperty[] }
+      }
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
+        resolved,
+        ctx.user.id,
+      )
+      try {
+        const properties = await runOperation(
+          ctx.services.pool,
+          hubspotConnector,
+          resolved,
+          (client, opts) => hubspotProperties(client as HttpClient, input.objectType, opts),
+          { ...(credentials && { credentials }) },
+        )
+        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
+        graphqlSchemas.set(key, { at: Date.now(), schema: properties })
+        return { ok: true as const, properties }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
 })
 
+/** How the new-resource picker groups the types. */
+const TYPE_GROUPS: Record<string, string> = {
+  postgres: 'Databases',
+  mysql: 'Databases',
+  bigquery: 'Databases',
+  rest: 'APIs',
+  graphql: 'APIs',
+  pubsub: 'Messaging',
+  sqs: 'Messaging',
+  kafka: 'Messaging',
+  slack: 'Services',
+  hubspot: 'Services',
+  sendgrid: 'Services',
+  googlesheets: 'Services',
+}
+
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000
-/** Introspection results by config row, settings version and (per-user accounts) person; oldest dropped past 200. */
+/**
+ * GraphQL schemas and HubSpot properties by config row, settings version, (per-user accounts) person and object type;
+ * oldest dropped past 200.
+ */
 const graphqlSchemas = new Map<string, { at: number; schema: unknown }>()

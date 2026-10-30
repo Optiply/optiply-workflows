@@ -32,6 +32,18 @@ const DEFAULT_TIMEOUT_MS = 120_000
  * Runs one query against a resource through the pool. Every failure becomes a `ConnectorError`, and secret values
  * are scrubbed from errors and metadata (and from data, for connectors that opt in).
  */
+/**
+ * Queries this process ran, by connector type, action (service queries, M27; empty otherwise) and outcome (`ok` or the
+ * error's code), keyed `type\taction\toutcome`, for `ow_connector_queries_total`.
+ */
+export const queryStats = new Map<string, number>()
+
+function countQuery(type: string, rawQuery: unknown, outcome: string): void {
+  const action = (rawQuery as { action?: unknown } | null)?.action
+  const key = `${type}\t${typeof action === 'string' ? action.slice(0, 40) : ''}\t${outcome}`
+  queryStats.set(key, (queryStats.get(key) ?? 0) + 1)
+}
+
 export async function runQuery(
   pool: PoolManager,
   connector: AnyConnector,
@@ -56,12 +68,20 @@ export async function runQuery(
         ...(credentials && { credentials }),
       }),
     )
+    countQuery(connector.type, rawQuery, 'ok')
     return {
       data: connector.scrubResultData ? scrubSecretsDeep(result.data, secrets) : result.data,
       metadata: scrubSecretsDeep(result.metadata, secrets),
     }
   } catch (err) {
-    throw toConnectorError(err, { timedOut: timeout.aborted, timeoutMs, aborted: signal.aborted, secrets })
+    const error = toConnectorError(err, {
+      timedOut: timeout.aborted,
+      timeoutMs,
+      aborted: signal.aborted,
+      secrets,
+    })
+    countQuery(connector.type, rawQuery, error instanceof ConnectorError ? error.code : 'error')
+    throw error
   }
 }
 

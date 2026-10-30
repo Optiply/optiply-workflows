@@ -19,6 +19,7 @@ import {
   type Warning,
 } from './files'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
+import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots, namedRecords } from './slots'
 
 export const WORKFLOW_FILE = 'workflow.json'
@@ -160,12 +161,11 @@ function moveOut(block: Block, dir: string, files: Files): Block {
       const { code: _code, ...config } = block.config
       return { ...block, config } as Block
     }
-    case 'resourceQuery': {
-      const { sql, ...query } = block.config.query
-      if (typeof sql !== 'string') return block
-      files[`${dir}${block.name}.sql`] = textFile(sql)
-      return { ...block, config: { ...block.config, query } }
-    }
+    case 'resourceQuery':
+      return {
+        ...block,
+        config: { ...block.config, query: moveQueryText(block.config.query, `${dir}${block.name}`, files) },
+      }
     case 'loop': {
       const runner = block.config.runner
       if (runner.kind === 'code') {
@@ -174,9 +174,7 @@ function moveOut(block: Block, dir: string, files: Files): Block {
         return { ...block, config: { ...block.config, runner: rest } } as Block
       }
       if (runner.kind === 'query') {
-        const { sql, ...query } = runner.query
-        if (typeof sql !== 'string') return block
-        files[`${dir}${block.name}.sql`] = textFile(sql)
+        const query = moveQueryText(runner.query, `${dir}${block.name}`, files)
         return { ...block, config: { ...block.config, runner: { ...runner, query } } }
       }
       return block
@@ -209,7 +207,7 @@ function moveIn(block: Record<string, unknown> & { name: string }, dir: string, 
       return
     case 'resourceQuery':
       if (isRecord(config)) {
-        slots.take(`${dir}${block.name}.sql`, config.query, 'sql', { required: false, what: what('query') })
+        takeQueryText(slots, `${dir}${block.name}`, config.query, what('query'))
       }
       return
     case 'loop': {
@@ -221,7 +219,7 @@ function moveIn(block: Record<string, unknown> & { name: string }, dir: string, 
           what: what('loop'),
         })
       } else if (runner.kind === 'query') {
-        slots.take(`${dir}${block.name}.sql`, runner.query, 'sql', { required: false, what: what('loop') })
+        takeQueryText(slots, `${dir}${block.name}`, runner.query, what('loop'))
       }
       return
     }

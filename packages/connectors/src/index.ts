@@ -135,7 +135,7 @@ export {
   restSecretsSchema,
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
-export { type RunOptions, runOperation, runQuery, testResource } from './run'
+export { queryStats, type RunOptions, runOperation, runQuery, testResource } from './run'
 export { configureServiceUrls, type ServiceUrls } from './services/common'
 export {
   configureSheets,

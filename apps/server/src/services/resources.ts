@@ -141,6 +141,11 @@ export function serverIdentityTarget(config: unknown, type?: string): string | n
     const c = config as { identity?: unknown; project?: unknown } | null
     return c?.identity === 'server' ? `pubsub:${String(c.project ?? '')}` : null
   }
+  if (type === 'googlesheets') {
+    // M27: any spreadsheet shared with the server's identity; choosing it is the admin's call, as for Pub/Sub.
+    const c = config as { auth?: { type?: unknown } } | null
+    return c?.auth?.type === 'server' ? 'google:sheets' : null
+  }
   const hop = (config as { ssh?: SshConfig } | null)?.ssh?.hops[0]
   if (hop?.reach !== 'iap' || hop.iap?.identity !== 'server') return null
   const { project, zone, instance, interface: nic } = hop.iap
