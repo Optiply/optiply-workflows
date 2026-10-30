@@ -125,6 +125,19 @@ describe('Slack resources', () => {
     expect(bad.code).toBe('invalid_query')
   })
 
+  it('say which scope a method needs when the token lacks it', async () => {
+    fake.slack.scopes = new Set(['channels:read', 'users:read'])
+    try {
+      const err = await failure(run({ action: 'postMessage', channel: '#general', text: 'x' }))
+      expect(err.message).toBe(
+        'Slack: missing_scope: chat.postMessage needs chat:write; the token has channels:read,users:read. Add it to the Slack app’s scopes and reinstall the app',
+      )
+      expect(err.details).toMatchObject({ needed: 'chat:write', provided: 'channels:read,users:read' })
+    } finally {
+      fake.slack.scopes = null
+    }
+  })
+
   it('never return the token, and need one', async () => {
     const out = await run({ action: 'api', method: 'auth.test', args: '{}' })
     expect(JSON.stringify(out)).not.toContain(fake.slack.token)

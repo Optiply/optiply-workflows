@@ -43,6 +43,8 @@ export interface FakeSlack {
   files: { id: string; name: string; title: string; bytes: Buffer; channel?: string; comment?: string }[]
   /** The next call to this method answers 429 with this Retry-After. */
   rateLimit: Map<string, number>
+  /** Scopes the token has: a method needing another answers missing_scope (Slack's `needed` and `provided`). */
+  scopes: Set<string> | null
 }
 
 export interface FakeHubSpotRecord {
@@ -117,6 +119,7 @@ export async function startFakeServices(
     messages: [],
     files: [],
     rateLimit: new Map(),
+    scopes: null,
   }
   let ts = 1_712_000_000
   const uploads = new Map<string, { filename: string; length: number; bytes?: Buffer }>()
@@ -135,6 +138,26 @@ export async function startFakeServices(
     const token = auth.replace(/^Bearer /, '')
     if (token !== slack.token && !slack.acceptTokens.has(token))
       return { status: 200, json: { ok: false, error: 'invalid_auth' } }
+    const needs: Record<string, string> = {
+      'chat.postMessage': 'chat:write',
+      'chat.update': 'chat:write',
+      'chat.delete': 'chat:write',
+      'conversations.list': 'channels:read',
+      'users.list': 'users:read',
+      'users.lookupByEmail': 'users:read.email',
+      'files.getUploadURLExternal': 'files:write',
+    }
+    if (slack.scopes && needs[method] && !slack.scopes.has(needs[method]!)) {
+      return {
+        status: 200,
+        json: {
+          ok: false,
+          error: 'missing_scope',
+          needed: needs[method],
+          provided: [...slack.scopes].join(','),
+        },
+      }
+    }
     const limited = slack.rateLimit.get(method)
     if (limited !== undefined) {
       slack.rateLimit.delete(method)

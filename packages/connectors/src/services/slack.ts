@@ -80,12 +80,24 @@ async function slack(
     })
   }
   if (!body.ok) {
+    // missing_scope says which scope the method needs and which the token has: worth saying, it's the fix.
+    const needed = typeof body.needed === 'string' ? body.needed : undefined
+    const provided = typeof body.provided === 'string' ? body.provided : undefined
+    const scopes = needed
+      ? `: ${method} needs ${needed}${provided ? `; the token has ${provided}` : ''}. Add it to the Slack app’s scopes and reinstall the app`
+      : ''
     const details = body.response_metadata?.messages?.join('; ')
-    throw new ConnectorError('query', `Slack: ${body.error ?? 'error'}${details ? ` (${details})` : ''}`, {
-      error: body.error,
-      method,
-      ...(body.response_metadata && { responseMetadata: body.response_metadata }),
-    })
+    throw new ConnectorError(
+      'query',
+      `Slack: ${body.error ?? 'error'}${scopes}${details ? ` (${details})` : ''}`,
+      {
+        error: body.error,
+        method,
+        ...(needed && { needed }),
+        ...(provided && { provided }),
+        ...(body.response_metadata && { responseMetadata: body.response_metadata }),
+      },
+    )
   }
   return { body, res }
 }
