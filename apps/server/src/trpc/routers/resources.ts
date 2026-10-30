@@ -20,6 +20,7 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { awsIdentityView } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
 import {
@@ -97,7 +98,9 @@ function requireAdminForServerIdentity(
       message:
         type === 'pubsub'
           ? "Only admins can use this server's own Google identity for a Pub/Sub project"
-          : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+          : target.startsWith('aws:')
+            ? "Only admins can use this server's own AWS credentials, or change the region or role used with them"
+            : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
     })
   }
   return target
@@ -263,6 +266,12 @@ export const resourcesRouter = router({
    * it is, and whether this user may choose it (admins only).
    */
   serverIdentity: authedProcedure.query(({ ctx }) => serverIdentityView(ctx.user)),
+
+  /**
+   * Whether SQS resources and Kafka's MSK IAM may use this server's own AWS credentials (M26, AWS_SERVER_IDENTITY),
+   * whose they are, and whether this user may choose them (admins only).
+   */
+  awsIdentity: authedProcedure.query(({ ctx }) => awsIdentityView(ctx.user)),
 
   create: authedProcedure
     .input(

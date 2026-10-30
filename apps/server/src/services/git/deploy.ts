@@ -93,7 +93,12 @@ export type DeployResult =
 
 type DeployConfig = Pick<
   Config,
-  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY' | 'PUBLIC_URL'
+  | 'keyring'
+  | 'GIT_CACHE_DIR'
+  | 'GIT_ALLOW_INSECURE_URLS'
+  | 'GOOGLE_SERVER_IDENTITY'
+  | 'AWS_SERVER_IDENTITY'
+  | 'PUBLIC_URL'
 > &
   Partial<Pick<Config, 'NPM_REGISTRY_URL' | 'COMPONENT_BUILD_DIR'>>
 
@@ -319,6 +324,7 @@ async function deployOnce(
               { commit },
               {
                 serverIdentity: config.GOOGLE_SERVER_IDENTITY === 'allow',
+                awsIdentity: config.AWS_SERVER_IDENTITY === 'allow',
               },
             ),
       )

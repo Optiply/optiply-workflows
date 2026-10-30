@@ -105,6 +105,15 @@ const ConfigSchema = z
     GOOGLE_IAP_URL: z.string().url().optional(),
     GOOGLE_PUBSUB_URL: z.string().url().optional(),
     GOOGLE_TOKEN_URL: z.string().url().optional(),
+    /**
+     * `allow` lets SQS resources and Kafka's MSK IAM (M26) use this server's own AWS credentials: the SDK's default
+     * chain (environment, `~/.aws`, SSO, web identity, ECS and EC2 metadata). Off by default; only admins can choose it
+     * for a resource.
+     */
+    AWS_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
+    /** STS's and SQS's endpoints: for tests against the fake AWS. */
+    AWS_STS_URL: z.string().url().optional(),
+    AWS_SQS_URL: z.string().url().optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

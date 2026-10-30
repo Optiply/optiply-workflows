@@ -6,6 +6,7 @@ import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
+import { configureAwsServer } from '../services/aws'
 import { deleteUnusedBundles } from '../services/component-libraries'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
@@ -38,6 +39,7 @@ export async function startWorker(deps: {
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) log.warn(pythonWarning)
   configureGoogle(config)
+  configureAwsServer(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,

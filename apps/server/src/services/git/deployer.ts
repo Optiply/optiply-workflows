@@ -23,7 +23,12 @@ export class GitDeployer {
       db: Db
       config: Pick<
         Config,
-        'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GOOGLE_SERVER_IDENTITY' | 'PUBLIC_URL'
+        | 'keyring'
+        | 'GIT_CACHE_DIR'
+        | 'GIT_ALLOW_INSECURE_URLS'
+        | 'GOOGLE_SERVER_IDENTITY'
+        | 'AWS_SERVER_IDENTITY'
+        | 'PUBLIC_URL'
       >
       log?: DeployerLogger
       /** 0: don't poll. */

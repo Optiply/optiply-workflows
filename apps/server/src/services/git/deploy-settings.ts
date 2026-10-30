@@ -169,7 +169,8 @@ export async function deployResource(
   db: Db,
   item: SettingsItem<ResourceObject>,
   git: { commit: string },
-  opts: { serverIdentity: boolean },
+  /** Whether this instance lets resources use its own Google identity and AWS credentials. */
+  opts: { serverIdentity: boolean; awsIdentity: boolean },
 ): Promise<ObjectOutcome> {
   const label = SETTINGS_LABELS.resource
   const { value } = item
@@ -218,10 +219,13 @@ export async function deployResource(
         `${env.slug}: this instance's overrides (${Object.keys(row!.overrides).join(', ')}) don't fit the new settings: change them here first`,
       )
     }
-    if (!opts.serverIdentity && serverIdentityTarget(effective.data, value.type)) {
+    const target = serverIdentityTarget(effective.data, value.type)
+    if (target && (target.startsWith('aws:') ? !opts.awsIdentity : !opts.serverIdentity)) {
       return problem(
         'server_identity',
-        `${env.slug}: uses this server's own Google identity, which this instance doesn't allow (GOOGLE_SERVER_IDENTITY)`,
+        target.startsWith('aws:')
+          ? `${env.slug}: uses this server's own AWS credentials, which this instance doesn't allow (AWS_SERVER_IDENTITY)`
+          : `${env.slug}: uses this server's own Google identity, which this instance doesn't allow (GOOGLE_SERVER_IDENTITY)`,
       )
     }
     next.set(env.id, parsed.data as Record<string, unknown>)

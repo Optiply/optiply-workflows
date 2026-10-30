@@ -103,6 +103,7 @@ export async function startTestMysql(): Promise<TestMysql> {
   }
 }
 
+export { type FakeAws, type FakeAwsKey, type FakeAwsRole, startFakeAws } from './aws/fake'
 export {
   type FakeDelivery,
   type FakePubSub,

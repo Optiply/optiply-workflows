@@ -113,12 +113,19 @@ export function iapKeyInfo(secrets: Record<string, unknown>): Record<string, Iap
 }
 
 /**
- * What a config reaches with the server's own Google identity, or null when it doesn't use it: the VM its first SSH
- * server is reached at through IAP (M18), as `project/zone/instance/interface:port`, or a Pub/Sub resource's project
- * (M19), as `pubsub:<project>`. Only admins may choose it or point it elsewhere: the server's identity may reach what
+ * What a config reaches with the server's own Google identity or AWS credentials, or null when it doesn't use them: the
+ * VM its first SSH server is reached at through IAP (M18), as `project/zone/instance/interface:port`, a Pub/Sub
+ * resource's project (M19), as `pubsub:<project>`, or an SQS or MSK IAM region and role (M26), as `aws:<region>:<role>`. Only admins may choose it or point it elsewhere: the server's identity may reach what
  * no one's key does.
  */
 export function serverIdentityTarget(config: unknown, type?: string): string | null {
+  if (type === 'sqs' || type === 'kafka') {
+    // M26: the server's own AWS credentials, for SQS or Kafka's MSK IAM: the region and any role assumed with them
+    // (they may be allowed to assume roles no one's key is).
+    const c = config as { identity?: unknown; auth?: unknown; region?: unknown; roleArn?: unknown } | null
+    if (type === 'kafka' && c?.auth !== 'aws-msk-iam') return null
+    return c?.identity === 'server' ? `aws:${String(c.region ?? '')}:${String(c.roleArn ?? '')}` : null
+  }
   if (type === 'pubsub') {
     const c = config as { identity?: unknown; project?: unknown } | null
     return c?.identity === 'server' ? `pubsub:${String(c.project ?? '')}` : null

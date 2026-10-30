@@ -6,6 +6,17 @@ import { restConnector } from './rest'
 import type { AnyConnector } from './types'
 
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
+export {
+  type AwsDefaults,
+  type AwsIdentity,
+  awsCredentials,
+  awsDefaults,
+  awsError,
+  awsIdentityConfig,
+  awsIdentitySecrets,
+  configureAws,
+  describeAws,
+} from './aws/credentials'
 export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
   CodeFetcher,

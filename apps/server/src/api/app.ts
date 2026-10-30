@@ -14,6 +14,7 @@ import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
 import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
+import { configureAwsServer } from '../services/aws'
 import { CollabHub } from '../services/collab/rooms'
 import { CollabStore } from '../services/collab/store'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
@@ -68,6 +69,7 @@ export async function buildApp(deps: {
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) app.log.warn(pythonWarning)
   configureGoogle(config)
+  configureAwsServer(config)
   const runner = new InlineRunner({
     db,
     pool: services.pool,
