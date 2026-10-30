@@ -284,8 +284,11 @@ export async function deployResource(
         await tx.insert(resourceConfigs).values({ resourceId: resource.id, environmentId: env.id, config })
         changed = true
       } else if (canonicalJson(row.config) !== canonicalJson(config)) {
-        const before = authFingerprint(applyOverrides(row.config, row.overrides))
-        if (before !== null && before !== authFingerprint(applyOverrides(config, row.overrides))) {
+        const before = authFingerprint(resource.type, applyOverrides(row.config, row.overrides))
+        if (
+          before !== null &&
+          before !== authFingerprint(resource.type, applyOverrides(config, row.overrides))
+        ) {
           await deleteTokens(tx, row.id)
         }
         await tx

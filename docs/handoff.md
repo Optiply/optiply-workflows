@@ -1852,7 +1852,7 @@ M27 is planned (`architecture.md` §2.30 and the M27 row), on the local branch `
    - 5c: the GraphQL editor (`monaco-graphql`, the schema, variables' JSON schema); e2e per type.
 6. **Finish** — 6a: the done-when spec (`m27-done-when.spec.ts`; the fakes and the GraphQL server in the e2e setup). 6b: a Docker image build checked locally; the Compose check on the user's stack only when they say (real Slack, HubSpot, SendGrid, Sheets). 6c: docs, the runbook. Then the review (`code-review`) and its fixes.
 
-**Progress:** step 0 written.
+**Progress:** step 0 `1cf0a75`. 1a: `packages/connectors/src/http-core.ts` (`createHttpClient` with `anyPublicHost`, `httpRequest` returning any status with the 401 retry, `httpError`, `testHttp`, `buildBody`, `checkHost`), REST on it (283 connector tests unchanged); `Connector.httpConfig(config)` and `httpConfigFor(type, config)`; the server's `authFingerprint`, `authorizationCode`, `credentialsFor` take the resource type, and OAuth connect accepts any type with `httpConfig` (service secrets keep the OAuth client secret as `clientSecret`).
 
 ## 15. How to start the next session
 

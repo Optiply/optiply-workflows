@@ -1,5 +1,6 @@
 import type { Evaluate, TemplateError } from '@ow/expressions'
 import type { z } from 'zod'
+import type { RestConfig } from './rest'
 
 /** One resource's settings in one environment, with secrets already decrypted (server-side only). */
 export interface ResolvedResource<Config = unknown, Secrets = unknown> {
@@ -88,6 +89,11 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },
   ): Promise<TestResult>
+  /**
+   * The REST-shaped settings an HTTP connector connects with (M27): its base URL, auth, allowed hosts and network.
+   * The server's OAuth sign-in (M9) and custom auth flows work from these, for any type that has them.
+   */
+  httpConfig?(config: Config): RestConfig
   /** Static checks that need no evaluation (e.g. `{{ }}` inside a SQL string literal). */
   validateQuery(query: Query): TemplateError[]
   execute(client: Client, query: Query, ctx: QueryContext): Promise<QueryResult>

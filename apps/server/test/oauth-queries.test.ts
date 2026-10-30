@@ -148,7 +148,7 @@ async function connect(
     environmentId: prodId,
     userId,
     tokens: { accessToken: access, refreshToken: `rt-${access}`, expiresAt, scope: 'me', account: null },
-    consentHash: authFingerprint(row!.config)!,
+    consentHash: authFingerprint('rest', row!.config)!,
     connectedBy: userId ?? adminId,
   })
 }

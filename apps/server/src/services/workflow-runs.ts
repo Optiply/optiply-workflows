@@ -416,7 +416,12 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
       return {
         connector,
         resource: resolved,
-        credentials: credentialsFor({ db, keyring, sandbox }, resolved, opts?.actingUserId ?? null),
+        credentials: credentialsFor(
+          { db, keyring, sandbox },
+          resource.type,
+          resolved,
+          opts?.actingUserId ?? null,
+        ),
       }
     },
   }

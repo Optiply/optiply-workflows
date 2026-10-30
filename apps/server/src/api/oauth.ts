@@ -83,7 +83,7 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         account: query.data.account,
         ...(query.data.appId && { appId: query.data.appId }),
         userId: user.id,
-        consent: authFingerprint(effectiveConfig(target.config))!,
+        consent: authFingerprint(target.resource.type, effectiveConfig(target.config))!,
       }
       reply.setCookie(pendingCookieName(state), JSON.stringify(pending), {
         ...cookieOptions,
@@ -163,7 +163,7 @@ export const oauthApi: FastifyPluginAsync<{ db: Db; config: Config }> = async (a
         return finish(reply, err.status, { ok: false, message: err.message, ...ids })
       throw err
     }
-    const consent = authFingerprint(effectiveConfig(target.config))!
+    const consent = authFingerprint(target.resource.type, effectiveConfig(target.config))!
     if (consent !== pending.consent) {
       return finish(reply, 400, {
         ok: false,

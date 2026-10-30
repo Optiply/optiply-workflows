@@ -4,6 +4,7 @@ import { kafkaConnector } from './kafka/connector'
 import { mysqlConnector } from './mysql'
 import { postgresConnector } from './postgres'
 import { pubsubConnector } from './pubsub/connector'
+import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import type { AnyConnector } from './types'
 
@@ -35,6 +36,16 @@ export {
   type ServerIdentityOptions,
   serverIdentity,
 } from './google-auth'
+export {
+  buildBody,
+  createHttpClient,
+  destroyHttpClient,
+  type HttpClient,
+  type HttpRequest,
+  type HttpResponse,
+  httpError,
+  httpRequest,
+} from './http-core'
 export {
   type KafkaAdmin,
   type KafkaClientExtras,
@@ -105,7 +116,17 @@ export {
   pubsubClient,
   pubsubConnector,
 } from './pubsub/connector'
-export { type AuthFlowStep, type RestConfig, type RestQuery, type RestSecrets, restConnector } from './rest'
+export {
+  type AuthFlowStep,
+  type RestAuth,
+  type RestConfig,
+  type RestQuery,
+  type RestSecrets,
+  restConfigSchema,
+  restConnector,
+  restQuerySchema,
+  restSecretsSchema,
+} from './rest'
 export { type RunOptions, runQuery, testResource } from './run'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
@@ -150,4 +171,15 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
 
 export function getConnector(type: string): AnyConnector | undefined {
   return Object.hasOwn(connectors, type) ? connectors[type] : undefined
+}
+
+/**
+ * The REST-shaped settings a resource of `type` connects with (M27: REST, GraphQL, the services), or null for other
+ * types and for settings that don't parse. The OAuth and custom auth flow code works from these.
+ */
+export function httpConfigFor(type: string, config: unknown): RestConfig | null {
+  const connector = connectors[type]
+  if (!connector?.httpConfig) return null
+  const parsed = connector.configSchema.safeParse(config)
+  return parsed.success ? connector.httpConfig(parsed.data) : null
 }

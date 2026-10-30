@@ -295,7 +295,11 @@ async function checkReleasable(
           resources.map((r) => r.id),
         ),
       )
-    const perUser = configs.find((c) => authorizationCode(effectiveConfig(c))?.tokens === 'perUser')
+    const perUser = configs.find(
+      (c) =>
+        authorizationCode(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c))?.tokens ===
+        'perUser',
+    )
     if (perUser) {
       const resource = resources.find((r) => r.id === perUser.resourceId)!
       const env = envs.find((e) => e.id === perUser.environmentId)

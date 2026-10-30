@@ -454,9 +454,10 @@ export const resourcesRouter = router({
         updatedAt: new Date(),
       }
       // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
-      const before = existing ? authFingerprint(effectiveConfig(existing)) : null
+      const before = existing ? authFingerprint(resource.type, effectiveConfig(existing)) : null
       const consentChanged =
-        before !== null && before !== authFingerprint(applyOverrides(values.config, existing!.overrides))
+        before !== null &&
+        before !== authFingerprint(resource.type, applyOverrides(values.config, existing!.overrides))
       let disconnectedAccounts = 0
       if (existing) {
         disconnectedAccounts = await ctx.db.transaction(async (tx) => {
@@ -545,7 +546,9 @@ export const resourcesRouter = router({
         effectiveConfig(existing),
         next.data,
       )
-      const consentChanged = authFingerprint(effectiveConfig(existing)) !== authFingerprint(next.data)
+      const consentChanged =
+        authFingerprint(resource.type, effectiveConfig(existing)) !==
+        authFingerprint(resource.type, next.data)
       const disconnectedAccounts = await ctx.db.transaction(async (tx) => {
         await tx
           .update(resourceConfigs)
@@ -645,6 +648,7 @@ export const resourcesRouter = router({
         existing || custom
           ? credentialsFor(
               { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+              resource.type,
               tested,
               ctx.user.id,
               { store: false },
@@ -678,7 +682,7 @@ export const resourcesRouter = router({
       const level = access.level(resource, environmentId)
       if (!level) continue
       const row = await getConfigRow(ctx.db, resource.id, environmentId)
-      const auth = row && authorizationCode(effectiveConfig(row))
+      const auth = row && authorizationCode(resource.type, effectiveConfig(row))
       if (!row || !auth) {
         environments.push({
           environmentId,
@@ -690,7 +694,7 @@ export const resourcesRouter = router({
         continue
       }
       const shared = auth.tokens === 'shared'
-      const consent = authFingerprint(effectiveConfig(row))!
+      const consent = authFingerprint(resource.type, effectiveConfig(row))!
       let connectedPeople: number | null = null
       if (!shared && atLeast(level, 'edit')) {
         const [counted] = await ctx.db
@@ -770,6 +774,7 @@ export const resourcesRouter = router({
       const resolved = toResolved(ctx.config.keyring, row)
       const credentials = credentialsFor(
         { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
         resolved,
         ctx.user.id,
       )

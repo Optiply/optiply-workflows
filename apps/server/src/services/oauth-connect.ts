@@ -1,5 +1,5 @@
 import { type AppQuery, instanceKeys } from '@ow/app-definition'
-import { type AuthorizationCodeSettings, restConnector } from '@ow/connectors'
+import { type AuthorizationCodeSettings, getConnector, httpConfigFor } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import {
   appReleases,
@@ -68,8 +68,8 @@ export async function connectTarget(
     !!input.appId &&
     (await liveAppQueries(db, access, input.appId, resource.slug))
   if (!resource || (!level && !throughApp)) throw new OAuthConnectError(404, 'Resource not found')
-  if (resource.type !== restConnector.type) {
-    throw new OAuthConnectError(400, 'Only REST resources connect accounts')
+  if (!getConnector(resource.type)?.httpConfig) {
+    throw new OAuthConnectError(400, "This kind of resource doesn't connect accounts")
   }
   const [config] = await db
     .select()
@@ -81,9 +81,9 @@ export async function connectTarget(
       ),
     )
   if (!config) throw new OAuthConnectError(400, 'This resource is not configured in this environment')
-  const parsed = restConnector.configSchema.safeParse(effectiveConfig(config))
-  const auth = parsed.success ? parsed.data.auth : undefined
-  if (!parsed.success || auth?.type !== 'oauth2AuthorizationCode') {
+  const http = httpConfigFor(resource.type, effectiveConfig(config))
+  const auth = http?.auth
+  if (!http || auth?.type !== 'oauth2AuthorizationCode') {
     throw new OAuthConnectError(400, "This resource doesn't use OAuth 2.0 sign-in in this environment")
   }
   if (input.account === 'shared' && auth.tokens !== 'shared') {
@@ -104,7 +104,7 @@ export async function connectTarget(
     config,
     auth,
     clientSecret: typeof secrets.clientSecret === 'string' ? secrets.clientSecret : undefined,
-    allowPrivateNetwork: parsed.data.allowPrivateNetwork,
+    allowPrivateNetwork: http.allowPrivateNetwork,
     userId: input.account === 'shared' ? null : user.id,
   }
 }
