@@ -5,14 +5,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   kafkaAvailable,
+  rabbitAvailable,
   s3Available,
   startFakeAws,
   startFakePubSub,
   startTestIapServer,
   startTestKafka,
+  startTestRabbit,
   startTestS3,
   startTestSshServer,
   type TestKafka,
+  type TestRabbit,
   type TestS3,
 } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
@@ -1249,6 +1252,55 @@ describe('SQS resources (M26)', () => {
     expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
     // Kept as it is by an editor, yes.
     expect((await save(member, id, endpoint)).status).toBe(200)
+  })
+})
+
+describe.skipIf(!rabbitAvailable())('RabbitMQ resources (M30)', () => {
+  let rabbit: TestRabbit
+  let id: string
+  beforeAll(async () => {
+    rabbit = await startTestRabbit()
+    SECRETS.push(rabbit.password)
+    await rabbit.declare('m30-orders')
+    id = data(
+      await admin.mutate('resources.create', { type: 'rabbitmq', name: 'Broker', slug: 'broker_m30' }),
+    ).id
+  }, 120_000)
+  afterAll(async () => {
+    await rabbit?.stop()
+  })
+
+  it('checks the password on save, tests the connection, publishes', async () => {
+    const config = {
+      host: rabbit.host,
+      port: rabbit.port,
+      username: rabbit.username,
+      allowPrivateNetwork: true,
+    }
+    const save = (secrets?: object) =>
+      admin.mutate('resources.saveConfig', {
+        resourceId: id,
+        environmentId: prodId,
+        config,
+        ...(secrets ? { secrets } : {}),
+      })
+    expect((await save()).body.error?.message).toBe('Add the password')
+    expect((await save({ password: rabbit.password })).status).toBe(200)
+    expect(
+      data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId })),
+    ).toMatchObject({
+      ok: true,
+      message: expect.stringMatching(/^RabbitMQ 4/),
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { action: 'publish', routingKey: 'm30-orders', messages: '{"body": {"n": {{ 6 * 7 }}}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: { published: 1 } })
+    expect((await rabbit.drain('m30-orders')).map((m) => m.body)).toEqual(['{"n":42}'])
   })
 })
 

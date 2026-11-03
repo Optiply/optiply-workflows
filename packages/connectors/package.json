@@ -23,6 +23,7 @@
     "@ow/crypto": "workspace:*",
     "@ow/expressions": "workspace:*",
     "@smithy/signature-v4": "5.7.5",
+    "amqplib": "0.10.9",
     "graphql": "16.14.2",
     "mysql2": "3.24.5",
     "postgres": "3.4.9",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@ow/db": "workspace:*",
     "@smithy/types": "4.19.0",
+    "@types/amqplib": "0.10.8",
     "@types/ssh2": "1.15.6",
     "@types/ws": "8.18.2",
     "aws-msk-iam-sasl-signer-js": "1.0.3",

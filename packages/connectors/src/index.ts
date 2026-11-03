@@ -7,6 +7,7 @@ import { mysqlConnector } from './mysql'
 import { openapiConnector } from './openapi'
 import { postgresConnector } from './postgres'
 import { pubsubConnector } from './pubsub/connector'
+import { rabbitmqConnector } from './rabbitmq/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
@@ -143,6 +144,15 @@ export {
   pubsubConnector,
 } from './pubsub/connector'
 export {
+  type RabbitClient,
+  type RabbitConfig,
+  type RabbitSecrets,
+  rabbitClient,
+  rabbitConfigSchema,
+  rabbitError,
+} from './rabbitmq/client'
+export { publishTo, rabbitMessage, rabbitmqConnector } from './rabbitmq/connector'
+export {
   type AuthFlowStep,
   type RestAuth,
   type RestConfig,
@@ -218,6 +228,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
+  [rabbitmqConnector.type]: rabbitmqConnector,
   [s3Connector.type]: s3Connector,
   [stripeConnector.type]: stripeConnector,
   [airtableConnector.type]: airtableConnector,

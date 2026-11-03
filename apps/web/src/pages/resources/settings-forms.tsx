@@ -10,7 +10,7 @@ import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OpenApiSpecFields } from './openapi-settings'
 import { OverridesCard } from './overrides'
-import { KafkaFields, S3Fields, SqsFields } from './queue-settings'
+import { KafkaFields, RabbitFields, S3Fields, SqsFields } from './queue-settings'
 import {
   AirtableFields,
   GoogleSheetsFields,
@@ -94,6 +94,7 @@ const DEFAULTS: Record<string, Config> = {
   },
   sqs: { region: 'eu-west-1', identity: 'key' },
   s3: { region: 'eu-west-1', identity: 'key', forcePathStyle: false },
+  rabbitmq: { host: '', vhost: '/', username: '', tls: false, allowPrivateNetwork: false },
   kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
@@ -245,6 +246,8 @@ export function SettingsPanel({
           <SqsFields {...props} />
         ) : resource.type === 's3' ? (
           <S3Fields {...props} />
+        ) : resource.type === 'rabbitmq' ? (
+          <RabbitFields {...props} />
         ) : resource.type === 'kafka' ? (
           <KafkaFields {...props} />
         ) : resource.type === 'slack' ? (

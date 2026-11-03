@@ -1965,7 +1965,7 @@ M30 (more brokers) is planned in `architecture.md` §2.33, on `feat/m30-brokers`
 6. **Done-when and docs.**
 7. **Review** (the `code-review` skill, high), fixes, full e2e.
 
-**Progress:** step 0 (this plan).
+**Progress:** step 0 `9710f2b`. Step 1 (RabbitMQ resource): `rabbitmq/client.ts` (`rabbitClient`: one connection per configuration, reopened after a close; a confirm channel for publishing; the host's addresses checked against the private-network guard unless allowed; TLS with an optional CA), `rabbitmq/connector.ts` (an **action type** like the services, so the forms come free: `publish` with exchange, routing key, messages; publisher confirms; `mandatory` so a message no queue takes is an error; the channel's close reason (`NOT_FOUND - no exchange …`) reported), `test-rabbitmq.ts`; **amqplib 0.10.9** (MIT; not 2.2.1, published two days earlier) and `@types/amqplib`; the server's password check, the Messaging group; web `RabbitFields`. 4 connector tests, 1 server test.
 
 ## 15. How to start the next session
 

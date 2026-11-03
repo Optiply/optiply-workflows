@@ -114,6 +114,7 @@ export {
   type FakeSubscriptionSettings,
   startFakePubSub,
 } from './pubsub/fake'
+export { rabbitAvailable, startTestRabbit, type TestRabbit } from './rabbitmq/test-rabbitmq'
 export {
   type FakeHubSpot,
   type FakeSendGrid,

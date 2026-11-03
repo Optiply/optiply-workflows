@@ -14,6 +14,7 @@ export const SERVICE_TYPES = [
   'jira',
   'notion',
   'salesforce',
+  'rabbitmq',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1216,6 +1217,32 @@ const SALESFORCE: readonly ActionSpec[] = [
   },
 ]
 
+const RABBITMQ: readonly ActionSpec[] = [
+  {
+    id: 'publish',
+    label: 'Publish',
+    description: 'Messages to an exchange, confirmed by the broker; a message no queue takes is an error.',
+    fields: [
+      {
+        key: 'exchange',
+        label: 'Exchange',
+        kind: 'text',
+        hint: 'Empty: the default exchange, where the routing key is a queue.',
+      },
+      { key: 'routingKey', label: 'Routing key', kind: 'text', placeholder: 'orders' },
+      {
+        key: 'messages',
+        label: 'Messages',
+        kind: 'json',
+        language: 'json',
+        required: true,
+        initial: '{"body": {}}',
+        hint: 'One message or an array: {"body": …, "headers": {…}, "messageId": "…", "persistent": true, "priority": 0, "expiration": "60000"}. A body that isn’t a string is sent as JSON.',
+      },
+    ],
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
@@ -1227,6 +1254,7 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   jira: JIRA,
   notion: NOTION,
   salesforce: SALESFORCE,
+  rabbitmq: RABBITMQ,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

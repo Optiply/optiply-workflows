@@ -157,6 +157,73 @@ export function SqsFields(props: FieldsProps) {
 }
 
 /**
+ * A RabbitMQ resource's settings (M30): the broker's host, port and vhost, the user and password, TLS with an optional
+ * CA, and whether a private address may be reached.
+ */
+export function RabbitFields(props: FieldsProps) {
+  const { config, set, secrets, edits, setEdit, disabled } = props
+  const text = (key: string, numeric = false) => ({
+    value: String(config[key] ?? ''),
+    disabled,
+    onChange: (e: { target: { value: string } }) => {
+      const v = e.target.value.trim()
+      set(key, v === '' ? undefined : numeric ? Number(v) : v)
+    },
+  })
+  return (
+    <>
+      <Grid>
+        <Field label="Host">
+          <Input {...text('host')} placeholder="rabbitmq.internal" data-testid="rabbit-host" />
+        </Field>
+        <Field label="Port" hint="Empty: 5672, or 5671 with TLS.">
+          <Input {...text('port', true)} placeholder="5672" data-testid="rabbit-port" />
+        </Field>
+        <Field label="Virtual host">
+          <Input {...text('vhost')} placeholder="/" />
+        </Field>
+        <Field label="Username">
+          <Input {...text('username')} data-testid="rabbit-username" />
+        </Field>
+      </Grid>
+      <Field label="Password">
+        <SecretField
+          isSet={isSet(secrets, 'password')}
+          edit={edits.password as SecretEdit}
+          onChange={(e) => setEdit('password', e)}
+          disabled={disabled}
+        />
+      </Field>
+      <Checkbox
+        label="TLS (amqps)"
+        hint="Encrypt the connection; a CA below for brokers with their own."
+        checked={config.tls === true}
+        disabled={disabled}
+        onChange={(v) => set('tls', v)}
+      />
+      {config.tls === true && (
+        <Field label="CA certificate" hint="PEM; empty: the system's.">
+          <Textarea
+            rows={4}
+            className="font-mono text-xs"
+            value={String(config.caCertificate ?? '')}
+            disabled={disabled}
+            onChange={(e) => set('caCertificate', e.target.value.trim() || undefined)}
+          />
+        </Field>
+      )}
+      <Checkbox
+        label="Allow a private network address"
+        hint="For a broker inside Optiply's network."
+        checked={config.allowPrivateNetwork === true}
+        disabled={disabled}
+        onChange={(v) => set('allowPrivateNetwork', v)}
+      />
+    </>
+  )
+}
+
+/**
  * An S3 resource's settings (M29): the AWS identity, a default bucket, and (admins only) another endpoint for
  * S3-compatible stores (MinIO, Cloudflare R2, Google Cloud Storage's interoperability) with path-style addressing.
  */

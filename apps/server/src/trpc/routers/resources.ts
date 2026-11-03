@@ -115,6 +115,7 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
   }
   if (type === 'stripe' && !secrets.token) return 'Add the secret key'
   if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
+  if (type === 'rabbitmq' && !secrets.password) return 'Add the password'
   if (type === 'openapi') {
     const spec = ((config ?? {}) as { spec?: unknown }).spec
     if (typeof spec !== 'string' || !spec.trim())
@@ -1063,6 +1064,7 @@ const TYPE_GROUPS: Record<string, string> = {
   pubsub: 'Messaging',
   sqs: 'Messaging',
   kafka: 'Messaging',
+  rabbitmq: 'Messaging',
   slack: 'Services',
   hubspot: 'Services',
   sendgrid: 'Services',

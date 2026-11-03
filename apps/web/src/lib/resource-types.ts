@@ -124,4 +124,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   notion: { label: 'NO', className: 'bg-op-purple-2 text-op-purple-4' },
   salesforce: { label: 'SF', className: 'bg-op-blue-2 text-op-blue-4' },
   openapi: { label: 'OAS', className: 'bg-op-green-1 text-op-green-4' },
+  rabbitmq: { label: 'RMQ', className: 'bg-op-orange-2 text-op-orange-4' },
 }
