@@ -12,7 +12,7 @@ import {
   type TestKafka,
   type TestRabbit,
 } from '@ow/connectors/testing'
-import { createDb, workflowTriggers } from '@ow/db'
+import { createDb, kinesisCheckpoints, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
@@ -815,7 +815,7 @@ describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () 
       }),
     )
     const wf = await workflowWith(
-      'on_jobs',
+      'on_rabbit_jobs',
       definition([code('seen', 'return { id: startTrigger.message.messageId, n: startTrigger.data.n }')], {
         triggers: { rabbitmq: [{ name: 'jobs', enabled: true, resource: 'broker_live', queue: 'm30-jobs' }] },
       }),
@@ -834,7 +834,7 @@ describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () 
         async () => {
           const listed = await env.app.inject({
             method: 'GET',
-            url: '/api/v1/workflows/on_jobs/runs',
+            url: '/api/v1/workflows/on_rabbit_jobs/runs',
             headers: { cookie: adminCookie },
           })
           run = listed.json().runs[0]
@@ -850,6 +850,68 @@ describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () 
         async () => (await rabbit.drain('m30-jobs')).length + (await rabbit.drain('m30-jobs-dead')).length,
       )
       .toBe(0)
+  })
+})
+
+describe('Kinesis triggers on the worker (M30)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  beforeAll(async () => {
+    aws = await startFakeAws()
+    aws.kinesis.createStream('clicks')
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_KINESIS_URL: aws.url })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws?.close()
+  })
+
+  it('projects the defaults, runs the live release per record, and keeps the shard’s checkpoint', async () => {
+    const user = aws.addUser('reader')
+    const { id: streamsId } = data(
+      await admin.mutate('resources.create', { type: 'kinesis', name: 'Live streams', slug: 'streams_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: streamsId,
+        environmentId: prodId,
+        config: { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId },
+        secrets: { secretAccessKey: user.secretAccessKey },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_clicks',
+      definition([code('seen', 'return { n: startTrigger.data.n, key: startTrigger.message.partitionKey }')], {
+        triggers: { kinesis: [{ name: 'clicks', enabled: true, resource: 'streams_live', stream: 'clicks', startAt: 'trimHorizon' }] },
+      }),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'kinesis',
+      config: { stream: 'clicks', startAt: 'trimHorizon', maxAttempts: 3, retryBackoffSeconds: 10, maxInFlight: 4 },
+    })
+    aws.kinesis.put('clicks', '{"n": 5}', 'user-1')
+    await worker.queues.tick()
+    let run: { status: string; triggerType: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({ method: 'GET', url: '/api/v1/workflows/on_clicks/runs', headers: { cookie: adminCookie } })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'kinesis' })
+    const db = createDb(env.databaseUrl, { max: 1 })
+    try {
+      await expect
+        .poll(async () => (await db.db.select().from(kinesisCheckpoints)).map((c) => c.sequenceNumber), { timeout: 10_000 })
+        .toEqual([aws.kinesis.shards('clicks')[0]!.records[0]!.seq])
+    } finally {
+      await db.close()
+    }
   })
 })
 

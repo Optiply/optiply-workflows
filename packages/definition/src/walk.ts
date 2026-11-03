@@ -45,9 +45,13 @@ export function triggerResources(def: WorkflowDefinition): string[] {
   const t = def.triggers
   return [
     ...new Set(
-      [...(t?.pubsub ?? []), ...(t?.sqs ?? []), ...(t?.kafka ?? []), ...(t?.rabbitmq ?? [])].map(
-        (q) => q.resource,
-      ),
+      [
+        ...(t?.pubsub ?? []),
+        ...(t?.sqs ?? []),
+        ...(t?.kafka ?? []),
+        ...(t?.rabbitmq ?? []),
+        ...(t?.kinesis ?? []),
+      ].map((q) => q.resource),
     ),
   ]
 }

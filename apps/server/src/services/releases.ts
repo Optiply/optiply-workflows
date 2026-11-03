@@ -545,7 +545,13 @@ async function projectTriggers(
   }
 }
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka', rabbitmq: 'RabbitMQ' } as const
+const QUEUE_LABELS = {
+  pubsub: 'Pub/Sub',
+  sqs: 'SQS',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
+} as const
 
 /** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
 function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
@@ -555,6 +561,7 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
     ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
     ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
     ...(t?.rabbitmq ?? []).map((trigger) => ({ kind: 'rabbitmq' as const, trigger })),
+    ...(t?.kinesis ?? []).map((trigger) => ({ kind: 'kinesis' as const, trigger })),
   ]
 }
 
@@ -563,11 +570,12 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
  * renamed workflow keeps its offsets.
  */
 function queueDefaults(
-  kind: 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq',
+  kind: 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis',
   workflowId: string,
   name: string,
 ): Record<string, unknown> {
   const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
+  if (kind === 'kinesis') return { ...shared, startAt: 'latest', maxAttempts: 3, retryBackoffSeconds: 10 }
   if (kind !== 'kafka') return shared
   return {
     ...shared,

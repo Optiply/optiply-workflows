@@ -78,6 +78,9 @@ export type DiagnosticCode =
   /** A RabbitMQ trigger's settings (M30): its resource (a `rabbitmq` one) or queue. */
   | 'invalid_rabbitmq'
   | 'duplicate_rabbitmq'
+  /** A Kinesis trigger's settings (M30): its resource (a `kinesis` one) or stream. */
+  | 'invalid_kinesis'
+  | 'duplicate_kinesis'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -872,6 +875,7 @@ function checkTriggers(
   checkQueueTriggers('sqs', def.triggers?.sqs, at, report, options)
   checkQueueTriggers('kafka', def.triggers?.kafka, at, report, options)
   checkQueueTriggers('rabbitmq', def.triggers?.rabbitmq, at, report, options)
+  checkQueueTriggers('kinesis', def.triggers?.kinesis, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -934,14 +938,20 @@ const KAFKA_TOPIC = /^(?!\.{1,2}$)[\w.-]{1,249}$/
 /** A consumer group id: printable, no spaces at the ends. */
 const KAFKA_GROUP = /^\S(.*\S)?$/
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka', rabbitmq: 'RabbitMQ' } as const
+const QUEUE_LABELS = {
+  pubsub: 'Pub/Sub',
+  sqs: 'SQS',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
+} as const
 type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
 
 /**
  * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
  * known), and the kind's own settings: a subscription name, a queue, topics and a group.
  */
-function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq'>(
+function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis'>(
   kind: K,
   triggers: QueueTriggers[K],
   at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
@@ -990,6 +1000,13 @@ function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq'>(
         code: invalid,
         message: `${where}: "${trigger.queue}" can't be consumed (amq. names are the broker's own)`,
         ...at([kind, i, 'queue']),
+      })
+    if ('stream' in trigger && !KINESIS_STREAM.test(trigger.stream))
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.stream}" isn't a stream name or ARN`,
+        hint: 'Letters, digits, _ . and - (up to 128), or arn:aws:kinesis:…:stream/name',
+        ...at([kind, i, 'stream']),
       })
     if (kind === 'sqs' && 'queue' in trigger && !SQS_QUEUE.test(trigger.queue))
       report({
@@ -1044,6 +1061,8 @@ const CUSTOM_SIGNATURE_FIELDS = [
   'signedPayload',
 ] as const
 
+const KINESIS_STREAM =
+  /^([a-zA-Z0-9_.-]{1,128}|arn:aws[\w-]*:kinesis:[a-z0-9-]+:\d{12}:stream\/[a-zA-Z0-9_.-]{1,128})$/
 const SNS_TOPIC_ARN = /^arn:aws[\w-]*:sns:[a-z0-9-]+:\d{12}:[\w-]{1,256}(\.fifo)?$/
 
 /** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */

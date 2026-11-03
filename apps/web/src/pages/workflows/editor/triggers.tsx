@@ -4,6 +4,7 @@ import {
   type Diagnostic,
   isValidTimeZone,
   type KafkaTrigger,
+  type KinesisTrigger,
   type PubSubTrigger,
   parseCron,
   type RabbitmqTrigger,
@@ -33,7 +34,7 @@ type Triggers = NonNullable<WorkflowDefinition['triggers']>
 function updateTriggers(edit: (triggers: Triggers) => Triggers) {
   useEditor.getState().update((def) => {
     const next = edit(def.triggers ?? {})
-    const { webhook, schedules, pubsub, sqs, kafka, rabbitmq } = next
+    const { webhook, schedules, pubsub, sqs, kafka, rabbitmq, kinesis } = next
     const sparse: Triggers = {
       ...(webhook && { webhook }),
       ...(schedules?.length && { schedules }),
@@ -41,6 +42,7 @@ function updateTriggers(edit: (triggers: Triggers) => Triggers) {
       ...(sqs?.length && { sqs }),
       ...(kafka?.length && { kafka }),
       ...(rabbitmq?.length && { rabbitmq }),
+      ...(kinesis?.length && { kinesis }),
     }
     const { triggers: _, ...rest } = def
     return Object.keys(sparse).length ? { ...rest, triggers: sparse } : rest
@@ -82,6 +84,7 @@ export function TriggersForm({ testInput }: { testInput: unknown }) {
       <QueueSection kind="sqs" triggers={triggers?.sqs ?? []} />
       <QueueSection kind="kafka" triggers={triggers?.kafka ?? []} />
       <QueueSection kind="rabbitmq" triggers={triggers?.rabbitmq ?? []} />
+      <QueueSection kind="kinesis" triggers={triggers?.kinesis ?? []} />
     </div>
   )
 }
@@ -432,8 +435,8 @@ function ScheduleCard({ index, schedule }: { index: number; schedule: ScheduleTr
   )
 }
 
-type QueueKind = 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq'
-type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger | RabbitmqTrigger
+type QueueKind = 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis'
+type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger | RabbitmqTrigger | KinesisTrigger
 
 /** What differs between the queue triggers' sections (Pub/Sub M19, SQS and Kafka M26). */
 const QUEUES: Record<
@@ -516,6 +519,23 @@ const QUEUES: Record<
     ),
     receiving: 'consuming',
   },
+  kinesis: {
+    title: 'Kinesis',
+    noun: 'stream trigger',
+    resourceKind: 'Amazon Kinesis',
+    maxHoldMinutes: 24 * 60,
+    fresh: (name, resource) => ({ name, enabled: true, resource, stream: '' }),
+    empty: 'run this workflow for each record in a stream',
+    explain: (
+      <>
+        Each record runs the workflow: <code>startTrigger.data</code> is its data (JSON or text),{' '}
+        <code>startTrigger.message</code> its shard, sequence number, partition key and attempt. A shard's
+        records run one at a time, in order; where each shard has got to is kept, so a restart carries on
+        there. A run that fails is retried; after the last attempt the record is skipped.
+      </>
+    ),
+    receiving: 'reading',
+  },
 }
 
 /** Queue triggers that start this workflow, a run per message: Pub/Sub (M19), SQS and Kafka (M26). */
@@ -525,7 +545,13 @@ function QueueSection({ kind, triggers }: { kind: QueueKind; triggers: QueueTrig
   const resources = (data?.resources ?? []).filter((r) => r.type === kind)
   const q = QUEUES[kind]
   const prefix =
-    kind === 'pubsub' ? 'subscription' : kind === 'sqs' || kind === 'rabbitmq' ? 'queue' : 'topic'
+    kind === 'pubsub'
+      ? 'subscription'
+      : kind === 'sqs' || kind === 'rabbitmq'
+        ? 'queue'
+        : kind === 'kinesis'
+          ? 'stream'
+          : 'topic'
   const add = () =>
     updateTriggers((t) => {
       const list = (t[kind] ?? []) as QueueTrigger[]
@@ -695,6 +721,42 @@ function QueueCard({
           'The queue to consume (it must exist; declare it with its dead-letter exchange).',
           'orders',
         )
+      ) : kind === 'kinesis' ? (
+        <>
+          {text('stream', 'Stream', 'Its name in the resource’s region and account, or its ARN.', 'orders')}
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="A new shard starts at" hint="Until it has a checkpoint.">
+              <Select
+                value={(trigger as KinesisTrigger).startAt ?? 'latest'}
+                onChange={(e) => patch({ startAt: e.target.value })}
+              >
+                <option value="latest">New records only</option>
+                <option value="trimHorizon">The oldest kept</option>
+              </Select>
+            </Field>
+            <Field label="Attempts" hint="Runs per record.">
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                placeholder="3"
+                data-testid="kinesis-maxAttempts"
+                value={(trigger as KinesisTrigger).maxAttempts ?? ''}
+                onChange={(e) => patch({ maxAttempts: number(e.target.value, 20) })}
+              />
+            </Field>
+            <Field label="Retry after (s)" hint="Doubling, at most 15 min.">
+              <Input
+                type="number"
+                min={1}
+                max={900}
+                placeholder="10"
+                value={(trigger as KinesisTrigger).retryBackoffSeconds ?? ''}
+                onChange={(e) => patch({ retryBackoffSeconds: number(e.target.value, 900) })}
+              />
+            </Field>
+          </div>
+        </>
       ) : (
         <KafkaFields trigger={trigger as KafkaTrigger} patch={patch} at={at} number={number} />
       )}

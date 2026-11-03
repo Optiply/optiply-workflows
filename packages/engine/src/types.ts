@@ -60,7 +60,7 @@ export interface RunInput {
    * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
    * (`startTrigger.message`).
    */
-  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage | RabbitRunMessage
+  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage | RabbitRunMessage | KinesisRunMessage
 }
 
 /** What an SQS-triggered run sees of its message, besides its body (M26). */
@@ -91,6 +91,17 @@ export interface KafkaRunMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+}
+
+/** What a Kinesis-triggered run sees of its record, besides its data (M30). */
+export interface KinesisRunMessage {
+  stream: string
+  shardId: string
+  sequenceNumber: string
+  partitionKey: string
+  arrivedAt: string
+  /** This run's attempt at the record, counting from 1. */
+  attempt: number
 }
 
 /** What a RabbitMQ-triggered run sees of its message, besides its body (M30). */

@@ -562,6 +562,37 @@ export const rabbitmqTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
 })
 
+/**
+ * A Kinesis stream of the live release (M30, architecture §2.33): each record starts a run in `environment`, one
+ * record per shard at a time, in order; where each shard has got to is kept in Postgres. A run that fails is retried
+ * after `retryBackoffSeconds` (doubling) up to `maxAttempts` runs, then the record is skipped (dropped).
+ */
+export const kinesisTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `kinesis` resource. */
+  resource: z.string().max(63),
+  /** The stream's name, or its ARN. */
+  stream: z.string().min(1).max(2048),
+  /** Where a shard with no checkpoint starts: new records only (default) or the oldest kept. */
+  startAt: z.enum(['latest', 'trimHorizon']).optional(),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Records whose runs may be under way at once, across shards (default 4); at most one per shard. */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** Runs per record before it is skipped (default 3). */
+  maxAttempts: z.number().int().min(1).max(20).optional(),
+  /** The wait before the first retry (default 10), doubling, at most 15 minutes. */
+  retryBackoffSeconds: z
+    .number()
+    .int()
+    .min(1)
+    .max(15 * 60)
+    .optional(),
+  /** How long a record is held while its run lasts (default 60); then its shard moves on and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const MAX_KAFKA_ATTEMPTS = 20
 export const MAX_KAFKA_BACKOFF_SECONDS = 15 * 60
 
@@ -601,6 +632,7 @@ export const triggersSchema = z.strictObject({
   sqs: z.array(sqsTriggerSchema).max(20).optional(),
   kafka: z.array(kafkaTriggerSchema).max(20).optional(),
   rabbitmq: z.array(rabbitmqTriggerSchema).max(20).optional(),
+  kinesis: z.array(kinesisTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -672,6 +704,7 @@ export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
 export type SqsTrigger = z.output<typeof sqsTriggerSchema>
 export type RabbitmqTrigger = z.output<typeof rabbitmqTriggerSchema>
+export type KinesisTrigger = z.output<typeof kinesisTriggerSchema>
 export type KafkaTrigger = z.output<typeof kafkaTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>

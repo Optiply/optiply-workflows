@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { type FakeKinesis, fakeKinesis } from './fake-kinesis'
 import { type FakeSns, fakeSns } from './fake-sns'
 import { type FakeSqs, type FakeSqsOptions, fakeSqs } from './fake-sqs'
 
@@ -49,6 +50,7 @@ export interface FakeAws {
   readonly handlers: Map<string, ServiceHandler>
   sqs: FakeSqs
   sns: FakeSns
+  kinesis: FakeKinesis
 }
 
 export type ServiceHandler = (req: SignedRequest, res: ServerResponse) => void | Promise<void>
@@ -72,6 +74,7 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   const handlers = new Map<string, ServiceHandler>()
   let base = ''
   const sns = fakeSns(handlers, account, () => base)
+  const kinesis = fakeKinesis(handlers, account)
 
   function newKey(prefix: string, arn: string, extra: Partial<FakeAwsKey> = {}): FakeAwsKey {
     const key: FakeAwsKey = {
@@ -171,6 +174,7 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
     account,
     sqs,
     sns,
+    kinesis,
     calls,
     handlers,
     addUser(name) {

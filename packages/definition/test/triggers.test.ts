@@ -414,3 +414,44 @@ describe('RabbitMQ triggers (M30)', () => {
     ])
   })
 })
+
+describe('Kinesis triggers (M30)', () => {
+  const resources: Record<string, { type: string }> = { streams: { type: 'kinesis' } }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a stream by name or ARN, and refuses anything else', () => {
+    expect(
+      check({
+        kinesis: [
+          {
+            name: 'a',
+            enabled: true,
+            resource: 'streams',
+            stream: 'orders.v2',
+            startAt: 'trimHorizon',
+            maxAttempts: 5,
+          },
+          {
+            name: 'b',
+            enabled: true,
+            resource: 'streams',
+            stream: 'arn:aws:kinesis:eu-west-1:123456789012:stream/orders',
+          },
+        ],
+      }),
+    ).toEqual([])
+    expect(
+      check({ kinesis: [{ name: 'a', enabled: true, resource: 'streams', stream: 'has space' }] }),
+    ).toEqual([
+      {
+        code: 'invalid_kinesis',
+        message: 'Kinesis trigger "a": "has space" isn\'t a stream name or ARN',
+        path: ['triggers', 'kinesis', 0, 'stream'],
+      },
+    ])
+  })
+})

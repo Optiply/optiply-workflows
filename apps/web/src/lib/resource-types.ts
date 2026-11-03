@@ -126,4 +126,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   openapi: { label: 'OAS', className: 'bg-op-green-1 text-op-green-4' },
   rabbitmq: { label: 'RMQ', className: 'bg-op-orange-2 text-op-orange-4' },
   sns: { label: 'SNS', className: 'bg-op-red-1 text-op-red-4' },
+  kinesis: { label: 'KIN', className: 'bg-op-orange-1 text-op-orange-4' },
 }

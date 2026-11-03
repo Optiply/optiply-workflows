@@ -41,6 +41,10 @@ export interface RunQueueMessage {
   attempt?: number
   /** RabbitMQ (M30). */
   redelivered?: boolean
+  /** Kinesis (M30). */
+  stream?: string
+  shardId?: string
+  sequenceNumber?: string
 }
 
 /** A run's Pub/Sub message, when a Pub/Sub trigger started it. */
@@ -58,6 +62,8 @@ export function queueMessageLine(run: Pick<RunView, 'triggerType' | 'input'>): s
     return `SQS message ${m.messageId} · ${m.queue?.split('/').pop()}${m.receiveCount && m.receiveCount > 1 ? ` · receive ${m.receiveCount}` : ''}`
   if (run.triggerType === 'kafka')
     return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+  if (run.triggerType === 'kinesis')
+    return `Kinesis ${m.stream}/${m.shardId}@${m.sequenceNumber}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
   if (run.triggerType === 'rabbitmq')
     return `RabbitMQ message${m.messageId ? ` ${m.messageId}` : ''} · ${m.queue}${m.redelivered ? ' · redelivered' : ''}`
   return undefined

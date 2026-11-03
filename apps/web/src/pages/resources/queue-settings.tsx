@@ -156,6 +156,19 @@ export function SqsFields(props: FieldsProps) {
   )
 }
 
+/** A Kinesis resource's settings (M30): the AWS identity; streams are named in queries and triggers. */
+export function KinesisFields(props: FieldsProps) {
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the streams" />
+      <p className="text-xs text-muted">
+        Putting records needs kinesis:PutRecords; triggers need kinesis:ListShards, kinesis:GetShardIterator
+        and kinesis:GetRecords on the stream.
+      </p>
+    </>
+  )
+}
+
 /** An SNS resource's settings (M30): the AWS identity; topics are named in each query. */
 export function SnsFields(props: FieldsProps) {
   return (

@@ -133,7 +133,7 @@ export const workflowsRouter = router({
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
     // Queue triggers (Pub/Sub M19, SQS and Kafka M26): their last day's messages, from what the consumer recorded.
     const isQueue = (kind: string) =>
-      kind === 'pubsub' || kind === 'sqs' || kind === 'kafka' || kind === 'rabbitmq'
+      kind === 'pubsub' || kind === 'sqs' || kind === 'kafka' || kind === 'rabbitmq' || kind === 'kinesis'
     const queueIds = rows.filter((r) => isQueue(r.trigger.kind)).map((r) => r.trigger.id)
     const counts = new Map(
       (queueIds.length

@@ -386,7 +386,7 @@ function EnabledTriggers({ name }: { name: string }) {
   const triggers = useEditor((s) => s.definition.triggers)
   const on = [
     triggers?.webhook?.enabled ? 'Webhook' : null,
-    ...(['schedules', 'pubsub', 'sqs', 'kafka', 'rabbitmq'] as const).map((kind) => {
+    ...(['schedules', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const).map((kind) => {
       const n = (triggers?.[kind] ?? []).filter((t) => t.enabled).length
       return n ? `${TRIGGER_LABELS[kind]}${n > 1 ? ` (${n})` : ''}` : null
     }),
@@ -410,6 +410,7 @@ const TRIGGER_LABELS = {
   sqs: 'SQS',
   kafka: 'Kafka',
   rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
 } as const
 
 function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) {

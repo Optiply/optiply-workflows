@@ -35,7 +35,7 @@ export interface QueueConsumerOptions {
   backoffSecondMs?: number
 }
 
-export const QUEUE_KINDS = ['pubsub', 'sqs', 'kafka', 'rabbitmq'] as const
+export const QUEUE_KINDS = ['pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
 export type QueueKind = (typeof QUEUE_KINDS)[number]
 
 /** What a held message's end became, as counted in `ow_queue_messages_total{outcome}`. */
@@ -71,6 +71,7 @@ export const queueStats: Record<QueueKind, ReturnType<typeof emptyStats>> = {
   sqs: emptyStats(),
   kafka: emptyStats(),
   rabbitmq: emptyStats(),
+  kinesis: emptyStats(),
 }
 
 export interface QueueLogger {
@@ -172,7 +173,7 @@ export class QueueConsumer {
     this.subscribers.clear()
     await this.opts.db.execute(sql`
       update workflow_triggers set lease_owner = null, lease_expires_at = null
-      where kind in ('pubsub', 'sqs', 'kafka', 'rabbitmq') and lease_owner = ${this.opts.workerId}`)
+      where kind in ('pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis') and lease_owner = ${this.opts.workerId}`)
   }
 
   /** Triggers this process receives for now, and the messages held for each. */
@@ -199,7 +200,7 @@ export class QueueConsumer {
     const held = await db.execute<QueueTriggerRow>(sql`
       update workflow_triggers
       set lease_owner = ${workerId}, lease_expires_at = now() + make_interval(secs => ${leaseSecs})
-      where kind in ('pubsub', 'sqs', 'kafka', 'rabbitmq') and enabled
+      where kind in ('pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis') and enabled
         and (lease_owner = ${workerId} or lease_owner is null or lease_expires_at < now())
       returning id, workflow_id, release_id, environment_id, kind, name, config`)
     const ids = new Set(held.map((t) => t.id))

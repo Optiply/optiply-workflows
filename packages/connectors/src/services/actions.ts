@@ -16,6 +16,7 @@ export const SERVICE_TYPES = [
   'salesforce',
   'rabbitmq',
   'sns',
+  'kinesis',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1270,6 +1271,27 @@ const SNS: readonly ActionSpec[] = [
   },
 ]
 
+const KINESIS: readonly ActionSpec[] = [
+  {
+    id: 'putRecords',
+    label: 'Put records',
+    description:
+      'Records into a stream (500 per request); a record without a partition key gets a random one.',
+    fields: [
+      { key: 'stream', label: 'Stream', kind: 'text', required: true, placeholder: 'orders, or its ARN' },
+      {
+        key: 'records',
+        label: 'Records',
+        kind: 'json',
+        language: 'json',
+        required: true,
+        initial: '{"data": {}, "partitionKey": ""}',
+        hint: 'One record or an array: {"data": …, "partitionKey": "…", "explicitHashKey": "…"}. Data that isn’t a string is sent as JSON; records with one key stay in order.',
+      },
+    ],
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
@@ -1283,6 +1305,7 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   salesforce: SALESFORCE,
   rabbitmq: RABBITMQ,
   sns: SNS,
+  kinesis: KINESIS,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

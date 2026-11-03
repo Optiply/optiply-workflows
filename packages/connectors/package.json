@@ -24,6 +24,7 @@
     "@confluentinc/kafka-javascript": "1.11.0",
     "@ow/crypto": "workspace:*",
     "@ow/expressions": "workspace:*",
+    "@smithy/node-http-handler": "^4.14.0",
     "@smithy/signature-v4": "5.7.5",
     "amqplib": "0.10.9",
     "graphql": "16.14.2",

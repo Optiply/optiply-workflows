@@ -275,6 +275,11 @@ interface OwKafkaMessage {
   attempt: number
   groupId: string
 }
+interface OwKinesisMessage {
+  stream: string; shardId: string; sequenceNumber: string; partitionKey: string; arrivedAt: string
+  /** This run's attempt at the record, counting from 1. */
+  attempt: number
+}
 interface OwRabbitMessage {
   queue: string
   /** Empty: the default exchange (the routing key is then the queue). */
@@ -306,13 +311,14 @@ export function scopeDeclarations(
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
   /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
-  queues: readonly ('pubsub' | 'sqs' | 'kafka' | 'rabbitmq')[] = [],
+  queues: readonly ('pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis')[] = [],
 ): { dts: string; sample: Record<string, unknown> } {
   const MESSAGE_TYPES = {
     pubsub: 'OwPubSubMessage',
     sqs: 'OwSqsMessage',
     kafka: 'OwKafkaMessage',
     rabbitmq: 'OwRabbitMessage',
+    kinesis: 'OwKinesisMessage',
   } as const
   const messageType = queues.length ? queues.map((k) => MESSAGE_TYPES[k]).join(' | ') : 'OwPubSubMessage'
   const lines = [GLOBALS]

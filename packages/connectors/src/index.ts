@@ -1,3 +1,4 @@
+import { kinesisConnector } from './aws/kinesis'
 import { s3Connector } from './aws/s3'
 import { snsConnector } from './aws/sns'
 import { sqsConnector } from './aws/sqs'
@@ -35,6 +36,14 @@ export {
   configureAws,
   describeAws,
 } from './aws/credentials'
+export {
+  type KinesisRecord,
+  type KinesisResourceClient,
+  kinesisClient,
+  kinesisConnector,
+  kinesisRecord,
+  streamRef,
+} from './aws/kinesis'
 export { S3_MAX_BYTES, type S3Handle, s3Client, s3Connector } from './aws/s3'
 export { snsConnector, snsMessage } from './aws/sns'
 export { type SqsReceived, type SqsResourceClient, sqsClient, sqsConnector } from './aws/sqs'
@@ -232,6 +241,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [kafkaConnector.type]: kafkaConnector,
   [rabbitmqConnector.type]: rabbitmqConnector,
   [snsConnector.type]: snsConnector,
+  [kinesisConnector.type]: kinesisConnector,
   [s3Connector.type]: s3Connector,
   [stripeConnector.type]: stripeConnector,
   [airtableConnector.type]: airtableConnector,
