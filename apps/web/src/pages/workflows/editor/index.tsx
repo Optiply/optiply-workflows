@@ -1,4 +1,4 @@
-import { type BlockType, type Diagnostic, usedLibraries, type WorkflowDefinition } from '@ow/definition'
+import { usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
@@ -11,33 +11,33 @@ import {
   LayoutGrid,
   Loader2,
   Play,
-  Plus,
+  Tag,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
-import { Avatar, Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { useLibraryRefs } from '@/lib/library-refs'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
-import { addableIn, BLOCK_KINDS, newBlock, nextName, PYTHON_KIND } from './catalog'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { closeSession, ensureSaved, openSession } from './collab'
-import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
+import { FunctionBanner, FunctionSettings } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
-import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
+import { autoLayout } from './layout'
 import { useRunEvents } from './live'
 import { usePresence } from './presence'
-import { ReleaseControls, ReleasesTab } from './releases'
+import { Rail, RailPanelView } from './rail'
+import { ReleaseControls } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
-import { graphOf, type SaveStatus, type SideTab, updateGraph, useEditor } from './store'
-import { WorkflowSettingsTab } from './workflow-settings'
+import { graphOf, type SaveStatus, updateGraph, useEditor } from './store'
 
 const route = getRouteApi('/app/workflows/$workflowId')
 
@@ -216,6 +216,8 @@ function EditorLayout({
         <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
         {git}
         <div className="flex min-h-0 flex-1 gap-2">
+          <Rail />
+          <RailPanelView workflow={workflow} canEdit={editable} hasEdit={canEdit} />
           <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
@@ -225,8 +227,9 @@ function EditorLayout({
             </div>
             {panelOpen && <RunPanel />}
           </div>
-          <SidePanel workflow={workflow} canEdit={editable} hasEdit={canEdit} />
+          <SidePanel canEdit={editable} />
         </div>
+        <StatusBar workflow={workflow} environments={environments ?? []} />
       </div>
       {editable && <LeaveWarning />}
       <EditorShortcuts editable={editable} />
@@ -271,86 +274,28 @@ function Header({
   )
 }
 
-type AddableType = Exclude<BlockType, 'startTrigger'>
-
+/** Undo, redo and Arrange, over the canvas; blocks are added from the rail's Blocks panel (M28). */
 function Toolbar() {
-  const trpc = useTRPC()
-  const select = useEditor((s) => s.select)
-  const selected = useEditor((s) => s.selected)
-  const fn = useEditor((s) => s.graph)
-  const definition = useEditor((s) => s.definition)
-  const { data: resources } = useQuery(trpc.resources.list.queryOptions())
-  const queryable = resources?.resources ?? []
-  const { fitView } = useReactFlow()
-  const types = addableIn(fn !== null, graphOf(definition, fn).blocks)
-
-  const add = (type: Exclude<BlockType, 'startTrigger'>, python = false) => {
-    let added = ''
-    const functions = (useEditor.getState().definition.functions ?? []).map((f) => f.name)
-    updateGraph((def) => {
-      // Block names can't be function names either (code calls functions by name).
-      const taken = [...def.blocks.map((b) => b.name), ...functions]
-      added = python ? nextName(type, taken, PYTHON_KIND) : nextName(type, taken)
-      const block = newBlock(type, added, queryable[0], { functions, inFunction: fn !== null, python })
-      const positions = positionsFor(def)
-      // To the right of the selected block, or after the rightmost one.
-      const anchor = selected && positions[selected]
-      const x = anchor
-        ? anchor.x + NODE_WIDTH + 80
-        : Math.max(0, ...Object.values(positions).map((p) => p.x)) + NODE_WIDTH + 80
-      const y = anchor ? anchor.y : 0
-      const edges =
-        type !== 'errorTrigger' &&
-        selected &&
-        def.blocks.some((b) => b.name === selected && b.type !== 'branch')
-          ? [...def.edges, { from: selected, port: 'out', to: added }]
-          : def.edges
-      return {
-        ...def,
-        blocks: [...def.blocks, block],
-        edges,
-        layout: { ...def.layout, blocks: { ...positions, [added]: { x, y } } },
-      }
-    })
-    select(added)
-    // Keep the new block in view once React Flow has measured it.
-    setTimeout(() => fitView({ padding: 0.2, maxZoom: 1, duration: 200 }), 50)
-  }
-
+  const { getNodes } = useReactFlow()
   return (
-    <div className="absolute top-3 left-3 z-10 flex items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
-      <Plus className="mx-1 size-3.5 text-muted" />
-      {types
-        .flatMap((type): { type: AddableType; python?: boolean }[] =>
-          type === 'code' ? [{ type }, { type, python: true }] : [{ type }],
-        )
-        .map(({ type, python }) => {
-          const kind = python ? PYTHON_KIND : BLOCK_KINDS[type]
-          const Icon = kind.icon
-          const disabled = type === 'resourceQuery' && queryable.length === 0
-          const label = python ? 'Add a Python code block' : `Add a ${kind.label.toLowerCase()} block`
-          return (
-            <Button
-              key={python ? 'python' : type}
-              size="icon"
-              variant="ghost"
-              disabled={disabled}
-              title={disabled ? 'Add a resource first' : label}
-              aria-label={label}
-              onClick={() => add(type, python)}
-            >
-              <Icon className="size-4" />
-            </Button>
-          )
-        })}
-      <div className="mx-1 h-5 w-px bg-border" />
+    <div className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
       <WorkflowUndoButtons />
       <div className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
         variant="ghost"
         title="Arrange blocks automatically"
-        onClick={() => updateGraph((g) => ({ ...g, layout: { ...g.layout, blocks: autoLayout(g) } }))}
+        onClick={() => {
+          // The blocks' measured sizes, so tall forms don't overlap.
+          const sizes = Object.fromEntries(
+            getNodes().flatMap((n) =>
+              n.measured?.width && n.measured.height
+                ? [[n.id, { width: n.measured.width, height: n.measured.height }]]
+                : [],
+            ),
+          )
+          updateGraph((g) => ({ ...g, layout: { ...g.layout, blocks: autoLayout(g, sizes) } }))
+        }}
       >
         <LayoutGrid className="size-4" /> Arrange
       </Button>
@@ -504,6 +449,44 @@ function SaveIndicator() {
   )
 }
 
+/** Under the editor, as Retool's: the run environment, the live version, and the run history panel's toggle. */
+function StatusBar({
+  workflow,
+  environments,
+}: {
+  workflow: Workflow
+  environments: { slug: string; name: string }[]
+}) {
+  const environment = useRun((s) => s.environment)
+  const panelOpen = useRun((s) => s.panelOpen)
+  const name = environments.find((e) => e.slug === environment)?.name ?? environment
+  return (
+    <footer className="flex h-6 shrink-0 items-center gap-4 px-2 text-xs text-muted" data-testid="status-bar">
+      <span className="flex items-center gap-1.5">
+        <span className="size-2 rounded-full bg-accent" />
+        {name}
+      </span>
+      <button
+        type="button"
+        className="flex cursor-pointer items-center gap-1 hover:text-ink"
+        title="Releases"
+        onClick={() => useEditor.getState().showTab('releases')}
+      >
+        <Tag className="size-3" />
+        {workflow.liveRelease ? `v${workflow.liveRelease.version}` : 'Not published'}
+      </button>
+      <button
+        type="button"
+        aria-pressed={panelOpen}
+        className={cn('flex cursor-pointer items-center gap-1 hover:text-ink', panelOpen && 'text-accent')}
+        onClick={() => useRun.getState().togglePanel()}
+      >
+        <History className="size-3" /> Run history
+      </button>
+    </footer>
+  )
+}
+
 /** Warns before leaving while edits made here aren't saved yet. */
 function LeaveWarning() {
   useEffect(() => {
@@ -517,112 +500,44 @@ function LeaveWarning() {
   return null
 }
 
-const SIDE_TABS: { value: SideTab; label: string }[] = [
-  { value: 'problems', label: 'Problems' },
-  { value: 'functions', label: 'Functions' },
-  { value: 'releases', label: 'Releases' },
-  { value: 'settings', label: 'Settings' },
-]
-
-/** The selected block's inspector or, with nothing selected, the workflow's problems, releases and settings. */
-function SidePanel({
-  workflow,
-  canEdit,
-  hasEdit,
-}: {
-  workflow: Workflow
-  /** Whether the draft shown can be edited (not a protected workflow's main draft). */
-  canEdit: boolean
-  /** Whether the person has Edit on the workflow (releases and settings outside the draft). */
-  hasEdit: boolean
-}) {
-  const selected = useEditor((s) => s.selected)
+/**
+ * The side editor panel (M28): the block opened in it (its node's "Open in the side panel"), or the open function's
+ * settings. Hidden otherwise; × closes it.
+ */
+function SidePanel({ canEdit }: { canEdit: boolean }) {
+  const opened = useEditor((s) => s.panelBlock)
   const definition = useEditor((s) => s.definition)
-  const diagnostics = useEditor((s) => s.diagnostics)
-  const tab = useEditor((s) => s.sideTab)
   const fn = useEditor((s) => s.graph)
   const epoch = useEditor((s) => s.epoch)
-  const block = graphOf(definition, fn).blocks.find((b) => b.name === selected)
+  const block = graphOf(definition, fn).blocks.find((b) => b.name === opened)
+  if (!block && fn === null) return null
 
   return (
     // `nokey`: React Flow listens for Space (pan) and Backspace/Delete (delete the selection) on the whole document
     // and doesn't recognise Monaco's input element as a text field; it ignores keys from inside `.nokey`.
     <aside
-      className="nokey flex w-[26rem] shrink-0 flex-col overflow-y-auto rounded-lg bg-surface"
+      className="nokey flex w-[30rem] shrink-0 flex-col overflow-y-auto rounded-lg bg-surface"
       data-testid="side-panel"
     >
       {block ? (
-        // `epoch`: after an undo or redo, fields start again from the definition (some read it only when mounted).
-        <Inspector key={`${epoch}/${fn ?? ''}/${block.name}`} name={block.name} />
-      ) : fn !== null ? (
-        <FunctionSettings key={`${epoch}/${fn}`} name={fn} canEdit={canEdit} />
-      ) : (
-        <div key={epoch} className="flex min-h-0 flex-col p-4">
-          <Tabs value={tab} onChange={(t) => useEditor.getState().showTab(t)} tabs={SIDE_TABS} />
-          {tab === 'problems' && <Problems diagnostics={diagnostics} />}
-          {tab === 'functions' && <FunctionsTab canEdit={canEdit} />}
-          {tab === 'releases' && <ReleasesTab workflow={workflow} canEdit={hasEdit} />}
-          {tab === 'settings' && (
-            <WorkflowSettingsTab workflow={workflow} canEdit={canEdit} hasEdit={hasEdit} />
-          )}
+        <div className="flex min-h-0 flex-col">
+          <div className="flex justify-end px-2 pt-2">
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Close the side panel"
+              aria-label="Close the side panel"
+              onClick={() => useEditor.getState().openInPanel(null)}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+          {/* `epoch`: after an undo or redo, fields start again from the definition (some read it only when mounted). */}
+          <Inspector key={`${epoch}/${fn ?? ''}/${block.name}`} name={block.name} />
         </div>
+      ) : (
+        <FunctionSettings key={`${epoch}/${fn}`} name={fn!} canEdit={canEdit} />
       )}
     </aside>
-  )
-}
-
-function Problems({ diagnostics }: { diagnostics: Diagnostic[] }) {
-  const errors = diagnostics.filter((d) => d.severity === 'error').length
-  return (
-    <div className="flex min-h-0 flex-col">
-      <p className="mb-3 text-xs text-muted">
-        {errors
-          ? `${errors} error${errors === 1 ? '' : 's'} to fix before this workflow can run.`
-          : 'Select a block to see its details.'}
-      </p>
-      <ProblemList diagnostics={diagnostics} empty="No problems found." />
-    </div>
-  )
-}
-
-function ProblemList({ diagnostics, empty }: { diagnostics: Diagnostic[]; empty: string }) {
-  const openGraph = useEditor((s) => s.openGraph)
-  if (!diagnostics.length) {
-    return (
-      <p className="flex items-center gap-1.5 text-sm text-muted">
-        <CheckCircle2 className="size-4 text-success" /> {empty}
-      </p>
-    )
-  }
-  return (
-    <ul className="space-y-1.5 overflow-y-auto" data-testid="problems">
-      {diagnostics.map((d) => (
-        <li key={`${d.code}:${d.path.join('.')}:${d.start ?? ''}`}>
-          <button
-            type="button"
-            onClick={() =>
-              d.block ? openGraph(d.function ?? null, d.block) : d.function && openGraph(d.function)
-            }
-            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-canvas"
-          >
-            <AlertCircle
-              className={cn(
-                'mt-0.5 size-4 shrink-0',
-                d.severity === 'error' ? 'text-danger' : 'text-warning-strong',
-              )}
-            />
-            <span className="min-w-0">
-              {(d.function || d.block) && (
-                <span className="font-mono text-xs text-muted">
-                  {[d.function, d.block].filter(Boolean).join('.')} ·{' '}
-                </span>
-              )}
-              {d.message}
-              {d.hint && <span className="block text-xs text-muted">{d.hint}</span>}
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
   )
 }

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, field, signIn, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, field, openRail, signIn, typeInto } from './helpers'
 
 /**
  * M7's done-when, all in the browser: create a table on the Database page, import a CSV into it, and query it
@@ -51,6 +51,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await typeInto(page, field(page, 'startTrigger', 'testInput.json'), '{"days": 10}')
     await addBlock(page, 'resource query')
     await expect(block(page, 'query1')).toBeVisible()
+    await block(page, 'query1').getByRole('button', { name: 'Open in the side panel' }).click()
     const resource = page.getByTestId('side-panel').getByRole('combobox', { name: /^Resource/ })
     await resource.selectOption('optiply_db')
     await expect(page.getByTestId('side-panel')).toContainText(
@@ -65,7 +66,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await typeInto(page, field(page, 'response1', 'body.txt'), '{{ query1.data }}')
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
 
     await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
     const panel = page.getByTestId('run-panel')

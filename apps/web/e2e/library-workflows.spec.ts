@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { E2E_EMAIL } from './global-setup'
-import { addBlock, block, clickEmptyCanvas, field, signIn, trpcMutate, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, field, openRail, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * Library queries in the workflow editor (M21 step 3): a Library query block and a loop whose runner is a library
@@ -43,25 +43,29 @@ test('use a library query in a block and a loop', async ({ page }) => {
 
     await addBlock(page, 'library query')
     await expect(block(page, 'library1')).toBeVisible()
-    await expect(block(page, 'library1')).toContainText('No library query chosen')
+    await expect(page.getByTestId('library-call').getByLabel('Library query')).toHaveValue('')
     await page.getByTestId('library-call').getByLabel('Library query').selectOption(slug)
-    await expect(block(page, 'library1')).toContainText(`${slug}@latest`)
+    await expect(page.getByTestId('library-call').getByLabel('Library query')).toHaveValue(slug)
     await expect(page.getByTestId('library-call').getByLabel('Version')).toHaveValue('latest')
+    // Parameters' descriptions show in the side panel.
+    await block(page, 'library1').getByRole('button', { name: 'Open in the side panel' }).click()
     await page.getByTestId('library-call-query').locator('summary').click()
     await expect(page.getByTestId('library-call-query')).toContainText('select {{ n }}::int * 10')
     await expect(page.getByTestId('library-call')).toContainText('The number to multiply')
+    await page.getByRole('button', { name: 'Close the side panel' }).first().click()
     await typeInto(page, field(page, 'library1', 'config.params.n.txt'), '{{ startTrigger.data.n }}')
     // Pinning the version works too.
     await page.getByTestId('library-call').getByLabel('Version').selectOption('1.0.0')
-    await expect(block(page, 'library1')).toContainText(`${slug}@1.0.0`)
+    await expect(page.getByTestId('library-call').getByLabel('Version')).toHaveValue('1.0.0')
   })
 
   await test.step('a loop whose runner is the library query', async () => {
     await addBlock(page, 'loop')
     await expect(block(page, 'loop1')).toBeVisible()
     await typeInto(page, field(page, 'loop1', 'input.txt'), '{{ [1, 2] }}')
-    await page.getByLabel('For each item, run').selectOption('library')
-    await page.getByTestId('library-call').getByLabel('Library query').selectOption(slug)
+    // Both blocks show their library query's form on the canvas: the loop's is in its block.
+    await block(page, 'loop1').getByLabel('For each item, run').selectOption('library')
+    await block(page, 'loop1').getByTestId('library-call').getByLabel('Library query').selectOption(slug)
     await typeInto(
       page,
       field(page, 'loop1', 'config.runner.params.n.txt'),
@@ -76,7 +80,7 @@ test('use a library query in a block and a loop', async ({ page }) => {
     )
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
   })
 
   await test.step('it runs with the parameters and the person running it as current_user', async () => {

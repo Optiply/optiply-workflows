@@ -97,7 +97,6 @@ export function RunPanel() {
       data-testid="run-panel"
       data-run-id={runId ?? ''}
     >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: a resize handle; the height is also kept per browser */}
       <div
         className="h-1.5 shrink-0 cursor-row-resize hover:bg-accent/30"
         title="Drag to resize"

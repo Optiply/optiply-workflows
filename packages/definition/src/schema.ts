@@ -580,7 +580,19 @@ export const triggersSchema = z.strictObject({
 })
 
 export const layoutSchema = z.strictObject({
-  blocks: z.record(blockNameSchema, z.strictObject({ x: z.number(), y: z.number() })).optional(),
+  blocks: z
+    .record(
+      blockNameSchema,
+      z.strictObject({
+        x: z.number(),
+        y: z.number(),
+        /** The block's width on the canvas, once resized (M28); otherwise its type's. */
+        w: z.number().min(160).max(2000).optional(),
+        /** Shown as its header only (M28). */
+        minimized: z.boolean().optional(),
+      }),
+    )
+    .optional(),
 })
 
 /**

@@ -9,6 +9,7 @@ import {
   Controls,
   EdgeLabelRenderer,
   type EdgeProps,
+  type FinalConnectionState,
   type Edge as FlowEdge,
   getBezierPath,
   Handle,
@@ -16,23 +17,28 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  NodeResizeControl,
   Position,
   ReactFlow,
+  useNodesInitialized,
   useReactFlow,
   ViewportPortal,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, Map as MapIcon, X } from 'lucide-react'
+import { AlertCircle, Map as MapIcon, Minus, PanelRight, Plus, X } from 'lucide-react'
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
-import { kindOf, summary } from './catalog'
-import { NODE_WIDTH, positionsFor } from './layout'
+import { kindOf } from './catalog'
+import { BlockBody, NameField, RunBlockButton } from './inspectors'
+import { blockWidth, type LayoutEntry, positionsFor } from './layout'
+import { BlockMenu, NodeFooter } from './node-result'
 import { sharePointer, usePresence } from './presence'
+import { BLOCK_DRAG_TYPE, useAddBlock, usePendingAdd } from './rail'
 import { type LiveBlock, useRun } from './run-state'
 import { type GraphPart, graphOf, problemsOf, updateGraph, useEditor } from './store'
 
-type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock }
+type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock; entry?: LayoutEntry }
 type BlockNode = Node<BlockNodeData, 'block'>
 
 const nodeTypes = { block: memo(BlockNodeView) }
@@ -87,14 +93,44 @@ export function Canvas() {
   const { screenToFlowPosition } = useReactFlow()
   const runBlocks = useRun((s) => s.blocks)
   const live = fn === null ? runBlocks : NO_LIVE
+  // Blocks without a saved position are placed by dagre: again with their measured sizes once React Flow has them,
+  // so their forms don't overlap (display only, like the first placement).
+  const [sizes, setSizes] = useState<Record<string, { width: number; height: number }>>()
+  const initialized = useNodesInitialized()
+  // A function's graph (or the workflow's again) is measured afresh.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `fn` is the graph shown
+  useEffect(() => setSizes(undefined), [fn])
+  const { getNodes } = useReactFlow()
+  const unplaced = graph.blocks.some((b) => !graph.layout?.blocks?.[b.name])
+  useEffect(() => {
+    if (!initialized || !unplaced || sizes) return
+    setSizes(
+      Object.fromEntries(
+        getNodes().flatMap((n) =>
+          n.measured?.width && n.measured.height
+            ? [[n.id, { width: n.measured.width, height: n.measured.height }]]
+            : [],
+        ),
+      ),
+    )
+  }, [initialized, unplaced, sizes, getNodes])
   const derived = useMemo(
-    () => toNodes(graph, diagnostics, selection, live, fn),
-    [graph, diagnostics, selection, live, fn],
+    () => toNodes(graph, diagnostics, selection, live, fn, sizes),
+    [graph, diagnostics, selection, live, fn, sizes],
   )
   // React Flow owns node state while dragging; it's rebuilt whenever the definition changes. What's selected comes
   // from the store alone (see onNodesChange), so the two never disagree about it.
   const [nodes, setNodes] = useState<BlockNode[]>(derived)
-  useEffect(() => setNodes(derived), [derived])
+  // Rebuilt nodes keep their measured size: React Flow hides a node it has to measure again, and a hidden node loses
+  // the focus of the code field being typed in (M28's forms live in the nodes).
+  useEffect(
+    () =>
+      setNodes((current) => {
+        const measured = new Map(current.map((n) => [n.id, n.measured]))
+        return derived.map((n) => (measured.get(n.id) ? { ...n, measured: measured.get(n.id) } : n))
+      }),
+    [derived],
+  )
   const edges = useMemo(() => toEdges(graph, diagnostics, live, fn), [graph, diagnostics, live, fn])
 
   // Clicks, ⌘/Ctrl-clicks and box selection arrive as `select` changes: they go to the store's selection (in the
@@ -137,11 +173,41 @@ export function Canvas() {
     })
   }, [])
   const hover = useEdgeHover()
+  const { add } = useAddBlock()
+  // A palette block dropped on the canvas is added there (M28).
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      const raw = e.dataTransfer.getData(BLOCK_DRAG_TYPE)
+      if (!raw || !editable) return
+      e.preventDefault()
+      const { type, python } = JSON.parse(raw) as { type: Parameters<typeof add>[0]; python: boolean }
+      add(type, python, screenToFlowPosition({ x: e.clientX, y: e.clientY }))
+    },
+    [add, editable, screenToFlowPosition],
+  )
+  // A connection dropped on empty canvas: the Blocks panel opens to add a block there, connected from that port.
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      if (!editable || state.isValid || state.toNode || !state.fromNode) return
+      const point = 'changedTouches' in event ? event.changedTouches[0]! : event
+      usePendingAdd.setState({
+        pending: {
+          from: state.fromNode.id,
+          port: state.fromHandle?.id ?? 'out',
+          at: screenToFlowPosition({ x: point.clientX, y: point.clientY }),
+        },
+      })
+      useEditor.getState().showTab('blocks')
+    },
+    [editable, screenToFlowPosition],
+  )
 
   const onNodeDragStop = useCallback((_: unknown, _node: BlockNode, dragged: BlockNode[]) => {
     updateGraph((g) => {
       const blocks = { ...positionsFor(g) }
-      for (const n of dragged) blocks[n.id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
+      for (const n of dragged) {
+        blocks[n.id] = { ...blocks[n.id], x: Math.round(n.position.x), y: Math.round(n.position.y) }
+      }
       return { ...g, layout: { ...g.layout, blocks } }
     })
   }, [])
@@ -169,6 +235,14 @@ export function Canvas() {
         onNodesChange={onNodesChange}
         onConnect={onConnect}
         onReconnect={onReconnect}
+        onConnectEnd={onConnectEnd}
+        onDrop={onDrop}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(BLOCK_DRAG_TYPE)) {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+          }
+        }}
         edgesReconnectable={editable}
         connectionLineType={ConnectionLineType.Bezier}
         onEdgeMouseEnter={(_, edge) => hover.enter(edge.id)}
@@ -323,14 +397,20 @@ function toNodes(
   selection: string[],
   live: Record<string, LiveBlock>,
   fn: string | null,
+  sizes?: Record<string, { width: number; height: number }>,
 ): BlockNode[] {
   const chosen = new Set(selection)
-  const positions = positionsFor(def)
+  const positions = positionsFor(def, sizes)
   return def.blocks.map((block) => ({
     id: block.name,
     type: 'block',
     position: positions[block.name] ?? { x: 0, y: 0 },
-    data: { block, problems: problemsOf(diagnostics, block.name, fn), live: live[block.name] },
+    data: {
+      block,
+      problems: problemsOf(diagnostics, block.name, fn),
+      live: live[block.name],
+      entry: positions[block.name],
+    },
     selected: chosen.has(block.name),
     deletable: block.type !== 'startTrigger',
   }))
@@ -388,37 +468,52 @@ function Pointers({ graph }: { graph: string | null }) {
 }
 
 function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
-  const { block, problems, live } = data
+  const { block, problems, live, entry } = data
+  const name = block.name
   // Who else has this block selected (M16): an outline in the first one's colour, and their names.
   const fn = useEditor((s) => s.graph)
+  const inspected = useEditor((s) => s.selected === name)
+  const inPanel = useEditor((s) => s.panelBlock === name)
+  const editable = !useEditor((s) => s.readOnly)
   const watchers = usePresence(
-    useShallow((s) => s.peers.filter((p) => p.area === fn && p.selection.includes(block.name))),
+    useShallow((s) => s.peers.filter((p) => p.area === fn && p.selection.includes(name))),
   )
+  const [renaming, setRenaming] = useState(false)
   const first = watchers[0]
   const kind = kindOf(block)
   const Icon = kind.icon
   const ports = blockPorts(block)
   const errors = problems.filter((p) => p.severity === 'error').length
   const warnings = problems.length - errors
+  const minimized = entry?.minimized ?? false
+  const width = blockWidth(block, entry)
 
   return (
     <div
-      style={{ width: NODE_WIDTH }}
-      data-testid={`block-${block.name}`}
+      style={{ width }}
+      data-testid={`block-${name}`}
       className={cn(
-        'relative rounded-lg border bg-surface shadow-card transition-shadow',
+        'relative flex flex-col rounded-lg border bg-surface shadow-card transition-shadow',
         errors ? 'border-danger/60' : 'border-border',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
         first && `ow-peer-selected ow-presence-${first.colour}`,
       )}
       data-status={live?.status}
+      data-inspected={inspected || undefined}
     >
+      {editable && !minimized && (
+        <NodeResizeControl
+          position="right"
+          minWidth={200}
+          maxWidth={1200}
+          className="!h-full !w-2 !translate-x-1 !border-0 !bg-transparent hover:!bg-accent/30"
+          resizeDirection="horizontal"
+          onResizeEnd={(_, { width: w }) => setEntry(name, { w: Math.round(w) })}
+        />
+      )}
       {watchers.length > 0 && (
-        <div
-          className="pointer-events-none absolute -top-6 left-0 flex gap-1"
-          data-testid={`peers-${block.name}`}
-        >
+        <div className="pointer-events-none absolute -top-6 left-0 flex gap-1" data-testid={`peers-${name}`}>
           {watchers.map((p) => (
             <span
               key={p.clientId}
@@ -432,12 +527,28 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
           ))}
         </div>
       )}
-      {!isTrigger(block) && <Handle type="target" position={Position.Left} className="ow-handle" />}
-      <div className="flex items-center gap-2 px-3 pt-2.5">
-        <span className={cn('rounded-md p-1', kind.tone)}>
+      {!isTrigger(block) && (
+        <Handle type="target" position={Position.Left} className="ow-handle" style={{ top: 16 }} />
+      )}
+      <div className="flex h-8 shrink-0 items-center gap-1.5 pr-1 pl-2.5">
+        <span className={cn('rounded p-0.5', kind.tone)}>
           <Icon className="size-3.5" />
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{block.name}</span>
+        {renaming ? (
+          <div className="nodrag min-w-0 flex-1">
+            <NameField name={name} onDone={() => setRenaming(false)} />
+          </div>
+        ) : (
+          // biome-ignore lint/a11y/noStaticElementInteractions: double-click renames, as on Retool's canvas; the side panel has the field too
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-sm font-semibold"
+            title={editable ? 'Double-click to rename' : undefined}
+            data-testid={`block-title-${name}`}
+            onDoubleClick={() => editable && setRenaming(true)}
+          >
+            {name}
+          </span>
+        )}
         {live && <RunStatusDot status={live.status} />}
         {(errors > 0 || warnings > 0) && (
           <span
@@ -451,13 +562,45 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
             {errors || warnings}
           </span>
         )}
+        <div className="nodrag flex items-center">
+          {editable && (
+            <HeaderButton
+              label={minimized ? 'Expand block' : 'Minimize block'}
+              onClick={() => setEntry(name, { minimized: !minimized })}
+            >
+              {minimized ? <Plus /> : <Minus />}
+            </HeaderButton>
+          )}
+          <HeaderButton
+            label={inPanel ? 'Close the side panel' : 'Open in the side panel'}
+            pressed={inPanel}
+            onClick={() => useEditor.getState().openInPanel(inPanel ? null : name)}
+          >
+            <PanelRight />
+          </HeaderButton>
+          {fn === null && !isTrigger(block) && <RunBlockButton name={name} compact />}
+          <BlockMenu block={block} onRename={() => setRenaming(true)} />
+        </div>
+        {ports.length === 1 && (
+          <Handle
+            type="source"
+            position={Position.Right}
+            id={ports[0]}
+            className="ow-handle"
+            style={{ top: 16 }}
+          />
+        )}
       </div>
-      <div className="truncate px-3 pb-2.5 pt-1 font-mono text-xs text-muted">
-        {summary(block) || kind.label}
-      </div>
-      {ports.length === 1 ? (
-        <Handle type="source" position={Position.Right} id={ports[0]} className="ow-handle" />
-      ) : (
+      {!minimized && (
+        <div className="nodrag nowheel nokey cursor-auto border-t border-border px-2.5 py-2">
+          {inPanel ? (
+            <p className="text-xs text-muted">Editing in the side panel.</p>
+          ) : (
+            <BlockBody name={name} active={inspected} />
+          )}
+        </div>
+      )}
+      {ports.length > 1 && (
         <div className="border-t border-border py-1">
           {ports.map((port) => (
             <div
@@ -475,8 +618,50 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
           ))}
         </div>
       )}
+      {!minimized && <NodeFooter block={block} />}
     </div>
   )
+}
+
+function HeaderButton({
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  label: string
+  pressed?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(
+        'flex size-6 cursor-pointer items-center justify-center rounded text-muted hover:bg-subtle hover:text-ink [&_svg]:size-3.5',
+        pressed && 'bg-accent-soft text-accent',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** Changes a block's layout entry (width, minimized), keeping every block's position. */
+function setEntry(name: string, change: Partial<LayoutEntry>) {
+  updateGraph((g) => {
+    const blocks = { ...positionsFor(g) }
+    const at = blocks[name]
+    if (!at) return g
+    const next = { ...at, ...change }
+    if (next.minimized === false) delete next.minimized
+    blocks[name] = next
+    return { ...g, layout: { ...g.layout, blocks } }
+  })
 }
 
 /** How the open run left each block: a coloured outline. */

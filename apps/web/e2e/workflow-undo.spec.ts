@@ -38,7 +38,7 @@ test('undo and redo blocks and edits in the workflow editor', async ({ page }) =
     await undo.click()
     await expect(block(page, 'response1')).toHaveCount(0)
     // Undo shows what it undid: the block the edit was made on.
-    await expect(page.getByTestId('block-name')).toHaveValue('code1')
+    await expect(block(page, 'code1')).toHaveAttribute('data-inspected', 'true')
     await undo.click()
     await expect.poll(() => editorText(field(page, 'code1', 'code.js'))).toBe('return null')
     await undo.click()

@@ -19,6 +19,39 @@ export { LOCAL, type SaveStatus }
 
 /** What the side panel shows when no block is selected. */
 export type SideTab = 'problems' | 'functions' | 'releases' | 'settings'
+/** The left rail's panels (M28); the workflow-level side tabs became some of them. */
+export type RailPanel = SideTab | 'blocks' | 'outline' | 'triggers' | 'search'
+
+/** Which rail panel is open, per browser. */
+const RAIL_KEY = 'ow.workflowRail'
+const RAIL_PANELS: readonly RailPanel[] = [
+  'blocks',
+  'outline',
+  'functions',
+  'triggers',
+  'search',
+  'releases',
+  'settings',
+  'problems',
+]
+
+function storedRail(): RailPanel | null {
+  try {
+    const value = localStorage.getItem(RAIL_KEY)
+    return RAIL_PANELS.includes(value as RailPanel) ? (value as RailPanel) : null
+  } catch {
+    return null
+  }
+}
+
+function storeRail(panel: RailPanel | null) {
+  try {
+    if (panel) localStorage.setItem(RAIL_KEY, panel)
+    else localStorage.removeItem(RAIL_KEY)
+  } catch {
+    // Storage blocked: the choice lasts until the page reloads.
+  }
+}
 
 /** The blocks, edges and layout of the graph on the canvas: the workflow's, or one function's. */
 export interface GraphPart {
@@ -84,7 +117,10 @@ interface EditorState {
   libraries: Record<string, LibraryRef | null>
   /** Results of the latest finished run, by block, for autocompletion. */
   samples: Record<string, SampleResult>
-  sideTab: SideTab
+  /** The left rail's open panel, or none. */
+  railPanel: RailPanel | null
+  /** The block opened in the side editor panel (M28): its form shows there instead of in its node. */
+  panelBlock: string | null
   /**
    * This editor's own edits to undo and redo (M13's steps, on the shared document's undo manager since M16: undoing
    * never reverts someone else's edit); made afresh when a draft is loaded and synced.
@@ -136,8 +172,12 @@ interface EditorState {
   /** Opens a function on the canvas (or the workflow, with null), selecting `block` in it. */
   openGraph(fn: string | null, block?: string | null): void
   setSamples(samples: Record<string, SampleResult>): void
-  /** Shows a workflow-level tab in the side panel (and deselects the block). */
-  showTab(tab: SideTab): void
+  /** Opens a rail panel (the workflow's problems, releases, ...). */
+  showTab(tab: RailPanel): void
+  /** Opens a rail panel, or closes it when it's the open one (or with null). */
+  toggleRail(panel: RailPanel | null): void
+  /** Opens a block's form in the side editor panel, or closes it (null). */
+  openInPanel(name: string | null): void
   /** What the server said about library queries the workflow uses (merged into `libraries`); re-validates. */
   setLibraries(libraries: Record<string, LibraryRef | null>): void
 }
@@ -162,7 +202,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   diagnostics: [],
   libraries: {},
   samples: {},
-  sideTab: 'problems',
+  railPanel: storedRail(),
+  panelBlock: null,
   history: null,
   canUndo: false,
   canRedo: false,
@@ -181,6 +222,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
       saveError: null,
       selected: null,
       selection: [],
+      panelBlock: null,
       notice: null,
       graph: null,
       diagnostics: validate(definition, get().libraries),
@@ -279,10 +321,19 @@ export const useEditor = create<EditorState>()((set, get) => ({
   notify: (notice) => set({ notice }),
   openGraph: (graph, block = null) => {
     get().history?.seal()
-    set({ graph, selected: block, selection: block ? [block] : [] })
+    set({ graph, selected: block, selection: block ? [block] : [], panelBlock: null })
   },
   setSamples: (samples) => set({ samples }),
-  showTab: (sideTab) => set({ sideTab, selected: null }),
+  showTab: (railPanel) => {
+    storeRail(railPanel)
+    set({ railPanel })
+  },
+  toggleRail: (panel) => {
+    const railPanel = panel === get().railPanel ? null : panel
+    storeRail(railPanel)
+    set({ railPanel })
+  },
+  openInPanel: (panelBlock) => set({ panelBlock, ...(panelBlock && { selected: panelBlock }) }),
   setLibraries: (found) => {
     const libraries = { ...get().libraries, ...found }
     set({ libraries, diagnostics: validate(get().definition, libraries) })

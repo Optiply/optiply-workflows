@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { clickEmptyCanvas, signIn } from './helpers'
+import { clickEmptyCanvas, openRail, signIn } from './helpers'
 
 /**
  * M23 step 3: a workflow's Python packages in its Settings, checked line by line, saved with the draft. (Installing
@@ -12,8 +12,7 @@ test("a workflow's Python packages in its settings", async ({ page }) => {
   await page.getByRole('button', { name: 'Create workflow' }).click()
   await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
   await clickEmptyCanvas(page)
-  const panel = page.getByTestId('side-panel')
-  await panel.getByRole('button', { name: 'Settings', exact: true }).click()
+  const panel = await openRail(page, 'settings')
 
   const packages = panel.getByLabel('Python packages')
   await packages.fill('polars==1.9.0\n\n-e git+https://github.com/x/y\nPolars>=1')
@@ -22,9 +21,8 @@ test("a workflow's Python packages in its settings", async ({ page }) => {
     '-e git+https://github.com/x/y: pip options (like -e or --index-url) are not allowed',
   )
   await expect(problems).toContainText('Polars>=1: "Polars" is already on line 1')
-  await panel.getByRole('button', { name: 'Problems', exact: true }).click()
-  await expect(panel).toContainText('pip options')
-  await panel.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(await openRail(page, 'problems')).toContainText('pip options')
+  await openRail(page, 'settings')
 
   await packages.fill('polars==1.9.0\nopenpyxl>=3.1')
   await expect(problems).toHaveCount(0)
@@ -43,7 +41,7 @@ test("a workflow's Python packages in its settings", async ({ page }) => {
 
   await page.reload()
   await clickEmptyCanvas(page)
-  await panel.getByRole('button', { name: 'Settings', exact: true }).click()
+  await openRail(page, 'settings')
   await expect(panel.getByLabel('Python packages')).toHaveValue('polars==1.9.0\nopenpyxl>=3.1')
   await expect(panel.getByPlaceholder('15')).toHaveValue('')
 })
@@ -56,8 +54,7 @@ test('installing the packages from the settings, and why it failed', async ({ pa
   await page.getByRole('button', { name: 'Create workflow' }).click()
   await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
   await clickEmptyCanvas(page)
-  const panel = page.getByTestId('side-panel')
-  await panel.getByRole('button', { name: 'Settings', exact: true }).click()
+  const panel = await openRail(page, 'settings')
   const state = panel.getByTestId('packages-state')
 
   // Requirements only this run asks for (the specifier changes nothing): nothing has installed them before.

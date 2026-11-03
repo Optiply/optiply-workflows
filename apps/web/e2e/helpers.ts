@@ -40,8 +40,46 @@ export const block = (page: Page, name: string) => page.getByTestId(`block-${nam
 export const field = (page: Page, blockName: string, file: string) =>
   page.locator(`[data-testid$="/${blockName}/${file}"]`)
 
+/** A block's name field: its title, double-clicked (M28). */
+export async function nameField(page: Page, blockName: string) {
+  // Shown first (from the Outline, which centres it), then selected: the click that selects a block re-renders it,
+  // and a double-click's second click is lost.
+  const outline = await openRail(page, 'outline')
+  await outline.getByRole('button', { name: blockName, exact: true }).click()
+  await page.getByTestId('rail-outline').click()
+  await page.getByTestId(`block-title-${blockName}`).click()
+  await page.getByTestId(`block-title-${blockName}`).dblclick()
+  return block(page, blockName).getByTestId('block-name')
+}
+
+/** Opens one of the workflow editor's rail panels (M28), unless it's open already. */
+export async function openRail(page: Page, panel: string) {
+  const button = page.getByTestId(`rail-${panel}`)
+  if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click()
+  return page.getByTestId('rail-panel')
+}
+
+/** Adds a block from the rail's Blocks panel (after the selected block, connected to it). */
 export async function addBlock(page: Page, kind: string) {
+  await openRail(page, 'blocks')
   await page.getByTitle(`Add a ${kind} block`).click()
+  await canvasSettled(page)
+}
+
+/**
+ * Waits for the canvas to stop moving: an added block is brought into view (a 200 ms pan 150 ms after it's added),
+ * and a drag started meanwhile misses its handles.
+ */
+export async function canvasSettled(page: Page) {
+  const transform = () => page.locator('.react-flow__viewport').getAttribute('style')
+  await page.waitForTimeout(400)
+  await expect
+    .poll(async () => {
+      const before = await transform()
+      await page.waitForTimeout(100)
+      return before === (await transform())
+    })
+    .toBe(true)
 }
 
 /**
@@ -50,6 +88,8 @@ export async function addBlock(page: Page, kind: string) {
  * The whole replacement is retried until the field shows the text.
  */
 export async function typeInto(page: Page, editor: Locator, text: string) {
+  // On the canvas a block's code field is a preview until the block is selected (M28): a click makes it an editor.
+  if (await isPreview(editor)) await editor.first().click()
   const monaco = editor.locator('.monaco-editor')
   await expect(async () => {
     // On the first visible line, in the field's middle: the lines can be taller and wider than the field (they
@@ -71,8 +111,19 @@ export async function typeInto(page: Page, editor: Locator, text: string) {
  * rendered lines; the fields this test types are single lines, so line breaks are dropped.
  */
 export async function editorText(editor: Locator): Promise<string> {
-  const text = await editor.locator('.view-lines').innerText()
+  const text = (await isPreview(editor))
+    ? await editor.first().innerText()
+    : await editor.locator('.view-lines').innerText()
   return text.replace(/ /g, ' ').replace(/\n/g, '').trim()
+}
+
+/** Whether a code field is a node's preview of its text rather than an editor. */
+async function isPreview(field: Locator): Promise<boolean> {
+  const id = await field
+    .first()
+    .getAttribute('data-testid', { timeout: 5000 })
+    .catch(() => null)
+  return id?.startsWith('code-preview-') ?? false
 }
 
 /** Drags from one handle to another in small steps, as React Flow expects. */

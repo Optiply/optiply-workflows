@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { expect, type Page, test } from '@playwright/test'
-import { block, signIn, trpcMutate, trpcQuery } from './helpers'
+import { openRail, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M15's done-when (architecture.md §2.7): a Stripe-signed webhook accepts its own events and refuses a forged and an
@@ -118,7 +118,7 @@ test('M15: signed, limited and multipart webhooks, and the OpenAPI document', as
 
     // The webhook panel lists all three, newest first.
     await page.goto(`/workflows/${workflowId}`)
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     const refused = page.getByTestId('webhook-rejections').locator('li')
     await expect(refused).toHaveCount(3)
     await expect(refused.nth(0)).toContainText("The body didn't match the body schema")

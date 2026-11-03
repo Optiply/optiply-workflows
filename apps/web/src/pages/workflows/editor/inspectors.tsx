@@ -18,8 +18,8 @@ import {
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } from 'lucide-react'
-import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
+import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X, Zap } from 'lucide-react'
+import { createContext, lazy, type ReactNode, Suspense, useContext, useEffect, useState } from 'react'
 import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
@@ -45,7 +45,30 @@ import { TriggersForm } from './triggers'
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('./code-field'))
 
+/** In a node, whether its code fields are editors yet; the side panel's always are. */
+const CodeInNode = createContext<{ active: boolean; onActivate: () => void } | null>(null)
+
+/** A code field's height in a node: shorter than in the side panel. */
+const NODE_CODE_HEIGHT = 140
+
 function Code(props: WorkflowCodeFieldProps) {
+  const node = useContext(CodeInNode)
+  const height = node ? Math.min(props.height, NODE_CODE_HEIGHT) : props.height
+  if (node && !node.active) {
+    return (
+      <button
+        type="button"
+        style={{ height }}
+        onClick={node.onActivate}
+        title="Click to edit"
+        data-testid={`code-preview-${props.path}`}
+        className="flex w-full cursor-text items-start justify-start overflow-hidden rounded-md border border-border bg-field px-2 py-1 text-left font-mono text-xs whitespace-pre text-ink"
+      >
+        {props.value}
+      </button>
+    )
+  }
+  props = { ...props, height }
   return (
     <Suspense
       fallback={
@@ -65,17 +88,19 @@ function Code(props: WorkflowCodeFieldProps) {
  * and breaks Monaco's focus handling.
  */
 function EditorField({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+  // Nodes stay compact: hints show in the side panel only.
+  const inNode = useContext(CodeInNode) !== null
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-sm font-medium text-ink">{label}</span>
       {children}
-      {hint && <span className="text-xs text-muted">{hint}</span>}
+      {hint && !inNode && <span className="text-xs text-muted">{hint}</span>}
     </div>
   )
 }
 
-/** Everything about one block: name, its type's settings, retries and timeouts, and its problems. */
-export function Inspector({ name }: { name: string }) {
+/** A block of the open graph and what its form needs: where its fields sit, their problems and models. */
+function useBlockForm(name: string) {
   const definition = useEditor((s) => s.definition)
   const allDiagnostics = useEditor((s) => s.diagnostics)
   const workflowId = useEditor((s) => s.workflowId)
@@ -99,6 +124,37 @@ export function Inspector({ name }: { name: string }) {
   // Block names repeat across functions, so the function is part of each field's model.
   const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
   const ctx: FormContext = { problemsAt, modelPath, text: (...path) => [...base, ...path] }
+  return { block, ctx, diagnostics, fn }
+}
+
+/**
+ * A block's own form, in its node on the canvas (M28). Code fields there show their text until the block is
+ * selected, then become editors: a canvas of many blocks keeps one or two Monaco editors.
+ */
+export function BlockBody({ name, active }: { name: string; active: boolean }) {
+  const form = useBlockForm(name)
+  if (!form) return null
+  return (
+    <CodeInNode.Provider value={{ active, onActivate: () => useEditor.getState().inspect(name) }}>
+      <div className="flex flex-col gap-3 text-sm">
+        <TypeForm block={form.block} ctx={form.ctx} />
+      </div>
+    </CodeInNode.Provider>
+  )
+}
+
+/** A block's timeout, retries and what happens when it fails, for its node's Settings tab. */
+export function BlockSettingsForm({ name, open }: { name: string; open?: boolean }) {
+  const form = useBlockForm(name)
+  if (!form || isTrigger(form.block)) return null
+  return <SettingsForm block={form.block} open={open} />
+}
+
+/** Everything about one block: name, its type's settings, retries and timeouts, and its problems. */
+export function Inspector({ name }: { name: string }) {
+  const form = useBlockForm(name)
+  if (!form) return null
+  const { block, ctx, diagnostics, fn } = form
   const kind = kindOf(block)
   const Icon = kind.icon
 
@@ -151,7 +207,7 @@ function startsWith(path: (string | number)[], prefix: (string | number)[]) {
 }
 
 /** The block name, renamed with every reference to it when the field is committed (Enter or blur). */
-function NameField({ name }: { name: string }) {
+export function NameField({ name, onDone }: { name: string; onDone?: () => void }) {
   const [draft, setDraft] = useState(name)
   const [error, setError] = useState<string | null>(null)
   const [skipped, setSkipped] = useState<string[]>([])
@@ -161,14 +217,19 @@ function NameField({ name }: { name: string }) {
   }, [name])
 
   const commit = () => {
-    if (draft === name) return setError(null)
-    const { definition, graph } = useEditor.getState()
+    if (draft === name) {
+      setError(null)
+      return onDone?.()
+    }
+    const { definition, graph, panelBlock } = useEditor.getState()
     const result = renameBlock(definition, name, draft, graph === null ? {} : { function: graph })
     if (!result.ok) return setError(result.error)
     setError(null)
     setSkipped(result.skipped.map((s) => s.block))
     useEditor.getState().update(() => result.definition)
     useEditor.getState().select(draft)
+    if (panelBlock === name) useEditor.getState().openInPanel(draft)
+    onDone?.()
   }
 
   return (
@@ -184,9 +245,11 @@ function NameField({ name }: { name: string }) {
           if (e.key === 'Escape') {
             setDraft(name)
             setError(null)
+            onDone?.()
           }
         }}
-        className="h-8 font-mono font-medium"
+        autoFocus={onDone !== undefined}
+        className={cn('font-mono font-medium', onDone ? 'h-6 px-1.5 text-sm' : 'h-8')}
       />
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       {skipped.length > 0 && (
@@ -199,7 +262,7 @@ function NameField({ name }: { name: string }) {
 }
 
 /** Runs just this block, reusing the results of the blocks before it from the latest run. */
-function RunBlockButton({ name }: { name: string }) {
+export function RunBlockButton({ name, compact }: { name: string; compact?: boolean }) {
   const starting = useRun((s) => s.starting)
   // Only problems in this block, the blocks before it and what they call stop it (M28).
   const errors = useEditor((s) => blockingErrors(s.definition, s.diagnostics, [name]).length > 0)
@@ -207,6 +270,7 @@ function RunBlockButton({ name }: { name: string }) {
     <Button
       size="icon"
       variant="ghost"
+      className={compact ? 'size-6 text-accent [&_svg]:size-3.5' : undefined}
       loading={starting}
       disabled={errors}
       title={
@@ -216,7 +280,7 @@ function RunBlockButton({ name }: { name: string }) {
       }
       onClick={() => runBlock(name)}
     >
-      {!starting && <Play className="size-4" />}
+      {!starting && <Play className={compact ? 'fill-current' : 'size-4'} />}
     </Button>
   )
 }
@@ -305,10 +369,35 @@ function StartTriggerForm({ block, ctx }: { block: BlockOf<'startTrigger'>; ctx:
           }}
         />
       </EditorField>
-      <TriggersForm testInput={stored} />
+      {useContext(CodeInNode) ? <EnabledTriggers name={block.name} /> : <TriggersForm testInput={stored} />}
     </div>
   )
 }
+
+/** In the start trigger's node: which triggers are on, and a way to their settings (the side panel). */
+function EnabledTriggers({ name }: { name: string }) {
+  const triggers = useEditor((s) => s.definition.triggers)
+  const on = [
+    triggers?.webhook?.enabled ? 'Webhook' : null,
+    ...(['schedules', 'pubsub', 'sqs', 'kafka'] as const).map((kind) => {
+      const n = (triggers?.[kind] ?? []).filter((t) => t.enabled).length
+      return n ? `${TRIGGER_LABELS[kind]}${n > 1 ? ` (${n})` : ''}` : null
+    }),
+  ].filter(Boolean)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-ink">Enabled triggers</span>
+      <div className="rounded-md border border-border px-2 py-1.5 text-center text-xs text-muted">
+        {on.length ? on.join(' · ') : 'No triggers enabled'}
+      </div>
+      <Button size="sm" variant="ghost" onClick={() => useEditor.getState().openInPanel(name)}>
+        <Zap className="size-3.5" /> Edit triggers
+      </Button>
+    </div>
+  )
+}
+
+const TRIGGER_LABELS = { schedules: 'Schedule', pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
 
 function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) {
   return (
@@ -1948,7 +2037,7 @@ type ExecutableBlock = Exclude<Block, BlockOf<'startTrigger' | 'errorTrigger'>>
  * Timeout, retries and what happens on failure. Unset values show their defaults as placeholders. A loop retries
  * per item (in its own form) and a wait only has "on failure".
  */
-function SettingsForm({ block }: { block: ExecutableBlock }) {
+function SettingsForm({ block, open }: { block: ExecutableBlock; open?: boolean }) {
   const settings: BlockSettings = block.settings ?? {}
   const retry = settings.retry ?? {}
   const defaults = resolveBlockSettings({ ...block, settings: undefined } as Block)
@@ -1968,7 +2057,7 @@ function SettingsForm({ block }: { block: ExecutableBlock }) {
   const num = (value: string) => (value === '' ? undefined : Math.max(0, Math.round(Number(value))))
 
   return (
-    <details className="group rounded-md border border-border">
+    <details className="group rounded-md border border-border" open={open}>
       <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
         {hasRetries ? 'Timeout, retries and failure' : hasTimeout ? 'Timeout and failure' : 'Failure'}
       </summary>

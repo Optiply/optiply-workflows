@@ -1,5 +1,16 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, drag, editorText, field, signIn, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  clickEmptyCanvas,
+  drag,
+  editorText,
+  field,
+  nameField,
+  openRail,
+  signIn,
+  typeInto,
+} from './helpers'
 
 /**
  * M3's done-when: build "query → branch → code → response" in the editor, run it, rename a block, and see its
@@ -55,7 +66,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
 
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
   })
 
   await test.step('run it', async () => {
@@ -66,8 +77,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
   })
 
   await test.step('rename query1 → customer: every reference follows', async () => {
-    await block(page, 'query1').click()
-    const name = page.getByTestId('block-name')
+    const name = await nameField(page, 'query1')
     await name.fill('customer')
     await name.press('Enter')
     await expect(block(page, 'customer')).toBeVisible()
@@ -82,7 +92,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
       .poll(() => editorText(field(page, 'code1', 'code.js')))
       .toBe('return customer.data[0].email.toUpperCase()')
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
   })
 
   await test.step('the renamed workflow still runs', async () => {

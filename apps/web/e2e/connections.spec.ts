@@ -21,9 +21,9 @@ test('remove a connection with one click, reattach another by dragging its end',
       layout: {
         blocks: {
           startTrigger: { x: 0, y: 0 },
-          a: { x: 320, y: 0 },
-          b: { x: 640, y: 0 },
-          c: { x: 640, y: 240 },
+          a: { x: 500, y: 0 },
+          b: { x: 1100, y: 0 },
+          c: { x: 1100, y: 420 },
         },
       },
     },

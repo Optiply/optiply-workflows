@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { expect, type Page, test } from '@playwright/test'
-import { block, field, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { block, field, openRail, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * M15 step 6a: a webhook's authentication, rate limit and environments set in the trigger panel, and a call the
@@ -45,7 +45,7 @@ test('sign a webhook with GitHub, and see a forged call refused', async ({ page,
 
   await test.step('choose a GitHub signature, its secret and a limit in the panel', async () => {
     await page.goto(`/workflows/${workflowId}`)
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     const webhook = page.getByTestId('webhook-trigger')
     await webhook.getByLabel('Enabled').check()
     await expect(webhook.getByText('X-Api-Key: <your API key>')).toBeVisible()
@@ -152,7 +152,7 @@ test('draft a body schema, and complete startTrigger.data from it', async ({ pag
     ).draftDefinition.triggers.webhook.bodySchema
 
   await page.goto(`/workflows/${workflowId}`)
-  await block(page, 'startTrigger').click()
+  await openRail(page, 'triggers')
   const schemaField = page.getByTestId('body-schema')
   await schemaField.getByRole('button', { name: 'Draft from the test input' }).click()
   await saved(page)

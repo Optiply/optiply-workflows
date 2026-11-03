@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, field, signIn, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, field, openRail, signIn, typeInto } from './helpers'
 
 /**
  * M23's done-when (docs/architecture.md §2.7, §2.26): two Python executions in a row share nothing (the warm pool's
@@ -69,8 +69,7 @@ test("M23's done-when", async ({ page }) => {
   await test.step("a workflow's own package, in a draft run", async () => {
     slug = await newWorkflow(page, `Packaged ${stamp}`)
     await clickEmptyCanvas(page)
-    const side = page.getByTestId('side-panel')
-    await side.getByRole('button', { name: 'Settings', exact: true }).click()
+    const side = await openRail(page, 'settings')
     await side.getByLabel('Python packages').fill('owtest-a')
     await block(page, 'startTrigger').click()
     await addBlock(page, 'Python code')

@@ -368,7 +368,7 @@ describe('GraphQL queries and email HTML (M27)', () => {
     ],
     edges: [],
   })
-  const object = { name: 'Mixed', definition }
+  const object = { name: 'Mixed', description: null, definition }
 
   it('go into .graphql and .html files; a service query’s own `query` stays in the JSON', () => {
     const { files } = encodeWorkflow(object)

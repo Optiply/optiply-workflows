@@ -1,5 +1,15 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, trpcMutate, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  clickEmptyCanvas,
+  editorText,
+  field,
+  nameField,
+  signIn,
+  trpcMutate,
+  typeInto,
+} from './helpers'
 
 /**
  * M13's done-when, in both editors: about 50 mixed edits (several kinds, cycled) undone one by one return the exact
@@ -57,7 +67,7 @@ test('the workflow editor: 50 edits undone to the exact start and redone to the 
       await addBlock(page, 'code')
       await expect(block(page, 'code1')).toBeVisible()
       await typeInto(page, field(page, 'code1', 'code.js'), `return ${i}`)
-      await page.getByTestId('block-name').fill(`step${i}`)
+      await (await nameField(page, 'code1')).fill(`step${i}`)
       await page.getByTestId('block-name').press('Enter')
       await expect(block(page, `step${i}`)).toBeVisible()
       const box = (await block(page, `step${i}`).boundingBox())!
