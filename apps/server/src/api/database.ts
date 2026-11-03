@@ -152,7 +152,7 @@ function fail(reply: FastifyReply, status: number, message: string, problems?: u
 function importFailure(reply: FastifyReply, err: unknown) {
   if (err instanceof ImportError) return fail(reply, 400, err.message, err.problems)
   if (err instanceof CsvError) {
-    return fail(reply, 400, err.message, err.line ? [{ line: err.line, message: err.message }] : undefined)
+    return fail(reply, 400, err.message, err.line ? [{ line: err.line, message: err.reason }] : undefined)
   }
   if (err instanceof ManagedDbError) return fail(reply, STATUS[err.code], err.message)
   if (err instanceof postgres.PostgresError) {
