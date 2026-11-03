@@ -377,6 +377,72 @@ describe('service resources', () => {
     expect(location.searchParams.get('code_challenge')).toBeTruthy()
   })
 
+  it('OpenAPI (M29): the document checked on save, operations listed, one run, a private spec URL refused', async () => {
+    const spec = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Echo', version: '1' },
+      paths: {
+        '/echo/{name}': {
+          post: {
+            operationId: 'echo',
+            parameters: [
+              { name: 'name', in: 'path', required: true },
+              { name: 'n', in: 'query' },
+            ],
+            requestBody: { content: { 'application/json': {} } },
+          },
+        },
+      },
+    })
+    const created = data(
+      await admin.mutate('resources.create', { type: 'openapi', name: 'Echo API', slug: 'echo_api' }),
+    )
+    const base = { baseUrl: `${fake.url}/_fake`, allowPrivateNetwork: true }
+    const bad = await admin.mutate('resources.saveConfig', {
+      resourceId: created.id,
+      environmentId: prodId,
+      config: { ...base, spec: '{"swagger": "1.2"}' },
+      secrets: {},
+    })
+    expect(bad.body.error?.message).toContain('OpenAPI 3.0 or 3.1')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: created.id,
+        environmentId: prodId,
+        config: { ...base, spec },
+        secrets: {},
+      }),
+    )
+    const ops = data(
+      await admin.query('resources.openapiOperations', { resourceId: created.id, environmentId: prodId }),
+    )
+    expect(ops).toMatchObject({
+      ok: true,
+      title: 'Echo',
+      operations: [{ id: 'echo', method: 'POST', path: '/echo/{name}' }],
+    })
+    const echoed = await run(
+      created.id,
+      { operationId: 'echo', parameters: '{"name": {{ who }}, "n": 2}', body: '{"a": 1}' },
+      { who: 'ada' },
+    )
+    expect(echoed).toMatchObject({
+      ok: true,
+      data: { method: 'POST', path: '/_fake/echo/ada', query: { n: '2' }, body: '{"a":1}' },
+    })
+    const fetched = data(
+      await admin.mutate('resources.openapiFetch', {
+        resourceId: created.id,
+        environmentId: prodId,
+        url: `${fake.url}/_fake/echo`,
+      }),
+    )
+    expect(fetched).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/private|blocked|not allowed/i),
+    })
+  })
+
   it('HubSpot: create and search records, and list an object’s properties for the forms', async () => {
     const id = await resourceOf('hubspot', 'crm', { auth: { type: 'token' } }, { token: fake.hubspot.token })
     await run(id, { action: 'create', objectType: 'contacts', properties: '{"email": "ada@example.com"}' })

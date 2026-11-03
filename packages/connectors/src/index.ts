@@ -4,6 +4,7 @@ import { bigqueryConnector } from './bigquery'
 import { graphqlConnector } from './graphql'
 import { kafkaConnector } from './kafka/connector'
 import { mysqlConnector } from './mysql'
+import { openapiConnector } from './openapi'
 import { postgresConnector } from './postgres'
 import { pubsubConnector } from './pubsub/connector'
 import type { RestConfig } from './rest'
@@ -112,6 +113,17 @@ export {
   type OAuthProviderPreset,
   oauthPresets,
 } from './oauth-presets'
+export {
+  buildOperationRequest,
+  exampleOf,
+  OPENAPI_MAX_SPEC,
+  type OpenApiDocument,
+  type OpenApiOperation,
+  type OpenApiParameter,
+  openApiDocument,
+  openapiConnector,
+  parseOpenApi,
+} from './openapi'
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export {
@@ -198,6 +210,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [restConnector.type]: restConnector,
   [restApiConnector.type]: restApiConnector,
   [graphqlConnector.type]: graphqlConnector,
+  [openapiConnector.type]: openapiConnector,
   [slackConnector.type]: slackConnector,
   [hubspotConnector.type]: hubspotConnector,
   [sendgridConnector.type]: sendgridConnector,

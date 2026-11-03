@@ -1,17 +1,23 @@
 import {
   ConnectorError,
   connectors,
+  createHttpClient,
+  destroyHttpClient,
   getConnector,
   graphqlConnector,
   graphqlIntrospect,
   type HttpClient,
   type HubSpotProperty,
+  httpRequest,
   hubspotConnector,
   hubspotProperties,
   type KafkaConfig,
   type KafkaSecrets,
   kafkaSettingsProblem,
+  OPENAPI_MAX_SPEC,
+  openApiDocument,
   restApiConnector,
+  restConfigSchema,
   runOperation,
   runQuery,
   SshSettingsError,
@@ -108,6 +114,16 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
   }
   if (type === 'stripe' && !secrets.token) return 'Add the secret key'
   if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
+  if (type === 'openapi') {
+    const spec = ((config ?? {}) as { spec?: unknown }).spec
+    if (typeof spec !== 'string' || !spec.trim())
+      return 'Add the OpenAPI document (paste it, or fetch it from its URL)'
+    try {
+      openApiDocument(spec)
+    } catch (err) {
+      return err instanceof ConnectorError ? err.message : 'The OpenAPI document doesn’t parse'
+    }
+  }
   if (type === 'salesforce') {
     const auth = ((config ?? {}) as { auth?: { clientId?: string } }).auth
     if (!auth?.clientId) return 'Add the connected app’s consumer key'
@@ -909,6 +925,77 @@ export const resourcesRouter = router({
   /**
    * A HubSpot object type's properties (M27), for the query forms' pickers. Needs Use; kept like a GraphQL schema.
    */
+  /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
+  openapiOperations: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id }))
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== 'openapi')
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only OpenAPI resources have operations' })
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      const spec = (row?.config as { spec?: unknown } | undefined)?.spec
+      if (typeof spec !== 'string')
+        return { ok: false as const, message: 'This resource has no OpenAPI document in this environment' }
+      try {
+        const doc = openApiDocument(spec)
+        return {
+          ok: true as const,
+          title: doc.title,
+          version: doc.version,
+          servers: doc.servers,
+          operations: doc.operations,
+        }
+      } catch (err) {
+        return {
+          ok: false as const,
+          message: err instanceof ConnectorError ? err.message : 'The OpenAPI document doesn’t parse',
+        }
+      }
+    }),
+
+  /**
+   * Fetches an OpenAPI document from a public URL (M29) for the settings form, which keeps its text in the settings:
+   * through the HTTP core's guard (no private addresses, redirects re-checked, 5 MB). Needs Edit on the resource.
+   */
+  openapiFetch: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, url: z.url({ protocol: /^https?$/ }) }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      if (resource.type !== 'openapi')
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only OpenAPI resources have a document' })
+      const client = createHttpClient(
+        restConfigSchema.parse({ baseUrl: input.url, maxResponseBytes: OPENAPI_MAX_SPEC }),
+        { headers: {}, values: {} },
+      )
+      try {
+        const res = await httpRequest(
+          client,
+          { method: 'GET', url: new URL(input.url) },
+          { signal: AbortSignal.timeout(20_000) },
+        )
+        if (!res.ok) return { ok: false as const, message: `The URL answered HTTP ${res.status}` }
+        const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
+        const doc = openApiDocument(text)
+        return {
+          ok: true as const,
+          spec: text,
+          title: doc.title,
+          version: doc.version,
+          servers: doc.servers,
+          operations: doc.operations.length,
+        }
+      } catch (err) {
+        return {
+          ok: false as const,
+          message: err instanceof ConnectorError ? err.message : (err as Error).message,
+        }
+      } finally {
+        await destroyHttpClient(client)
+      }
+    }),
+
   hubspotProperties: authedProcedure
     .input(
       z.object({
@@ -971,6 +1058,7 @@ const TYPE_GROUPS: Record<string, string> = {
   bigquery: 'Databases',
   rest: 'APIs',
   graphql: 'APIs',
+  openapi: 'APIs',
   pubsub: 'Messaging',
   sqs: 'Messaging',
   kafka: 'Messaging',
