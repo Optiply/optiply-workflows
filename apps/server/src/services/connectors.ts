@@ -13,6 +13,7 @@ type ConnectorsConfig = Pick<
   | 'STRIPE_API_URL'
   | 'AIRTABLE_API_URL'
   | 'NOTION_API_URL'
+  | 'SALESFORCE_URL'
 >
 
 /** Instance settings of the HTTP connectors (M27), in every process that runs queries. */
@@ -28,5 +29,6 @@ export function configureConnectors(config: ConnectorsConfig): void {
     ...(config.STRIPE_API_URL && { stripe: config.STRIPE_API_URL }),
     ...(config.AIRTABLE_API_URL && { airtable: config.AIRTABLE_API_URL }),
     ...(config.NOTION_API_URL && { notion: config.NOTION_API_URL }),
+    ...(config.SALESFORCE_URL && { salesforce: config.SALESFORCE_URL }),
   })
 }

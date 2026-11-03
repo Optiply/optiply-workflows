@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { type FakeAirtable, fakeAirtable } from './fake-airtable'
 import { type FakeJira, fakeJira } from './fake-jira'
 import { type FakeNotion, fakeNotion } from './fake-notion'
+import { type FakeSalesforce, fakeSalesforce } from './fake-salesforce'
 import { type FakeStripe, fakeStripe } from './fake-stripe'
 
 // Fakes of the services M27 connects to, on one HTTP server for tests: Slack's Web API under `/slack/api`, HubSpot's
@@ -25,6 +26,7 @@ export interface FakeServices {
     stripe: string
     airtable: string
     notion: string
+    salesforce: string
     /** Jira sites: a resource's site URL, not an instance setting. */
     jiraCloud: string
     jiraDataCenter: string
@@ -37,6 +39,7 @@ export interface FakeServices {
   airtable: FakeAirtable
   jira: FakeJira
   notion: FakeNotion
+  salesforce: FakeSalesforce
   calls: {
     service: string
     method: string
@@ -121,6 +124,7 @@ export async function startFakeServices(
   const airtable = fakeAirtable()
   const jira = fakeJira()
   const notion = fakeNotion()
+  const salesforce = fakeSalesforce()
   const slack: FakeSlack = {
     token: opts.slackToken ?? 'xoxb-fake-token',
     acceptTokens: new Set(),
@@ -825,6 +829,7 @@ export async function startFakeServices(
     ['/stripe/', 'stripe', stripe.handler],
     ['/airtable/', 'airtable', airtable.handler],
     ['/notion/', 'notion', notion.handler],
+    ['/salesforce/', 'salesforce', salesforce.handler],
     ['/jira-cloud/', 'jira', jira.handler],
     ['/jira-dc/', 'jira', jira.handler],
   ]
@@ -875,6 +880,7 @@ export async function startFakeServices(
       stripe: `${origin}/stripe`,
       airtable: `${origin}/airtable`,
       notion: `${origin}/notion`,
+      salesforce: `${origin}/salesforce`,
       jiraCloud: `${origin}/jira-cloud`,
       jiraDataCenter: `${origin}/jira-dc`,
     },
@@ -886,6 +892,7 @@ export async function startFakeServices(
     airtable: airtable.state,
     jira: jira.state,
     notion: notion.state,
+    salesforce: salesforce.state,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),
   }

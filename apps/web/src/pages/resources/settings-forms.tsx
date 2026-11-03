@@ -16,6 +16,7 @@ import {
   HubSpotFields,
   JiraFields,
   NotionFields,
+  SalesforceFields,
   SendGridFields,
   SlackFields,
   StripeFields,
@@ -79,6 +80,7 @@ const DEFAULTS: Record<string, Config> = {
   airtable: {},
   jira: { siteUrl: '', deployment: 'cloud', allowPrivateNetwork: false },
   notion: {},
+  salesforce: { domain: '', apiVersion: 'v62.0', auth: { type: 'oauth', clientId: '' } },
   googlesheets: { auth: { type: 'serviceAccount' } },
   graphql: {
     baseUrl: '',
@@ -248,6 +250,8 @@ export function SettingsPanel({
           <JiraFields {...props} />
         ) : resource.type === 'notion' ? (
           <NotionFields {...props} />
+        ) : resource.type === 'salesforce' ? (
+          <SalesforceFields {...props} resourceId={resource.id} />
         ) : resource.type === 'googlesheets' ? (
           <GoogleSheetsFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (

@@ -121,4 +121,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   airtable: { label: 'AT', className: 'bg-op-yellow-1 text-op-yellow-4' },
   jira: { label: 'JI', className: 'bg-op-blue-1 text-op-blue-4' },
   notion: { label: 'NO', className: 'bg-op-purple-2 text-op-purple-4' },
+  salesforce: { label: 'SF', className: 'bg-op-blue-2 text-op-blue-4' },
 }

@@ -322,6 +322,74 @@ export function NotionFields(props: FieldsProps) {
   )
 }
 
+const SALESFORCE_APP = {
+  label: 'Salesforce',
+  consoleUrl: 'https://help.salesforce.com/s/articleView?id=sf.connected_app_create.htm',
+  scope: 'api refresh_token',
+}
+
+/**
+ * Salesforce (M29): the org's My Domain URL, the API version, and a connected app: OAuth sign-in (M9; each
+ * environment's account or each person's) or its client credentials flow (it runs as the app's Run As user).
+ */
+export function SalesforceFields(props: FieldsProps & { resourceId: string }) {
+  const auth = (props.config.auth ?? { type: 'oauth' }) as Auth
+  return (
+    <>
+      <Grid>
+        <Field label="My Domain URL" hint="Setup → My Domain, e.g. https://optiply.my.salesforce.com">
+          <Input
+            value={String(props.config.domain ?? '')}
+            disabled={props.disabled}
+            placeholder="https://optiply.my.salesforce.com"
+            data-testid="salesforce-domain"
+            onChange={(e) => props.set('domain', e.target.value.trim())}
+          />
+        </Field>
+        <Field label="API version">
+          <Input
+            value={String(props.config.apiVersion ?? 'v62.0')}
+            disabled={props.disabled}
+            onChange={(e) => props.set('apiVersion', e.target.value.trim() || undefined)}
+          />
+        </Field>
+      </Grid>
+      <Field label="Sign in with">
+        <Select
+          value={auth.type}
+          disabled={props.disabled}
+          data-testid="service-auth"
+          onChange={(e) => props.set('auth', { type: e.target.value, clientId: auth.clientId ?? '' })}
+        >
+          <option value="oauth">OAuth sign-in (a connected app)</option>
+          <option value="clientCredentials">Client credentials (a connected app's Run As user)</option>
+        </Select>
+      </Field>
+      {auth.type === 'clientCredentials' ? (
+        <Grid>
+          <Field label="Consumer key">
+            <Input
+              value={auth.clientId ?? ''}
+              disabled={props.disabled}
+              data-testid="oauth-client-id"
+              onChange={(e) => props.set('auth', { ...auth, clientId: e.target.value })}
+            />
+          </Field>
+          <SecretInput props={props} name="clientSecret" label="Consumer secret" />
+        </Grid>
+      ) : (
+        <OAuthApp
+          props={props}
+          auth={auth}
+          preset={SALESFORCE_APP}
+          resourceId={props.resourceId}
+          scopeHint="Space-separated: api to call the API, refresh_token to stay signed in."
+        />
+      )}
+    </>
+  )
+}
+
 export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) {
   const trpc = useTRPC()
   const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data

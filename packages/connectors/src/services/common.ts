@@ -27,6 +27,8 @@ export interface ServiceUrls {
   stripe?: string
   airtable?: string
   notion?: string
+  /** Replaces every Salesforce resource's My Domain URL (tests only). */
+  salesforce?: string
 }
 
 let urls: ServiceUrls = {}

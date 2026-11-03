@@ -14,6 +14,7 @@ import { googleSheetsConnector } from './services/googlesheets'
 import { hubspotConnector } from './services/hubspot'
 import { jiraConnector } from './services/jira'
 import { notionConnector } from './services/notion'
+import { salesforceConnector } from './services/salesforce'
 import { sendgridConnector } from './services/sendgrid'
 import { slackConnector } from './services/slack'
 import { stripeConnector } from './services/stripe'
@@ -155,6 +156,7 @@ export {
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
 export { jiraConnector } from './services/jira'
 export { notionConnector } from './services/notion'
+export { salesforceConnector } from './services/salesforce'
 export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
 export { stripeConnector, stripeForm } from './services/stripe'
@@ -208,6 +210,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [airtableConnector.type]: airtableConnector,
   [jiraConnector.type]: jiraConnector,
   [notionConnector.type]: notionConnector,
+  [salesforceConnector.type]: salesforceConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

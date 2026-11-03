@@ -108,6 +108,11 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
   }
   if (type === 'stripe' && !secrets.token) return 'Add the secret key'
   if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
+  if (type === 'salesforce') {
+    const auth = ((config ?? {}) as { auth?: { clientId?: string } }).auth
+    if (!auth?.clientId) return 'Add the connected app’s consumer key'
+    if (!secrets.clientSecret) return 'Add the connected app’s consumer secret'
+  }
   if (type === 'jira') {
     const c = (config ?? {}) as { deployment?: string; email?: string }
     const cloudSite = (c.deployment ?? 'cloud') === 'cloud'
@@ -978,6 +983,7 @@ const TYPE_GROUPS: Record<string, string> = {
   airtable: 'Services',
   jira: 'Services',
   notion: 'Services',
+  salesforce: 'Services',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

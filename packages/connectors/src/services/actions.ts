@@ -13,6 +13,7 @@ export const SERVICE_TYPES = [
   'airtable',
   'jira',
   'notion',
+  'salesforce',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1102,6 +1103,119 @@ const NOTION: readonly ActionSpec[] = [
   },
 ]
 
+const SF_OBJECT: ActionField = {
+  key: 'object',
+  label: 'Object',
+  kind: 'text',
+  required: true,
+  placeholder: 'Account',
+}
+const SF_ID: ActionField = { key: 'id', label: 'Record id', kind: 'text', required: true }
+const SF_RECORD: ActionField = {
+  key: 'record',
+  label: 'Fields',
+  kind: 'json',
+  language: 'json',
+  required: true,
+  hint: 'A JSON object of field values, e.g. {"Name": "Acme", "Industry": "Retail"}',
+}
+
+const SALESFORCE: readonly ActionSpec[] = [
+  {
+    id: 'query',
+    label: 'Query (SOQL)',
+    description:
+      'A SOQL query; each {{ }} is sent as a quoted, escaped value (put it outside quotes), page after page.',
+    fields: [
+      {
+        key: 'soql',
+        label: 'SOQL',
+        kind: 'long',
+        required: true,
+        language: 'plaintext',
+        initial: 'SELECT Id, Name FROM Account WHERE Name = {{ name }} LIMIT 100',
+      },
+      { key: 'all', label: 'Include deleted and archived', kind: 'bool' },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'search',
+    label: 'Search',
+    description: 'Records containing a term, across objects (Salesforce’s parameterized search).',
+    fields: [
+      { key: 'term', label: 'Term', kind: 'text', required: true },
+      {
+        key: 'objects',
+        label: 'Objects',
+        kind: 'list',
+        hint: 'e.g. Account, Contact (empty: all searchable objects).',
+      },
+      {
+        key: 'fieldList',
+        label: 'Fields',
+        kind: 'list',
+        hint: 'Fields to return for each object, e.g. Id, Name.',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'get',
+    label: 'Get a record',
+    description: 'One record by its id.',
+    fields: [
+      SF_OBJECT,
+      SF_ID,
+      { key: 'fieldList', label: 'Fields', kind: 'list', hint: 'Empty: all fields.' },
+    ],
+  },
+  { id: 'create', label: 'Create a record', description: 'A new record.', fields: [SF_OBJECT, SF_RECORD] },
+  {
+    id: 'update',
+    label: 'Update a record',
+    description: 'Changes the fields given.',
+    fields: [SF_OBJECT, SF_ID, SF_RECORD],
+  },
+  {
+    id: 'upsert',
+    label: 'Upsert a record',
+    description: 'Creates or updates the record with this external id.',
+    fields: [
+      SF_OBJECT,
+      {
+        key: 'externalIdField',
+        label: 'External id field',
+        kind: 'text',
+        required: true,
+        placeholder: 'Optiply_Id__c',
+      },
+      { key: 'externalId', label: 'External id', kind: 'text', required: true },
+      SF_RECORD,
+    ],
+  },
+  {
+    id: 'delete',
+    label: 'Delete a record',
+    description: 'Moves a record to the recycle bin.',
+    fields: [SF_OBJECT, SF_ID],
+  },
+  {
+    id: 'describe',
+    label: 'Describe an object',
+    description: 'An object’s fields, their types and whether they’re required.',
+    fields: [SF_OBJECT],
+  },
+  {
+    id: 'api',
+    label: 'Call any endpoint',
+    description: 'Any path under /services/data.',
+    fields: API_FIELDS.map((f) =>
+      f.key === 'path' ? { ...f, placeholder: '/services/data/v62.0/limits' } : f,
+    ),
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
@@ -1112,6 +1226,7 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   airtable: AIRTABLE,
   jira: JIRA,
   notion: NOTION,
+  salesforce: SALESFORCE,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

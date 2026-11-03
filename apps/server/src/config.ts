@@ -129,6 +129,8 @@ const ConfigSchema = z
     STRIPE_API_URL: z.string().url().optional(),
     AIRTABLE_API_URL: z.string().url().optional(),
     NOTION_API_URL: z.string().url().optional(),
+    /** Replaces every Salesforce resource's My Domain URL (tests only). */
+    SALESFORCE_URL: z.string().url().optional(),
     REST_API_PRIVATE_HOSTS: z
       .string()
       .default('')

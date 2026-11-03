@@ -61,6 +61,7 @@ beforeAll(async () => {
     STRIPE_API_URL: fake.urls.stripe,
     AIRTABLE_API_URL: fake.urls.airtable,
     NOTION_API_URL: fake.urls.notion,
+    SALESFORCE_URL: fake.urls.salesforce,
   })
   await createLocalUser(env.db, 'admin@example.com', { admin: true })
   memberId = (await createLocalUser(env.db, 'member@example.com')).id
@@ -324,6 +325,56 @@ describe('service resources', () => {
       ok: true,
       data: [{ Name: 'Acme' }],
     })
+  })
+
+  it('Salesforce (M29): the app checked on save, SOQL through client credentials, OAuth starts at My Domain', async () => {
+    const cc = data(
+      await admin.mutate('resources.create', { type: 'salesforce', name: 'Salesforce', slug: 'salesforce' }),
+    )
+    const domain = 'https://optiply.my.salesforce.com'
+    const noSecret = await admin.mutate('resources.saveConfig', {
+      resourceId: cc.id,
+      environmentId: prodId,
+      config: { domain, auth: { type: 'clientCredentials', clientId: fake.salesforce.clientId } },
+      secrets: {},
+    })
+    expect(noSecret.body.error?.message).toContain('consumer secret')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: cc.id,
+        environmentId: prodId,
+        config: { domain, auth: { type: 'clientCredentials', clientId: fake.salesforce.clientId } },
+        secrets: { clientSecret: fake.salesforce.clientSecret },
+      }),
+    )
+    await run(cc.id, { action: 'create', object: 'Account', record: '{"Name": "Acme"}' })
+    expect(
+      await run(
+        cc.id,
+        { action: 'query', soql: 'SELECT Name FROM Account WHERE Name = {{ n }}' },
+        { n: 'Acme' },
+      ),
+    ).toMatchObject({
+      ok: true,
+      data: [{ Name: 'Acme' }],
+    })
+
+    const oauth = await resourceOf(
+      'salesforce',
+      'salesforce_oauth',
+      { domain, auth: { type: 'oauth', clientId: 'sf-consumer' } },
+      { clientSecret: 'x' },
+    )
+    const started = await env.app.inject({
+      method: 'GET',
+      url: `/api/oauth/start?resourceId=${oauth}&environmentId=${prodId}&account=shared`,
+      headers: { cookie: adminCookie },
+    })
+    const location = new URL(String(started.headers.location))
+    expect(location.pathname).toBe('/salesforce/services/oauth2/authorize')
+    expect(location.searchParams.get('client_id')).toBe('sf-consumer')
+    expect(location.searchParams.get('scope')).toBe('api refresh_token')
+    expect(location.searchParams.get('code_challenge')).toBeTruthy()
   })
 
   it('HubSpot: create and search records, and list an object’s properties for the forms', async () => {
