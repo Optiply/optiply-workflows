@@ -10,7 +10,14 @@ import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OverridesCard } from './overrides'
 import { KafkaFields, S3Fields, SqsFields } from './queue-settings'
-import { GoogleSheetsFields, HubSpotFields, SendGridFields, SlackFields } from './service-settings'
+import {
+  AirtableFields,
+  GoogleSheetsFields,
+  HubSpotFields,
+  SendGridFields,
+  SlackFields,
+  StripeFields,
+} from './service-settings'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -66,6 +73,8 @@ const DEFAULTS: Record<string, Config> = {
   slack: { auth: { type: 'token' } },
   hubspot: { auth: { type: 'token' } },
   sendgrid: { region: 'global' },
+  stripe: {},
+  airtable: {},
   googlesheets: { auth: { type: 'serviceAccount' } },
   graphql: {
     baseUrl: '',
@@ -227,6 +236,10 @@ export function SettingsPanel({
           <HubSpotFields {...props} resourceId={resource.id} />
         ) : resource.type === 'sendgrid' ? (
           <SendGridFields {...props} />
+        ) : resource.type === 'stripe' ? (
+          <StripeFields {...props} />
+        ) : resource.type === 'airtable' ? (
+          <AirtableFields {...props} />
         ) : resource.type === 'googlesheets' ? (
           <GoogleSheetsFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (

@@ -3,7 +3,15 @@
 // The service connectors' actions (M27, M29): Slack, HubSpot, SendGrid, Google Sheets, S3, … A query is `{action, ...fields}`
 // where every field is a string: a template, rendered by its kind when the query runs.
 
-export const SERVICE_TYPES = ['slack', 'hubspot', 'sendgrid', 'googlesheets', 's3'] as const
+export const SERVICE_TYPES = [
+  'slack',
+  'hubspot',
+  'sendgrid',
+  'googlesheets',
+  's3',
+  'stripe',
+  'airtable',
+] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
 export function isServiceType(type: string | undefined): type is ServiceType {
@@ -643,12 +651,233 @@ const S3: readonly ActionSpec[] = [
   { id: 'listBuckets', label: 'List buckets', description: 'The buckets the identity can see.', fields: [] },
 ]
 
+export const STRIPE_KINDS = [
+  'customers',
+  'payment_intents',
+  'charges',
+  'invoices',
+  'subscriptions',
+  'products',
+  'prices',
+  'refunds',
+  'payment_methods',
+  'coupons',
+  'events',
+] as const
+/** The kinds Stripe's search API covers. */
+export const STRIPE_SEARCHABLE = [
+  'customers',
+  'payment_intents',
+  'charges',
+  'invoices',
+  'subscriptions',
+  'products',
+  'prices',
+] as const
+
+const stripeKind = (kinds: readonly string[] = STRIPE_KINDS): ActionField => ({
+  key: 'kind',
+  label: 'Object',
+  kind: 'select',
+  options: kinds.map((k) => ({ value: k, label: k.replaceAll('_', ' ') })),
+  initial: 'customers',
+})
+const STRIPE_PARAMS: ActionField = {
+  key: 'params',
+  label: 'Parameters',
+  kind: 'json',
+  language: 'json',
+  hint: 'A JSON object, as in Stripe’s API reference (nested objects and arrays are sent the way Stripe expects).',
+}
+const STRIPE_IDEMPOTENCY: ActionField = {
+  key: 'idempotencyKey',
+  label: 'Idempotency key',
+  kind: 'text',
+  hint: 'Empty: one made from the run and the request, so a retried block doesn’t charge twice.',
+}
+
+const STRIPE: readonly ActionSpec[] = [
+  {
+    id: 'list',
+    label: 'List objects',
+    description: 'Objects of a kind, newest first, page after page.',
+    fields: [
+      stripeKind(),
+      {
+        key: 'filters',
+        label: 'Filters',
+        kind: 'json',
+        language: 'json',
+        hint: 'e.g. {"customer": "cus_…", "status": "open"}',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'search',
+    label: 'Search',
+    description: 'Stripe’s search query language, e.g. email:"ada@example.com" AND metadata["shop"]:"nl".',
+    fields: [
+      stripeKind(STRIPE_SEARCHABLE),
+      { key: 'query', label: 'Query', kind: 'text', required: true },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'retrieve',
+    label: 'Get an object',
+    description: 'One object by its id.',
+    fields: [
+      stripeKind(),
+      { key: 'id', label: 'Id', kind: 'text', required: true },
+      { key: 'expand', label: 'Expand', kind: 'list', hint: 'Fields to expand, e.g. customer' },
+    ],
+  },
+  {
+    id: 'create',
+    label: 'Create an object',
+    description: 'Creates an object from its parameters.',
+    fields: [stripeKind(), STRIPE_PARAMS, STRIPE_IDEMPOTENCY],
+  },
+  {
+    id: 'update',
+    label: 'Update an object',
+    description: 'Changes an object’s parameters (an empty string clears one).',
+    fields: [
+      stripeKind(),
+      { key: 'id', label: 'Id', kind: 'text', required: true },
+      STRIPE_PARAMS,
+      STRIPE_IDEMPOTENCY,
+    ],
+  },
+  {
+    id: 'delete',
+    label: 'Delete an object',
+    description: 'Deletes an object where Stripe allows it (customers, products, coupons, …).',
+    fields: [stripeKind(), { key: 'id', label: 'Id', kind: 'text', required: true }],
+  },
+  {
+    id: 'api',
+    label: 'Call any endpoint',
+    description: 'Any path under api.stripe.com/v1 (the body is sent form-encoded).',
+    fields: API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/v1/balance' } : f)),
+  },
+]
+
+const AIRTABLE_BASE: ActionField = {
+  key: 'base',
+  label: 'Base',
+  kind: 'text',
+  placeholder: 'the resource’s default base (app…)',
+  hint: 'A base id (app…). Empty: the base set on the resource.',
+}
+const AIRTABLE_TABLE: ActionField = {
+  key: 'table',
+  label: 'Table',
+  kind: 'text',
+  required: true,
+  placeholder: 'Orders or tbl…',
+}
+const AIRTABLE_TYPECAST: ActionField = {
+  key: 'typecast',
+  label: 'Convert values',
+  kind: 'bool',
+  hint: 'Let Airtable turn text into the field’s type (and add select options).',
+}
+
+const AIRTABLE: readonly ActionSpec[] = [
+  {
+    id: 'list',
+    label: 'List records',
+    description: 'Records of a table or view, filtered by a formula, page after page.',
+    fields: [
+      AIRTABLE_BASE,
+      AIRTABLE_TABLE,
+      { key: 'view', label: 'View', kind: 'text' },
+      { key: 'filterByFormula', label: 'Formula', kind: 'text', placeholder: "{Status} = 'Open'" },
+      {
+        key: 'sort',
+        label: 'Sort',
+        kind: 'json',
+        language: 'json',
+        hint: '[{"field": "Name", "direction": "asc"}]',
+      },
+      { key: 'fields', label: 'Fields', kind: 'list', hint: 'Only these fields (empty: all).' },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'get',
+    label: 'Get a record',
+    description: 'One record by its id.',
+    fields: [AIRTABLE_BASE, AIRTABLE_TABLE, { key: 'id', label: 'Record id', kind: 'text', required: true }],
+  },
+  {
+    id: 'create',
+    label: 'Create records',
+    description: 'One record (an object of fields) or many (an array); sent 10 at a time.',
+    fields: [
+      AIRTABLE_BASE,
+      AIRTABLE_TABLE,
+      { key: 'records', label: 'Records', kind: 'json', language: 'json', required: true },
+      AIRTABLE_TYPECAST,
+    ],
+  },
+  {
+    id: 'update',
+    label: 'Update records',
+    description: 'Records as {id, fields} (or {id, ...fields}); only the fields given change.',
+    fields: [
+      AIRTABLE_BASE,
+      AIRTABLE_TABLE,
+      { key: 'records', label: 'Records', kind: 'json', language: 'json', required: true },
+      AIRTABLE_TYPECAST,
+    ],
+  },
+  {
+    id: 'upsert',
+    label: 'Upsert records',
+    description: 'Updates records matching on the merge fields, creates the rest.',
+    fields: [
+      AIRTABLE_BASE,
+      AIRTABLE_TABLE,
+      { key: 'records', label: 'Records', kind: 'json', language: 'json', required: true },
+      { key: 'mergeOn', label: 'Match on', kind: 'list', required: true, hint: 'Field names, e.g. SKU' },
+      AIRTABLE_TYPECAST,
+    ],
+  },
+  {
+    id: 'delete',
+    label: 'Delete records',
+    description: 'Records by id (a list), 10 at a time.',
+    fields: [
+      AIRTABLE_BASE,
+      AIRTABLE_TABLE,
+      { key: 'ids', label: 'Record ids', kind: 'list', required: true },
+    ],
+  },
+  {
+    id: 'schema',
+    label: 'Tables and fields',
+    description: 'The base’s tables, their fields and views.',
+    fields: [AIRTABLE_BASE],
+  },
+  {
+    id: 'api',
+    label: 'Call any endpoint',
+    description: 'Any path under api.airtable.com/v0.',
+    fields: API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/v0/meta/bases' } : f)),
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
   sendgrid: SENDGRID,
   googlesheets: GOOGLE_SHEETS,
   s3: S3,
+  stripe: STRIPE,
+  airtable: AIRTABLE,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

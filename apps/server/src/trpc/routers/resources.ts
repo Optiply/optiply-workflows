@@ -106,6 +106,8 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
     if (auth === 'token' && !secrets.token) return type === 'sendgrid' ? 'Add the API key' : 'Add the token'
     if (auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
   }
+  if (type === 'stripe' && !secrets.token) return 'Add the secret key'
+  if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
   if (type === 'sqs' || type === 's3') return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
@@ -966,6 +968,8 @@ const TYPE_GROUPS: Record<string, string> = {
   sendgrid: 'Services',
   googlesheets: 'Services',
   s3: 'Storage',
+  stripe: 'Services',
+  airtable: 'Services',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

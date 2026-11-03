@@ -1,6 +1,8 @@
 import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { type FakeAirtable, fakeAirtable } from './fake-airtable'
+import { type FakeStripe, fakeStripe } from './fake-stripe'
 
 // Fakes of the services M27 connects to, on one HTTP server for tests: Slack's Web API under `/slack/api`, HubSpot's
 // CRM under `/hubspot`, SendGrid under `/sendgrid`, Google Sheets under `/sheets/v4/spreadsheets` and Drive under
@@ -18,11 +20,15 @@ export interface FakeServices {
     drive: string
     /** Google's token endpoint, for the service account key's JWTs. */
     googleToken: string
+    stripe: string
+    airtable: string
   }
   slack: FakeSlack
   hubspot: FakeHubSpot
   sendgrid: FakeSendGrid
   sheets: FakeSheets
+  stripe: FakeStripe
+  airtable: FakeAirtable
   calls: {
     service: string
     method: string
@@ -87,7 +93,7 @@ export interface FakeSheets {
   shares: { spreadsheetId: string; email: string; role: string }[]
 }
 
-type Handler = (
+export type Handler = (
   req: IncomingMessage,
   url: URL,
   body: Buffer,
@@ -103,6 +109,8 @@ export async function startFakeServices(
   } = {},
 ): Promise<FakeServices> {
   const calls: FakeServices['calls'] = []
+  const stripe = fakeStripe()
+  const airtable = fakeAirtable()
   const slack: FakeSlack = {
     token: opts.slackToken ?? 'xoxb-fake-token',
     acceptTokens: new Set(),
@@ -804,6 +812,8 @@ export async function startFakeServices(
     ['/google/token', 'google', googleTokenHandler],
     ['/sheets/', 'sheets', sheetsHandler],
     ['/drive/', 'drive', sheetsHandler],
+    ['/stripe/', 'stripe', stripe.handler],
+    ['/airtable/', 'airtable', airtable.handler],
   ]
 
   const server = createServer(async (req, res: ServerResponse) => {
@@ -849,11 +859,15 @@ export async function startFakeServices(
       sheets: `${origin}/sheets/v4/spreadsheets`,
       drive: `${origin}/drive`,
       googleToken: `${origin}/google/token`,
+      stripe: `${origin}/stripe`,
+      airtable: `${origin}/airtable`,
     },
     slack,
     hubspot,
     sendgrid,
     sheets,
+    stripe: stripe.state,
+    airtable: airtable.state,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),
   }

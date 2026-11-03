@@ -10,6 +10,9 @@ type ConnectorsConfig = Pick<
   | 'SENDGRID_EU_API_URL'
   | 'GOOGLE_SHEETS_API_URL'
   | 'GOOGLE_DRIVE_API_URL'
+  | 'STRIPE_API_URL'
+  | 'AIRTABLE_API_URL'
+  | 'NOTION_API_URL'
 >
 
 /** Instance settings of the HTTP connectors (M27), in every process that runs queries. */
@@ -22,5 +25,8 @@ export function configureConnectors(config: ConnectorsConfig): void {
     ...(config.SENDGRID_EU_API_URL && { sendgridEu: config.SENDGRID_EU_API_URL }),
     ...(config.GOOGLE_SHEETS_API_URL && { sheets: config.GOOGLE_SHEETS_API_URL }),
     ...(config.GOOGLE_DRIVE_API_URL && { drive: config.GOOGLE_DRIVE_API_URL }),
+    ...(config.STRIPE_API_URL && { stripe: config.STRIPE_API_URL }),
+    ...(config.AIRTABLE_API_URL && { airtable: config.AIRTABLE_API_URL }),
+    ...(config.NOTION_API_URL && { notion: config.NOTION_API_URL }),
   })
 }

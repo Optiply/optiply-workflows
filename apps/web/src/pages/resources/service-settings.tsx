@@ -191,6 +191,61 @@ export function SendGridFields(props: FieldsProps) {
   )
 }
 
+/** Stripe (M29): a secret or restricted key, an optional API version pin and connected account. */
+export function StripeFields(props: FieldsProps) {
+  const text = (key: string) => ({
+    value: String(props.config[key] ?? ''),
+    disabled: props.disabled,
+    onChange: (e: { target: { value: string } }) => props.set(key, e.target.value.trim() || undefined),
+  })
+  return (
+    <>
+      <SecretInput
+        props={props}
+        name="token"
+        label="Secret key"
+        placeholder="rk_live_… or sk_test_…"
+        hint="Developers → API keys. A restricted key with only the rights your queries need is safer."
+      />
+      <Grid>
+        <Field label="API version" hint="Optional: pins Stripe-Version (empty: the account's default).">
+          <Input {...text('apiVersion')} placeholder="2025-01-27.acacia" data-testid="stripe-version" />
+        </Field>
+        <Field label="Connected account" hint="Optional: act as a Connect account (Stripe-Account).">
+          <Input {...text('account')} placeholder="acct_…" data-testid="stripe-account" />
+        </Field>
+      </Grid>
+    </>
+  )
+}
+
+/** Airtable (M29): a personal access token and an optional default base. */
+export function AirtableFields(props: FieldsProps) {
+  return (
+    <>
+      <SecretInput
+        props={props}
+        name="token"
+        label="Personal access token"
+        placeholder="pat…"
+        hint="airtable.com/create/tokens: the data.records and schema.bases scopes, on the bases your queries use."
+      />
+      <Field
+        label="Default base"
+        hint="Optional: queries that name no base use this one (app…, from the base's URL)."
+      >
+        <Input
+          value={String(props.config.base ?? '')}
+          disabled={props.disabled}
+          placeholder="appXXXXXXXXXXXXXX"
+          data-testid="airtable-base"
+          onChange={(e) => props.set('base', e.target.value.trim() || undefined)}
+        />
+      </Field>
+    </>
+  )
+}
+
 export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) {
   const trpc = useTRPC()
   const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data

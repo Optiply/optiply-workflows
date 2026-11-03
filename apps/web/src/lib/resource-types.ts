@@ -117,4 +117,6 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   sendgrid: { label: 'SG', className: 'bg-op-blue-1 text-op-blue-4' },
   googlesheets: { label: 'GS', className: 'bg-op-green-1 text-op-green-4' },
   s3: { label: 'S3', className: 'bg-op-green-2 text-op-green-4' },
+  stripe: { label: 'ST', className: 'bg-op-purple-1 text-op-purple-4' },
+  airtable: { label: 'AT', className: 'bg-op-yellow-1 text-op-yellow-4' },
 }

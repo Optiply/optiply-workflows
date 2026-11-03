@@ -24,6 +24,9 @@ export interface ServiceUrls {
   sendgridEu?: string
   sheets?: string
   drive?: string
+  stripe?: string
+  airtable?: string
+  notion?: string
 }
 
 let urls: ServiceUrls = {}
@@ -192,6 +195,10 @@ export interface ServiceCall {
   contentType?: string
   /** Credentials sent with this call only (a Google token), dropped on a redirect to another origin. */
   authorization?: string
+  /** More query parameters as pairs, in order (keys may repeat: Stripe's `expand[0]`, Airtable's `records[]`). */
+  pairs?: [string, string][]
+  /** More headers (a service's version or account headers, an idempotency key). */
+  extraHeaders?: [string, string][]
 }
 
 /** One call to a service's API; a 429 is waited out once (up to 30 s, as `Retry-After` says), then answered. */
@@ -209,6 +216,11 @@ export async function call(
     if (Array.isArray(value)) for (const v of value) params.push([key, v])
     else params.push([key, String(value)])
   }
+  params.push(...(request.pairs ?? []))
+  const headers: [string, string][] = [
+    ...(request.authorization ? ([['authorization', request.authorization]] as [string, string][]) : []),
+    ...(request.extraHeaders ?? []),
+  ]
   const send = () =>
     httpRequest(
       client,
@@ -216,10 +228,8 @@ export async function call(
         method: request.method,
         url,
         params,
-        ...(request.authorization && {
-          headers: [['authorization', request.authorization]] as [string, string][],
-          sensitive: ['authorization'],
-        }),
+        ...(headers.length && { headers }),
+        ...(request.authorization && { sensitive: ['authorization'] }),
         ...(request.json !== undefined
           ? { body: JSON.stringify(request.json), contentType: 'application/json; charset=utf-8' }
           : request.body !== undefined

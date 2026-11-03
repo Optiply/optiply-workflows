@@ -58,6 +58,8 @@ beforeAll(async () => {
     GOOGLE_SHEETS_API_URL: fake.urls.sheets,
     GOOGLE_DRIVE_API_URL: fake.urls.drive,
     GOOGLE_TOKEN_URL: fake.urls.googleToken,
+    STRIPE_API_URL: fake.urls.stripe,
+    AIRTABLE_API_URL: fake.urls.airtable,
   })
   await createLocalUser(env.db, 'admin@example.com', { admin: true })
   memberId = (await createLocalUser(env.db, 'member@example.com')).id
@@ -220,6 +222,64 @@ describe('service resources', () => {
     })
     const unconnected = await run(oauth.id, { action: 'postMessage', channel: '#general', text: 'x' })
     expect(unconnected).toMatchObject({ ok: false, error: { code: 'auth_required' } })
+  })
+
+  it('Stripe and Airtable (M29): keys checked on save, a run’s create is idempotent, records written', async () => {
+    const stripe = data(
+      await admin.mutate('resources.create', { type: 'stripe', name: 'Stripe', slug: 'stripe' }),
+    )
+    const missing = await admin.mutate('resources.saveConfig', {
+      resourceId: stripe.id,
+      environmentId: prodId,
+      config: {},
+      secrets: {},
+    })
+    expect(missing.body.error?.message).toContain('Add the secret key')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: stripe.id,
+        environmentId: prodId,
+        config: {},
+        secrets: { token: fake.stripe.key },
+      }),
+    )
+    const made = await run(
+      stripe.id,
+      { action: 'create', kind: 'customers', params: '{"email": "{{ email }}"}' },
+      { email: 'ada@example.com' },
+    )
+    expect(made).toMatchObject({ ok: true, data: { email: 'ada@example.com' } })
+    // The playground isn't a run: its key is random, so the same create twice makes two customers.
+    await run(
+      stripe.id,
+      { action: 'create', kind: 'customers', params: '{"email": "{{ email }}"}' },
+      { email: 'ada@example.com' },
+    )
+    expect(fake.stripe.objects.get('customers')?.size).toBe(2)
+    expect(data(await admin.query('resources.types'))).toEqual(
+      expect.arrayContaining([
+        { type: 'stripe', label: 'Stripe', group: 'Services' },
+        { type: 'airtable', label: 'Airtable', group: 'Services' },
+        { type: 's3', label: 'Amazon S3', group: 'Storage' },
+      ]),
+    )
+
+    const base = 'appFAKEBASE000002'
+    fake.airtable.bases.set(base, [
+      {
+        id: 'tblStock00000001',
+        name: 'Stock',
+        fields: [{ id: 'fldSku', name: 'SKU', type: 'singleLineText' }],
+        records: new Map(),
+      },
+    ])
+    const at = await resourceOf('airtable', 'airtable', { base }, { token: fake.airtable.token })
+    expect(
+      await run(at, { action: 'create', table: 'Stock', records: '[{"SKU": "A"}, {"SKU": "B"}]' }),
+    ).toMatchObject({
+      ok: true,
+      data: [{ SKU: 'A' }, { SKU: 'B' }],
+    })
   })
 
   it('HubSpot: create and search records, and list an object’s properties for the forms', async () => {

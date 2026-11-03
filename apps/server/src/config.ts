@@ -125,6 +125,10 @@ const ConfigSchema = z
     SENDGRID_EU_API_URL: z.string().url().optional(),
     GOOGLE_SHEETS_API_URL: z.string().url().optional(),
     GOOGLE_DRIVE_API_URL: z.string().url().optional(),
+    /** M29's services, the same way: tests only. */
+    STRIPE_API_URL: z.string().url().optional(),
+    AIRTABLE_API_URL: z.string().url().optional(),
+    NOTION_API_URL: z.string().url().optional(),
     REST_API_PRIVATE_HOSTS: z
       .string()
       .default('')

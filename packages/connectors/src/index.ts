@@ -9,10 +9,12 @@ import { pubsubConnector } from './pubsub/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
+import { airtableConnector } from './services/airtable'
 import { googleSheetsConnector } from './services/googlesheets'
 import { hubspotConnector } from './services/hubspot'
 import { sendgridConnector } from './services/sendgrid'
 import { slackConnector } from './services/slack'
+import { stripeConnector } from './services/stripe'
 import type { AnyConnector } from './types'
 
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
@@ -138,6 +140,7 @@ export {
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { queryStats, type RunOptions, runOperation, runQuery, testResource } from './run'
+export { airtableConnector } from './services/airtable'
 export { configureServiceUrls, type ServiceUrls } from './services/common'
 export {
   configureSheets,
@@ -150,6 +153,7 @@ export {
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
 export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
+export { stripeConnector, stripeForm } from './services/stripe'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'
@@ -196,6 +200,8 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
   [s3Connector.type]: s3Connector,
+  [stripeConnector.type]: stripeConnector,
+  [airtableConnector.type]: airtableConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {
