@@ -15,13 +15,16 @@ import {
 import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
 import {
   kafkaAvailable,
+  s3Available,
   startFakeAws,
   startFakePubSub,
   startFakeServices,
   startTestGraphql,
   startTestIapServer,
   startTestKafka,
+  startTestS3,
   type TestKafka,
+  type TestS3,
 } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
@@ -169,6 +172,47 @@ export default async function globalSetup() {
     sendgrid: services.sendgrid.key,
   })
   process.env.E2E_GRAPHQL = JSON.stringify({ url: graphql.url, token: graphql.token })
+  // M29: Stripe, Airtable, Jira, Notion and Salesforce on the same fake server; an Airtable base and a Notion
+  // database to start from. Specs read their state through /_fake/state (`m29`).
+  services.airtable.bases.set('appE2EBASE0000001', [
+    {
+      id: 'tblStock00000001',
+      name: 'Stock',
+      fields: [
+        { id: 'fldSku', name: 'SKU', type: 'singleLineText' },
+        { id: 'fldQty', name: 'Qty', type: 'number' },
+      ],
+      records: new Map(),
+    },
+  ])
+  services.notion.databases.set('5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b', {
+    id: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b',
+    title: 'Purchase orders',
+    properties: {
+      Name: { id: 'title', type: 'title' },
+      Qty: { id: 'q', type: 'number' },
+      Status: { id: 's', type: 'status' },
+    },
+  })
+  process.env.E2E_M29 = JSON.stringify({
+    stripe: services.stripe.key,
+    airtable: { token: services.airtable.token, base: 'appE2EBASE0000001' },
+    jira: { site: services.urls.jiraCloud, email: services.jira.email, token: services.jira.apiToken },
+    notion: { token: services.notion.token, database: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b' },
+    salesforce: { clientId: services.salesforce.clientId, clientSecret: services.salesforce.clientSecret },
+  })
+  // S3 (M29): an S3-compatible store in Docker where Docker runs (the spec's S3 part skips without E2E_S3).
+  let s3: TestS3 | undefined
+  if (s3Available()) {
+    s3 = await startTestS3()
+    await s3.createBucket('e2e-files')
+    process.env.E2E_S3 = JSON.stringify({
+      endpoint: s3.endpoint,
+      region: s3.region,
+      accessKeyId: s3.accessKeyId,
+      secretAccessKey: s3.secretAccessKey,
+    })
+  }
 
   // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
   // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
@@ -350,6 +394,10 @@ export default async function globalSetup() {
     SENDGRID_EU_API_URL: services.urls.sendgridEu,
     GOOGLE_SHEETS_API_URL: services.urls.sheets,
     GOOGLE_DRIVE_API_URL: services.urls.drive,
+    STRIPE_API_URL: services.urls.stripe,
+    AIRTABLE_API_URL: services.urls.airtable,
+    NOTION_API_URL: services.urls.notion,
+    SALESFORCE_URL: services.urls.salesforce,
     REST_API_PRIVATE_HOSTS: '127.0.0.1',
     // The server's own AWS credentials: the fake's `server` user, never the developer's.
     AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
@@ -428,6 +476,7 @@ export default async function globalSetup() {
     await pubsub.close()
     await aws.close()
     await kafka?.stop()
+    await s3?.stop()
     await google.stop()
     await services.stop()
     await graphql.stop()

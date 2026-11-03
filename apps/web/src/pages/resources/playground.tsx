@@ -199,7 +199,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
                   spellCheck={false}
                   className="font-mono text-[13px]"
                   value={value}
-                  data-testid={`openapi-${field}`}
+                  data-testid={`openapi-field-${field}`}
                   onKeyDown={onKeyDown}
                   onChange={(e) => onChange(e.target.value)}
                 />

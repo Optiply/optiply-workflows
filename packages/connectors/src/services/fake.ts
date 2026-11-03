@@ -785,6 +785,22 @@ export async function startFakeServices(
           ),
           sendgrid: sendgrid.mails,
           sheets: Object.fromEntries(sheets.spreadsheets),
+          m29: {
+            stripe: Object.fromEntries([...stripe.state.objects].map(([kind, m]) => [kind, [...m.values()]])),
+            stripeRequests: stripe.state.requests.slice(-50),
+            airtable: Object.fromEntries(
+              [...airtable.state.bases].map(([base, tables]) => [
+                base,
+                Object.fromEntries(tables.map((t) => [t.name, [...t.records.values()]])),
+              ]),
+            ),
+            jira: [...jira.state.issues.values()],
+            notion: [...notion.state.pages.values()],
+            salesforce: Object.fromEntries(
+              [...salesforce.state.records].map(([type, m]) => [type, [...m.values()]]),
+            ),
+            soql: salesforce.state.queries.slice(-20),
+          },
           calls: calls
             .filter((c) => !/^\/_fake\/(state|sheets)/.test(c.path))
             .slice(-200)
