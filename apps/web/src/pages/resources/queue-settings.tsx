@@ -156,6 +156,56 @@ export function SqsFields(props: FieldsProps) {
   )
 }
 
+/**
+ * An S3 resource's settings (M29): the AWS identity, a default bucket, and (admins only) another endpoint for
+ * S3-compatible stores (MinIO, Cloudflare R2, Google Cloud Storage's interoperability) with path-style addressing.
+ */
+export function S3Fields(props: FieldsProps) {
+  const { me } = appRoute.useRouteContext()
+  const { config, set, disabled } = props
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the buckets" />
+      <p className="text-xs text-muted">
+        Listing needs s3:ListBucket; reading s3:GetObject; writing s3:PutObject; deleting s3:DeleteObject.
+        Presigned URLs act with the identity's rights.
+      </p>
+      <Field label="Default bucket" hint="Optional: queries that name no bucket use this one.">
+        <Input
+          value={String(config.bucket ?? '')}
+          disabled={disabled}
+          placeholder="optiply-exports"
+          data-testid="s3-bucket"
+          onChange={(e) => set('bucket', e.target.value.trim() || undefined)}
+        />
+      </Field>
+      <Field
+        label="Endpoint"
+        hint={
+          me.isAdmin
+            ? 'Optional: an S3-compatible store (MinIO, Cloudflare R2, Google Cloud Storage). Only admins set it.'
+            : 'Another endpoint can only be set by an admin.'
+        }
+      >
+        <Input
+          value={String(config.endpoint ?? '')}
+          disabled={disabled || !me.isAdmin}
+          placeholder="https://s3.eu-west-1.amazonaws.com"
+          data-testid="s3-endpoint"
+          onChange={(e) => set('endpoint', e.target.value.trim() || undefined)}
+        />
+      </Field>
+      <Checkbox
+        label="Path-style URLs"
+        hint="endpoint/bucket/key instead of bucket.endpoint/key, as most S3-compatible stores need."
+        checked={config.forcePathStyle === true}
+        disabled={disabled}
+        onChange={(v) => set('forcePathStyle', v)}
+      />
+    </>
+  )
+}
+
 const KAFKA_AUTH: { value: string; label: string }[] = [
   { value: 'none', label: 'No sign-in' },
   { value: 'plain', label: 'SASL PLAIN (username and password)' },

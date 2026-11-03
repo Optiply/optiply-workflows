@@ -9,7 +9,7 @@ import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OverridesCard } from './overrides'
-import { KafkaFields, SqsFields } from './queue-settings'
+import { KafkaFields, S3Fields, SqsFields } from './queue-settings'
 import { GoogleSheetsFields, HubSpotFields, SendGridFields, SlackFields } from './service-settings'
 import {
   ConnectorErrorNote,
@@ -77,6 +77,7 @@ const DEFAULTS: Record<string, Config> = {
     maxResponseBytes: 10 * 1024 * 1024,
   },
   sqs: { region: 'eu-west-1', identity: 'key' },
+  s3: { region: 'eu-west-1', identity: 'key', forcePathStyle: false },
   kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
@@ -216,6 +217,8 @@ export function SettingsPanel({
           <PubSubFields {...props} />
         ) : resource.type === 'sqs' ? (
           <SqsFields {...props} />
+        ) : resource.type === 's3' ? (
+          <S3Fields {...props} />
         ) : resource.type === 'kafka' ? (
           <KafkaFields {...props} />
         ) : resource.type === 'slack' ? (

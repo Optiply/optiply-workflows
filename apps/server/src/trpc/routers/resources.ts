@@ -106,7 +106,7 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
     if (auth === 'token' && !secrets.token) return type === 'sendgrid' ? 'Add the API key' : 'Add the token'
     if (auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
   }
-  if (type === 'sqs') return awsSettingsProblem(config, secrets)
+  if (type === 'sqs' || type === 's3') return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
     return (
@@ -128,12 +128,17 @@ function requireAdminForServerIdentity(
   stored: unknown,
   next: unknown,
 ): string | null {
-  // An SQS resource's own endpoint (M26) receives signed requests and the queues' messages: admins choose it.
+  // An SQS (M26) or S3 (M29) resource's own endpoint receives signed requests and the data: admins choose it.
   const endpoint = (c: unknown) => (c as { endpoint?: unknown } | null)?.endpoint ?? null
-  if (type === 'sqs' && endpoint(next) && endpoint(next) !== endpoint(stored) && !user.isAdmin)
+  if (
+    (type === 'sqs' || type === 's3') &&
+    endpoint(next) &&
+    endpoint(next) !== endpoint(stored) &&
+    !user.isAdmin
+  )
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: 'Only admins can point an SQS resource at another endpoint',
+      message: `Only admins can point an ${type === 's3' ? 'S3' : 'SQS'} resource at another endpoint`,
     })
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
@@ -960,6 +965,7 @@ const TYPE_GROUPS: Record<string, string> = {
   hubspot: 'Services',
   sendgrid: 'Services',
   googlesheets: 'Services',
+  s3: 'Storage',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

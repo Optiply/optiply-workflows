@@ -1,3 +1,4 @@
+import { s3Connector } from './aws/s3'
 import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
 import { graphqlConnector } from './graphql'
@@ -26,6 +27,7 @@ export {
   configureAws,
   describeAws,
 } from './aws/credentials'
+export { S3_MAX_BYTES, type S3Handle, s3Client, s3Connector } from './aws/s3'
 export { type SqsReceived, type SqsResourceClient, sqsClient, sqsConnector } from './aws/sqs'
 export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
@@ -193,6 +195,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [pubsubConnector.type]: pubsubConnector,
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
+  [s3Connector.type]: s3Connector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

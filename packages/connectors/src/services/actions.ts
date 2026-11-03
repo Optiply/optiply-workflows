@@ -1,9 +1,9 @@
 // Pure data with no Node imports, so the web app's query forms can use it (`@ow/connectors/actions`).
 //
-// The service connectors' actions (M27): Slack, HubSpot, SendGrid and Google Sheets. A query is `{action, ...fields}`
+// The service connectors' actions (M27, M29): Slack, HubSpot, SendGrid, Google Sheets, S3, … A query is `{action, ...fields}`
 // where every field is a string: a template, rendered by its kind when the query runs.
 
-export const SERVICE_TYPES = ['slack', 'hubspot', 'sendgrid', 'googlesheets'] as const
+export const SERVICE_TYPES = ['slack', 'hubspot', 'sendgrid', 'googlesheets', 's3'] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
 export function isServiceType(type: string | undefined): type is ServiceType {
@@ -500,11 +500,155 @@ const GOOGLE_SHEETS: readonly ActionSpec[] = [
   },
 ]
 
+const S3_BUCKET: ActionField = {
+  key: 'bucket',
+  label: 'Bucket',
+  kind: 'text',
+  placeholder: 'the resource’s default bucket',
+  hint: 'Empty: the bucket set on the resource.',
+}
+const S3_KEY: ActionField = {
+  key: 'key',
+  label: 'Key',
+  kind: 'text',
+  required: true,
+  placeholder: 'reports/2026-11.csv',
+}
+const S3_FORMAT: ActionField = {
+  key: 'format',
+  label: 'As',
+  kind: 'select',
+  options: [
+    { value: 'text', label: 'Text' },
+    { value: 'json', label: 'JSON' },
+    { value: 'base64', label: 'Base64 (binary)' },
+  ],
+  initial: 'text',
+}
+
+const S3: readonly ActionSpec[] = [
+  {
+    id: 'list',
+    label: 'List objects',
+    description: 'Objects under a prefix, page after page; a delimiter groups keys into folders.',
+    fields: [
+      S3_BUCKET,
+      { key: 'prefix', label: 'Prefix', kind: 'text', placeholder: 'reports/' },
+      {
+        key: 'delimiter',
+        label: 'Delimiter',
+        kind: 'text',
+        placeholder: '/',
+        hint: 'Set to / to list one folder level.',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'get',
+    label: 'Get an object',
+    description: 'An object’s content (up to 10 MB) as text, JSON or base64, with its type and metadata.',
+    fields: [S3_BUCKET, S3_KEY, S3_FORMAT],
+  },
+  {
+    id: 'put',
+    label: 'Put an object',
+    description: 'Writes an object from text, JSON or base64 (or a webhook’s file object).',
+    fields: [
+      S3_BUCKET,
+      S3_KEY,
+      {
+        key: 'body',
+        label: 'Content',
+        kind: 'value',
+        required: true,
+        hint: 'Text, {{ }} for any value (objects are written as JSON), or base64 with As: Base64.',
+      },
+      S3_FORMAT,
+      { key: 'contentType', label: 'Content type', kind: 'text', placeholder: 'text/csv' },
+      {
+        key: 'metadata',
+        label: 'Metadata',
+        kind: 'json',
+        language: 'json',
+        hint: 'A JSON object of strings, or empty.',
+      },
+      { key: 'cacheControl', label: 'Cache control', kind: 'text', placeholder: 'max-age=3600' },
+    ],
+  },
+  {
+    id: 'delete',
+    label: 'Delete objects',
+    description: 'Deletes one key, or several (a list).',
+    fields: [
+      S3_BUCKET,
+      {
+        key: 'keys',
+        label: 'Keys',
+        kind: 'list',
+        required: true,
+        hint: 'One key, a {{ }} array, or one per line.',
+      },
+    ],
+  },
+  {
+    id: 'copy',
+    label: 'Copy an object',
+    description: 'Copies an object within a bucket or to another.',
+    fields: [
+      { key: 'sourceBucket', label: 'From bucket', kind: 'text', placeholder: 'the target bucket' },
+      { key: 'sourceKey', label: 'From key', kind: 'text', required: true },
+      S3_BUCKET,
+      S3_KEY,
+    ],
+  },
+  {
+    id: 'head',
+    label: 'Object details',
+    description: 'An object’s size, type, ETag, dates and metadata, without its content.',
+    fields: [S3_BUCKET, S3_KEY],
+  },
+  {
+    id: 'presign',
+    label: 'Presigned URL',
+    description: 'A URL anyone can use to download (GET) or upload (PUT) one object until it expires.',
+    fields: [
+      S3_BUCKET,
+      S3_KEY,
+      {
+        key: 'method',
+        label: 'For',
+        kind: 'select',
+        options: [
+          { value: 'GET', label: 'Download (GET)' },
+          { value: 'PUT', label: 'Upload (PUT)' },
+        ],
+        initial: 'GET',
+      },
+      {
+        key: 'expiresIn',
+        label: 'Expires in (seconds)',
+        kind: 'number',
+        placeholder: '900',
+        hint: 'Up to 604,800 (7 days).',
+      },
+      {
+        key: 'contentType',
+        label: 'Content type (PUT)',
+        kind: 'text',
+        hint: 'An upload must then send this type.',
+      },
+    ],
+  },
+  { id: 'listBuckets', label: 'List buckets', description: 'The buckets the identity can see.', fields: [] },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
   sendgrid: SENDGRID,
   googlesheets: GOOGLE_SHEETS,
+  s3: S3,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

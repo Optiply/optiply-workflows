@@ -160,7 +160,7 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="Type">
           <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            {['Databases', 'APIs', 'Messaging', 'Services'].map((group) => (
+            {['Databases', 'APIs', 'Storage', 'Messaging', 'Services'].map((group) => (
               <optgroup key={group} label={group}>
                 {types
                   ?.filter((t) => t.group === group)

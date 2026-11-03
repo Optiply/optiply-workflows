@@ -1935,7 +1935,7 @@ M29 (more connectors) is planned in `architecture.md` §2.32 and the M29 row, on
 7. **Done-when and docs:** `m29-done-when.spec.ts`, the runbook sections, §9x, "As built".
 8. **Review:** the `code-review` skill (high), fixes in one commit, full e2e.
 
-**Progress:** step 0 in progress.
+**Progress:** step 0 `cc02db2`. Step 1 (S3): `packages/connectors/src/aws/s3.ts` (`s3Connector` on `@aws-sdk/client-s3` and the presigner, M26's identity; actions list/get/put/delete/copy/head/presign/listBuckets in `services/actions.ts`, so the web's action form draws it everywhere; checksums only when required on a custom endpoint), `aws/test-s3.ts` (**Versity Gateway** `versity/versitygw:v1.0.13` in Docker, Apache-2.0, checks SigV4: MinIO's public images are gone (`minio/minio` and quay.io both refuse pulls)), 8 connector tests incl. presigned PUT/GET with `fetch`; the server: `s3` in `settingsProblem`, the admin-only endpoint rule, the server identity target, the picker's new **Storage** group; the web: `S3Fields` (identity, default bucket, admin-only endpoint, path style), badge. Server test: endpoint rule, test connection, put/get through `resources.run`.
 
 ## 15. How to start the next session
 

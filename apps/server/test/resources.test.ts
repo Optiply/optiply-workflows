@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   kafkaAvailable,
+  s3Available,
   startFakeAws,
   startFakePubSub,
   startTestIapServer,
   startTestKafka,
+  startTestS3,
   startTestSshServer,
   type TestKafka,
+  type TestS3,
 } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
@@ -1246,6 +1249,69 @@ describe('SQS resources (M26)', () => {
     expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
     // Kept as it is by an editor, yes.
     expect((await save(member, id, endpoint)).status).toBe(200)
+  })
+})
+
+describe.skipIf(!s3Available())('S3 resources (M29)', () => {
+  let store: TestS3
+  let id: string
+  const save = (as: ReturnType<typeof trpc>, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    store = await startTestS3()
+    SECRETS.push(store.secretAccessKey)
+    id = data(await admin.mutate('resources.create', { type: 's3', name: 'Files', slug: 'files_m29' })).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'S3 editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    await admin.mutate('permissions.set', {
+      objectType: 'resource',
+      objectId: id,
+      groupId,
+      environmentId: prodId,
+      level: 'edit',
+    })
+  }, 120_000)
+  afterAll(async () => {
+    await store?.stop()
+  })
+
+  it('lets only admins set an endpoint, checks the key, and puts and gets an object', async () => {
+    const config = {
+      region: store.region,
+      identity: 'key',
+      accessKeyId: store.accessKeyId,
+      endpoint: store.endpoint,
+      forcePathStyle: true,
+      bucket: 'exports',
+    }
+    expect((await save(member, config, { secretAccessKey: store.secretAccessKey })).body.error?.message).toBe(
+      'Only admins can point an S3 resource at another endpoint',
+    )
+    expect((await save(admin, config)).body.error?.message).toBe('Add the secret access key')
+    const saved = await save(admin, config, { secretAccessKey: store.secretAccessKey })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ secretAccessKey: { set: true } })
+    // Kept as it is by an editor, yes.
+    expect((await save(member, config)).status).toBe(200)
+
+    await store.createBucket('exports')
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({ ok: true, message: `Bucket exports in ${store.region} is reachable` })
+    const run = (query: object) =>
+      admin.mutate('resources.run', { resourceId: id, environmentId: prodId, query })
+    expect(
+      data(await run({ action: 'put', key: 'a.json', body: '{{ { n: 6 * 7 } }}', format: 'json' })),
+    ).toMatchObject({ ok: true })
+    expect(data(await run({ action: 'get', key: 'a.json', format: 'json' }))).toMatchObject({
+      ok: true,
+      data: { n: 42 },
+    })
   })
 })
 

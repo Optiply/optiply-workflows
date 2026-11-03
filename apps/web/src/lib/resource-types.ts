@@ -116,4 +116,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   hubspot: { label: 'HS', className: 'bg-op-orange-1 text-op-orange-4' },
   sendgrid: { label: 'SG', className: 'bg-op-blue-1 text-op-blue-4' },
   googlesheets: { label: 'GS', className: 'bg-op-green-1 text-op-green-4' },
+  s3: { label: 'S3', className: 'bg-op-green-2 text-op-green-4' },
 }
