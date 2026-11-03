@@ -8,6 +8,7 @@ import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
+import { OpenApiSpecFields } from './openapi-settings'
 import { OverridesCard } from './overrides'
 import { KafkaFields, S3Fields, SqsFields } from './queue-settings'
 import {
@@ -102,6 +103,16 @@ const DEFAULTS: Record<string, Config> = {
     allowedHosts: [],
     allowPrivateNetwork: false,
     maxResponseBytes: 10 * 1024 * 1024,
+  },
+  openapi: {
+    baseUrl: '',
+    headers: [],
+    params: [],
+    auth: { type: 'none' },
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    maxResponseBytes: 10 * 1024 * 1024,
+    spec: '',
   },
 }
 
@@ -257,7 +268,12 @@ export function SettingsPanel({
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
-          <RestFields {...props} resourceId={resource.id} graphql={resource.type === 'graphql'} />
+          <>
+            <RestFields {...props} resourceId={resource.id} graphql={resource.type === 'graphql'} />
+            {resource.type === 'openapi' && (
+              <OpenApiSpecFields {...props} resourceId={resource.id} environmentId={environmentId} />
+            )}
+          </>
         )}
       </Card>
       {fromGit && stored?.config && (

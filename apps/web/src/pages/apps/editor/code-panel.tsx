@@ -26,8 +26,10 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { ActionQueryForm } from '@/components/action-query'
+import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -294,6 +296,7 @@ function QueryEditor({ query }: { query: AppQuery }) {
   // M27: a service's action form, or GraphQL's query and variables; other HTTP queries are edited as JSON.
   const kind = resource ? queryKind(resource.type) : null
   const graphqlSchema = useGraphqlSchema(kind === 'graphql' ? resource : undefined)
+  const openapi = useOpenApiOperations(kind === 'openapi' ? resource : undefined)
   const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
     edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
   /** Sets or (empty) removes an optional field. */
@@ -411,6 +414,26 @@ function QueryEditor({ query }: { query: AppQuery }) {
                 height={height}
                 value={value}
                 problems={problemsAt(diagnostics, [...base, 'query', field.key])}
+                onChange={onChange}
+              />
+            )}
+          />
+        ) : kind === 'openapi' ? (
+          <OpenApiQueryForm
+            query={query.query}
+            operations={openapi.operations}
+            message={openapi.message}
+            disabled={readOnly}
+            onChange={(patch) =>
+              editResourceQuery((q) => ({ ...q, ...(patch as Record<string, JsonValue>) }))
+            }
+            code={({ field, value, onChange, height }) => (
+              <AppCodeField
+                path={[...base, 'query', field]}
+                language="plaintext"
+                height={height}
+                value={value}
+                problems={problemsAt(diagnostics, [...base, 'query', field])}
                 onChange={onChange}
               />
             )}

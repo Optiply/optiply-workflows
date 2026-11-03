@@ -36,6 +36,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.1152.0
+        version: 3.1152.0
       '@aws-sdk/client-sqs':
         specifier: 3.1152.0
         version: 3.1152.0
@@ -43,6 +46,9 @@ importers:
         specifier: 3.1152.0
         version: 3.1152.0
       '@aws-sdk/credential-providers':
+        specifier: 3.1152.0
+        version: 3.1152.0
+      '@aws-sdk/s3-request-presigner':
         specifier: 3.1152.0
         version: 3.1152.0
       '@confluentinc/kafka-javascript':
@@ -162,6 +168,9 @@ importers:
       y-protocols:
         specifier: 1.0.7
         version: 1.0.7(yjs@13.6.33)
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
       yjs:
         specifier: 13.6.33
         version: 13.6.33
@@ -3141,10 +3150,10 @@ snapshots:
   '@aws-sdk/client-s3@3.1152.0':
     dependencies:
       '@aws-sdk/checksums': 3.1002.1
-      '@aws-sdk/core': 3.979.0
+      '@aws-sdk/core': 3.979.1
       '@aws-sdk/credential-provider-node': 3.972.91
       '@aws-sdk/middleware-sdk-s3': 3.972.85
-      '@aws-sdk/signature-v4-multi-region': 3.996.50
+      '@aws-sdk/signature-v4-multi-region': 3.996.51
       '@aws-sdk/types': 3.975.0
       '@smithy/core': 3.38.0
       '@smithy/fetch-http-handler': 5.8.0
@@ -3338,8 +3347,8 @@ snapshots:
 
   '@aws-sdk/s3-request-presigner@3.1152.0':
     dependencies:
-      '@aws-sdk/core': 3.979.0
-      '@aws-sdk/signature-v4-multi-region': 3.996.50
+      '@aws-sdk/core': 3.979.1
+      '@aws-sdk/signature-v4-multi-region': 3.996.51
       '@aws-sdk/types': 3.975.0
       '@smithy/core': 3.38.0
       '@smithy/types': 4.19.0

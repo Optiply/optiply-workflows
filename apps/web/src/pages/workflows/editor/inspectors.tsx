@@ -22,8 +22,10 @@ import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X, Z
 import { createContext, lazy, type ReactNode, Suspense, useContext, useEffect, useState } from 'react'
 import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
+import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useOpenApiOperations } from '@/lib/openapi-operations'
 import {
   defaultQuery,
   isMessageKind,
@@ -549,11 +551,13 @@ function QueryEditor({
           : 'pubsub'
         : typeof query.action === 'string'
           ? null
-          : typeof query.url === 'string'
-            ? 'restapi'
-            : typeof query.query === 'string'
-              ? 'graphql'
-              : 'rest'
+          : typeof query.operationId === 'string'
+            ? 'openapi'
+            : typeof query.url === 'string'
+              ? 'restapi'
+              : typeof query.query === 'string'
+                ? 'graphql'
+                : 'rest'
   const messageKind = kind !== null && isMessageKind(kind) ? kind : null
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
@@ -630,6 +634,15 @@ function QueryEditor({
         <p className="text-sm text-muted">
           This query's resource isn't there: its query is kept as it is until you choose another resource.
         </p>
+      ) : kind === 'openapi' ? (
+        <OpenApiInspector
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          resource={current}
+        />
       ) : kind === 'graphql' ? (
         <GraphqlQueryForm
           query={query}
@@ -703,6 +716,44 @@ function MessageQueryForm({
  * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
  * the operation to run when there are several, and headers.
  */
+/** An OpenAPI resource's operation (M29): the shared form, with this editor's code fields. */
+function OpenApiInspector({
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+  resource,
+}: {
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+  resource: Parameters<typeof useOpenApiOperations>[0]
+}) {
+  const { operations, message } = useOpenApiOperations(resource)
+  return (
+    <OpenApiQueryForm
+      query={query}
+      operations={operations}
+      message={message}
+      onChange={setQuery}
+      code={({ field, value, onChange, height }) => (
+        <Code
+          path={ctx.modelPath(`${models}query.${field}`)}
+          language="json"
+          height={height}
+          value={value}
+          problems={ctx.problemsAt(...at, 'query', field)}
+          text={ctx.text(...at, 'query', field)}
+          onChange={onChange}
+        />
+      )}
+    />
+  )
+}
+
 function GraphqlQueryForm({
   query,
   setQuery,

@@ -4,7 +4,9 @@ import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
 import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
+import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { useOpenApiOperations } from '@/lib/openapi-operations'
 import {
   DEFAULT_GRAPHQL_QUERY,
   DEFAULT_PUBSUB_QUERY,
@@ -34,6 +36,8 @@ interface Draft {
   /** The built-in REST API's request (M27): a full URL and its own sign-in. */
   restapi: Draft['rest'] & { url: string; auth: { type: string; [key: string]: string } }
   graphql: { query: string; variables: string; operationName: string; headers: KeyValue[] }
+  /** An OpenAPI resource's operation call (M29). */
+  openapi: { operationId: string; parameters: string; body: string; contentType: string }
   /** A service's action query (M27), per type. */
   services: Record<string, Record<string, unknown>>
   scope: string
@@ -55,6 +59,7 @@ const EMPTY: Draft = {
     auth: { type: 'none' },
   },
   graphql: { ...DEFAULT_GRAPHQL_QUERY, headers: [] },
+  openapi: { operationId: '', parameters: '{}', body: '', contentType: '' },
   services: {},
   scope: '{\n  \n}',
 }
@@ -75,6 +80,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
   const run = useMutation(trpc.resources.run.mutationOptions())
   const configured = !!resource.environments.find((e) => e.environmentId === environmentId)?.config
   const kind = queryKind(resource.type)
+  const openapi = useOpenApiOperations(kind === 'openapi' ? resource : undefined, environmentId)
 
   useEffect(() => {
     try {
@@ -105,9 +111,11 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
             ? (({ path: _path, ...rest }) => rest)(draft.restapi)
             : kind === 'graphql'
               ? draft.graphql
-              : kind === 'service'
-                ? serviceQuery
-                : draft.rest
+              : kind === 'openapi'
+                ? draft.openapi
+                : kind === 'service'
+                  ? serviceQuery
+                  : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -174,6 +182,24 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
                   className="font-mono text-[13px]"
                   value={value}
                   data-testid={`query-field-${field.key}`}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) => onChange(e.target.value)}
+                />
+              )}
+            />
+          ) : kind === 'openapi' ? (
+            <OpenApiQueryForm
+              query={draft.openapi}
+              operations={openapi.operations}
+              message={openapi.message}
+              onChange={(patch) => setDraft((d) => ({ ...d, openapi: { ...d.openapi, ...patch } }))}
+              code={({ field, value, onChange, height }) => (
+                <Textarea
+                  rows={Math.max(3, Math.round(height / 24))}
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                  value={value}
+                  data-testid={`openapi-${field}`}
                   onKeyDown={onKeyDown}
                   onChange={(e) => onChange(e.target.value)}
                 />

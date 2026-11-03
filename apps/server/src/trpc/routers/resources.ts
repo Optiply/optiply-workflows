@@ -3,6 +3,7 @@ import {
   connectors,
   createHttpClient,
   destroyHttpClient,
+  exampleOf,
   getConnector,
   graphqlConnector,
   graphqlIntrospect,
@@ -939,13 +940,13 @@ export const resourcesRouter = router({
         return { ok: false as const, message: 'This resource has no OpenAPI document in this environment' }
       try {
         const doc = openApiDocument(spec)
-        return {
-          ok: true as const,
-          title: doc.title,
-          version: doc.version,
-          servers: doc.servers,
-          operations: doc.operations,
-        }
+        // Bodies get an example (the document's, or one built from the schema) for the form's "Use the example".
+        const operations = doc.operations.map((op) => {
+          if (!op.body) return op
+          const { schema: _schema, ...body } = op.body
+          return { ...op, body: { ...body, example: op.body.example ?? exampleOf(op.body.schema) } }
+        })
+        return { ok: true as const, title: doc.title, version: doc.version, servers: doc.servers, operations }
       } catch (err) {
         return {
           ok: false as const,

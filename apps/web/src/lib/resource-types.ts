@@ -16,7 +16,7 @@ export function isMessageKind(kind: string | undefined): kind is MessageKind {
   return kind === 'pubsub' || kind === 'sqs' || kind === 'kafka'
 }
 
-export type QueryKind = 'sql' | MessageKind | 'rest' | 'restapi' | 'graphql' | 'service'
+export type QueryKind = 'sql' | MessageKind | 'rest' | 'restapi' | 'graphql' | 'openapi' | 'service'
 
 /**
  * The shape of a resource type's queries: SQL, a message, REST's request, the built-in REST API's (a full URL and its
@@ -25,7 +25,7 @@ export type QueryKind = 'sql' | MessageKind | 'rest' | 'restapi' | 'graphql' | '
 export function queryKind(type: string | undefined): QueryKind {
   if (isSqlType(type)) return 'sql'
   if (isMessageKind(type)) return type
-  if (type === 'restapi' || type === 'graphql') return type
+  if (type === 'restapi' || type === 'graphql' || type === 'openapi') return type
   return isServiceType(type) ? 'service' : 'rest'
 }
 
@@ -94,6 +94,7 @@ export function defaultQuery(type: string | undefined, sql = 'select 1'): { [key
   if (isMessageKind(kind)) return defaultMessageQuery(kind)
   if (kind === 'restapi') return structuredClone(DEFAULT_RESTAPI_QUERY)
   if (kind === 'graphql') return { ...DEFAULT_GRAPHQL_QUERY, headers: [] }
+  if (kind === 'openapi') return { operationId: '', parameters: '{}', body: '', contentType: '' }
   if (kind === 'service' && isServiceType(type)) return defaultActionQuery(type)
   return { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } }
 }
@@ -122,4 +123,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   jira: { label: 'JI', className: 'bg-op-blue-1 text-op-blue-4' },
   notion: { label: 'NO', className: 'bg-op-purple-2 text-op-purple-4' },
   salesforce: { label: 'SF', className: 'bg-op-blue-2 text-op-blue-4' },
+  openapi: { label: 'OAS', className: 'bg-op-green-1 text-op-green-4' },
 }
