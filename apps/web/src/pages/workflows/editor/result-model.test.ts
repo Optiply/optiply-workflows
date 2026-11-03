@@ -46,6 +46,8 @@ describe('paths', () => {
   it('writes the expression that reads a node', () => {
     expect(pathExpression('query1.data', [0, 'name'])).toBe('query1.data[0].name')
     expect(pathExpression('x', ['first name'])).toBe('x["first name"]')
+    // A block's inputs, by block name.
+    expect(pathExpression('', ['code1', 0, 'id'])).toBe('code1.data[0].id')
   })
 
   it('lists expandable nodes, capped', () => {

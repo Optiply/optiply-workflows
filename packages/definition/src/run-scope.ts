@@ -23,7 +23,8 @@ export function blockingErrors(
   targets?: readonly string[],
 ): Diagnostic[] {
   const errors = diagnostics.filter((d) => d.severity === 'error')
-  if (!targets) return errors
+  // Every block's ▶ asks on each change: with no errors there's nothing to scope.
+  if (!targets || !errors.length) return errors
   const scope = runScope(def, targets)
   const names = new Set((def.functions ?? []).map((f) => f.name))
   const called = new Set(

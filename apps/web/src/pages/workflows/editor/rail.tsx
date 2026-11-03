@@ -49,6 +49,14 @@ export const usePendingAdd = create<{
   pending: { from: string; port: string; at: { x: number; y: number } } | null
 }>()(() => ({ pending: null }))
 
+// It's for that moment only: closing the Blocks panel, opening another graph or another draft drops it.
+useEditor.subscribe((s, was) => {
+  if (!usePendingAdd.getState().pending) return
+  if (s.railPanel !== 'blocks' || s.graph !== was.graph || s.shared !== was.shared) {
+    usePendingAdd.setState({ pending: null })
+  }
+})
+
 /** The left icon rail: one click opens a panel, another closes it. */
 export function Rail() {
   const open = useEditor((s) => s.railPanel)
@@ -391,7 +399,10 @@ function CodeSearch() {
     if (!text) return { pattern: null, error: null }
     try {
       const source = regex ? text : text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      return { pattern: new RegExp(word ? `\\b${source}\\b` : source, caseSensitive ? '' : 'i'), error: null }
+      return {
+        pattern: new RegExp(word ? `\\b(?:${source})\\b` : source, caseSensitive ? '' : 'i'),
+        error: null,
+      }
     } catch (err) {
       return { pattern: null, error: err instanceof Error ? err.message : String(err) }
     }

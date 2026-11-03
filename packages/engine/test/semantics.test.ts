@@ -562,6 +562,27 @@ describe('run block (only)', () => {
     expect([...store.results.keys()]).toEqual(['b'])
   })
 
+  it("doesn't go on to the error handler when the block fails; runs a handler block with a test failure (M28)", async () => {
+    const def = wf(
+      [
+        code('boom', 'throw new Error("no")'),
+        { name: 'errorHandler', type: 'errorTrigger' },
+        code('notify', 'return errorHandler.data.code'),
+      ],
+      [
+        ['startTrigger', 'boom'],
+        ['errorHandler', 'notify'],
+      ],
+    )
+    const failed = await run(services, def, { only: ['boom'] })
+    expect(failed.outcome.status).toBe('failed')
+    expect(failed.statuses).toEqual({ startTrigger: 'succeeded', boom: 'failed' })
+    const handler = await run(services, def, { only: ['notify'] })
+    expect(handler.outcome.status).toBe('succeeded')
+    expect(handler.statuses).toEqual({ errorHandler: 'succeeded', notify: 'succeeded' })
+    expect(handler.data('notify')).toBe('test')
+  })
+
   it('fails when a target does not exist', async () => {
     const { outcome } = await run(services, graph(), { only: ['nope'] })
     expect(outcome.error).toEqual({ code: 'invalid_target', message: 'No block is named "nope"' })

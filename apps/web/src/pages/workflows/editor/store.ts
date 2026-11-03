@@ -121,6 +121,8 @@ interface EditorState {
   railPanel: RailPanel | null
   /** The block opened in the side editor panel (M28): its form shows there instead of in its node. */
   panelBlock: string | null
+  /** A block the canvas should bring into view (a problem or search hit clicked), until it has. */
+  focus: string | null
   /**
    * This editor's own edits to undo and redo (M13's steps, on the shared document's undo manager since M16: undoing
    * never reverts someone else's edit); made afresh when a draft is loaded and synced.
@@ -204,6 +206,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   samples: {},
   railPanel: storedRail(),
   panelBlock: null,
+  focus: null,
   history: null,
   canUndo: false,
   canRedo: false,
@@ -321,7 +324,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   notify: (notice) => set({ notice }),
   openGraph: (graph, block = null) => {
     get().history?.seal()
-    set({ graph, selected: block, selection: block ? [block] : [], panelBlock: null })
+    // A block asked for (a problem or a search hit) opens in the side panel, with its fields, and is shown.
+    set({ graph, selected: block, selection: block ? [block] : [], panelBlock: block, focus: block })
   },
   setSamples: (samples) => set({ samples }),
   showTab: (railPanel) => {

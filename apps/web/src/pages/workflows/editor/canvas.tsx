@@ -41,7 +41,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { kindOf } from './catalog'
 import { BlockBody, NameField, RunBlockButton } from './inspectors'
-import { blockWidth, type LayoutEntry, positionsFor } from './layout'
+import { blockWidth, type LayoutEntry, positionsFor, setMeasuredSizes } from './layout'
 import { BlockMenu, NodeFooter } from './node-result'
 import { sharePointer, usePresence } from './presence'
 import { BLOCK_DRAG_TYPE, useAddBlock, usePendingAdd } from './rail'
@@ -124,6 +124,26 @@ export function Canvas() {
       ),
     )
   }, [initialized, unplaced, sizes, getNodes])
+  // A block asked for from a panel (a problem, a search hit): shown from its header down, once it's on the canvas.
+  const focus = useEditor((s) => s.focus)
+  const { setCenter, getZoom, getNode } = useReactFlow()
+  useEffect(() => {
+    if (!focus || !initialized) return
+    const node = getNode(focus)
+    if (node) {
+      const w = node.measured?.width ?? 300
+      const h = node.measured?.height ?? 100
+      void setCenter(node.position.x + w / 2, node.position.y + Math.min(h / 2, 160), {
+        zoom: Math.max(getZoom(), 0.8),
+        duration: 250,
+      })
+    }
+    useEditor.setState({ focus: null })
+  }, [focus, initialized, getNode, setCenter, getZoom])
+  useEffect(() => {
+    setMeasuredSizes(sizes)
+    return () => setMeasuredSizes(undefined)
+  }, [sizes])
   const derived = useMemo(
     () => toNodes(graph, diagnostics, selection, live, fn, sizes),
     [graph, diagnostics, selection, live, fn, sizes],
@@ -198,7 +218,15 @@ export function Canvas() {
   // A connection dropped on empty canvas: the Blocks panel opens to add a block there, connected from that port.
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
-      if (!editable || state.isValid || state.toNode || !state.fromNode) return
+      // Only from an output: a block added from a dragged input would be connected the wrong way round.
+      if (
+        !editable ||
+        state.isValid ||
+        state.toNode ||
+        !state.fromNode ||
+        state.fromHandle?.type !== 'source'
+      )
+        return
       const point = 'changedTouches' in event ? event.changedTouches[0]! : event
       usePendingAdd.setState({
         pending: {

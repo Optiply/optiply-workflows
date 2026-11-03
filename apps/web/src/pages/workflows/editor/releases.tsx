@@ -88,7 +88,13 @@ function ReleaseMenu({ workflow }: { workflow: Workflow }) {
   const refresh = useRefreshReleases(workflow.id)
   const { me } = appRoute.useRouteContext()
   const { data: releases } = useQuery(trpc.releases.list.queryOptions({ workflowId: workflow.id }))
-  const setLive = useMutation(trpc.releases.setLive.mutationOptions({ onSuccess: () => refresh() }))
+  const setLive = useMutation(
+    trpc.releases.setLive.mutationOptions({
+      onSuccess: () => refresh(),
+      // The menu has closed: the editor's notice says why the rollback didn't happen.
+      onError: (e) => useEditor.getState().notify(`The rollback failed: ${errorMessage(e)}`),
+    }),
+  )
   const draft = useEditor((s) => s.definition)
   const [comparing, setComparing] = useState(false)
   const live = releases?.find((r) => r.live)

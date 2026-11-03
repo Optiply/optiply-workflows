@@ -91,12 +91,22 @@ export function autoLayout(
 }
 
 /**
+ * The open graph's blocks as React Flow measured them (set by the canvas), so edits that save positions place the
+ * blocks that had none where the canvas shows them, not by the size estimates.
+ */
+let measuredSizes: Record<string, { width: number; height: number }> | undefined
+
+export function setMeasuredSizes(sizes: Record<string, { width: number; height: number }> | undefined) {
+  measuredSizes = sizes
+}
+
+/**
  * Saved positions, with dagre filling in any block that has none (e.g. a workflow created through the API). Filling
  * in doesn't change the definition; positions are only saved when the user moves blocks or runs autolayout.
  */
 export function positionsFor(
   def: GraphPart,
-  sizes?: Record<string, { width: number; height: number }>,
+  sizes: Record<string, { width: number; height: number }> | undefined = measuredSizes,
 ): Positions {
   const saved = def.layout?.blocks ?? {}
   if (def.blocks.every((b) => saved[b.name])) return saved

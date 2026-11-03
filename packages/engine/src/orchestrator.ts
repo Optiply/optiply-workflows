@@ -239,6 +239,14 @@ class RunExecution {
       const incoming = this.graph.incoming.get(name)!
       if (!incoming.every((edge) => this.results.has(edge.from))) continue
       const block = this.graph.blocks.get(name)!
+      if (block.type === 'errorTrigger') {
+        // Running a block under the error handler (M28): the handler starts with a test failure, not its executor
+        // (which only a failing run may start).
+        this.track(
+          this.startHandler({ block: null, code: 'test', message: 'A test run of the error handler' }),
+        )
+        continue
+      }
       const fired =
         block.type === 'startTrigger' ||
         (this.isFunction && incoming.length === 0) ||
@@ -606,7 +614,8 @@ class RunExecution {
 
   /** The main path failed: start the error handler's path, or fail the run. A failing handler fails the run too. */
   private async afterFailure(error: EngineError & { block?: string }, failed?: BlockResult) {
-    if (this.phase === 'handler' || !this.handler) {
+    // A run of some blocks (M28) tests them: it doesn't go on to the error handler, whose blocks it didn't check.
+    if (this.phase === 'handler' || !this.handler || this.opts.only) {
       return this.settle('failed', this.failure ?? error)
     }
     this.failure = error
@@ -619,22 +628,26 @@ class RunExecution {
       this.opts.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS,
     )
     if (this.results.has(this.handler)) return this.pump() // Resumed: the handler had already started.
-    const now = new Date()
-    const data = { block: failed?.key ?? null, code: error.code, message: error.message }
     await this.track(
-      this.commit({
-        key: this.handler,
-        status: 'succeeded',
-        data,
-        sizeBytes: JSON.stringify(data).length,
-        error: null,
-        metadata: {},
-        port: 'out',
-        attempt: 1,
-        startedAt: now,
-        finishedAt: now,
-      }),
+      this.startHandler({ block: failed?.key ?? null, code: error.code, message: error.message }),
     )
+  }
+
+  /** The error handler's own result: the failure it reads as `{{ <handler>.data }}`. */
+  private startHandler(data: { block: string | null; code: string; message: string }) {
+    const now = new Date()
+    return this.commit({
+      key: this.handler!,
+      status: 'succeeded',
+      data,
+      sizeBytes: JSON.stringify(data).length,
+      error: null,
+      metadata: {},
+      port: 'out',
+      attempt: 1,
+      startedAt: now,
+      finishedAt: now,
+    })
   }
 
   /** Records the phase's in-flight and waiting blocks as cancelled (after `failed`, when a block failed). */

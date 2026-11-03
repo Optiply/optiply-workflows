@@ -61,8 +61,12 @@ export function childSummary(value: unknown): string | null {
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
 
-/** The expression that reads a node from its block: `query1.data[0].name`, `x["first name"]`. */
+/**
+ * The expression that reads a node from its block: `query1.data[0].name`, `x["first name"]`. With no root, the value
+ * is a block's inputs by block name (the Inputs tabs): `code1.data[0].id`.
+ */
 export function pathExpression(root: string, path: (string | number)[]): string {
+  if (!root && typeof path[0] === 'string') return pathExpression(`${path[0]}.data`, path.slice(1))
   return path.reduce<string>(
     (out, key) =>
       typeof key === 'number'
