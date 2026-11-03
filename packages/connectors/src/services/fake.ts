@@ -2,6 +2,8 @@ import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { type FakeAirtable, fakeAirtable } from './fake-airtable'
+import { type FakeJira, fakeJira } from './fake-jira'
+import { type FakeNotion, fakeNotion } from './fake-notion'
 import { type FakeStripe, fakeStripe } from './fake-stripe'
 
 // Fakes of the services M27 connects to, on one HTTP server for tests: Slack's Web API under `/slack/api`, HubSpot's
@@ -22,6 +24,10 @@ export interface FakeServices {
     googleToken: string
     stripe: string
     airtable: string
+    notion: string
+    /** Jira sites: a resource's site URL, not an instance setting. */
+    jiraCloud: string
+    jiraDataCenter: string
   }
   slack: FakeSlack
   hubspot: FakeHubSpot
@@ -29,6 +35,8 @@ export interface FakeServices {
   sheets: FakeSheets
   stripe: FakeStripe
   airtable: FakeAirtable
+  jira: FakeJira
+  notion: FakeNotion
   calls: {
     service: string
     method: string
@@ -111,6 +119,8 @@ export async function startFakeServices(
   const calls: FakeServices['calls'] = []
   const stripe = fakeStripe()
   const airtable = fakeAirtable()
+  const jira = fakeJira()
+  const notion = fakeNotion()
   const slack: FakeSlack = {
     token: opts.slackToken ?? 'xoxb-fake-token',
     acceptTokens: new Set(),
@@ -814,6 +824,9 @@ export async function startFakeServices(
     ['/drive/', 'drive', sheetsHandler],
     ['/stripe/', 'stripe', stripe.handler],
     ['/airtable/', 'airtable', airtable.handler],
+    ['/notion/', 'notion', notion.handler],
+    ['/jira-cloud/', 'jira', jira.handler],
+    ['/jira-dc/', 'jira', jira.handler],
   ]
 
   const server = createServer(async (req, res: ServerResponse) => {
@@ -861,6 +874,9 @@ export async function startFakeServices(
       googleToken: `${origin}/google/token`,
       stripe: `${origin}/stripe`,
       airtable: `${origin}/airtable`,
+      notion: `${origin}/notion`,
+      jiraCloud: `${origin}/jira-cloud`,
+      jiraDataCenter: `${origin}/jira-dc`,
     },
     slack,
     hubspot,
@@ -868,6 +884,8 @@ export async function startFakeServices(
     sheets,
     stripe: stripe.state,
     airtable: airtable.state,
+    jira: jira.state,
+    notion: notion.state,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),
   }

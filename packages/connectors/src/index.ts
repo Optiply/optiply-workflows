@@ -12,6 +12,8 @@ import { restApiConnector } from './restapi'
 import { airtableConnector } from './services/airtable'
 import { googleSheetsConnector } from './services/googlesheets'
 import { hubspotConnector } from './services/hubspot'
+import { jiraConnector } from './services/jira'
+import { notionConnector } from './services/notion'
 import { sendgridConnector } from './services/sendgrid'
 import { slackConnector } from './services/slack'
 import { stripeConnector } from './services/stripe'
@@ -151,6 +153,8 @@ export {
   spreadsheetId,
 } from './services/googlesheets'
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
+export { jiraConnector } from './services/jira'
+export { notionConnector } from './services/notion'
 export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
 export { stripeConnector, stripeForm } from './services/stripe'
@@ -202,6 +206,8 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [s3Connector.type]: s3Connector,
   [stripeConnector.type]: stripeConnector,
   [airtableConnector.type]: airtableConnector,
+  [jiraConnector.type]: jiraConnector,
+  [notionConnector.type]: notionConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

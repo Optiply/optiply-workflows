@@ -108,6 +108,12 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
   }
   if (type === 'stripe' && !secrets.token) return 'Add the secret key'
   if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
+  if (type === 'jira') {
+    const c = (config ?? {}) as { deployment?: string; email?: string }
+    const cloudSite = (c.deployment ?? 'cloud') === 'cloud'
+    if (cloudSite && !c.email) return 'Add the email of the account the API token belongs to'
+    if (!secrets.token) return cloudSite ? 'Add the API token' : 'Add the personal access token'
+  }
   if (type === 'sqs' || type === 's3') return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
@@ -970,6 +976,8 @@ const TYPE_GROUPS: Record<string, string> = {
   s3: 'Storage',
   stripe: 'Services',
   airtable: 'Services',
+  jira: 'Services',
+  notion: 'Services',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

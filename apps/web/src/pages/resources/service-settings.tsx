@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { Field, Input, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { RedirectUri } from './oauth'
-import { type FieldsProps, Grid, isSet } from './settings-forms'
+import { Checkbox, type FieldsProps, Grid, isSet } from './settings-forms'
 import { type SecretEdit, SecretField } from './shared'
 
 // The service resources' settings (M27): Slack, HubSpot and Google Sheets sign in with a token (or key) or M9's OAuth;
@@ -243,6 +243,82 @@ export function AirtableFields(props: FieldsProps) {
         />
       </Field>
     </>
+  )
+}
+
+/** Jira (M29): the site, Cloud (an email and API token) or Data Center (a personal access token). */
+export function JiraFields(props: FieldsProps) {
+  const cloud = (props.config.deployment ?? 'cloud') === 'cloud'
+  return (
+    <>
+      <Grid>
+        <Field
+          label="Site URL"
+          hint="Cloud: https://your-team.atlassian.net. Data Center: your Jira's address."
+        >
+          <Input
+            value={String(props.config.siteUrl ?? '')}
+            disabled={props.disabled}
+            placeholder="https://optiply.atlassian.net"
+            data-testid="jira-site"
+            onChange={(e) => props.set('siteUrl', e.target.value.trim())}
+          />
+        </Field>
+        <Field label="Jira">
+          <Select
+            value={cloud ? 'cloud' : 'datacenter'}
+            disabled={props.disabled}
+            data-testid="jira-deployment"
+            onChange={(e) => props.set('deployment', e.target.value)}
+          >
+            <option value="cloud">Cloud</option>
+            <option value="datacenter">Data Center / Server</option>
+          </Select>
+        </Field>
+      </Grid>
+      {cloud && (
+        <Field label="Email" hint="The Atlassian account the API token belongs to.">
+          <Input
+            value={String(props.config.email ?? '')}
+            disabled={props.disabled}
+            placeholder="ops@optiply.nl"
+            data-testid="jira-email"
+            onChange={(e) => props.set('email', e.target.value.trim() || undefined)}
+          />
+        </Field>
+      )}
+      <SecretInput
+        props={props}
+        name="token"
+        label={cloud ? 'API token' : 'Personal access token'}
+        placeholder={cloud ? 'ATATT…' : ''}
+        hint={
+          cloud
+            ? 'id.atlassian.com → Security → API tokens. It acts with the account’s permissions.'
+            : 'Profile → Personal Access Tokens.'
+        }
+      />
+      <Checkbox
+        label="Allow a private network address"
+        hint="For a Data Center site inside Optiply's network."
+        checked={props.config.allowPrivateNetwork === true}
+        disabled={props.disabled}
+        onChange={(v) => props.set('allowPrivateNetwork', v)}
+      />
+    </>
+  )
+}
+
+/** Notion (M29): an internal integration's token. */
+export function NotionFields(props: FieldsProps) {
+  return (
+    <SecretInput
+      props={props}
+      name="token"
+      label="Integration token"
+      placeholder="ntn_…"
+      hint="notion.so/profile/integrations → an internal integration. Share each page or database with it (••• → Connections)."
+    />
   )
 }
 

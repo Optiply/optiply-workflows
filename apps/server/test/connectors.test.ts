@@ -60,6 +60,7 @@ beforeAll(async () => {
     GOOGLE_TOKEN_URL: fake.urls.googleToken,
     STRIPE_API_URL: fake.urls.stripe,
     AIRTABLE_API_URL: fake.urls.airtable,
+    NOTION_API_URL: fake.urls.notion,
   })
   await createLocalUser(env.db, 'admin@example.com', { admin: true })
   memberId = (await createLocalUser(env.db, 'member@example.com')).id
@@ -279,6 +280,49 @@ describe('service resources', () => {
     ).toMatchObject({
       ok: true,
       data: [{ SKU: 'A' }, { SKU: 'B' }],
+    })
+  })
+
+  it('Jira and Notion (M29): settings checked on save, an issue created, a database queried', async () => {
+    const jira = data(await admin.mutate('resources.create', { type: 'jira', name: 'Jira', slug: 'jira' }))
+    const cloudSite = { siteUrl: fake.urls.jiraCloud, deployment: 'cloud', allowPrivateNetwork: true }
+    const noEmail = await admin.mutate('resources.saveConfig', {
+      resourceId: jira.id,
+      environmentId: prodId,
+      config: cloudSite,
+      secrets: { token: 'x' },
+    })
+    expect(noEmail.body.error?.message).toContain('Add the email')
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: jira.id,
+        environmentId: prodId,
+        config: { ...cloudSite, email: fake.jira.email },
+        secrets: { token: fake.jira.apiToken },
+      }),
+    )
+    expect(
+      await run(
+        jira.id,
+        { action: 'createIssue', project: 'OPS', issueType: 'Task', summary: 'From {{ who }}' },
+        { who: 'a workflow' },
+      ),
+    ).toMatchObject({
+      ok: true,
+      data: { key: expect.stringMatching(/^OPS-/) },
+    })
+
+    const db = '2a3b4c5d-6e7f-4089-9abc-def012345678'
+    fake.notion.databases.set(db, {
+      id: db,
+      title: 'Suppliers',
+      properties: { Name: { id: 'title', type: 'title' } },
+    })
+    const notion = await resourceOf('notion', 'notion', {}, { token: fake.notion.token })
+    await run(notion, { action: 'createPage', parent: db, properties: '{"Name": "Acme"}' })
+    expect(await run(notion, { action: 'queryDatabase', id: db })).toMatchObject({
+      ok: true,
+      data: [{ Name: 'Acme' }],
     })
   })
 

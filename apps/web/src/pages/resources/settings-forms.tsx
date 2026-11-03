@@ -14,6 +14,8 @@ import {
   AirtableFields,
   GoogleSheetsFields,
   HubSpotFields,
+  JiraFields,
+  NotionFields,
   SendGridFields,
   SlackFields,
   StripeFields,
@@ -75,6 +77,8 @@ const DEFAULTS: Record<string, Config> = {
   sendgrid: { region: 'global' },
   stripe: {},
   airtable: {},
+  jira: { siteUrl: '', deployment: 'cloud', allowPrivateNetwork: false },
+  notion: {},
   googlesheets: { auth: { type: 'serviceAccount' } },
   graphql: {
     baseUrl: '',
@@ -240,6 +244,10 @@ export function SettingsPanel({
           <StripeFields {...props} />
         ) : resource.type === 'airtable' ? (
           <AirtableFields {...props} />
+        ) : resource.type === 'jira' ? (
+          <JiraFields {...props} />
+        ) : resource.type === 'notion' ? (
+          <NotionFields {...props} />
         ) : resource.type === 'googlesheets' ? (
           <GoogleSheetsFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (

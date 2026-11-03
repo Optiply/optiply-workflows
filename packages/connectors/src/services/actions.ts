@@ -11,6 +11,8 @@ export const SERVICE_TYPES = [
   's3',
   'stripe',
   'airtable',
+  'jira',
+  'notion',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -870,6 +872,236 @@ const AIRTABLE: readonly ActionSpec[] = [
   },
 ]
 
+const JIRA_ISSUE: ActionField = {
+  key: 'issue',
+  label: 'Issue',
+  kind: 'text',
+  required: true,
+  placeholder: 'OPS-123',
+}
+const JIRA_FIELDS: ActionField = {
+  key: 'fields',
+  label: 'Other fields',
+  kind: 'json',
+  language: 'json',
+  hint: 'A JSON object of Jira fields, e.g. {"labels": ["stock"], "priority": {"name": "High"}}',
+}
+
+const JIRA: readonly ActionSpec[] = [
+  {
+    id: 'search',
+    label: 'Search issues (JQL)',
+    description: 'Issues matching a JQL query, page after page.',
+    fields: [
+      {
+        key: 'jql',
+        label: 'JQL',
+        kind: 'long',
+        required: true,
+        language: 'plaintext',
+        initial: 'project = OPS AND statusCategory != Done ORDER BY updated DESC',
+      },
+      {
+        key: 'fieldList',
+        label: 'Fields',
+        kind: 'list',
+        hint: 'Fields to return (default: summary, status, assignee, updated, …).',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'getIssue',
+    label: 'Get an issue',
+    description: 'One issue by key or id.',
+    fields: [JIRA_ISSUE, { key: 'fieldList', label: 'Fields', kind: 'list', hint: 'Empty: all fields.' }],
+  },
+  {
+    id: 'createIssue',
+    label: 'Create an issue',
+    description: 'A new issue; the description is plain text (turned into Jira’s format).',
+    fields: [
+      { key: 'project', label: 'Project', kind: 'text', required: true, placeholder: 'OPS' },
+      { key: 'issueType', label: 'Issue type', kind: 'text', required: true, initial: 'Task' },
+      { key: 'summary', label: 'Summary', kind: 'text', required: true },
+      { key: 'description', label: 'Description', kind: 'long', language: 'plaintext' },
+      JIRA_FIELDS,
+    ],
+  },
+  {
+    id: 'updateIssue',
+    label: 'Update an issue',
+    description: 'Changes the fields given.',
+    fields: [
+      JIRA_ISSUE,
+      { key: 'summary', label: 'Summary', kind: 'text' },
+      { key: 'description', label: 'Description', kind: 'long', language: 'plaintext' },
+      JIRA_FIELDS,
+    ],
+  },
+  {
+    id: 'transition',
+    label: 'Move an issue',
+    description: 'Moves an issue through its workflow by the transition’s name (or id).',
+    fields: [
+      JIRA_ISSUE,
+      { key: 'transition', label: 'Transition', kind: 'text', required: true, placeholder: 'Done' },
+      { key: 'comment', label: 'Comment', kind: 'long', language: 'plaintext' },
+      JIRA_FIELDS,
+    ],
+  },
+  {
+    id: 'addComment',
+    label: 'Comment on an issue',
+    description: 'Adds a plain-text comment.',
+    fields: [
+      JIRA_ISSUE,
+      { key: 'body', label: 'Comment', kind: 'long', required: true, language: 'plaintext' },
+    ],
+  },
+  {
+    id: 'assign',
+    label: 'Assign an issue',
+    description: 'Assigns to a user (Cloud: account id; Data Center: username); empty unassigns.',
+    fields: [JIRA_ISSUE, { key: 'assignee', label: 'Assignee', kind: 'text' }],
+  },
+  {
+    id: 'api',
+    label: 'Call any endpoint',
+    description: 'Any path under the site’s /rest.',
+    fields: API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/rest/api/3/project' } : f)),
+  },
+]
+
+const NOTION_ID = (label: string): ActionField => ({
+  key: 'id',
+  label,
+  kind: 'text',
+  required: true,
+  hint: 'Its id or its Notion URL.',
+})
+const NOTION_PROPERTIES: ActionField = {
+  key: 'properties',
+  label: 'Properties',
+  kind: 'json',
+  language: 'json',
+  hint: 'Plain values by property name, e.g. {"Name": "Order 12", "Qty": 3, "Tags": ["urgent"], "Due": "2026-11-04"}',
+}
+
+const NOTION: readonly ActionSpec[] = [
+  {
+    id: 'queryDatabase',
+    label: 'Query a database',
+    description: 'A database’s pages, filtered and sorted (Notion’s JSON), as rows of plain values.',
+    fields: [
+      NOTION_ID('Database'),
+      {
+        key: 'filter',
+        label: 'Filter',
+        kind: 'json',
+        language: 'json',
+        hint: '{"property": "Status", "status": {"equals": "Open"}}',
+      },
+      {
+        key: 'sorts',
+        label: 'Sorts',
+        kind: 'json',
+        language: 'json',
+        hint: '[{"property": "Due", "direction": "ascending"}]',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'getPage',
+    label: 'Get a page',
+    description: 'A page’s properties as plain values.',
+    fields: [NOTION_ID('Page')],
+  },
+  {
+    id: 'createPage',
+    label: 'Create a page',
+    description: 'A page in a database (properties as plain values) or under a page, with optional content.',
+    fields: [
+      {
+        key: 'parent',
+        label: 'Database or page',
+        kind: 'text',
+        required: true,
+        hint: 'An id or URL. A database takes properties; a page takes a title.',
+      },
+      NOTION_PROPERTIES,
+      { key: 'title', label: 'Title (under a page)', kind: 'text' },
+      {
+        key: 'content',
+        label: 'Content',
+        kind: 'long',
+        language: 'markdown',
+        hint: 'Lines: # heading, - bullet, 1. numbered, [ ] to-do, else paragraphs.',
+      },
+    ],
+  },
+  {
+    id: 'updatePage',
+    label: 'Update a page',
+    description: 'Changes the properties given (plain values).',
+    fields: [NOTION_ID('Page'), NOTION_PROPERTIES],
+  },
+  {
+    id: 'archivePage',
+    label: 'Archive a page',
+    description: 'Moves a page to the trash.',
+    fields: [NOTION_ID('Page')],
+  },
+  {
+    id: 'appendBlocks',
+    label: 'Add content',
+    description: 'Adds content at the end of a page.',
+    fields: [
+      NOTION_ID('Page'),
+      {
+        key: 'content',
+        label: 'Content',
+        kind: 'value',
+        required: true,
+        hint: 'Lines as in Create a page, or {{ }} with Notion block objects.',
+      },
+    ],
+  },
+  {
+    id: 'getBlocks',
+    label: 'Read content',
+    description: 'A page’s blocks, with their plain text.',
+    fields: [NOTION_ID('Page'), MAX_FIELD],
+  },
+  {
+    id: 'search',
+    label: 'Search',
+    description: 'Pages and databases shared with the integration, by title.',
+    fields: [
+      { key: 'query', label: 'Title contains', kind: 'text' },
+      {
+        key: 'only',
+        label: 'Only',
+        kind: 'select',
+        options: [
+          { value: '', label: 'Pages and databases' },
+          { value: 'page', label: 'Pages' },
+          { value: 'database', label: 'Databases' },
+        ],
+        initial: '',
+      },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'api',
+    label: 'Call any endpoint',
+    description: 'Any path under api.notion.com/v1.',
+    fields: API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/v1/users' } : f)),
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
@@ -878,6 +1110,8 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   s3: S3,
   stripe: STRIPE,
   airtable: AIRTABLE,
+  jira: JIRA,
+  notion: NOTION,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {
