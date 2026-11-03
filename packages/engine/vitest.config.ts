@@ -8,5 +8,8 @@ export default defineConfig({
     env: { TZ: 'UTC' },
     testTimeout: 30_000,
     hookTimeout: 120_000,
+    // The queue consumers' tests wait for runs with expect.poll; its default 1 s ran out on a GitHub runner
+    // (2026-11-03, a Pub/Sub consumer's first pull). A wait that succeeds still returns at once.
+    expect: { poll: { timeout: 10_000 } },
   },
 })
