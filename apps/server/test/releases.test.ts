@@ -880,15 +880,34 @@ describe('Kinesis triggers on the worker (M30)', () => {
     )
     const wf = await workflowWith(
       'on_clicks',
-      definition([code('seen', 'return { n: startTrigger.data.n, key: startTrigger.message.partitionKey }')], {
-        triggers: { kinesis: [{ name: 'clicks', enabled: true, resource: 'streams_live', stream: 'clicks', startAt: 'trimHorizon' }] },
-      }),
+      definition(
+        [code('seen', 'return { n: startTrigger.data.n, key: startTrigger.message.partitionKey }')],
+        {
+          triggers: {
+            kinesis: [
+              {
+                name: 'clicks',
+                enabled: true,
+                resource: 'streams_live',
+                stream: 'clicks',
+                startAt: 'trimHorizon',
+              },
+            ],
+          },
+        },
+      ),
     )
     data(await publish(wf))
     const [projected] = await triggersOf(wf.id)
     expect(projected).toMatchObject({
       kind: 'kinesis',
-      config: { stream: 'clicks', startAt: 'trimHorizon', maxAttempts: 3, retryBackoffSeconds: 10, maxInFlight: 4 },
+      config: {
+        stream: 'clicks',
+        startAt: 'trimHorizon',
+        maxAttempts: 3,
+        retryBackoffSeconds: 10,
+        maxInFlight: 4,
+      },
     })
     aws.kinesis.put('clicks', '{"n": 5}', 'user-1')
     await worker.queues.tick()
@@ -896,7 +915,11 @@ describe('Kinesis triggers on the worker (M30)', () => {
     await expect
       .poll(
         async () => {
-          const listed = await env.app.inject({ method: 'GET', url: '/api/v1/workflows/on_clicks/runs', headers: { cookie: adminCookie } })
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_clicks/runs',
+            headers: { cookie: adminCookie },
+          })
           run = listed.json().runs[0]
           return run?.status
         },
@@ -907,7 +930,9 @@ describe('Kinesis triggers on the worker (M30)', () => {
     const db = createDb(env.databaseUrl, { max: 1 })
     try {
       await expect
-        .poll(async () => (await db.db.select().from(kinesisCheckpoints)).map((c) => c.sequenceNumber), { timeout: 10_000 })
+        .poll(async () => (await db.db.select().from(kinesisCheckpoints)).map((c) => c.sequenceNumber), {
+          timeout: 10_000,
+        })
         .toEqual([aws.kinesis.shards('clicks')[0]!.records[0]!.seq])
     } finally {
       await db.close()
