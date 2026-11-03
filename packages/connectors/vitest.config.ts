@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     pool: 'forks',
     // The Postgres tests boot their own embedded Postgres.
-    testTimeout: 30_000,
+    // As the server's: a shared GitHub runner is several times slower than a Mac.
+    testTimeout: process.env.CI ? 90_000 : 30_000,
     hookTimeout: 120_000,
   },
 })
