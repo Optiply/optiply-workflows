@@ -365,9 +365,11 @@ describe.skipIf(!available)('the code executor', () => {
     })
 
     it("counts a warm jail's limits from its request, not from its start", async () => {
+      // A second and a half of CPU within a two-second timeout (four on a shared CI runner, 2026-11-03), after
+      // waiting in the pool longer than that: neither the wait nor the imports count.
+      const limit = process.env.CI ? 4000 : 2000
       await poolFull()
-      await new Promise((resolve) => setTimeout(resolve, 2500)) // the jails wait in the pool
-      // A second and a half of CPU within a two-second timeout: neither the wait nor the imports count.
+      await new Promise((resolve) => setTimeout(resolve, limit + 500)) // the jails wait in the pool
       const busy = await run(
         py(
           'import time',
@@ -376,7 +378,7 @@ describe.skipIf(!available)('the code executor', () => {
           'return 1',
         ),
         {},
-        2000,
+        limit,
       )
       expect(busy).toMatchObject({ ok: true, result: 1, warm: true })
       const started = Date.now()
@@ -679,8 +681,10 @@ describe.skipIf(!available)('the code executor', () => {
     const times: number[] = []
     let warm = 0
     for (let i = 0; i < 20; i++) {
-      // Time for the pool to replace the jail just used, as between a workflow's runs.
-      await new Promise((resolve) => setTimeout(resolve, 400))
+      // Time for the pool to replace the jail just used, as between a workflow's runs. A GitHub runner refills it
+      // slower than that (2026-11-03: p90 2 s, cold jails), so CI waits until it's full: the timing is still measured.
+      if (process.env.CI) await poolFull()
+      else await new Promise((resolve) => setTimeout(resolve, 400))
       const started = performance.now()
       const outcome = await run('import pandas as pd\nreturn int(pd.Series(query1.data).sum())', {
         query1: { data: [1, 2, 3] },

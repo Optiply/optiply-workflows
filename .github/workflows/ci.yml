@@ -19,7 +19,8 @@ jobs:
       - run: pnpm biome ci .
       - run: pnpm typecheck
       # Tests boot an embedded Postgres (embedded-postgres npm binaries); no service container needed.
-      - run: pnpm test
+      # Every package's tests run even when one fails, so one run shows every failure (turbo stops all by default).
+      - run: pnpm test --continue=dependencies-successful
       # M4's done-when (sync webhook p50 under 50 ms), measured alone: during `pnpm test` every package's suite and
       # its Postgres compete for the runner's CPUs.
       - run: pnpm --filter @ow/server bench:webhooks

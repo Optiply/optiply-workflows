@@ -251,9 +251,14 @@ describe('Postgres through an SSH tunnel', () => {
     const res = pgResource(tunnel(), 'restart')
     expect((await runPg(res, 'select 1 as one')).data).toEqual([{ one: 1 }])
     await ssh.restart()
-    await vi.waitFor(async () => {
-      expect((await runPg(res, 'select 2 as two')).data).toEqual([{ two: 2 }])
-    })
+    // vi.waitFor's default 1 s wasn't enough on a GitHub runner (2026-11-03): the pool's first try after the restart
+    // fails and the tunnel reconnects on the next.
+    await vi.waitFor(
+      async () => {
+        expect((await runPg(res, 'select 2 as two')).data).toEqual([{ two: 2 }])
+      },
+      { timeout: 15_000, interval: 250 },
+    )
   })
 })
 
