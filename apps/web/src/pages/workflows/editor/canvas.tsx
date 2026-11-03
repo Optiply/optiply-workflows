@@ -22,10 +22,20 @@ import {
   ReactFlow,
   useNodesInitialized,
   useReactFlow,
+  useStore,
   ViewportPortal,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, Map as MapIcon, Minus, PanelRight, Plus, X } from 'lucide-react'
+import {
+  AlertCircle,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Map as MapIcon,
+  Minus,
+  PanelRight,
+  Plus,
+  X,
+} from 'lucide-react'
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
@@ -267,7 +277,26 @@ export function Canvas() {
         <ViewportPortal>
           <Pointers graph={fn} />
         </ViewportPortal>
-        <Controls showInteractive={false}>
+        <Controls showInteractive={false} orientation="horizontal">
+          <ZoomLevel />
+          {editable && (
+            <>
+              <ControlButton
+                onClick={() => setAllMinimized(true)}
+                title="Collapse all blocks"
+                aria-label="Collapse all blocks"
+              >
+                <ChevronsDownUp />
+              </ControlButton>
+              <ControlButton
+                onClick={() => setAllMinimized(false)}
+                title="Expand all blocks"
+                aria-label="Expand all blocks"
+              >
+                <ChevronsUpDown />
+              </ControlButton>
+            </>
+          )}
           <ControlButton
             onClick={toggleMinimap}
             title={minimap ? 'Hide the minimap' : 'Show the minimap'}
@@ -651,8 +680,36 @@ function HeaderButton({
   )
 }
 
-/** Changes a block's layout entry (width, minimized), keeping every block's position. */
-function setEntry(name: string, change: Partial<LayoutEntry>) {
+/** The zoom as a percentage; a click goes back to 100 %. */
+function ZoomLevel() {
+  const zoom = useStore((s) => s.transform[2])
+  const { zoomTo } = useReactFlow()
+  return (
+    <ControlButton
+      onClick={() => void zoomTo(1, { duration: 200 })}
+      title="Zoom to 100%"
+      aria-label="Zoom to 100%"
+      className="!w-11 font-mono text-[11px] tabular-nums"
+      data-testid="zoom-level"
+    >
+      {Math.round(zoom * 100)}%
+    </ControlButton>
+  )
+}
+
+/** Minimizes every block of the open graph, or shows them all again (one undoable edit). */
+function setAllMinimized(minimized: boolean) {
+  updateGraph((g) => {
+    const blocks = { ...positionsFor(g) }
+    for (const [name, { minimized: _was, ...at }] of Object.entries(blocks)) {
+      blocks[name] = minimized ? { ...at, minimized } : at
+    }
+    return { ...g, layout: { ...g.layout, blocks } }
+  })
+}
+
+/** Changes a block's layout entry (width, minimized, result height), keeping every block's position. */
+export function setEntry(name: string, change: Partial<LayoutEntry>) {
   updateGraph((g) => {
     const blocks = { ...positionsFor(g) }
     const at = blocks[name]

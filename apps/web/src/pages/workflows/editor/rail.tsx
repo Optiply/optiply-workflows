@@ -340,7 +340,8 @@ function Outline() {
                   if (node) {
                     const w = node.measured?.width ?? NODE_WIDTH
                     const h = node.measured?.height ?? 100
-                    void setCenter(node.position.x + w / 2, node.position.y + h / 2, {
+                    // A tall block (a form) is shown from its header down, not by its middle.
+                    void setCenter(node.position.x + w / 2, node.position.y + Math.min(h / 2, 160), {
                       zoom: Math.max(getZoom(), 0.8),
                       duration: 250,
                     })

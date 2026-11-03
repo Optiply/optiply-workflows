@@ -319,6 +319,13 @@
   border-left: 2px solid var(--presence);
   margin-left: -1px;
 }
+/* The same caret in a block's code preview on the canvas (M28). */
+.ow-preview-caret {
+  display: inline-block;
+  height: 1.2em;
+  margin: 0 -1px -0.25em;
+  border-left: 2px solid var(--presence);
+}
 
 /* A block someone else has selected. */
 .react-flow .ow-peer-selected {

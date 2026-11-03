@@ -57,10 +57,13 @@ Only verified `@optiply.nl` accounts can sign in (`OIDC_ALLOWED_DOMAIN`, sent to
 
 Open **Workflows** in the app to create one. The editor has:
 
-- a canvas for blocks and connections;
-- a side panel with each block's settings, Monaco for code and SQL, and autocomplete from the latest run;
-- **Run** (it saves first and uses the start trigger's test input) and **Run block** (it reuses earlier results);
-- live status on the canvas, and a run panel with each block's data, logs and output.
+- a canvas whose blocks hold their own forms (Monaco for code and SQL, autocomplete from the latest run), with a header to rename, minimize, open in the side panel, run or use the ⋯ menu, and a footer whose Inputs, Data (a table), JSON (a tree), Logs and Settings open under the block;
+- connections drawn by dragging, removed with the × on hover, moved by dragging an end;
+- a toolbar (bottom left) with zoom, the zoom %, fit, Collapse all and Expand all, and the minimap; a block's ⋯ menu also switches a block to a loop (and back) and adds the workflow's error handler;
+- an icon rail on the left: Blocks (click or drag onto the canvas), Outline, Functions, Triggers, Code search, Releases, Settings and Problems, each opened and closed with one click;
+- **Publish** with its ▾ (compare the draft with live, the release history, roll back to the release before);
+- **Run** (it saves first and uses the start trigger's test input) and ▶ on a block, which runs it alone (reusing earlier results; only its own and its ancestors' problems stop it), or with the blocks before it from its ⋯ menu;
+- live status on the canvas, and a run history panel (drag to resize, maximize) with the runs, each block's time, and its inputs, data, JSON and logs (filtered by text and level).
 
 **Runs** lists every run you can see.
 

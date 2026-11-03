@@ -1,5 +1,6 @@
 import { type Block, isTrigger } from '@ow/definition'
 import { useQueries, useQuery } from '@tanstack/react-query'
+import { useStore } from '@xyflow/react'
 import {
   CheckCircle2,
   Copy,
@@ -8,7 +9,9 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Repeat,
   Trash2,
+  TriangleAlert,
   X,
   XCircle,
 } from 'lucide-react'
@@ -16,15 +19,22 @@ import { useEffect, useState } from 'react'
 import { Menu, MenuItem, MenuSeparator, Spinner } from '@/components/ui'
 import { FINAL_RUN_STATUSES, runsApi } from '@/lib/runs-api'
 import { cn } from '@/lib/utils'
-import { removeFrom } from './canvas'
+import { removeFrom, setEntry } from './canvas'
+import { nextName } from './catalog'
 import { copyText, duplicateChosen } from './clipboard'
 import { BlockSettingsForm } from './inspectors'
+import { NODE_GAP, nodeHeight, positionsFor } from './layout'
 import { DataTab, JsonTree } from './result-view'
 import { runBlock, useRun } from './run-state'
-import { updateGraph, useEditor } from './store'
+import { graphOf, updateGraph, useEditor } from './store'
+import { switchBlock, switchTarget } from './switch-block'
 
 export type NodeTab = 'inputs' | 'data' | 'json' | 'logs' | 'settings'
 
+/** A result panel's height until it's resized, and its bounds (the schema's for `h`). */
+const PANEL_HEIGHT = 240
+const PANEL_MIN = 96
+const PANEL_MAX = 448
 const FINAL_BLOCK = new Set(['succeeded', 'errored', 'failed', 'skipped', 'cancelled'])
 /** Blocks whose own code logs: their nodes get a Logs tab. */
 const LOGGING = new Set<Block['type']>(['code', 'loop', 'function', 'workflow'])
@@ -94,6 +104,31 @@ export function NodeFooter({ block }: { block: Block }) {
     if (target === name && status && FINAL_BLOCK.has(status)) setTab((t) => t ?? 'data')
   }, [target, status, name, runId])
   const tabs = nodeTabs(block)
+  const saved = useEditor((s) => graphOf(s.definition, s.graph).layout?.blocks?.[name]?.h)
+  const zoom = useStore((s) => s.transform[2])
+  // While its bottom edge is dragged; kept afterwards as the block's layout entry `h`.
+  const [dragged, setDragged] = useState<number | null>(null)
+  const height = dragged ?? saved ?? PANEL_HEIGHT
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startY = e.clientY
+    const startHeight = height
+    let next = startHeight
+    const move = (ev: PointerEvent) => {
+      // The canvas is zoomed: a screen pixel is 1/zoom of the panel's own.
+      next = Math.round(Math.min(PANEL_MAX, Math.max(PANEL_MIN, startHeight + (ev.clientY - startY) / zoom)))
+      setDragged(next)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      if (next !== startHeight && !useEditor.getState().readOnly) setEntry(name, { h: next })
+      setDragged(null)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
 
   return (
     <>
@@ -119,8 +154,8 @@ export function NodeFooter({ block }: { block: Block }) {
       </div>
       {tab && (
         <div
-          className="nodrag nowheel nokey absolute top-full right-0 left-0 mt-1.5 flex max-h-[28rem] min-h-24 resize-y flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-card"
-          style={{ height: tab === 'settings' ? undefined : 240 }}
+          className="nodrag nowheel nokey absolute top-full right-0 left-0 mt-1.5 flex max-h-[28rem] min-h-24 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-card"
+          style={{ height: tab === 'settings' ? undefined : height }}
           data-testid={`node-panel-${name}`}
         >
           <button
@@ -133,6 +168,14 @@ export function NodeFooter({ block }: { block: Block }) {
             <X className="size-3.5" />
           </button>
           <NodePanel block={block} tab={tab} result={result} />
+          {tab !== 'settings' && (
+            <div
+              title="Drag to resize"
+              data-testid={`node-panel-resize-${name}`}
+              onPointerDown={startResize}
+              className="absolute right-0 bottom-0 left-0 h-1.5 cursor-row-resize hover:bg-accent/30"
+            />
+          )}
         </div>
       )}
     </>
@@ -240,11 +283,47 @@ function NodeLogs({ name }: { name: string }) {
   )
 }
 
-/** The node's ⋯ menu: run with the blocks before it, duplicate, copy, delete. */
+/** Replaces a block by its switched type (`switch-block.ts`); its connections and place stay. */
+function switchType(name: string) {
+  updateGraph((g) => ({
+    ...g,
+    blocks: g.blocks.map((b) => (b.name === name ? (switchBlock(b) ?? b) : b)),
+  }))
+}
+
+/** Adds the workflow's error handler (one at most) under the start trigger, and selects it. */
+function addErrorHandler() {
+  let added = ''
+  updateGraph((g) => {
+    const positions = positionsFor(g)
+    added = nextName(
+      'errorTrigger',
+      g.blocks.map((b) => b.name),
+    )
+    const start = g.blocks.find((b) => b.type === 'startTrigger')
+    const below = start && positions[start.name]
+    const at = below
+      ? { x: below.x, y: below.y + nodeHeight(start, below) + NODE_GAP }
+      : { x: 0, y: Math.max(0, ...Object.values(positions).map((p) => p.y)) + 300 }
+    return {
+      ...g,
+      blocks: [...g.blocks, { name: added, type: 'errorTrigger' }],
+      layout: { ...g.layout, blocks: { ...positions, [added]: at } },
+    }
+  })
+  useEditor.getState().select(added)
+}
+
+/**
+ * The node's ⋯ menu: run with the blocks before it, rename, duplicate, copy, switch its type where the config carries
+ * over, add the workflow's error handler, delete.
+ */
 export function BlockMenu({ block, onRename }: { block: Block; onRename: () => void }) {
   const name = block.name
   const fn = useEditor((s) => s.graph)
   const editable = !useEditor((s) => s.readOnly)
+  const hasHandler = useEditor((s) => s.definition.blocks.some((b) => b.type === 'errorTrigger'))
+  const target = switchTarget(block)
   const select = () => useEditor.getState().select(name)
   return (
     <Menu
@@ -292,6 +371,16 @@ export function BlockMenu({ block, onRename }: { block: Block; onRename: () => v
       >
         Copy
       </MenuItem>
+      {editable && target && (
+        <MenuItem icon={<Repeat />} onClick={() => switchType(name)}>
+          {target.label}
+        </MenuItem>
+      )}
+      {editable && fn === null && !hasHandler && (
+        <MenuItem icon={<TriangleAlert />} onClick={addErrorHandler}>
+          Add global error handler
+        </MenuItem>
+      )}
       {editable && block.type !== 'startTrigger' && (
         <>
           <MenuSeparator />

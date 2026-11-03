@@ -2,12 +2,16 @@ import { Graph, layout } from '@dagrejs/dagre'
 import { type Block, type BlockType, blockPorts } from '@ow/definition'
 import type { GraphPart } from './store'
 
-/** A block's place on the canvas, its width once resized and whether it's minimized (M28). */
+/**
+ * A block's place on the canvas, its width once resized, whether it's minimized and its result panel's height once
+ * resized (M28).
+ */
 export interface LayoutEntry {
   x: number
   y: number
   w?: number
   minimized?: boolean
+  h?: number
 }
 
 type Positions = Record<string, LayoutEntry>

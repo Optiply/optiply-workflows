@@ -120,3 +120,23 @@ describe('resolveBlockSettings', () => {
     })
   })
 })
+
+describe('layout entries (M28)', () => {
+  const withEntry = (entry: object) => ({ ...wf([start]), layout: { blocks: { startTrigger: entry } } })
+
+  it("keep a block's width, minimized state and result panel height", () => {
+    const def = withEntry({ x: 0, y: 0, w: 420, minimized: true, h: 300 })
+    expect(workflowDefinitionSchema.safeParse(def).success).toBe(true)
+  })
+
+  it('refuse sizes out of range and unknown keys', () => {
+    for (const entry of [
+      { x: 0, y: 0, w: 100 },
+      { x: 0, y: 0, h: 50 },
+      { x: 0, y: 0, h: 900 },
+      { x: 0, y: 0, z: 1 },
+    ]) {
+      expect(workflowDefinitionSchema.safeParse(withEntry(entry)).success).toBe(false)
+    }
+  })
+})

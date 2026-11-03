@@ -41,6 +41,7 @@ export function CompareReleasesDialog({
   releases,
   releaseId,
   draft,
+  withDraft = false,
   loadRelease,
   onClose,
 }: {
@@ -51,13 +52,15 @@ export function CompareReleasesDialog({
   releaseId: string
   /** The draft's definition as the editor has it now. */
   draft: unknown
+  /** Compare the release with the draft from the start (the Publish menu's "Compare draft with live"). */
+  withDraft?: boolean
   loadRelease: (id: string) => Promise<{ definition: unknown }>
   onClose: () => void
 }) {
   const at = releases.findIndex((r) => r.id === releaseId)
   const older = releases[at + 1]
-  const [from, setFrom] = useState<Side>(older ? older.id : releaseId)
-  const [to, setTo] = useState<Side>(older ? releaseId : 'draft')
+  const [from, setFrom] = useState<Side>(older && !withDraft ? older.id : releaseId)
+  const [to, setTo] = useState<Side>(older && !withDraft ? releaseId : 'draft')
   // Releases never change: each is fetched once.
   const side = (id: Side) => ({
     queryKey: ['release-definition', kind, objectId, id],

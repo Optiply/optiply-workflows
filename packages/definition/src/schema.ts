@@ -590,6 +590,8 @@ export const layoutSchema = z.strictObject({
         w: z.number().min(160).max(2000).optional(),
         /** Shown as its header only (M28). */
         minimized: z.boolean().optional(),
+        /** The height of the result panel under the block, once resized (M28). */
+        h: z.number().min(96).max(448).optional(),
       }),
     )
     .optional(),

@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
 import { kindOf } from './catalog'
 import type { FieldProblem, WorkflowCodeFieldProps } from './code-field'
+import { useRemoteCarets, withCarets } from './preview-cursors'
 import { usePythonCheck } from './python-check'
 import { runBlock, useRun } from './run-state'
 import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
@@ -54,20 +55,7 @@ const NODE_CODE_HEIGHT = 140
 function Code(props: WorkflowCodeFieldProps) {
   const node = useContext(CodeInNode)
   const height = node ? Math.min(props.height, NODE_CODE_HEIGHT) : props.height
-  if (node && !node.active) {
-    return (
-      <button
-        type="button"
-        style={{ height }}
-        onClick={node.onActivate}
-        title="Click to edit"
-        data-testid={`code-preview-${props.path}`}
-        className="flex w-full cursor-text items-start justify-start overflow-hidden rounded-md border border-border bg-field px-2 py-1 text-left font-mono text-xs whitespace-pre text-ink"
-      >
-        {props.value}
-      </button>
-    )
-  }
+  if (node && !node.active) return <CodePreview {...props} height={height} onActivate={node.onActivate} />
   props = { ...props, height }
   return (
     <Suspense
@@ -80,6 +68,23 @@ function Code(props: WorkflowCodeFieldProps) {
     >
       <LazyCodeField {...props} />
     </Suspense>
+  )
+}
+
+/** A code field in a node until the block is inspected: its text, with others' carets in it (M16). */
+function CodePreview(props: WorkflowCodeFieldProps & { onActivate: () => void }) {
+  const carets = useRemoteCarets(props.text)
+  return (
+    <button
+      type="button"
+      style={{ height: props.height }}
+      onClick={props.onActivate}
+      title="Click to edit"
+      data-testid={`code-preview-${props.path}`}
+      className="flex w-full cursor-text items-start justify-start overflow-hidden rounded-md border border-border bg-field px-2 py-1 text-left font-mono text-xs whitespace-pre text-ink"
+    >
+      <span>{withCarets(props.value, carets)}</span>
+    </button>
   )
 }
 

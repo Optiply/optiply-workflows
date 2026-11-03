@@ -1,12 +1,12 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { Clock, GitCompare, Rocket, Undo2, Webhook } from 'lucide-react'
+import { ChevronDown, Clock, GitCompare, History, Rocket, Undo2, Webhook } from 'lucide-react'
 import { useState } from 'react'
 import { CompareReleasesDialog } from '@/components/compare-releases'
 import { confirmDialog } from '@/components/confirm'
 import { ReleaseAuthor, useGitInfo } from '@/components/git'
-import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
+import { Badge, Button, Dialog, ErrorNote, Field, Input, Menu, MenuItem, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { ensureSaved } from './collab'
@@ -58,23 +58,100 @@ export function ReleaseControls({ workflow, canEdit }: { workflow: Workflow; can
         )}
       </button>
       {canEdit && (
-        <Button
-          size="sm"
-          disabled={errors > 0 || !unpublished}
-          title={
-            errors
-              ? 'Fix the problems first'
-              : unpublished
-                ? 'Release this draft and make it live'
-                : 'Nothing changed since the live release'
-          }
-          onClick={() => setPublishing(true)}
-        >
-          <Rocket className="size-3.5" /> Publish
-        </Button>
+        <div className="flex items-center">
+          <Button
+            size="sm"
+            className="rounded-r-none"
+            disabled={errors > 0 || !unpublished}
+            title={
+              errors
+                ? 'Fix the problems first'
+                : unpublished
+                  ? 'Release this draft and make it live'
+                  : 'Nothing changed since the live release'
+            }
+            onClick={() => setPublishing(true)}
+          >
+            <Rocket className="size-3.5" /> Publish
+          </Button>
+          <ReleaseMenu workflow={workflow} />
+        </div>
       )}
       {publishing && <PublishDialog workflow={workflow} onClose={() => setPublishing(false)} />}
     </div>
+  )
+}
+
+/** Publish's ▾: compare the draft with the live release, the release history, a rollback to the release before. */
+function ReleaseMenu({ workflow }: { workflow: Workflow }) {
+  const trpc = useTRPC()
+  const refresh = useRefreshReleases(workflow.id)
+  const { me } = appRoute.useRouteContext()
+  const { data: releases } = useQuery(trpc.releases.list.queryOptions({ workflowId: workflow.id }))
+  const setLive = useMutation(trpc.releases.setLive.mutationOptions({ onSuccess: () => refresh() }))
+  const draft = useEditor((s) => s.definition)
+  const [comparing, setComparing] = useState(false)
+  const live = releases?.find((r) => r.live)
+  // Newest first: the release before the live one.
+  const previous = live && releases?.[releases.indexOf(live) + 1]
+  const canSetLive = !workflow.gitProtected || me.isAdmin
+  return (
+    <>
+      <Menu
+        label="Release actions"
+        trigger={(props) => (
+          <Button
+            size="sm"
+            className="rounded-l-none border-l border-l-white/25 px-1.5"
+            title="Release actions"
+            aria-label="Release actions"
+            {...props}
+          >
+            <ChevronDown className="size-3.5" />
+          </Button>
+        )}
+      >
+        {live && (
+          <MenuItem icon={<GitCompare />} onClick={() => setComparing(true)}>
+            Compare draft with live (v{live.version})
+          </MenuItem>
+        )}
+        <MenuItem icon={<History />} onClick={() => useEditor.getState().showTab('releases')}>
+          Release history
+        </MenuItem>
+        {canSetLive && previous && (
+          <MenuItem
+            icon={<Undo2 />}
+            onClick={async () => {
+              const emergency = workflow.gitProtected
+                ? ' This workflow is protected: this stays until its next change in Git (or Deploy now).'
+                : ''
+              if (
+                await confirmDialog(
+                  `Roll back to v${previous.version}? Its webhook and schedules will run instead of v${live.version}.${emergency}`,
+                )
+              ) {
+                setLive.mutate({ workflowId: workflow.id, releaseId: previous.id })
+              }
+            }}
+          >
+            Roll back to v{previous.version}
+          </MenuItem>
+        )}
+      </Menu>
+      {comparing && releases && live && (
+        <CompareReleasesDialog
+          kind="workflow"
+          objectId={workflow.id}
+          releases={releases}
+          releaseId={live.id}
+          draft={draft}
+          withDraft
+          loadRelease={(id) => trpcClient.releases.get.query({ workflowId: workflow.id, id })}
+          onClose={() => setComparing(false)}
+        />
+      )}
+    </>
   )
 }
 

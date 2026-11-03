@@ -358,7 +358,11 @@ function GlobalResult({ run, tab }: { run: RunView; tab: 'inputs' | 'data' | 'js
           {run.error.message}
         </p>
       )}
-      {tab === 'data' ? (
+      {!run.response && !run.error && isFinal(run.status) ? (
+        <p className="p-2 text-sm text-muted">
+          No response: the workflow has no Response block. Pick a block to see its data.
+        </p>
+      ) : tab === 'data' ? (
         <DataTab value={run.response?.body ?? null} name={name} className="min-h-0 flex-1" />
       ) : (
         <JsonTree value={run.response?.body ?? null} name={name} root="response" className="min-h-0 flex-1" />
