@@ -58,6 +58,9 @@ async function freePort(): Promise<number> {
 export async function startTestKafka(): Promise<TestKafka> {
   const [p1, p2, p3] = [await freePort(), await freePort(), await freePort()]
   const dir = mkdtempSync(join(tmpdir(), 'ow-kafka-'))
+  // mkdtemp makes the folder 0700. On Linux the broker (the image's own user, not ours) then can't enter /cfg and
+  // exits at once; Docker Desktop's file sharing hid this on the Mac.
+  chmodSync(dir, 0o755)
   for (const file of ['ca.pem', 'server-keystore.pem']) {
     copyFileSync(new URL(file, FIXTURES), join(dir, file))
     chmodSync(join(dir, file), 0o644)
@@ -103,7 +106,7 @@ export async function startTestKafka(): Promise<TestKafka> {
   await run('docker', [
     'run',
     '-d',
-    '--rm',
+    // No --rm: a broker that exits keeps its logs for the error below; `stop` removes the container either way.
     '--name',
     name,
     ...[p1, p2, p3].flatMap((p) => ['-p', `127.0.0.1:${p}:${p}`]),
@@ -121,9 +124,18 @@ export async function startTestKafka(): Promise<TestKafka> {
   try {
     const deadline = Date.now() + 90_000
     for (;;) {
-      const { stdout } = await run('docker', ['logs', name]).catch(() => ({ stdout: '' }))
+      const { stdout, stderr } = await run('docker', ['logs', name]).catch(() => ({ stdout: '', stderr: '' }))
       if (/Kafka Server started/.test(stdout)) break
-      if (Date.now() > deadline) throw new Error(`Kafka didn't start in 90 s:\n${stdout.slice(-2000)}`)
+      const state = await run('docker', ['inspect', '-f', '{{.State.Status}} {{.State.ExitCode}}', name])
+        .then((r) => r.stdout.trim())
+        .catch(() => 'unknown')
+      const exited = state.startsWith('exited') || state.startsWith('dead')
+      if (exited || Date.now() > deadline) {
+        const output = `${stdout}\n${stderr}`.trim().slice(-2000)
+        throw new Error(
+          `${exited ? `Kafka exited (${state})` : "Kafka didn't start in 90 s"}:\n${output || '(no output)'}`,
+        )
+      }
       await new Promise((r) => setTimeout(r, 500))
     }
   } catch (err) {

@@ -29,7 +29,8 @@ jobs:
   # Playwright against the bundled server serving the built web app (see apps/web/e2e/global-setup.ts).
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # One worker, ~120 specs by M28: ~21 min on the Mac, plus the build and Playwright's install here.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

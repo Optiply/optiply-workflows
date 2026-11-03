@@ -331,8 +331,10 @@ describe('SharedDefinition', () => {
     }
     times.sort((x, y) => x - y)
     const median = times[50] ?? 0
-    // Generous for a slow CI runner: on this Mac (2026-10-21) the median was 1.8 ms, the load 11 ms, the first read 4.
-    expect(median).toBeLessThan(20)
+    // On this Mac (2026-10-21) the median was 1.8 ms, the load 11 ms, the first read 4. A GitHub runner, sharing its
+    // CPUs with every other package's suite under `pnpm test`, measured 40 ms (2026-11-03), so CI gets more room:
+    // the bound is there to catch a quadratic (a 500-block edit taking seconds), not to time the runner.
+    expect(median).toBeLessThan(process.env.CI ? 150 : 20)
     expect(loaded).toBeLessThan(500)
     expect(firstRead).toBeLessThan(500)
   })
