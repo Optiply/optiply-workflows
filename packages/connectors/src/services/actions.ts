@@ -15,6 +15,7 @@ export const SERVICE_TYPES = [
   'notion',
   'salesforce',
   'rabbitmq',
+  'sns',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1243,6 +1244,32 @@ const RABBITMQ: readonly ActionSpec[] = [
   },
 ]
 
+const SNS: readonly ActionSpec[] = [
+  {
+    id: 'publish',
+    label: 'Publish',
+    description: 'Messages to a topic (10 per request); FIFO topics need a group id.',
+    fields: [
+      {
+        key: 'topicArn',
+        label: 'Topic ARN',
+        kind: 'text',
+        required: true,
+        placeholder: 'arn:aws:sns:eu-west-1:123456789012:orders',
+      },
+      {
+        key: 'messages',
+        label: 'Messages',
+        kind: 'json',
+        language: 'json',
+        required: true,
+        initial: '{"message": {}}',
+        hint: 'One message or an array: {"message": …, "subject": "…", "attributes": {…}, "groupId": "…", "deduplicationId": "…"}. A message that isn’t a string is sent as JSON.',
+      },
+    ],
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
   hubspot: HUBSPOT,
@@ -1255,6 +1282,7 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   notion: NOTION,
   salesforce: SALESFORCE,
   rabbitmq: RABBITMQ,
+  sns: SNS,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

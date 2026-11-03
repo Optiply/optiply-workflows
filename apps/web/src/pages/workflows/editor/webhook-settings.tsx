@@ -138,6 +138,8 @@ function SignatureFields({
             // Custom fields belong to the custom preset only (the validator says so too).
             set({
               preset: next,
+              // SNS lists its topics; the others don't (the validator says so too).
+              topicArns: next === 'sns' ? (auth.topicArns ?? []) : undefined,
               header: undefined,
               algorithm: undefined,
               encoding: undefined,
@@ -154,37 +156,69 @@ function SignatureFields({
             </option>
           ))}
         </Select>
-        <Select
-          aria-label="Signing secret"
-          value={auth.secret}
-          onChange={(e) => set({ secret: e.target.value })}
-        >
-          <option value="">Choose the secret…</option>
-          {secrets.map((v) => (
-            <option key={v.id} value={v.name}>
-              {v.name}
-            </option>
-          ))}
-          {auth.secret && !secrets.some((v) => v.name === auth.secret) && (
-            <option value={auth.secret}>{auth.secret} (not a secret config var)</option>
-          )}
-        </Select>
-      </div>
-      <FieldProblems problems={problemsAt('auth', 'secret')} />
-      <span className="text-xs text-muted">
-        The signing secret is a secret config var, set per environment (one secret per line while you rotate
-        it):{' '}
-        <Link to="/settings/config-vars" className={linkClass}>
-          Settings → Config vars
-        </Link>
-        .
-        {preset && (
-          <>
-            {' '}
-            Checks the <code className="font-mono">{preset.header}</code> header.
-          </>
+        {auth.preset === 'sns' ? (
+          <span className="self-center text-xs text-muted">Signed by AWS: no secret</span>
+        ) : (
+          <Select
+            aria-label="Signing secret"
+            value={auth.secret}
+            onChange={(e) => set({ secret: e.target.value })}
+          >
+            <option value="">Choose the secret…</option>
+            {secrets.map((v) => (
+              <option key={v.id} value={v.name}>
+                {v.name}
+              </option>
+            ))}
+            {auth.secret && !secrets.some((v) => v.name === auth.secret) && (
+              <option value={auth.secret}>{auth.secret} (not a secret config var)</option>
+            )}
+          </Select>
         )}
-      </span>
+      </div>
+      {auth.preset === 'sns' && (
+        <>
+          <textarea
+            aria-label="SNS topic ARNs"
+            data-testid="sns-topic-arns"
+            rows={3}
+            className="w-full rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+            placeholder="arn:aws:sns:eu-west-1:123456789012:orders"
+            value={(auth.topicArns ?? []).join('\n')}
+            onChange={(e) =>
+              set({
+                topicArns: e.target.value
+                  .split(/[\n,]/)
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+          />
+          <FieldProblems problems={problemsAt('auth', 'topicArns')} />
+          <span className="text-xs text-muted">
+            One topic ARN per line: only their messages start runs. Subscribe this webhook's URL to the topic
+            (HTTPS) in AWS; the subscription is confirmed here at once. The run gets the message (JSON parsed)
+            in <code className="font-mono">startTrigger.data.message</code>, with its subject and attributes.
+          </span>
+        </>
+      )}
+      {auth.preset !== 'sns' && <FieldProblems problems={problemsAt('auth', 'secret')} />}
+      {auth.preset !== 'sns' && (
+        <span className="text-xs text-muted">
+          The signing secret is a secret config var, set per environment (one secret per line while you rotate
+          it):{' '}
+          <Link to="/settings/config-vars" className={linkClass}>
+            Settings → Config vars
+          </Link>
+          .
+          {preset && (
+            <>
+              {' '}
+              Checks the <code className="font-mono">{preset.header}</code> header.
+            </>
+          )}
+        </span>
+      )}
 
       {custom && (
         <div className="grid grid-cols-2 gap-2">

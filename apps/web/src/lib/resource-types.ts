@@ -125,4 +125,5 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   salesforce: { label: 'SF', className: 'bg-op-blue-2 text-op-blue-4' },
   openapi: { label: 'OAS', className: 'bg-op-green-1 text-op-green-4' },
   rabbitmq: { label: 'RMQ', className: 'bg-op-orange-2 text-op-orange-4' },
+  sns: { label: 'SNS', className: 'bg-op-red-1 text-op-red-4' },
 }

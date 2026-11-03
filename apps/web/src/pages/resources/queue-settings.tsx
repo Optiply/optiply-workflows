@@ -156,6 +156,19 @@ export function SqsFields(props: FieldsProps) {
   )
 }
 
+/** An SNS resource's settings (M30): the AWS identity; topics are named in each query. */
+export function SnsFields(props: FieldsProps) {
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the topics" />
+      <p className="text-xs text-muted">
+        Publishing needs sns:Publish on the topics. To receive a topic's messages, subscribe a workflow's
+        webhook (the Amazon SNS signature preset) to it.
+      </p>
+    </>
+  )
+}
+
 /**
  * A RabbitMQ resource's settings (M30): the broker's host, port and vhost, the user and password, TLS with an optional
  * CA, and whether a private address may be reached.

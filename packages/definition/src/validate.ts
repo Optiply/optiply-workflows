@@ -1044,6 +1044,8 @@ const CUSTOM_SIGNATURE_FIELDS = [
   'signedPayload',
 ] as const
 
+const SNS_TOPIC_ARN = /^arn:aws[\w-]*:sns:[a-z0-9-]+:\d{12}:[\w-]{1,256}(\.fifo)?$/
+
 /** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */
 function checkWebhook(
   webhook: WebhookTrigger,
@@ -1054,7 +1056,33 @@ function checkWebhook(
   const auth = webhook.auth
   if (auth?.type === 'signature') {
     const authAt = (field: string) => at(['auth', field])
-    if (!auth.secret) {
+    if (auth.preset === 'sns') {
+      // SNS signs with AWS's certificate: no secret, but the topics whose messages count.
+      if (!auth.topicArns?.length)
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'List the SNS topics (ARNs) whose messages may start runs',
+          hint: 'Any SNS topic in any account could otherwise send signed messages to this URL',
+          ...authAt('topicArns'),
+        })
+      auth.topicArns?.forEach((arn, i) => {
+        if (!SNS_TOPIC_ARN.test(arn))
+          report({
+            code: 'invalid_webhook_auth',
+            message: `"${arn}" isn't a topic ARN`,
+            ...at(['auth', 'topicArns', i]),
+          })
+      })
+    } else if (auth.topicArns !== undefined) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'Topic ARNs are for the SNS preset only',
+        ...authAt('topicArns'),
+      })
+    }
+    if (auth.preset === 'sns') {
+      // Nothing more: the secret is unused.
+    } else if (!auth.secret) {
       report({
         code: 'invalid_webhook_auth',
         message: 'Choose the secret config var that holds the signing secret',

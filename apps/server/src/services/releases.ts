@@ -419,7 +419,8 @@ async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Envi
     }
   }
   const runsIn = webhookEnvironments(webhook, envs)
-  if (webhook.auth.type !== 'signature') return
+  // SNS (M30) signs with AWS's certificate: there's no secret to check.
+  if (webhook.auth.type !== 'signature' || webhook.auth.preset === 'sns') return
   const name = webhook.auth.secret
   const [variable] = await db.select().from(configVars).where(eq(configVars.name, name))
   if (!variable) {

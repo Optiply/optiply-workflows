@@ -25,6 +25,7 @@ import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
 import { RunEventHub } from '../services/run-events'
+import { configureSnsWebhooks } from '../services/sns-webhook'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
@@ -72,6 +73,7 @@ export async function buildApp(deps: {
   configureGoogle(config)
   configureAwsServer(config)
   configureConnectors(config)
+  configureSnsWebhooks(config.SNS_CERT_HOSTS)
   const runner = new InlineRunner({
     db,
     pool: services.pool,

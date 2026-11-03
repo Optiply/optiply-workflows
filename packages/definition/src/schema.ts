@@ -408,6 +408,8 @@ export const WEBHOOK_SIGNATURE_PRESETS = [
   'slack',
   'hubspot',
   'shopify',
+  /** Amazon SNS (M30): signed with AWS's certificate, not a shared secret; `topicArns` says whose messages count. */
+  'sns',
   'custom',
 ] as const
 export const WEBHOOK_HMAC_ALGORITHMS = ['sha256', 'sha1', 'sha512'] as const
@@ -423,8 +425,10 @@ export const webhookAuthSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('signature'),
     preset: z.enum(WEBHOOK_SIGNATURE_PRESETS),
-    /** The name of a secret config var holding the signing secret, so it's set per environment. */
+    /** The name of a secret config var holding the signing secret, so it's set per environment (not for `sns`). */
     secret: z.string().max(64),
+    /** `sns` only: the topics whose messages start runs (any SNS topic could otherwise sign messages to this URL). */
+    topicArns: z.array(z.string().max(300)).max(20).optional(),
     /** `custom` only: the header with the signature. */
     header: z.string().max(100).optional(),
     /** `custom` only; default sha256. */

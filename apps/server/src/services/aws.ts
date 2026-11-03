@@ -2,7 +2,10 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers'
 import { awsCredentials, configureAws, describeAws } from '@ow/connectors'
 import type { Config } from '../config'
 
-type AwsConfig = Pick<Config, 'AWS_SERVER_IDENTITY' | 'AWS_STS_URL' | 'AWS_SQS_URL'>
+type AwsConfig = Pick<
+  Config,
+  'AWS_SERVER_IDENTITY' | 'AWS_STS_URL' | 'AWS_SQS_URL' | 'AWS_SNS_URL' | 'AWS_KINESIS_URL'
+>
 
 let allowed = false
 
@@ -16,6 +19,8 @@ export function configureAwsServer(config: AwsConfig): void {
     ...(allowed ? { serverCredentials: fromNodeProviderChain() } : {}),
     ...(config.AWS_STS_URL ? { stsEndpoint: config.AWS_STS_URL } : {}),
     ...(config.AWS_SQS_URL ? { sqsEndpoint: config.AWS_SQS_URL } : {}),
+    ...(config.AWS_SNS_URL ? { snsEndpoint: config.AWS_SNS_URL } : {}),
+    ...(config.AWS_KINESIS_URL ? { kinesisEndpoint: config.AWS_KINESIS_URL } : {}),
   })
 }
 

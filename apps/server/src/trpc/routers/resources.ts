@@ -137,7 +137,7 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
     if (cloudSite && !c.email) return 'Add the email of the account the API token belongs to'
     if (!secrets.token) return cloudSite ? 'Add the API token' : 'Add the personal access token'
   }
-  if (type === 'sqs' || type === 's3') return awsSettingsProblem(config, secrets)
+  if (type === 'sqs' || type === 's3' || type === 'sns') return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
     return (
@@ -1065,6 +1065,7 @@ const TYPE_GROUPS: Record<string, string> = {
   sqs: 'Messaging',
   kafka: 'Messaging',
   rabbitmq: 'Messaging',
+  sns: 'Messaging',
   slack: 'Services',
   hubspot: 'Services',
   sendgrid: 'Services',

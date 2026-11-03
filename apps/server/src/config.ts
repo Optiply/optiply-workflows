@@ -114,6 +114,14 @@ const ConfigSchema = z
     /** STS's and SQS's endpoints: for tests against the fake AWS. */
     AWS_STS_URL: z.string().url().optional(),
     AWS_SQS_URL: z.string().url().optional(),
+    /** M30's SNS and Kinesis endpoints, the same way (tests). */
+    AWS_SNS_URL: z.string().url().optional(),
+    AWS_KINESIS_URL: z.string().url().optional(),
+    /**
+     * Hosts (host:port) whose SNS signing certificates are trusted besides sns.<region>.amazonaws.com, over http too:
+     * tests only, never production.
+     */
+    SNS_CERT_HOSTS: z.string().default(''),
     /**
      * Private hosts the built-in REST API resource (M27) may reach all the same, comma-separated (`*.internal.example`
      * patterns allowed); every other private address stays refused.

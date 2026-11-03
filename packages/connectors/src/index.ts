@@ -1,4 +1,5 @@
 import { s3Connector } from './aws/s3'
+import { snsConnector } from './aws/sns'
 import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
 import { graphqlConnector } from './graphql'
@@ -35,6 +36,7 @@ export {
   describeAws,
 } from './aws/credentials'
 export { S3_MAX_BYTES, type S3Handle, s3Client, s3Connector } from './aws/s3'
+export { snsConnector, snsMessage } from './aws/sns'
 export { type SqsReceived, type SqsResourceClient, sqsClient, sqsConnector } from './aws/sqs'
 export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
@@ -229,6 +231,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [sqsConnector.type]: sqsConnector,
   [kafkaConnector.type]: kafkaConnector,
   [rabbitmqConnector.type]: rabbitmqConnector,
+  [snsConnector.type]: snsConnector,
   [s3Connector.type]: s3Connector,
   [stripeConnector.type]: stripeConnector,
   [airtableConnector.type]: airtableConnector,
