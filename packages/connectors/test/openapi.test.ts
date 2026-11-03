@@ -10,6 +10,7 @@ import {
   runQuery,
   testResource,
 } from '../src'
+import { serializeParameter } from '../src/openapi'
 import { codeEvaluator, resource, scopeEvaluator } from './helpers'
 
 // The OpenAPI resource (M29 step 5) against an echo server described by a document with every parameter style.
@@ -234,6 +235,31 @@ describe('reading documents', () => {
     expect(upload!.body).toMatchObject({
       contentTypes: ['multipart/form-data'],
       schema: { required: ['file'] },
+    })
+  })
+
+  it('joins arrays by their style in every place (Swagger 2.0’s tsv and pipes too)', () => {
+    const p = (style: string, where: 'query' | 'header' = 'query') => ({
+      name: 'p',
+      in: where,
+      required: false,
+      style,
+      explode: false,
+    })
+    expect(serializeParameter(p('tabDelimited'), ['a', 'b'])).toEqual({ pairs: [['p', 'a\tb']] })
+    expect(serializeParameter(p('pipeDelimited', 'header'), ['a', 'b'])).toEqual({ value: 'a|b' })
+    expect(serializeParameter(p('simple', 'header'), ['a', 'b'])).toEqual({ value: 'a,b' })
+    const swagger = JSON.parse(SWAGGER)
+    swagger.paths['/orders'].get.parameters.push({
+      name: 'tags',
+      in: 'query',
+      type: 'array',
+      items: { type: 'string' },
+      collectionFormat: 'tsv',
+    })
+    expect(parseOpenApi(JSON.stringify(swagger)).operations[0]!.parameters.at(-1)).toMatchObject({
+      style: 'tabDelimited',
+      explode: false,
     })
   })
 

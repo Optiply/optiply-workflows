@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { createHttpClient, destroyHttpClient, type HttpClient, type HttpResponse } from '../http-core'
 import { type Connector, ConnectorError, type CredentialSource, type QueryResult } from '../types'
@@ -54,7 +54,7 @@ function httpConfig(_config: Config) {
  * Form-encodes a JSON value the way Stripe reads it: nested objects as `a[b]`, arrays as `a[0]` (objects inside as
  * `a[0][b]`), booleans as true/false, null and empty strings as an empty value (which clears a field on update).
  */
-export function stripeForm(value: Record<string, unknown>): string {
+export function stripePairs(value: Record<string, unknown>): [string, string][] {
   const pairs: [string, string][] = []
   const walk = (prefix: string, v: unknown) => {
     if (v === undefined) return
@@ -70,21 +70,16 @@ export function stripeForm(value: Record<string, unknown>): string {
   }
   for (const [k, v] of Object.entries(value)) walk(k, v)
   return pairs
+}
+
+/** `stripePairs` as a form body (brackets left readable, as Stripe's docs write them). */
+export function stripeForm(value: Record<string, unknown>): string {
+  return stripePairs(value)
     .map(
       ([k, v]) =>
         `${encodeURIComponent(k).replaceAll('%5B', '[').replaceAll('%5D', ']')}=${encodeURIComponent(v)}`,
     )
     .join('&')
-}
-
-/** Query parameters for a GET in Stripe's form: the same encoding, as pairs. */
-function stripeQuery(value: Record<string, unknown>): [string, string][] {
-  const form = stripeForm(value)
-  if (!form) return []
-  return form.split('&').map((pair) => {
-    const [k, v] = pair.split('=')
-    return [decodeURIComponent(k!), decodeURIComponent(v ?? '')]
-  })
 }
 
 type Ctx = {
@@ -118,16 +113,14 @@ async function stripe(
   })
 }
 
-/** The request's Idempotency-Key: the one given, or one from the run and the request (random outside a run). */
-export function idempotencyKeyFor(
-  given: string | undefined,
-  labels: Record<string, string> | undefined,
-  request: string,
-): string {
-  if (given) return given
-  const run = labels?.ow_run
-  if (!run) return `ow-${randomUUID()}`
-  return `ow-${run}-${createHash('sha256').update(request).digest('hex').slice(0, 32)}`
+/**
+ * The request's Idempotency-Key: the one given (an order id, so a retried block or a rerun can't charge twice), else a
+ * new one per query execution. Not from the run and the request: identical creates in one run (a loop) would be
+ * merged, and Stripe keeps a 500 under its key, so a retried block could never succeed. The key stays the same for
+ * this execution's own retries (a 429 waited out).
+ */
+export function idempotencyKeyFor(given: string | undefined): string {
+  return given || `ow-${randomUUID()}`
 }
 
 function kindOf(value: string | undefined, allowed: readonly string[] = STRIPE_KINDS): string {
@@ -167,15 +160,24 @@ export const stripeConnector: Connector<Config, ServiceSecrets, ActionQuery, Str
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const f = fieldReader('stripe', query, ctx)
-    const post = async (path: string, params: Record<string, unknown>, given?: string) => {
-      const body = stripeForm(params)
-      const idempotencyKey = idempotencyKeyFor(given, ctx.labels, `POST ${path}\n${body}`)
-      return stripe(
+    const post = async (
+      path: string,
+      params: Record<string, unknown>,
+      given?: string,
+      pairs: [string, string][] = [],
+    ) =>
+      stripe(
         client,
-        { method: 'POST', path, body, contentType: 'application/x-www-form-urlencoded', idempotencyKey },
+        {
+          method: 'POST',
+          path,
+          body: stripeForm(params),
+          contentType: 'application/x-www-form-urlencoded',
+          idempotencyKey: idempotencyKeyFor(given),
+          ...(pairs.length && { pairs }),
+        },
         ctx,
       )
-    }
     switch (query.action) {
       case 'list':
       case 'search': {
@@ -196,7 +198,7 @@ export const stripeConnector: Connector<Config, ServiceSecrets, ActionQuery, Str
           }
           const res = await stripe(
             client,
-            { method: 'GET', path: `/v1/${kind}${search ? '/search' : ''}`, pairs: stripeQuery(params) },
+            { method: 'GET', path: `/v1/${kind}${search ? '/search' : ''}`, pairs: stripePairs(params) },
             ctx,
           )
           const body = res.data as { data?: { id?: string }[]; has_more?: boolean; next_page?: string | null }
@@ -216,7 +218,7 @@ export const stripeConnector: Connector<Config, ServiceSecrets, ActionQuery, Str
           {
             method: 'GET',
             path: `/v1/${kind}/${segment(await f.required('id'))}`,
-            pairs: stripeQuery(expand.length ? { expand } : {}),
+            pairs: stripePairs(expand.length ? { expand } : {}),
           },
           ctx,
         )
@@ -251,14 +253,18 @@ export const stripeConnector: Connector<Config, ServiceSecrets, ActionQuery, Str
       }
       case 'api': {
         const request = await apiCall(f, '/v1/', 'the API')
-        if (request.json !== undefined) {
-          if (typeof request.json !== 'object' || request.json === null || Array.isArray(request.json))
+        // Query parameters in Stripe's bracket form, whatever the method (read raw: apiCall makes them strings).
+        const pairs = stripePairs((await f.object('query')) ?? {})
+        if (request.method === 'POST') {
+          const body = request.json ?? {}
+          if (typeof body !== 'object' || body === null || Array.isArray(body))
             throw new ConnectorError('invalid_query', 'Body must be a JSON object (Stripe takes form fields)')
-          const res = await post(request.path, request.json as Record<string, unknown>)
+          const res = await post(request.path, body as Record<string, unknown>, undefined, pairs)
           return answer(res.data, res)
         }
-        const res =
-          request.method === 'POST' ? await post(request.path, {}) : await stripe(client, request, ctx)
+        if (request.json !== undefined)
+          throw new ConnectorError('invalid_query', `Stripe takes a body on POST only, not ${request.method}`)
+        const res = await stripe(client, { method: request.method, path: request.path, pairs }, ctx)
         return answer(res.data, res)
       }
       default:

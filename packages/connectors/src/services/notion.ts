@@ -119,13 +119,14 @@ export function plainProperty(prop: Record<string, unknown>): unknown {
 /** A page as a row: id, url, times, then each property's plain value. */
 export function flatPage(page: Record<string, unknown>): Record<string, unknown> {
   const props = (page.properties ?? {}) as Record<string, Record<string, unknown>>
+  // The page's own id, url and times win over properties of the same name, so `id` always names the page.
   return {
+    ...Object.fromEntries(Object.entries(props).map(([name, p]) => [name, plainProperty(p)])),
     id: page.id,
     url: page.url,
     createdTime: page.created_time,
     lastEditedTime: page.last_edited_time,
     ...(page.archived ? { archived: true } : {}),
-    ...Object.fromEntries(Object.entries(props).map(([name, p]) => [name, plainProperty(p)])),
   }
 }
 

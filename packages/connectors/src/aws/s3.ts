@@ -13,11 +13,11 @@ import {
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
-import { fileValue } from '../http-core'
 import {
   type ActionQuery,
   actionQuerySchema,
   fieldReader,
+  fileOf,
   limitOf,
   validateActionQuery,
 } from '../services/common'
@@ -95,18 +95,8 @@ export function copySource(bucket: string, key: string): string {
 /** What a `put` writes: bytes and, when the content doesn't say, a type. */
 export function putBody(value: unknown, format: string): { bytes: Buffer; contentType?: string } {
   if (format === 'base64') {
-    if (typeof value === 'string') {
-      const text = value.replace(/\s+/g, '')
-      if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(text))
-        throw new ConnectorError('invalid_query', 'Content isn’t base64')
-      return { bytes: Buffer.from(text, 'base64') }
-    }
-    const file = fileValue(value)
-    if (!file)
-      throw new ConnectorError(
-        'invalid_query',
-        'Content needs base64 text or a file object ({ base64, filename, contentType })',
-      )
+    // Base64 text or a webhook's file object, read as everywhere else (`fileOf`).
+    const file = fileOf(value, 'Content')
     return { bytes: file.bytes, ...(file.contentType && { contentType: file.contentType }) }
   }
   if (format === 'json' || (value !== null && typeof value === 'object')) {

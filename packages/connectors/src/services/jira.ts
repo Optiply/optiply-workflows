@@ -166,8 +166,15 @@ export const jiraConnector: Connector<Config, ServiceSecrets, ActionQuery, JiraC
     const f = fieldReader('jira', query, ctx)
     const api = `/rest/api/${client.v}`
     const cloud = client.config.deployment === 'cloud'
+    // Data Center takes text: an object or list is written as JSON, not "[object Object]".
     const text = (value: unknown) =>
-      cloud ? adf(value) : typeof value === 'string' ? value : String(value ?? '')
+      cloud
+        ? adf(value)
+        : typeof value === 'string'
+          ? value
+          : value !== null && typeof value === 'object'
+            ? JSON.stringify(value, null, 2)
+            : String(value ?? '')
     const issuePath = async () => `${api}/issue/${segment(await f.required('issue'))}`
 
     switch (query.action) {

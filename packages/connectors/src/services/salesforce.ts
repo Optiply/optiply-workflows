@@ -113,7 +113,15 @@ async function salesforce(client: SalesforceClient, request: ServiceCall, ctx: C
   })
 }
 
-/** A value as a SOQL literal: strings quoted and escaped, numbers, booleans, null, dates, lists for IN. */
+const SOQL_DATE = /^\d{4}-\d{2}-\d{2}$/
+const SOQL_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/
+
+/**
+ * A value as a SOQL literal: strings quoted and escaped, numbers, booleans, null, lists for IN, and dates unquoted:
+ * a Date, or a string that is exactly an ISO date (2026-11-03) or date-time with a zone (2026-11-03T10:00:00Z), since
+ * values from expressions arrive as strings and SOQL refuses quoted dates. (A text field compared to such a string
+ * needs its value changed, e.g. a trailing space; that is rare next to date filters.)
+ */
 export function soqlLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'null'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
@@ -123,6 +131,8 @@ export function soqlLiteral(value: unknown): string {
   }
   if (typeof value === 'bigint') return value.toString()
   if (value instanceof Date) return value.toISOString().replace(/\.\d{3}Z$/, 'Z')
+  if (typeof value === 'string' && (SOQL_DATE.test(value) || SOQL_DATETIME.test(value)))
+    return value.replace(/\.\d{1,3}(?=Z|[+-])/, '')
   if (Array.isArray(value)) {
     if (value.length === 0)
       throw new ConnectorError('invalid_query', 'An empty list can’t go into SOQL (IN () is invalid)')

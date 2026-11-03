@@ -56,6 +56,12 @@ describe('soql', () => {
     expect(soqlLiteral(true)).toBe('true')
     expect(soqlLiteral(null)).toBe('null')
     expect(soqlLiteral(new Date('2026-11-03T10:00:00.123Z'))).toBe('2026-11-03T10:00:00Z')
+    // Dates as ISO strings (how expressions give them) go unquoted, as SOQL wants; anything else stays quoted.
+    expect(soqlLiteral('2026-11-03')).toBe('2026-11-03')
+    expect(soqlLiteral('2026-11-03T10:00:00.250Z')).toBe('2026-11-03T10:00:00Z')
+    expect(soqlLiteral('2026-11-03T10:00:00+01:00')).toBe('2026-11-03T10:00:00+01:00')
+    expect(soqlLiteral("2026-11-03' OR Id != '")).toBe("'2026-11-03\\' OR Id != \\''")
+    expect(soqlLiteral('2026-11-03 10:00')).toBe("'2026-11-03 10:00'")
     expect(soqlLiteral(['a', 1])).toBe("('a', 1)")
     expect(() => soqlLiteral([])).toThrow(/empty list/)
     expect(() => soqlLiteral({ a: 1 })).toThrow(/object/)

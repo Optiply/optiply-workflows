@@ -86,11 +86,15 @@ function deref(doc: Json, node: unknown, depth = 0): unknown {
   return deref(doc, target, depth + 1)
 }
 
-/** A schema with its `$ref`s followed a few levels deep (enough for forms and examples; cycles stop). */
+/**
+ * A schema with its `$ref`s followed one level below the top: enough for parameters' types, a body's fields (and
+ * which are files) and an example; deeper levels stay as their type only. Expanding further grows combinatorially on
+ * large real documents (Stripe's, GitHub's), and the result is cached and sent to the browser.
+ */
 function schemaOf(doc: Json, node: unknown, depth = 0): OpenApiSchema | undefined {
   const s = deref(doc, node) as OpenApiSchema | undefined
   if (!s || typeof s !== 'object') return undefined
-  if (depth > 4) return { type: s.type, ...(s.description && { description: s.description }) }
+  if (depth > 1) return { type: s.type, ...(s.description && { description: s.description }) }
   const out: OpenApiSchema = { ...s }
   if (s.items) out.items = schemaOf(doc, s.items, depth + 1)
   if (s.properties)
@@ -140,7 +144,7 @@ export function exampleOf(schema: OpenApiSchema | undefined, depth = 0): unknown
 const COLLECTION: Record<string, { style: string; explode: boolean }> = {
   csv: { style: 'form', explode: false },
   ssv: { style: 'spaceDelimited', explode: false },
-  tsv: { style: 'form', explode: false },
+  tsv: { style: 'tabDelimited', explode: false },
   pipes: { style: 'pipeDelimited', explode: false },
   multi: { style: 'form', explode: true },
 }
@@ -307,6 +311,17 @@ export function openApiDocument(text: string): OpenApiDocument {
 
 const text = (v: unknown) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v))
 
+/** How an array is joined: by its style (Swagger 2.0's ssv, tsv and pipes too), else commas. */
+function separator(style: string): string {
+  return style === 'spaceDelimited'
+    ? ' '
+    : style === 'pipeDelimited'
+      ? '|'
+      : style === 'tabDelimited'
+        ? '\t'
+        : ','
+}
+
 /** A parameter's value serialized by its style for its place: pairs for the query, one string otherwise. */
 export function serializeParameter(
   p: OpenApiParameter,
@@ -318,8 +333,7 @@ export function serializeParameter(
   if (p.in === 'query') {
     if (array) {
       if (p.style === 'form' && p.explode) return { pairs: array.map((v) => [p.name, text(v)]) }
-      const sep = p.style === 'spaceDelimited' ? ' ' : p.style === 'pipeDelimited' ? '|' : ','
-      return { pairs: [[p.name, array.map(text).join(sep)]] }
+      return { pairs: [[p.name, array.map(text).join(separator(p.style))]] }
     }
     if (object) {
       if (p.style === 'deepObject')
@@ -338,7 +352,7 @@ export function serializeParameter(
     }
     return { pairs: [[p.name, text(value)]] }
   }
-  if (array) return { value: array.map(text).join(',') }
+  if (array) return { value: array.map(text).join(separator(p.style)) }
   if (object)
     return {
       value: p.explode

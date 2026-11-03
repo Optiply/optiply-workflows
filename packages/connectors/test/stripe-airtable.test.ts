@@ -74,15 +74,10 @@ describe('stripe', () => {
     })
   })
 
-  it('makes idempotency keys from the run and the request, or at random outside a run', () => {
-    const a = idempotencyKeyFor(undefined, { ow_run: 'run-1' }, 'POST /v1/customers\nemail=x')
-    expect(a).toBe(idempotencyKeyFor(undefined, { ow_run: 'run-1' }, 'POST /v1/customers\nemail=x'))
-    expect(a).not.toBe(idempotencyKeyFor(undefined, { ow_run: 'run-1' }, 'POST /v1/customers\nemail=y'))
-    expect(a).not.toBe(idempotencyKeyFor(undefined, { ow_run: 'run-2' }, 'POST /v1/customers\nemail=x'))
-    expect(idempotencyKeyFor(undefined, undefined, 'x')).not.toBe(
-      idempotencyKeyFor(undefined, undefined, 'x'),
-    )
-    expect(idempotencyKeyFor('mine', { ow_run: 'run-1' }, 'x')).toBe('mine')
+  it('uses the idempotency key given, else a new one each time', () => {
+    expect(idempotencyKeyFor('order-42')).toBe('order-42')
+    expect(idempotencyKeyFor(undefined)).toMatch(/^ow-[0-9a-f-]{36}$/)
+    expect(idempotencyKeyFor(undefined)).not.toBe(idempotencyKeyFor(undefined))
   })
 
   it('tests the key, and refuses a wrong one', async () => {
@@ -145,15 +140,23 @@ describe('stripe', () => {
     expect(missing.details).toMatchObject({ status: 404, code: 'resource_missing' })
   })
 
-  it('replays a retried create in a run instead of charging twice', async () => {
-    const labels = { ow_run: 'run-retry' }
-    const q = { action: 'create', kind: 'payment_intents', params: '{"amount": 1999, "currency": "eur"}' }
-    const first = await run(q, {}, key(), labels)
-    const again = await run(q, {}, key(), labels)
+  it('replays a create with the same idempotency key, and makes two identical ones without a key', async () => {
+    const q = (extra = {}) => ({
+      action: 'create',
+      kind: 'payment_intents',
+      params: '{"amount": 1999, "currency": "eur"}',
+      ...extra,
+    })
+    const keyed = q({ idempotencyKey: 'order-{{ id }}' })
+    const first = await run(keyed, { id: 7 }, key(), { ow_run: 'run-1' })
+    // A retried block, or the same order in another run: Stripe answers the first payment again.
+    const again = await run(keyed, { id: 7 }, key(), { ow_run: 'run-2' })
     expect((again.data as { id: string }).id).toBe((first.data as { id: string }).id)
     expect(fake.stripe.objects.get('payment_intents')?.size).toBe(1)
-    const other = await run(q, {}, key(), { ow_run: 'run-other' })
-    expect((other.data as { id: string }).id).not.toBe((first.data as { id: string }).id)
+    // Two identical creates in one run (a loop) are two objects.
+    await run(q(), {}, key(), { ow_run: 'run-3' })
+    await run(q(), {}, key(), { ow_run: 'run-3' })
+    expect(fake.stripe.objects.get('payment_intents')?.size).toBe(3)
   })
 
   it('reports a declined card with Stripe’s codes', async () => {
@@ -186,6 +189,23 @@ describe('stripe', () => {
       body: '{"name": "Pallet", "metadata": {"sku": "P-1"}}',
     })
     expect(made.data).toMatchObject({ name: 'Pallet', metadata: { sku: 'P-1' } })
+    // Query parameters go along on any method (in Stripe's bracket form); a body goes with POST only.
+    const id = (made.data as { id: string }).id
+    await run({
+      action: 'api',
+      method: 'POST',
+      path: `/v1/products/${id}`,
+      query: '{"expand": ["default_price"]}',
+      body: '{"active": false}',
+    })
+    expect(fake.calls.at(-1)!.path).toBe(`/stripe/v1/products/${id}?expand%5B0%5D=default_price`)
+    expect(
+      (await failure(run({ action: 'api', method: 'DELETE', path: `/v1/products/${id}`, body: '{"x": 1}' })))
+        .message,
+    ).toBe('Stripe takes a body on POST only, not DELETE')
+    expect((await run({ action: 'api', method: 'DELETE', path: `/v1/products/${id}` })).data).toMatchObject({
+      deleted: true,
+    })
     expect((await failure(run({ action: 'api', method: 'GET', path: '/v2/x' }))).message).toMatch(
       /starts with \/v1\//,
     )
@@ -235,6 +255,11 @@ describe('airtable', () => {
       createdTime: 't',
       SKU: 'A',
     })
+    // A field called id doesn't hide the record's id, and a listed row fed back drops createdTime.
+    expect(flatRecord({ id: 'rec1', fields: { id: 'imported-7' } }).id).toBe('rec1')
+    expect(recordsOf([{ id: 'rec1', createdTime: 't', SKU: 'B' }], true)).toEqual([
+      { id: 'rec1', fields: { SKU: 'B' } },
+    ])
   })
 
   it('tests the token', async () => {

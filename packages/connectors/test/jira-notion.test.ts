@@ -178,6 +178,21 @@ describe('jira', () => {
     })
     const key = (made.data as { key: string }).key
     expect(fake.jira.issues.get(key)?.fields.description).toBe('Plain')
+    // An object as a Data Center description is written as JSON, not "[object Object]".
+    const noted = await run(
+      r,
+      {
+        action: 'createIssue',
+        project: 'OPS',
+        issueType: 'Bug',
+        summary: 'Object',
+        description: '{{ note }}',
+      },
+      { note: { sku: 'A-1', qty: 2 } },
+    )
+    expect(fake.jira.issues.get((noted.data as { key: string }).key)?.fields.description).toBe(
+      '{\n  "sku": "A-1",\n  "qty": 2\n}',
+    )
     const listed = await run(r, { action: 'search', jql: 'project = OPS', max: '3' })
     expect(listed.data).toHaveLength(3)
     await run(r, { action: 'assign', issue: key, assignee: 'ada' })
@@ -253,6 +268,10 @@ describe('notion', () => {
     expect(
       flatPage({ id: 'p', url: 'u', properties: { Name: { type: 'title', title: [{ plain_text: 'x' }] } } }),
     ).toMatchObject({ id: 'p', Name: 'x' })
+    // A property called id doesn't hide the page's id.
+    expect(
+      flatPage({ id: 'p', properties: { id: { type: 'rich_text', rich_text: [{ plain_text: 'x' }] } } }).id,
+    ).toBe('p')
     expect(notionBlocks('# Title\n- one\n1. first\n[x] done\nText')).toEqual([
       {
         object: 'block',

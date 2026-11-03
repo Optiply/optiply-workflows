@@ -923,9 +923,6 @@ export const resourcesRouter = router({
         return { ok: false as const, error: errorView(err) }
       }
     }),
-  /**
-   * A HubSpot object type's properties (M27), for the query forms' pickers. Needs Use; kept like a GraphQL schema.
-   */
   /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
   openapiOperations: authedProcedure
     .input(z.object({ resourceId: Id, environmentId: Id }))
@@ -997,6 +994,9 @@ export const resourcesRouter = router({
       }
     }),
 
+  /**
+   * A HubSpot object type's properties (M27), for the query forms' pickers. Needs Use; kept like a GraphQL schema.
+   */
   hubspotProperties: authedProcedure
     .input(
       z.object({

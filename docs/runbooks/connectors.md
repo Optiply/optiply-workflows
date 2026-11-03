@@ -110,9 +110,11 @@ M29 added S3, Stripe, Airtable, Jira, Notion, Salesforce and OpenAPI resources. 
   `sk_test_…` keys work against test mode. Test connection reads `/v1/balance` and says live or test.
 - **Stripe-Version** can be pinned in the settings (empty: the account's default); **Connected account** acts as a
   Connect account.
-- Every create and update carries an **Idempotency-Key**. Inside a workflow run it's made from the run and the request,
-  so a retried block replays Stripe's first answer instead of charging twice; give your own key to dedupe across runs.
-  Outside a run (the playground, apps) it's random.
+- Every create and update carries an **Idempotency-Key**: the one given in the query, else a new one per query
+  execution (kept for that execution's own retries, such as a 429 waited out). Give your own key, made from something
+  that identifies the payment (`order-{{ startTrigger.data.orderId }}`), so a retried block or a second run can't
+  charge twice: Stripe answers the first result again. Stripe also keeps a 500 under its key for 24 hours, so change
+  the key to try a failed charge again.
 - Errors show Stripe's message, and `details` has `type`, `code`, `declineCode`, `param` and `requestId` (search it in
   the Stripe dashboard's logs).
 
@@ -152,8 +154,10 @@ M29 added S3, Stripe, Airtable, Jira, Notion, Salesforce and OpenAPI resources. 
     **Connect account** (one per environment, or each person their own). PKCE is on.
   - **Client credentials:** enable the client credentials flow on the app and set its **Run As** user; queries act as
     that user.
-- In SOQL each `{{ }}` is sent as a **quoted, escaped value** (strings, numbers, dates, lists for `IN`): write
-  `WHERE Name = {{ name }}`, never `'{{ name }}'` (refused). Results follow `nextRecordsUrl` up to **At most**.
+- In SOQL each `{{ }}` is sent as a **quoted, escaped value** (strings, numbers, lists for `IN`): write
+  `WHERE Name = {{ name }}`, never `'{{ name }}'` (refused). A value that is exactly an ISO date (`2026-11-03`) or
+  date-time with a zone (`2026-11-03T10:00:00Z`) goes unquoted, as SOQL's date literals must. Results follow
+  `nextRecordsUrl` up to **At most**.
 - Errors show Salesforce's message and `errorCode` (`INVALID_FIELD`, `REQUIRED_FIELD_MISSING`, `INVALID_SESSION_ID`
   means sign in again).
 

@@ -66,12 +66,15 @@ interface AirtableRecord {
   fields?: Record<string, unknown>
 }
 
-/** A record as a row: its id and creation time, then its fields. */
+/**
+ * A record as a row: its fields, then its id and creation time, which win over fields of the same name (an imported
+ * `id` column), so a row's `id` can always be fed back to update or delete it.
+ */
 export function flatRecord(record: AirtableRecord): Record<string, unknown> {
   return {
+    ...(record.fields ?? {}),
     id: record.id,
     ...(record.createdTime && { createdTime: record.createdTime }),
-    ...(record.fields ?? {}),
   }
 }
 
@@ -86,7 +89,13 @@ export function recordsOf(
   return list.map((item, i) => {
     if (!item || typeof item !== 'object' || Array.isArray(item))
       throw new ConnectorError('invalid_query', `Record ${i + 1} must be an object`)
-    const { id, fields, ...rest } = item as { id?: unknown; fields?: unknown } & Record<string, unknown>
+    // A listed row fed back: its createdTime isn't a field Airtable accepts.
+    const {
+      id,
+      fields,
+      createdTime: _createdTime,
+      ...rest
+    } = item as { id?: unknown; fields?: unknown } & Record<string, unknown>
     const values =
       fields && typeof fields === 'object' && !Array.isArray(fields)
         ? (fields as Record<string, unknown>)

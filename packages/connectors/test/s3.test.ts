@@ -53,7 +53,7 @@ describe('s3 helpers', () => {
       bytes: Buffer.from('hi'),
       contentType: 'text/plain',
     })
-    expect(() => putBody('not base64!', 'base64')).toThrow(/isn’t base64/)
+    expect(() => putBody('not base64!', 'base64')).toThrow(/needs base64 text/)
   })
 })
 

@@ -712,10 +712,6 @@ function MessageQueryForm({
   )
 }
 
-/**
- * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
- * the operation to run when there are several, and headers.
- */
 /** An OpenAPI resource's operation (M29): the shared form, with this editor's code fields. */
 function OpenApiInspector({
   query,
@@ -754,6 +750,10 @@ function OpenApiInspector({
   )
 }
 
+/**
+ * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
+ * the operation to run when there are several, and headers.
+ */
 function GraphqlQueryForm({
   query,
   setQuery,

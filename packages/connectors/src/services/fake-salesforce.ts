@@ -22,6 +22,7 @@ function literal(text: string): unknown {
       .slice(1, -1)
       .replace(/\\(.)/g, (_, ch: string) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' })[ch] ?? ch)
   }
+  if (/^\d{4}-\d{2}-\d{2}(T[\d:]+(Z|[+-]\d{2}:\d{2}))?$/.test(t)) return t
   if (t === 'null') return null
   if (t === 'true' || t === 'false') return t === 'true'
   return Number(t)
