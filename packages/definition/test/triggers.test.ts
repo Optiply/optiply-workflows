@@ -370,3 +370,47 @@ describe('SQS and Kafka triggers (M26)', () => {
     ])
   })
 })
+
+describe('RabbitMQ triggers (M30)', () => {
+  const resources: Record<string, { type: string }> = { broker: { type: 'rabbitmq' }, queue: { type: 'sqs' } }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts any queue name a consumer may read (spaces and dots too)', () => {
+    expect(
+      check({
+        rabbitmq: [{ name: 'a', enabled: true, resource: 'broker', queue: 'orders.v2 eu', maxInFlight: 10 }],
+      }),
+    ).toEqual([])
+  })
+
+  it('refuses a duplicate name, a resource of another kind, and the broker’s own amq. queues', () => {
+    expect(
+      check({
+        rabbitmq: [
+          { name: 'a', enabled: true, resource: 'broker', queue: 'ok' },
+          { name: 'a', enabled: true, resource: 'queue', queue: 'amq.direct' },
+        ],
+      }),
+    ).toEqual([
+      {
+        code: 'duplicate_rabbitmq',
+        message: 'Another RabbitMQ trigger is already named "a"',
+        path: ['triggers', 'rabbitmq', 1, 'name'],
+      },
+      {
+        code: 'invalid_rabbitmq',
+        message: 'RabbitMQ trigger "a": "queue" isn\'t a RabbitMQ resource',
+        path: ['triggers', 'rabbitmq', 1, 'resource'],
+      },
+      {
+        code: 'invalid_rabbitmq',
+        message: 'RabbitMQ trigger "a": "amq.direct" can\'t be consumed (amq. names are the broker\'s own)',
+        path: ['triggers', 'rabbitmq', 1, 'queue'],
+      },
+    ])
+  })
+})

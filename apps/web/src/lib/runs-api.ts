@@ -39,6 +39,8 @@ export interface RunQueueMessage {
   offset?: string
   key?: string | null
   attempt?: number
+  /** RabbitMQ (M30). */
+  redelivered?: boolean
 }
 
 /** A run's Pub/Sub message, when a Pub/Sub trigger started it. */
@@ -56,6 +58,8 @@ export function queueMessageLine(run: Pick<RunView, 'triggerType' | 'input'>): s
     return `SQS message ${m.messageId} · ${m.queue?.split('/').pop()}${m.receiveCount && m.receiveCount > 1 ? ` · receive ${m.receiveCount}` : ''}`
   if (run.triggerType === 'kafka')
     return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+  if (run.triggerType === 'rabbitmq')
+    return `RabbitMQ message${m.messageId ? ` ${m.messageId}` : ''} · ${m.queue}${m.redelivered ? ' · redelivered' : ''}`
   return undefined
 }
 

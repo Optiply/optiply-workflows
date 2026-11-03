@@ -577,6 +577,9 @@ importers:
       '@ow/code-executor':
         specifier: workspace:*
         version: link:../../apps/code-executor
+      '@types/amqplib':
+        specifier: 0.10.8
+        version: 0.10.8
       postgres:
         specifier: 3.4.9
         version: 3.4.9

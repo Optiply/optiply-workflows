@@ -6,6 +6,7 @@ import {
   type KafkaTrigger,
   type PubSubTrigger,
   parseCron,
+  type RabbitmqTrigger,
   resolveWebhookSettings,
   type ScheduleTrigger,
   type SqsTrigger,
@@ -32,13 +33,14 @@ type Triggers = NonNullable<WorkflowDefinition['triggers']>
 function updateTriggers(edit: (triggers: Triggers) => Triggers) {
   useEditor.getState().update((def) => {
     const next = edit(def.triggers ?? {})
-    const { webhook, schedules, pubsub, sqs, kafka } = next
+    const { webhook, schedules, pubsub, sqs, kafka, rabbitmq } = next
     const sparse: Triggers = {
       ...(webhook && { webhook }),
       ...(schedules?.length && { schedules }),
       ...(pubsub?.length && { pubsub }),
       ...(sqs?.length && { sqs }),
       ...(kafka?.length && { kafka }),
+      ...(rabbitmq?.length && { rabbitmq }),
     }
     const { triggers: _, ...rest } = def
     return Object.keys(sparse).length ? { ...rest, triggers: sparse } : rest
@@ -79,6 +81,7 @@ export function TriggersForm({ testInput }: { testInput: unknown }) {
       <QueueSection kind="pubsub" triggers={triggers?.pubsub ?? []} />
       <QueueSection kind="sqs" triggers={triggers?.sqs ?? []} />
       <QueueSection kind="kafka" triggers={triggers?.kafka ?? []} />
+      <QueueSection kind="rabbitmq" triggers={triggers?.rabbitmq ?? []} />
     </div>
   )
 }
@@ -429,8 +432,8 @@ function ScheduleCard({ index, schedule }: { index: number; schedule: ScheduleTr
   )
 }
 
-type QueueKind = 'pubsub' | 'sqs' | 'kafka'
-type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger
+type QueueKind = 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq'
+type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger | RabbitmqTrigger
 
 /** What differs between the queue triggers' sections (Pub/Sub M19, SQS and Kafka M26). */
 const QUEUES: Record<
@@ -496,6 +499,23 @@ const QUEUES: Record<
     ),
     receiving: 'consuming',
   },
+  rabbitmq: {
+    title: 'RabbitMQ',
+    noun: 'queue trigger',
+    resourceKind: 'RabbitMQ',
+    maxHoldMinutes: 24 * 60,
+    fresh: (name, resource) => ({ name, enabled: true, resource, queue: '' }),
+    empty: 'run this workflow for each message in a queue',
+    explain: (
+      <>
+        Each message runs the workflow: <code>startTrigger.data</code> is its body (JSON or text),{' '}
+        <code>startTrigger.message</code> its exchange, routing key, headers and properties. It's acked when
+        the run succeeds and rejected without requeueing when it fails, so the queue's dead-letter exchange
+        takes it (without one, RabbitMQ drops it). Give messages a message id so a redelivery is recognised.
+      </>
+    ),
+    receiving: 'consuming',
+  },
 }
 
 /** Queue triggers that start this workflow, a run per message: Pub/Sub (M19), SQS and Kafka (M26). */
@@ -504,7 +524,8 @@ function QueueSection({ kind, triggers }: { kind: QueueKind; triggers: QueueTrig
   const { data } = useQuery(trpc.resources.list.queryOptions())
   const resources = (data?.resources ?? []).filter((r) => r.type === kind)
   const q = QUEUES[kind]
-  const prefix = kind === 'pubsub' ? 'subscription' : kind === 'sqs' ? 'queue' : 'topic'
+  const prefix =
+    kind === 'pubsub' ? 'subscription' : kind === 'sqs' || kind === 'rabbitmq' ? 'queue' : 'topic'
   const add = () =>
     updateTriggers((t) => {
       const list = (t[kind] ?? []) as QueueTrigger[]
@@ -665,6 +686,13 @@ function QueueCard({
           'queue',
           'Queue',
           "Its name in the resource's region and account (name.fifo for FIFO), or its URL.",
+          'orders',
+        )
+      ) : kind === 'rabbitmq' ? (
+        text(
+          'queue',
+          'Queue',
+          'The queue to consume (it must exist; declare it with its dead-letter exchange).',
           'orders',
         )
       ) : (

@@ -539,6 +539,25 @@ export const sqsTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_SQS_HOLD_MINUTES).optional(),
 })
 
+/**
+ * A RabbitMQ queue of the live release (M30, architecture §2.33): each message starts a run in `environment`, through
+ * the `rabbitmq` resource's settings there; acked when its run succeeds, nacked without requeueing when it fails (the
+ * queue's dead-letter exchange applies).
+ */
+export const rabbitmqTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `rabbitmq` resource. */
+  resource: z.string().max(63),
+  queue: z.string().min(1).max(255),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4): the consumer's prefetch. */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's acked and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const MAX_KAFKA_ATTEMPTS = 20
 export const MAX_KAFKA_BACKOFF_SECONDS = 15 * 60
 
@@ -577,6 +596,7 @@ export const triggersSchema = z.strictObject({
   pubsub: z.array(pubsubTriggerSchema).max(20).optional(),
   sqs: z.array(sqsTriggerSchema).max(20).optional(),
   kafka: z.array(kafkaTriggerSchema).max(20).optional(),
+  rabbitmq: z.array(rabbitmqTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -647,6 +667,7 @@ export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
 export type SqsTrigger = z.output<typeof sqsTriggerSchema>
+export type RabbitmqTrigger = z.output<typeof rabbitmqTriggerSchema>
 export type KafkaTrigger = z.output<typeof kafkaTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>

@@ -4,10 +4,13 @@ import { join } from 'node:path'
 import { kafkaClient, produceTo } from '@ow/connectors'
 import {
   kafkaAvailable,
+  rabbitAvailable,
   startFakeAws,
   startFakePubSub,
   startTestKafka,
+  startTestRabbit,
   type TestKafka,
+  type TestRabbit,
 } from '@ow/connectors/testing'
 import { createDb, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
@@ -781,6 +784,72 @@ describe('SQS triggers on the worker (M26)', () => {
       kind: 'sqs',
       queue: { worker: worker.dispatcher.workerId, lastDay: { messages: 1, succeeded: 1, failed: 0 } },
     })
+  })
+})
+
+describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () => {
+  let rabbit: TestRabbit
+  beforeAll(async () => {
+    rabbit = await startTestRabbit()
+    await rabbit.declare('m30-jobs', { deadLetterQueue: 'm30-jobs-dead' })
+  }, 120_000)
+  afterAll(async () => {
+    await rabbit?.stop()
+  })
+
+  it('projects the defaults, runs the live release per message, and acks it', async () => {
+    const { id: brokerId } = data(
+      await admin.mutate('resources.create', { type: 'rabbitmq', name: 'Live broker', slug: 'broker_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: brokerId,
+        environmentId: prodId,
+        config: {
+          host: rabbit.host,
+          port: rabbit.port,
+          username: rabbit.username,
+          allowPrivateNetwork: true,
+        },
+        secrets: { password: rabbit.password },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_jobs',
+      definition([code('seen', 'return { id: startTrigger.message.messageId, n: startTrigger.data.n }')], {
+        triggers: { rabbitmq: [{ name: 'jobs', enabled: true, resource: 'broker_live', queue: 'm30-jobs' }] },
+      }),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'rabbitmq',
+      config: { queue: 'm30-jobs', maxInFlight: 4, maxHoldMinutes: 60 },
+    })
+    await rabbit.send('m30-jobs', '{"n": 9}', { messageId: 'job-9' })
+    await worker.queues.tick()
+    let run: { status: string; triggerType: string; id: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_jobs/runs',
+            headers: { cookie: adminCookie },
+          })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'rabbitmq' })
+    // Acked: nothing left in the queue or its dead-letter queue.
+    await expect
+      .poll(
+        async () => (await rabbit.drain('m30-jobs')).length + (await rabbit.drain('m30-jobs-dead')).length,
+      )
+      .toBe(0)
   })
 })
 

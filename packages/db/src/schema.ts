@@ -503,7 +503,7 @@ export const workflowReleases = pgTable(
   ],
 )
 
-export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka'] as const
+export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
 
 /** A queue trigger's runtime state (Pub/Sub, SQS, Kafka), as its consumer reports it (`workflow_triggers.state`). */
 export interface QueueTriggerState {
@@ -560,7 +560,10 @@ export const workflowTriggers = pgTable(
     uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
     uniqueIndex('workflow_triggers_alias_uq').on(t.aliasShape).where(sql`${t.aliasShape} is not null`),
     index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
-    check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule', 'pubsub', 'sqs', 'kafka')`),
+    check(
+      'workflow_triggers_kind_ck',
+      sql`${t.kind} in ('webhook', 'schedule', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis')`,
+    ),
   ],
 )
 
@@ -614,6 +617,25 @@ export const webhookRejections = pgTable(
  * redelivery of a message whose run succeeded is answered without a run; one whose run is still going is held, not run
  * again. The message id is Pub/Sub's or SQS's, or Kafka's `<topic>/<partition>/<offset>@<timestamp>`. Retention prunes old ones.
  */
+/**
+ * Where a Kinesis trigger (M30) has got to in each shard: the sequence number of the last record whose run ended
+ * (succeeded, or given up on after its attempts). A shard without a row starts where the trigger says (latest or
+ * trim horizon); a closed shard whose last record is done is `finished`, and its children start then.
+ */
+export const kinesisCheckpoints = pgTable(
+  'kinesis_checkpoints',
+  {
+    triggerId: uuid()
+      .notNull()
+      .references(() => workflowTriggers.id, { onDelete: 'cascade' }),
+    shardId: text().notNull(),
+    sequenceNumber: text(),
+    finished: boolean().notNull().default(false),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.triggerId, t.shardId] })],
+)
+
 export const queueDeliveries = pgTable(
   'queue_deliveries',
   {
@@ -655,6 +677,8 @@ export const RUN_TRIGGER_TYPES = [
   'git',
   'sqs',
   'kafka',
+  'rabbitmq',
+  'kinesis',
 ] as const
 export const BLOCK_STATUSES = [
   'pending',
@@ -760,7 +784,7 @@ export const workflowRuns = pgTable(
     ),
     check(
       'workflow_runs_trigger_type_ck',
-      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka')`,
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka', 'rabbitmq', 'kinesis')`,
     ),
     check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
     check(

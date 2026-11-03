@@ -275,6 +275,15 @@ interface OwKafkaMessage {
   attempt: number
   groupId: string
 }
+interface OwRabbitMessage {
+  queue: string
+  /** Empty: the default exchange (the routing key is then the queue). */
+  exchange: string; routingKey: string
+  /** Delivered before and not acked (a lost connection, another worker). */
+  redelivered: boolean
+  headers: Record<string, any>
+  messageId?: string; contentType?: string; correlationId?: string; timestamp?: string
+}
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean
   headers: { get(name: string): string | null; has(name: string): boolean }
@@ -297,9 +306,14 @@ export function scopeDeclarations(
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
   /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
-  queues: readonly ('pubsub' | 'sqs' | 'kafka')[] = [],
+  queues: readonly ('pubsub' | 'sqs' | 'kafka' | 'rabbitmq')[] = [],
 ): { dts: string; sample: Record<string, unknown> } {
-  const MESSAGE_TYPES = { pubsub: 'OwPubSubMessage', sqs: 'OwSqsMessage', kafka: 'OwKafkaMessage' } as const
+  const MESSAGE_TYPES = {
+    pubsub: 'OwPubSubMessage',
+    sqs: 'OwSqsMessage',
+    kafka: 'OwKafkaMessage',
+    rabbitmq: 'OwRabbitMessage',
+  } as const
   const messageType = queues.length ? queues.map((k) => MESSAGE_TYPES[k]).join(' | ') : 'OwPubSubMessage'
   const lines = [GLOBALS]
   for (const fn of functions) {

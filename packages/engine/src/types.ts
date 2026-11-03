@@ -60,7 +60,7 @@ export interface RunInput {
    * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
    * (`startTrigger.message`).
    */
-  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage
+  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage | RabbitRunMessage
 }
 
 /** What an SQS-triggered run sees of its message, besides its body (M26). */
@@ -91,6 +91,21 @@ export interface KafkaRunMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+}
+
+/** What a RabbitMQ-triggered run sees of its message, besides its body (M30). */
+export interface RabbitRunMessage {
+  queue: string
+  /** The exchange it was published to (empty: the default exchange) and its routing key. */
+  exchange: string
+  routingKey: string
+  /** Delivered before and not acked (a lost channel, another worker). */
+  redelivered: boolean
+  headers: Record<string, unknown>
+  messageId?: string
+  contentType?: string
+  correlationId?: string
+  timestamp?: string
 }
 
 /** What a Pub/Sub-triggered run sees of its message, besides its data. */

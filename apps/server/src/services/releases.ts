@@ -544,7 +544,7 @@ async function projectTriggers(
   }
 }
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka', rabbitmq: 'RabbitMQ' } as const
 
 /** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
 function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
@@ -553,6 +553,7 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
     ...(t?.pubsub ?? []).map((trigger) => ({ kind: 'pubsub' as const, trigger })),
     ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
     ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
+    ...(t?.rabbitmq ?? []).map((trigger) => ({ kind: 'rabbitmq' as const, trigger })),
   ]
 }
 
@@ -561,7 +562,7 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
  * renamed workflow keeps its offsets.
  */
 function queueDefaults(
-  kind: 'pubsub' | 'sqs' | 'kafka',
+  kind: 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq',
   workflowId: string,
   name: string,
 ): Record<string, unknown> {

@@ -75,6 +75,9 @@ export type DiagnosticCode =
   /** A Kafka trigger's settings (M26): its resource (a `kafka` one), topics, group or dead-letter topic. */
   | 'invalid_kafka'
   | 'duplicate_kafka'
+  /** A RabbitMQ trigger's settings (M30): its resource (a `rabbitmq` one) or queue. */
+  | 'invalid_rabbitmq'
+  | 'duplicate_rabbitmq'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -868,6 +871,7 @@ function checkTriggers(
   checkQueueTriggers('pubsub', def.triggers?.pubsub, at, report, options)
   checkQueueTriggers('sqs', def.triggers?.sqs, at, report, options)
   checkQueueTriggers('kafka', def.triggers?.kafka, at, report, options)
+  checkQueueTriggers('rabbitmq', def.triggers?.rabbitmq, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -930,14 +934,14 @@ const KAFKA_TOPIC = /^(?!\.{1,2}$)[\w.-]{1,249}$/
 /** A consumer group id: printable, no spaces at the ends. */
 const KAFKA_GROUP = /^\S(.*\S)?$/
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka', rabbitmq: 'RabbitMQ' } as const
 type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
 
 /**
  * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
  * known), and the kind's own settings: a subscription name, a queue, topics and a group.
  */
-function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka'>(
+function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq'>(
   kind: K,
   triggers: QueueTriggers[K],
   at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
@@ -977,7 +981,17 @@ function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka'>(
         message: `${where}: "${trigger.subscription}" isn't a subscription id or projects/…/subscriptions/… name`,
         ...at([kind, i, 'subscription']),
       })
-    if ('queue' in trigger && !SQS_QUEUE.test(trigger.queue))
+    if (
+      kind === 'rabbitmq' &&
+      'queue' in trigger &&
+      (trigger.queue.startsWith('amq.') || [...trigger.queue].some((ch) => ch.charCodeAt(0) < 32))
+    )
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.queue}" can't be consumed (amq. names are the broker's own)`,
+        ...at([kind, i, 'queue']),
+      })
+    if (kind === 'sqs' && 'queue' in trigger && !SQS_QUEUE.test(trigger.queue))
       report({
         code: invalid,
         message: `${where}: "${trigger.queue}" isn't a queue name or URL`,

@@ -112,6 +112,8 @@ export const workflowSpec: CollabSpec = defineSpec({
     ['triggers.pubsub', byName],
     ['triggers.sqs', byName],
     ['triggers.kafka', byName],
+    ['triggers.rabbitmq', byName],
+    ['triggers.kinesis', byName],
     ...blockPatterns(['config.conditions']).map((p) => [p, byId] as const),
     ...blockPatterns(['config.fields']).map((p) => [p, byName] as const),
     ...blockPatterns(['config.outcomes']).map((p) => [p, byId] as const),

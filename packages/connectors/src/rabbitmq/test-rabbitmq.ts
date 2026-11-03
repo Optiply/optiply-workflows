@@ -147,14 +147,21 @@ export async function startTestRabbit(): Promise<TestRabbit> {
           })
         }
       }),
-    send: (queue, body, opts = {}) =>
-      withChannel(async (ch) => {
+    send: async (queue, body, opts = {}) => {
+      // A confirm channel, waited on: closing the connection right after a plain send can lose the message.
+      const c = await amqp.connect(url)
+      try {
+        const ch = await c.createConfirmChannel()
         ch.sendToQueue(queue, Buffer.from(body), {
           persistent: true,
           ...(opts.messageId && { messageId: opts.messageId }),
           ...(opts.headers && { headers: opts.headers }),
         })
-      }),
+        await ch.waitForConfirms()
+      } finally {
+        await c.close()
+      }
+    },
     stop,
   }
 }
