@@ -170,6 +170,8 @@ export async function startTestBuilder(opts: {
   const env = Object.entries({
     PYTHON_BUILDER_TOKEN: token,
     PYTHON_PACKAGE_INDEX_URL: opts.indexUrl,
+    // The tests' indexes are http (M32's named indexes refuse it otherwise).
+    PYTHON_ALLOW_INSECURE_INDEXES: '1',
     ...opts.env,
   }).flatMap(([k, v]) => ['-e', `${k}=${v}`])
   execFileSync(

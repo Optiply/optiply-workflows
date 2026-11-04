@@ -7,17 +7,25 @@ the code executor reads, so its Python blocks can import them. It alone has netw
                  -> {"ok": true, "lock": {...}, "envId": "...", "sizeBytes": n, "cached": bool, "log": "..."}
   POST /install  {"lock": {...}}  (a lock /build gave: installs exactly it, without resolving)
                  -> {"ok": true, "envId": "...", "sizeBytes": n, "cached": bool, "log": "..."}
+  POST /check-index {"index": {...}}  (M32: whether an index answers, and takes its sign-in)
+                 -> {"ok": true, "status": 200} or {"ok": false, "status": 401, "message": "..."}
   GET  /health   -> {"ok": true, "python": "3.12.x", "platform": "cp312-linux-aarch64", "pip": "..."}
+
+/build and /install also take `indexes` (M32): [{"name", "url", "username"?, "password"?, "mode"}], an admin's
+package indexes, `primary` (instead of PYTHON_PACKAGE_INDEX_URL) or `extra` (searched with it). They're used for that
+request only: their credentials reach pip through its environment, never its command line, the lock, an env or a
+log. A lock's package from a named index says so (`"index": "<name>"`); /install needs those indexes again.
 
 Failures answer 200 with {"ok": false, "error": {"kind", "message"}, "log"}: kind `resolve` (no such package or
 version, or no wheel), `install`, `too_big`, `timeout`, `platform` (a lock made elsewhere) or `invalid`. Every request
 but /health needs `Authorization: Bearer <PYTHON_BUILDER_TOKEN>`.
 
-A lock is {"platform", "packages": [{"name", "version", "sha256"}]}, sorted by name; its env is `envs/<envId>/site`
+A lock is {"platform", "packages": [{"name", "version", "sha256", "index"?}]}, sorted by name; its env is `envs/<envId>/site`
 (envId: the lock's hash), with `lock.json` beside it and `used` touched whenever a build or install names it. Envs
 unused for PYTHON_ENV_KEEP_DAYS are removed: their locks rebuild them.
 """
 
+import base64
 import hashlib
 import hmac
 import importlib.metadata
@@ -31,7 +39,9 @@ import sysconfig
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,6 +53,9 @@ MAX_ENV_BYTES = int(float(os.environ.get("PYTHON_ENV_MAX_MB", "1024")) * 1024 * 
 MAX_BUILDS = int(os.environ.get("PYTHON_MAX_BUILDS", "2"))
 KEEP_DAYS = float(os.environ.get("PYTHON_ENV_KEEP_DAYS", "30"))
 BUILD_TIMEOUT_S = float(os.environ.get("PYTHON_BUILD_TIMEOUT_SECONDS", "300"))
+# Indexes over http (a local mirror, the tests' index): only when allowed (M32).
+ALLOW_INSECURE = os.environ.get("PYTHON_ALLOW_INSECURE_INDEXES", "").lower() in ("1", "true", "yes")
+MAX_INDEXES = 5
 # The workflow editor allows 30; a release moved to another platform comes back as its lock, every package pinned.
 MAX_REQUIREMENTS = 500
 MAX_LOG_CHARS = 64 * 1024
@@ -62,6 +75,7 @@ REQUIREMENT = re.compile(
 NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 VERSION = re.compile(r"^[A-Za-z0-9.+!_-]+$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+INDEX_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62})$")
 
 
 def log(event, **fields):
@@ -80,21 +94,102 @@ def scrub(text):
     return re.sub(r"(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", text)[-MAX_LOG_CHARS:]
 
 
-def pip_args():
-    args = [sys.executable, "-m", "pip", "--disable-pip-version-check", "--no-input", "--no-color"]
-    index = ["--index-url", INDEX_URL]
-    host = urllib.parse.urlsplit(INDEX_URL)
-    if host.scheme == "http" and host.hostname:
-        index += ["--trusted-host", host.hostname]  # an http index someone configured on purpose (a local mirror)
-    return args, index
+PIP = [sys.executable, "-m", "pip", "--disable-pip-version-check", "--no-input", "--no-color"]
 
 
-def pip(args, deadline):
+def check_indexes(raw):
+    """A request's `indexes`, checked: [{name, url, username, password, mode}], or a BuildError `invalid`."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_INDEXES:
+        raise BuildError("invalid", f"Expected indexes: a list of at most {MAX_INDEXES}")
+    indexes = []
+    for item in raw:
+        if not isinstance(item, dict) or not set(item) <= {"name", "url", "username", "password", "mode"}:
+            raise BuildError("invalid", "An index is {name, url, username, password, mode}")
+        name, url, mode = item.get("name"), item.get("url"), item.get("mode")
+        username, password = item.get("username"), item.get("password")
+        if not isinstance(name, str) or not INDEX_NAME.match(name):
+            raise BuildError("invalid", "An index's name is lowercase letters, digits, - and _")
+        if mode not in ("primary", "extra"):
+            raise BuildError("invalid", f"Index {name}: mode is primary or extra")
+        for value in (username, password):
+            if value is not None and (not isinstance(value, str) or not value or len(value) > 4096):
+                raise BuildError("invalid", f"Index {name}: a username or password that isn't text")
+        if password is not None and username is None:
+            raise BuildError("invalid", f"Index {name}: a password needs a username")
+        parts = urllib.parse.urlsplit(url) if isinstance(url, str) and len(url) <= 2048 else None
+        if (
+            parts is None
+            or parts.scheme not in ("https", "http")
+            or not parts.hostname
+            or parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+        ):
+            raise BuildError("invalid", f"Index {name}: expected an http(s) URL without credentials, query or fragment")
+        if parts.scheme == "http" and not ALLOW_INSECURE:
+            raise BuildError("invalid", f"Index {name}: http isn't allowed here (PYTHON_ALLOW_INSECURE_INDEXES)")
+        indexes.append({"name": name, "url": url.rstrip("/"), "username": username, "password": password, "mode": mode})
+    if len({i["name"] for i in indexes}) != len(indexes):
+        raise BuildError("invalid", "Two indexes have the same name")
+    if sum(1 for i in indexes if i["mode"] == "primary") > 1:
+        raise BuildError("invalid", "At most one index replaces the default one (primary)")
+    return indexes
+
+
+def with_auth(index):
+    """The index's URL with its credentials in it, for pip's environment only."""
+    if index["username"] is None:
+        return index["url"]
+    parts = urllib.parse.urlsplit(index["url"])
+    auth = urllib.parse.quote(index["username"], safe="")
+    if index["password"] is not None:
+        auth += ":" + urllib.parse.quote(index["password"], safe="")
+    return urllib.parse.urlunsplit((parts.scheme, f"{auth}@{parts.netloc}", parts.path, "", ""))
+
+
+def index_env(main, extras):
+    """pip's index settings as environment variables (a process's environment, unlike its command line, isn't
+    readable by other users): `main` an index or None for the default, then the extra ones."""
+    urls = [INDEX_URL if main is None else main["url"], *(i["url"] for i in extras)]
+    env = {"PIP_INDEX_URL": INDEX_URL if main is None else with_auth(main)}
+    if extras:
+        env["PIP_EXTRA_INDEX_URL"] = " ".join(with_auth(i) for i in extras)
+    # An http index someone configured on purpose (a local mirror).
+    trusted = sorted({urllib.parse.urlsplit(u).hostname for u in urls if urllib.parse.urlsplit(u).scheme == "http"})
+    if trusted:
+        env["PIP_TRUSTED_HOST"] = " ".join(h for h in trusted if h)
+    return env
+
+
+def resolve_env(indexes):
+    primary = next((i for i in indexes if i["mode"] == "primary"), None)
+    return index_env(primary, [i for i in indexes if i["mode"] == "extra"])
+
+
+def install_env(lock, indexes):
+    """The indexes a lock's packages came from (each pinned by its hash, so one pip call may search them all)."""
+    by_name = {i["name"]: i for i in indexes}
+    named = []
+    for p in lock["packages"]:
+        if "index" in p:
+            if p["index"] not in by_name:
+                raise BuildError("invalid", f"The lock needs the package index {p['index']}, which wasn't sent")
+            if by_name[p["index"]] not in named:
+                named.append(by_name[p["index"]])
+    if any("index" not in p for p in lock["packages"]) or not named:
+        return index_env(None, named)
+    return index_env(named[0], named[1:])
+
+
+def pip(args, deadline, env=None):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise BuildError("timeout", f"The build took longer than {BUILD_TIMEOUT_S:.0f} s")
     try:
-        done = subprocess.run(args, capture_output=True, text=True, timeout=remaining, env=pip_env())
+        done = subprocess.run(args, capture_output=True, text=True, timeout=remaining, env={**pip_env(), **(env or {})})
     except subprocess.TimeoutExpired as exc:
         output = (exc.stdout or "") + (exc.stderr or "")
         if isinstance(output, bytes):
@@ -108,20 +203,20 @@ def pip_env():
     return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/tmp", "PIP_CACHE_DIR": "/tmp/pip-cache", "LANG": "C.UTF-8"}
 
 
-def resolve(requirements, deadline):
-    """The requirements as a lock: every package pip would install, its version and its wheel's hash."""
-    base, index = pip_args()
+def resolve(requirements, deadline, indexes=()):
+    """The requirements as a lock: every package pip would install, its version, its wheel's hash and, for one from
+    a named index, that index."""
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "report.json")
         code, output = pip(
-            base
+            PIP
             + ["install", "--dry-run", "--ignore-installed", "--only-binary", ":all:", "--report", report, "--quiet"]
-            + index
             + requirements,  # none starts with "-" (checked): not taken for options
             deadline,
+            resolve_env(indexes),
         )
         if code != 0:
-            raise BuildError("resolve", first_error(output) or "pip couldn't resolve the packages", output)
+            raise BuildError("resolve", index_refusal(indexes, deadline) or first_error(output) or "pip couldn't resolve the packages", output)
         with open(report) as f:
             data = json.load(f)
     packages = []
@@ -136,7 +231,85 @@ def resolve(requirements, deadline):
             raise BuildError("resolve", f"The index gave no sha256 for {item['metadata']['name']}", output)
         packages.append({"name": item["metadata"]["name"], "version": item["metadata"]["version"], "sha256": sha})
     packages.sort(key=lambda p: normalize(p["name"]))
+    attribute(packages, indexes, deadline)
     return {"platform": PLATFORM, "packages": packages}, output
+
+
+def attribute(packages, indexes, deadline):
+    """Each package's index, when it's a named one: with a primary index only, all of them; else the named index
+    whose page for the package lists its file's hash (the default index's packages have none)."""
+    if not indexes:
+        return
+    primary = next((i for i in indexes if i["mode"] == "primary"), None)
+    extras = [i for i in indexes if i["mode"] == "extra"]
+    for p in packages:
+        found = None
+        for index in extras:
+            if p["sha256"] in index_page(index, p["name"], deadline):
+                found = index
+                break
+        if found is None:
+            found = primary
+        if found is not None:
+            p["index"] = found["name"]
+
+
+def index_request(index, url, deadline):
+    request = urllib.request.Request(url, headers={"Accept": "text/html", "User-Agent": "ow-python-builder"})
+    if index["username"] is not None:
+        token = f"{index['username']}:{index['password'] or ''}".encode()
+        request.add_header("Authorization", "Basic " + base64.b64encode(token).decode())
+    timeout = max(1, min(30, deadline - time.monotonic()))
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
+def index_page(index, name, deadline):
+    """The index's simple page for a package (PEP 503), or "" when it has none."""
+    try:
+        with index_request(index, f"{index['url']}/{normalize(name)}/", deadline) as res:
+            return res.read(8 * 1024 * 1024).decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, ValueError):
+        return ""
+
+
+def probe(index, deadline):
+    """The index's root page, signed in: (ok, status, message) for Test and for a failed build."""
+    try:
+        with index_request(index, index["url"] + "/", deadline) as res:
+            status = res.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, None, f"Couldn't reach the index: {getattr(exc, 'reason', exc)}"
+    if status in (401, 403):
+        if index["username"] is None:
+            return False, status, "The index wants a sign-in: add a username and password"
+        return False, status, "The index refused the sign-in: check the username and password"
+    if status >= 400 and status != 404:
+        return False, status, f"The index answered {status}"
+    # 404: signed in, but its root lists nothing (some private indexes): packages' pages still answer.
+    return True, status, None
+
+
+def index_refusal(indexes, deadline):
+    """When a build fails: a named index that refuses its sign-in or can't be reached says so (pip, quiet, often
+    only says it found nothing)."""
+    for index in indexes:
+        ok, _status, message = probe(index, min(deadline, time.monotonic() + 20))
+        if not ok:
+            return f"Package index {index['name']}: {message[0].lower()}{message[1:]}"
+    return None
+
+
+def hide(text, body):
+    """The text without any password a request's indexes carry (pip may echo one, decoded or not)."""
+    raw = body.get("indexes") if isinstance(body.get("indexes"), list) else [body.get("index")]
+    for index in raw:
+        password = index.get("password") if isinstance(index, dict) else None
+        if isinstance(password, str) and len(password) >= 3:
+            for form in {password, urllib.parse.quote(password, safe="")}:
+                text = text.replace(form, "***")
+    return text
 
 
 def first_error(output):
@@ -165,7 +338,8 @@ def check_lock(lock):
     for p in packages:
         if not (
             isinstance(p, dict)
-            and set(p) == {"name", "version", "sha256"}
+            and {"name", "version", "sha256"} <= set(p) <= {"name", "version", "sha256", "index"}
+            and ("index" not in p or (isinstance(p["index"], str) and INDEX_NAME.match(p["index"])))
             and isinstance(p["name"], str)
             and NAME.match(p["name"])
             and isinstance(p["version"], str)
@@ -228,7 +402,7 @@ def cached(lock):
     return None if size is None else (eid, size)
 
 
-def install(lock, deadline):
+def install(lock, deadline, indexes=()):
     """The lock's env on the volume (installed unless it's there): (envId, size, cached, pip's output)."""
     eid = env_id(lock)
     final = os.path.join(ENVS, eid)
@@ -236,7 +410,7 @@ def install(lock, deadline):
         size = installed(eid)
         if size is not None:
             return eid, size, True, ""
-        base, index = pip_args()
+        env = install_env(lock, indexes)
         tmp = tempfile.mkdtemp(prefix=".tmp-", dir=ENVS)
         try:
             output = ""
@@ -247,15 +421,15 @@ def install(lock, deadline):
                     for p in lock["packages"]:
                         f.write(f"{p['name']}=={p['version']} --hash=sha256:{p['sha256']}\n")
                 code, output = pip(
-                    base
+                    PIP
                     + ["install", "--no-deps", "--require-hashes", "--only-binary", ":all:", "--target", site, "--quiet"]
-                    + index
                     + ["-r", reqs],
                     deadline,
+                    env,
                 )
                 os.unlink(reqs)
                 if code != 0:
-                    raise BuildError("install", first_error(output) or "pip couldn't install the packages", output)
+                    raise BuildError("install", index_refusal(indexes, deadline) or first_error(output) or "pip couldn't install the packages", output)
             else:
                 os.makedirs(site)
             size = dir_size(site)
@@ -331,6 +505,7 @@ class Handler(BaseHTTPRequestHandler):
         output = ""
         try:
             lock = None
+            indexes = check_indexes(body.get("indexes"))
             if self.path == "/install":
                 lock = check_lock(body.get("lock"))
                 there = cached(lock)
@@ -341,18 +516,18 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 deadline = time.monotonic() + BUILD_TIMEOUT_S
                 if self.path == "/build":
-                    lock, output = resolve([r.strip() for r in body["requirements"]], deadline)
-                eid, size, was_cached, install_output = install(lock, deadline)
+                    lock, output = resolve([r.strip() for r in body["requirements"]], deadline, indexes)
+                eid, size, was_cached, install_output = install(lock, deadline, indexes)
             finally:
                 builds.release()
             output += install_output
-            answer = {"ok": True, "envId": eid, "sizeBytes": size, "cached": was_cached, "log": scrub(output)}
+            answer = {"ok": True, "envId": eid, "sizeBytes": size, "cached": was_cached, "log": hide(scrub(output), body)}
             if self.path == "/build":
                 answer["lock"] = lock
             return answer
         except BuildError as exc:
             output += exc.output
-            return {"ok": False, "error": {"kind": exc.kind, "message": scrub(str(exc))}, "log": scrub(output)}
+            return {"ok": False, "error": {"kind": exc.kind, "message": hide(scrub(str(exc)), body)}, "log": hide(scrub(output), body)}
         except OSError as exc:  # the volume (full, not writable)
             return {
                 "ok": False,
@@ -386,8 +561,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
         self.send_json(HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "platform": PLATFORM, "pip": PIP_VERSION})
 
+    def check_index(self, body):
+        """POST /check-index: the index's root page, signed in; what its answer means for the Settings page."""
+        try:
+            index = check_indexes([body.get("index")])[0]
+        except BuildError as exc:
+            return self.refuse(HTTPStatus.BAD_REQUEST, str(exc))
+        ok, status, message = probe(index, time.monotonic() + 20)
+        answer = {"ok": ok, "status": status}
+        if message:
+            answer["message"] = hide(scrub(message), body)
+        return self.send_json(HTTPStatus.OK, answer)
+
     def do_POST(self):
-        if self.path not in ("/build", "/install"):
+        if self.path not in ("/build", "/install", "/check-index"):
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
         if not self.authorized():
             return self.refuse(HTTPStatus.UNAUTHORIZED, "A valid bearer token is required")
@@ -398,6 +585,8 @@ class Handler(BaseHTTPRequestHandler):
             body = None
         if not isinstance(body, dict):
             return self.refuse(HTTPStatus.BAD_REQUEST, "Send a JSON object of at most 1 MB")
+        if self.path == "/check-index":
+            return self.check_index(body)
         if self.path == "/build":
             requirements = body.get("requirements")
             if (

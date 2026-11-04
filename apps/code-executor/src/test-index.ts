@@ -111,8 +111,17 @@ function zip(files: [string, Buffer][]): Buffer {
   return Buffer.concat([...locals, directory, end])
 }
 
-/** Serves `packages` as a simple index on a random port, on every interface (the builder's container comes in). */
-export async function startTestIndex(packages: TestPackage[]): Promise<TestIndex> {
+/**
+ * Serves `packages` as a simple index on a random port, on every interface (the builder's container comes in).
+ * With `auth` (M32), every request needs that HTTP basic sign-in (401 without it, 403 with another).
+ */
+export async function startTestIndex(
+  packages: TestPackage[],
+  opts: { auth?: { username: string; password: string } } = {},
+): Promise<TestIndex> {
+  const expected = opts.auth
+    ? `Basic ${Buffer.from(`${opts.auth.username}:${opts.auth.password}`).toString('base64')}`
+    : null
   const files = new Map<string, Buffer>()
   const links = new Map<string, string[]>()
   const delays = new Map<string, number>()
@@ -129,6 +138,11 @@ export async function startTestIndex(packages: TestPackage[]): Promise<TestIndex
     if (pkg.delayMs) delays.set(normalize(pkg.name), pkg.delayMs)
   }
   const server: Server = createServer((req, res) => {
+    if (expected && req.headers.authorization !== expected) {
+      res.writeHead(req.headers.authorization ? 403 : 401, { 'www-authenticate': 'Basic realm="test index"' })
+      res.end()
+      return
+    }
     const path = decodeURIComponent((req.url ?? '/').split('?')[0]!)
     const simple = /^\/simple\/([^/]+)\/?$/.exec(path)
     if (simple && links.has(normalize(simple[1]!))) {
@@ -139,6 +153,13 @@ export async function startTestIndex(packages: TestPackage[]): Promise<TestIndex
         res.writeHead(200, { 'content-type': 'text/html' })
         res.end(`<!doctype html><html><body>${links.get(name)!.join('<br>')}</body></html>`)
       }, delay)
+      return
+    }
+    if (path === '/simple/' || path === '/simple') {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end(
+        `<!doctype html><html><body>${[...links.keys()].map((n) => `<a href="/simple/${n}/">${n}</a>`).join('')}</body></html>`,
+      )
       return
     }
     const file = /^\/files\/([^/]+)$/.exec(path)
