@@ -5,6 +5,7 @@ import { Blocks, RotateCcw } from 'lucide-react'
 import { useContext, useEffect, useRef, useState } from 'react'
 import { EditingContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
+import { useContentHeights } from '../runtime/content-heights'
 import { fetchBundle, type MountedFrame, mountComponentFrame } from '../runtime/frame-mount'
 import { useAppHostContext, useAppHostState, useAppScope } from '../runtime/react'
 
@@ -132,6 +133,18 @@ function CustomFrame({
   // component be used until the pointer leaves it.
   const editing = useContext(EditingContext)
   const [using, setUsing] = useState(false)
+  // Auto height (M33): the content's height, as the frame reports it, goes to the grid while Height is Auto.
+  const heightMode = useAppHostState((s) => s.values[`${scope}${name}.heightMode`])
+  const auto = (heightMode ?? (iface.autoHeight ? 'auto' : 'fixed')) === 'auto'
+  const autoRef = useRef(auto)
+  autoRef.current = auto
+  const lastPx = useRef<number | null>(null)
+  const setContentHeight = useContentHeights((s) => s.set)
+  const heightKey = `${scope}${name}`
+  useEffect(() => {
+    setContentHeight(heightKey, auto ? lastPx.current : null)
+  }, [auto, heightKey, setContentHeight])
+  useEffect(() => () => setContentHeight(heightKey, null), [heightKey, setContentHeight])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the frame is made once per release and component (its key); props follow below.
   useEffect(() => {
@@ -161,6 +174,10 @@ function CustomFrame({
       switch (message.type) {
         case 'ready':
           setStatus({ kind: 'ready' })
+          return
+        case 'height':
+          lastPx.current = message.px
+          if (autoRef.current) setContentHeight(heightKey, message.px)
           return
         case 'pong':
           lastPong = performance.now()

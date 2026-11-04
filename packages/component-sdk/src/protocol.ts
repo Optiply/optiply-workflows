@@ -52,3 +52,5 @@ export type FromFrame =
   /** An error the component didn't catch outside rendering (an event handler, a promise): for the app's console. */
   | { type: 'log'; level: 'error' | 'warn'; message: string }
   | { type: 'pong'; n: number }
+  /** The content's height in CSS pixels (M33), when it changes: the app grows a component on Auto to it. */
+  | { type: 'height'; px: number }

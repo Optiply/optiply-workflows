@@ -64,6 +64,50 @@ function applyStyle(css: string | null, theme: { mode: string; tokens: Record<st
   document.documentElement.dataset.theme = theme.mode
 }
 
+/** The most a frame reports (M33): a component can't grow an app beyond this. */
+const MAX_REPORTED_HEIGHT = 4000
+
+/**
+ * Reports the content's height whenever it changes, at most once a frame (M33): how far down what the component
+ * rendered reaches (the root itself fills the frame, so its own size says nothing). The page uses it for a
+ * component on Auto height and ignores it otherwise. One that fills its frame reports the frame's height: stable.
+ */
+function watchHeight(root: HTMLElement, report: (px: number) => void) {
+  let last = -1
+  let pending = false
+  const measure = () => {
+    pending = false
+    const top = root.getBoundingClientRect().top - root.scrollTop
+    let bottom = 0
+    for (const child of Array.from(root.children)) {
+      const margin = Number.parseFloat(getComputedStyle(child).marginBottom) || 0
+      bottom = Math.max(bottom, child.getBoundingClientRect().bottom + margin - top)
+    }
+    const px = Math.min(MAX_REPORTED_HEIGHT, Math.ceil(bottom))
+    if (px !== last) {
+      last = px
+      report(px)
+    }
+  }
+  const schedule = () => {
+    if (pending) return
+    pending = true
+    requestAnimationFrame(measure)
+  }
+  const sizes = new ResizeObserver(schedule)
+  const watchChildren = () => {
+    sizes.disconnect()
+    sizes.observe(root)
+    for (const child of Array.from(root.children)) sizes.observe(child)
+  }
+  new MutationObserver(() => {
+    watchChildren()
+    schedule()
+  }).observe(root, { childList: true, subtree: true, characterData: true, attributes: true })
+  watchChildren()
+  schedule()
+}
+
 let connected = false
 window.addEventListener('message', (event) => {
   // Only the page holding this frame, only once.
@@ -82,7 +126,9 @@ window.addEventListener('message', (event) => {
       }
     },
     render(component, bridge: FrameBridge) {
-      const root = ReactDOMClient.createRoot(document.getElementById('root')!)
+      const element = document.getElementById('root')!
+      watchHeight(element, (px) => send({ type: 'height', px }))
+      const root = ReactDOMClient.createRoot(element)
       root.render(
         React.createElement(
           Boundary,
