@@ -29,12 +29,60 @@ app page ◀──GET /api/component-bundles/<hash>.js|css (signed in)──┘
 
 | Variable | Default | What |
 |---|---|---|
-| `NPM_REGISTRY_URL` | `https://registry.npmjs.org/` | The registry dependencies come from. Public packages only: no credentials are sent (private registries are not in M25). |
+| `NPM_REGISTRY_URL` | `https://registry.npmjs.org/` | The registry dependencies come from, unless an admin's registry without a scope replaces it (M33, Settings → Components). |
+| `NPM_ALLOW_INSECURE_REGISTRIES` | off | M33: admin-defined registries over `http` (a local mirror, tests). |
 | `COMPONENT_BUILD_DIR` | `<tmp>/ow-component-builds` | Builds' working directories and npm's download cache (`npm-cache/`). Disposable; a volume only keeps the cache across restarts. |
 
 Fixed limits per build: 120 s for `npm install` (then killed), 200 MB of installed packages, a 5 MB bundle (JS and
 CSS), 2 MB of source in a library, 200 files, 100 components. The image needs `npm` (in `node:24-bookworm-slim`) and
 the server's `esbuild` dependency (its platform binary comes with `pnpm deploy`).
+
+## The CLI (M33)
+
+Developers can work on a library in their own editor with **`ow-components`**, one Node 20+ file the instance
+serves (`GET /api/cli/ow-components.mjs`, no sign-in; the server's build makes it at `dist/cli/ow-components.mjs`).
+The library editor's **Use the CLI** shows the commands for that instance.
+
+```
+curl -O https://workflows.example.com/api/cli/ow-components.mjs
+node ow-components.mjs login https://workflows.example.com      # paste a token from Settings → Access tokens
+node ow-components.mjs init price-widgets                        # or: pull price-widgets
+cd price-widgets && node ../ow-components.mjs dev                # each save: push into the draft, build
+node ../ow-components.mjs push --build --publish 1.2.0 --notes "…"
+node ow-components.mjs push --prebuilt dist/ --slug price-widgets --version 2.0.0   # a bundle built elsewhere
+```
+
+- **The folder** is the Git layout: `library.json` (name, description, components, allowed origins),
+  `package.json` (dependencies), the sources; `.ow-components.json` keeps what it last synced (the draft revision,
+  a hash of the files). Hidden files, `node_modules` and `dist` aren't pushed.
+- **push** saves the folder as the draft, with the revision it last saw: if someone changed the draft since (in the
+  browser), it refuses; `pull` (after keeping your changes) or `push --force`. `--build` prints the build's problems
+  as `file:line:column`. Open library editors follow a push and rebuild their Preview ("Pushed from the CLI by …").
+- **Sign-in:** personal access tokens (Settings → **Access tokens**, every user makes their own; shown once, sha256
+  stored; expiry 30/90/365 days or never). A token acts as its user, with their permissions, on component libraries
+  only (`componentLibraries.*`, `me`, `folders.list`); anything else answers 403; a revoked or expired token, or a
+  disabled user's, 401. `login` keeps the URL and token in `~/.config/ow-components/config.json` (mode 600); in CI
+  set `OW_URL` and `OW_TOKEN`. Admins see and revoke everyone's tokens (Everyone's tokens). What a token does is
+  audited as its user with `via: owpat_xxxxxxxx`; pushes also as `component_library.draft_pushed`.
+
+## Private npm registries (M33)
+
+Admins add registries in **Settings → Components**: one per **scope** (`@acme` → its registry), or one without a
+scope that replaces `NPM_REGISTRY_URL` for every other package. The token is a **secret config var**, its value in
+the **default environment**; a build writes it to its own temporary `.npmrc` (`//host/path/:_authToken=…`, mode
+600), which only npm reads (install scripts never run, so no package code sees it), and npm's log is scrubbed of it.
+The lock keeps tarball URLs, never the token. **Test** asks the registry `/-/whoami` with the token. Libraries need
+nothing: an `@acme/…` dependency resolves from `@acme`'s registry. A token var without a value fails the build's
+install naming it. `NPM_ALLOW_INSECURE_REGISTRIES=true` allows `http://` registries (a local mirror, tests).
+
+## Auto height (M33)
+
+A component may declare **Grows with its content** (`autoHeight` in `library.json`); each instance in an app has
+**Height: auto | fixed** (`heightMode`), its default from the component. On Auto the frame reports how far down what
+the component rendered reaches (at most 4000 px), and the app's grid lays the component out at that many rows,
+moving what's under it (and back up when it shrinks); on Fixed it keeps its rows and its frame scrolls, as before.
+In the app editor's canvas a component keeps its stored height (resize it there for Fixed). A component that fills
+its frame (`height: 100%`) reports the frame's own height: on Auto it stays as it is.
 
 ## What the frame does and doesn't guarantee
 
@@ -61,6 +109,11 @@ the server's `esbuild` dependency (its platform binary comes with `pnpm deploy`)
   registry doesn't have); "npm's output" under it has the rest. Behind a proxy, set `NPM_REGISTRY_URL` to a mirror the
   server can reach.
 - **`spawn npm ENOENT`**: the server's image or host has no `npm` on `PATH`.
+- **A private package answers 401 or 404**: its scope has no registry in Settings → Components, or the token's
+  config var has no value in the default environment (the build says which), or the token can't read that package.
+- **The CLI says "The draft changed"**: someone edited the draft in the browser since the folder last synced: pull
+  (after keeping your changes elsewhere) or `push --force`. **401**: the token is revoked, expired or its user
+  disabled; **403 outside its scope**: tokens only reach component libraries.
 - **"took over 120 s"**: a slow registry or a very large dependency tree; the next build reuses npm's cache.
 - **"The bundle is … MB"**: drop a large dependency, or import only the parts used.
 - **A component shows "stopped responding"**: its code loops or blocks for 10 s; Restart in the box starts it
