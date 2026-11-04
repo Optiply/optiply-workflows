@@ -2010,7 +2010,9 @@ M31 (Git sync's last gaps: GitLab, a GitHub App) is planned in `architecture.md`
 
 ## 15. How to start the next session
 
-**Session 37 (2026-11-04), the user back:** M30's step 5 finished (the Schema Registry, and non-text broker bodies as base64), step 6 (done-when, runbooks) and step 7 (review: 10 fixes, full e2e) committed; `feat/m30-brokers` pushed (`edc78f1`, no PR). M31 started on `feat/m31-git-hosts`: see §14. The user's stack still runs M29 (M30 has migration 0035).
+**Session 37 (2026-11-04), the user back:** M30's step 5 finished (the Schema Registry, and non-text broker bodies as base64), step 6 (done-when, runbooks) and step 7 (review: 10 fixes, full e2e) committed; `feat/m30-brokers` pushed (`edc78f1`, no PR). M31 (GitLab, a GitHub App) built step by step with the user on `feat/m31-git-hosts`, reviewed (10 fixes, `c0c43c5`), pushed, no PR: see §14 and §9z. The user's stack still runs M29: M30 and M31 add migrations 0035 and 0036, so moving it on needs the user's go-ahead.
+
+**Start session 38 with:** (1) whether to migrate the user's Compose stack to M31 (back up the image and database first, as for M23; migrations 0035 and 0036 run on api start); (2) M32 (Python follow-ups: a warm pool per package env, private package indexes, sdists; `architecture.md` §2.35, outline) per the overnight plan's order, planned in §14 as M31 was; (3) the PR plan for M27–M31 (pushed branches, no PRs: CI costs).
 
 
 **Session 36 (2026-11-03), start of the night:** see §14 for where the overnight build stands; the next session reads §14's Progress line first.
