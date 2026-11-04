@@ -71,6 +71,34 @@ Producing from a workflow: a resource query on the Kafka resource, with the topi
 (`{"key": "order-{{ id }}", "value": {{ order }}, "headers": {"kind": "created"}}`, or an array, up to 1,000; `null` as
 a value is a tombstone). It answers each partition's first offset.
 
+## The Schema Registry (Avro and JSON Schema)
+
+A Kafka resource can name a **Schema Registry** speaking Confluent's API (Confluent Cloud, Confluent Platform,
+Redpanda, Karapace). Then:
+
+- **Triggers decode** values in the registry's **wire format** (a zero byte, the schema's 4-byte id, the payload):
+  Avro by the schema (`startTrigger.data` is plain JSON: `bytes` fields as base64, unions as their value), JSON Schema
+  as the JSON after the header. `startTrigger.message.schemaId` names the schema, and Runs shows "· schema 12".
+  Schemas are fetched by id once and kept. A value that can't be decoded (its schema deleted, the registry down, a
+  Protobuf schema) still runs: its bytes as base64 (`message.encoding: 'base64'`) and `message.schemaError` saying why.
+  Values not in the wire format arrive as before (JSON or text).
+- **Produce queries encode** a message that names a **`subject`**, by that subject's latest schema (looked up again
+  after a minute): `{"key": "order-7", "subject": "orders-value", "value": {"id": 7, "sku": "A-7"}}`. An Avro value is
+  checked against the schema first, and a mismatch names the field (`The value doesn't match subject orders-value's
+  schema at id`). Messages without a subject are sent as before; one produce can mix subjects. The subject must
+  exist: register schemas with your usual tools (this doesn't register them).
+
+Setting it up: the resource's settings → Schema Registry: the URL, and for a registry with sign-in its username and
+password (Confluent Cloud: a Schema Registry API key and secret; the password is kept encrypted). A registry on a
+private address needs "Allow a private network address". Saving refuses a username without its password.
+
+| It says | What to do |
+|---|---|
+| `schemaError: Schema registry: Schema not found` | The value's schema was deleted (or another registry wrote it): the run has its bytes as base64. |
+| `Schema registry: Unauthorized` / `HTTP 401` | The registry's username and password (Confluent Cloud: a Schema Registry key, not a cluster key). |
+| `Subject 'orders-value' not found.` (produce) | Register the subject's schema, or fix its name (`<topic>-value` by Confluent's default naming). |
+| `Subject … is PROTOBUF, which isn't encoded here` | Protobuf isn't supported: produce JSON, or use an Avro or JSON Schema subject. |
+
 ## When it fails
 
 The trigger card shows the last error; the same goes to the worker's log (`component: queue`).
@@ -99,6 +127,6 @@ The trigger card shows the last error; the same goes to the worker's log (`compo
 
 ## Not supported
 
-Exactly-once transactions; the Schema Registry (Avro and Protobuf values arrive as text); SSH tunnels to Kafka (brokers
+Exactly-once transactions; Protobuf in the Schema Registry (such values arrive as base64 with a `schemaError`); registering schemas; SSH tunnels to Kafka (brokers
 advertise their own addresses); several messages per run; several workers of this platform sharing one trigger's
 partitions (one consumes at a time; outside consumers in the same group do share them).

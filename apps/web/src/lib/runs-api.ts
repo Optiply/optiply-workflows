@@ -39,6 +39,8 @@ export interface RunQueueMessage {
   offset?: string
   key?: string | null
   attempt?: number
+  /** Kafka (M30): the Schema Registry schema its value was decoded with. */
+  schemaId?: number
   /** RabbitMQ (M30). */
   redelivered?: boolean
   /** Kinesis (M30). */
@@ -61,7 +63,7 @@ export function queueMessageLine(run: Pick<RunView, 'triggerType' | 'input'>): s
   if (run.triggerType === 'sqs')
     return `SQS message ${m.messageId} · ${m.queue?.split('/').pop()}${m.receiveCount && m.receiveCount > 1 ? ` · receive ${m.receiveCount}` : ''}`
   if (run.triggerType === 'kafka')
-    return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+    return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.schemaId ? ` · schema ${m.schemaId}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
   if (run.triggerType === 'kinesis')
     return `Kinesis ${m.stream}/${m.shardId}@${m.sequenceNumber}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
   if (run.triggerType === 'rabbitmq')

@@ -15,15 +15,19 @@ import {
 import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
 import {
   kafkaAvailable,
+  rabbitAvailable,
   s3Available,
   startFakeAws,
   startFakePubSub,
+  startFakeRegistry,
   startFakeServices,
   startTestGraphql,
   startTestIapServer,
   startTestKafka,
+  startTestRabbit,
   startTestS3,
   type TestKafka,
+  type TestRabbit,
   type TestS3,
 } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
@@ -226,6 +230,7 @@ export default async function globalSetup() {
       'm26-retry-dlt',
       'm26-takeover',
       'm26-produced',
+      'm30-avro',
     ])
       await kafka.createTopic(topic)
     process.env.E2E_KAFKA = kafka.plaintext
@@ -238,6 +243,41 @@ export default async function globalSetup() {
       mtls: kafka.mtls,
     })
   }
+  // M30: RabbitMQ in Docker where Docker runs (E2E_RABBIT; specs skip without it); SNS and Kinesis on the fake AWS (the
+  // server trusts the fake's certificate host through SNS_CERT_HOSTS, and its HTTP subscriptions post to the e2e
+  // server's webhooks); a fake Schema Registry with an Avro subject for Kafka. E2E_M30 names the topic and registry.
+  let rabbit: TestRabbit | undefined
+  if (rabbitAvailable()) {
+    rabbit = await startTestRabbit()
+    await rabbit.declare('m30-jobs', { deadLetterQueue: 'm30-jobs-dead' })
+    process.env.E2E_RABBIT = JSON.stringify({
+      host: rabbit.host,
+      port: rabbit.port,
+      username: rabbit.username,
+      password: rabbit.password,
+    })
+  }
+  const m30Topic = aws.sns.createTopic('m30-orders')
+  aws.kinesis.createStream('m30-clicks')
+  const schemaRegistry = await startFakeRegistry()
+  const avroSchemaId = schemaRegistry.register('m30-avro-value', {
+    type: 'record',
+    name: 'Order',
+    fields: [
+      { name: 'id', type: 'long' },
+      { name: 'sku', type: 'string' },
+    ],
+  })
+  process.env.E2E_M30 = JSON.stringify({
+    topicArn: m30Topic,
+    registry: {
+      url: schemaRegistry.url,
+      username: schemaRegistry.username,
+      password: schemaRegistry.password,
+      avroSchemaId,
+    },
+  })
+
   const kafkaPlain = () =>
     kafkaClient({ brokers: [kafka!.plaintext], auth: 'none', tls: false, identity: 'key' }, {})
 
@@ -310,6 +350,17 @@ export default async function globalSetup() {
       return json(got)
     }
     if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
+    // M30: subscribe a webhook to an SNS topic (the fake sends its SubscriptionConfirmation at once), and whether it
+    // confirmed; what an SNS topic was sent; what's left in a RabbitMQ queue (read and acked).
+    if (url.pathname === '/sns/subscribe' && req.method === 'POST') {
+      await aws.sns.subscribe(param('topicArn'), param('endpoint'))
+      return json({})
+    }
+    if (url.pathname === '/sns/confirmed')
+      return json(aws.sns.confirmed(param('topicArn'), param('endpoint')))
+    if (url.pathname === '/sns/messages')
+      return json(aws.sns.messages.filter((m) => m.topicArn === param('topicArn')))
+    if (url.pathname === '/rabbit/drain') return json(await rabbit!.drain(param('queue')))
     if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
       pubsub.redeliver(param('subscription'), param('messageId'))
       return json({})
@@ -388,6 +439,9 @@ export default async function globalSetup() {
     AWS_SERVER_IDENTITY: 'allow',
     AWS_STS_URL: aws.url,
     AWS_SQS_URL: aws.url,
+    AWS_SNS_URL: aws.url,
+    AWS_KINESIS_URL: aws.url,
+    SNS_CERT_HOSTS: new URL(aws.url).host,
     SLACK_API_URL: services.urls.slack,
     HUBSPOT_API_URL: services.urls.hubspot,
     SENDGRID_API_URL: services.urls.sendgrid,
@@ -476,6 +530,8 @@ export default async function globalSetup() {
     await pubsub.close()
     await aws.close()
     await kafka?.stop()
+    await rabbit?.stop()
+    await schemaRegistry.stop()
     await s3?.stop()
     await google.stop()
     await services.stop()
