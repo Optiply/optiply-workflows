@@ -31,6 +31,7 @@ import { GitSettingsPage } from './pages/settings/git'
 import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
+import { PythonSettingsPage } from './pages/settings/python'
 import { UsersPage } from './pages/settings/users'
 import { WorkflowsPage } from './pages/workflows/list'
 
@@ -248,6 +249,11 @@ const gitRoute = createRoute({
   path: '/git',
   component: GitSettingsPage,
 })
+const pythonRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/python',
+  component: PythonSettingsPage,
+})
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -279,6 +285,7 @@ const routeTree = rootRoute.addChildren([
       configVarsRoute,
       apiKeysRoute,
       gitRoute,
+      pythonRoute,
       auditRoute,
     ]),
   ]),
