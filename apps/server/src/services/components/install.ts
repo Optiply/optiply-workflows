@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { type NpmRegistryAccess, npmAuthKey } from './registries'
 
 /**
  * Installs a component library's npm dependencies (M25, architecture §2.28) into a build directory: `npm install`
@@ -30,6 +31,11 @@ export async function installDependencies(
     dependencies: Record<string, string>
     lock: string | null
     registry: string
+    /**
+     * The admins' registries (M33): per scope, or one for everything else (instead of `registry`), with their
+     * tokens. They go into the build's own `.npmrc` (only npm reads it; no package code runs: no install scripts).
+     */
+    registries?: NpmRegistryAccess[]
     /** npm's download cache, shared by builds. */
     cacheDir: string
     limits?: InstallLimits
@@ -47,14 +53,25 @@ export async function installDependencies(
   await mkdir(home, { recursive: true })
   const npmrc = join(home, '.npmrc')
   const globalrc = join(home, 'global.npmrc')
-  await writeFile(npmrc, '')
+  let registry = opts.registry
+  const lines: string[] = []
+  const tokens: string[] = []
+  for (const r of opts.registries ?? []) {
+    if (r.scope) lines.push(`${r.scope}:registry=${r.url}`)
+    else registry = r.url
+    if (r.token) {
+      lines.push(`${npmAuthKey(r.url)}:_authToken=${r.token}`)
+      tokens.push(r.token)
+    }
+  }
+  await writeFile(npmrc, lines.length ? `${lines.join('\n')}\n` : '', { mode: 0o600 })
   await writeFile(globalrc, '')
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: home,
     npm_config_userconfig: npmrc,
     npm_config_globalconfig: globalrc,
-    npm_config_registry: opts.registry,
+    npm_config_registry: registry,
     npm_config_cache: opts.cacheDir,
     npm_config_ignore_scripts: 'true',
     npm_config_audit: 'false',
@@ -64,6 +81,8 @@ export async function installDependencies(
     npm_config_loglevel: 'warn',
   }
   const run = await runNpm(['install'], dir, env, limits.timeoutMs)
+  // npm doesn't print tokens; if a URL or error ever carried one, it's not kept.
+  for (const token of tokens) run.log = run.log.split(token).join('***')
   if (run.timedOut) {
     return {
       ok: false,

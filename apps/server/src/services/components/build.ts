@@ -8,11 +8,13 @@ import {
   PROVIDED_PACKAGES,
   validateComponentLibrary,
 } from '@ow/app-definition'
+import type { Keyring } from '@ow/crypto'
 import { componentBundles, type Db } from '@ow/db'
 import { canonicalJson } from '@ow/definition'
 import { eq, sql } from 'drizzle-orm'
 import { build, type Message, type Plugin } from 'esbuild'
 import { DEFAULT_INSTALL_LIMITS, type InstallLimits, installDependencies } from './install'
+import { type NpmRegistryAccess, npmRegistryAccess } from './registries'
 
 /**
  * Builds a component library (M25, architecture §2.28): its npm dependencies installed (`install.ts`), then every
@@ -29,6 +31,10 @@ export const MAX_BUNDLE_BYTES = 5 * 1024 * 1024
 export interface ComponentBuildConfig {
   /** The npm registry, e.g. `https://registry.npmjs.org/`. */
   registry: string
+  /** For the admins' npm registries' tokens (M33). */
+  keyring?: Keyring
+  /** The registries, as `buildComponentLibrary` read them for this build. */
+  registries?: NpmRegistryAccess[]
   /** Where builds and npm's download cache go. */
   workDir: string
   limits?: InstallLimits
@@ -124,11 +130,24 @@ export async function buildComponentLibrary(
   if (cached)
     return { ok: true, bundleHash: cached.hash, lock: cached.lock, sizeBytes: cached.sizeBytes, cached: true }
 
+  // The admins' npm registries (M33), only for a build that installs something.
+  let registries: NpmRegistryAccess[] = []
+  if (Object.keys(def.dependencies).length) {
+    const access = await npmRegistryAccess(db, config.keyring)
+    if (!access.ok) {
+      return {
+        ok: false,
+        stage: 'install',
+        problems: [{ file: 'package.json', line: null, column: null, message: access.message }],
+      }
+    }
+    registries = access.registries
+  }
   return gate.run(async () => {
     await mkdir(config.workDir, { recursive: true })
     const dir = await realpath(await mkdtemp(join(config.workDir, 'build-')))
     try {
-      const outcome = await buildIn(dir, config, def, lock)
+      const outcome = await buildIn(dir, { ...config, registries }, def, lock)
       if (!outcome.ok) return outcome
       const bundleHash = bundleHashOf(outcome.js, outcome.css)
       // Kept under the lock the build ended with: the draft's next build starts from that lock (the one it started
@@ -176,6 +195,7 @@ async function buildIn(
     dependencies: def.dependencies,
     lock,
     registry: config.registry,
+    registries: config.registries,
     cacheDir: join(config.workDir, 'npm-cache'),
     limits: config.limits ?? DEFAULT_INSTALL_LIMITS,
   })
@@ -301,9 +321,14 @@ function confineTo(dir: string): Plugin {
 export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 /** The build settings from the server's config. */
-export function componentBuildConfig(config: { NPM_REGISTRY_URL: string; COMPONENT_BUILD_DIR?: string }) {
+export function componentBuildConfig(config: {
+  NPM_REGISTRY_URL: string
+  COMPONENT_BUILD_DIR?: string
+  keyring?: Keyring
+}): ComponentBuildConfig {
   return {
     registry: config.NPM_REGISTRY_URL,
+    keyring: config.keyring,
     workDir: config.COMPONENT_BUILD_DIR ?? join(tmpdir(), 'ow-component-builds'),
   }
 }

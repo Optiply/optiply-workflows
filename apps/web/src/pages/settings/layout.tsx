@@ -14,6 +14,7 @@ const TABS = [
   { to: '/settings/access-tokens', label: 'Access tokens', adminOnly: false },
   { to: '/settings/git', label: 'Git', adminOnly: true },
   { to: '/settings/python', label: 'Python', adminOnly: true },
+  { to: '/settings/components', label: 'Components', adminOnly: true },
   { to: '/settings/audit', label: 'Audit log', adminOnly: true },
 ] as const
 

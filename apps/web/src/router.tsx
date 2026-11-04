@@ -26,6 +26,7 @@ import { RunsPage } from './pages/runs/list'
 import { AccessTokensPage } from './pages/settings/access-tokens'
 import { ApiKeysPage } from './pages/settings/api-keys'
 import { AuditPage } from './pages/settings/audit'
+import { ComponentsSettingsPage } from './pages/settings/components'
 import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
 import { GitSettingsPage } from './pages/settings/git'
@@ -260,6 +261,11 @@ const pythonRoute = createRoute({
   path: '/python',
   component: PythonSettingsPage,
 })
+const componentsSettingsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/components',
+  component: ComponentsSettingsPage,
+})
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -293,6 +299,7 @@ const routeTree = rootRoute.addChildren([
       accessTokensRoute,
       gitRoute,
       pythonRoute,
+      componentsSettingsRoute,
       auditRoute,
     ]),
   ]),

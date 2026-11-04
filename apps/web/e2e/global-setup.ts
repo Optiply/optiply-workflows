@@ -45,6 +45,8 @@ export const E2E_EMAIL = 'e2e@optiply.nl'
 export const E2E_PASSWORD = 'e2e-password-not-secret'
 /** The e2e's private package index's password (M32; username `ci`). */
 const E2E_PRIVATE_INDEX_PASSWORD = 'private-index-password-not-secret'
+/** The e2e's private npm registry's token (M33). */
+const E2E_NPM_PRIVATE_TOKEN = 'npm-token-not-secret'
 /** A second person, for what differs between people (their own OAuth accounts). Same password. */
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 /** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
@@ -447,6 +449,19 @@ export default async function globalSetup() {
       files: { 'index.js': 'module.exports = (n) => "#" + String(n).padStart(3, "0")' },
     },
   ])
+  // M33: a private registry for the @acme scope, with a token. Specs read E2E_NPM_PRIVATE_URL and _TOKEN.
+  const privateNpm = await startTestRegistry(
+    [
+      {
+        name: '@acme/greeting',
+        version: '1.0.0',
+        files: { 'index.js': 'module.exports = (name) => "Hello from @acme, " + name' },
+      },
+    ],
+    { token: E2E_NPM_PRIVATE_TOKEN },
+  )
+  process.env.E2E_NPM_PRIVATE_URL = privateNpm.url
+  process.env.E2E_NPM_PRIVATE_TOKEN = E2E_NPM_PRIVATE_TOKEN
   const origins = await Promise.all(
     ['allowed', 'other'].map(async (which) => {
       const origin = createServer((_req, res) => {
@@ -490,6 +505,7 @@ export default async function globalSetup() {
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
     NPM_REGISTRY_URL: registry.url,
+    NPM_ALLOW_INSECURE_REGISTRIES: 'true',
     COMPONENT_BUILD_DIR: componentBuilds,
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
@@ -600,6 +616,7 @@ export default async function globalSetup() {
     await services.stop()
     await graphql.stop()
     await registry.stop()
+    await privateNpm.stop()
     for (const origin of origins) await new Promise((r) => origin.close(r))
     rmSync(componentBuilds, { recursive: true, force: true })
     rmSync(gitRoot, { recursive: true, force: true })

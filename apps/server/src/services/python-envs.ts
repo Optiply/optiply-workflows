@@ -16,7 +16,7 @@ import { BlockFailure, type PythonEnvProvider } from '@ow/engine'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { recordAudit } from '../audit'
 import type { Config } from '../config'
-import { decryptForRow } from './secrets'
+import { defaultEnvSecret as sharedDefaultEnvSecret } from './default-env-secrets'
 
 /**
  * Workflows' Python packages (M23, docs/architecture.md §2.26): the package builder (`python-builder`, from
@@ -180,23 +180,8 @@ export async function builderIndex(db: Db, row: PythonIndex): Promise<BuilderInd
   return index
 }
 
-/** A secret config var's value in the default environment; null when it isn't one, or has none. */
 async function defaultEnvSecret(db: Db, name: string): Promise<string | null> {
-  if (!keyring) return null
-  const [row] = await db
-    .select({ isSecret: configVars.isSecret, value: configVarValues })
-    .from(configVars)
-    .innerJoin(configVarValues, eq(configVarValues.configVarId, configVars.id))
-    .innerJoin(
-      environments,
-      and(eq(environments.id, configVarValues.environmentId), eq(environments.isDefault, true)),
-    )
-    .where(eq(configVars.name, name))
-  if (!row?.isSecret || !row.value.valueEncrypted) return null
-  const plain = String(
-    decryptForRow<string>(keyring, 'config_var_values', row.value, row.value.valueEncrypted),
-  )
-  return plain || null
+  return keyring ? sharedDefaultEnvSecret(db, keyring, name) : null
 }
 
 /** The indexes a lock's packages name (M32), as the builder takes them. */

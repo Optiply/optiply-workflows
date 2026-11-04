@@ -25,12 +25,21 @@ export interface TestPackage {
 export interface TestRegistry {
   url: string
   requests: string[]
+  /** The Authorization header of each request (M33), in order. */
+  authorizations: (string | undefined)[]
   stop(): Promise<void>
 }
 
 const run = promisify(execFile)
 
-export async function startTestRegistry(packages: TestPackage[]): Promise<TestRegistry> {
+/**
+ * With `token` (M33), every request needs `Authorization: Bearer <token>` (401 without it, 403 with another), and
+ * `/-/whoami` answers `{ username: 'ci' }`, as a private registry does.
+ */
+export async function startTestRegistry(
+  packages: TestPackage[],
+  opts: { token?: string } = {},
+): Promise<TestRegistry> {
   const work = await mkdtemp(join(tmpdir(), 'ow-npm-registry-'))
   const tarballs = new Map<string, Buffer>()
   const packuments = new Map<
@@ -87,9 +96,21 @@ export async function startTestRegistry(packages: TestPackage[]): Promise<TestRe
   }
 
   const requests: string[] = []
+  const authorizations: (string | undefined)[] = []
   server.on('request', (req, res) => {
     const path = decodeURIComponent((req.url ?? '/').split('?')[0]!)
     requests.push(path)
+    authorizations.push(req.headers.authorization)
+    if (opts.token && req.headers.authorization !== `Bearer ${opts.token}`) {
+      res.writeHead(req.headers.authorization ? 403 : 401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Unauthorized' }))
+      return
+    }
+    if (path === '/-/whoami') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ username: 'ci' }))
+      return
+    }
     const tgz = tarballs.get(path)
     if (tgz) {
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': tgz.length })
@@ -109,6 +130,7 @@ export async function startTestRegistry(packages: TestPackage[]): Promise<TestRe
   return {
     url,
     requests,
+    authorizations,
     async stop() {
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await rm(work, { recursive: true, force: true })

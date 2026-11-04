@@ -14,6 +14,7 @@ import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
 import { libraryQueriesRouter } from './routers/library-queries'
 import { modulesRouter } from './routers/modules'
+import { npmRegistriesRouter } from './routers/npm-registries'
 import { permissionsRouter } from './routers/permissions'
 import { pythonIndexesRouter } from './routers/python-indexes'
 import { releasesRouter } from './routers/releases'
@@ -48,6 +49,7 @@ export const appRouter = router({
   resources: resourcesRouter,
   database: databaseRouter,
   folders: foldersRouter,
+  npmRegistries: npmRegistriesRouter,
   permissions: permissionsRouter,
   tasks: tasksRouter,
   configVars: configVarsRouter,

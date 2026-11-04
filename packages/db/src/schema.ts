@@ -1277,6 +1277,27 @@ export const personalAccessTokens = pgTable(
 )
 
 export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect
+
+/**
+ * npm registries an admin defines for component libraries' builds (M33, docs/architecture.md §2.36): one per scope
+ * (`@acme`), or one without a scope replacing NPM_REGISTRY_URL. The token is a secret config var's name, read in the
+ * default environment by the build. Not in Git.
+ */
+export const npmRegistries = pgTable(
+  'npm_registries',
+  {
+    id: id(),
+    /** `@acme`, or null for every package without a registry of its own. */
+    scope: text(),
+    url: text().notNull(),
+    tokenConfigVar: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique('npm_registries_scope_uq').on(t.scope).nullsNotDistinct()],
+)
+
+export type NpmRegistry = typeof npmRegistries.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect

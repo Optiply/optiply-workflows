@@ -596,6 +596,7 @@ async function deployObject(
             componentBuildConfig({
               NPM_REGISTRY_URL: config.NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY,
               COMPONENT_BUILD_DIR: config.COMPONENT_BUILD_DIR,
+              keyring: config.keyring,
             }),
             {
               ...meta,

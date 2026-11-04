@@ -95,6 +95,8 @@ const ConfigSchema = z
      * scripts and without the server's own npm settings.
      */
     NPM_REGISTRY_URL: z.string().url().default('https://registry.npmjs.org/'),
+    /** Admin-defined npm registries (M33) over http, for a local mirror or tests. */
+    NPM_ALLOW_INSECURE_REGISTRIES: bool,
     /** Where component library builds and npm's download cache go; default a directory under the system's tmp. */
     COMPONENT_BUILD_DIR: z.string().min(1).optional(),
     /**
