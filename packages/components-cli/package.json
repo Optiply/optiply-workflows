@@ -1,0 +1,19 @@
+{
+  "name": "@ow/components-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ow-components: work on Optiply Workflows component libraries from a folder (M33)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ow/app-definition": "workspace:*",
+    "@ow/definition": "workspace:*",
+    "@ow/git-format": "workspace:*",
+    "superjson": "2.2.6"
+  }
+}

@@ -30,6 +30,7 @@ import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
+import { cliApi } from './cli'
 import { collabApi, MAX_COLLAB_MESSAGE_BYTES } from './collab'
 import { componentBundlesApi } from './component-bundles'
 import { databaseApi } from './database'
@@ -118,6 +119,7 @@ export async function buildApp(deps: {
   await app.register(runsApi, { prefix: '/api/v1', db, events, publicUrl: config.PUBLIC_URL })
   await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(componentBundlesApi, { db })
+  await app.register(cliApi)
   await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
   await app.register(webhooksApi, {
     prefix: '/api/v1',

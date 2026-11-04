@@ -38,6 +38,19 @@ await build({
   ],
 })
 
+// The components CLI (M33): one self-contained file (its npm dependencies bundled in), served at
+// /api/cli/ow-components.mjs.
+await build({
+  entryPoints: ['../../packages/components-cli/src/main.ts'],
+  outfile: 'dist/cli/ow-components.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  banner: { js: '#!/usr/bin/env node' },
+  logLevel: 'warning',
+})
+
 const undeclared = [...externals].filter((name) => !existsSync(`node_modules/${name}/package.json`))
 if (undeclared.length) {
   console.error(
