@@ -36,6 +36,7 @@ export const gitWebhookApi: FastifyPluginAsync<{ db: Db; config: Config; deploye
       return reply.code(check.status).send({ error: { code: check.code, message: check.message } })
     if (check.event === 'ping') return { ok: true }
     if (check.event === 'other') return { ignored: `${check.name} events don't deploy` }
+    if (check.event === 'elsewhere') return { ignored: `Pushes to ${check.repo} don't deploy here` }
     if (check.ref !== `refs/heads/${loaded.row.branch}`) {
       return { ignored: `Only pushes to ${loaded.row.branch} deploy` }
     }

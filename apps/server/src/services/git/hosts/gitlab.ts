@@ -53,7 +53,9 @@ export function gitlabTarget(
     } catch {
       return null
     }
-    if (base.protocol !== 'https:' || base.origin !== url.origin) return null
+    // Its own server only (the token goes there), over https, or the repo's own http (insecure URLs allowed).
+    if (base.origin !== url.origin || (base.protocol !== 'https:' && base.protocol !== url.protocol))
+      return null
     api = `${base.origin}${base.pathname.replace(/\/+$/, '')}`
     const prefix = base.pathname.replace(/\/+$/, '').replace(/\/api\/v4$/, '')
     if (prefix && path.startsWith(`${prefix}/`)) path = path.slice(prefix.length)
@@ -252,11 +254,17 @@ export function checkGitLabWebhook(
     return { ok: false, status: 401, code: 'bad_signature', message: 'The webhook token does not match' }
   const event = String(headers['x-gitlab-event'] ?? 'unknown')
   if (event !== 'Push Hook') return { ok: true, event: 'other', name: event }
-  let payload: { ref?: unknown }
+  let payload: { ref?: unknown; project?: { path_with_namespace?: unknown } }
   try {
     payload = JSON.parse(raw.toString('utf8'))
   } catch {
     return { ok: false, status: 400, code: 'invalid_request', message: 'The payload is not valid JSON' }
   }
-  return { ok: true, event: 'push', ref: typeof payload.ref === 'string' ? payload.ref : '' }
+  const repo = payload.project?.path_with_namespace
+  return {
+    ok: true,
+    event: 'push',
+    ref: typeof payload.ref === 'string' ? payload.ref : '',
+    ...(typeof repo === 'string' && { repo }),
+  }
 }

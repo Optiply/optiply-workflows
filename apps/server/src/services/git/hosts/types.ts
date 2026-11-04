@@ -36,6 +36,8 @@ export class GitHostError extends Error {
 export interface GitCredentials {
   username: string
   token: string
+  /** Minted again on asking (a GitHub App's): git retries a refused sign-in once. */
+  refreshable?: boolean
 }
 
 /**
@@ -68,5 +70,8 @@ export interface GitHostCheck {
 export type GitWebhookCheck =
   | { ok: false; status: 400 | 401; code: string; message: string }
   | { ok: true; event: 'ping' }
-  | { ok: true; event: 'push'; ref: string }
+  /** `repo`: the repo pushed to, as the host names it (`owner/repo`, GitLab's full path), when it says. */
+  | { ok: true; event: 'push'; ref: string; repo?: string }
+  /** A push to another repo (a GitHub App's or a group's webhook covers several): ignored. */
+  | { ok: true; event: 'elsewhere'; repo: string }
   | { ok: true; event: 'other'; name: string }

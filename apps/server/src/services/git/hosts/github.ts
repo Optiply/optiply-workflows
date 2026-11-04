@@ -209,7 +209,7 @@ export function checkGitHubWebhook(
   const event = headers['x-github-event']
   if (event === 'ping') return { ok: true, event: 'ping' }
   if (event !== 'push') return { ok: true, event: 'other', name: String(event ?? 'unknown') }
-  let payload: { ref?: unknown }
+  let payload: { ref?: unknown; repository?: { full_name?: unknown } }
   try {
     const text = String(headers['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')
       ? (new URLSearchParams(raw.toString('utf8')).get('payload') ?? '')
@@ -218,5 +218,11 @@ export function checkGitHubWebhook(
   } catch {
     return { ok: false, status: 400, code: 'invalid_request', message: 'The payload is not valid JSON' }
   }
-  return { ok: true, event: 'push', ref: typeof payload.ref === 'string' ? payload.ref : '' }
+  const repo = payload.repository?.full_name
+  return {
+    ok: true,
+    event: 'push',
+    ref: typeof payload.ref === 'string' ? payload.ref : '',
+    ...(typeof repo === 'string' && { repo }),
+  }
 }

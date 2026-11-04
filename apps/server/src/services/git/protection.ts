@@ -90,7 +90,7 @@ export function requireNotDeployBranch(branch: string, deployBranch: string): vo
   if (branch === deployBranch) {
     throw new TRPCError({
       code: 'BAD_REQUEST',
-      message: `Changes reach ${deployBranch} through pull requests: pick another branch`,
+      message: `Changes reach ${deployBranch} through pull or merge requests: pick another branch`,
     })
   }
 }

@@ -226,7 +226,10 @@ export async function saveGitSettings(
   }
 }
 
-/** GitLab's API URL for an instance under a path: on the repo's own origin, over https; null when empty. */
+/**
+ * GitLab's API URL for an instance under a path: on the repo's own origin, over https (or the repo's own http where
+ * insecure URLs are allowed), ending in `/api/v4` (added when given the instance's base); null when empty.
+ */
 function checkApiUrl(apiUrl: string | null, repoUrl: string, allowInsecure: boolean): string | null {
   const text = apiUrl?.trim()
   if (!text) return null
@@ -242,7 +245,8 @@ function checkApiUrl(apiUrl: string | null, repoUrl: string, allowInsecure: bool
     throw new TRPCError({ code: 'BAD_REQUEST', message: "The API URL must be on the repo's own host" })
   if (url.username || url.password || url.search || url.hash)
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Leave credentials and queries out of the API URL' })
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  const path = url.pathname.replace(/\/+$/, '')
+  return `${url.origin}${path.endsWith('/api/v4') ? path : `${path}/api/v4`}`
 }
 
 export async function clearGitSettings(db: Db): Promise<boolean> {

@@ -52,6 +52,10 @@ export async function fakeGitHub(opts: {
 }) {
   /** Installation tokens minted, and when each expires (ms). */
   const appTokens = new Map<string, number>()
+  /** The App's installation id: changed by `/_test/reinstall-app` (installed again). */
+  let installationId = opts.app?.installationId ?? 77
+  const granted = () =>
+    opts.app?.permissions ?? { contents: 'write', pull_requests: 'write', metadata: 'read' }
   let minted = 0
   const appJwtValid = (authorization: string | undefined): boolean => {
     if (!opts.app || !authorization?.startsWith('Bearer ')) return false
@@ -172,6 +176,12 @@ export async function fakeGitHub(opts: {
       for (const token of appTokens.keys()) appTokens.set(token, 0)
       return send(res, 200, { ok: true })
     }
+    // The App uninstalled and installed again: another installation id, its old tokens gone.
+    if (req.method === 'POST' && url.pathname === '/_test/reinstall-app') {
+      installationId += 100
+      for (const token of appTokens.keys()) appTokens.set(token, 0)
+      return send(res, 200, { installationId })
+    }
     const prefix = `/repos/${opts.owner}/${opts.repo}`
     // A GitHub App (M31): its installation on the repo, and installation tokens, for the App's JWT.
     if (req.method === 'GET' && /^\/repos\/[^/]+\/[^/]+\/installation$/.test(url.pathname)) {
@@ -179,18 +189,22 @@ export async function fakeGitHub(opts: {
         return send(res, 401, { message: 'A JSON web token could not be decoded' })
       if (url.pathname !== `${prefix}/installation`) return send(res, 404, { message: 'Not Found' })
       return send(res, 200, {
-        id: opts.app!.installationId ?? 77,
+        id: installationId,
         account: { login: opts.app!.account ?? opts.owner },
         app_slug: opts.app!.slug ?? 'optiply-sync',
-        permissions: opts.app!.permissions ?? { contents: 'write', pull_requests: 'write', metadata: 'read' },
+        permissions: granted(),
       })
     }
     const tokens = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname)
     if (req.method === 'POST' && tokens) {
       if (!appJwtValid(req.headers.authorization))
         return send(res, 401, { message: 'A JSON web token could not be decoded' })
-      if (Number(tokens[1]) !== (opts.app!.installationId ?? 77))
-        return send(res, 404, { message: 'Not Found' })
+      if (Number(tokens[1]) !== installationId) return send(res, 404, { message: 'Not Found' })
+      // GitHub refuses a token asking for more than the installation was granted.
+      const asked = ((await readBody(req)) as { permissions?: Record<string, string> }).permissions ?? {}
+      const rank = (l?: string) => (l === 'write' ? 2 : l === 'read' ? 1 : 0)
+      if (Object.entries(asked).some(([name, level]) => rank(granted()[name]) < rank(level)))
+        return send(res, 422, { message: 'The permissions requested are not granted to this installation.' })
       const token = `ghs_installation${++minted}`
       const expiresAt = Date.now() + (opts.app!.tokenTtlMs ?? 3_600_000)
       appTokens.set(token, expiresAt)

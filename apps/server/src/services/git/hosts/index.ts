@@ -22,11 +22,6 @@ export * from './types'
 type HostConfig = Pick<Config, 'keyring' | 'GITHUB_API_URL' | 'GITLAB_API_URL'>
 type Loaded = { row: GitSettings; secrets: GitSecrets }
 
-/** What the host calls a change request, for messages: "pull request" or "merge request". */
-export function changeRequestNoun(kind: GitHostKind): string {
-  return kind === 'gitlab' ? 'merge request' : 'pull request'
-}
-
 /**
  * The host a repo URL is on, when its address says so (github.com, gitlab.com, or a host named gitlab.…); null for
  * another host, where the admin picks (GitHub Enterprise Server by default, as before M31).
@@ -92,7 +87,10 @@ export async function openGitHost(
  * What git signs in to the remote with, asked before each command that talks to it (so a short-lived token is
  * fresh): the host's username and the token. Null: no token set (a public or local repo).
  */
-export function gitCredentials(loaded: Loaded, config: HostConfig): () => Promise<GitCredentials | null> {
+export function gitCredentials(
+  loaded: Loaded,
+  config: HostConfig,
+): (opts?: { refresh?: boolean }) => Promise<GitCredentials | null> {
   const app = githubApp(loaded, config)
   if (app && 'error' in app)
     return async () => {
@@ -100,9 +98,9 @@ export function gitCredentials(loaded: Loaded, config: HostConfig): () => Promis
     }
   // A GitHub App's installation token, as GitHub's docs say: user `x-access-token`.
   if (app)
-    return async () => {
+    return async (opts) => {
       try {
-        return { username: 'x-access-token', token: await app.token() }
+        return { username: 'x-access-token', token: await app.token(opts), refreshable: true }
       } catch (err) {
         // Git's callers know GitError: the App's sign-in failing is git's sign-in failing.
         if (err instanceof GitHostError)
@@ -126,7 +124,18 @@ export function checkGitWebhook(
   headers: IncomingHttpHeaders,
   raw: Buffer,
 ): GitWebhookCheck {
-  return loaded.row.host === 'gitlab'
-    ? checkGitLabWebhook(secret, headers, raw)
-    : checkGitHubWebhook(secret, headers, raw)
+  const check =
+    loaded.row.host === 'gitlab'
+      ? checkGitLabWebhook(secret, headers, raw)
+      : checkGitHubWebhook(secret, headers, raw)
+  // A push to another repo the webhook also covers (a GitHub App installed on several, a GitLab group's hook).
+  if (check.ok && check.event === 'push' && check.repo) {
+    const expected =
+      loaded.row.host === 'gitlab'
+        ? gitlabTarget(loaded.row.repoUrl, loaded.row.apiUrl)?.project
+        : ((t) => t && `${t.owner}/${t.repo}`)(githubTarget(loaded.row.repoUrl))
+    if (expected && expected.toLowerCase() !== check.repo.toLowerCase())
+      return { ok: true, event: 'elsewhere', repo: check.repo }
+  }
+  return check
 }

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, GitBranch, GitPullRequest } from 'lucide-react'
 import { useState } from 'react'
 import { Badge, Button, Dialog, ErrorNote, Field, Input } from '@/components/ui'
+import { newChangeRequestUrl } from '@/lib/git-links'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 
 export type GitInfo = RouterOutputs['git']['info']
@@ -13,15 +14,10 @@ export function useGitInfo() {
   return useQuery({ ...trpc.git.info.queryOptions(), staleTime: 60_000 })
 }
 
-/**
- * What the Git host calls a change request (M31): GitHub's pull request, GitLab's merge request, and how its number
- * is written (`#3`, `!3`).
- */
+/** What the Git host calls a change request (M31): GitHub's pull request, GitLab's merge request. */
 export function useChangeRequest() {
   const { data } = useGitInfo()
-  return data?.host === 'gitlab'
-    ? { noun: 'merge request', Noun: 'Merge request', mark: '!' }
-    : { noun: 'pull request', Noun: 'Pull request', mark: '#' }
+  return { noun: data?.host === 'gitlab' ? 'merge request' : 'pull request' }
 }
 
 /** A short commit sha, linking to the commit when the repo is on the web. */
@@ -173,12 +169,12 @@ export function ProtectDialog({
           ) : (
             <div className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
               No {cr.noun} was opened: {result.pullRequestError}
-              {git?.webUrl && (
+              {git && newChangeRequestUrl(git, result.branch) && (
                 <>
                   {' '}
                   <a
                     className="underline"
-                    href={`${git.webUrl}/compare/${git.branch}...${result.branch}`}
+                    href={newChangeRequestUrl(git, result.branch)!}
                     target="_blank"
                     rel="noreferrer"
                   >

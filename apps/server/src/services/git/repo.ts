@@ -12,7 +12,12 @@ import { askpassScript, GitError, type GitRunOptions, runGit } from './cli'
 export interface GitRemote {
   url: string
   token: string | null
-  credentials?: () => Promise<{ username: string; token: string } | null>
+  credentials?: (opts?: { refresh?: boolean }) => Promise<{
+    username: string
+    token: string
+    /** A short-lived token that can be minted again (a GitHub App's): a refused sign-in is tried once more. */
+    refreshable?: boolean
+  } | null>
 }
 
 export interface GitAuthor {
@@ -166,21 +171,32 @@ export class GitRepo {
     const protocols = ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always']
     if (this.allowInsecure)
       protocols.push('-c', 'protocol.http.allow=always', '-c', 'protocol.file.allow=always')
-    const signIn = this.remote.credentials
-      ? await this.remote.credentials()
-      : this.remote.token
-        ? { username: 'x-access-token', token: this.remote.token }
-        : null
-    return this.git([...protocols, '-c', 'http.followRedirects=false', ...args], {
-      ...opts,
-      env: {
-        ...opts.env,
-        ...(signIn
-          ? { GIT_ASKPASS: this.askpass, OW_GIT_USERNAME: signIn.username, OW_GIT_TOKEN: signIn.token }
-          : {}),
-      },
-      secrets: signIn ? [signIn.token] : [],
-    })
+    const run = async (refresh: boolean) => {
+      const signIn = this.remote.credentials
+        ? await this.remote.credentials({ refresh })
+        : this.remote.token
+          ? { username: 'x-access-token', token: this.remote.token }
+          : null
+      const result = this.git([...protocols, '-c', 'http.followRedirects=false', ...args], {
+        ...opts,
+        env: {
+          ...opts.env,
+          ...(signIn
+            ? { GIT_ASKPASS: this.askpass, OW_GIT_USERNAME: signIn.username, OW_GIT_TOKEN: signIn.token }
+            : {}),
+        },
+        secrets: signIn ? [signIn.token] : [],
+      })
+      return { result, refreshable: signIn?.refreshable === true }
+    }
+    const first = await run(false)
+    try {
+      return await first.result
+    } catch (err) {
+      // A short-lived token revoked before it expired: once more with a new one.
+      if (err instanceof GitError && err.kind === 'auth' && first.refreshable) return (await run(true)).result
+      throw err
+    }
   }
 
   /** The remote's branches and their commits. */

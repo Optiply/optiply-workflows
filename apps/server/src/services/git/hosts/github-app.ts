@@ -21,6 +21,8 @@ export const APP_PERMISSIONS = { contents: 'write', pull_requests: 'write', meta
 const REFRESH_BEFORE_MS = 5 * 60_000
 
 interface Cached {
+  /** The private key, parsed once per process. */
+  key?: KeyObject
   installation?: Promise<GitHubAppInstallation>
   token?: { value: string; expiresAt: number }
   minting?: Promise<string>
@@ -58,15 +60,16 @@ export class GitHubAppTokens {
     private readonly appId: string,
     privateKeyPem: string,
   ) {
-    this.key = appPrivateKey(privateKeyPem)
     const id = createHash('sha256')
       .update([target.api, target.owner, target.repo, appId, privateKeyPem].join('\n'))
       .digest('hex')
     let cached = cache.get(id)
     if (!cached) {
-      cached = {}
+      // Parsed (and checked) once; a bad key isn't kept.
+      cached = { key: appPrivateKey(privateKeyPem) }
       cache.set(id, cached)
     }
+    this.key = cached.key!
     this.cached = cached
   }
 
@@ -104,14 +107,23 @@ export class GitHubAppTokens {
 
   private async mint(): Promise<string> {
     const installation = await this.installation()
-    const minted = await this.request<{ token: string; expires_at: string }>(
-      'POST',
-      `/app/installations/${installation.id}/access_tokens`,
-      { repositories: [this.target.repo], permissions: APP_PERMISSIONS },
-      'token',
-    )
-    this.cached.token = { value: minted.token, expiresAt: Date.parse(minted.expires_at) }
-    return minted.token
+    // What Git sync needs, as far as the installation grants it: asking for more is refused outright (422), which
+    // would stop even reading the repo; Test connection says what's missing.
+    const permissions = grantedNeeds(installation.permissions)
+    try {
+      const minted = await this.request<{ token: string; expires_at: string }>(
+        'POST',
+        `/app/installations/${installation.id}/access_tokens`,
+        { repositories: [this.target.repo], ...(Object.keys(permissions).length ? { permissions } : {}) },
+        'token',
+      )
+      this.cached.token = { value: minted.token, expiresAt: Date.parse(minted.expires_at) }
+      return minted.token
+    } catch (err) {
+      // The App may have been installed again (another installation id), or its permissions changed: found afresh.
+      this.cached.installation = undefined
+      throw err
+    }
   }
 
   private async request<T>(
@@ -160,6 +172,19 @@ export class GitHubAppTokens {
       )
     throw new GitHostError('failed', said)
   }
+}
+
+const levelRank = (level: string | undefined) =>
+  level === 'write' || level === 'admin' ? 2 : level === 'read' ? 1 : 0
+
+/** Git sync's permissions, each at most what the installation grants (none it doesn't grant at all). */
+function grantedNeeds(granted: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, level] of Object.entries(APP_PERMISSIONS)) {
+    const have = levelRank(granted[name])
+    if (have) out[name] = have >= levelRank(level) ? level : 'read'
+  }
+  return out
 }
 
 /** The permissions Git sync needs that an installation lacks, as "contents: write". */

@@ -426,6 +426,44 @@ describe('over HTTP with a token', () => {
     }
   })
 
+  it('asks for a fresh token once when a refreshable one is refused (a revoked App token; review fix)', async () => {
+    const asked: boolean[] = []
+    const repo = await GitRepo.open(
+      join(root, 'http-cache-refresh'),
+      {
+        url: `${http.url}/flows.git`,
+        token: null,
+        credentials: async (opts) => {
+          asked.push(opts?.refresh ?? false)
+          return {
+            username: 'x-access-token',
+            token: opts?.refresh ? TOKEN : 'ghs_revoked',
+            refreshable: true,
+          }
+        },
+      },
+      insecure,
+    )
+    await repo.listBranches()
+    expect(asked).toEqual([false, true])
+    // A token that can't be minted again isn't retried.
+    let plain = 0
+    const fixed = await GitRepo.open(
+      join(root, 'http-cache-refresh-plain'),
+      {
+        url: `${http.url}/flows.git`,
+        token: null,
+        credentials: async () => {
+          plain++
+          return { username: 'x-access-token', token: 'ghp_wrong' }
+        },
+      },
+      insecure,
+    )
+    await expect(fixed.listBranches()).rejects.toMatchObject({ kind: 'auth' })
+    expect(plain).toBe(1)
+  })
+
   it('reports a repo that is not there', async () => {
     const repo = await GitRepo.open(
       join(root, 'http-cache-404'),

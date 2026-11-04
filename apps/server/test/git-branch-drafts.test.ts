@@ -163,7 +163,10 @@ describe('a branch draft, from opening to deploying', () => {
           create: true,
         }),
       ),
-    ).toMatchObject({ code: 'BAD_REQUEST', message: expect.stringContaining('through pull requests') })
+    ).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('through pull or merge requests'),
+    })
     const plain = data(await admin.mutate('workflows.create', { slug: 'plain', name: 'Plain' })).id
     expect(
       failure(

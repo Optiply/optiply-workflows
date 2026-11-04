@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { appJwt, appPrivateKey, GitHubAppTokens, gitCredentials } from '../src/services/git/hosts'
+import { GitHubHost } from '../src/services/git/hosts/github'
 import { loadGitSettings } from '../src/services/git/settings'
 import { fakeGitHub } from './fake-github'
 import { bareRepo, scratch } from './git-helpers'
@@ -150,6 +151,7 @@ describe('a GitHub App', () => {
     expect(await gitCredentials(loaded!, env.config)()).toEqual({
       username: 'x-access-token',
       token: expect.stringMatching(/^ghs_installation\d+$/),
+      refreshable: true,
     })
   })
 
@@ -196,18 +198,34 @@ describe('a GitHub App', () => {
       app: { id: APP_ID, publicKey: keys.publicKey, permissions: { contents: 'read', metadata: 'read' } },
     })
     try {
-      const tokens = new GitHubAppTokens(
-        { api: limited.url, owner: 'optiply', repo: 'flows' },
-        APP_ID,
-        keys.privateKey,
-      )
+      const target = { api: limited.url, owner: 'optiply', repo: 'flows' }
+      const tokens = new GitHubAppTokens(target, APP_ID, keys.privateKey)
       const { missingAppPermissions } = await import('../src/services/git/hosts/github-app')
       expect(missingAppPermissions((await tokens.installation()).permissions)).toEqual([
         'contents: write',
         'pull_requests: write',
       ])
+      // Review fix: a token is minted for what was granted (asking for more is refused outright), so the repo can
+      // still be read, and Test connection says what's missing instead of failing.
+      expect(await tokens.token()).toMatch(/^ghs_/)
+      expect(await new GitHubHost(target, (o) => tokens.token(o), tokens).check()).toEqual({
+        message: 'GitHub App optiply-sync, installed on optiply (optiply/flows)',
+        problems: ["The App's installation needs contents: write, pull_requests: write"],
+      })
     } finally {
       await limited.close()
     }
+  })
+
+  it('finds the installation again when the App is installed again (review fix)', async () => {
+    data(await asApp())
+    const pullRequest = () => admin.query('git.pullRequest', { branch: 'protect/workflow-sync-orders' })
+    expect(data(await pullRequest())).toMatchObject({ error: null })
+    await fetch(`${github.url}/_test/reinstall-app`, { method: 'POST' })
+    // The old installation's id is forgotten after its mint fails; at most one call fails meanwhile.
+    const first = data(await pullRequest()) as { error: string | null }
+    const second = data(await pullRequest()) as { error: string | null }
+    expect(second.error).toBeNull()
+    if (first.error) expect(first.error).toMatch(/GitHub said 404/)
   })
 })

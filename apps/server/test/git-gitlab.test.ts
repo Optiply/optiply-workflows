@@ -1,8 +1,10 @@
+import { createHmac } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { gitSettings } from '@ow/db'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { gitCredentials, gitlabTarget } from '../src/services/git/hosts'
+import { releaseNotes } from '../src/services/git/deploy'
+import { checkGitWebhook, gitCredentials, gitlabTarget } from '../src/services/git/hosts'
 import { loadGitSettings } from '../src/services/git/settings'
 import { fakeGitLab } from './fake-gitlab'
 import { bareRepo, scratch } from './git-helpers'
@@ -109,6 +111,70 @@ describe('GitLab projects and settings', () => {
     // Git signs in as GitLab's `oauth2`.
     const loaded = await loadGitSettings(env.db, env.config.keyring)
     expect(await gitCredentials(loaded!, env.config)()).toEqual({ username: 'oauth2', token: TOKEN })
+  })
+})
+
+describe('review fixes (M31)', () => {
+  it('adds /api/v4 to an API URL given as the instance’s base, and takes the repo’s own http', async () => {
+    expect(
+      data(
+        await admin.mutate('git.saveSettings', {
+          repoUrl: 'https://code.optiply.nl/gitlab/optiply/flows.git',
+          host: 'gitlab',
+          apiUrl: 'https://code.optiply.nl/gitlab',
+          token: TOKEN,
+        }),
+      ),
+    ).toMatchObject({ apiUrl: 'https://code.optiply.nl/gitlab/api/v4' })
+    expect(gitlabTarget('http://gitlab.internal/grp/proj.git', 'http://gitlab.internal/api/v4')).toEqual({
+      api: 'http://gitlab.internal/api/v4',
+      project: 'grp/proj',
+    })
+    // Never down to http from an https repo.
+    expect(gitlabTarget('https://gitlab.internal/grp/proj.git', 'http://gitlab.internal/api/v4')).toBeNull()
+  })
+
+  it('writes release notes from GitLab’s merge commits as from GitHub’s', () => {
+    expect(
+      releaseNotes({
+        subject: "Merge branch 'ow/faster' into 'main'",
+        body: 'Faster sync\n\nSee merge request optiply/data/flows!12',
+      }),
+    ).toBe('Faster sync (!12)')
+    expect(releaseNotes({ subject: 'Merge pull request #3 from optiply/x', body: 'Faster sync' })).toBe(
+      'Faster sync (#3)',
+    )
+    expect(releaseNotes({ subject: "Merge branch 'a' into 'main'", body: '' })).toBe(
+      "Merge branch 'a' into 'main'",
+    )
+  })
+
+  it('ignores pushes to another repo the webhook also covers (an App on several, a group hook)', () => {
+    const settings = (host: 'github' | 'gitlab', repoUrl: string) =>
+      ({ row: { host, repoUrl, apiUrl: null }, secrets: {} }) as never
+    const github = settings('github', 'https://github.com/optiply/flows.git')
+    const push = (repo: string) =>
+      Buffer.from(JSON.stringify({ ref: 'refs/heads/main', repository: { full_name: repo } }))
+    const signed = (body: Buffer) => ({
+      'x-github-event': 'push',
+      'x-hub-signature-256': `sha256=${createHmac('sha256', 's').update(body).digest('hex')}`,
+    })
+    const other = push('optiply/other')
+    expect(checkGitWebhook(github, 's', signed(other), other)).toEqual({
+      ok: true,
+      event: 'elsewhere',
+      repo: 'optiply/other',
+    })
+    const ours = push('Optiply/Flows')
+    expect(checkGitWebhook(github, 's', signed(ours), ours)).toMatchObject({ ok: true, event: 'push' })
+    const gitlab = settings('gitlab', 'https://gitlab.com/optiply/data/flows.git')
+    const gl = (path: string) =>
+      Buffer.from(JSON.stringify({ ref: 'refs/heads/main', project: { path_with_namespace: path } }))
+    const headers = { 'x-gitlab-event': 'Push Hook', 'x-gitlab-token': 's' }
+    expect(checkGitWebhook(gitlab, 's', headers, gl('optiply/data/other'))).toMatchObject({
+      event: 'elsewhere',
+    })
+    expect(checkGitWebhook(gitlab, 's', headers, gl('optiply/data/flows'))).toMatchObject({ event: 'push' })
   })
 })
 
