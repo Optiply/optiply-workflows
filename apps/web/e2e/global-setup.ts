@@ -43,6 +43,8 @@ const webDist = fileURLToPath(new URL('../dist', import.meta.url))
 
 export const E2E_EMAIL = 'e2e@optiply.nl'
 export const E2E_PASSWORD = 'e2e-password-not-secret'
+/** The e2e's private package index's password (M32; username `ci`). */
+const E2E_PRIVATE_INDEX_PASSWORD = 'private-index-password-not-secret'
 /** A second person, for what differs between people (their own OAuth accounts). Same password. */
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 /** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
@@ -140,6 +142,26 @@ export default async function globalSetup() {
         { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
       ])
     : null
+  // M32: a private index with a password (a package only it has, and one with only an sdist). Specs read
+  // E2E_PRIVATE_INDEX_URL and E2E_PRIVATE_INDEX_PASSWORD (username `ci`).
+  const privateIndex = packages
+    ? await startTestIndex(
+        [
+          {
+            name: 'owtest-private',
+            version: '1.0.0',
+            requires: ['owtest-b'],
+            files: { 'owtest_private/__init__.py': 'SAUCE = 42\n' },
+          },
+          { name: 'owtest-psrc', version: '2.0.0', files: { 'owtest_psrc.py': 'P = 2\n' }, sdist: {} },
+        ],
+        { auth: { username: 'ci', password: E2E_PRIVATE_INDEX_PASSWORD } },
+      )
+    : null
+  if (privateIndex) {
+    process.env.E2E_PRIVATE_INDEX_URL = privateIndex.url
+    process.env.E2E_PRIVATE_INDEX_PASSWORD = E2E_PRIVATE_INDEX_PASSWORD
+  }
   const volume = packages ? testEnvsVolume() : null
   // The builder first: a new volume takes its /envs and their owner.
   const builder =
@@ -564,6 +586,7 @@ export default async function globalSetup() {
     await executor?.stop()
     await builder?.stop()
     await index?.stop()
+    await privateIndex?.stop()
     volume?.remove()
     await new Promise((r) => iapControl.close(r))
     await iap.close()
