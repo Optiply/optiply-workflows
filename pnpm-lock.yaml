@@ -120,6 +120,9 @@ importers:
       amqplib:
         specifier: 0.10.9
         version: 0.10.9
+      avsc:
+        specifier: 5.7.9
+        version: 5.7.9
       busboy:
         specifier: 1.6.0
         version: 1.6.0
@@ -462,6 +465,9 @@ importers:
       amqplib:
         specifier: 0.10.9
         version: 0.10.9
+      avsc:
+        specifier: 5.7.9
+        version: 5.7.9
       graphql:
         specifier: 16.14.2
         version: 16.14.2
@@ -1980,6 +1986,10 @@ packages:
   atomic-sleep@1.0.0:
     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
     engines: {node: '>=8.0.0'}
+
+  avsc@5.7.9:
+    resolution: {integrity: sha512-yOA4wFeI7ET3v32Di/sUybQ+ttP20JHSW3mxLuNGeO0uD6PPcvLrIQXSvy/rhJOWU5JrYh7U4OHplWMmtAtjMg==}
+    engines: {node: '>=0.11'}
 
   avvio@9.3.1:
     resolution: {integrity: sha512-QyTKW61/qlba+cUQBm/sT9X8lri4UdomqSDwCnrnj1IvLVDRRiXRkz4CgBRWB+/cmfC7SK5WQc8T1vSdGvaUcQ==}
@@ -4343,6 +4353,8 @@ snapshots:
   async-exit-hook@2.0.1: {}
 
   atomic-sleep@1.0.0: {}
+
+  avsc@5.7.9: {}
 
   avvio@9.3.1:
     dependencies:

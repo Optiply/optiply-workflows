@@ -104,6 +104,7 @@ export {
   kafkaConsumer,
 } from './kafka/consumer'
 export { type MskIamToken, mskIamToken } from './kafka/msk-iam'
+export { type SchemaRegistry, schemaRegistry, wireSchemaId } from './kafka/registry'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export {

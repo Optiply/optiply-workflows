@@ -430,6 +430,66 @@ export function KafkaFields(props: FieldsProps) {
         </Field>
       )}
       {auth === 'aws-msk-iam' && <AwsIdentityFields {...props} uses="the MSK cluster" />}
+      <SchemaRegistryFields {...props} />
+    </>
+  )
+}
+
+/**
+ * Kafka's optional Schema Registry (M30): Confluent's API (Redpanda's and Karapace's too). Triggers decode values in
+ * its wire format (Avro, JSON Schema); a produce message naming a `subject` is encoded by its latest schema.
+ */
+function SchemaRegistryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const registry = config.schemaRegistry as
+    | { url?: string; username?: string; allowPrivateNetwork?: boolean }
+    | undefined
+  const update = (patch: Record<string, unknown>) => {
+    const next = { ...registry, ...patch }
+    set('schemaRegistry', next.url ? next : undefined)
+  }
+  return (
+    <>
+      <Field
+        label="Schema Registry"
+        hint="Optional. Triggers decode Avro and JSON Schema values; produce messages with a subject are encoded."
+      >
+        <Input
+          value={registry?.url ?? ''}
+          disabled={disabled}
+          placeholder="https://schema-registry.example.com"
+          data-testid="kafka-registry-url"
+          onChange={(e) => update({ url: e.target.value.trim() || undefined })}
+        />
+      </Field>
+      {registry?.url && (
+        <>
+          <Grid>
+            <Field label="Registry username" hint="Empty: no sign-in.">
+              <Input
+                value={registry.username ?? ''}
+                disabled={disabled}
+                data-testid="kafka-registry-username"
+                onChange={(e) => update({ username: e.target.value.trim() || undefined })}
+              />
+            </Field>
+            <Field label="Registry password" hint="Stored encrypted; never shown again.">
+              <SecretField
+                isSet={isSet(secrets, 'schemaRegistryPassword')}
+                edit={edits.schemaRegistryPassword as SecretEdit}
+                onChange={(e) => setEdit('schemaRegistryPassword', e)}
+                disabled={disabled}
+              />
+            </Field>
+          </Grid>
+          <Checkbox
+            label="Allow a private network address"
+            hint="For a registry inside Optiply's network."
+            checked={registry.allowPrivateNetwork === true}
+            disabled={disabled}
+            onChange={(v) => update({ allowPrivateNetwork: v })}
+          />
+        </>
+      )}
     </>
   )
 }

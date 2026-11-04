@@ -3,7 +3,7 @@ import type { RabbitmqTrigger } from '@ow/definition'
 import type { Channel, ConsumeMessage } from 'amqplib'
 import type { AdapterContext, QueueAdapter, QueueMessage } from '../queue-consumer'
 import type { RabbitRunMessage } from '../types'
-import { textOrJson } from './pubsub'
+import { bodyData } from './pubsub'
 
 /**
  * RabbitMQ (M30): a consumer on the queue with a prefetch of the trigger's in-flight limit; deliveries wait in a
@@ -91,12 +91,13 @@ export function rabbitmqAdapter(ctx: AdapterContext): QueueAdapter {
       ...(p.correlationId && { correlationId: String(p.correlationId) }),
       ...(p.timestamp && { timestamp: new Date(Number(p.timestamp) * 1000).toISOString() }),
     }
-    const text = msg.content.toString('utf8')
+    const body = bodyData(msg.content)
+    if (body.binary) message.encoding = 'base64'
     return {
       // The publisher's message id recognises a redelivery; without one, each delivery is its own.
       id: p.messageId ? `id:${String(p.messageId)}` : `delivery:${handle}:${Date.now()}`,
       handle,
-      input: { data: textOrJson(text), message },
+      input: { data: body.data, message },
     }
   }
 

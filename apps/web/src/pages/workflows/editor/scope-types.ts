@@ -250,6 +250,8 @@ interface OwPubSubMessage {
   subscription: string
   /** The data's bytes, for binary payloads. */
   dataBase64: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 /** An SQS trigger's message (runs an SQS trigger started); its body is \`startTrigger.data\`. */
 interface OwSqsMessage {
@@ -274,11 +276,19 @@ interface OwKafkaMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+  /** The Schema Registry schema the value was decoded with. */
+  schemaId?: number
+  /** Why a value in the registry's wire format couldn't be decoded. */
+  schemaError?: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 interface OwKinesisMessage {
   stream: string; shardId: string; sequenceNumber: string; partitionKey: string; arrivedAt: string
   /** This run's attempt at the record, counting from 1. */
   attempt: number
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 interface OwRabbitMessage {
   queue: string
@@ -288,6 +298,8 @@ interface OwRabbitMessage {
   redelivered: boolean
   headers: Record<string, any>
   messageId?: string; contentType?: string; correlationId?: string; timestamp?: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean

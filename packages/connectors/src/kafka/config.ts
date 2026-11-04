@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { awsIdentityConfig, awsIdentitySecrets } from '../aws/credentials'
+import { schemaRegistrySchema } from './registry'
 
 /** A broker's `host:port`. */
 const BROKER = /^[A-Za-z0-9.-]+:\d{1,5}$/
@@ -31,11 +32,15 @@ export const kafkaConfigSchema = z.object({
   accessKeyId: awsIdentityConfig.accessKeyId,
   roleArn: awsIdentityConfig.roleArn,
   externalId: awsIdentityConfig.externalId,
+  /** The Schema Registry (M30): triggers decode the Confluent wire format; produce encodes by subject. */
+  schemaRegistry: schemaRegistrySchema.optional(),
 })
 
 export const kafkaSecretsSchema = z.object({
   /** SASL PLAIN and SCRAM's password. */
   password: z.string().min(1).optional(),
+  /** The Schema Registry's password (M30), with its username. */
+  schemaRegistryPassword: z.string().min(1).optional(),
   /** mTLS: the client certificate's private key (PEM). */
   clientKey: z.string().trim().includes('PRIVATE KEY-----').optional(),
   ...awsIdentitySecrets,
@@ -46,6 +51,9 @@ export type KafkaSecrets = z.output<typeof kafkaSecretsSchema>
 
 /** What each auth mode needs, as a message for the settings form and Test connection; null when all is there. */
 export function kafkaSettingsProblem(config: KafkaConfig, secrets: KafkaSecrets): string | null {
+  // M30: a Schema Registry signed in to needs its password.
+  if (config.schemaRegistry?.username && !secrets.schemaRegistryPassword)
+    return "Add the schema registry's password"
   switch (config.auth) {
     case 'plain':
     case 'scram-sha-256':

@@ -1,5 +1,11 @@
 import { kafkaClient, kafkaConnector, kafkaConsumer, produceTo } from '@ow/connectors'
-import { kafkaAvailable, startTestKafka, type TestKafka } from '@ow/connectors/testing'
+import {
+  type FakeRegistry,
+  kafkaAvailable,
+  startFakeRegistry,
+  startTestKafka,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import {
   type Db,
   environments,
@@ -24,12 +30,16 @@ let prodId: string
 let stopDb: (() => Promise<void>) | undefined
 let kafka: TestKafka
 const consumers: QueueConsumer[] = []
+let registry: FakeRegistry
 const settings = () => ({
   brokers: [kafka.plaintext],
   auth: 'none' as const,
   tls: false,
   identity: 'key' as const,
+  // M30: a Schema Registry; values not in its wire format are left as they are.
+  schemaRegistry: { url: registry.url, username: registry.username, allowPrivateNetwork: true },
 })
+const secrets = () => ({ schemaRegistryPassword: registry.password })
 
 const resources: ResourceProvider = {
   async resolve(slug, environmentId) {
@@ -41,7 +51,7 @@ const resources: ResourceProvider = {
         environmentId,
         version: '1',
         config: settings(),
-        secrets: {},
+        secrets: secrets(),
       },
     }
   },
@@ -54,6 +64,7 @@ beforeAll(async () => {
   db = conn.db
   prodId = (await db.select().from(environments)).find((e) => e.slug === 'production')!.id
   kafka = await startTestKafka()
+  registry = await startFakeRegistry()
   stopDb = async () => {
     await conn.close()
     await pg.stop()
@@ -65,6 +76,7 @@ afterEach(async () => {
 })
 afterAll(async () => {
   await kafka?.stop()
+  await registry?.stop()
   await stopDb?.()
 })
 
@@ -106,12 +118,15 @@ async function subscribed(config: Record<string, unknown> = {}) {
       environmentId: prodId,
     })
     .returning()
-  const producer = kafkaClient(settings(), {})
+  const producer = kafkaClient(settings(), secrets())
   return {
     topic,
     trigger: trigger!,
     groupId: `ow-${workflow!.id}-orders`,
-    async send(...messages: { key?: string; value: string | null; headers?: Record<string, string> }[]) {
+    producer,
+    async send(
+      ...messages: { key?: string; value: string | Buffer | null; headers?: Record<string, string> }[]
+    ) {
       try {
         await produceTo(producer, topic, messages, AbortSignal.timeout(10_000))
       } finally {
@@ -157,7 +172,7 @@ const poll = { timeout: 30_000 }
 
 /** What a topic holds, read from the start by a group of its own. */
 async function readAll(topic: string, count: number) {
-  const client = kafkaClient(settings(), {})
+  const client = kafkaClient(settings(), secrets())
   const c = await kafkaConsumer(client, {
     groupId: `reader-${topic}-${Date.now()}`,
     topics: [topic],
@@ -178,7 +193,7 @@ async function readAll(topic: string, count: number) {
 
 /** The group's committed offset of partition 0, through the broker's own tool. */
 async function committed(topic: string, groupId: string): Promise<number | null> {
-  const client = kafkaClient(settings(), {})
+  const client = kafkaClient(settings(), secrets())
   try {
     const admin = await client.admin()
     const [entry] = await admin.fetchOffsets({ groupId, topics: [topic] } as never)
@@ -345,4 +360,40 @@ describe.skipIf(!available)('QueueConsumer: Kafka', () => {
       .toBe('dead_lettered')
     expect((await readAll(dlt, 1))[0]).toMatchObject({ key: 'k' })
   }, 90_000)
+
+  it('decodes Schema Registry values (Avro) for the run, and runs an undecodable one as it came', async () => {
+    const schemaId = registry.register(`m30-orders-value`, {
+      type: 'record',
+      name: 'Order',
+      fields: [
+        { name: 'id', type: 'long' },
+        { name: 'sku', type: 'string' },
+      ],
+    })
+    const { trigger, send, producer } = await subscribed()
+    const framed = await producer.registry!.encode(
+      'm30-orders-value',
+      { id: 9, sku: 'A-9' },
+      AbortSignal.timeout(5000),
+    )
+    const unknown = Buffer.concat([Buffer.from([0, 0, 0, 3, 231]), Buffer.from('?')])
+    await send({ key: 'a', value: framed }, { key: 'b', value: unknown })
+    consumer().start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length, { timeout: 15_000 }).toBe(2)
+    const runs = await runsOf(trigger.id)
+    const byKey = new Map(
+      runs.map((r) => [
+        (r.input as { message: KafkaRunMessage }).message.key,
+        r.input as { data: unknown; message: KafkaRunMessage },
+      ]),
+    )
+    expect(byKey.get('a')).toMatchObject({ data: { id: 9, sku: 'A-9' }, message: { schemaId } })
+    expect(byKey.get('b')!.message.schemaError).toMatch(/Schema not found/)
+    // Its bytes hold NULs, which jsonb can't store: base64, so the run starts (it used to fail forever).
+    expect(byKey.get('b')).toMatchObject({
+      data: unknown.toString('base64'),
+      message: { encoding: 'base64' },
+    })
+    expect(byKey.get('a')!.message.encoding).toBeUndefined()
+  })
 })

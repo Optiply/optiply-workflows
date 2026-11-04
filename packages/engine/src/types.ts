@@ -91,6 +91,12 @@ export interface KafkaRunMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+  /** M30: the Schema Registry's schema the value was decoded with. */
+  schemaId?: number
+  /** M30: why a wire-format value couldn't be decoded (it runs as it came). */
+  schemaError?: string
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /** What a Kinesis-triggered run sees of its record, besides its data (M30). */
@@ -102,6 +108,8 @@ export interface KinesisRunMessage {
   arrivedAt: string
   /** This run's attempt at the record, counting from 1. */
   attempt: number
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /** What a RabbitMQ-triggered run sees of its message, besides its body (M30). */
@@ -117,6 +125,8 @@ export interface RabbitRunMessage {
   contentType?: string
   correlationId?: string
   timestamp?: string
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /** What a Pub/Sub-triggered run sees of its message, besides its data. */
@@ -130,6 +140,8 @@ export interface PubSubRunMessage {
   subscription: string
   /** The data's bytes, for binary payloads `data` can only show as text. */
   dataBase64: string
+  /** M30: `data` is `dataBase64` too (the bytes weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /**

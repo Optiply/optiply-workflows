@@ -72,7 +72,7 @@ export const MESSAGE_QUERIES: Record<
     hint: 'The topic’s name.',
     messages: '{"key": "", "value": {}}',
     messagesHint:
-      'One message or an array of them: {"key": "…", "value": …, "headers": {…}, "partition": 0}. A value that isn’t a string is sent as JSON; null is a tombstone.',
+      'One message or an array of them: {"key": "…", "value": …, "headers": {…}, "partition": 0}. A value that isn’t a string is sent as JSON; null is a tombstone. With a schema registry, "subject": "orders-value" encodes the value by that subject’s latest schema (Avro or JSON Schema).',
   },
 }
 

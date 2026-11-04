@@ -107,6 +107,7 @@ export { type FakeAws, type FakeAwsKey, type FakeAwsRole, startFakeAws } from '.
 export type { FakeSqs, FakeSqsMessage, FakeSqsQueueOptions } from './aws/fake-sqs'
 export { s3Available, startTestS3, type TestS3 } from './aws/test-s3'
 export { startTestGraphql, type TestGraphql } from './graphql-fake'
+export { type FakeRegistry, startFakeRegistry } from './kafka/fake-registry'
 export { kafkaAvailable, startTestKafka, type TestKafka } from './kafka/test-kafka'
 export {
   type FakeDelivery,

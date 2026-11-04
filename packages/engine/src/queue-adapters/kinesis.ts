@@ -7,10 +7,10 @@ import {
 } from '@ow/connectors'
 import { kinesisCheckpoints } from '@ow/db'
 import type { KinesisTrigger } from '@ow/definition'
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { AdapterContext, QueueAdapter, QueueMessage } from '../queue-consumer'
 import type { KinesisRunMessage } from '../types'
-import { textOrJson } from './pubsub'
+import { bodyData } from './pubsub'
 
 type Config = KinesisTrigger &
   Required<Pick<KinesisTrigger, 'startAt' | 'maxAttempts' | 'retryBackoffSeconds'>>
@@ -126,7 +126,9 @@ export function kinesisAdapter(ctx: AdapterContext): QueueAdapter {
           arrivedAt: record.arrivedAt,
           attempt,
         }
-        return { data: textOrJson(record.data.toString('utf8')), message }
+        const body = bodyData(record.data)
+        if (body.binary) message.encoding = 'base64'
+        return { data: body.data, message }
       },
     }
   }

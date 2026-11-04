@@ -27,6 +27,7 @@
     "@smithy/node-http-handler": "^4.14.0",
     "@smithy/signature-v4": "5.7.5",
     "amqplib": "0.10.9",
+    "avsc": "5.7.9",
     "graphql": "16.14.2",
     "mysql2": "3.24.5",
     "postgres": "3.4.9",
