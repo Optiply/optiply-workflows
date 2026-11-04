@@ -20,7 +20,13 @@ Failures answer 200 with {"ok": false, "error": {"kind", "message"}, "log"}: kin
 version, or no wheel), `install`, `too_big`, `timeout`, `platform` (a lock made elsewhere) or `invalid`. Every request
 but /health needs `Authorization: Bearer <PYTHON_BUILDER_TOKEN>`.
 
-A lock is {"platform", "packages": [{"name", "version", "sha256", "index"?}]}, sorted by name; its env is `envs/<envId>/site`
+Packages without a wheel (M32): when pip finds no wheel for a requirement, the builder looks for its sdist on the same
+indexes, downloads it itself (no package code runs to read its metadata), downloads its declared build requirements as
+wheels, and builds the wheel in nsjail (sdist-jail.cfg: no network, no token, not the envs volume). Built wheels are
+kept by the sdist's hash (`envs/.wheels/<sha256>/`); resolving then runs again with them. In the lock such a package
+has its sdist's hash and `"source": "sdist"`. Failures of that build are kind `sdist`.
+
+A lock is {"platform", "packages": [{"name", "version", "sha256", "index"?, "source"?}]}, sorted by name; its env is `envs/<envId>/site`
 (envId: the lock's hash), with `lock.json` beside it and `used` touched whenever a build or install names it. Envs
 unused for PYTHON_ENV_KEEP_DAYS are removed: their locks rebuild them.
 """
@@ -36,12 +42,14 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -56,6 +64,15 @@ BUILD_TIMEOUT_S = float(os.environ.get("PYTHON_BUILD_TIMEOUT_SECONDS", "300"))
 # Indexes over http (a local mirror, the tests' index): only when allowed (M32).
 ALLOW_INSECURE = os.environ.get("PYTHON_ALLOW_INSECURE_INDEXES", "").lower() in ("1", "true", "yes")
 MAX_INDEXES = 5
+# sdists (M32): built in nsjail with these limits; at most this many per build.
+HERE = os.path.dirname(os.path.abspath(__file__))
+NSJAIL = os.environ.get("NSJAIL", "/usr/local/bin/nsjail")
+SDIST_JAIL = os.path.join(HERE, "sdist-jail.cfg")
+SDIST_MEMORY_MB = int(os.environ.get("PYTHON_SDIST_MEMORY_MB", "2048"))
+SDIST_TIMEOUT_S = float(os.environ.get("PYTHON_SDIST_TIMEOUT_SECONDS", "300"))
+MAX_SDISTS = int(os.environ.get("PYTHON_MAX_SDISTS", "10"))
+MAX_SDIST_BYTES = 256 * 1024 * 1024
+WHEELS = os.path.join(ENVS, ".wheels")
 # The workflow editor allows 30; a release moved to another platform comes back as its lock, every package pinned.
 MAX_REQUIREMENTS = 500
 MAX_LOG_CHARS = 64 * 1024
@@ -204,23 +221,52 @@ def pip_env():
 
 
 def resolve(requirements, deadline, indexes=()):
-    """The requirements as a lock: every package pip would install, its version, its wheel's hash and, for one from
-    a named index, that index."""
+    """The requirements as a lock: every package pip would install, its version, its wheel's hash (or its sdist's,
+    for one built here) and, for one from a named index, that index. A requirement pip finds no wheel for is built
+    from its sdist, then resolving runs again with the wheels built so far."""
+    built = {}  # canonical name -> the sdist it was built from
+    logs = []
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "report.json")
-        code, output = pip(
-            PIP
-            + ["install", "--dry-run", "--ignore-installed", "--only-binary", ":all:", "--report", report, "--quiet"]
-            + requirements,  # none starts with "-" (checked): not taken for options
-            deadline,
-            resolve_env(indexes),
-        )
-        if code != 0:
-            raise BuildError("resolve", index_refusal(indexes, deadline) or first_error(output) or "pip couldn't resolve the packages", output)
+        found = os.path.join(tmp, "built")
+        os.mkdir(found)
+        while True:
+            code, output = pip(
+                PIP
+                + ["install", "--dry-run", "--ignore-installed", "--only-binary", ":all:", "--report", report, "--quiet"]
+                + ["--find-links", found]
+                + requirements,  # none starts with "-" (checked): not taken for options
+                deadline,
+                resolve_env(indexes),
+            )
+            logs.append(output)
+            if code == 0:
+                break
+            missing = no_wheel(output)
+            sdist = None
+            if missing is not None and canonical(missing.name) not in built and len(built) < MAX_SDISTS:
+                sdist = find_sdist(missing, indexes, deadline)
+            if sdist is None:
+                message = index_refusal(indexes, deadline) or first_error(output) or "pip couldn't resolve the packages"
+                raise BuildError("resolve", message, "".join(logs))
+            wheel, build_log = sdist_wheel(sdist, indexes, deadline)
+            logs.append(build_log)
+            shutil.copy(wheel, found)
+            built[canonical(sdist["name"])] = sdist
         with open(report) as f:
             data = json.load(f)
+    output = "".join(logs)
     packages = []
     for item in data.get("install", []):
+        name = item["metadata"]["name"]
+        sdist = built.get(canonical(name))
+        url = (item.get("download_info") or {}).get("url", "")
+        if sdist and url.startswith("file:"):
+            entry = {"name": name, "version": item["metadata"]["version"], "sha256": sdist["sha256"], "source": "sdist"}
+            if sdist["index"] is not None:
+                entry["index"] = sdist["index"]
+            packages.append(entry)
+            continue
         info = item.get("download_info") or {}
         hashes = (info.get("archive_info") or {}).get("hashes") or {}
         sha = hashes.get("sha256")
@@ -228,11 +274,246 @@ def resolve(requirements, deadline, indexes=()):
             legacy = (info.get("archive_info") or {}).get("hash", "")
             sha = legacy.split("=", 1)[1] if legacy.startswith("sha256=") else None
         if not sha:
-            raise BuildError("resolve", f"The index gave no sha256 for {item['metadata']['name']}", output)
-        packages.append({"name": item["metadata"]["name"], "version": item["metadata"]["version"], "sha256": sha})
+            raise BuildError("resolve", f"The index gave no sha256 for {name}", output)
+        packages.append({"name": name, "version": item["metadata"]["version"], "sha256": sha})
     packages.sort(key=lambda p: normalize(p["name"]))
     attribute(packages, indexes, deadline)
     return {"platform": PLATFORM, "packages": packages}, output
+
+
+def canonical(name):
+    return normalize(name)
+
+
+def no_wheel(output):
+    """The requirement pip found no wheel for (`Could not find a version that satisfies the requirement X`), parsed,
+    or None."""
+    from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
+
+    match = re.search(r"Could not find a version that satisfies the requirement (\S+)", output)
+    if not match:
+        return None
+    try:
+        requirement = Requirement(match.group(1))
+    except InvalidRequirement:
+        return None
+    return None if requirement.url else requirement
+
+
+def default_index():
+    """PYTHON_PACKAGE_INDEX_URL as an index (its credentials, if the URL carries them, taken out)."""
+    parts = urllib.parse.urlsplit(INDEX_URL)
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    url = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", "")).rstrip("/")
+    username = urllib.parse.unquote(parts.username) if parts.username else None
+    password = urllib.parse.unquote(parts.password) if parts.password else None
+    return {"name": None, "url": url, "username": username, "password": password, "mode": "primary"}
+
+
+def sources(indexes):
+    """Where pip looks, in its order: the primary index (a named one, or the default), then the extra ones."""
+    primary = next((i for i in indexes if i["mode"] == "primary"), None) or default_index()
+    return [primary, *(i for i in indexes if i["mode"] == "extra")]
+
+
+def sdist_links(index, name, deadline):
+    """The sdists on an index's page for a package: [{name, version, sha256, url, filename}] (yanked ones left out)."""
+    from pip._vendor.packaging.utils import InvalidSdistFilename, parse_sdist_filename
+
+    page = index_page(index, name, deadline)
+    base = f"{index['url']}/{normalize(name)}/"
+    links = []
+    for anchor, text in re.findall(r"<a\s([^>]*)>([^<]*)</a>", page, re.IGNORECASE):
+        href = re.search(r'href\s*=\s*"([^"]*)"', anchor)
+        if not href or "data-yanked" in anchor:
+            continue
+        filename = text.strip()
+        if not filename.endswith((".tar.gz", ".zip")):
+            continue
+        sha = re.search(r"#sha256=([0-9a-f]{64})", href.group(1))
+        if not sha:
+            continue
+        try:
+            project, version = parse_sdist_filename(filename)
+        except (InvalidSdistFilename, ValueError):
+            continue
+        if canonical(project) != canonical(name):
+            continue
+        url = urllib.parse.urljoin(base, href.group(1).split("#", 1)[0].replace("&amp;", "&"))
+        links.append({"name": name, "version": version, "sha256": sha.group(1), "url": url, "filename": filename})
+    return links
+
+
+def find_sdist(requirement, indexes, deadline):
+    """The newest sdist the requirement allows on the indexes pip searched (the first index on a tie), or None."""
+    best = None
+    for index in sources(indexes):
+        for link in sdist_links(index, requirement.name, deadline):
+            if not requirement.specifier.contains(link["version"], prereleases=None):
+                continue
+            if best is None or link["version"] > best["version"]:
+                best = {**link, "index": index["name"], "source": index}
+    if best:
+        best["version"] = str(best["version"])
+    return best
+
+
+def fetch(index, url, sha, dest, deadline):
+    """Downloads an sdist, checking its hash; the index's sign-in only goes to the index's own host."""
+    same_host = urllib.parse.urlsplit(url).netloc == urllib.parse.urlsplit(index["url"]).netloc
+    signed = index if same_host else {**index, "username": None, "password": None}
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with index_request(signed, url, deadline) as res, open(dest, "wb") as f:
+            while chunk := res.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_SDIST_BYTES:
+                    raise BuildError("sdist", f"The sdist {os.path.basename(dest)} is over 256 MB")
+                digest.update(chunk)
+                f.write(chunk)
+    except (urllib.error.URLError, OSError) as exc:
+        raise BuildError("sdist", f"Couldn't download {os.path.basename(dest)}: {getattr(exc, 'reason', exc)}") from None
+    if digest.hexdigest() != sha:
+        raise BuildError("sdist", f"{os.path.basename(dest)} doesn't match its sha256 on the index")
+
+
+def build_requirements(path):
+    """The sdist's `build-system.requires` from its pyproject.toml (setuptools' defaults without one), read from the
+    archive without unpacking it."""
+    import tomllib
+
+    from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
+
+    data = None
+    try:
+        if path.endswith(".zip"):
+            with zipfile.ZipFile(path) as z:
+                names = [n for n in z.namelist() if n.count("/") == 1 and n.endswith("/pyproject.toml")]
+                data = z.read(names[0]) if names else None
+        else:
+            with tarfile.open(path, "r:gz") as t:
+                member = next((m for m in t.getmembers() if m.isfile() and m.name.count("/") == 1 and m.name.endswith("/pyproject.toml")), None)
+                data = t.extractfile(member).read() if member else None
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, EOFError) as exc:
+        raise BuildError("sdist", f"{os.path.basename(path)} isn't a readable archive: {exc}") from None
+    system = None
+    if data is not None:
+        try:
+            system = tomllib.loads(data.decode("utf-8")).get("build-system")
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+            raise BuildError("sdist", f"{os.path.basename(path)}'s pyproject.toml can't be read: {exc}") from None
+    requires = system.get("requires") if isinstance(system, dict) else None
+    if requires is None:
+        requires = ["setuptools>=40.8.0", "wheel"]
+    if not isinstance(requires, list) or len(requires) > 50 or not all(isinstance(r, str) for r in requires):
+        raise BuildError("sdist", f"{os.path.basename(path)}'s build-system.requires isn't a list of requirements")
+    for r in requires:
+        try:
+            if Requirement(r).url:
+                raise BuildError("sdist", f"{os.path.basename(path)} needs {r} to build: URLs aren't allowed")
+        except InvalidRequirement:
+            raise BuildError("sdist", f"{os.path.basename(path)}'s build requirement {r!r} isn't one") from None
+    return requires
+
+
+def cached_wheel(sha):
+    """The wheel built from the sdist with this hash, when it's kept (touched, as it's used)."""
+    folder = os.path.join(WHEELS, sha)
+    try:
+        wheels = [n for n in os.listdir(folder) if n.endswith(".whl")]
+    except OSError:
+        return None
+    if len(wheels) != 1:
+        return None
+    os.utime(folder)
+    return os.path.join(folder, wheels[0])
+
+
+def sdist_wheel(sdist, indexes, deadline):
+    """The wheel for an sdist ({name, version, sha256, url, filename, source}): kept, or built now. (path, log)"""
+    with env_lock(f"sdist-{sdist['sha256']}"):
+        wheel = cached_wheel(sdist["sha256"])
+        if wheel:
+            return wheel, f"{sdist['name']} {sdist['version']}: built from source before\n"
+        with tempfile.TemporaryDirectory(prefix="sdist-") as tmp:
+            src, wheelhouse, out = (os.path.join(tmp, d) for d in ("src", "wheelhouse", "out"))
+            for d in (src, wheelhouse, out):
+                os.mkdir(d)
+            path = os.path.join(src, sdist["filename"])
+            fetch(sdist["source"], sdist["url"], sdist["sha256"], path, deadline)
+            log_text = f"{sdist['name']} {sdist['version']}: no wheel, building {sdist['filename']} from source\n"
+            requires = build_requirements(path)
+            if requires:
+                code, output = pip(
+                    PIP + ["download", "--only-binary", ":all:", "--dest", wheelhouse, "--quiet", *requires],
+                    deadline,
+                    resolve_env(indexes),
+                )
+                log_text += output
+                if code != 0:
+                    raise BuildError(
+                        "sdist",
+                        f"{sdist['name']}'s build requirements ({', '.join(requires)}) couldn't be downloaded as wheels: "
+                        + (first_error(output) or "pip found none"),
+                        log_text,
+                    )
+            log_text += jail_build(sdist, path, wheelhouse, out, deadline)
+            wheels = [n for n in os.listdir(out) if n.endswith(".whl")]
+            if len(wheels) != 1:
+                raise BuildError("sdist", f"Building {sdist['filename']} gave no wheel", log_text)
+            os.makedirs(WHEELS, mode=0o700, exist_ok=True)
+            keep = tempfile.mkdtemp(prefix=".tmp-", dir=WHEELS)
+            shutil.copy(os.path.join(out, wheels[0]), keep)
+            final = os.path.join(WHEELS, sdist["sha256"])
+            try:
+                os.rename(keep, final)
+            except OSError:
+                shutil.rmtree(keep, ignore_errors=True)  # there already (another builder process)
+            return cached_wheel(sdist["sha256"]), log_text
+
+
+def jail_build(sdist, path, wheelhouse, out, deadline):
+    """`pip wheel` on the sdist in nsjail, offline: its build requirements from the wheelhouse only. Its output."""
+    seconds = int(max(1, min(SDIST_TIMEOUT_S, deadline - time.monotonic())))
+    args = [
+        NSJAIL, "--config", SDIST_JAIL, "--quiet",
+        "--time_limit", str(seconds),
+        "--rlimit_cpu", str(seconds),
+        "--rlimit_as", str(SDIST_MEMORY_MB),
+        "--bindmount_ro", f"{os.path.dirname(path)}:/src",
+        "--bindmount_ro", f"{wheelhouse}:/wheelhouse",
+        "--bindmount", f"{out}:/out",
+        "--",
+        "/usr/local/bin/python3", "-I", "-m", "pip", "wheel", "--no-index", "--find-links", "/wheelhouse",
+        "--no-deps", "--wheel-dir", "/out", f"/src/{os.path.basename(path)}",
+    ]  # fmt: skip
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=seconds + 10, env={"PATH": "/usr/bin:/bin"})
+    except subprocess.TimeoutExpired:
+        raise BuildError("timeout", f"Building {sdist['filename']} took longer than {seconds} s") from None
+    output = done.stdout + done.stderr
+    if done.returncode != 0:
+        asked = re.search(r"No matching distribution found for (\S+)", output)
+        if asked:
+            message = (
+                f"{sdist['name']}'s build asked for {asked.group(1)}, which its pyproject.toml's build-system.requires "
+                "doesn't declare (builds are offline: only what it declares is there)"
+            )
+        else:
+            message = f"Building {sdist['name']} {sdist['version']} from source failed: " + (
+                last_error(output) or f"exit {done.returncode}"
+            )
+        raise BuildError("sdist", message, output)
+    return output
+
+
+def last_error(output):
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith(("ERROR:", "error:")) or "Error" in line:
+            return line.removeprefix("ERROR:").strip()[:500]
+    return lines[-1][:500] if lines else None
 
 
 def attribute(packages, indexes, deadline):
@@ -243,6 +524,8 @@ def attribute(packages, indexes, deadline):
     primary = next((i for i in indexes if i["mode"] == "primary"), None)
     extras = [i for i in indexes if i["mode"] == "extra"]
     for p in packages:
+        if p.get("source") == "sdist":
+            continue  # named (or not) by where its sdist came from
         found = None
         for index in extras:
             if p["sha256"] in index_page(index, p["name"], deadline):
@@ -338,8 +621,9 @@ def check_lock(lock):
     for p in packages:
         if not (
             isinstance(p, dict)
-            and {"name", "version", "sha256"} <= set(p) <= {"name", "version", "sha256", "index"}
+            and {"name", "version", "sha256"} <= set(p) <= {"name", "version", "sha256", "index", "source"}
             and ("index" not in p or (isinstance(p["index"], str) and INDEX_NAME.match(p["index"])))
+            and p.get("source", "sdist") == "sdist"
             and isinstance(p["name"], str)
             and NAME.match(p["name"])
             and isinstance(p["version"], str)
@@ -417,16 +701,24 @@ def install(lock, deadline, indexes=()):
             site = os.path.join(tmp, "site")
             if lock["packages"]:
                 reqs = os.path.join(tmp, "requirements.txt")
+                lines = []
+                for p in lock["packages"]:
+                    if p.get("source") == "sdist":
+                        wheel, build_log = locked_sdist_wheel(p, indexes, deadline)
+                        output += build_log
+                        lines.append(f"{wheel} --hash=sha256:{file_sha256(wheel)}")
+                    else:
+                        lines.append(f"{p['name']}=={p['version']} --hash=sha256:{p['sha256']}")
                 with open(reqs, "w") as f:
-                    for p in lock["packages"]:
-                        f.write(f"{p['name']}=={p['version']} --hash=sha256:{p['sha256']}\n")
-                code, output = pip(
+                    f.write("\n".join(lines) + "\n")
+                code, pip_output = pip(
                     PIP
                     + ["install", "--no-deps", "--require-hashes", "--only-binary", ":all:", "--target", site, "--quiet"]
                     + ["-r", reqs],
                     deadline,
                     env,
                 )
+                output += pip_output
                 os.unlink(reqs)
                 if code != 0:
                     raise BuildError("install", index_refusal(indexes, deadline) or first_error(output) or "pip couldn't install the packages", output)
@@ -460,16 +752,57 @@ def install(lock, deadline, indexes=()):
                 shutil.rmtree(tmp, ignore_errors=True)
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def locked_sdist_wheel(package, indexes, deadline):
+    """A lock's sdist-built package as a wheel: kept, or its sdist (found by its hash on its index) built again."""
+    wheel = cached_wheel(package["sha256"])
+    if wheel:
+        return wheel, ""
+    if "index" in package:
+        index = next((i for i in indexes if i["name"] == package["index"]), None)
+        if index is None:
+            raise BuildError("invalid", f"The lock needs the package index {package['index']}, which wasn't sent")
+    else:
+        index = default_index()
+    link = next((l for l in sdist_links(index, package["name"], deadline) if l["sha256"] == package["sha256"]), None)
+    if link is None:
+        raise BuildError("sdist", f"The sdist of {package['name']} {package['version']} isn't on its index any more")
+    return sdist_wheel({**link, "version": package["version"], "index": index["name"], "source": index}, indexes, deadline)
+
+
 def unused(used, now):
     """Whether an env's `used` file is older than KEEP_DAYS."""
     return os.path.isfile(used) and now - os.stat(used).st_mtime > KEEP_DAYS * 86400
 
 
 def clean():
-    """Removes envs unused for KEEP_DAYS, and temporary directories a crash left behind."""
+    """Removes envs unused for KEEP_DAYS, wheels built from sdists unused as long, and temporary directories a crash
+    left behind."""
     now = time.time()
+    try:
+        kept = os.listdir(WHEELS)
+    except OSError:
+        kept = []
+    for name in kept:
+        path = os.path.join(WHEELS, name)
+        try:
+            limit = BUILD_TIMEOUT_S * 2 if name.startswith(".tmp-") else KEEP_DAYS * 86400
+            if now - os.stat(path).st_mtime > limit:
+                with env_lock(f"sdist-{name}"):
+                    shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
     for name in os.listdir(ENVS):
         path = os.path.join(ENVS, name)
+        if name == ".wheels":
+            continue
         try:
             if name.startswith(".tmp-"):
                 if now - os.stat(path).st_mtime > BUILD_TIMEOUT_S * 2:

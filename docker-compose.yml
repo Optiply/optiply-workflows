@@ -145,9 +145,10 @@ services:
       retries: 6
       start_period: 5s
 
-  # Installs workflows' Python packages (M23, docs/architecture.md §2.26, docs/runbooks/python.md): pip, wheels only
-  # (no package's code runs here), into envs on the python-envs volume. The only Python service with internet access
-  # (the package index); no privileges, no secrets but its token, no database.
+  # Installs workflows' Python packages (M23, docs/architecture.md §2.26, docs/runbooks/python.md): pip into envs on
+  # the python-envs volume. The only Python service with internet access (the package indexes); no secrets but its
+  # token (an index's password comes with each request that needs it), no database. Wheels install without running
+  # package code; an sdist (M32, §2.35) is built in nsjail, offline: hence the executor's capability and profile.
   python-builder:
     build:
       context: apps/code-executor
@@ -160,9 +161,21 @@ services:
       PYTHON_PACKAGE_INDEX_URL: ${PYTHON_PACKAGE_INDEX_URL:-https://pypi.org/simple}
       PYTHON_ENV_MAX_MB: ${PYTHON_ENV_MAX_MB:-1024}
       PYTHON_ENV_KEEP_DAYS: ${PYTHON_ENV_KEEP_DAYS:-30}
+      # sdists' builds (M32): address space and time per build, how many per set of requirements.
+      PYTHON_SDIST_MEMORY_MB: ${PYTHON_SDIST_MEMORY_MB:-2048}
+      PYTHON_SDIST_TIMEOUT_SECONDS: ${PYTHON_SDIST_TIMEOUT_SECONDS:-300}
+      PYTHON_MAX_SDISTS: ${PYTHON_MAX_SDISTS:-10}
+      # Admin-defined indexes over http (a local mirror): off.
+      PYTHON_ALLOW_INSECURE_INDEXES: ${PYTHON_ALLOW_INSECURE_INDEXES:-}
     volumes:
       - python-envs:/envs
-    mem_limit: 1g
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=./apps/code-executor/seccomp.json
+      - apparmor=unconfined
+    # Two builds at once, a compiler's among them.
+    mem_limit: 2g
+    pids_limit: 512
     networks: [executor, builder-egress]
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]

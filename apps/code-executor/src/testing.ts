@@ -144,7 +144,7 @@ export async function startTestExecutor(
   return { ...(await waitForHealth(name)), token, container: name }
 }
 
-export { buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
+export { buildSdist, buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
 
 export interface TestBuilder {
   url: string
@@ -182,6 +182,8 @@ export async function startTestBuilder(opts: {
       '--rm',
       '--name',
       name,
+      // nsjail for sdist builds (M32), as the executor's.
+      ...EXECUTOR_DOCKER_FLAGS,
       // Docker Desktop knows host.docker.internal; Linux (CI) needs it named.
       '--add-host',
       'host.docker.internal:host-gateway',

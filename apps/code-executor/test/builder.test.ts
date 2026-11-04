@@ -117,13 +117,14 @@ describe.skipIf(!available)('the package builder', () => {
     expect(older.envId).not.toBe(built.envId)
   })
 
-  it('says why pip found nothing to install: no such package, no wheel', async () => {
+  it('says why pip found nothing to install: no such package, no wheel and no buildable sdist', async () => {
     const missing = await call('/build', { requirements: ['owtest-nope'] })
     expect(missing).toMatchObject({ ok: false, error: { kind: 'resolve' } })
     expect(missing.error!.message).toMatch(/owtest-nope/)
+    // No wheel: its sdist is tried (M32), and this one isn't a real archive.
     const sdist = await call('/build', { requirements: ['owtest-c'] })
-    expect(sdist).toMatchObject({ ok: false, error: { kind: 'resolve' } })
-    expect(sdist.log).toMatch(/owtest-c/)
+    expect(sdist).toMatchObject({ ok: false, error: { kind: 'sdist' } })
+    expect(sdist.error!.message).toMatch(/owtest-c-1\.0\.0\.tar\.gz isn't a readable archive/)
     expect(sh(builder, 'ls -A /envs | grep -c "^.tmp-" || true').trim()).toBe('0')
   })
 

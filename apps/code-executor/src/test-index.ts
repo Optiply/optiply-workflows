@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { crc32 } from 'node:zlib'
+import { crc32, gzipSync } from 'node:zlib'
 
 export interface TestPackage {
   name: string
@@ -15,8 +15,14 @@ export interface TestPackage {
   files?: Record<string, string>
   /** `Requires-Dist` lines (`owtest-b>=1`). */
   requires?: string[]
-  /** Served as an sdist only (a `.tar.gz` pip won't take with `--only-binary`). */
+  /** Served as an sdist only (a `.tar.gz` pip won't take with `--only-binary`), and not a real one: unbuildable. */
   sdistOnly?: boolean
+  /**
+   * Served as a real sdist only (M32): its build backend is in the sdist (`backend-path`), so building it needs
+   * nothing but `buildRequires` (its `build-system.requires`). `dynamicRequires` are asked for at build time without
+   * being declared; `hook` is Python run at build time (in the builder's jail) with `files` (path → text) to add to.
+   */
+  sdist?: { buildRequires?: string[]; dynamicRequires?: string[]; hook?: string }
   /** Its index page answers this late the first time: a build that holds the builder's slot a while. */
   delayMs?: number
 }
@@ -61,6 +67,92 @@ export function buildWheel(pkg: TestPackage): { filename: string; data: Buffer }
   ].join('\n')
   files.push([`${dist}.dist-info/RECORD`, Buffer.from(record)])
   return { filename: `${dist}-py3-none-any.whl`, data: zip(files) }
+}
+
+/** The build backend in every test sdist: a wheel of `ow_meta.json`'s files, after the test's hook. */
+const SDIST_BACKEND = `import base64, hashlib, json, os, zipfile
+
+def _meta():
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ow_meta.json")) as f:
+        return json.load(f)
+
+def get_requires_for_build_wheel(config_settings=None):
+    return _meta()["dynamic"]
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    m = _meta()
+    files = dict(m["files"])
+    if m["hook"]:
+        exec(m["hook"], {"files": files})
+    dist = m["name"].replace("-", "_") + "-" + m["version"]
+    files[dist + ".dist-info/METADATA"] = "Metadata-Version: 2.1\\nName: %s\\nVersion: %s\\n%s" % (
+        m["name"], m["version"], "".join("Requires-Dist: %s\\n" % r for r in m["requires"]))
+    files[dist + ".dist-info/WHEEL"] = "Wheel-Version: 1.0\\nGenerator: ow-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n"
+    name = dist + "-py3-none-any.whl"
+    record = []
+    with zipfile.ZipFile(os.path.join(wheel_directory, name), "w") as z:
+        for path, text in files.items():
+            data = text.encode()
+            z.writestr(path, data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            record.append("%s,sha256=%s,%d" % (path, digest, len(data)))
+        record.append(dist + ".dist-info/RECORD,,")
+        z.writestr(dist + ".dist-info/RECORD", "\\n".join(record) + "\\n")
+    return name
+`
+
+/** A real sdist (`<name>-<version>.tar.gz`) with its own build backend (M32). */
+export function buildSdist(pkg: TestPackage): { filename: string; data: Buffer } {
+  const stem = `${pkg.name.replace(/[-.]+/g, '_')}-${pkg.version}`
+  const requires = JSON.stringify(pkg.sdist?.buildRequires ?? [])
+  const files: [string, string][] = [
+    [
+      'pyproject.toml',
+      `[build-system]\nrequires = ${requires}\nbuild-backend = "backend"\nbackend-path = ["."]\n`,
+    ],
+    ['backend.py', SDIST_BACKEND],
+    [
+      'ow_meta.json',
+      JSON.stringify({
+        name: pkg.name,
+        version: pkg.version,
+        requires: pkg.requires ?? [],
+        files: pkg.files ?? {},
+        dynamic: pkg.sdist?.dynamicRequires ?? [],
+        hook: pkg.sdist?.hook ?? '',
+      }),
+    ],
+    ['PKG-INFO', `Metadata-Version: 2.1\nName: ${pkg.name}\nVersion: ${pkg.version}\n`],
+  ]
+  return {
+    filename: `${stem}.tar.gz`,
+    data: gzipSync(tar(files.map(([p, t]) => [`${stem}/${p}`, Buffer.from(t)]))),
+  }
+}
+
+/** A ustar archive of regular files (mode 644, mtime 0): what gzip makes an sdist of. */
+function tar(files: [string, Buffer][]): Buffer {
+  const blocks: Buffer[] = []
+  const octal = (n: number, width: number) => `${n.toString(8).padStart(width - 1, '0')}\0`
+  for (const [path, data] of files) {
+    const header = Buffer.alloc(512)
+    header.write(path, 0, 100, 'utf8')
+    header.write(octal(0o644, 8), 100)
+    header.write(octal(0, 8), 108)
+    header.write(octal(0, 8), 116)
+    header.write(octal(data.length, 12), 124)
+    header.write(octal(0, 12), 136)
+    header.write('        ', 148) // the checksum, as spaces while it's summed
+    header.write('0', 156)
+    header.write('ustar\0', 257)
+    header.write('00', 263)
+    let sum = 0
+    for (const byte of header) sum += byte
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148)
+    blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512))
+  }
+  blocks.push(Buffer.alloc(1024))
+  return Buffer.concat(blocks)
 }
 
 /** A zip with its files stored (not compressed): local headers, the central directory, its end. */
@@ -129,7 +221,9 @@ export async function startTestIndex(
   for (const pkg of packages) {
     const { filename, data } = pkg.sdistOnly
       ? { filename: `${pkg.name}-${pkg.version}.tar.gz`, data: Buffer.from('not really a tarball') }
-      : buildWheel(pkg)
+      : pkg.sdist
+        ? buildSdist(pkg)
+        : buildWheel(pkg)
     files.set(filename, data)
     hashes[`${pkg.name}==${pkg.version}`] = sha256(data)
     const page = links.get(normalize(pkg.name)) ?? []
