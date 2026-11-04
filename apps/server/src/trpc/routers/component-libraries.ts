@@ -9,6 +9,7 @@ import {
   validateComponentLibrary,
 } from '@ow/app-definition'
 import {
+  auditEvents,
   type ComponentLibrary,
   type ComponentLibraryRelease,
   componentLibraries,
@@ -257,12 +258,43 @@ export const componentLibrariesRouter = router({
           message: `Someone else saved this component library since revision ${input.revision}; reload to get their changes`,
         })
       }
+      // A push from the components CLI (M33: a token's save): open editors say so and rebuild their Preview.
+      if (ctx.token) {
+        await ctx.audit({
+          action: 'component_library.draft_pushed',
+          objectType: 'component_library',
+          objectId: library.id,
+          metadata: { revision: saved.revision },
+        })
+      }
       return {
         revision: saved.revision,
         draftHash: await componentLibraryHash(definition),
         diagnostics: validateComponentLibrary(definition).diagnostics,
       }
     }),
+
+  /** The draft's last push from the components CLI (M33): when, by whom, at which revision; null if none. */
+  lastPush: authedProcedure.input(z.object({ componentLibraryId: Id })).query(async ({ ctx, input }) => {
+    const { access, library } = await visibleLibrary(ctx, { id: input.componentLibraryId })
+    requireLevel(access.componentLibraryLevel(library), 'edit', 'this component library')
+    const [row] = await ctx.db
+      .select({ at: auditEvents.at, name: users.name, email: users.email, metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .leftJoin(users, eq(users.id, auditEvents.actorUserId))
+      .where(
+        and(
+          eq(auditEvents.action, 'component_library.draft_pushed'),
+          eq(auditEvents.objectType, 'component_library'),
+          eq(auditEvents.objectId, library.id),
+        ),
+      )
+      .orderBy(desc(auditEvents.at))
+      .limit(1)
+    if (!row) return null
+    const revision = typeof row.metadata?.revision === 'number' ? row.metadata.revision : null
+    return { at: row.at, by: row.name || row.email || 'someone', revision }
+  }),
 
   /**
    * Builds the draft (or a Git branch draft): Edit. The packages are installed from the lock the draft's last build

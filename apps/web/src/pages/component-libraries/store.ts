@@ -53,6 +53,8 @@ export interface ComponentLibraryEditorState {
   ): void
   attach(shared: SharedDefinition<ComponentLibraryDefinition>): void
   remote(): void
+  /** How many changes came from elsewhere (others, a push from the CLI: M33), to notice them. */
+  remoteChanges: number
   connection(status: SaveStatus, saveError: string | null, revision?: number): void
   setDraftHash(definition: ComponentLibraryDefinition, draftHash: string): void
   /** Applies an edit to the shared document; it's checked again, and can be undone. */
@@ -100,8 +102,10 @@ export const useComponentLibraryEditor = create<ComponentLibraryEditorState>()((
 
   remote: () => {
     const { shared, definition } = get()
-    if (shared && shared.value !== definition) set(applied(shared.value))
+    if (shared && shared.value !== definition)
+      set({ ...applied(shared.value), remoteChanges: get().remoteChanges + 1 })
   },
+  remoteChanges: 0,
 
   connection: (status, saveError, revision) =>
     set((s) => ({ status, saveError, revision: revision ?? s.revision })),

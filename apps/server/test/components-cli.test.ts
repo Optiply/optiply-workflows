@@ -147,6 +147,13 @@ describe('the components CLI', () => {
     expect(files['src/Hello.tsx']).toContain('// edited locally')
     expect(files['src/extra.ts']).toBe('export const EXTRA = 1\n')
     expect(lib.liveRelease).toMatchObject({ version: '1.0.0' })
+    // Open editors learn of the push (and rebuild their Preview).
+    expect(
+      data(await admin.query('componentLibraries.lastPush', { componentLibraryId: lib.id })),
+    ).toMatchObject({
+      by: expect.any(String),
+      revision: 2,
+    })
   })
 
   it('refuses to push over a draft someone changed since, unless --force', async () => {
