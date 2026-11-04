@@ -1,4 +1,3 @@
-import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { ApiError, CliError, init, login, type Output, pull, push, pushPrebuilt } from './commands'
 import { dev } from './dev'
@@ -43,12 +42,36 @@ async function readToken(): Promise<string> {
     for await (const chunk of process.stdin) text += chunk
     return text.trim()
   }
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    return (await rl.question('Access token (Settings → Access tokens): ')).trim()
-  } finally {
-    rl.close()
-  }
+  return (await readHidden('Access token (Settings → Access tokens, not shown as you type): ')).trim()
+}
+
+/** A line from the terminal without echoing it (a token is a password): Enter ends it, Ctrl-C cancels. */
+function readHidden(prompt: string): Promise<string> {
+  const stdin = process.stdin
+  process.stdout.write(prompt)
+  stdin.setRawMode(true)
+  stdin.setEncoding('utf8')
+  stdin.resume()
+  return new Promise((resolve, reject) => {
+    let value = ''
+    const finish = (error?: Error) => {
+      stdin.off('data', onData)
+      stdin.setRawMode(false)
+      stdin.pause()
+      process.stdout.write('\n')
+      if (error) reject(error)
+      else resolve(value)
+    }
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') return finish()
+        if (ch === '\u0003') return finish(new CliError('Cancelled'))
+        if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1)
+        else if (ch >= ' ') value += ch
+      }
+    }
+    stdin.on('data', onData)
+  })
 }
 
 async function main(argv: string[]): Promise<number> {
