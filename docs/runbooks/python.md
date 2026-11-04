@@ -107,7 +107,9 @@ A workflow picks one under its Settings → Python packages ("From"); it's `sett
 first line of `requirements.txt`, `# index: <slug>`. Its lock names the index of each package from it, and installs
 of that lock (live runs, rollbacks) fetch from that index again (each file pinned by its hash). The password reaches
 the builder with each request that needs it and goes to pip through its environment (never its command line); it's
-in no lock, env, answer or log. **Test** asks the builder to fetch the index's root signed in. Editing an index
+in no lock, env, answer or log. **Test** asks the builder to fetch the index's root signed in (a 404 there fails it: some indexes list nothing at
+their root, but GitLab's answers 404 to a wrong sign-in). The builder sends the sign-in only to the index's own host,
+and keeps it across a redirect only on that host (never from https to http): files on a CDN or S3 get none. Editing an index
 drops the envs resolved from it (they resolve again on their next run); deleting one is refused while a workflow's
 draft or live release names it. A run whose index is gone, or whose password var has no value in the default
 environment, fails `python_packages` saying which.
@@ -180,7 +182,10 @@ env mounted, `PYTHON_PREIMPORT` and then the env's **roots** imported (the top-l
 other package in it requires: what the workflow asked for, read from the env's `*.dist-info`; one that fails to
 import is skipped). At most `PYTHON_WARM_ENV_JAILS` (4) envs keep one, the least recently run dropped first; an env
 not run for `PYTHON_WARM_ENV_IDLE_SECONDS` (600), or removed from the volume, loses it. They start once the base
-pool is full, one at a time with its jails, and count towards the container's memory like the base pool's. Measured
+pool is full, one at a time with its jails, and count towards the container's memory like the base pool's; one
+holding more than `PYTHON_WARM_ENV_MAX_MB` (256) once its imports are done isn't kept (torch and the like: that env
+runs cold; `/health` says `tooBig`). Pre-imported modules run their import-time code before the block's own, as the
+base pool's do. Measured
 in the executor's tests: a block importing pandas and an env package, p50 30 ms warm against 272 ms cold.
 `PYTHON_WARM_ENV_JAILS=0` turns them off.
 

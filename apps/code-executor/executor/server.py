@@ -71,6 +71,9 @@ ENV_ID = re.compile(r"^[0-9a-f]{32}$")
 WARM_ENV_JAILS = int(os.environ.get("PYTHON_WARM_ENV_JAILS", "4"))
 WARM_ENV_IDLE_S = float(os.environ.get("PYTHON_WARM_ENV_IDLE_SECONDS", "600"))
 MAX_ENV_PREIMPORTS = 20
+# An env's warm jail holding more than this once its imports are done isn't kept (torch and the like): its env runs
+# cold, so idle jails can't take the memory runs need.
+WARM_ENV_MAX_MB = int(os.environ.get("PYTHON_WARM_ENV_MAX_MB", "256"))
 
 run_slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 check_slots = threading.BoundedSemaphore(MAX_CHECKS)
@@ -142,6 +145,17 @@ class Jail:
 
     def alive(self):
         return self.proc.poll() is None
+
+    def memory_used(self):
+        """The jail's memory now (its cgroup's), or None when its cgroup can't be found."""
+        cgroup = self._cgroup()
+        if not cgroup:
+            return None
+        try:
+            with open(os.path.join(cgroup, "memory.current")) as f:
+                return int(f.read())
+        except (OSError, ValueError):
+            return None
 
     def credit_imports(self):
         """A warm jail's memory limit raised by what its imports took, so its run gets the memory a cold one gets
@@ -265,6 +279,8 @@ class Pool:
 
     def _maintain(self):
         while True:
+            # Read before taking our own lock: the env pools' lock is never taken inside it (nor ours in theirs).
+            env_starting = env_pools.starting()
             with self.cond:
                 now = time.monotonic()
                 stale = [j for j in self.ready if now - j.born > WARM_MAX_IDLE_S or not j.alive()]
@@ -272,7 +288,7 @@ class Pool:
                     self.ready.remove(jail)
                 wanted = self.size - len(self.ready) - self.starting
                 # Env jails (M32) starting count towards the parallel limit too.
-                parallel = WARM_START_PARALLEL - self.starting - env_pools.starting()
+                parallel = WARM_START_PARALLEL - self.starting - env_starting
                 start = 0 if now < self.retry_at else max(0, min(wanted, parallel))
                 self.starting += start
             for jail in stale:
@@ -410,7 +426,7 @@ class EnvPools:
             entry = self.envs.get(env_id)
             if entry is None:
                 entry = {"jail": None, "starting": False, "warm": 0, "cold": 0, "failures": 0, "retry_at": 0.0,
-                         "preimport": None}
+                         "preimport": None, "too_big": False}
                 self.envs[env_id] = entry
                 while len(self.envs) > self.size:
                     _, dropped = self.envs.popitem(last=False)
@@ -437,7 +453,13 @@ class EnvPools:
             return {
                 "size": self.size,
                 "envs": {
-                    eid: {"ready": e["jail"] is not None, "starting": e["starting"], "warm": e["warm"], "cold": e["cold"]}
+                    eid: {
+                        "ready": e["jail"] is not None,
+                        "starting": e["starting"],
+                        "tooBig": e["too_big"],
+                        "warm": e["warm"],
+                        "cold": e["cold"],
+                    }
                     for eid, e in self.envs.items()
                 },
             }
@@ -446,6 +468,9 @@ class EnvPools:
         while True:
             stale = []
             start = None
+            # The base pool's state, read before taking our own lock (see Pool._maintain).
+            base_idle = pool.idle()
+            base_starting = pool.starting_count()
             with self.cond:
                 now = time.monotonic()
                 for eid, e in list(self.envs.items()):
@@ -459,10 +484,10 @@ class EnvPools:
                         e["jail"] = None
                 starting = sum(1 for e in self.envs.values() if e["starting"])
                 # After the base pool is full, and one at a time with its jails: the most recently run env first.
-                if pool.idle() and starting + pool.starting_count() < WARM_START_PARALLEL:
+                if base_idle and starting + base_starting < WARM_START_PARALLEL:
                     for eid in reversed(self.envs):
                         e = self.envs[eid]
-                        if e["jail"] is None and not e["starting"] and now >= e["retry_at"]:
+                        if e["jail"] is None and not e["starting"] and not e["too_big"] and now >= e["retry_at"]:
                             e["starting"] = True
                             start = (eid, e)
                             break
@@ -483,7 +508,12 @@ class EnvPools:
                 log("warm_env_roots", env=env_id, modules=roots)
             jail = Jail(WARM_LIMIT_S, warm=True, env_site=site, preimport=entry["preimport"])
             ok = jail.wait_ready(WARM_START_S)
-            if ok and not jail.credit_imports():
+            used = jail.memory_used() if ok else None
+            if used is not None and used > WARM_ENV_MAX_MB * 1024 * 1024:
+                entry["too_big"] = True
+                ok = False
+                log("warm_env_too_big", env=env_id, mb=round(used / 1024 / 1024), max_mb=WARM_ENV_MAX_MB)
+            elif ok and not jail.credit_imports():
                 log("warm_jail_memory", message="Couldn't raise a warm jail's memory limit by its imports")
         except OSError:
             ok = False
@@ -505,7 +535,7 @@ class EnvPools:
                 entry["failures"] += 1
                 entry["retry_at"] = time.monotonic() + min(60, 2 ** entry["failures"])
             self.cond.notify()
-        if not ok:
+        if not ok and not entry["too_big"]:
             log("warm_jail_failed", env=env_id, message="\n".join(errors)[-2000:] or "not ready in time")
 
 

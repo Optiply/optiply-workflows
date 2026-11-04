@@ -4,6 +4,8 @@
  * it by the sdist's hash, and locks the sdist.
  */
 import { execFileSync } from 'node:child_process'
+import { createServer, type IncomingHttpHeaders, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   executorAvailable,
@@ -29,7 +31,11 @@ interface Answer {
 const available = executorAvailable()
 let index: TestIndex
 let privateIndex: TestIndex
+let redirecting: TestIndex
 let builder: TestBuilder
+/** Another host the redirecting index sends its files to: what it was asked, with which headers. */
+let elsewhere: Server
+const elsewhereSaw: IncomingHttpHeaders[] = []
 
 async function call(path: string, body: unknown): Promise<Answer> {
   const res = await fetch(`${builder.url}${path}`, {
@@ -87,7 +93,22 @@ describe.skipIf(!available)("the package builder's sdists", () => {
         },
       },
       { name: 'owtest-untooled', version: '1.0.0', sdist: { buildRequires: ['owtest-absent'] } },
+      // Its build makes a wheel of another project (it would shadow owtest-b).
+      { name: 'owtest-liar', version: '1.0.0', sdist: { wheelName: 'owtest-b' } },
     ])
+    elsewhere = createServer((req, res) => {
+      elsewhereSaw.push(req.headers)
+      res.writeHead(404)
+      res.end()
+    })
+    await new Promise<void>((resolve) => elsewhere.listen(0, '0.0.0.0', resolve))
+    redirecting = await startTestIndex(
+      [{ name: 'owtest-moved', version: '1.0.0', files: { 'owtest_moved.py': 'X = 1\n' }, sdist: {} }],
+      {
+        auth: { username: 'ci', password: 'pw-not-for-elsewhere' },
+        redirectFilesTo: `http://host.docker.internal:${(elsewhere.address() as AddressInfo).port}`,
+      },
+    )
     privateIndex = await startTestIndex(
       [{ name: 'owtest-psrc', version: '2.0.0', files: { 'owtest_psrc.py': 'P = 2\n' }, sdist: {} }],
       { auth: { username: 'ci', password: 'pw-for-sdists' } },
@@ -97,6 +118,8 @@ describe.skipIf(!available)("the package builder's sdists", () => {
   afterAll(async () => {
     await builder?.stop()
     await privateIndex?.stop()
+    await redirecting?.stop()
+    await new Promise((resolve) => elsewhere?.close(resolve))
     await index?.stop()
   })
 
@@ -181,5 +204,37 @@ describe.skipIf(!available)("the package builder's sdists", () => {
       },
     ])
     expect(JSON.stringify(built)).not.toContain('pw-for-sdists')
+  })
+
+  it("refuses a wheel built for another project, and replaces a broken kept wheel's folder", async () => {
+    // pip's own `wheel` refuses it first (the builder's check stands behind it): no lock, nothing kept.
+    const liar = await call('/build', { requirements: ['owtest-liar'] })
+    expect(liar).toMatchObject({ ok: false, error: { kind: 'sdist' } })
+    expect(sh(`ls /envs/.wheels`)).not.toContain(index.hashes['owtest-liar==1.0.0'])
+    const sha = index.hashes['owtest-src==1.0.0']
+    sh(`rm -rf /envs/.wheels/${sha} && mkdir -p /envs/.wheels/${sha} && touch /envs/.wheels/${sha}/junk`)
+    const built = await call('/build', { requirements: ['owtest-src'] })
+    expect(built).toMatchObject({ ok: true })
+    expect(built.log).toContain('building owtest_src-1.0.0.tar.gz from source')
+    expect(sh(`ls /envs/.wheels/${sha}`).trim()).toBe('owtest_src-1.0.0-py3-none-any.whl')
+  })
+
+  it("doesn't send an index's sign-in to another host it redirects to", async () => {
+    const indexes = [
+      {
+        name: 'moved',
+        url: redirecting.url,
+        mode: 'extra',
+        username: 'ci',
+        password: 'pw-not-for-elsewhere',
+      },
+    ]
+    const built = await call('/build', { requirements: ['owtest-moved'], indexes })
+    expect(built).toMatchObject({
+      ok: false,
+      error: { kind: 'sdist', message: expect.stringContaining("Couldn't download") },
+    })
+    expect(elsewhereSaw.length).toBeGreaterThan(0)
+    for (const headers of elsewhereSaw) expect(headers.authorization).toBeUndefined()
   })
 })

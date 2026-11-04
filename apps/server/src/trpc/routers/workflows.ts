@@ -392,14 +392,20 @@ export const workflowsRouter = router({
         )
       } catch (err) {
         if (!(err instanceof BlockFailure)) throw err
-        // Recorded as failed (the state says why), unless the index itself is the problem (said here).
-        if (input.index) {
-          const state = await pythonEnvState(ctx.db, input.requirements, input.index)
-          if (state.available && state.state === 'none') {
-            return { ...state, state: 'failed' as const, error: err.message, log: '', at: new Date() }
+        // A failed build is recorded (the state says why); a failure before it (the index, its password) or an
+        // install of a recorded lock isn't, so the state would still say what it said before: this failure instead.
+        const state = await pythonEnvState(ctx.db, input.requirements, input.index)
+        if (state.available && state.state !== 'failed') {
+          const log = typeof err.details?.log === 'string' ? err.details.log : ''
+          return {
+            available: true as const,
+            state: 'failed' as const,
+            error: err.message,
+            log,
+            at: new Date(),
           }
-          return state
         }
+        return state
       }
       return pythonEnvState(ctx.db, input.requirements, input.index)
     }),

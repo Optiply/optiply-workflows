@@ -257,10 +257,12 @@ def resolve(requirements, deadline, indexes=()):
             data = json.load(f)
     output = "".join(logs)
     packages = []
+    urls = {}  # canonical name -> where pip would download it from
     for item in data.get("install", []):
         name = item["metadata"]["name"]
         sdist = built.get(canonical(name))
         url = (item.get("download_info") or {}).get("url", "")
+        urls[canonical(name)] = url
         if sdist and url.startswith("file:"):
             entry = {"name": name, "version": item["metadata"]["version"], "sha256": sdist["sha256"], "source": "sdist"}
             if sdist["index"] is not None:
@@ -277,7 +279,7 @@ def resolve(requirements, deadline, indexes=()):
             raise BuildError("resolve", f"The index gave no sha256 for {name}", output)
         packages.append({"name": name, "version": item["metadata"]["version"], "sha256": sha})
     packages.sort(key=lambda p: normalize(p["name"]))
-    attribute(packages, indexes, deadline)
+    attribute(packages, urls, indexes, deadline)
     return {"platform": PLATFORM, "packages": packages}, output
 
 
@@ -320,8 +322,7 @@ def sdist_links(index, name, deadline):
     """The sdists on an index's page for a package: [{name, version, sha256, url, filename}] (yanked ones left out)."""
     from pip._vendor.packaging.utils import InvalidSdistFilename, parse_sdist_filename
 
-    page = index_page(index, name, deadline)
-    base = f"{index['url']}/{normalize(name)}/"
+    page, base = index_page(index, name, deadline)
     links = []
     for anchor, text in re.findall(r"<a\s([^>]*)>([^<]*)</a>", page, re.IGNORECASE):
         href = re.search(r'href\s*=\s*"([^"]*)"', anchor)
@@ -360,12 +361,10 @@ def find_sdist(requirement, indexes, deadline):
 
 def fetch(index, url, sha, dest, deadline):
     """Downloads an sdist, checking its hash; the index's sign-in only goes to the index's own host."""
-    same_host = urllib.parse.urlsplit(url).netloc == urllib.parse.urlsplit(index["url"]).netloc
-    signed = index if same_host else {**index, "username": None, "password": None}
     digest = hashlib.sha256()
     size = 0
     try:
-        with index_request(signed, url, deadline) as res, open(dest, "wb") as f:
+        with index_request(index, url, deadline) as res, open(dest, "wb") as f:
             while chunk := res.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_SDIST_BYTES:
@@ -462,6 +461,7 @@ def sdist_wheel(sdist, indexes, deadline):
             wheels = [n for n in os.listdir(out) if n.endswith(".whl")]
             if len(wheels) != 1:
                 raise BuildError("sdist", f"Building {sdist['filename']} gave no wheel", log_text)
+            check_built(sdist, wheels[0], log_text)
             os.makedirs(WHEELS, mode=0o700, exist_ok=True)
             keep = tempfile.mkdtemp(prefix=".tmp-", dir=WHEELS)
             shutil.copy(os.path.join(out, wheels[0]), keep)
@@ -469,8 +469,35 @@ def sdist_wheel(sdist, indexes, deadline):
             try:
                 os.rename(keep, final)
             except OSError:
-                shutil.rmtree(keep, ignore_errors=True)  # there already (another builder process)
-            return cached_wheel(sdist["sha256"]), log_text
+                # There already: kept by another build, or broken (a crash, a cleaning half done): replaced then.
+                if cached_wheel(sdist["sha256"]) is None:
+                    shutil.rmtree(final, ignore_errors=True)
+                    try:
+                        os.rename(keep, final)
+                    except OSError:
+                        pass
+                shutil.rmtree(keep, ignore_errors=True)
+            wheel = cached_wheel(sdist["sha256"])
+            if wheel is None:
+                raise BuildError("sdist", f"The wheel built from {sdist['filename']} couldn't be kept", log_text)
+            return wheel, log_text
+
+
+def check_built(sdist, filename, log_text):
+    """The wheel an sdist built is that project at that version (a build naming another one would shadow it)."""
+    from pip._vendor.packaging.utils import InvalidWheelFilename, parse_wheel_filename
+    from pip._vendor.packaging.version import Version
+
+    try:
+        project, version, _build, _tags = parse_wheel_filename(filename)
+    except InvalidWheelFilename:
+        raise BuildError("sdist", f"Building {sdist['filename']} gave {filename}, not a wheel's name", log_text) from None
+    if canonical(project) != canonical(sdist["name"]) or version != Version(sdist["version"]):
+        raise BuildError(
+            "sdist",
+            f"Building {sdist['filename']} gave a wheel of {project} {version}, not {sdist['name']} {sdist['version']}",
+            log_text,
+        )
 
 
 def jail_build(sdist, path, wheelhouse, out, deadline):
@@ -516,43 +543,90 @@ def last_error(output):
     return lines[-1][:500] if lines else None
 
 
-def attribute(packages, indexes, deadline):
-    """Each package's index, when it's a named one: with a primary index only, all of them; else the named index
-    whose page for the package lists its file's hash (the default index's packages have none)."""
+def attribute(packages, urls, indexes, deadline):
+    """Each package's index, when it's a named one. Where pip would download it from names it when exactly one of
+    the indexes pip searched has that URL's prefix (its URL without `/simple`); else the extra index whose page for
+    the package lists its file's hash (a page that can't be read fails the build: a guess would make a lock that
+    can't be installed again); else the primary one, if named (the default index's packages have none)."""
     if not indexes:
         return
     primary = next((i for i in indexes if i["mode"] == "primary"), None)
     extras = [i for i in indexes if i["mode"] == "extra"]
+    searched = sources(indexes)
     for p in packages:
         if p.get("source") == "sdist":
             continue  # named (or not) by where its sdist came from
-        found = None
-        for index in extras:
-            if p["sha256"] in index_page(index, p["name"], deadline):
-                found = index
-                break
-        if found is None:
-            found = primary
-        if found is not None:
+        url = urls.get(canonical(p["name"]), "")
+        matches = [i for i in searched if url.startswith(index_root(i))]
+        if len(matches) == 1:
+            found = matches[0]
+        else:
+            found = None
+            for index in extras:
+                page, _base = index_page(index, p["name"], deadline, strict=True)
+                if p["sha256"] in page:
+                    found = index
+                    break
+            if found is None:
+                found = primary
+        if found is not None and found["name"] is not None:
             p["index"] = found["name"]
 
 
+def index_root(index):
+    """The URL an index's files are likely under: its own without a final `/simple` (`https://host/api/pypi/x/`)."""
+    url = index["url"].rstrip("/")
+    return (url[: -len("/simple")] if url.endswith("/simple") else url) + "/"
+
+
+class SignedRedirects(urllib.request.HTTPRedirectHandler):
+    """Redirects keep an index's sign-in only on the index's own host, and never from https to http (the header is
+    added unredirected, so urllib's own copying leaves it out)."""
+
+    def __init__(self, auth, host):
+        super().__init__()
+        self.auth = auth
+        self.host = host
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and self.auth:
+            target = urllib.parse.urlsplit(new.full_url)
+            downgraded = urllib.parse.urlsplit(req.full_url).scheme == "https" and target.scheme == "http"
+            if target.netloc == self.host and not downgraded:
+                new.add_unredirected_header("Authorization", self.auth)
+        return new
+
+
 def index_request(index, url, deadline):
+    """A GET to an index: signed in only when the URL is on the index's own host (and only there after redirects)."""
     request = urllib.request.Request(url, headers={"Accept": "text/html", "User-Agent": "ow-python-builder"})
-    if index["username"] is not None:
+    host = urllib.parse.urlsplit(index["url"]).netloc
+    auth = None
+    if index["username"] is not None and urllib.parse.urlsplit(url).netloc == host:
         token = f"{index['username']}:{index['password'] or ''}".encode()
-        request.add_header("Authorization", "Basic " + base64.b64encode(token).decode())
+        auth = "Basic " + base64.b64encode(token).decode()
+        request.add_unredirected_header("Authorization", auth)
     timeout = max(1, min(30, deadline - time.monotonic()))
-    return urllib.request.urlopen(request, timeout=timeout)
+    return urllib.request.build_opener(SignedRedirects(auth, host)).open(request, timeout=timeout)
 
 
-def index_page(index, name, deadline):
-    """The index's simple page for a package (PEP 503), or "" when it has none."""
+def index_page(index, name, deadline, strict=False):
+    """The index's simple page for a package (PEP 503) and the URL it was served from (for its relative links): ""
+    when it has none (404). Other failures: "" too, or with `strict` a BuildError."""
+    url = f"{index['url']}/{normalize(name)}/"
     try:
-        with index_request(index, f"{index['url']}/{normalize(name)}/", deadline) as res:
-            return res.read(8 * 1024 * 1024).decode("utf-8", "replace")
-    except (urllib.error.URLError, OSError, ValueError):
-        return ""
+        with index_request(index, url, deadline) as res:
+            return res.read(8 * 1024 * 1024).decode("utf-8", "replace"), res.geturl()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404 or not strict:
+            return "", url
+        raise BuildError("resolve", f"Package index {index['name']} answered {exc.code} for {name}'s page") from None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        if not strict:
+            return "", url
+        reason = getattr(exc, "reason", exc)
+        raise BuildError("resolve", f"Package index {index['name']}'s page for {name} couldn't be read: {reason}") from None
 
 
 def probe(index, deadline):
@@ -568,9 +642,14 @@ def probe(index, deadline):
         if index["username"] is None:
             return False, status, "The index wants a sign-in: add a username and password"
         return False, status, "The index refused the sign-in: check the username and password"
-    if status >= 400 and status != 404:
+    if status == 404:
+        # Some indexes list nothing at their root; others (GitLab's) answer 404 to a wrong sign-in.
+        return False, status, (
+            "The index answered 404 at its root: check the URL (and the sign-in: some indexes, GitLab's among them, "
+            "answer 404 when it's wrong)"
+        )
+    if status >= 400:
         return False, status, f"The index answered {status}"
-    # 404: signed in, but its root lists nothing (some private indexes): packages' pages still answer.
     return True, status, None
 
 
@@ -578,8 +657,8 @@ def index_refusal(indexes, deadline):
     """When a build fails: a named index that refuses its sign-in or can't be reached says so (pip, quiet, often
     only says it found nothing)."""
     for index in indexes:
-        ok, _status, message = probe(index, min(deadline, time.monotonic() + 20))
-        if not ok:
+        ok, status, message = probe(index, min(deadline, time.monotonic() + 20))
+        if not ok and status != 404:  # a 404 root isn't sure to be the problem: pip's own words then
             return f"Package index {index['name']}: {message[0].lower()}{message[1:]}"
     return None
 

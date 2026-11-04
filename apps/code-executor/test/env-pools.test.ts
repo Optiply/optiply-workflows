@@ -29,7 +29,7 @@ interface Outcome {
 }
 interface EnvPoolStats {
   size: number
-  envs: Record<string, { ready: boolean; starting: boolean; warm: number; cold: number }>
+  envs: Record<string, { ready: boolean; starting: boolean; tooBig: boolean; warm: number; cold: number }>
 }
 
 async function build(requirements: string[]): Promise<string> {
@@ -165,7 +165,7 @@ describe.skipIf(!available)('the warm pool per env', () => {
     expect(broken).toMatchObject({ ok: false, warm: true })
   })
 
-  it('drops the jail of an env not run for a while, and takes none with PYTHON_WARM_ENV_JAILS=0', async () => {
+  it('drops the jail of an env not run for a while, keeps none too big, and none with PYTHON_WARM_ENV_JAILS=0', async () => {
     const envId = await build(['owtest-c'])
     const quick = await startTestExecutor({
       envsVolume: volume.name,
@@ -174,6 +174,11 @@ describe.skipIf(!available)('the warm pool per env', () => {
     const none = await startTestExecutor({
       envsVolume: volume.name,
       env: { PYTHON_WARM_JAILS: '0', PYTHON_WARM_ENV_JAILS: '0' },
+    })
+    // An env's warm jail holding more than PYTHON_WARM_ENV_MAX_MB once ready isn't kept: its env runs cold.
+    const small = await startTestExecutor({
+      envsVolume: volume.name,
+      env: { PYTHON_WARM_JAILS: '0', PYTHON_WARM_ENV_MAX_MB: '1' },
     })
     try {
       await run('return 1', envId, quick)
@@ -193,9 +198,15 @@ describe.skipIf(!available)('the warm pool per env', () => {
       await run('return 1', envId, none)
       expect(await run('return 1', envId, none)).toMatchObject({ ok: true, warm: false })
       expect((await envPools(none)).envs).toEqual({})
+      await run('return 1', envId, small)
+      await expect
+        .poll(async () => (await envPools(small)).envs[envId]?.tooBig, { timeout: 30_000 })
+        .toBe(true)
+      expect(await run('return 1', envId, small)).toMatchObject({ ok: true, warm: false })
     } finally {
       await quick.stop()
       await none.stop()
+      await small.stop()
     }
   })
 })

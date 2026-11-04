@@ -22,7 +22,7 @@ export interface TestPackage {
    * nothing but `buildRequires` (its `build-system.requires`). `dynamicRequires` are asked for at build time without
    * being declared; `hook` is Python run at build time (in the builder's jail) with `files` (path → text) to add to.
    */
-  sdist?: { buildRequires?: string[]; dynamicRequires?: string[]; hook?: string }
+  sdist?: { buildRequires?: string[]; dynamicRequires?: string[]; hook?: string; wheelName?: string }
   /** Its index page answers this late the first time: a build that holds the builder's slot a while. */
   delayMs?: number
 }
@@ -84,7 +84,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     files = dict(m["files"])
     if m["hook"]:
         exec(m["hook"], {"files": files})
-    dist = m["name"].replace("-", "_") + "-" + m["version"]
+    dist = (m.get("wheel_name") or m["name"]).replace("-", "_") + "-" + m["version"]
     files[dist + ".dist-info/METADATA"] = "Metadata-Version: 2.1\\nName: %s\\nVersion: %s\\n%s" % (
         m["name"], m["version"], "".join("Requires-Dist: %s\\n" % r for r in m["requires"]))
     files[dist + ".dist-info/WHEEL"] = "Wheel-Version: 1.0\\nGenerator: ow-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n"
@@ -120,6 +120,7 @@ export function buildSdist(pkg: TestPackage): { filename: string; data: Buffer }
         files: pkg.files ?? {},
         dynamic: pkg.sdist?.dynamicRequires ?? [],
         hook: pkg.sdist?.hook ?? '',
+        ...(pkg.sdist?.wheelName && { wheel_name: pkg.sdist.wheelName }),
       }),
     ],
     ['PKG-INFO', `Metadata-Version: 2.1\nName: ${pkg.name}\nVersion: ${pkg.version}\n`],
@@ -209,7 +210,11 @@ function zip(files: [string, Buffer][]): Buffer {
  */
 export async function startTestIndex(
   packages: TestPackage[],
-  opts: { auth?: { username: string; password: string } } = {},
+  opts: {
+    auth?: { username: string; password: string }
+    /** Files (not pages) answer a 302 to this base URL's `/files/<name>` (another host, in tests). */
+    redirectFilesTo?: string
+  } = {},
 ): Promise<TestIndex> {
   const expected = opts.auth
     ? `Basic ${Buffer.from(`${opts.auth.username}:${opts.auth.password}`).toString('base64')}`
@@ -257,6 +262,11 @@ export async function startTestIndex(
       return
     }
     const file = /^\/files\/([^/]+)$/.exec(path)
+    if (file && opts.redirectFilesTo) {
+      res.writeHead(302, { location: `${opts.redirectFilesTo}/files/${file[1]}` })
+      res.end()
+      return
+    }
     if (file && files.has(file[1]!)) {
       res.writeHead(200, { 'content-type': 'application/octet-stream' })
       res.end(files.get(file[1]!))

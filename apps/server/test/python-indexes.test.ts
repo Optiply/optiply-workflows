@@ -314,6 +314,17 @@ describe.skipIf(!available)('package indexes on the server', { timeout: 120_000 
       status: 'failed',
       error: { code: 'python_packages', message: expect.stringContaining('EMPTY_SECRET') },
     })
+    // The editor's Install now says so too (the failure comes before any build, so nothing records it).
+    const [flow] = await env.db.select().from(workflows).where(eq(workflows.slug, 'idx-draft'))
+    expect(
+      data(
+        await admin.mutate('workflows.installPythonEnv', {
+          workflowId: flow!.id,
+          requirements: ['owtest-private', 'owtest-psrc'],
+          index: 'private',
+        }),
+      ),
+    ).toMatchObject({ state: 'failed', error: expect.stringContaining('EMPTY_SECRET') })
     data(await admin.mutate('pythonIndexes.update', { id, ...indexFields() }))
     expect(await run('idx-draft')).toMatchObject({ status: 'succeeded' })
   })

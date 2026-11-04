@@ -121,6 +121,7 @@ services:
       # A warm jail per workflow env (M32): for this many envs at most, dropped when not run for the idle time.
       PYTHON_WARM_ENV_JAILS: ${PYTHON_WARM_ENV_JAILS:-4}
       PYTHON_WARM_ENV_IDLE_SECONDS: ${PYTHON_WARM_ENV_IDLE_SECONDS:-600}
+      PYTHON_WARM_ENV_MAX_MB: ${PYTHON_WARM_ENV_MAX_MB:-256}  # an env's warm jail holding more isn't kept
     cap_add: [SYS_ADMIN]
     security_opt:
       - seccomp=./apps/code-executor/seccomp.json
