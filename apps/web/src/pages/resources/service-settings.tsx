@@ -1,7 +1,7 @@
 import { ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL } from '@ow/connectors/ai-models'
 import { oauthPresets } from '@ow/connectors/oauth-presets'
 import { useQuery } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { Field, Input, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { RedirectUri } from './oauth'
@@ -472,18 +472,44 @@ export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) 
   )
 }
 
-/** A whole number or a price from a text box: empty is none. */
-function numberField(props: FieldsProps, key: string, integer: boolean) {
-  return {
-    value: props.config[key] === undefined ? '' : String(props.config[key]),
-    disabled: props.disabled,
-    inputMode: 'decimal' as const,
-    onChange: (e: { target: { value: string } }) => {
-      const text = e.target.value.trim()
-      const n = integer ? Number.parseInt(text, 10) : Number(text)
-      props.set(key, text === '' || !Number.isFinite(n) ? undefined : n)
-    },
+/**
+ * A whole number or a price in a text box: what's typed stays as typed (`1.` on the way to `1.25`), the setting is its
+ * value (empty: none). A setting changed elsewhere (another environment's) replaces the text.
+ */
+function NumberInput({
+  props,
+  name,
+  integer,
+  ...rest
+}: {
+  props: FieldsProps
+  name: string
+  integer: boolean
+  placeholder: string
+  'data-testid': string
+}) {
+  const stored = props.config[name] === undefined ? '' : String(props.config[name])
+  const [text, setText] = useState(stored)
+  const parse = (t: string) => {
+    const n = integer ? Number.parseInt(t, 10) : Number(t)
+    return t.trim() === '' || !Number.isFinite(n) ? undefined : n
   }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a change from outside the box resets it
+  useEffect(() => {
+    if (parse(text) !== props.config[name]) setText(stored)
+  }, [stored])
+  return (
+    <Input
+      {...rest}
+      value={text}
+      disabled={props.disabled}
+      inputMode="decimal"
+      onChange={(e) => {
+        setText(e.target.value)
+        props.set(name, parse(e.target.value))
+      }}
+    />
+  )
 }
 
 /** What both AI resources share (M35): the run's token budget, prompts kept out of run history, private networks. */
@@ -494,7 +520,7 @@ function AiCommonFields({ props, privateHint }: { props: FieldsProps; privateHin
         label="Token budget per run"
         hint="Input and output tokens a run's AI calls may use in all, across its blocks; a call is refused once they're spent. Empty: no limit."
       >
-        <Input {...numberField(props, 'budgetTokens', true)} placeholder="200000" data-testid="ai-budget" />
+        <NumberInput props={props} name="budgetTokens" integer placeholder="200000" data-testid="ai-budget" />
       </Field>
       <Checkbox
         label="Hide prompts in run history"
@@ -531,9 +557,10 @@ export function AnthropicFields(props: FieldsProps) {
           hint="Blocks and queries that name no model use this one. Any model id works."
         >
           <Input
-            value={String(props.config.model ?? DEFAULT_ANTHROPIC_MODEL)}
+            value={String(props.config.model ?? '')}
             disabled={props.disabled}
-            onChange={(e) => props.set('model', e.target.value.trim() || DEFAULT_ANTHROPIC_MODEL)}
+            placeholder={DEFAULT_ANTHROPIC_MODEL}
+            onChange={(e) => props.set('model', e.target.value.trim() || undefined)}
             list="anthropic-models"
             data-testid="ai-model"
           />
@@ -604,15 +631,19 @@ export function OpenAiCompatibleFields(props: FieldsProps) {
       />
       <Grid>
         <Field label="Input price" hint="US dollars per million input tokens, for the cost. Empty: unknown.">
-          <Input
-            {...numberField(props, 'inputPrice', false)}
+          <NumberInput
+            props={props}
+            name="inputPrice"
+            integer={false}
             placeholder="1.25"
             data-testid="ai-input-price"
           />
         </Field>
         <Field label="Output price" hint="US dollars per million output tokens.">
-          <Input
-            {...numberField(props, 'outputPrice', false)}
+          <NumberInput
+            props={props}
+            name="outputPrice"
+            integer={false}
             placeholder="10"
             data-testid="ai-output-price"
           />

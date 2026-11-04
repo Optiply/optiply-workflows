@@ -196,6 +196,8 @@ export const anthropicConnector: Connector<Config, Secrets, typeof querySchema._
           ...init,
           headers: Object.fromEntries(new Headers(init.headers).entries()),
           dispatcher: agent,
+          // Never followed (the SDK then reports the 3xx): a redirect could lead past the private-network guard.
+          redirect: 'manual',
         } as Parameters<typeof undiciFetch>[1])) as unknown as typeof fetch,
     })
     return { config: resource.config, sdk, agent, hasKey: !!resource.secrets.apiKey }

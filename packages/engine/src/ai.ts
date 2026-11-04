@@ -1,9 +1,8 @@
+import { AI_RESOURCE_TYPES, tokensOf } from '@ow/connectors'
 import type { BlockResult } from './types'
 
 // AI calls in runs (M35, docs/architecture.md §2.38): the run's token budget, and the run log's line per call. The
 // calls themselves are resource queries on AI resources (the connectors' `ai/`).
-
-const AI_PROVIDERS: ReadonlySet<unknown> = new Set(['anthropic', 'openai_compatible'])
 
 interface Usage {
   inputTokens?: number
@@ -16,17 +15,18 @@ interface Usage {
 function aiMetadata(metadata: unknown): (Record<string, unknown> & { usage: Usage }) | null {
   if (!metadata || typeof metadata !== 'object') return null
   const m = metadata as Record<string, unknown>
-  if (!AI_PROVIDERS.has(m.provider) || !m.usage || typeof m.usage !== 'object') return null
+  if (typeof m.provider !== 'string' || !AI_RESOURCE_TYPES.has(m.provider)) return null
+  if (!m.usage || typeof m.usage !== 'object') return null
   return m as Record<string, unknown> & { usage: Usage }
 }
 
 function tokens(usage: Usage): number {
-  return (
-    (usage.inputTokens ?? 0) +
-    (usage.outputTokens ?? 0) +
-    (usage.cacheReadTokens ?? 0) +
-    (usage.cacheWriteTokens ?? 0)
-  )
+  return tokensOf({
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+  })
 }
 
 /**

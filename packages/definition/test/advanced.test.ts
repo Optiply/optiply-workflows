@@ -633,6 +633,27 @@ describe('AI agents’ tools (M35)', () => {
       ['unpublished_workflow', 'blocks.1.config.query.tools'],
       ['unknown_workflow', 'blocks.2.config.runner.query.tools'],
     ])
+    const dynamic = validateDefinition(
+      withFunctions(
+        [
+          start,
+          {
+            name: 'a',
+            type: 'resourceQuery',
+            config: {
+              resource: 'claude',
+              query: { action: 'agent', prompt: 'x', tools: '{{ startTrigger.data.tool }}' },
+            },
+          },
+        ],
+        [['startTrigger', 'a']],
+        [],
+      ),
+      { resolveWorkflow: () => 'published' },
+    ).diagnostics
+    expect(dynamic.map((x) => [x.code, x.path.join('.')])).toEqual([
+      ['invalid_query', 'blocks.1.config.query.tools'],
+    ])
   })
 })
 

@@ -245,7 +245,16 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
                     }))
                   : []
         for (const call of calls) {
-          if (call.slug.includes('{{')) continue
+          if (call.slug.includes('{{')) {
+            report({
+              code: 'invalid_query',
+              message: 'An agent’s tools are workflow slugs written out, not {{ }} expressions',
+              path: [...path, 'blocks', i, ...call.at],
+              block: block.name,
+              ...(fn && { function: fn.name }),
+            })
+            continue
+          }
           const state = options.resolveWorkflow!(call.slug)
           if (state === 'published') continue
           report({

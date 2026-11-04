@@ -36,6 +36,9 @@ export const ANTHROPIC_MODELS = [
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-5-5'
 
+/** The AI resource types (M35): their queries' metadata has the provider, model, usage and cost. */
+export const AI_RESOURCE_TYPES: ReadonlySet<string> = new Set(['anthropic', 'openai_compatible'])
+
 /** Models Anthropic's server-side refusal fallback (`fallbacks: "default"`) accepts. */
 export const FALLBACK_MODELS: ReadonlySet<string> = new Set([
   'claude-fable-5-1',

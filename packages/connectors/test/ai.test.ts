@@ -454,7 +454,7 @@ describe('the agent', () => {
       {
         slug: 'lookup-customer',
         input: { email: 'email from the text' },
-        callId: expect.stringMatching(/^toolu_/),
+        callId: expect.stringMatching(/^0\.0:toolu_/),
       },
     ])
     expect(result.data).toEqual({
@@ -610,5 +610,133 @@ describe('the agent', () => {
       answer: 'Done: There\'s no tool named "delete-everything"',
       steps: [],
     })
+  })
+})
+
+describe('review fixes (M35 step 7)', () => {
+  it('sends strict structured output only for schemas strict mode takes', async () => {
+    const { strictCompatible } = await import('../src/ai/openai')
+    expect(
+      strictCompatible({
+        type: 'object',
+        properties: {
+          a: { type: 'string' },
+          b: { type: 'object', properties: {}, additionalProperties: false },
+        },
+        required: ['a', 'b'],
+        additionalProperties: false,
+      }),
+    ).toBe(true)
+    expect(
+      strictCompatible({ type: 'object', properties: { a: {} }, required: [], additionalProperties: false }),
+    ).toBe(false)
+    expect(strictCompatible({ type: 'object', properties: { a: {} }, required: ['a'] })).toBe(false)
+    const before = fake.requests.length
+    await run(openaiCompatibleConnector, openai(), {
+      action: 'extract',
+      input: 'Ada',
+      schema:
+        '{"type":"object","properties":{"name":{"type":"string"},"phone":{"type":"string"}},"required":["name"]}',
+    })
+    const format = fake.requests[before]!.body.response_format as { json_schema: { strict: boolean } }
+    expect(format.json_schema.strict).toBe(false)
+    // Not OpenAI's own host: max_tokens.
+    expect(fake.requests[before]!.body).toHaveProperty('max_tokens')
+  })
+
+  it('never follows a redirect', async () => {
+    fake.next('openai', {
+      status: 302,
+      body: {},
+      headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+    })
+    const openaiError = await failure(
+      run(openaiCompatibleConnector, openai(), { action: 'generate', prompt: 'x' }),
+    )
+    expect(openaiError).toMatchObject({ code: 'http', message: expect.stringContaining('169.254.169.254') })
+    fake.next('anthropic', {
+      status: 302,
+      body: {},
+      headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+    })
+    const anthropicError = await failure(
+      run(anthropicConnector, anthropic(), { action: 'generate', prompt: 'x' }),
+    )
+    expect(anthropicError.message).toContain('302')
+  })
+
+  it('fails answers that stopped early for other reasons than Max tokens', async () => {
+    const stop = (reason: string) =>
+      fake.next('anthropic', {
+        body: {
+          id: 'msg_stop',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-5-5',
+          content: [{ type: 'text', text: 'Half a sum' }],
+          stop_reason: reason,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      })
+    stop('model_context_window_exceeded')
+    expect(
+      await failure(run(anthropicConnector, anthropic(), { action: 'summarize', input: 'long' })),
+    ).toMatchObject({ code: 'ai_max_tokens', message: expect.stringContaining('context window') })
+    stop('pause_turn')
+    expect(
+      await failure(run(anthropicConnector, anthropic(), { action: 'generate', prompt: 'x' })),
+    ).toMatchObject({
+      code: 'ai_invalid_output',
+      message: expect.stringContaining('pause_turn'),
+    })
+  })
+
+  it('keys each agent tool call apart even when the server repeats or leaves out ids', async () => {
+    const keys: string[] = []
+    const ai: AiRunContext = {
+      tools: {
+        describe: async (slugs) =>
+          slugs.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })),
+        run: async (_slug, _input, _signal, key) => {
+          keys.push(key)
+          return { ok: true, data: { n: keys.length }, runId: `run-${keys.length}` }
+        },
+      },
+    }
+    fake.next('openai', {
+      body: {
+        model: 'fake-llm',
+        choices: [
+          {
+            index: 0,
+            finish_reason: 'tool_calls',
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                { id: 'call_0', type: 'function', function: { name: 'lookup', arguments: '{"a":1}' } },
+                { id: 'call_0', type: 'function', function: { name: 'lookup', arguments: '{"a":2}' } },
+                { type: 'function', function: { name: 'lookup', arguments: '{"a":3}' } },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      },
+    })
+    const before = fake.requests.length
+    const result = await run(
+      openaiCompatibleConnector,
+      openai(),
+      { action: 'agent', prompt: 'x', tools: 'lookup' },
+      {},
+      ai,
+    )
+    expect(new Set(keys).size).toBe(3)
+    expect((result.data as { steps: unknown[] }).steps).toHaveLength(3)
+    const sent = fake.requests[before + 1]!.body.messages as { role: string; tool_call_id?: string }[]
+    const ids = sent.filter((m) => m.role === 'tool').map((m) => m.tool_call_id)
+    expect(new Set(ids).size).toBe(3)
   })
 })

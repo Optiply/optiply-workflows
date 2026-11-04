@@ -1,3 +1,4 @@
+import { AI_RESOURCE_TYPES } from '@ow/connectors/ai-models'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -477,7 +478,7 @@ interface AgentStepView {
 function aiMetaOf(block: BlockView & { data: unknown }): AiMeta | null {
   for (const m of [block.metadata, block.error?.details] as unknown[]) {
     const meta = m as Partial<AiMeta> | null | undefined
-    if (meta && (meta.provider === 'anthropic' || meta.provider === 'openai_compatible') && meta.usage) {
+    if (meta && typeof meta.provider === 'string' && AI_RESOURCE_TYPES.has(meta.provider) && meta.usage) {
       return meta as AiMeta
     }
   }

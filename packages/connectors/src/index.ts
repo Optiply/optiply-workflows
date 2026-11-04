@@ -30,11 +30,13 @@ export { anthropicConnector } from './ai/anthropic'
 export type { AiRunContext, AiToolHost, AiToolSpec } from './ai/core'
 export { openaiCompatibleConnector } from './ai/openai'
 export {
+  AI_RESOURCE_TYPES,
   type AiUsage,
   ANTHROPIC_MODELS,
   ANTHROPIC_PRICES,
   costOf,
   DEFAULT_ANTHROPIC_MODEL,
+  tokensOf,
 } from './ai/prices'
 export { aiStats } from './ai/stats'
 export { type FlowSandbox, runAuthFlow } from './auth-flow'

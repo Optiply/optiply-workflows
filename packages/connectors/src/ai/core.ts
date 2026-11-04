@@ -87,12 +87,12 @@ export interface AiRunContext {
 /** Workflows as an agent's tools (M35, step 3): their descriptions, and running one with an input. */
 export interface AiToolHost {
   describe(slugs: string[]): Promise<AiToolSpec[]>
-  /** Runs the workflow (a child run, keyed by the model's call id so a retried call doesn't start another). */
+  /** Runs the workflow (a child run, keyed by `callKey`: the turn, the call's place in it and its id). */
   run(
     slug: string,
     input: unknown,
     signal: AbortSignal,
-    callId: string,
+    callKey: string,
   ): Promise<{ ok: boolean; data: unknown; runId: string | null }>
 }
 
@@ -265,13 +265,7 @@ export async function executeAiQuery(
         metadata,
       )
     }
-    if (completion.answer.stopReason === 'max_tokens') {
-      throw new ConnectorError(
-        'ai_max_tokens',
-        `The answer was cut off at ${request.maxTokens} tokens: raise Max tokens`,
-        metadata,
-      )
-    }
+    stoppedEarly(completion.answer, request, metadata)
     return { data: read(completion.answer), metadata }
   } catch (err) {
     if (!(err instanceof ConnectorError)) {
@@ -313,6 +307,37 @@ export async function completeCounted(
   }
   ctx.ai?.budget?.add(tokensOf(answer.usage))
   return { answer, durationMs: Date.now() - started }
+}
+
+/**
+ * An answer that stopped before it was finished: cut off at Max tokens or the model's context window, or any stop the
+ * actions don't expect (an agent's `tool_use` aside). Refusals are reported before this.
+ */
+export function stoppedEarly(
+  answer: AiCompletion,
+  request: Pick<AiCompletionRequest, 'maxTokens'>,
+  metadata: Record<string, unknown>,
+): void {
+  if (answer.stopReason === 'end' || answer.stopReason === 'tool_use') return
+  if (answer.stopReason === 'max_tokens') {
+    throw new ConnectorError(
+      'ai_max_tokens',
+      `The answer was cut off at ${request.maxTokens} tokens: raise Max tokens`,
+      metadata,
+    )
+  }
+  if (answer.stopReason === 'model_context_window_exceeded') {
+    throw new ConnectorError(
+      'ai_max_tokens',
+      "The input and answer didn't fit in the model's context window: shorten the input",
+      metadata,
+    )
+  }
+  throw new ConnectorError(
+    'ai_invalid_output',
+    `The model stopped before finishing (${answer.stopReason})`,
+    metadata,
+  )
 }
 
 /** Refuses a call when the run has spent the resource's budget already. */

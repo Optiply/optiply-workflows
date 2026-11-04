@@ -1,3 +1,4 @@
+import { AI_RESOURCE_TYPES } from '@ow/connectors/ai-models'
 import { QUEUE_TRIGGER_KINDS } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
@@ -9,9 +10,6 @@ import { scopeDeclarations } from './scope-types'
 import { graphOf, useEditor } from './store'
 
 export type { CodeFieldProps, FieldProblem } from '@/components/code/code-field'
-
-/** The AI resource types (M35): their queries' data is typed from the action. */
-const AI_TYPES: ReadonlySet<string> = new Set(['anthropic', 'openai_compatible'])
 
 export interface WorkflowCodeFieldProps extends CodeFieldProps {
   /** Where the field's text sits in the definition, to edit it together with others (M16). */
@@ -34,7 +32,9 @@ export default function WorkflowCodeField({ text: at, removeEmpty, ...props }: W
   const { data: resources } = useQuery(trpc.resources.list.queryOptions())
   const aiResources = useMemo(
     () =>
-      new Set<string>((resources?.resources ?? []).filter((r) => AI_TYPES.has(r.type)).map((r) => r.slug)),
+      new Set<string>(
+        (resources?.resources ?? []).filter((r) => AI_RESOURCE_TYPES.has(r.type)).map((r) => r.slug),
+      ),
     [resources],
   )
   const scope = useMemo(() => {

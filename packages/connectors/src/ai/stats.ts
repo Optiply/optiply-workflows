@@ -20,6 +20,17 @@ const KINDS = [
   ['cache_write', 'cacheWriteTokens'],
 ] as const
 
+/** Model labels seen; past this many, others count as `other` (a model can be any text, even a template's value). */
+const MAX_MODELS = 100
+const models = new Set<string>()
+
+function modelLabel(model: string): string {
+  if (models.has(model)) return model
+  if (models.size >= MAX_MODELS) return 'other'
+  models.add(model)
+  return model
+}
+
 function add(map: Map<string, number>, key: string, n: number): void {
   map.set(key, (map.get(key) ?? 0) + n)
 }
@@ -31,11 +42,12 @@ export function countAiCall(
   outcome: string,
   answered?: { usage: AiUsage; costUsd: number | null },
 ): void {
-  add(aiStats.calls, `${provider}\t${model}\t${outcome}`, 1)
+  const label = modelLabel(model)
+  add(aiStats.calls, `${provider}\t${label}\t${outcome}`, 1)
   if (!answered) return
   for (const [kind, field] of KINDS) {
     const n = answered.usage[field]
-    if (n) add(aiStats.tokens, `${provider}\t${model}\t${kind}`, n)
+    if (n) add(aiStats.tokens, `${provider}\t${label}\t${kind}`, n)
   }
-  if (answered.costUsd) add(aiStats.costUsd, `${provider}\t${model}`, answered.costUsd)
+  if (answered.costUsd) add(aiStats.costUsd, `${provider}\t${label}`, answered.costUsd)
 }

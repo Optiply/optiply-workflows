@@ -86,7 +86,11 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
             })),
       ),
     ],
-    max_tokens: request.maxTokens,
+    // OpenAI's own API (and Azure's) takes max_completion_tokens (its reasoning models refuse max_tokens); other
+    // OpenAI-compatible servers still know max_tokens only.
+    ...(usesCompletionTokens(client.config.baseUrl)
+      ? { max_completion_tokens: request.maxTokens }
+      : { max_tokens: request.maxTokens }),
     ...(request.tools?.length && {
       tools: request.tools.map((t) => ({
         type: 'function',
@@ -96,7 +100,9 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
     ...(request.schema && {
       response_format: {
         type: 'json_schema',
-        json_schema: { name: 'answer', schema: request.schema, strict: true },
+        // Strict mode refuses schemas with optional properties or open objects: those are sent non-strict (the
+        // answer is checked against the schema here either way).
+        json_schema: { name: 'answer', schema: request.schema, strict: strictCompatible(request.schema) },
       },
     }),
   }
@@ -119,11 +125,14 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
           cacheRead: client.config.inputPrice,
         }
       : undefined
-  const toolCalls = (choice?.message?.tool_calls ?? []).flatMap((call) =>
-    call.function?.name
-      ? [{ id: call.id, name: call.function.name, input: parseArguments(call.function.arguments) }]
-      : [],
-  )
+  // A server that leaves ids out (or repeats them) gets ids of our own, so each result goes back to its call.
+  const seen = new Set<string>()
+  const toolCalls = (choice?.message?.tool_calls ?? []).flatMap((call, i) => {
+    if (!call.function?.name) return []
+    if (!call.id || seen.has(call.id)) call.id = `call_${i}_${seen.size}`
+    seen.add(call.id)
+    return [{ id: call.id, name: call.function.name, input: parseArguments(call.function.arguments) }]
+  })
   return {
     text: choice?.message?.content ?? '',
     ...(toolCalls.length && {
@@ -148,6 +157,30 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
     refusalCategory: refused ? (choice?.message?.refusal ?? 'content_filter') : null,
     costUsd: costOf(usage, price),
   }
+}
+
+/** OpenAI's API and Azure OpenAI's take `max_completion_tokens`. */
+function usesCompletionTokens(baseUrl: string): boolean {
+  const host = new URL(baseUrl).hostname
+  return host === 'api.openai.com' || host.endsWith('.openai.azure.com')
+}
+
+/**
+ * Whether OpenAI's strict structured outputs take the schema: every object lists all its properties as required and
+ * has `additionalProperties: false`, all the way down.
+ */
+export function strictCompatible(schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object') return true
+  if (Array.isArray(schema)) return schema.every(strictCompatible)
+  const s = schema as Record<string, unknown>
+  if (s.type === 'object' || s.properties) {
+    const keys = Object.keys((s.properties as Record<string, unknown> | undefined) ?? {})
+    const required = new Set(Array.isArray(s.required) ? s.required : [])
+    if (s.additionalProperties !== false || !keys.every((k) => required.has(k))) return false
+  }
+  return Object.entries(s).every(([key, value]) =>
+    key === 'enum' || key === 'const' || key === 'required' ? true : strictCompatible(value),
+  )
 }
 
 /** A tool call's arguments: JSON text, kept as text when it isn't JSON (the workflow sees what the model wrote). */
@@ -183,6 +216,9 @@ async function call(
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
         dispatcher: client.agent,
+        // Never followed: a redirect could lead past the private-network guard (an address written out isn't looked
+        // up). A 3xx is an error naming where it pointed.
+        redirect: 'manual',
         signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]),
       })
     } catch (err) {
@@ -202,6 +238,14 @@ async function call(
       throw new ConnectorError(
         'connection',
         `Couldn't reach ${url}: ${(cause as Error)?.message ?? (err as Error).message}`,
+      )
+    }
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel()
+      throw new ConnectorError(
+        'http',
+        `The API answered ${res.status}, redirecting to ${res.headers.get('location') ?? 'nowhere'}: use that address as the base URL`,
+        { status: res.status },
       )
     }
     const text = await res.text()

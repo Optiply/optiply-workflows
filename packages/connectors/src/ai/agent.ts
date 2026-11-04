@@ -10,6 +10,7 @@ import {
   type AiToolResult,
   completeCounted,
   describe,
+  stoppedEarly,
 } from './core'
 import type { AiUsage } from './prices'
 import { countAiCall } from './stats'
@@ -105,11 +106,13 @@ export async function runAgent(
     const outcome =
       answer.stopReason === 'refusal'
         ? 'ai_refused'
-        : answer.stopReason === 'max_tokens'
+        : answer.stopReason === 'max_tokens' || answer.stopReason === 'model_context_window_exceeded'
           ? 'ai_max_tokens'
-          : calls.length && turn >= maxSteps
-            ? 'ai_max_steps'
-            : 'ok'
+          : answer.stopReason !== 'end' && answer.stopReason !== 'tool_use'
+            ? 'ai_invalid_output'
+            : calls.length && turn >= maxSteps
+              ? 'ai_max_steps'
+              : 'ok'
     countAiCall(provider.name, answer.model, outcome, answer)
     if (outcome === 'ai_refused') {
       throw new ConnectorError(
@@ -118,13 +121,7 @@ export async function runAgent(
         { ...metadata(answer), steps },
       )
     }
-    if (outcome === 'ai_max_tokens') {
-      throw new ConnectorError(
-        'ai_max_tokens',
-        `The answer was cut off at ${request.maxTokens} tokens: raise Max tokens`,
-        { ...metadata(answer), steps },
-      )
-    }
+    stoppedEarly(answer, request, { ...metadata(answer), steps })
     if (!calls.length) {
       return { data: { answer: answer.text, steps }, metadata: metadata(answer) }
     }
@@ -135,8 +132,11 @@ export async function runAgent(
         { ...metadata(answer), steps },
       )
     }
-    const results = await mapLimited(calls, TOOL_CONCURRENCY, (call) =>
-      callTool(call, slugs, host, ctx.signal, steps),
+    // Each call's child run is keyed by the turn, its place in it and the provider's id (which some servers repeat).
+    const results = await mapLimited(
+      calls.map((call, i) => ({ call, key: `${turn}.${i}:${call.id}` })),
+      TOOL_CONCURRENCY,
+      ({ call, key }) => callTool(call, key, slugs, host, ctx.signal, steps),
     )
     request.turns!.push({ kind: 'assistant', raw: answer.raw }, { kind: 'results', results })
   }
@@ -144,6 +144,7 @@ export async function runAgent(
 
 async function callTool(
   call: AiToolCall,
+  key: string,
   slugs: readonly string[],
   host: NonNullable<NonNullable<QueryContext['ai']>['tools']>,
   signal: AbortSignal,
@@ -155,7 +156,7 @@ async function callTool(
   const step: AgentStep = { workflow: call.name, input: call.input, runId: null, ok: false }
   steps.push(step)
   try {
-    const result = await host.run(call.name, call.input, signal, call.id)
+    const result = await host.run(call.name, call.input, signal, key)
     step.runId = result.runId
     step.ok = result.ok
     return { id: call.id, content: clip(JSON.stringify(result.data ?? null)), isError: !result.ok }

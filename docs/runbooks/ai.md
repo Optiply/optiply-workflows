@@ -46,9 +46,13 @@ only the resource's settings are used.
    shown as "cost unknown", never 0.
 6. **Test connection** asks `GET /models`.
 
-Calls are `POST <base>/chat/completions`; extract and classify use `response_format: json_schema` with `strict`, the
-agent function calling (`tools`, `tool_calls`). A provider that doesn't support structured output fails
-`ai_invalid_output` (the answer isn't JSON, or doesn't match).
+Calls are `POST <base>/chat/completions`; extract and classify use `response_format: json_schema`, **strict** only
+when the schema allows it (every property required and `additionalProperties: false` on every object; otherwise sent
+non-strict and checked here), the agent function calling (`tools`, `tool_calls`). The answer's length is
+`max_completion_tokens` for OpenAI's own API and Azure OpenAI (their reasoning models refuse `max_tokens`), `max_tokens`
+for every other server. A provider that doesn't support structured output fails `ai_invalid_output` (the answer isn't
+JSON, or doesn't match). Redirects are never followed (by either type): a base URL that answers 3xx fails `http`,
+naming where it pointed; use that address.
 
 ## Budgets and costs
 
@@ -67,6 +71,7 @@ agent function calling (`tools`, `tool_calls`). A provider that doesn't support 
 
 Metrics (Prometheus, `/metrics`):
 
+- Model labels are the first 100 distinct models a process sees; later ones count as `model="other"`.
 - `ow_ai_calls_total{provider,model,outcome}`: `outcome` is `ok` or the error's code (`ai_budget`, `ai_refused`,
   `ai_max_tokens`, `ai_invalid_output`, `ai_max_steps`, `http`, `timeout`, …).
 - `ow_ai_tokens_total{provider,model,kind}`: `kind` is `input`, `output`, `cache_read`, `cache_write`.
@@ -85,7 +90,8 @@ These are per process (API and worker each): sum them.
 
 ## The agent
 
-- **Workflows it may call**: slugs written out (the picker under the field adds published ones). Each is offered to the
+- **Workflows it may call**: slugs written out, never `{{ }}` (the editor reports one; the picker under the field
+  adds published ones). Each is offered to the
   model by its slug, its **description** (Workflow settings; write it for the model: what it does, what it returns) and
   its **webhook trigger's body schema** (none: any object). Write the body schema: it's how the model knows the input.
 - Each tool call is a **child run** of the workflow's **live release** in the run's environment, as a Workflow block
@@ -104,8 +110,8 @@ These are per process (API and worker each): sum them.
 | --- | --- | --- |
 | `ai_budget` | The run had spent the resource's token budget | Raise the budget, or make fewer or smaller calls |
 | `ai_refused` | The model declined (Anthropic's category in the message, e.g. `cyber`) | Rephrase; with Anthropic, keep Fall back on refusal on |
-| `ai_max_tokens` | The answer was cut off at Max tokens | Raise **Max tokens** on the query (default 16,000) |
-| `ai_invalid_output` | Extract/classify: the answer isn't JSON or doesn't match the schema (`details.answer` has it) | Simplify the schema; add `required` and `additionalProperties: false`; a stronger model |
+| `ai_max_tokens` | The answer was cut off at Max tokens, or the input and answer didn't fit the model's context window | Raise **Max tokens** on the query (default 16,000); shorten the input |
+| `ai_invalid_output` | Extract/classify: the answer isn't JSON or doesn't match the schema (`details.answer` has it); or the model stopped early for another reason (named in the message) | Simplify the schema; add `required` and `additionalProperties: false`; a stronger model |
 | `ai_max_steps` | The agent was still calling tools after Max steps | Clearer instructions, better tool descriptions, more steps |
 | `http` 401 | The key is wrong or revoked | Replace the key; Test connection |
 | `http` 429 | Rate limited after 2 retries | The provider's limits; fewer concurrent runs (workflow concurrency) |
