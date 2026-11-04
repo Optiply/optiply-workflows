@@ -118,12 +118,15 @@ services:
       PYTHON_MAX_CONCURRENT: ${PYTHON_MAX_CONCURRENT:-4}
       PYTHON_WARM_JAILS: ${PYTHON_WARM_JAILS:-4}
       PYTHON_PREIMPORT: ${PYTHON_PREIMPORT-numpy,pandas}  # set it empty for none
+      # A warm jail per workflow env (M32): for this many envs at most, dropped when not run for the idle time.
+      PYTHON_WARM_ENV_JAILS: ${PYTHON_WARM_ENV_JAILS:-4}
+      PYTHON_WARM_ENV_IDLE_SECONDS: ${PYTHON_WARM_ENV_IDLE_SECONDS:-600}
     cap_add: [SYS_ADMIN]
     security_opt:
       - seccomp=./apps/code-executor/seccomp.json
       - apparmor=unconfined
     # The jails' memory counts here too: PYTHON_MAX_CONCURRENT x PYTHON_MEMORY_MB, plus ~45 MB per warm jail (numpy
-    # and pandas imported) and the server.
+    # and pandas imported; an env's warm jail its packages too) and the server.
     mem_limit: 2g
     pids_limit: 512
     networks: [executor]

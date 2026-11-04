@@ -7,7 +7,8 @@ The code executor: runs Python code blocks for the workflow workers, each in a f
                prints it, then {"outcome": {"ok", "result" | "error"}} as the last line.
   POST /check  {"fields": [{"id": "...", "code": "..."}]} -> {"ok": true, "problems": [...]}
   GET  /health -> {"ok": true, "python": "3.12.x", "packages": {...}, "pool": {"ready", "starting", ...}}
-Runs say whether they ran in a warm jail ("warm"): one started ahead, its packages imported, used once.
+Runs say whether they ran in a warm jail ("warm"): one started ahead, its packages imported, used once. Runs in a
+workflow's env (M32) get warm jails of their own after the env's first run: one per env, for a few envs at a time.
 
 Every request but /health needs `Authorization: Bearer <PYTHON_EXECUTOR_TOKEN>`. The standard library only: nothing
 is installed outside the jail. The server holds no secrets but its token; the jail sees none.
@@ -65,6 +66,11 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 # Workflows' packages (M23): envs the builder installed (`<envId>/site`), mounted read-only into the jail.
 ENVS = os.environ.get("PYTHON_ENVS_DIR", "/envs")
 ENV_ID = re.compile(r"^[0-9a-f]{32}$")
+# The warm pool per env (M32): one warm jail for each of this many envs at most, the least recently run dropped first;
+# an env not run for PYTHON_WARM_ENV_IDLE_SECONDS gets none. Its jail also imports the env's roots (below).
+WARM_ENV_JAILS = int(os.environ.get("PYTHON_WARM_ENV_JAILS", "4"))
+WARM_ENV_IDLE_S = float(os.environ.get("PYTHON_WARM_ENV_IDLE_SECONDS", "600"))
+MAX_ENV_PREIMPORTS = 20
 
 run_slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 check_slots = threading.BoundedSemaphore(MAX_CHECKS)
@@ -91,7 +97,7 @@ class Jail:
     limits allow for the time it may wait in the pool (the runner lowers its CPU limit once the request arrives,
     and the server keeps the request's deadline)."""
 
-    def __init__(self, seconds, warm=False, env_site=None):
+    def __init__(self, seconds, warm=False, env_site=None, preimport=PREIMPORT):
         self.warm = warm
         self.born = time.monotonic()
         self.result_r, result_w = os.pipe()
@@ -108,7 +114,7 @@ class Jail:
             "--cgroup_mem_max", str(MEMORY_MB * 1024 * 1024),
         ]
         if warm:
-            args += ["--env", f"OW_WARM={result_w}", "--env", f"OW_PREIMPORT={PREIMPORT}"]
+            args += ["--env", f"OW_WARM={result_w}", "--env", f"OW_PREIMPORT={preimport}"]
         if env_site:
             # The workflow's packages, ahead of the image's on sys.path (the runner puts them there).
             args += ["--bindmount_ro", f"{env_site}:/opt/env", "--env", "OW_ENV=/opt/env"]
@@ -248,6 +254,15 @@ class Pool:
         with self.cond:
             return {"size": self.size, "ready": len(self.ready), "starting": self.starting, **self.served}
 
+    def idle(self):
+        """Whether the pool is full, nothing of its own starting (env jails may start then)."""
+        with self.cond:
+            return self.starting == 0 and len(self.ready) >= self.size
+
+    def starting_count(self):
+        with self.cond:
+            return self.starting
+
     def _maintain(self):
         while True:
             with self.cond:
@@ -256,7 +271,9 @@ class Pool:
                 for jail in stale:
                     self.ready.remove(jail)
                 wanted = self.size - len(self.ready) - self.starting
-                start = 0 if now < self.retry_at else max(0, min(wanted, WARM_START_PARALLEL - self.starting))
+                # Env jails (M32) starting count towards the parallel limit too.
+                parallel = WARM_START_PARALLEL - self.starting - env_pools.starting()
+                start = 0 if now < self.retry_at else max(0, min(wanted, parallel))
                 self.starting += start
             for jail in stale:
                 jail.close()
@@ -293,6 +310,206 @@ class Pool:
 
 
 pool = Pool(WARM_JAILS)
+
+
+def env_roots(site):
+    """The top-level modules of an env's roots: its packages no other package in it requires (so, mostly, what the
+    workflow asked for), as its `*.dist-info` metadata says. Read outside the jail, never imported here."""
+    dists = {}
+    try:
+        names = os.listdir(site)
+    except OSError:
+        return []
+    for name in names:
+        if not name.endswith(".dist-info"):
+            continue
+        path = os.path.join(site, name)
+        project, requires = None, []
+        try:
+            with open(os.path.join(path, "METADATA"), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        break  # the headers end; the description follows
+                    key, _, value = line.partition(":")
+                    if key == "Name":
+                        project = canonical(value.strip())
+                    elif key == "Requires-Dist" and "extra ==" not in value and "extra==" not in value:
+                        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", value)
+                        if match:
+                            requires.append(canonical(match.group(1)))
+        except OSError:
+            continue
+        if project:
+            dists[project] = (path, requires)
+    required = {r for _, requires in dists.values() for r in requires}
+    modules = []
+    for project in sorted(dists):
+        if project in required:
+            continue
+        for module in top_level(dists[project][0]):
+            if module not in modules:
+                modules.append(module)
+    return modules[:MAX_ENV_PREIMPORTS]
+
+
+def canonical(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+MODULE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def top_level(dist_info):
+    """A distribution's importable top-level modules: `top_level.txt`, else the first parts of RECORD's paths. Private
+    ones (`_cffi_backend`) are left out."""
+    try:
+        with open(os.path.join(dist_info, "top_level.txt"), encoding="utf-8") as f:
+            names = [line.strip().replace("/", ".").split(".")[0] for line in f]
+    except OSError:
+        names = []
+        try:
+            with open(os.path.join(dist_info, "RECORD"), encoding="utf-8") as f:
+                for line in f:
+                    first = line.split(",", 1)[0].split("/")[0]
+                    if first.endswith(".py"):
+                        names.append(first[:-3])
+                    elif "/" in line.split(",", 1)[0] and not first.endswith((".dist-info", ".data")) and first != "..":
+                        names.append(first)
+                    elif first.endswith((".so", ".pyd")):
+                        names.append(first.split(".")[0])
+        except OSError:
+            return []
+    found = []
+    for name in names:
+        if MODULE.match(name) and name not in found and name != "__pycache__":
+            found.append(name)
+    return found
+
+
+class EnvPools:
+    """Warm jails for workflows' envs (M32): after an env's run, one jail for it, started ahead with its env mounted
+    and its roots imported (after PREIMPORT), used once and replaced like the base pool's. At most WARM_ENV_JAILS
+    envs have one (the least recently run is dropped); an env not run for WARM_ENV_IDLE_S, or no longer installed,
+    loses its jail. They start after the base pool is full, one at a time with its jails."""
+
+    def __init__(self, size):
+        self.size = size
+        self.envs = collections.OrderedDict()  # envId -> its entry, least recently run first
+        self.cond = threading.Condition()
+
+    def start(self):
+        if self.size > 0:
+            threading.Thread(target=self._maintain, daemon=True).start()
+
+    def take(self, env_id):
+        """The env's ready jail, or None (the run starts a cold one); either way the env is now wanted warm."""
+        if self.size <= 0:
+            return None
+        stale = []
+        with self.cond:
+            entry = self.envs.get(env_id)
+            if entry is None:
+                entry = {"jail": None, "starting": False, "warm": 0, "cold": 0, "failures": 0, "retry_at": 0.0,
+                         "preimport": None}
+                self.envs[env_id] = entry
+                while len(self.envs) > self.size:
+                    _, dropped = self.envs.popitem(last=False)
+                    if dropped["jail"]:
+                        stale.append(dropped["jail"])
+            self.envs.move_to_end(env_id)
+            entry["last"] = time.monotonic()
+            jail, entry["jail"] = entry["jail"], None
+            if jail is not None and not jail.alive():
+                stale.append(jail)
+                jail = None
+            entry["warm" if jail else "cold"] += 1
+            self.cond.notify()
+        for old in stale:
+            old.close()
+        return jail
+
+    def starting(self):
+        with self.cond:
+            return sum(1 for e in self.envs.values() if e["starting"])
+
+    def stats(self):
+        with self.cond:
+            return {
+                "size": self.size,
+                "envs": {
+                    eid: {"ready": e["jail"] is not None, "starting": e["starting"], "warm": e["warm"], "cold": e["cold"]}
+                    for eid, e in self.envs.items()
+                },
+            }
+
+    def _maintain(self):
+        while True:
+            stale = []
+            start = None
+            with self.cond:
+                now = time.monotonic()
+                for eid, e in list(self.envs.items()):
+                    gone = not os.path.isfile(os.path.join(ENVS, eid, "lock.json"))
+                    if now - e["last"] > WARM_ENV_IDLE_S or gone:
+                        del self.envs[eid]
+                        if e["jail"]:
+                            stale.append(e["jail"])
+                    elif e["jail"] and (now - e["jail"].born > WARM_MAX_IDLE_S or not e["jail"].alive()):
+                        stale.append(e["jail"])
+                        e["jail"] = None
+                starting = sum(1 for e in self.envs.values() if e["starting"])
+                # After the base pool is full, and one at a time with its jails: the most recently run env first.
+                if pool.idle() and starting + pool.starting_count() < WARM_START_PARALLEL:
+                    for eid in reversed(self.envs):
+                        e = self.envs[eid]
+                        if e["jail"] is None and not e["starting"] and now >= e["retry_at"]:
+                            e["starting"] = True
+                            start = (eid, e)
+                            break
+            for jail in stale:
+                jail.close()
+            if start:
+                threading.Thread(target=self._start_one, args=start, daemon=True).start()
+            with self.cond:
+                self.cond.wait(timeout=1)
+
+    def _start_one(self, env_id, entry):
+        jail = None
+        site = os.path.join(ENVS, env_id, "site")
+        try:
+            if entry["preimport"] is None:
+                roots = env_roots(site)
+                entry["preimport"] = ",".join([*(n for n in PREIMPORT.split(",") if n.strip()), *roots])
+                log("warm_env_roots", env=env_id, modules=roots)
+            jail = Jail(WARM_LIMIT_S, warm=True, env_site=site, preimport=entry["preimport"])
+            ok = jail.wait_ready(WARM_START_S)
+            if ok and not jail.credit_imports():
+                log("warm_jail_memory", message="Couldn't raise a warm jail's memory limit by its imports")
+        except OSError:
+            ok = False
+        errors = []
+        if not ok and jail is not None:
+            jail.kill()
+            errors = jail.jail_errors()
+            jail.close()
+            jail = None
+        with self.cond:
+            entry["starting"] = False
+            if self.envs.get(env_id) is not entry:  # dropped while it started
+                if jail:
+                    threading.Thread(target=jail.close, daemon=True).start()
+            elif ok:
+                entry["jail"] = jail
+                entry["failures"] = 0
+            else:
+                entry["failures"] += 1
+                entry["retry_at"] = time.monotonic() + min(60, 2 ** entry["failures"])
+            self.cond.notify()
+        if not ok:
+            log("warm_jail_failed", env=env_id, message="\n".join(errors)[-2000:] or "not ready in time")
+
+
+env_pools = EnvPools(WARM_ENV_JAILS)
 
 
 class Execution:
@@ -569,7 +786,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/health":
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
         self.send_json(
-            HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "packages": PACKAGES, "pool": pool.stats()}
+            HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "packages": PACKAGES, "pool": pool.stats(), "envPools": env_pools.stats()}
         )
 
     def do_POST(self):
@@ -634,9 +851,11 @@ class Handler(BaseHTTPRequestHandler):
                 message = f"The workflow's Python packages aren't installed here (env {env_id}): the builder installs them"
                 outcome = {"ok": False, "error": {"kind": "python_packages", "message": message}, "logs": []}
             else:
-                # Runs take a warm jail when one is ready (a warm jail's mounts are fixed: never for packages);
-                # checks start their own (they have their own limits).
-                jail = pool.take() if self.path == "/run" and not env_id else None
+                # Runs take a warm jail when one is ready: the base pool's, or the env's own (a warm jail's mounts
+                # are fixed); checks start their own (they have their own limits).
+                jail = None
+                if self.path == "/run":
+                    jail = env_pools.take(env_id) if env_id else pool.take()
                 outcome = Execution(request, timeout_ms, emit, env_site).run(self.client_gone, jail)
         finally:
             slots.release()
@@ -694,6 +913,7 @@ def main():
         sys.exit("PYTHON_EXECUTOR_TOKEN must be set (16 characters or more)")
     PACKAGES = packages()
     pool.start()
+    env_pools.start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
     log(
@@ -702,6 +922,7 @@ def main():
         max_concurrent=MAX_CONCURRENT,
         memory_mb=MEMORY_MB,
         warm_jails=WARM_JAILS,
+        warm_env_jails=WARM_ENV_JAILS,
         preimport=PREIMPORT,
         packages=PACKAGES,
     )

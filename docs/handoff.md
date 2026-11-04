@@ -2021,7 +2021,7 @@ M32 (Python's last follow-ups: a warm pool per package env, private package inde
 6. **Done-when and docs:** `m32-done-when.spec.ts` (a private index with a password, a package from it and an sdist-only package, the second run warm); `docs/runbooks/python.md` (indexes, sdists, the per-env pool); §9 entry, "As built".
 7. **Review** (the `code-review` skill, high), fixes, full e2e. The user's Compose stack only when they say.
 
-**Progress:** step 0 committed. The user is away (away mode): steps 1–7 built, checked and committed one by one; the branch pushed at the end, no PR; the Compose stack untouched (migration 0037).
+**Progress:** step 0 committed. The user is away (away mode): steps 1–7 built, checked and committed one by one; the branch pushed at the end, no PR; the Compose stack untouched (migration 0037). Step 1 (`EnvPools` in `server.py`, `env_roots` from the env's `*.dist-info`, the runner skipping a root that raises `SystemExit`; `test/env-pools.test.ts`, 4 tests; executor suite 51): measured in the test containers, a run in a package env importing pandas p50 **30 ms warm** (20/20 warm) vs 272 ms cold. Env jails start only when the base pool is full and count towards `PYTHON_WARM_START_PARALLEL`. A root's failed import isn't logged (the jail's stderr is the code's): the jail comes up without it.
 
 ## 15. How to start the next session
 
