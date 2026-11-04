@@ -64,8 +64,18 @@ export async function login(app: FastifyInstance, email: string, password = PASS
  * Minimal tRPC-over-HTTP client for tests (no batching; speaks the superjson envelope). `record` collects every raw
  * response body, so a test can assert something never appears in any response.
  */
-export function trpc(app: FastifyInstance, cookie?: string, opts: { record?: string[] } = {}) {
-  const headers = cookie ? { cookie } : {}
+export function trpc(
+  app: FastifyInstance,
+  cookie?: string,
+  opts: {
+    record?: string[] /** An access token (M33), sent as `Authorization: Bearer`. */
+    bearer?: string
+  } = {},
+) {
+  const headers: Record<string, string> = {
+    ...(cookie && { cookie }),
+    ...(opts.bearer && { authorization: `Bearer ${opts.bearer}` }),
+  }
   return {
     async query(path: string, input?: unknown) {
       const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify({ json: input }))}`

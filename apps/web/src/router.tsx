@@ -23,6 +23,7 @@ import { ModulesPage } from './pages/modules/list'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
+import { AccessTokensPage } from './pages/settings/access-tokens'
 import { ApiKeysPage } from './pages/settings/api-keys'
 import { AuditPage } from './pages/settings/audit'
 import { ConfigVarsPage } from './pages/settings/config-vars'
@@ -243,6 +244,11 @@ const apiKeysRoute = createRoute({
   path: '/api-keys',
   component: ApiKeysPage,
 })
+const accessTokensRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/access-tokens',
+  component: AccessTokensPage,
+})
 const auditRoute = createRoute({ getParentRoute: () => settingsRoute, path: '/audit', component: AuditPage })
 const gitRoute = createRoute({
   getParentRoute: () => settingsRoute,
@@ -284,6 +290,7 @@ const routeTree = rootRoute.addChildren([
       environmentsRoute,
       configVarsRoute,
       apiKeysRoute,
+      accessTokensRoute,
       gitRoute,
       pythonRoute,
       auditRoute,

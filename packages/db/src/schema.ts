@@ -1241,6 +1241,42 @@ export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
 export type WebhookRejection = typeof webhookRejections.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type ApiKey = typeof apiKeys.$inferSelect
+
+/** What a personal access token may do (M33): one scope for now. */
+export const ACCESS_TOKEN_SCOPES = ['component-libraries'] as const
+export type AccessTokenScope = (typeof ACCESS_TOKEN_SCOPES)[number]
+
+/**
+ * Personal access tokens (M33, docs/architecture.md §2.36): a user's own, acting as them within their scopes
+ * (`Authorization: Bearer owpat_…` on tRPC). Only the sha256 is kept.
+ */
+export const personalAccessTokens = pgTable(
+  'personal_access_tokens',
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text().notNull(),
+    /** `owpat_` plus the token's first 8 characters. */
+    prefix: text().notNull(),
+    /** sha256 hex of the token. */
+    hash: text().notNull(),
+    scopes: text().array().$type<AccessTokenScope[]>().notNull(),
+    expiresAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    /** Updated at most once a minute. */
+    lastUsedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('personal_access_tokens_hash_uq').on(t.hash),
+    index('personal_access_tokens_user_idx').on(t.userId),
+    check('personal_access_tokens_hash_ck', sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect
