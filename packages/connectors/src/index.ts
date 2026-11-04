@@ -1,3 +1,5 @@
+import { anthropicConnector } from './ai/anthropic'
+import { openaiCompatibleConnector } from './ai/openai'
 import { kinesisConnector } from './aws/kinesis'
 import { s3Connector } from './aws/s3'
 import { snsConnector } from './aws/sns'
@@ -24,6 +26,16 @@ import { slackConnector } from './services/slack'
 import { stripeConnector } from './services/stripe'
 import type { AnyConnector } from './types'
 
+export { anthropicConnector } from './ai/anthropic'
+export type { AiRunContext, AiToolHost, AiToolSpec } from './ai/core'
+export { openaiCompatibleConnector } from './ai/openai'
+export {
+  type AiUsage,
+  ANTHROPIC_MODELS,
+  ANTHROPIC_PRICES,
+  costOf,
+  DEFAULT_ANTHROPIC_MODEL,
+} from './ai/prices'
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
 export {
   type AwsDefaults,
@@ -249,6 +261,8 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [jiraConnector.type]: jiraConnector,
   [notionConnector.type]: notionConnector,
   [salesforceConnector.type]: salesforceConnector,
+  [anthropicConnector.type]: anthropicConnector,
+  [openaiCompatibleConnector.type]: openaiCompatibleConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

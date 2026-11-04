@@ -1,5 +1,6 @@
 import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import { type Evaluate, TemplateError } from '@ow/expressions'
+import type { AiRunContext } from './ai/core'
 import { type PoolManager, parseResource } from './pool'
 import { tunnelFor } from './ssh/client'
 import type { SshConfig, SshSecrets } from './ssh/settings'
@@ -24,6 +25,8 @@ export interface RunOptions {
   untrustedValues?: boolean
   /** See `QueryContext.credentials`. */
   credentials?: CredentialSource
+  /** See `QueryContext.ai` (M35). */
+  ai?: AiRunContext
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -68,6 +71,7 @@ export async function runQuery(
         ...(opts.labels && { labels: opts.labels }),
         ...(opts.untrustedValues && { untrustedValues: true }),
         ...(credentials && { credentials }),
+        ...(opts.ai && { ai: opts.ai }),
       }),
     )
     countQuery(connector.type, query, 'ok')

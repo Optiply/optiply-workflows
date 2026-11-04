@@ -17,6 +17,9 @@ export const SERVICE_TYPES = [
   'rabbitmq',
   'sns',
   'kinesis',
+  // AI (M35): a language model's actions, through Anthropic's API or an OpenAI-compatible one.
+  'anthropic',
+  'openai_compatible',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1292,8 +1295,191 @@ const KINESIS: readonly ActionSpec[] = [
   },
 ]
 
+// AI (M35, docs/architecture.md §2.38): the same actions for both providers. Every answer's usage, model and cost
+// are the query's metadata; its data is the answer (text, the extracted JSON, the label).
+const AI_MODEL: ActionField = {
+  key: 'model',
+  label: 'Model',
+  kind: 'text',
+  hint: "Empty: the resource's default model.",
+}
+const AI_MAX_TOKENS: ActionField = {
+  key: 'maxTokens',
+  label: 'Max tokens',
+  kind: 'number',
+  placeholder: '16000',
+  hint: 'The most the answer may take, thinking included (Anthropic). The run’s budget is the resource’s.',
+}
+const AI_EFFORT: ActionField = {
+  key: 'effort',
+  label: 'Effort',
+  kind: 'select',
+  options: [
+    { value: '', label: "The model's default" },
+    { value: 'low', label: 'Low (fast, cheap)' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High (thorough)' },
+  ],
+  initial: '',
+  hint: 'Anthropic: how much the model thinks. Ignored by OpenAI-compatible providers.',
+}
+
+export const AI_ACTIONS: readonly ActionSpec[] = [
+  {
+    id: 'generate',
+    label: 'Generate text',
+    description: 'Answers a prompt with text.',
+    fields: [
+      {
+        key: 'system',
+        label: 'System prompt',
+        kind: 'long',
+        language: 'plaintext',
+        hint: 'Who the model is, how to answer.',
+      },
+      { key: 'prompt', label: 'Prompt', kind: 'long', language: 'plaintext', required: true },
+      AI_MODEL,
+      AI_EFFORT,
+      AI_MAX_TOKENS,
+    ],
+  },
+  {
+    id: 'summarize',
+    label: 'Summarize',
+    description: 'Summarizes a text: short, medium or long, as prose or bullets.',
+    fields: [
+      { key: 'input', label: 'Text', kind: 'long', language: 'plaintext', required: true },
+      {
+        key: 'length',
+        label: 'Length',
+        kind: 'select',
+        options: [
+          { value: 'short', label: 'Short (a sentence or two)' },
+          { value: 'medium', label: 'Medium (a paragraph)' },
+          { value: 'long', label: 'Long (several paragraphs)' },
+        ],
+        initial: 'medium',
+      },
+      {
+        key: 'style',
+        label: 'Style',
+        kind: 'select',
+        options: [
+          { value: 'prose', label: 'Prose' },
+          { value: 'bullets', label: 'Bullet points' },
+        ],
+        initial: 'prose',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        kind: 'long',
+        language: 'plaintext',
+        hint: 'What to focus on (optional).',
+      },
+      AI_MODEL,
+      AI_EFFORT,
+      AI_MAX_TOKENS,
+    ],
+  },
+  {
+    id: 'extract',
+    label: 'Extract JSON',
+    description: 'Reads a text into JSON matching a schema (the answer is checked against it).',
+    fields: [
+      { key: 'input', label: 'Text', kind: 'long', language: 'plaintext', required: true },
+      {
+        key: 'schema',
+        label: 'JSON Schema',
+        kind: 'json',
+        language: 'json',
+        required: true,
+        hint: 'An object schema: the properties to fill (required ones, and `additionalProperties: false`, recommended).',
+        initial:
+          '{\n  "type": "object",\n  "properties": {\n    "name": { "type": "string" }\n  },\n  "required": ["name"],\n  "additionalProperties": false\n}',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        kind: 'long',
+        language: 'plaintext',
+        hint: 'How to read the text (optional).',
+      },
+      AI_MODEL,
+      AI_EFFORT,
+      AI_MAX_TOKENS,
+    ],
+  },
+  {
+    id: 'classify',
+    label: 'Classify',
+    description: 'Picks one label (or several) for a text, with the reason.',
+    fields: [
+      { key: 'input', label: 'Text', kind: 'long', language: 'plaintext', required: true },
+      {
+        key: 'labels',
+        label: 'Labels',
+        kind: 'list',
+        required: true,
+        placeholder: 'complaint, question, order',
+      },
+      {
+        key: 'multiple',
+        label: 'Several labels',
+        kind: 'bool',
+        hint: 'Every label that applies, instead of the best one.',
+      },
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        kind: 'long',
+        language: 'plaintext',
+        hint: 'What each label means (optional).',
+      },
+      AI_MODEL,
+      AI_EFFORT,
+      AI_MAX_TOKENS,
+    ],
+  },
+  {
+    id: 'agent',
+    label: 'Agent (workflows as tools)',
+    description:
+      'Works on a task, calling the workflows it’s given as tools, until it answers. Workflows only.',
+    fields: [
+      {
+        key: 'instructions',
+        label: 'Instructions',
+        kind: 'long',
+        language: 'plaintext',
+        hint: 'The agent’s role and rules.',
+      },
+      { key: 'prompt', label: 'Task', kind: 'long', language: 'plaintext', required: true },
+      {
+        key: 'tools',
+        label: 'Workflows it may call',
+        kind: 'list',
+        required: true,
+        placeholder: 'lookup-customer, create-ticket',
+      },
+      {
+        key: 'maxSteps',
+        label: 'Max steps',
+        kind: 'number',
+        placeholder: '10',
+        hint: 'Model turns at most (up to 50).',
+      },
+      AI_MODEL,
+      AI_EFFORT,
+      AI_MAX_TOKENS,
+    ],
+  },
+]
+
 export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]>> = {
   slack: SLACK,
+  anthropic: AI_ACTIONS,
+  openai_compatible: AI_ACTIONS,
   hubspot: HUBSPOT,
   sendgrid: SENDGRID,
   googlesheets: GOOGLE_SHEETS,
