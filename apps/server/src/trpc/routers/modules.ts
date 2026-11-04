@@ -3,6 +3,8 @@ import {
   appDefinitionHash,
   appDefinitionSchema,
   emptyModule,
+  MAX_MODULE_DEPTH,
+  type ModuleInfo,
   validateApp,
 } from '@ow/app-definition'
 import { type Module, moduleReleases, modules, permissions, users } from '@ow/db'
@@ -15,8 +17,9 @@ import { inUseMessage, usedByView } from '../../services/dependents'
 import { branchDraftDefinition } from '../../services/git/branch-drafts'
 import { requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
 import {
+  instanceStepSchema,
   moduleInfos,
-  moduleReleasesByKey,
+  moduleReleaseTree,
   moduleUsers,
   publishModuleRelease,
   runModuleDraftQuery,
@@ -30,6 +33,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { droppedUses } from '../../services/publish-impact'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -119,7 +123,7 @@ export const modulesRouter = router({
         draftDefinition: module.draftDefinition,
         draftRevision: module.draftRevision,
         draftHash: await appDefinitionHash(module.draftDefinition),
-        diagnostics: (await checkApp(ctx.db, module.draftDefinition)).diagnostics,
+        diagnostics: (await checkApp(ctx.db, module.draftDefinition, module.slug)).diagnostics,
         liveRelease: live
           ? {
               id: live.id,
@@ -170,9 +174,12 @@ export const modulesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, module } = await visibleModule(ctx, input)
       requireLevel(access.moduleLevel(module), 'edit', 'this module')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(module, 'module', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== module.folderId) {
+        requireUnprotected(module, 'module', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'module',
@@ -232,6 +239,29 @@ export const modulesRouter = router({
   }),
 
   /**
+   * For the publish dialog (M21): the inputs the live release declares and the draft doesn't, and the apps and
+   * modules placing it on `latest` that pass them (a warning; publishing isn't refused).
+   */
+  publishImpact: authedProcedure.input(z.object({ moduleId: Id })).query(async ({ ctx, input }) => {
+    const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+    requireLevel(access.moduleLevel(module), 'edit', 'this module')
+    const [live] = module.liveReleaseId
+      ? await ctx.db.select().from(moduleReleases).where(eq(moduleReleases.id, module.liveReleaseId))
+      : []
+    return droppedUses(
+      ctx.db,
+      access,
+      {
+        kind: 'module',
+        slug: module.slug,
+        live: live ? (live.definition.module?.inputs ?? []).map((i) => i.name) : null,
+        draft: (module.draftDefinition.module?.inputs ?? []).map((i) => i.name),
+      },
+      await moduleUsers(ctx.db, module.slug),
+    )
+  }),
+
+  /**
    * What the app editor's validator needs for the modules an app places (`ModuleInfo` by slug: the live version
    * and each release's interface), plus their names; the ones the caller can't see are left out.
    */
@@ -241,10 +271,13 @@ export const modulesRouter = router({
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       const infos = await moduleInfos(ctx.db, [...new Set(input.slugs)])
+      // One the caller may not use says only that (M21): "needs use access", not "unknown", and nothing more.
       return Object.fromEntries(
-        [...infos]
-          .filter(([, { module }]) => access.moduleLevel(module) !== null)
-          .map(([slug, { module, info }]) => [slug, { id: module.id, name: module.name, ...info }]),
+        [...infos].map(([slug, { module, info }]): [string, ModuleInfo & { id?: string; name?: string }] =>
+          access.moduleLevel(module) !== null
+            ? [slug, { id: module.id, name: module.name, ...info }]
+            : [slug, { liveVersion: null, versions: {}, noUse: true }],
+        ),
       )
     }),
 
@@ -256,7 +289,7 @@ export const modulesRouter = router({
     .input(z.object({ keys: z.array(z.string().max(200)).max(200) }))
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
-      return moduleReleasesByKey(ctx.db, input.keys, (m) => atLeast(access.moduleLevel(m), 'use'))
+      return moduleReleaseTree(ctx.db, input.keys, (m) => atLeast(access.moduleLevel(m), 'use'))
     }),
 
   /** Deletes the module with its releases and grants; refused while apps place it. */
@@ -301,6 +334,18 @@ export const modulesRouter = router({
       gitCommit: release.gitCommit,
       live: release.id === module.liveReleaseId,
     }))
+  }),
+
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ moduleId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, module } = await visibleModule(ctx, { id: input.moduleId })
+    requireLevel(access.moduleLevel(module), 'edit', 'this module')
+    const [release] = await ctx.db
+      .select()
+      .from(moduleReleases)
+      .where(and(eq(moduleReleases.id, input.id), eq(moduleReleases.moduleId, module.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
   }),
 
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */
@@ -364,6 +409,12 @@ export const modulesRouter = router({
         /** A Git branch draft (M14) instead of the main draft. */
         branchDraftId: Id.optional(),
         query: QueryName,
+        /** A query of a module instance inside the module (M21): the path of instances, outermost first. */
+        path: z
+          .array(instanceStepSchema)
+          .min(1)
+          .max(MAX_MODULE_DEPTH - 1)
+          .optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),
@@ -381,6 +432,7 @@ export const modulesRouter = router({
           module,
           ...(definition && { definition }),
           query: input.query,
+          ...(input.path && { path: input.path }),
           environmentId: input.environmentId,
           values: input.values,
           ...(signal && { signal }),

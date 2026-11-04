@@ -1,21 +1,133 @@
-import { X } from 'lucide-react'
-import { useContext } from 'react'
+import { containerViews } from '@ow/app-definition'
+import { ChevronDown, ChevronRight, X } from 'lucide-react'
+import { useContext, useEffect } from 'react'
 import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import { ChildGrid, EditingContext, ShownModalContext } from '../grid-context'
+import { ChildGrid, EditingContext, ShownModalContext, shownViews } from '../grid-context'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
 
-/** A box holding other components on its own grid. */
+const PADDING = { none: 'p-0', small: 'p-2', medium: 'p-4', large: 'p-6' } as const
+const BACKGROUNDS: Record<string, string> = {
+  surface: 'bg-surface',
+  canvas: 'bg-canvas',
+  accent: 'bg-accent-soft',
+}
+/** A color written as one: hex, rgb(), hsl(); nothing else goes into a style. */
+const COLOR = /^(#[0-9a-f]{3,8}|(rgb|hsl)a?\([\d\s.,%/]+\))$/i
+
+/**
+ * A box holding other components on its own grid; with views (M24), one grid per view, the shown one switched by
+ * tabs (or by `setView`): only its components render. Its header (title, tabs, the fold button and the `header`
+ * slot) and its `footer` slot stay put; the content scrolls inside it when `scroll` is on. A collapsible container
+ * folds to its header in a running app (the editor keeps it open, marked as folded).
+ */
 export function ContainerRenderer({ component, definition }: RendererProps) {
-  const title = useAppValue<string>(`${component.name}.title`)
-  const border = useAppValue<boolean>(`${component.name}.showBorder`)
+  const host = useAppHostContext()
+  const editing = useContext(EditingContext)
+  const name = component.name
+  const title = useAppValue<string>(`${name}.title`)
+  const border = useAppValue<boolean>(`${name}.showBorder`)
+  const showTabs = useAppValue<boolean>(`${name}.showTabs`) !== false
+  const collapsible = useAppValue<boolean>(`${name}.collapsible`) === true
+  const expanded = useAppValue<boolean>(`${name}.expanded`) !== false
+  const scroll = useAppValue<boolean>(`${name}.scroll`) !== false
+  const background = useAppValue<string>(`${name}.background`)
+  const padding = useAppValue<keyof typeof PADDING>(`${name}.padding`)
+  // Names as written (children are placed in them by name); labels as evaluated (they may be templates).
+  const evaluated = useAppValue<unknown>(`${name}.views`)
+  const current = useAppValue<string>(`${name}.currentView`)
+  const views = containerViews(component)
+  const shown = views.length ? (views.some((v) => v.name === current) ? current : views[0]!.name) : undefined
+  useEffect(() => {
+    if (editing && shown) shownViews.set(name, shown)
+  })
+  const label = (view: string) => {
+    const found = Array.isArray(evaluated)
+      ? (evaluated as { name?: unknown; label?: unknown }[]).find((v) => v?.name === view)
+      : undefined
+    return typeof found?.label === 'string' && found.label ? found.label : view
+  }
+  const inSlot = (slot: string) => definition.components.some((c) => c.parent === name && c.slot === slot)
+  const hasHeader = inSlot('header')
+  const hasFooter = inSlot('footer')
+  const folded = collapsible && !expanded && !editing
+  const tabs = views.length > 0 && showTabs && !folded
+  const named = typeof background === 'string' ? BACKGROUNDS[background] : undefined
+  const color =
+    typeof background === 'string' && !named && COLOR.test(background.trim()) ? background.trim() : undefined
+  const body = cn('min-h-0 flex-1', scroll && 'overflow-auto')
   return (
-    <div className={cn('flex h-full flex-col rounded-lg p-4', border && 'border border-border bg-surface')}>
-      {title && <h2 className="mb-2 text-base font-bold">{title}</h2>}
-      <div className="min-h-0 flex-1">
-        <ChildGrid definition={definition} parent={component.name} />
-      </div>
+    <div
+      className={cn(
+        'flex h-full flex-col rounded-lg',
+        PADDING[padding ?? 'medium'] ?? PADDING.medium,
+        border && 'border border-border',
+        named ?? (border && 'bg-surface'),
+      )}
+      style={color ? { background: color } : undefined}
+    >
+      {(title || tabs || collapsible || hasHeader) && (
+        <div className={cn('flex flex-wrap items-end gap-x-4 gap-y-1', !folded && 'mb-2')}>
+          {collapsible && (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-label={`${expanded ? 'Fold' : 'Unfold'} ${title || name}`}
+              className="self-center rounded p-0.5 text-muted hover:bg-canvas hover:text-ink"
+              onClick={() => host.call(name, 'toggle')}
+            >
+              {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+            </button>
+          )}
+          {title && <h2 className="text-base font-bold">{title}</h2>}
+          {editing && collapsible && !expanded && (
+            <span className="self-center rounded bg-subtle px-1.5 text-[11px] text-muted">
+              folded in the app
+            </span>
+          )}
+          {tabs && (
+            <div role="tablist" aria-label={title || name} className="flex gap-1 border-b border-border">
+              {views.map((v) => (
+                <button
+                  key={v.name}
+                  type="button"
+                  role="tab"
+                  aria-selected={v.name === shown}
+                  className={cn(
+                    '-mb-px border-b-2 px-3 py-1.5 text-sm font-medium',
+                    v.name === shown
+                      ? 'border-accent text-accent'
+                      : 'border-transparent text-muted hover:text-ink',
+                  )}
+                  onClick={() => host.call(name, 'setView', [v.name])}
+                >
+                  {label(v.name)}
+                </button>
+              ))}
+            </div>
+          )}
+          {hasHeader && !folded && (
+            <div className="min-w-0 flex-1" data-slot="header">
+              <ChildGrid definition={definition} parent={name} slot="header" />
+            </div>
+          )}
+        </div>
+      )}
+      {folded ? null : shown ? (
+        <div className={body} role="tabpanel" aria-label={label(shown)}>
+          <ChildGrid key={shown} definition={definition} parent={name} slot={shown} />
+        </div>
+      ) : (
+        <div className={body}>
+          <ChildGrid definition={definition} parent={name} />
+        </div>
+      )}
+      {hasFooter && !folded && (
+        <div className="pt-2" data-slot="footer">
+          <ChildGrid definition={definition} parent={name} slot="footer" />
+        </div>
+      )}
     </div>
   )
 }

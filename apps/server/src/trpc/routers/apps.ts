@@ -2,8 +2,10 @@ import {
   type AppDefinition,
   appDefinitionHash,
   appDefinitionSchema,
+  customInstanceKeys,
   emptyApp,
   instanceKeys,
+  MAX_MODULE_DEPTH,
   validateApp,
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
@@ -11,8 +13,9 @@ import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
+import { componentLibraryReleasesByKey } from '../../services/component-libraries'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
-import { moduleReleasesByKey } from '../../services/modules'
+import { instanceStepSchema, moduleReleaseTree } from '../../services/modules'
 import {
   type Access,
   checkFolderMove,
@@ -109,9 +112,9 @@ export const appsRouter = router({
     }),
 
   /**
-   * For people using the app: its live release, and the module releases its instances run (M14) by `slug@version`
-   * (the app's publisher vouched for them; an instance whose release is gone doesn't run). NOT_FOUND until the
-   * first release.
+   * For people using the app: its live release, the module releases its instances run (M14) and the component
+   * library releases its custom components run (M25, its modules' too), by `slug@version` (the app's publisher
+   * vouched for them; one whose release is gone doesn't run). NOT_FOUND until the first release.
    */
   open: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, input)
@@ -122,7 +125,7 @@ export const appsRouter = router({
     return {
       ...summary(app, access),
       release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
-      modules: await moduleReleasesByKey(ctx.db, instanceKeys(live.definition)),
+      ...(await placedReleases(ctx.db, live.definition)),
     }
   }),
 
@@ -173,9 +176,12 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, input)
       requireLevel(access.appLevel(app), 'edit', 'this app')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(app, 'app', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== app.folderId) {
+        requireUnprotected(app, 'app', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'app',
@@ -268,6 +274,18 @@ export const appsRouter = router({
     }))
   }),
 
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ appId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    const [release] = await ctx.db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.id, input.id), eq(appReleases.appId, app.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
+  }),
+
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */
   publish: authedProcedure
     .input(
@@ -330,8 +348,11 @@ export const appsRouter = router({
         /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
         branchDraftId: Id.optional(),
         query: QueryName,
-        /** A module instance's query (M14): the instance and the module release the page runs. */
-        module: z.object({ instance: QueryName, releaseId: Id }).optional(),
+        /**
+         * A module instance's query (M14): the instances from the app to it, outermost first (M21: modules inside
+         * modules), each with the module release the page runs.
+         */
+        module: z.array(instanceStepSchema).min(1).max(MAX_MODULE_DEPTH).optional(),
         environmentId: Id,
         values: z.record(z.string(), z.unknown()).default({}),
       }),
@@ -362,7 +383,9 @@ export const appsRouter = router({
           metadata: {
             query: input.query,
             version: version ?? 'draft',
-            ...(module && { module: `${input.module!.instance}: ${module.slug}@${module.version}` }),
+            ...(module && {
+              module: `${input.module!.map((m) => m.instance).join('/')}: ${module.slug}@${module.version}`,
+            }),
             ...(library && { library: `${library.slug}@${library.version}` }),
             ok: outcome.ok,
             errorCode: outcome.ok ? undefined : outcome.error.code,
@@ -373,3 +396,10 @@ export const appsRouter = router({
       return outcome
     }),
 })
+
+/** The module releases a definition's instances run, and the library releases its custom components (and its modules') run. */
+async function placedReleases(db: Context['db'], definition: AppDefinition) {
+  const modules = await moduleReleaseTree(db, instanceKeys(definition))
+  const keys = [definition, ...Object.values(modules).map((m) => m.definition)].flatMap(customInstanceKeys)
+  return { modules, libraries: await componentLibraryReleasesByKey(db, keys) }
+}

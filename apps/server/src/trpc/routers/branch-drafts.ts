@@ -1,5 +1,5 @@
 import { GIT_OBJECT_KINDS, gitBranchDrafts } from '@ow/db'
-import { KIND_LABELS } from '@ow/git-format'
+import { folderPathSchema, KIND_LABELS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -15,7 +15,8 @@ import {
 } from '../../services/git/branch-drafts'
 import { draftColumn, gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import { branchNameSchema } from '../../services/git/repo'
-import { loadAccess, requireLevel } from '../../services/permissions'
+import { updateBranchDraftFromMain } from '../../services/git/update-from-main'
+import { atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
@@ -48,6 +49,18 @@ async function editableDraft(ctx: AuthedContext, id: string) {
   await requireEdit(ctx, loaded.target)
   return loaded
 }
+
+/** A merge's resolutions, by conflict id (architecture §2.23). */
+const resolutionsSchema = z
+  .record(
+    z.string().max(64),
+    z.union([
+      z.enum(['ours', 'theirs']),
+      z.object({ chunks: z.array(z.enum(['ours', 'theirs', 'both'])).max(10_000) }),
+      z.object({ text: z.string().max(2_000_000) }),
+    ]),
+  )
+  .refine((r) => Object.keys(r).length <= 1000, 'At most 1000 resolutions')
 
 /**
  * Protected workflows, apps, library queries and modules are edited in drafts on Git branches (M11, M14): one per object and branch, saved with
@@ -96,7 +109,37 @@ export const branchDraftsRouter = router({
     return branchDraftView(draft)
   }),
 
-  /** Saves the draft (and the name and description the repo keeps) if nobody saved since `revision`. */
+  /**
+   * The name, description and folder the repo keeps for the object, on this branch (M22). Not the definition, so the
+   * draft's revision stays: people editing it together (M16) aren't told someone else saved. The next commit takes
+   * them along.
+   */
+  setDetails: authedProcedure
+    .input(
+      z.object({
+        id: Id,
+        name: Name.optional(),
+        description: Description,
+        /** A folder path, `Finance/Reports`; null or empty for the top level. */
+        folder: z.union([folderPathSchema, z.literal('')]).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { draft } = await editableDraft(ctx, input.id)
+      const [updated] = await ctx.db
+        .update(gitBranchDrafts)
+        .set({
+          ...(input.name !== undefined && { name: input.name }),
+          ...(input.description !== undefined && { description: input.description || null }),
+          ...(input.folder !== undefined && { folder: input.folder || null }),
+          updatedBy: ctx.user.id,
+        })
+        .where(eq(gitBranchDrafts.id, draft.id))
+        .returning()
+      return branchDraftView(updated!)
+    }),
+
+  /** Saves the draft (and the name, description and folder the repo keeps) if nobody saved since `revision`. */
   save: authedProcedure
     .input(
       z.object({
@@ -105,6 +148,8 @@ export const branchDraftsRouter = router({
         definition: z.unknown(),
         name: Name.optional(),
         description: Description,
+        /** A folder path, `Finance/Reports`; null or empty for the top level (M22). */
+        folder: z.union([folderPathSchema, z.literal('')]).nullish(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -115,6 +160,7 @@ export const branchDraftsRouter = router({
         definition: input.definition,
         name: input.name,
         description: input.description,
+        folder: input.folder,
       })
       const view = await branchDraftView(saved)
       return { revision: view.revision, draftHash: view.draftHash, diagnostics: view.diagnostics }
@@ -133,17 +179,70 @@ export const branchDraftsRouter = router({
     return branchDraftChanges(ctx.db, ctx.config, target, draft)
   }),
 
-  /** Loads the branch's files into the draft; `discardChanges` drops what isn't committed. */
+  /**
+   * Brings the branch's files into the draft, merged with its uncommitted changes: the updated draft, or the conflicts
+   * to resolve (nothing saved). Called again with `resolutions` by conflict id; `discardChanges` drops the draft's.
+   */
   updateFromBranch: authedProcedure
-    .input(z.object({ id: Id, discardChanges: z.boolean().default(false) }))
+    .input(
+      z.object({
+        id: Id,
+        discardChanges: z.boolean().default(false),
+        resolutions: resolutionsSchema.optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { draft, target } = await editableDraft(ctx, input.id)
-      const updated = await updateBranchDraftFromBranch(ctx.db, ctx.config, ctx.user, {
+      const result = await updateBranchDraftFromBranch(ctx.db, ctx.config, ctx.user, {
         target,
         draft,
         discardChanges: input.discardChanges,
+        resolutions: input.resolutions,
       })
-      return branchDraftView(updated)
+      return result.status === 'updated'
+        ? { status: 'updated' as const, draft: await branchDraftView(result.draft) }
+        : result
+    }),
+
+  /**
+   * Brings the deploy branch into the draft's branch as a merge commit (then updates the draft from the branch), or
+   * returns the objects' conflicts to resolve (nothing written). Called again with `resolutions` by object directory.
+   */
+  updateFromMain: authedProcedure
+    .input(z.object({ id: Id, resolutions: z.record(z.string().max(300), resolutionsSchema).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { draft, target } = await editableDraft(ctx, input.id)
+      const access = await loadAccess(ctx.db, ctx.user)
+      const result = await updateBranchDraftFromMain(ctx.db, ctx.config, ctx.user, {
+        target,
+        draft,
+        resolutions: input.resolutions,
+        canEdit: async (kind, slug) => {
+          const object = await loadGitObject(ctx.db, kind, { slug })
+          // Not on the instance yet (new on a branch): admins only.
+          return object ? atLeast(gitObjectLevel(access, kind, object), 'edit') : ctx.user.isAdmin
+        },
+      })
+      if (result.status !== 'merged') return result
+      if (result.commit) {
+        await ctx.audit({
+          action: 'git.merged_main',
+          objectType: target.kind,
+          objectId: target.object.id,
+          metadata: { branch: draft.branch, commit: result.commit, objects: result.objects },
+        })
+      }
+      const update =
+        result.draft?.status === 'updated'
+          ? { status: 'updated' as const, draft: await branchDraftView(result.draft.draft) }
+          : result.draft
+      return {
+        status: 'merged' as const,
+        commit: result.commit,
+        objects: result.objects,
+        draft: update,
+        draftError: result.draftError ?? null,
+      }
     }),
 
   /** Commits the draft at `revision` onto its branch, as the caller. */

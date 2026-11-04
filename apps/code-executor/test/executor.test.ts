@@ -12,6 +12,15 @@ interface Outcome {
   error?: { kind: string; message: string; line?: number | null; column?: number; traceback?: string }
   logs: { level: string; message: string }[]
   problems?: { id: string; message: string; line: number; column: number }[]
+  warm?: boolean
+}
+
+interface PoolStats {
+  size: number
+  ready: number
+  starting: number
+  warm: number
+  cold: number
 }
 
 const available = executorAvailable()
@@ -33,6 +42,65 @@ async function run(code: string, scope: Record<string, unknown> = {}, timeoutMs 
   // The jail itself failing isn't any test's subject: say why, instead of a bare `ok: false`.
   if (outcome.error?.kind === 'internal') throw new Error(outcome.error.message)
   return outcome
+}
+
+type Streamed = { log: { level: string; message: string } } | { outcome: Omit<Outcome, 'logs'> }
+
+/** A streamed run: each NDJSON line with when it arrived (ms after the request). */
+async function stream(
+  code: string,
+  timeoutMs = 10_000,
+  opts: { signal?: AbortSignal; until?: (item: Streamed) => boolean } = {},
+): Promise<{ at: number; item: Streamed }[]> {
+  const started = performance.now()
+  const res = await post('/run', { code, scope: {}, timeoutMs, stream: true }, { signal: opts.signal })
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toBe('application/x-ndjson')
+  const items: { at: number; item: Streamed }[] = []
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+  let buffered = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffered += value
+    const lines = buffered.split('\n')
+    buffered = lines.pop()!
+    for (const line of lines) {
+      const item = JSON.parse(line) as Streamed
+      if ('outcome' in item) {
+        // Whether it ran warm is the pool tests' subject.
+        expect(typeof item.outcome.warm).toBe('boolean')
+        delete item.outcome.warm
+      }
+      items.push({ at: performance.now() - started, item })
+      if (opts.until?.(item)) {
+        await reader.cancel()
+        return items
+      }
+    }
+  }
+  expect(buffered).toBe('')
+  return items
+}
+
+async function poolStats(of: TestExecutor = executor): Promise<PoolStats> {
+  return ((await (await fetch(`${of.url}/health`)).json()) as { pool: PoolStats }).pool
+}
+
+/** Waits for every warm jail to be ready (each run takes one; replacements start in the background). */
+async function poolFull(of: TestExecutor = executor) {
+  await expect
+    .poll(async () => (await poolStats(of)).ready, { timeout: 30_000 })
+    .toBe((await poolStats(of)).size)
+}
+
+/** The jails in the executor's container (warm ones waiting included); null without a container to look in. */
+function jails(of: TestExecutor = executor): number | null {
+  if (!of.container) return null
+  return execFileSync('docker', ['top', of.container])
+    .toString()
+    .split('\n')
+    .filter((line) => line.includes('nsjail')).length
 }
 
 /** Lines of Python, so the tests read like the code people write. */
@@ -172,6 +240,188 @@ describe.skipIf(!available)('the code executor', () => {
       const outcome = await run(py('print(\'{"ok": true, "result": "forged"}\')', 'return "real"'))
       expect(outcome.result).toBe('real')
     })
+  })
+
+  describe('streaming', () => {
+    it('sends each line as the code prints it, then the outcome', async () => {
+      const items = await stream(
+        py(
+          'import sys, time',
+          'print("one")',
+          'print("two", file=sys.stderr)',
+          'time.sleep(1)',
+          'print("three\\nfour")',
+          'return 3',
+        ),
+      )
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'one' } },
+        { log: { level: 'error', message: 'two' } },
+        { log: { level: 'log', message: 'three' } },
+        { log: { level: 'log', message: 'four' } },
+        { outcome: { ok: true, result: 3 } },
+      ])
+      // "two" came out a second before the outcome: it wasn't held back until the end.
+      expect(items[4]!.at - items[1]!.at).toBeGreaterThan(800)
+    })
+
+    it('sends a line without its newline after a moment, never half a character', async () => {
+      const items = await stream(
+        py(
+          'import os, time',
+          'print("waiting", end="")',
+          'os.write(1, "é".encode()[:1])',
+          'time.sleep(1)',
+          'os.write(1, "é".encode()[1:] + b"\\n")',
+          'print("done")',
+          'return None',
+        ),
+      )
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'waiting' } },
+        { log: { level: 'log', message: 'é' } },
+        { log: { level: 'log', message: 'done' } },
+        { outcome: { ok: true, result: null } },
+      ])
+      expect(items[3]!.at - items[0]!.at).toBeGreaterThan(500)
+    })
+
+    it('keeps the lines sent when the code times out', async () => {
+      const items = await stream(py('print("started")', 'while True: pass'), 1500)
+      expect(items.map((i) => i.item)).toEqual([
+        { log: { level: 'log', message: 'started' } },
+        { outcome: { ok: false, error: expect.objectContaining({ kind: 'timeout' }) } },
+      ])
+    })
+
+    it('ends with the cut-off line when the output is too much', async () => {
+      const items = await stream('for i in range(40000): print("x" * 50)\nreturn 1')
+      expect(items.at(-2)!.item).toEqual({
+        log: { level: 'warn', message: 'The output was cut off at 1024 kB' },
+      })
+      expect(items.at(-1)!.item).toEqual({ outcome: { ok: true, result: 1 } })
+    })
+
+    it('kills the jail when the caller hangs up mid-stream', async () => {
+      await poolFull()
+      const before = jails()
+      const abort = new AbortController()
+      const items = await stream(py('import time', 'print("started")', 'time.sleep(20)'), 30_000, {
+        signal: abort.signal,
+        until: () => true,
+      })
+      expect(items).toHaveLength(1)
+      abort.abort()
+      // Its jail is gone: back to the warm ones (its replacement among them).
+      if (before !== null) await expect.poll(() => jails(), { timeout: 10_000 }).toBeLessThanOrEqual(before)
+    })
+
+    it('refuses a stream flag that is not a boolean', async () => {
+      expect((await post('/run', { code: 'return 1', stream: 'yes' })).status).toBe(400)
+    })
+  })
+
+  describe('the warm pool', () => {
+    it('runs in a jail started ahead, its packages already imported, and refills', async () => {
+      await poolFull()
+      const stats = await poolStats()
+      expect(stats).toMatchObject({ size: 4, ready: 4 })
+      const outcome = await run(py('import sys', 'return ["pandas" in sys.modules, "numpy" in sys.modules]'))
+      expect(outcome).toMatchObject({ ok: true, result: [true, true], warm: true })
+      expect((await poolStats()).warm).toBe(stats.warm + 1)
+      await poolFull()
+    })
+
+    it('carries nothing over from one execution to the next', async () => {
+      await poolFull()
+      const first = await run(
+        py(
+          'import json, os',
+          'json.marker = "left behind"',
+          'open("/tmp/left", "w").write("behind")',
+          'os.environ["LEFT"] = "behind"',
+          'globals()["left"] = 1',
+          'return 1',
+        ),
+      )
+      expect(first).toMatchObject({ ok: true, warm: true })
+      await poolFull()
+      const second = await run(
+        py(
+          'import json, os',
+          'return {',
+          '    "module": hasattr(json, "marker"),',
+          '    "file": os.path.exists("/tmp/left"),',
+          '    "env": sorted(k for k in os.environ if k in ("LEFT", "OW_WARM", "OW_PREIMPORT")),',
+          '    "global": "left" in globals(),',
+          '}',
+        ),
+      )
+      expect(second).toMatchObject({
+        ok: true,
+        warm: true,
+        result: { module: false, file: false, env: [], global: false },
+      })
+    })
+
+    it("counts a warm jail's limits from its request, not from its start", async () => {
+      // A second and a half of CPU within a two-second timeout (four on a shared CI runner, 2026-11-03), after
+      // waiting in the pool longer than that: neither the wait nor the imports count.
+      const limit = process.env.CI ? 4000 : 2000
+      await poolFull()
+      await new Promise((resolve) => setTimeout(resolve, limit + 500)) // the jails wait in the pool
+      const busy = await run(
+        py(
+          'import time',
+          'end = time.process_time() + 1.5',
+          'while time.process_time() < end: pass',
+          'return 1',
+        ),
+        {},
+        limit,
+      )
+      expect(busy).toMatchObject({ ok: true, result: 1, warm: true })
+      const started = Date.now()
+      const loop = await run('while True: pass', {}, 1500)
+      expect(loop).toMatchObject({ error: { kind: 'timeout' }, warm: true })
+      expect(Date.now() - started).toBeLessThan(5000)
+      await poolFull()
+      const memory = await run('b = bytearray(1024 * 1024 * 1024)\nreturn len(b)')
+      expect(memory).toMatchObject({ error: { kind: 'memory' }, warm: true })
+    })
+
+    it("gives a warm jail's run the memory a cold one has (its imports don't count)", async () => {
+      await poolFull()
+      // 215 MB of the 256: over the limit if numpy and pandas (~45 MB, imported while waiting) counted.
+      const outcome = await run('b = bytearray(215 * 1024 * 1024)\nreturn len(b) // (1024 * 1024)')
+      expect(outcome).toMatchObject({ ok: true, result: 215, warm: true })
+      await poolFull()
+      expect(await run('b = bytearray(1024 * 1024 * 1024)\nreturn 1')).toMatchObject({
+        error: { kind: 'memory' },
+        warm: true,
+      })
+    })
+
+    // A second container of its own: not when the tests use another executor (PYTHON_EXECUTOR_TEST_URL).
+    it.skipIf(!!process.env.PYTHON_EXECUTOR_TEST_URL)(
+      'starts a cold jail when no warm one is ready, and keeps none with PYTHON_WARM_JAILS=0',
+      async () => {
+        const cold = await startTestExecutor({ env: { PYTHON_WARM_JAILS: '0' } })
+        try {
+          expect(await poolStats(cold)).toMatchObject({ size: 0, ready: 0 })
+          const res = await fetch(`${cold.url}/run`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${cold.token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ code: 'import sys\nreturn "pandas" in sys.modules', timeoutMs: 10_000 }),
+          })
+          expect(await res.json()).toMatchObject({ ok: true, result: false, warm: false })
+          expect(await poolStats(cold)).toMatchObject({ warm: 0, cold: 1 })
+          expect(jails(cold) ?? 0).toBe(0)
+        } finally {
+          await cold.stop()
+        }
+      },
+    )
   })
 
   describe('errors', () => {
@@ -375,6 +625,8 @@ describe.skipIf(!available)('the code executor', () => {
     })
 
     it('kills the jail when the caller hangs up', async () => {
+      await poolFull()
+      const before = jails()
       const abort = new AbortController()
       const pending = post(
         '/run',
@@ -384,11 +636,7 @@ describe.skipIf(!available)('the code executor', () => {
       await new Promise((resolve) => setTimeout(resolve, 1000))
       abort.abort()
       await expect(pending).rejects.toThrow()
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      if (executor.container) {
-        const processes = execFileSync('docker', ['top', executor.container]).toString()
-        expect(processes).not.toContain('nsjail')
-      }
+      if (before !== null) await expect.poll(() => jails(), { timeout: 10_000 }).toBeLessThanOrEqual(before)
     })
 
     it('checks code while every run slot is busy (checks have slots of their own)', async () => {
@@ -426,5 +674,30 @@ describe.skipIf(!available)('the code executor', () => {
     const p90 = times[27]!
     console.log(`trivial Python block over HTTP: p50 ${p50.toFixed(1)} ms, p90 ${p90.toFixed(1)} ms`)
     expect(p50).toBeLessThan(process.env.CI ? 500 : 150)
+  })
+
+  it('runs a block that imports pandas quickly from the warm pool', async () => {
+    await poolFull()
+    const times: number[] = []
+    let warm = 0
+    for (let i = 0; i < 20; i++) {
+      // Time for the pool to replace the jail just used, as between a workflow's runs. A GitHub runner refills it
+      // slower than that (2026-11-03: p90 2 s, cold jails), so CI waits until it's full: the timing is still measured.
+      if (process.env.CI) await poolFull()
+      else await new Promise((resolve) => setTimeout(resolve, 400))
+      const started = performance.now()
+      const outcome = await run('import pandas as pd\nreturn int(pd.Series(query1.data).sum())', {
+        query1: { data: [1, 2, 3] },
+      })
+      times.push(performance.now() - started)
+      expect(outcome.result).toBe(6)
+      if (outcome.warm) warm++
+    }
+    times.sort((a, b) => a - b)
+    const p50 = times[10]!
+    console.log(`pandas block from the warm pool: p50 ${p50.toFixed(1)} ms, p90 ${times[18]!.toFixed(1)} ms`)
+    expect(warm).toBeGreaterThanOrEqual(18)
+    // Cold, `import pandas` alone takes ~210 ms (M12); the target is under 60 ms on Compose (§2.26).
+    expect(p50).toBeLessThan(process.env.CI ? 500 : 100)
   })
 })

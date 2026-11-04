@@ -17,19 +17,121 @@ import {
   matchWebhookAlias,
   parseWebhookAlias,
   queriedResources,
+  type ResolvedWebhook,
+  resolveWebhookSettings,
   type WebhookTrigger,
+  webhookEnvironments,
 } from '@ow/definition'
+import { type BodyValidator, compileBodySchema } from '@ow/definition/body-schema'
 import type { RunEvent } from '@ow/engine'
+import busboy from 'busboy'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { FastifyReply } from 'fastify'
 import type { RunEventHub } from './run-events'
+import { WebhookRejection } from './webhook-limits'
 import { RunRequestError } from './workflow-runs'
+
+/** A webhook's body as sent, with the parser that matched its content type. */
+export class RawBody {
+  constructor(
+    readonly kind: 'json' | 'form' | 'multipart' | 'text',
+    readonly bytes: Buffer,
+    /** The Content-Type header, for the multipart boundary. */
+    readonly contentType = '',
+  ) {}
+
+  /**
+   * JSON (an empty body is null), a form as an object, multipart as fields and files (`parseMultipart`), anything
+   * else as text.
+   */
+  async parse(): Promise<unknown> {
+    if (this.kind === 'multipart') return parseMultipart(this.bytes, this.contentType)
+    const text = this.bytes.toString('utf8')
+    if (this.kind === 'form') return Object.fromEntries(new URLSearchParams(text))
+    if (this.kind === 'text') return text
+    if (!text.trim()) return null
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new RunRequestError(400, 'invalid_request', 'The body is not valid JSON')
+    }
+  }
+}
+
+/** A file from a multipart body, as a run receives it (and a REST query's multipart part accepts it). */
+export interface WebhookFile {
+  filename: string
+  contentType: string
+  size: number
+  base64: string
+}
+
+/** More parts than this is refused (413). */
+export const MAX_MULTIPART_PARTS = 1000
+
+/**
+ * A `multipart/form-data` body as an object: each field a string, each file a `WebhookFile`; a name sent more than
+ * once becomes an array. Parsed with busboy: the platform's own parser (undici's `Response.formData`) refuses valid
+ * bodies whose boundary text appears inside a part.
+ */
+function parseMultipart(bytes: Buffer, contentType: string): Promise<Record<string, unknown>> {
+  const malformed = () => new RunRequestError(400, 'invalid_request', 'The multipart body is malformed')
+  return new Promise((resolve, reject) => {
+    let parser: busboy.Busboy
+    try {
+      parser = busboy({
+        headers: { 'content-type': contentType },
+        // The whole body is already capped (the app's bodyLimit); fields may use all of it.
+        limits: { parts: MAX_MULTIPART_PARTS, fieldSize: Number.POSITIVE_INFINITY },
+        defParamCharset: 'utf8',
+      })
+    } catch {
+      reject(malformed())
+      return
+    }
+    const parts = new Map<string, unknown[]>()
+    const add = (name: string, item: unknown) => parts.set(name, [...(parts.get(name) ?? []), item])
+    parser.on('field', (name, value) => add(name, value))
+    parser.on('file', (name, stream, info) => {
+      const chunks: Buffer[] = []
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+      stream.on('end', () => {
+        const file = Buffer.concat(chunks)
+        add(name, {
+          filename: info.filename ?? '',
+          // RFC 7578 §4.4: a part without Content-Type is text/plain.
+          contentType: info.mimeType,
+          size: file.length,
+          base64: file.toString('base64'),
+        } satisfies WebhookFile)
+      })
+    })
+    parser.on('partsLimit', () =>
+      reject(
+        new WebhookRejection(
+          413,
+          'too_many_parts',
+          `A multipart body can have at most ${MAX_MULTIPART_PARTS} parts`,
+          'too_many_parts',
+        ),
+      ),
+    )
+    parser.on('error', () => reject(malformed()))
+    parser.on('close', () =>
+      resolve(
+        Object.fromEntries([...parts].map(([name, items]) => [name, items.length === 1 ? items[0] : items])),
+      ),
+    )
+    parser.end(bytes)
+  })
+}
 
 export interface WebhookTarget {
   workflow: Workflow
   trigger: WorkflowTrigger
   release: WorkflowRelease
-  webhook: Required<Pick<WebhookTrigger, 'methods' | 'syncTimeoutMs'>> & WebhookTrigger
+  /** The live release's webhook with every default applied. */
+  webhook: ResolvedWebhook
   pathParams: Record<string, string>
 }
 
@@ -93,16 +195,46 @@ function target(
   release: WorkflowRelease,
   pathParams: Record<string, string>,
 ): WebhookTarget {
-  const webhook = trigger.config as WebhookTarget['webhook']
+  const webhook = resolveWebhookSettings(trigger.config as WebhookTrigger)
   return { workflow, trigger, release, webhook, pathParams }
 }
 
-/** The environment `?environment=` names, or the default one. */
-export async function webhookEnvironment(db: Db, slug: string | undefined) {
+/**
+ * The environment `?environment=` names, among those the webhook allows. Without one: the default environment, or
+ * the first listed when the webhook lists environments without the default.
+ */
+export async function webhookEnvironment(db: Db, webhook: ResolvedWebhook, slug: string | undefined) {
   const rows = await db.select().from(environments)
-  const env = slug ? rows.find((e) => e.slug === slug) : rows.find((e) => e.isDefault)
-  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug}"`)
+  const allowed = webhookEnvironments(webhook, rows)
+  const fallback = allowed.find((e) => e.isDefault) ?? allowed[0]
+  const env = slug === undefined ? fallback : rows.find((e) => e.slug === slug)
+  if (!env) throw new RunRequestError(404, 'not_found', `No environment "${slug ?? 'default'}"`)
+  if (!allowed.includes(env))
+    throw new RunRequestError(403, 'forbidden', `This webhook doesn't run in ${env.name}`)
   return env
+}
+
+const validators = new Map<string, BodyValidator | null>()
+const VALIDATOR_CACHE_SIZE = 100
+
+/**
+ * The webhook's body validator for a release, compiled once and kept (the latest 100 releases). Null without a
+ * schema, or for one that doesn't compile (the validator refuses those before a release; logged here).
+ */
+export function bodyValidator(
+  release: WorkflowRelease,
+  webhook: ResolvedWebhook,
+  log: { warn(obj: object, msg: string): void },
+): BodyValidator | null {
+  if (!webhook.bodySchema) return null
+  if (validators.has(release.id)) return validators.get(release.id)!
+  const compiled = compileBodySchema(webhook.bodySchema)
+  if (!compiled.ok)
+    log.warn({ releaseId: release.id, error: compiled.error }, "webhook body schema doesn't compile")
+  const validate = compiled.ok ? compiled.validate : null
+  if (validators.size >= VALIDATOR_CACHE_SIZE) validators.delete(validators.keys().next().value!)
+  validators.set(release.id, validate)
+  return validate
 }
 
 /** Refuses up front when a resource the release queries isn't configured in the environment. */
@@ -132,15 +264,14 @@ export async function requireConfiguredResources(
   }
 }
 
-/** Headers that never reach the run: the credentials the caller authenticated with. */
-export function runHeaders(
-  headers: Record<string, string | string[] | undefined>,
-  keySource: 'x-api-key' | 'authorization',
-): Record<string, string> {
+/** Headers that never reach the run: cookies and every API key the caller sent (used or not). */
+export function runHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {
-    if (value === undefined || name === 'cookie' || name === keySource) continue
-    out[name] = Array.isArray(value) ? value.join(', ') : value
+    if (value === undefined || name === 'cookie' || name === 'x-api-key') continue
+    const text = Array.isArray(value) ? value.join(', ') : value
+    if (name === 'authorization' && /^\s*Bearer\s+ow_/i.test(text)) continue
+    out[name] = text
   }
   return out
 }

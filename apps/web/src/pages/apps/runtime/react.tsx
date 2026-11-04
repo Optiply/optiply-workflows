@@ -10,7 +10,7 @@ import { AppHost, type AppHostOptions, type AppHostState } from './host'
 const HostContext = createContext<AppHost | null>(null)
 
 /**
- * Inside a module instance (M14): its prefix (`picker1/`). Its components' values are the runtime's under that
+ * Inside a module instance (M14): its prefix (`picker1/`, or `shell1/picker1/` nested: M21). Its components' values are the runtime's under that
  * prefix, and the names they send (`set`, `fire`, `call`, `trigger`) get it too, so renderers work unchanged.
  */
 const ScopeContext = createContext('')
@@ -19,9 +19,10 @@ export function AppHostProvider({ host, children }: { host: AppHost; children: R
   return <HostContext.Provider value={host}>{children}</HostContext.Provider>
 }
 
-/** Renders `children` as a module instance's components. */
+/** Renders `children` as a module instance's components; inside another instance (M21), under both prefixes. */
 export function AppScope({ instance, children }: { instance: string; children: ReactNode }) {
-  return <ScopeContext.Provider value={`${instance}/`}>{children}</ScopeContext.Provider>
+  const outer = useContext(ScopeContext)
+  return <ScopeContext.Provider value={`${outer}${instance}/`}>{children}</ScopeContext.Provider>
 }
 
 /** The prefix of the module instance rendering here; empty in the app itself. */
@@ -46,6 +47,10 @@ function scopedHost(host: AppHost, prefix: string): AppHost {
     fire: (owner: string, event: string) => host.fire(prefix + owner, event),
     call: (entity: string, method: string, args?: unknown[]) => host.call(prefix + entity, method, args),
     trigger: (query: string) => host.trigger(prefix + query),
+    registerFrame: (component: string, frame: Parameters<AppHost['registerFrame']>[1]) =>
+      host.registerFrame(prefix + component, frame),
+    componentLog: (component: string, level: 'error' | 'warn', message: string) =>
+      host.componentLog(prefix + component, level, message),
   }
   return new Proxy(host, {
     get(target, property) {

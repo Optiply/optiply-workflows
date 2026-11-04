@@ -82,32 +82,33 @@ export function PullRequestLink({
 }
 
 /**
- * Protecting a workflow, app, library query or module: what it means, an optional branch name, and then the branch and pull request it
- * made (or how to open one by hand).
+ * Protecting a workflow, app, library query, module, or since M22 a resource or config var: what it means, an
+ * optional branch name, and then the branch and pull request it made (or how to open one by hand).
  */
 export function ProtectDialog({
   kind,
   object,
   onClose,
 }: {
-  kind: GitKind
+  kind: GitKind | SettingsKind
   object: { id: string; slug: string; name: string }
   onClose: () => void
 }) {
   const trpc = useTRPC()
   const refresh = useRefreshKind(kind)
   const { data: git } = useGitInfo()
-  const defaultBranch = `protect/${kind}-${object.slug}`
+  const settings = isSettingsKind(kind)
+  const defaultBranch = `protect/${kind.replace('_', '-')}-${object.slug}`
   const [branch, setBranch] = useState(defaultBranch)
   const [result, setResult] = useState<ProtectResult | null>(null)
-  const protect = useMutation(
-    trpc.git.protect.mutationOptions({
-      onSuccess: async (done) => {
-        setResult(done)
-        await refresh()
-      },
-    }),
-  )
+  const onSuccess = async (done: ProtectResult) => {
+    setResult(done)
+    await refresh()
+  }
+  const protectObject = useMutation(trpc.git.protect.mutationOptions({ onSuccess }))
+  const protectSettings = useMutation(trpc.git.protectSettings.mutationOptions({ onSuccess }))
+  const protect = settings ? protectSettings : protectObject
+  const label = GIT_ALL_LABELS[kind]
   return (
     <Dialog
       title={`Protect “${object.name}”`}
@@ -124,14 +125,15 @@ export function ProtectDialog({
               variant="primary"
               loading={protect.isPending}
               disabled={!branch.trim()}
-              onClick={() =>
-                protect.mutate({
-                  kind,
+              onClick={() => {
+                const input = {
                   id: object.id,
                   // The default: the server picks the next free name if an earlier protect left that branch.
                   ...(branch.trim() !== defaultBranch && { branch: branch.trim() }),
-                })
-              }
+                }
+                if (isSettingsKind(kind)) protectSettings.mutate({ ...input, kind })
+                else protectObject.mutate({ ...input, kind })
+              }}
               data-testid="protect-confirm"
             >
               Protect
@@ -143,8 +145,8 @@ export function ProtectDialog({
       {result ? (
         <div className="flex flex-col gap-3 text-sm" data-testid="protect-result">
           <p>
-            The {GIT_KIND_LABELS[kind]} is protected: from now on it’s edited on Git branches, and merging
-            into <span className="font-mono">{git?.branch}</span> deploys it.
+            The {label} is protected: from now on {settings ? 'its settings change' : 'it’s edited'} on Git
+            branches, and merging into <span className="font-mono">{git?.branch}</span> deploys it.
           </p>
           <p>
             Its files are on <span className="font-mono">{result.branch}</span> (
@@ -185,15 +187,30 @@ export function ProtectDialog({
       ) : (
         <div className="flex flex-col gap-4 text-sm">
           <p>
-            A protected {GIT_KIND_LABELS[kind]} is reviewed before it goes live. Its live version is committed
-            to a branch and a pull request into <span className="font-mono">{git?.branch ?? 'main'}</span> is
-            opened. From then on:
+            A protected {label} is reviewed before it changes.{' '}
+            {settings ? 'Its settings (never its secrets)' : 'Its live version'} {settings ? 'are' : 'is'}{' '}
+            committed to a branch and a pull request into{' '}
+            <span className="font-mono">{git?.branch ?? 'main'}</span> is opened. From then on:
           </p>
-          <ul className="list-disc space-y-1 pl-5 text-muted">
-            <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
-            <li>Merging deploys it as a new release; nobody publishes it here any more.</li>
-            <li>Only admins can roll it back here, in an emergency, until its next change in Git.</li>
-          </ul>
+          {settings ? (
+            <ul className="list-disc space-y-1 pl-5 text-muted">
+              <li>
+                Its settings are read-only here: change them with Save to branch, and review the pull request.
+              </li>
+              <li>Merging deploys them to every instance deploying that branch.</li>
+              <li>
+                Secrets stay on each instance
+                {kind === 'resource' ? ', as do overrides of single settings' : ''}
+                {kind === 'config_var' ? ', as do local values' : ''}.
+              </li>
+            </ul>
+          ) : (
+            <ul className="list-disc space-y-1 pl-5 text-muted">
+              <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
+              <li>Merging deploys it as a new release; nobody publishes it here any more.</li>
+              <li>Only admins can roll it back here, in an emergency, until its next change in Git.</li>
+            </ul>
+          )}
           <Field
             label="Branch"
             hint="Where its files go first. Left as it is, a name already taken gets a number (-2, -3…)."
@@ -207,6 +224,13 @@ export function ProtectDialog({
   )
 }
 
+/** Unprotecting a resource or config var (M22): it can then be changed here again. */
+export function useUnprotectSettings(kind: SettingsKind) {
+  const trpc = useTRPC()
+  const refresh = useRefreshKind(kind)
+  return useMutation(trpc.git.unprotectSettings.mutationOptions({ onSuccess: () => refresh() }))
+}
+
 /** Unprotecting: confirms, then lets the object be edited here again. */
 export function useUnprotect(kind: GitKind) {
   const trpc = useTRPC()
@@ -214,8 +238,15 @@ export function useUnprotect(kind: GitKind) {
   return useMutation(trpc.git.unprotect.mutationOptions({ onSuccess: () => refresh() }))
 }
 
-/** What Git sync keeps: workflows, apps, and since M14 library queries and modules. */
-export type GitKind = 'workflow' | 'app' | 'library_query' | 'module'
+/** What Git sync keeps: workflows, apps, since M14 library queries and modules, since M25 component libraries. */
+export type GitKind = 'workflow' | 'app' | 'library_query' | 'module' | 'component_library'
+
+/** Resources and config vars (M22): kept in Git without drafts or releases. */
+export type SettingsKind = 'resource' | 'config_var'
+
+export function isSettingsKind(kind: string): kind is SettingsKind {
+  return kind === 'resource' || kind === 'config_var'
+}
 
 /** Each kind as people read it. */
 export const GIT_KIND_LABELS: Record<GitKind, string> = {
@@ -223,6 +254,7 @@ export const GIT_KIND_LABELS: Record<GitKind, string> = {
   app: 'app',
   library_query: 'library query',
   module: 'module',
+  component_library: 'component library',
 }
 
 /** Where each kind's directories are in the repo. */
@@ -231,10 +263,25 @@ export const GIT_KIND_ROOTS: Record<GitKind, string> = {
   app: 'apps',
   library_query: 'library',
   module: 'modules',
+  component_library: 'component-libraries',
+}
+
+/** Every kind as people read it, resources and config vars (M22) included. */
+export const GIT_ALL_LABELS: Record<GitKind | SettingsKind, string> = {
+  ...GIT_KIND_LABELS,
+  resource: 'resource',
+  config_var: 'config var',
+}
+
+/** Every kind's directory in the repo, resources and config vars (M22) included. */
+export const GIT_ALL_ROOTS: Record<GitKind | 'resource' | 'config_var', string> = {
+  ...GIT_KIND_ROOTS,
+  resource: 'resources',
+  config_var: 'config-vars',
 }
 
 /** Refetches a kind's list and objects (after protecting or unprotecting one). */
-function useRefreshKind(kind: GitKind) {
+function useRefreshKind(kind: GitKind | SettingsKind) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const keys = {
@@ -242,9 +289,15 @@ function useRefreshKind(kind: GitKind) {
     app: [trpc.apps.list.queryKey(), trpc.apps.get.queryKey()],
     library_query: [trpc.libraryQueries.list.queryKey(), trpc.libraryQueries.get.queryKey()],
     module: [trpc.modules.list.queryKey(), trpc.modules.get.queryKey()],
+    component_library: [trpc.componentLibraries.list.queryKey(), trpc.componentLibraries.get.queryKey()],
+    resource: [trpc.resources.list.queryKey(), trpc.resources.get.queryKey()],
+    config_var: [trpc.configVars.list.queryKey()],
   }[kind]
   return () => Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
 }
 
 export const UNPROTECT_CONFIRM =
   'Unprotect it? It can then be edited and published here again. Its files stay in the repo, and merges there stop deploying it.'
+
+export const UNPROTECT_SETTINGS_CONFIRM =
+  'Unprotect it? Its settings can then be changed here again. Its files stay in the repo, and merges there stop deploying it.'

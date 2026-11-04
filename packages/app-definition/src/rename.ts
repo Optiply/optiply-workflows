@@ -1,4 +1,4 @@
-import { renameInField } from '@ow/definition'
+import { fieldRefs, renameInField } from '@ow/definition'
 import { appFields } from './fields'
 import { appNameReason } from './names'
 import { type AppDefinition, appNameSchema, type EventHandler } from './schema'
@@ -79,8 +79,42 @@ export function renameAppEntity(def: AppDefinition, from: string, to: string): A
   return { ok: true, definition: next, changed, skipped }
 }
 
-function setAt(target: unknown, path: (string | number)[], value: string) {
+/** Sets the string at `path` inside `target` (a copy the caller owns). */
+export function setAt(target: unknown, path: (string | number)[], value: string) {
   let node = target as Record<string | number, unknown>
   for (const key of path.slice(0, -1)) node = node[key] as Record<string | number, unknown>
   node[path.at(-1)!] = value
+}
+
+/**
+ * A module's input renamed (M21): every `inputs.<from>` (and `inputs['<from>']`) read in the module's templates and
+ * code becomes `inputs.<to>`. `inputs` is a reserved name in modules, so the read is unambiguous; a field with a
+ * syntax error that mentions it is left alone (`skipped`), and so is everything while `to` isn't a valid name.
+ */
+export function renameModuleInputReads(
+  def: AppDefinition,
+  from: string,
+  to: string,
+): { definition: AppDefinition; changed: (string | number)[][]; skipped: (string | number)[][] } {
+  // A name that isn't one (the validator says so) would break the code reading it: the reads wait for a valid one.
+  if (from === to || !def.module || !appNameSchema.safeParse(to).success) {
+    return { definition: def, changed: [], skipped: [] }
+  }
+  const next = structuredClone(def)
+  const changed: (string | number)[][] = []
+  const skipped: (string | number)[][] = []
+  for (const field of appFields(def)) {
+    const { refs, errors } = fieldRefs(field, { properties: true })
+    const reads = refs.filter(
+      (r) => r.name === 'inputs' && r.property === from && r.propertyStart !== undefined,
+    )
+    if (errors.length && /\binputs\b/.test(field.source)) skipped.push(field.path)
+    if (!reads.length) continue
+    let source = field.source
+    for (const r of [...reads].reverse())
+      source = source.slice(0, r.propertyStart!) + to + source.slice(r.propertyEnd!)
+    setAt(next, field.path, source)
+    changed.push(field.path)
+  }
+  return { definition: next, changed, skipped }
 }

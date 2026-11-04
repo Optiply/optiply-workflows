@@ -9,6 +9,7 @@ import {
   duration,
   FINAL_RUN_STATUSES,
   type IterationView,
+  queueMessageLine,
   type RunView,
   runsApi,
 } from '@/lib/runs-api'
@@ -52,6 +53,14 @@ export function RunPanel() {
               {run.environment} · {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version} ·{' '}
               {duration(run.startedAt, run.finishedAt)}
             </span>
+            {queueMessageLine(run) && (
+              <span
+                className="whitespace-nowrap text-xs text-muted"
+                data-testid={run.triggerType === 'pubsub' ? 'run-pubsub' : 'run-queue'}
+              >
+                {queueMessageLine(run)}
+              </span>
+            )}
             {run.parentRunId && (
               <span className="whitespace-nowrap text-xs text-muted">
                 started by <RunLink runId={run.parentRunId} />

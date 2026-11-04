@@ -6,7 +6,7 @@ import {
   validateLibraryQuery,
 } from '@ow/app-definition'
 import { type LibraryQuery, libraryQueries, libraryQueryReleases, permissions, users } from '@ow/db'
-import { workflowSlugSchema } from '@ow/definition'
+import { type LibraryInfo, workflowSlugSchema } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -28,6 +28,7 @@ import {
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
+import { droppedUses } from '../../services/publish-impact'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -156,9 +157,12 @@ export const libraryQueriesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, query } = await visibleQuery(ctx, input)
       requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
-      // The name and description live in the repo; the folder is the instance's.
+      // The name, description and folder live in the repo (the folder since M22).
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(query, 'library_query', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== query.folderId) {
+        requireUnprotected(query, 'library_query', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'library_query',
@@ -223,6 +227,32 @@ export const libraryQueriesRouter = router({
   }),
 
   /**
+   * For the publish dialog (M21): the parameters the live release declares and the draft doesn't, and the apps,
+   * modules and workflows on `latest` passing them (a warning; publishing isn't refused).
+   */
+  publishImpact: authedProcedure.input(z.object({ libraryQueryId: Id })).query(async ({ ctx, input }) => {
+    const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+    requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+    const [live] = query.liveReleaseId
+      ? await ctx.db
+          .select()
+          .from(libraryQueryReleases)
+          .where(eq(libraryQueryReleases.id, query.liveReleaseId))
+      : []
+    return droppedUses(
+      ctx.db,
+      access,
+      {
+        kind: 'library',
+        slug: query.slug,
+        live: live ? live.definition.params.map((p) => p.name) : null,
+        draft: query.draftDefinition.params.map((p) => p.name),
+      },
+      await libraryUsers(ctx.db, query.slug),
+    )
+  }),
+
+  /**
    * What the app editor's validator needs for the library queries an app uses (`LibraryInfo` by slug: the live
    * version and each release's parameters), plus their names; the ones the caller can't see are left out.
    */
@@ -232,10 +262,13 @@ export const libraryQueriesRouter = router({
     .query(async ({ ctx, input }) => {
       const access = await loadAccess(ctx.db, ctx.user)
       const infos = await libraryInfos(ctx.db, [...new Set(input.slugs)])
+      // One the caller may not use says only that (M21): "needs use access", not "unknown", and nothing more.
       return Object.fromEntries(
-        [...infos]
-          .filter(([, { query }]) => access.libraryQueryLevel(query) !== null)
-          .map(([slug, { query, info }]) => [slug, { id: query.id, name: query.name, ...info }]),
+        [...infos].map(([slug, { query, info }]): [string, LibraryInfo & { id?: string; name?: string }] =>
+          access.libraryQueryLevel(query) !== null
+            ? [slug, { id: query.id, name: query.name, ...info }]
+            : [slug, { liveVersion: null, versions: {}, noUse: true }],
+        ),
       )
     }),
 
@@ -292,6 +325,18 @@ export const libraryQueriesRouter = router({
       gitCommit: release.gitCommit,
       live: release.id === query.liveReleaseId,
     }))
+  }),
+
+  /** One release with its definition, to compare it with another or the draft (M24). */
+  release: authedProcedure.input(z.object({ libraryQueryId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, query } = await visibleQuery(ctx, { id: input.libraryQueryId })
+    requireLevel(access.libraryQueryLevel(query), 'edit', 'this library query')
+    const [release] = await ctx.db
+      .select()
+      .from(libraryQueryReleases)
+      .where(and(eq(libraryQueryReleases.id, input.id), eq(libraryQueryReleases.libraryQueryId, query.id)))
+    if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
+    return { id: release.id, version: release.version, definition: release.definition }
   }),
 
   /** Releases the draft at `draftRevision` and makes it live (`version`, or `bump` from the latest; first 1.0.0). */

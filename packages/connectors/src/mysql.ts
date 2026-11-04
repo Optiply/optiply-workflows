@@ -1,7 +1,10 @@
-import { type CompiledSql, compileSql, TemplateError } from '@ow/expressions'
+import { type CompiledSql, compileSql, paramValue, TemplateError } from '@ow/expressions'
 import mysql from 'mysql2'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
+import { deferredStream, sshConnectionError, tunnelFor } from './ssh/client'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -25,9 +28,11 @@ const configSchema = z.object({
   /** Queries returning more rows than this fail rather than load everything into memory. */
   maxRows: z.number().int().positive().default(10_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
+  /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
+  ssh: sshConfigSchema.optional(),
 })
 
-const secretsSchema = z.object({ password: z.string().optional() })
+const secretsSchema = z.object({ password: z.string().optional(), ssh: sshSecretsSchema.optional() })
 
 const querySchema = z.object({ sql: z.string().min(1) })
 
@@ -38,8 +43,10 @@ type Query = z.output<typeof querySchema>
 interface Client {
   pool: mysql.Pool
   config: Config
-  /** Options for a side connection that kills a running query. */
+  /** Options for a side connection that kills a running query (through the tunnel too). */
   connectionOptions: mysql.ConnectionOptions
+  /** The SSH tunnel every connection goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
@@ -50,14 +57,18 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   querySchema,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const connectionOptions: mysql.ConnectionOptions = {
+      // Each connection is a channel through the tunnel; TLS goes over it, checked against `host`.
+      ...(tunnel ? { stream: () => deferredStream(tunnel.open(config.host, config.port)) } : {}),
       host: config.host,
       port: config.port,
       database: config.database,
       user: config.user,
       password: secrets.password,
       ssl: sslOption(config),
-      connectTimeout: 10_000,
+      // Through a tunnel, the SSH servers' own connect time (15 s each) comes first, so their errors say which and why.
+      connectTimeout: 10_000 + (config.ssh?.hops.length ?? 0) * 15_000,
       charset: 'utf8mb4',
       // One statement per query: `select 1; drop table t` is a syntax error, not two statements.
       multipleStatements: false,
@@ -79,11 +90,12 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
       idleTimeout: 60_000,
       enableKeepAlive: true,
     })
-    return { pool, config, connectionOptions }
+    return { pool, config, connectionOptions, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ pool }) {
+  async destroyClient({ pool, tunnel }) {
     await new Promise<void>((resolve) => pool.end(() => resolve()))
+    await tunnel?.close()
   },
 
   async testConnection(client, { signal, timeoutMs }) {
@@ -108,7 +120,7 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   async execute(client, query, ctx): Promise<QueryResult> {
     const plan = await resolveFragments(compileSql(query.sql, 'mysql'), 'mysql', ctx.evaluate)
     const values: unknown[] = []
-    for (const param of plan.params) values.push(await ctx.evaluate(param.code))
+    for (const param of plan.params) values.push(await paramValue(param, ctx.evaluate))
     const { text, params } = expandParams(plan, values)
     return runStatement(client, text, params, {
       signal: ctx.signal,
@@ -349,6 +361,8 @@ function stopError(stop: 'aborted' | 'timeout'): ConnectorError {
 /** MySQL errors keep their code and SQLSTATE; connection failures are told apart from query failures. */
 function toError(err: unknown, stop: 'aborted' | 'timeout' | undefined): unknown {
   if (err instanceof ConnectorError) return err
+  const ssh = sshConnectionError(err)
+  if (ssh) return ssh
   const e = err as { code?: string; errno?: number; sqlState?: string; sqlMessage?: string; message?: string }
   // Stopped on purpose: whatever the query died of (usually ER_QUERY_INTERRUPTED) is our own KILL QUERY.
   if (stop) return stopError(stop)

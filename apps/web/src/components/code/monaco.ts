@@ -184,3 +184,74 @@ monaco.languages.registerCompletionItemProvider('python', {
 })
 
 export { monaco }
+
+/**
+ * TypeScript for component libraries (M25): JSX with React's automatic runtime, ES modules, the SDK's and React's
+ * declarations. npm packages aren't installed in the browser: importing one is `any` (a wildcard module). Every file
+ * of the open library is a model (`syncLibraryModels`), so imports between them resolve.
+ */
+const ts = monaco.typescript.typescriptDefaults
+ts.setCompilerOptions({
+  target: monaco.typescript.ScriptTarget.ES2020,
+  module: monaco.typescript.ModuleKind.ESNext,
+  moduleResolution: monaco.typescript.ModuleResolutionKind.NodeJs,
+  jsx: monaco.typescript.JsxEmit.ReactJSX,
+  allowJs: true,
+  allowNonTsExtensions: true,
+  esModuleInterop: true,
+  strict: true,
+  noEmit: true,
+  lib: ['es2023', 'dom', 'dom.iterable'],
+})
+ts.setEagerModelSync(true)
+let componentLibsInstalled = false
+
+export function installComponentTypes(sdkTypes: string, reactTypes: string) {
+  if (componentLibsInstalled) return
+  componentLibsInstalled = true
+  ts.setExtraLibs([
+    { content: sdkTypes, filePath: 'file:///node_modules/@ow/component-sdk/index.d.ts' },
+    { content: reactTypes, filePath: 'file:///node_modules/@types/react-lite/index.d.ts' },
+    // Any npm package: `any` (more specific declarations above win).
+    { content: "declare module '*'", filePath: 'file:///node_modules/@types/ow-any-package/index.d.ts' },
+  ])
+}
+
+/** The language a library file is edited in. */
+export function libraryLanguage(path: string): 'typescript' | 'javascript' | 'css' | 'json' | 'plaintext' {
+  if (/\.(tsx|ts)$/.test(path)) return 'typescript'
+  if (/\.(jsx|js)$/.test(path)) return 'javascript'
+  if (path.endsWith('.css')) return 'css'
+  if (path.endsWith('.json')) return 'json'
+  return 'plaintext'
+}
+
+/** A library file's model URI: one tree per library, so imports between its files resolve. */
+export const libraryModelPath = (library: string, path: string) =>
+  `file:///component-libraries/${library}/${path}`
+
+/**
+ * Keeps a model for every file of the library, with its current content, so the TypeScript service sees all of
+ * them; a model the open editor shows is left to it. Models of files gone (or of another library) are disposed.
+ */
+export function syncLibraryModels(
+  library: string,
+  files: readonly { path: string; content: string }[],
+  open: string | null,
+) {
+  const root = `file:///component-libraries/${library}/`
+  const wanted = new Map(files.map((f) => [libraryModelPath(library, f.path), f]))
+  for (const model of monaco.editor.getModels()) {
+    const uri = model.uri.toString()
+    if (!uri.startsWith('file:///component-libraries/')) continue
+    if (!uri.startsWith(root) || !wanted.has(uri)) {
+      if (uri !== open) model.dispose()
+    }
+  }
+  for (const [uri, file] of wanted) {
+    if (uri === open) continue
+    const existing = monaco.editor.getModel(monaco.Uri.parse(uri))
+    if (!existing) monaco.editor.createModel(file.content, libraryLanguage(file.path), monaco.Uri.parse(uri))
+    else if (existing.getValue() !== file.content) existing.setValue(file.content)
+  }
+}

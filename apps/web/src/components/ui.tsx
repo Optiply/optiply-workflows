@@ -2,6 +2,7 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { Check, Copy, Loader2, X } from 'lucide-react'
 import {
   type ComponentProps,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useEffect,
@@ -67,6 +68,37 @@ export const FIELD =
 
 export function Input({ className, ...props }: ComponentProps<'input'>) {
   return <input className={cn('h-8 w-full rounded-md px-2.5', FIELD, className)} {...props} />
+}
+
+/** Whether the browser can mask a text input with CSS (Chromium, Safari and current Firefox can). */
+const CSS_MASKING = typeof CSS !== 'undefined' && CSS.supports?.('-webkit-text-security', 'disc')
+
+/**
+ * An input for a secret the platform stores (a token, a password for a resource), not the user's own password.
+ * Browsers offer to save any `type="password"` field as a login (Chrome does even with `autocomplete="new-password"`,
+ * which reads as "sign-up"), so where CSS can mask the text it's a text field shown as dots, which password managers
+ * leave alone; elsewhere it stays a password field, so a secret is never shown in plain text.
+ */
+export function SecretInput({ className, style, ...props }: Omit<ComponentProps<'input'>, 'type'>) {
+  if (!CSS_MASKING)
+    return (
+      <Input type="password" autoComplete="new-password" className={className} style={style} {...props} />
+    )
+  return (
+    <Input
+      type="text"
+      autoComplete="off"
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      data-1p-ignore
+      data-lpignore="true"
+      data-form-type="other"
+      className={className}
+      style={{ WebkitTextSecurity: 'disc', ...style } as CSSProperties}
+      {...props}
+    />
+  )
 }
 
 export function Label({ className, ...props }: ComponentProps<'label'>) {
@@ -368,7 +400,9 @@ export function Dialog({
   className?: string
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    // Escape in a code editor is the editor's (closing its suggestions), not the dialog's.
+    const onKey = (e: KeyboardEvent) =>
+      e.key === 'Escape' && !(e.target instanceof Element && e.target.closest('.monaco-editor')) && onClose()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])

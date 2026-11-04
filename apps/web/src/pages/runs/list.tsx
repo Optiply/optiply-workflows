@@ -16,7 +16,7 @@ import {
   Td,
   Th,
 } from '@/components/ui'
-import { duration, runsApi } from '@/lib/runs-api'
+import { duration, pubsubMessage, queueMessageLine, runsApi } from '@/lib/runs-api'
 
 const STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
 
@@ -103,6 +103,12 @@ export function RunsPage() {
                   <Td className="text-muted">
                     {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version} ·{' '}
                     {run.triggerType}
+                    {pubsubMessage(run) && (
+                      <span className="font-mono text-xs"> · message {pubsubMessage(run)!.messageId}</span>
+                    )}
+                    {run.triggerType !== 'pubsub' && queueMessageLine(run) && (
+                      <span className="font-mono text-xs"> · {queueMessageLine(run)}</span>
+                    )}
                   </Td>
                   <Td className="whitespace-nowrap text-muted">{new Date(run.createdAt).toLocaleString()}</Td>
                   <Td className="whitespace-nowrap text-muted">{duration(run.startedAt, run.finishedAt)}</Td>

@@ -1,20 +1,28 @@
 import {
   environments,
   permissions,
+  pythonEnvs,
+  queueDeliveries,
   type Workflow,
+  webhookRejections,
   workflowReleases,
   workflows,
   workflowTriggers,
 } from '@ow/db'
 import {
   definitionHash,
+  MAX_REQUIREMENT_LENGTH,
+  MAX_REQUIREMENTS,
+  requirementProblems,
   validateDefinition,
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
+import { BlockFailure } from '@ow/engine'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
@@ -25,10 +33,15 @@ import {
   requireLevel,
 } from '../../services/permissions'
 import { pythonRunner } from '../../services/python'
+import { envForRequirements, pythonBuilder, requirementsHash } from '../../services/python-envs'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
+/** A workflow's Python packages (M23), as the editor's field holds them. */
+const requirementsInput = z.array(z.string().max(MAX_REQUIREMENT_LENGTH)).min(1).max(MAX_REQUIREMENTS)
+const NO_BUILDER =
+  "This instance can't install Python packages: it has no package builder (PYTHON_BUILDER_URL)"
 /** Appears in webhook URLs (M4), so it's a stable identifier. */
 const Slug = z
   .string()
@@ -103,7 +116,7 @@ export const workflowsRouter = router({
       draftDefinition: workflow.draftDefinition,
       draftRevision: workflow.draftRevision,
       draftHash: await definitionHash(workflow.draftDefinition),
-      diagnostics: validateDefinition(workflow.draftDefinition).diagnostics,
+      diagnostics: validateDefinition(workflow.draftDefinition, { checkBodySchema }).diagnostics,
       liveRelease: live ?? null,
     }
   }),
@@ -117,6 +130,31 @@ export const workflowsRouter = router({
       .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
       .where(eq(workflowTriggers.workflowId, workflow.id))
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
+    // Queue triggers (Pub/Sub M19, SQS and Kafka M26): their last day's messages, from what the consumer recorded.
+    const isQueue = (kind: string) => kind === 'pubsub' || kind === 'sqs' || kind === 'kafka'
+    const queueIds = rows.filter((r) => isQueue(r.trigger.kind)).map((r) => r.trigger.id)
+    const counts = new Map(
+      (queueIds.length
+        ? await ctx.db
+            .select({
+              triggerId: queueDeliveries.triggerId,
+              messages: sql<number>`count(*)::int`,
+              succeeded: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'succeeded')::int`,
+              failed: sql<number>`count(*) filter (where ${queueDeliveries.outcome} in ('failed', 'dead_lettered', 'dropped'))::int`,
+              deadLettered: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'dead_lettered')::int`,
+            })
+            .from(queueDeliveries)
+            .where(
+              and(
+                inArray(queueDeliveries.triggerId, queueIds),
+                gt(queueDeliveries.updatedAt, sql`now() - interval '1 day'`),
+              ),
+            )
+            .groupBy(queueDeliveries.triggerId)
+        : []
+      ).map((c) => [c.triggerId, c]),
+    )
+    const now = Date.now()
     return rows.map(({ trigger, environment }) => ({
       id: trigger.id,
       kind: trigger.kind,
@@ -127,7 +165,49 @@ export const workflowsRouter = router({
       releaseId: trigger.releaseId,
       nextFireAt: trigger.nextFireAt,
       lastFiredAt: trigger.lastFiredAt,
+      ...(isQueue(trigger.kind) && {
+        queue: {
+          // Only a lease still current: a worker gone without a goodbye isn't pulling.
+          worker:
+            trigger.leaseOwner && trigger.leaseExpiresAt && trigger.leaseExpiresAt.getTime() > now
+              ? trigger.leaseOwner
+              : null,
+          state: trigger.state ?? null,
+          lastDay: {
+            messages: counts.get(trigger.id)?.messages ?? 0,
+            succeeded: counts.get(trigger.id)?.succeeded ?? 0,
+            failed: counts.get(trigger.id)?.failed ?? 0,
+            deadLettered: counts.get(trigger.id)?.deadLettered ?? 0,
+          },
+        },
+      }),
     }))
+  }),
+
+  /**
+   * The latest calls the live webhook refused (4xx), newest first, for the webhook panel. Edit access: they hold
+   * callers' IP addresses.
+   */
+  webhookRejections: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
+    const { access, workflow } = await visibleWorkflow(ctx, input.id)
+    requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+    return ctx.db
+      .select({
+        id: webhookRejections.id,
+        at: webhookRejections.createdAt,
+        status: webhookRejections.status,
+        reason: webhookRejections.reason,
+        message: webhookRejections.message,
+        environment: environments.name,
+        ip: webhookRejections.ip,
+        userAgent: webhookRejections.userAgent,
+      })
+      .from(webhookRejections)
+      .innerJoin(workflowTriggers, eq(workflowTriggers.id, webhookRejections.triggerId))
+      .leftJoin(environments, eq(environments.id, webhookRejections.environmentId))
+      .where(and(eq(workflowTriggers.workflowId, workflow.id), eq(workflowTriggers.kind, 'webhook')))
+      .orderBy(desc(webhookRejections.createdAt), desc(webhookRejections.id))
+      .limit(50)
   }),
 
   /** `protected`: made in Git from the start (edited on branches; the first merge deploys it). */
@@ -189,9 +269,12 @@ export const workflowsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.id)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
-      // The name and description live in the repo; the folder and concurrency limit are the instance's.
+      // The name, description and folder live in the repo (the folder since M22); the concurrency limit is the instance's.
       if (input.name !== undefined || input.description !== undefined) {
         requireUnprotected(workflow, 'workflow', 'rename it or change its description')
+      }
+      if (input.folderId !== undefined && input.folderId !== workflow.folderId) {
+        requireUnprotected(workflow, 'workflow', 'move it to another folder')
       }
       await checkFolderMove(ctx.db, {
         type: 'workflow',
@@ -236,7 +319,7 @@ export const workflowsRouter = router({
         revision: saved.revision,
         /** Compared with the live release's hash to show unpublished changes. */
         draftHash: await definitionHash(parsed.data),
-        diagnostics: validateDefinition(parsed.data).diagnostics,
+        diagnostics: validateDefinition(parsed.data, { checkBodySchema }).diagnostics,
       }
     }),
 
@@ -266,6 +349,45 @@ export const workflowsRouter = router({
       }
     }),
 
+  /**
+   * The state of a set of Python packages (M23) for the editor: installed (the lock's packages, its size), failed
+   * (pip's reason and output) or not yet. The editor sends what its field holds, saved or not.
+   */
+  pythonEnv: authedProcedure
+    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .query(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      return pythonEnvState(ctx.db, input.requirements)
+    }),
+
+  /** Installs a set of Python packages now (M23), so the next run doesn't wait; the answer is the new state. */
+  installPythonEnv: authedProcedure
+    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
+      requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
+      const problem = requirementProblems(input.requirements)[0]
+      if (problem) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `${input.requirements[problem.index]}: ${problem.message}`,
+        })
+      }
+      const client = pythonBuilder()
+      if (!client) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: NO_BUILDER })
+      try {
+        await envForRequirements(ctx.db, client, input.requirements, {
+          workflowId: workflow.id,
+          actorUserId: ctx.user.id,
+        })
+      } catch (err) {
+        if (!(err instanceof BlockFailure)) throw err
+        // Recorded as failed: the state says why.
+      }
+      return pythonEnvState(ctx.db, input.requirements)
+    }),
+
   /** Deletes the workflow with its releases and run history. */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
@@ -286,3 +408,29 @@ export const workflowsRouter = router({
     return { ok: true }
   }),
 })
+
+/** `python_envs`' row for these requirements, as the editor shows it. */
+async function pythonEnvState(db: Context['db'], requirements: string[]) {
+  if (!pythonBuilder()) return { available: false as const, message: NO_BUILDER }
+  const [row] = await db
+    .select()
+    .from(pythonEnvs)
+    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements)))
+  if (!row) return { available: true as const, state: 'none' as const }
+  if (row.state === 'failed') {
+    return {
+      available: true as const,
+      state: 'failed' as const,
+      error: row.error?.message ?? 'The install failed',
+      log: row.log ?? '',
+      at: row.lastUsedAt,
+    }
+  }
+  return {
+    available: true as const,
+    state: 'ready' as const,
+    packages: (row.lock?.packages ?? []).map((p) => `${p.name}==${p.version}`),
+    sizeBytes: row.sizeBytes ?? 0,
+    at: row.builtAt,
+  }
+}

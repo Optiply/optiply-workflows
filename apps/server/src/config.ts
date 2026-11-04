@@ -47,6 +47,11 @@ const ConfigSchema = z
     WEBHOOK_INLINE_CONCURRENCY: z.coerce.number().int().min(0).max(100).default(8),
     /** Workers delete runs (with their blocks and logs) that finished longer ago than this, once a day. 0 keeps all. */
     RUN_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(30),
+    /**
+     * How often an open editor's connection (M16) checks its session and access again: a draft deleted, access
+     * taken away, the object protected or the person signed out ends it.
+     */
+    COLLAB_ACCESS_CHECK_MS: z.coerce.number().int().min(100).max(3_600_000).default(30_000),
     /** When set, `/metrics` needs `Authorization: Bearer <token>`. */
     METRICS_TOKEN: z.string().optional(),
     /** Workers serve `/metrics` (and `/health`) on this port; 0 turns it off. The API serves it on PORT. */
@@ -65,6 +70,8 @@ const ConfigSchema = z
     GIT_ALLOW_INSECURE_URLS: bool,
     /** Workers check the deploy branch this often (seconds; 0 turns polling off: webhooks and Deploy now only). */
     GIT_POLL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
+    /** Workers re-check the last deploy's problem objects this often (minutes; 0 off; M22). */
+    GIT_RETRY_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
     GITHUB_API_URL: z.string().url().optional(),
     /**
@@ -74,6 +81,39 @@ const ConfigSchema = z
     PYTHON_EXECUTOR_URL: z.string().url().optional(),
     /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN). Without it Python stays off (a warning at start). */
     PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
+    /**
+     * The package builder that installs workflows' Python packages (M23, the `python-builder` service), e.g.
+     * `http://python-builder:8080`. Without it, workflows that declare packages can't run or be published.
+     */
+    PYTHON_BUILDER_URL: z.string().url().optional(),
+    /** The builder's bearer token (its PYTHON_BUILDER_TOKEN). */
+    PYTHON_BUILDER_TOKEN: z.string().min(16).optional(),
+    /**
+     * The npm registry component libraries' dependencies come from (M25). Builds run `npm install` without install
+     * scripts and without the server's own npm settings.
+     */
+    NPM_REGISTRY_URL: z.string().url().default('https://registry.npmjs.org/'),
+    /** Where component library builds and npm's download cache go; default a directory under the system's tmp. */
+    COMPONENT_BUILD_DIR: z.string().min(1).optional(),
+    /**
+     * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
+     * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
+     * file, or the metadata server). Off by default; only admins can choose it for a resource.
+     */
+    GOOGLE_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
+    /** IAP's WebSocket endpoint, Pub/Sub's REST API and Google's token endpoint: for tests against fakes. */
+    GOOGLE_IAP_URL: z.string().url().optional(),
+    GOOGLE_PUBSUB_URL: z.string().url().optional(),
+    GOOGLE_TOKEN_URL: z.string().url().optional(),
+    /**
+     * `allow` lets SQS resources and Kafka's MSK IAM (M26) use this server's own AWS credentials: the SDK's default
+     * chain (environment, `~/.aws`, SSO, web identity, ECS and EC2 metadata). Off by default; only admins can choose it
+     * for a resource.
+     */
+    AWS_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
+    /** STS's and SQS's endpoints: for tests against the fake AWS. */
+    AWS_STS_URL: z.string().url().optional(),
+    AWS_SQS_URL: z.string().url().optional(),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

@@ -1,5 +1,5 @@
-# Full stack: Postgres, a one-shot migration, the API (serves the web app too), two workers, and the code executor
-# that runs Python code blocks.
+# Full stack: Postgres, a one-shot migration, the API (serves the web app too), two workers, the code executor
+# that runs Python code blocks, and the builder that installs workflows' Python packages.
 #   docker compose up --build
 # Secrets come from .env (see .env.example); DATABASE_URL is wired to the bundled Postgres here.
 
@@ -26,6 +26,8 @@ x-app: &app
     METRICS_TOKEN: ${METRICS_TOKEN:-}
     # Git sync (M11): workers check the deploy branch this often (seconds; 0: webhook and Deploy now only).
     GIT_POLL_SECONDS: ${GIT_POLL_SECONDS:-60}
+    # Deploy problems are re-checked this often (minutes; 0: only when the instance changes; M22).
+    GIT_RETRY_MINUTES: ${GIT_RETRY_MINUTES:-10}
     # Local test repos and a fake GitHub only (file:// and http:// repos; another GitHub API). Keep unset.
     GIT_ALLOW_INSECURE_URLS: ${GIT_ALLOW_INSECURE_URLS:-false}
     GITHUB_API_URL: ${GITHUB_API_URL:-}
@@ -33,6 +35,12 @@ x-app: &app
     # Without a token Python stays off (a warning at start): the app runs, Python blocks can't.
     PYTHON_EXECUTOR_URL: http://code-executor:8080
     PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
+    # Workflows' Python packages (M23): the python-builder service below. Without its token, workflows that declare
+    # packages can't run or be published.
+    PYTHON_BUILDER_URL: http://python-builder:8080
+    PYTHON_BUILDER_TOKEN: ${PYTHON_BUILDER_TOKEN:-}
+    # Google Cloud IAP for SSH tunnels (M18): `allow` lets admins pick the server's own Google identity.
+    GOOGLE_SERVER_IDENTITY: ${GOOGLE_SERVER_IDENTITY:-}
 
 services:
   postgres:
@@ -91,7 +99,8 @@ services:
         condition: service_started
         required: false
 
-  # Runs Python code blocks, each in a fresh nsjail jail (docs/architecture.md §2.14, docs/runbooks/python.md).
+  # Runs Python code blocks, each in a fresh nsjail jail (docs/architecture.md §2.14, §2.26, docs/runbooks/python.md);
+  # PYTHON_WARM_JAILS of them are started ahead, numpy and pandas imported, each used for one run.
   # The only service with extra privileges: SYS_ADMIN for nsjail's namespaces, Docker's seccomp profile plus
   # pivot_root, and AppArmor off (Docker's profile refuses nsjail's mounts; the jail has its own seccomp policy).
   # It holds no secrets but its token, has no published port, and sits on an internal network with the app only:
@@ -105,14 +114,51 @@ services:
       PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
       PYTHON_MEMORY_MB: ${PYTHON_MEMORY_MB:-256}
       PYTHON_MAX_CONCURRENT: ${PYTHON_MAX_CONCURRENT:-4}
+      PYTHON_WARM_JAILS: ${PYTHON_WARM_JAILS:-4}
+      PYTHON_PREIMPORT: ${PYTHON_PREIMPORT-numpy,pandas}  # set it empty for none
     cap_add: [SYS_ADMIN]
     security_opt:
       - seccomp=./apps/code-executor/seccomp.json
       - apparmor=unconfined
-    # The jails' memory counts here too: PYTHON_MAX_CONCURRENT x PYTHON_MEMORY_MB, plus the server.
+    # The jails' memory counts here too: PYTHON_MAX_CONCURRENT x PYTHON_MEMORY_MB, plus ~45 MB per warm jail (numpy
+    # and pandas imported) and the server.
     mem_limit: 2g
     pids_limit: 512
     networks: [executor]
+    # Workflows' packages, as the builder installed them; the jail mounts one read-only per run that needs it.
+    volumes:
+      - python-envs:/envs:ro
+    depends_on:
+      # It first sets up the envs volume (owned by its user); the executor only reads it.
+      python-builder:
+        condition: service_started
+        required: false
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  # Installs workflows' Python packages (M23, docs/architecture.md §2.26, docs/runbooks/python.md): pip, wheels only
+  # (no package's code runs here), into envs on the python-envs volume. The only Python service with internet access
+  # (the package index); no privileges, no secrets but its token, no database.
+  python-builder:
+    build:
+      context: apps/code-executor
+      target: builder
+    image: optiply-workflows-python-builder:local
+    restart: unless-stopped
+    environment:
+      # Without one it refuses to start (and packages stay off in the app).
+      PYTHON_BUILDER_TOKEN: ${PYTHON_BUILDER_TOKEN:-}
+      PYTHON_PACKAGE_INDEX_URL: ${PYTHON_PACKAGE_INDEX_URL:-https://pypi.org/simple}
+      PYTHON_ENV_MAX_MB: ${PYTHON_ENV_MAX_MB:-1024}
+      PYTHON_ENV_KEEP_DAYS: ${PYTHON_ENV_KEEP_DAYS:-30}
+    volumes:
+      - python-envs:/envs
+    mem_limit: 1g
+    networks: [executor, builder-egress]
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
       interval: 10s
@@ -121,9 +167,12 @@ services:
       start_period: 5s
 
 networks:
-  # The app and the code executor only; internal: the executor reaches nothing outside it.
+  # The app, the code executor and the builder; internal: the executor reaches nothing outside it.
   executor:
     internal: true
+  # The builder's way out to the package index.
+  builder-egress: {}
 
 volumes:
   pgdata:
+  python-envs:

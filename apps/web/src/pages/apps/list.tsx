@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, GitBranch, LayoutGrid, Pencil, Plus } from 'lucide-react'
 import { useState } from 'react'
-import { FolderSections, FolderSelect, NewFolderForm, useFolders } from '@/components/folders'
+import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
   Badge,
@@ -58,9 +58,9 @@ export function AppsPage() {
           Create one to start building. If you expected to see apps here, ask an admin for access.
         </EmptyState>
       ) : (
-        <FolderSections type="app" items={data} listKey={trpc.apps.list.queryKey()}>
+        <FolderBrowser type="app" items={data} listKey={trpc.apps.list.queryKey()}>
           {(a) => <AppRow key={a.id} app={a} hasFolders={!!folders?.folders.length} />}
-        </FolderSections>
+        </FolderBrowser>
       )}
     </>
   )
@@ -155,7 +155,8 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
-  const [folderId, setFolderId] = useState<string | null>(null)
+  // In the folder open in the list, to begin with.
+  const [folderId, setFolderId] = useState<string | null>(useOpenFolder('app').id)
   const [inGit, setInGit] = useState(false)
   const { data: folders } = useFolders('app')
   const { data: git } = useGitInfo()

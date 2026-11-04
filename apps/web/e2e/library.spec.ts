@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
  * parameter edited, run with the test value, published twice and rolled back.
  */
 test('create, run, publish and roll back a library query', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const name = `Plus one ${Date.now()}`
 
@@ -51,10 +51,46 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await page.getByTestId('release-status').click()
   await page.getByTestId('releases').getByRole('button', { name: 'Make live' }).click()
   await expect(page.getByTestId('releases').locator('li').filter({ hasText: 'v1.0.0' })).toContainText('Live')
+  // Compare (M24): v1.1.0 against v1.0.0, the SQL line by line; closing goes back to the list.
+  await page
+    .getByTestId('releases')
+    .locator('li')
+    .filter({ hasText: 'v1.1.0' })
+    .getByRole('button', { name: 'Compare' })
+    .click()
+  const compare = page.getByRole('dialog', { name: 'Compare' }).getByTestId('compare')
+  await expect(compare.getByRole('region', { name: 'Query' }).getByTestId('file-diff')).toContainText(
+    '+select {{ n }}::int + 2 as x',
+  )
   await page.keyboard.press('Escape')
-  await expect(page.getByTestId('library-used-by')).toContainText('No app or module uses it yet')
+  await expect(page.getByTestId('releases')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('library-used-by')).toContainText('Nothing uses it yet')
   await page.getByRole('link', { name: 'Library', exact: true }).first().click()
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
+})
+
+/** A library query deleted and created again under its slug opens as the new one, not the deleted one. */
+test('a library query recreated under a deleted one’s slug opens as itself', async ({ page }) => {
+  await signIn(page)
+  const name = `Again ${Date.now()}`
+  const create = async () => {
+    await page.getByRole('link', { name: 'Library' }).click()
+    await page.getByRole('button', { name: 'New query' }).click()
+    await page.getByLabel('Name', { exact: true }).fill(name)
+    await page.getByRole('button', { name: 'Create query' }).click()
+    await expect(page).toHaveURL(/\/library\/again_\d+$/)
+    await expect(page.getByTestId('library-used-by')).toContainText('Nothing uses it yet')
+  }
+
+  await create()
+  await page.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
+  await expect(page).toHaveURL(/\/library$/)
+
+  await create()
+  await typeInto(page, page.locator('[data-testid^="code-library:"]'), 'select 2 as x')
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
 })
 
 /** In the app editor (M14 step 3b): a library query added from the picker, its parameter filled, run and pinned. */
@@ -103,7 +139,7 @@ test('use a library query in an app', async ({ page }) => {
 
 /** In Git (M14 step 7d): a library query protected from its editor, edited and run on a branch, committed. */
 test('protect a library query and edit it on a branch', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const repoUrl = process.env.E2E_GIT_REPO_URL!
   const repoDir = process.env.E2E_GIT_REPO_DIR ?? new URL(repoUrl).pathname

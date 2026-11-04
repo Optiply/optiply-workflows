@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN, E2E_MEMBER_EMAIL } from './global-setup'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M14's done-when (architecture §2.7):
@@ -88,7 +88,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
   test.setTimeout(240_000)
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const stamp = Date.now()
   const librarySlug = `customer_email_${stamp}`
@@ -148,7 +148,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
     await grant('app', latestApp.id, 'edit')
     const context = await browser.newContext()
     const viewer = await context.newPage()
-    viewer.on('dialog', (d) => void d.accept())
+    await acceptConfirms(viewer)
     await signIn(viewer, E2E_MEMBER_EMAIL)
     await viewer.goto(`/apps/${pinnedSlug}`)
     await expect(viewer.locator('[data-component="email"]')).toHaveText('Email: ada@example.com')
@@ -165,10 +165,10 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
         definition: changed,
       })
     ).revision
-    // In the editor the library query isn't theirs to see: a problem, and Publish waits.
+    // In the editor they're told they need Use on it (M21; it was "unknown" before): a problem, and Publish waits.
     await viewer.goto(`/apps/${latestSlug}/edit`)
     await viewer.getByRole('tab', { name: /^Problems/ }).click()
-    await expect(viewer.getByText(`No library query has the slug "${librarySlug}"`)).toBeVisible()
+    await expect(viewer.getByText(`You need use access to library query "${librarySlug}"`)).toBeVisible()
     await expect(viewer.getByRole('button', { name: 'Publish', exact: true })).toBeDisabled()
     // And the server refuses it.
     const refused = await viewer.request.post('/api/trpc/apps.publish', {
@@ -238,7 +238,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
           appId: app.id,
           releaseId: live.id,
           query: 'drop_everything',
-          module: { instance: 'customerPicker1', releaseId: release.id },
+          module: [{ instance: 'customerPicker1', releaseId: release.id }],
           environmentId: (
             await trpcQuery<{ id: string; isDefault: boolean }[]>(page, 'environments.list', undefined)
           ).find((e) => e.isDefault)!.id,

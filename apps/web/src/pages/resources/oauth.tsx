@@ -2,6 +2,7 @@ import { fillPlaceholders, type OAuthProviderId, oauthPresets } from '@ow/connec
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, KeyRound } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Badge, Button, Card, Checkbox, CopyButton, ErrorNote, Field, Input, Select } from '@/components/ui'
 import { connectAccount } from '@/lib/oauth'
 import { useTRPC } from '@/lib/trpc'
@@ -319,9 +320,9 @@ export function OAuthConnections({
             <Button
               variant="danger"
               loading={disconnect.isPending}
-              onClick={() => {
+              onClick={async () => {
                 if (
-                  confirm(
+                  await confirmDialog(
                     shared
                       ? 'Disconnect the shared account? Queries will stop working until someone connects one.'
                       : 'Disconnect your account?',

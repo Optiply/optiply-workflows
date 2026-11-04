@@ -1,7 +1,8 @@
 import {
   type CompiledSql,
   type Evaluate,
-  fragmentText,
+  type FragmentSql,
+  fragmentSql,
   type SqlDialect,
   SqlFragmentError,
   withFragments,
@@ -9,7 +10,8 @@ import {
 import { ConnectorError } from './types'
 
 /**
- * Puts the `{{ sql.column(…) }}` and `{{ sql.direction(…) }}` of a query into its SQL text. Each value is checked
+ * Puts the `{{ sql.column(…) }}`, `{{ sql.direction(…) }}` and `{{ sql.where(…) }}` of a query into its SQL text
+ * (`sql.where`'s values bound, not written). Each value is checked
  * here, against the list written in the query, whoever computed it: in apps it comes from the viewer's browser.
  * Runs before anything is sent to the database, so the statement the database sees is complete.
  */
@@ -19,11 +21,11 @@ export async function resolveFragments(
   evaluate: Evaluate,
 ): Promise<CompiledSql> {
   if (!plan.fragments.length) return plan
-  const texts: string[] = []
+  const pieces: FragmentSql[] = []
   for (const fragment of plan.fragments) {
     const value = await evaluate(fragment.code)
     try {
-      texts.push(fragmentText(fragment.spec, value, dialect))
+      pieces.push(fragmentSql(fragment.spec, value, dialect))
     } catch (err) {
       if (!(err instanceof SqlFragmentError)) throw err
       throw new ConnectorError('expression', `Error in {{ ${fragment.code.trim()} }}: ${err.message}`, {
@@ -32,5 +34,5 @@ export async function resolveFragments(
       })
     }
   }
-  return withFragments(plan, texts)
+  return withFragments(plan, pieces)
 }

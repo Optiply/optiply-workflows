@@ -13,9 +13,9 @@ import {
 import { and, eq } from 'drizzle-orm'
 import type { Config } from '../config'
 import { resolveLibraryRelease } from './library-queries'
-import { moduleReleasesByKey } from './modules'
+import { moduleReleaseTree } from './modules'
 import { type Access, atLeast, loadAccess } from './permissions'
-import { decryptConfigSecrets } from './resources'
+import { decryptConfigSecrets, effectiveConfig } from './resources'
 
 /** Whose account a connect or disconnect is about: the resource's shared one, or the signed-in person's. */
 export type AccountKind = 'shared' | 'mine'
@@ -81,7 +81,7 @@ export async function connectTarget(
       ),
     )
   if (!config) throw new OAuthConnectError(400, 'This resource is not configured in this environment')
-  const parsed = restConnector.configSchema.safeParse(config.config)
+  const parsed = restConnector.configSchema.safeParse(effectiveConfig(config))
   const auth = parsed.success ? parsed.data.auth : undefined
   if (!parsed.success || auth?.type !== 'oauth2AuthorizationCode') {
     throw new OAuthConnectError(400, "This resource doesn't use OAuth 2.0 sign-in in this environment")
@@ -120,7 +120,7 @@ async function liveAppQueries(db: Db, access: Access, appId: string, resourceSlu
   const [release] = await db.select().from(appReleases).where(eq(appReleases.id, app.liveReleaseId))
   if (!release) return false
   if (await queriesResource(db, release.definition.queries, resourceSlug)) return true
-  const instances = Object.values(await moduleReleasesByKey(db, instanceKeys(release.definition)))
+  const instances = Object.values(await moduleReleaseTree(db, instanceKeys(release.definition)))
   for (const instance of instances) {
     if (await queriesResource(db, instance.definition.queries, resourceSlug)) return true
   }

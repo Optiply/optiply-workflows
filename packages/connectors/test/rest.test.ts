@@ -18,10 +18,10 @@ let pool: PoolManager
 let tokenVersion = 1
 let tokenRequests = 0
 
-async function readBody(req: IncomingMessage): Promise<string> {
-  let body = ''
-  for await (const chunk of req) body += chunk
-  return body
+async function readBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks)
 }
 
 function json(res: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}) {
@@ -32,8 +32,11 @@ function json(res: ServerResponse, status: number, value: unknown, headers: Reco
 beforeAll(async () => {
   server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
-    const body = await readBody(req)
+    const raw = await readBody(req)
+    const body = raw.toString()
     switch (url.pathname) {
+      case '/api/raw':
+        return json(res, 200, { contentType: req.headers['content-type'], base64: raw.toString('base64') })
       case '/api/echo':
         return json(res, 200, {
           method: req.method,
@@ -44,6 +47,9 @@ beforeAll(async () => {
         })
       case '/api/redirect-same':
         res.writeHead(302, { location: '/api/echo?from=redirect' })
+        return res.end()
+      case '/api/redirect-with-token':
+        res.writeHead(302, { location: `http://localhost:${port}/api/echo?token=s3cr3t` })
         return res.end()
       case '/api/redirect-localhost':
         res.writeHead(307, { location: `http://localhost:${port}/api/echo` })
@@ -170,6 +176,80 @@ describe('requests', () => {
       { x: 2 },
     )
     expect((raw.data as Echo).body).toBe('<x>2</x>')
+  })
+
+  it('sends multipart bodies: text fields, files from base64 and from a webhook file object', async () => {
+    const pdf = Buffer.from(Array.from({ length: 256 }, (_, i) => 255 - i))
+    const upload = {
+      filename: 'scan.png',
+      contentType: 'image/png',
+      size: 3,
+      base64: Buffer.from([1, 2, 3]).toString('base64'),
+    }
+    const result = await run(
+      restResource(),
+      {
+        method: 'POST',
+        path: 'raw',
+        // A Content-Type of the query's own would lose the boundary: it's dropped.
+        headers: [{ key: 'Content-Type', value: 'multipart/form-data' }],
+        body: {
+          type: 'multipart',
+          parts: [
+            { kind: 'text', key: 'note', value: 'order {{ id }}' },
+            {
+              kind: 'file',
+              key: 'invoice',
+              file: '{{ pdf }}',
+              filename: 'invoice-{{ id }}.pdf',
+              contentType: 'application/pdf',
+            },
+            { kind: 'file', key: 'scan', file: '{{ upload }}' },
+            { kind: 'file', key: 'plain', file: '{{ plain }}' },
+            { kind: 'text', key: '', value: 'skipped' },
+          ],
+        },
+      },
+      { id: 7, pdf: pdf.toString('base64'), upload, plain: Buffer.from('hi').toString('base64') },
+    )
+    const echo = result.data as Echo
+    expect(echo.contentType).toMatch(/^multipart\/form-data; boundary=/)
+    const sent = Buffer.from(echo.base64, 'base64')
+    // Read back with an independent parser (undici's; the boundary fetch picks is random, so it's safe there).
+    const form = await new Response(sent, { headers: { 'content-type': echo.contentType } }).formData()
+    expect([...form.keys()]).toEqual(['note', 'invoice', 'scan', 'plain'])
+    expect(form.get('note')).toBe('order 7')
+    const invoice = form.get('invoice') as File
+    expect([invoice.name, invoice.type]).toEqual(['invoice-7.pdf', 'application/pdf'])
+    expect(Buffer.from(await invoice.arrayBuffer()).equals(pdf)).toBe(true)
+    const scan = form.get('scan') as File
+    expect([scan.name, scan.type, Buffer.from(await scan.arrayBuffer())]).toEqual([
+      'scan.png',
+      'image/png',
+      Buffer.from([1, 2, 3]),
+    ])
+    const plain = form.get('plain') as File
+    expect([plain.name, plain.type, await plain.text()]).toEqual(['plain', 'application/octet-stream', 'hi'])
+  })
+
+  it('refuses a file part that is neither base64 nor a file object', async () => {
+    for (const value of ['not base64!', 42, { name: 'x' }, null]) {
+      const err = await failure(
+        run(
+          restResource(),
+          {
+            method: 'POST',
+            path: 'raw',
+            body: { type: 'multipart', parts: [{ kind: 'file', key: 'f', file: '{{ v }}' }] },
+          },
+          { v: value },
+        ),
+      )
+      expect(err).toMatchObject({
+        code: 'query',
+        message: expect.stringMatching(/^File part "f" needs base64 text/),
+      })
+    }
   })
 
   it('decodes binary bodies as base64', async () => {
@@ -397,6 +477,14 @@ describe('network guard', () => {
 
     const blocked = await failure(run(restResource(auth, secrets), { path: 'redirect-localhost' }))
     expect(blocked.code).toBe('blocked')
+    // The message says the server redirected there (not that the base URL is wrong).
+    expect(blocked.message).toBe(
+      `127.0.0.1:${port} redirected to http://localhost:${port}/api/echo. localhost isn't allowed for this resource. Add it to the resource's allowed hosts.`,
+    )
+
+    const withToken = await failure(run(restResource(), { path: 'redirect-with-token' }))
+    expect(withToken.message).toContain(`redirected to http://localhost:${port}/api/echo.`)
+    expect(withToken.message).not.toContain('s3cr3t')
 
     const allowed = await run(restResource({ ...auth, allowedHosts: ['localhost'] }, secrets), {
       path: 'redirect-localhost',

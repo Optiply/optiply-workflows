@@ -1,20 +1,25 @@
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { Dispatcher, RetentionJob, Scheduler } from '@ow/engine'
+import { Dispatcher, QueueConsumer, RetentionJob, Scheduler } from '@ow/engine'
 import { IvmRuntime } from '@ow/sandbox'
 import type { Logger } from 'pino'
 import type postgres from 'postgres'
 import type { Config } from '../config'
 import { Metrics } from '../metrics'
+import { configureAwsServer } from '../services/aws'
+import { deleteUnusedBundles } from '../services/component-libraries'
 import { GitDeployer } from '../services/git/deployer'
+import { configureGoogle } from '../services/google'
+import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
+import { pythonEnvProvider } from '../services/python-envs'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
  * The workflow worker: claims queued runs and executes them (see `Dispatcher` in @ow/engine), renews their
  * leases and recovers runs whose worker died, and fires due schedules every 5 s (`Scheduler`; every worker ticks,
  * and each due schedule is fired by one of them), and once a day deletes runs older than `RUN_RETENTION_DAYS`
- * (`RetentionJob`; one worker a day wins the job), and deploys from Git every `GIT_POLL_SECONDS` (`GitDeployer`; one
+ * (`RetentionJob`; one worker a day wins the job), and deploys from Git every `GIT_POLL_SECONDS`, re-checking problem objects every `GIT_RETRY_MINUTES` (`GitDeployer`; one
  * process at a time). `stop()` stops firing and hands in-flight runs back to the queue.
  */
 export async function startWorker(deps: {
@@ -33,6 +38,8 @@ export async function startWorker(deps: {
   const authSandbox = new IvmRuntime()
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) log.warn(pythonWarning)
+  configureGoogle(config)
+  configureAwsServer(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,
@@ -42,6 +49,8 @@ export async function startWorker(deps: {
     context: dbRunContext(db, config.keyring),
     concurrency: config.WORKER_CONCURRENCY,
     python: configurePython(config) ?? undefined,
+    pythonEnvs: pythonEnvProvider(db, config),
+    library: engineLibrary(db),
     log: log.child({ component: 'dispatcher' }),
     observer: metrics.observer,
   })
@@ -56,6 +65,7 @@ export async function startWorker(deps: {
     db,
     days: config.RUN_RETENTION_DAYS,
     log: log.child({ component: 'retention' }),
+    also: async () => ({ componentBundles: await deleteUnusedBundles(db) }),
   })
   retention.start()
   const git = new GitDeployer({
@@ -63,14 +73,26 @@ export async function startWorker(deps: {
     config,
     log: log.child({ component: 'git' }),
     pollMs: config.GIT_POLL_SECONDS * 1000,
+    retryMs: config.GIT_RETRY_MINUTES * 60_000,
   })
   git.start()
+  // Queue triggers (Pub/Sub M19, SQS and Kafka M26): received by one worker at a time each, under the dispatcher's name.
+  const queues = new QueueConsumer({
+    db,
+    resources: dbResourceProvider(db, config.keyring, authSandbox),
+    workerId: dispatcher.workerId,
+    log: log.child({ component: 'queue' }),
+  })
+  queues.start()
   return {
     dispatcher,
     scheduler,
     retention,
     git,
+    queues,
     stop: async () => {
+      // First, so held messages are nacked to the next worker while this one can still finish runs.
+      await queues.stop()
       await git.stop()
       await retention.stop()
       await scheduler.stop()

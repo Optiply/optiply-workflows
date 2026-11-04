@@ -10,7 +10,7 @@ export class GitConflictError extends Error {
     readonly paths: string[],
   ) {
     super(
-      `${paths.join(', ')} changed on ${branch} since you started: update your draft from the branch first`,
+      `${paths.join(', ')} changed on ${branch} since you started: update your draft from the branch first (it merges their changes with yours)`,
     )
     this.name = 'GitConflictError'
   }

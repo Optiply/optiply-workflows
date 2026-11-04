@@ -13,6 +13,7 @@ import {
   pageNameReason,
   removeCode,
   removeComponent,
+  removeComponents,
   removePage,
   renamePage,
   setEntityPage,
@@ -196,6 +197,95 @@ describe('page edits', () => {
     expect(validateApp(without).diagnostics.filter((d) => d.code === 'unknown_page')).toEqual([])
   })
 
+  it('rewrites utils.openPage of a renamed page in templates and code, not computed names (M24)', () => {
+    const two = addPage(single).definition
+    const withCode = {
+      ...two,
+      components: [
+        ...two.components,
+        comp(
+          'go',
+          'button',
+          { text: "{{ url.page === 'page2' ? 'Here' : 'Go' }}" },
+          {
+            events: [
+              {
+                id: 'a',
+                event: 'click',
+                action: {
+                  type: 'runScript',
+                  code: "utils.openPage('page2', { id: 1 }); utils.openPage(target)",
+                },
+              },
+            ],
+          },
+        ),
+      ],
+      queries: [...two.queries, { name: 'nav', kind: 'js' as const, code: 'utils.openPage("page2")' }],
+    }
+    const renamed = renamePage(withCode, 'page2', 'orders')
+    const go = renamed.components.find((c) => c.name === 'go')!
+    expect(go.events![0]!.action).toMatchObject({
+      code: "utils.openPage('orders', { id: 1 }); utils.openPage(target)",
+    })
+    expect(renamed.queries.find((q) => q.name === 'nav')).toMatchObject({ code: 'utils.openPage("orders")' })
+    // A comparison with the name isn't a call: left as written.
+    expect(go.props!.text).toBe("{{ url.page === 'page2' ? 'Here' : 'Go' }}")
+  })
+
+  it('follows page renames and removals into Navigation groups, and checks links (M24)', () => {
+    const two = addPage(single).definition
+    const nav = addComponent(two, 'navigation').definition
+    const linked = setProp(nav, 'navigation1', 'items', [
+      { label: 'Shop', icon: 'cart', items: [{ page: 'page1' }, { page: 'page2', label: 'Two' }] },
+      { url: 'https://optiply.com', label: 'Site', icon: 'external' },
+    ])
+    const items = (d: typeof linked) => d.components.find((c) => c.name === 'navigation1')!.props!.items
+    expect(items(renamePage(linked, 'page2', 'orders'))).toEqual([
+      { label: 'Shop', icon: 'cart', items: [{ page: 'page1' }, { page: 'orders', label: 'Two' }] },
+      { url: 'https://optiply.com', label: 'Site', icon: 'external' },
+    ])
+    expect(items(removePage(linked, 'page2'))).toEqual([
+      { label: 'Shop', icon: 'cart', items: [{ page: 'page1' }] },
+      { url: 'https://optiply.com', label: 'Site', icon: 'external' },
+    ])
+    expect(validateApp(linked).diagnostics).toEqual([])
+    const bad = setProp(nav, 'navigation1', 'items', [
+      { url: 'javascript:alert(1)' },
+      { url: "{{ 'https://' + 'optiply.com' }}" },
+      { page: 'page1', icon: 'unicorn' },
+      { label: 'G', items: [{ page: 'nope' }, { label: 'deeper', items: [{ page: 'page1' }] }] },
+    ])
+    expect(
+      validateApp(bad).diagnostics.map((d) => [d.severity, d.path.slice(4).join('.'), d.message]),
+    ).toEqual([
+      ['error', '0.url', 'A link opens a web page or an email: http://, https:// or mailto:'],
+      ['warning', '2.icon', 'No icon is named "unicorn": it shows without one'],
+      ['error', '3.items.0.page', 'No page is named "nope"'],
+      ['warning', '3.items.1.items', 'A group holds links, not groups: these aren’t shown'],
+    ])
+  })
+
+  it('removes several components with what is inside them (M24)', () => {
+    const def = app({
+      components: [
+        comp('a', 'text'),
+        comp('b', 'text'),
+        comp('box', 'container'),
+        comp('in', 'text', {}, { parent: 'box' }),
+      ],
+      layout: {
+        a: { x: 0, y: 0, w: 4, h: 2 },
+        b: { x: 4, y: 0, w: 2, h: 2 },
+        box: { x: 0, y: 2, w: 6, h: 6 },
+        in: { x: 0, y: 0, w: 6, h: 2 },
+      },
+    })
+    const gone = removeComponents(def, ['box', 'a'])
+    expect(gone.components.map((c) => c.name)).toEqual(['b'])
+    expect(Object.keys(gone.layout ?? {})).toEqual(['b'])
+  })
+
   it('new things go on the page given; moves follow the page', () => {
     const two = addPage(single).definition
     const added = addComponent(two, 'text', { page: 'page2' })
@@ -225,6 +315,22 @@ describe('page edits', () => {
     )
     expect(setEntityPage(two, 'q1', null).queries[0]!.page).toBeUndefined()
     expect(setEntityPage(two, 'inner', 'page2')).toBe(two)
+    // Out of the frame's sidebar onto a page: the sidebar holds components on every page only.
+    const framed = { ...global, frame: { sidebar: 'medium' as const } }
+    const inSidebar = moveToParent(framed, 'table1', undefined, { slot: 'sidebar', page: null })
+    expect(inSidebar.components.find((c) => c.name === 'table1')!.slot).toBe('sidebar')
+    const onPage = setEntityPage(inSidebar, 'table1', 'page2').components.find((c) => c.name === 'table1')!
+    expect(onPage).toMatchObject({ page: 'page2' })
+    expect(onPage.slot).toBeUndefined()
+    const slots = (def: unknown) => validateApp(def).diagnostics.filter((d) => d.code === 'invalid_slot')
+    expect(slots(setEntityPage(inSidebar, 'table1', 'page2'))).toEqual([])
+    // As a sidebar slot left on a page component would be.
+    expect(
+      slots({
+        ...inSidebar,
+        components: inSidebar.components.map((c) => (c.name === 'table1' ? { ...c, page: 'page2' } : c)),
+      }),
+    ).not.toEqual([])
   })
 
   it('Navigation links must name pages', () => {

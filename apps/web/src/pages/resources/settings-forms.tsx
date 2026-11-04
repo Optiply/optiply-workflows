@@ -1,11 +1,15 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { CircleCheck, Plus } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { CircleCheck, GitBranch, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
+import { SaveToBranchDialog } from '@/components/settings-git'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
+import { OverridesCard } from './overrides'
+import { KafkaFields, SqsFields } from './queue-settings'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -14,11 +18,19 @@ import {
   type SecretEdit,
   SecretField,
 } from './shared'
+import {
+  type IapKeyInfo,
+  type SshConfig,
+  type SshEdits,
+  type SshKeyInfo,
+  SshTestSteps,
+  SshTunnelFields,
+} from './ssh-tunnel'
 
 type Config = Record<string, unknown>
-/** Secret edits by field; REST secret headers nest one level (`headers: { name: edit }`). */
-type SecretEdits = Record<string, SecretEdit | Record<string, SecretEdit>>
-type Mask = Record<string, unknown> | null
+/** Secret edits by field; nested records nest (`headers: { name: edit }`, `ssh: { hopId: { privateKey: edit } }`). */
+export type SecretEdits = { [key: string]: SecretEdit | SecretEdits }
+export type Mask = Record<string, unknown> | null
 
 const DEFAULTS: Record<string, Config> = {
   postgres: {
@@ -49,6 +61,9 @@ const DEFAULTS: Record<string, Config> = {
     statementTimeoutMs: 120_000,
     labels: {},
   },
+  pubsub: { identity: 'key' },
+  sqs: { region: 'eu-west-1', identity: 'key' },
+  kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
     headers: [],
@@ -80,6 +95,10 @@ export interface FieldsProps {
   edits: SecretEdits
   setEdit: (key: string, edit: SecretEdits[string]) => void
   disabled: boolean
+  /** Each SSH hop's stored key, as the server describes it (M17). */
+  sshKeys: Record<string, SshKeyInfo> | null
+  /** Each IAP hop's stored service account key, as its account (M18). */
+  iapKeys: Record<string, IapKeyInfo> | null
 }
 
 export function SettingsPanel({
@@ -102,6 +121,9 @@ export function SettingsPanel({
     ...(stored?.config ?? {}),
   }))
   const [edits, setEdits] = useState<SecretEdits>({})
+  const [savingToBranch, setSavingToBranch] = useState(false)
+  // Protected (M22): the settings are Git's, so saving here changes the secrets only (sent with Git's settings).
+  const fromGit = resource.gitProtected
 
   const refresh = () =>
     Promise.all([
@@ -131,8 +153,17 @@ export function SettingsPanel({
     edits,
     setEdit: (key, edit) => setEdits((e) => ({ ...e, [key]: edit })),
     disabled: !canEdit,
+    sshKeys: (stored?.sshKeys as Record<string, SshKeyInfo> | null | undefined) ?? null,
+    iapKeys: (stored?.iapKeys as Record<string, IapKeyInfo> | null | undefined) ?? null,
   }
   const request = { resourceId: resource.id, environmentId, config, secrets: buildPatch(edits) }
+  const secretsOnly = { ...request, config: (stored?.config ?? {}) as Config }
+  const changedHere =
+    JSON.stringify(config) !== JSON.stringify({ ...DEFAULTS[resource.type], ...(stored?.config ?? {}) })
+  // Trusted in Test connection but not saved yet (M17).
+  const pins = (c: Config | null | undefined) =>
+    JSON.stringify(((c?.ssh as SshConfig | undefined)?.hops ?? []).map((h) => h.hostKey ?? null))
+  const unsavedTrust = !!config.ssh && pins(config) !== pins(stored?.config as Config | undefined)
 
   return (
     <div className="space-y-4">
@@ -141,37 +172,89 @@ export function SettingsPanel({
           You can use this resource here but not change its settings.
         </p>
       )}
-      {!stored?.config && canEdit && (
+      {!stored?.config && canEdit && !fromGit && (
         <p className="rounded-md bg-accent-soft px-3 py-2 text-sm text-accent">
           Not configured in this environment yet. Fill in the settings and save.
+        </p>
+      )}
+      {fromGit && (
+        <p
+          className="rounded-md bg-accent-soft px-3 py-2 text-sm text-accent"
+          data-testid="settings-from-git"
+        >
+          {stored?.config
+            ? 'These settings come from Git: change them with Save to branch. Secrets are this instance’s own and are saved here.'
+            : 'Git has no settings for this environment: add them with Save to branch.'}
+        </p>
+      )}
+      {stored?.needsSecrets && (
+        <p
+          className="rounded-md bg-warning-soft px-3 py-2 text-sm text-warning-strong"
+          data-testid="needs-secrets"
+        >
+          Deployed from Git without its secrets: fill them in for this environment and save.
         </p>
       )}
       <Card className="space-y-5 p-5">
         {resource.type === 'bigquery' ? (
           <BigQueryFields {...props} />
+        ) : resource.type === 'pubsub' ? (
+          <PubSubFields {...props} />
+        ) : resource.type === 'sqs' ? (
+          <SqsFields {...props} />
+        ) : resource.type === 'kafka' ? (
+          <KafkaFields {...props} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
           <RestFields {...props} resourceId={resource.id} />
         )}
       </Card>
+      {fromGit && stored?.config && (
+        <OverridesCard resource={resource} environmentId={environmentId} canEdit={canEdit} />
+      )}
 
       {canEdit && (
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(request)}>
-              Save
-            </Button>
+            {fromGit ? (
+              <>
+                <Button
+                  variant="primary"
+                  loading={save.isPending}
+                  disabled={!stored?.config || !secretsOnly.secrets}
+                  onClick={() => save.mutate(secretsOnly)}
+                >
+                  Save secrets
+                </Button>
+                <Button
+                  disabled={!changedHere && !!stored?.config}
+                  onClick={() => setSavingToBranch(true)}
+                  data-testid="save-to-branch"
+                >
+                  <GitBranch className="size-4" /> Save to branch…
+                </Button>
+              </>
+            ) : (
+              <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(request)}>
+                Save
+              </Button>
+            )}
             <Button loading={test.isPending} onClick={() => test.mutate(request)}>
               Test connection
             </Button>
-            {stored?.config && (
+            {stored?.config && !fromGit && (
               <Button
                 variant="danger"
                 className="ml-auto"
                 loading={remove.isPending}
-                onClick={() => {
-                  if (confirm('Remove this environment’s settings and credentials?')) {
+                onClick={async () => {
+                  if (
+                    await confirmDialog('Remove this environment’s settings and credentials?', {
+                      danger: true,
+                      confirm: 'Remove',
+                    })
+                  ) {
                     remove.mutate({ resourceId: resource.id, environmentId })
                   }
                 }}
@@ -182,30 +265,60 @@ export function SettingsPanel({
           </div>
           <ErrorNote error={save.error ?? test.error ?? remove.error} />
           {save.isSuccess && !save.isPending && <p className="text-sm text-success">Saved.</p>}
+          {test.data?.ssh && (
+            <SshTestSteps
+              steps={test.data.ssh}
+              hops={(config.ssh as SshConfig | undefined)?.hops ?? []}
+              disabled={!canEdit}
+              onTrust={(hop, hostKey) => {
+                const ssh = config.ssh as SshConfig
+                const next = {
+                  ...config,
+                  ssh: { hops: ssh.hops.map((h) => (h.id === hop ? { ...h, hostKey } : h)) },
+                }
+                setConfig(next)
+                // Tried again with the key trusted: the next hop, or the resource itself.
+                test.mutate({ ...request, config: next })
+              }}
+            />
+          )}
+          {unsavedTrust && test.data && (
+            <p className="text-sm text-muted">Save to keep the trusted host key.</p>
+          )}
           {test.data?.ok && (
             <p className="flex items-center gap-2 text-sm text-success">
               <CircleCheck className="size-4" /> Connected{test.data.message ? ` · ${test.data.message}` : ''}{' '}
               · {test.data.durationMs} ms
             </p>
           )}
-          {test.data && !test.data.ok && (
+          {/* A hop that failed shows its own error; anything else (the last SSH server couldn't reach the database, the
+              database refused) shows here. */}
+          {test.data && !test.data.ok && !test.data.ssh?.some((step) => !step.ok) && (
             <ConnectorErrorNote error={test.data.error} onConnected={() => test.mutate(request)} />
           )}
         </div>
       )}
       {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
+      {savingToBranch && (
+        <SaveToBranchDialog
+          kind="resource"
+          object={resource}
+          edit={{ configs: { [environmentId]: config } }}
+          onClose={() => setSavingToBranch(false)}
+        />
+      )}
     </div>
   )
 }
 
-const isSet = (secrets: Mask, key: string) => !!secrets && key in secrets
+export const isSet = (secrets: Mask, key: string) => !!secrets && key in secrets
 const num = (v: string) => (v === '' ? undefined : Number(v))
 
-function Grid({ children }: { children: ReactNode }) {
+export function Grid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>
 }
 
-function Checkbox({
+export function Checkbox({
   checked,
   onChange,
   disabled,
@@ -235,8 +348,36 @@ function Checkbox({
   )
 }
 
+/** The SSH tunnel section of a Postgres, MySQL or REST resource's settings (M17). */
+function Tunnel({
+  config,
+  set,
+  secrets,
+  edits,
+  setEdit,
+  disabled,
+  sshKeys,
+  iapKeys,
+  target,
+}: FieldsProps & { target: string }) {
+  return (
+    <SshTunnelFields
+      ssh={config.ssh as SshConfig | undefined}
+      onChange={(ssh) => set('ssh', ssh)}
+      mask={secrets?.ssh as Record<string, Record<string, unknown>> | undefined}
+      edits={edits.ssh as SshEdits | undefined}
+      setEdits={(e) => setEdit('ssh', e)}
+      keys={sshKeys}
+      iapKeys={iapKeys}
+      disabled={disabled}
+      target={target}
+    />
+  )
+}
+
 /** Postgres and MySQL settings: the same fields, with each one's TLS modes. */
-function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: FieldsProps & { type: string }) {
+function SqlFields(props: FieldsProps & { type: string }) {
+  const { config, set, secrets, edits, setEdit, disabled, type } = props
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -311,11 +452,100 @@ function SqlFields({ config, set, secrets, edits, setEdit, disabled, type }: Fie
           type === 'mysql' ? 'Makes the session read-only' : 'Runs every query in a read-only transaction'
         }. A guard against mistakes; use a SELECT-only user for security.`}
       />
+      <Tunnel {...props} target="the database" />
     </>
   )
 }
 
 const GIB = 1024 ** 3
+
+/**
+ * A Pub/Sub resource's settings (M19): its project, and whose Google identity it signs in as: a service account key, or
+ * this server's own where the instance allows it (only admins choose it, as for IAP).
+ */
+function PubSubFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const trpc = useTRPC()
+  const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data
+  const canChoose = !!server?.allowed && server.canChoose
+  const identity = (config.identity as string | undefined) ?? 'key'
+  // Editors keep the server's identity an admin chose, but can't point it at another project.
+  const locked = disabled || (identity === 'server' && !canChoose)
+  return (
+    <>
+      <Field
+        label="Google identity"
+        hint="It needs roles/pubsub.subscriber on the subscriptions triggers pull, and roles/pubsub.publisher on the topics it publishes to."
+      >
+        <Select
+          value={identity}
+          disabled={locked}
+          data-testid="pubsub-identity"
+          onChange={(e) => set('identity', e.target.value)}
+        >
+          <option value="key">A service account key</option>
+          <option value="server" disabled={!canChoose}>
+            This server's Google identity
+          </option>
+        </Select>
+      </Field>
+      {identity === 'server' ? (
+        server &&
+        (server.allowed ? (
+          <div className="space-y-1 text-xs" data-testid="pubsub-server-note">
+            {server.identity && (
+              <p className="text-muted">
+                Signs in as <code className="text-ink">{server.identity}</code>
+              </p>
+            )}
+            {server.error && <p className="text-danger">{server.error}</p>}
+            {!canChoose && (
+              <p className="text-muted">Chosen by an admin: only admins can point it at another project.</p>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-danger" data-testid="pubsub-server-note">
+            This instance doesn't let resources use its own Google identity (any more): choose a service
+            account key.
+          </p>
+        ))
+      ) : (
+        <>
+          {server && !canChoose && (
+            <p className="text-xs text-muted">
+              {server.allowed
+                ? "Only admins can choose this server's own Google identity."
+                : "This instance doesn't let resources use its own Google identity (GOOGLE_SERVER_IDENTITY)."}
+            </p>
+          )}
+          <Field label="Service account key" hint="The JSON key file. Stored encrypted; never shown again.">
+            <SecretField
+              isSet={isSet(secrets, 'serviceAccountKey')}
+              edit={edits.serviceAccountKey as SecretEdit}
+              onChange={(e) => setEdit('serviceAccountKey', e)}
+              disabled={disabled}
+              placeholder='{ "type": "service_account", … }'
+            />
+          </Field>
+        </>
+      )}
+      <Field
+        label="Project"
+        hint={
+          identity === 'server'
+            ? 'The project its subscriptions and topics are in.'
+            : "The project its subscriptions and topics are in. Defaults to the key's project."
+        }
+      >
+        <Input
+          value={String(config.project ?? '')}
+          disabled={locked}
+          placeholder="optiply-production"
+          onChange={(e) => set('project', e.target.value || undefined)}
+        />
+      </Field>
+    </>
+  )
+}
 
 function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
   const text = (key: string) => ({
@@ -408,15 +638,8 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields({
-  config,
-  set,
-  secrets,
-  edits,
-  setEdit,
-  disabled,
-  resourceId,
-}: FieldsProps & { resourceId: string }) {
+function RestFields(props: FieldsProps & { resourceId: string }) {
+  const { config, set, secrets, edits, setEdit, disabled, resourceId } = props
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -599,8 +822,9 @@ function RestFields({
         disabled={disabled}
         onChange={(v) => set('allowPrivateNetwork', v)}
         label="Allow private network addresses"
-        hint="Off by default: requests to localhost, internal IPs and cloud metadata are blocked."
+        hint="Off by default: requests to localhost, internal IPs and cloud metadata are blocked. Through an SSH tunnel they're allowed: what's reached is the SSH server's network."
       />
+      <Tunnel {...props} target="the API" />
     </>
   )
 }

@@ -2,7 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { PythonExecutorClient, SandboxError } from '../src'
+import { PythonExecutorClient, pythonStats, SandboxError } from '../src'
 
 type Handler = (body: Record<string, unknown>, res: ServerResponse) => void
 let handler: Handler = () => {}
@@ -88,4 +88,81 @@ it('reads busy and refusals as unavailable, and returns the problems of a check'
   expect(await client().check([{ id: 'a', code: 'x' }])).toEqual([
     { id: 'a', message: 'SyntaxError', line: 1, column: 2 },
   ])
+})
+
+const ndjson = (res: ServerResponse) => {
+  res.writeHead(200, { 'content-type': 'application/x-ndjson' })
+  return (item: unknown) => res.write(`${JSON.stringify(item)}\n`)
+}
+
+it('asks for a stream and logs each line as it arrives, before the outcome', async () => {
+  let finish = () => {}
+  handler = (_, res) => {
+    const send = ndjson(res)
+    send({ log: { level: 'log', message: 'one' } })
+    send({ log: { level: 'error', message: 'two' } })
+    finish = () => {
+      send({ outcome: { ok: true, result: 3, warm: true } })
+      res.end()
+    }
+  }
+  const logs: [string, unknown[]][] = []
+  const running = client().run('x', {}, { timeoutMs: 5000, onLog: (level, args) => logs.push([level, args]) })
+  await expect.poll(() => logs.length).toBe(2)
+  expect(seen.at(-1)).toMatchObject({ path: '/run', stream: true })
+  const warmBefore = pythonStats.warm
+  finish()
+  expect(await running).toBe(3)
+  expect(pythonStats.warm).toBe(warmBefore + 1)
+  expect(logs).toEqual([
+    ['log', ['one']],
+    ['error', ['two']],
+  ])
+})
+
+it('reads a stream that ends without its outcome as unavailable, keeping what was logged', async () => {
+  handler = (_, res) => {
+    ndjson(res)({ log: { level: 'log', message: 'started' } })
+    setTimeout(() => res.destroy(), 50)
+  }
+  const logs: unknown[][] = []
+  const err = await failure(client().run('x', {}, { timeoutMs: 5000, onLog: (_, args) => logs.push(args) }))
+  expect(err.kind).toBe('unavailable')
+  expect(err.message).toContain('The Python executor stopped answering')
+  expect(logs).toEqual([['started']])
+})
+
+it('hangs up mid-stream when the work is aborted', async () => {
+  let closed = false
+  handler = (_, res) => {
+    ndjson(res)({ log: { level: 'log', message: 'started' } })
+    res.on('close', () => {
+      closed = true
+    })
+  }
+  const abort = new AbortController()
+  const logs: unknown[][] = []
+  const running = client().run(
+    'x',
+    {},
+    { timeoutMs: 5000, signal: abort.signal, onLog: (_, a) => logs.push(a) },
+  )
+  await expect.poll(() => logs.length).toBe(1)
+  abort.abort(new Error('cancelled'))
+  await expect(running).rejects.toThrow('cancelled')
+  await expect.poll(() => closed).toBe(true)
+})
+
+it("sends the workflow's env and reads a missing one as python_packages", async () => {
+  handler = (_, res) => {
+    const send = ndjson(res)
+    send({ outcome: { ok: false, error: { kind: 'python_packages', message: "aren't installed here" } } })
+    res.end()
+  }
+  const err = await failure(client().run('x', {}, { timeoutMs: 5000, envId: 'a'.repeat(32) }))
+  expect(seen.at(-1)).toMatchObject({ path: '/run', envId: 'a'.repeat(32) })
+  expect(err).toMatchObject({ kind: 'python_packages', message: "aren't installed here" })
+  handler = (_, res) => json(res, { ok: true, result: 1 })
+  await client().run('x', {}, { timeoutMs: 5000 })
+  expect(seen.at(-1)).not.toHaveProperty('envId')
 })

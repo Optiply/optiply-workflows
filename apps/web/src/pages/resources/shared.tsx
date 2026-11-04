@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
 import { AuthRequiredNote } from '@/components/auth-required'
-import { Badge, Button, Card, ErrorNote, Input, Select, Spinner } from '@/components/ui'
+import { Badge, Button, Card, ErrorNote, Input, SecretInput, Select, Spinner } from '@/components/ui'
 import { authRequired } from '@/lib/oauth'
 import { TYPE_BADGES } from '@/lib/resource-types'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -71,9 +71,7 @@ export function SecretField({
   }
   return (
     <div className="flex gap-2">
-      <Input
-        type="password"
-        autoComplete="new-password"
+      <SecretInput
         value={edit ?? ''}
         placeholder={placeholder ?? (isSet ? 'New value' : 'Not set')}
         disabled={disabled}
@@ -248,7 +246,7 @@ function Cell({ value }: { value: unknown }) {
 }
 
 type Target = {
-  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module'
+  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module' | 'component_library'
   objectId: string | null
 }
 

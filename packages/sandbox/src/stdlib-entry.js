@@ -41,4 +41,21 @@ globalThis.sql = Object.freeze({
       `sql.direction got ${quoted(value)}: expected true or "desc" (DESC), false or "asc" (ASC)`,
     )
   },
+  // `WHERE {{ sql.where(table1.filters, ['name', 'total']) }}` (M24): a table's filters as a condition. Here it
+  // answers with the filters; the SQL connector checks them against the list and binds their values.
+  where(filters, columns) {
+    if (!Array.isArray(columns))
+      throw new TypeError('sql.where needs the list of columns the filters may name')
+    if (filters === null || filters === undefined) return []
+    if (!Array.isArray(filters))
+      throw new Error(`sql.where got ${quoted(filters)}: expected a list of filters`)
+    for (const f of filters) {
+      if (!f || !columns.includes(f.column)) {
+        throw new Error(
+          `sql.where got the column ${quoted(f?.column)}: expected one of ${columns.map(quoted).join(', ')}`,
+        )
+      }
+    }
+    return filters
+  },
 })

@@ -2,8 +2,9 @@ import { type AppDefinition, addLibraryQuery, type LibraryAppQuery, usedLibrarie
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ExternalLink, Library } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Dialog, EmptyState, ErrorNote, Input, Select, Spinner } from '@/components/ui'
+import { useLibraryRefs } from '@/lib/library-refs'
 import { useTRPC } from '@/lib/trpc'
 import { AppCodeField, EditorField, problemsAt } from './fields'
 import { useAppEditor } from './store'
@@ -13,18 +14,11 @@ import { useAppEditor } from './store'
  * versions and parameters while the app is edited.
  */
 export function useLibrarySync() {
-  const trpc = useTRPC()
   const key = useAppEditor((s) => usedLibraries(s.definition).join(','))
-  const setLibraries = useAppEditor((s) => s.setLibraries)
-  const slugs = key ? key.split(',') : []
-  const resolved = useQuery({
-    ...trpc.libraryQueries.resolve.queryOptions({ slugs }),
-    enabled: slugs.length > 0,
-  })
-  useEffect(() => {
-    if (!resolved.data || !key) return
-    setLibraries(Object.fromEntries(key.split(',').map((slug) => [slug, resolved.data[slug] ?? null])))
-  }, [resolved.data, key, setLibraries])
+  useLibraryRefs(
+    key,
+    useAppEditor((s) => s.setLibraries),
+  )
 }
 
 /** Picks a published library query to add to the app. */
@@ -104,9 +98,11 @@ export function LibraryQueryHeader({
 }) {
   const trpc = useTRPC()
   const library = useAppEditor((s) => s.libraries[query.library])
+  const readOnly = useAppEditor((s) => s.readOnly)
+
   const releases = useQuery({
     ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: library?.id ?? '' }),
-    enabled: !!library,
+    enabled: !!library?.id,
   })
   return (
     <>
@@ -123,6 +119,7 @@ export function LibraryQueryHeader({
         </Link>
       </span>
       <Select
+        disabled={readOnly}
         aria-label="Version"
         className="w-44"
         value={query.version}
@@ -139,6 +136,7 @@ export function LibraryQueryHeader({
         )}
       </Select>
       <Select
+        disabled={readOnly}
         aria-label="Run"
         className="w-56"
         value={query.run}
@@ -166,7 +164,7 @@ export function LibraryQueryBody({
   const library = useAppEditor((s) => s.libraries[query.library])
   const releases = useQuery({
     ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: library?.id ?? '' }),
-    enabled: !!library,
+    enabled: !!library?.id,
   })
   const release = releases.data?.find((r) =>
     query.version === 'latest' ? r.live : r.version === query.version,
@@ -183,8 +181,13 @@ export function LibraryQueryBody({
 
   if (library === null) {
     return (
+      <p className="text-sm text-danger">No library query has the slug "{query.library}". Pick another.</p>
+    )
+  }
+  if (library?.noUse) {
+    return (
       <p className="text-sm text-danger">
-        No library query "{query.library}" that you can use. Ask its owner for access, or pick another.
+        You need use access to library query "{query.library}". Ask its owner for access, or pick another.
       </p>
     )
   }
@@ -207,6 +210,8 @@ export function LibraryQueryBody({
         >
           <AppCodeField
             path={[...base, 'params', p.name]}
+            // Parsed into the parameter's value: not bound to a shared text.
+            bind={false}
             language="plaintext"
             singleLine
             height={30}

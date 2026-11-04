@@ -1,5 +1,7 @@
+import { SharedDefinition, workflowSpec } from '@ow/collab'
 import type { WorkflowDefinition } from '@ow/definition'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
 import { updateBlock, updateGraph, useEditor } from './store'
 
 const START: WorkflowDefinition = {
@@ -20,6 +22,9 @@ const START: WorkflowDefinition = {
 }
 
 const editor = () => useEditor.getState()
+/** Steps this editor can undo, and redo. */
+const past = () => editor().history?.undoManager.undoStack.length ?? 0
+const future = () => editor().history?.undoManager.redoStack.length ?? 0
 const json = (def: WorkflowDefinition) => JSON.stringify(def)
 const typeCode = (code: string) =>
   updateBlock<Extract<WorkflowDefinition['blocks'][number], { type: 'code' }>>('code1', (b) => ({
@@ -29,9 +34,17 @@ const typeCode = (code: string) =>
 const addBlock = (name: string) =>
   updateGraph((g) => ({ ...g, blocks: [...g.blocks, { name, type: 'code', config: { code: '' } }] }))
 
+/** A shared document holding `def`, as one synced from the server. */
+function synced(def: WorkflowDefinition): SharedDefinition<WorkflowDefinition> {
+  const shared = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+  shared.set(def)
+  return shared
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ now: 0 })
   editor().load('w1', START, 3, 'hash')
+  editor().attach(synced(START))
 })
 
 describe('undo and redo in the workflow editor', () => {
@@ -45,13 +58,12 @@ describe('undo and redo in the workflow editor', () => {
 
     for (let i = 0; i < 3; i++) editor().undo()
     expect(json(editor().definition)).toBe(json(START))
-    expect(editor().status).toBe('saved') // what the server has: nothing to save
+    expect(editor().shared?.value).toEqual(START)
     editor().undo() // nothing left
     expect(json(editor().definition)).toBe(json(START))
 
     for (let i = 0; i < 3; i++) editor().redo()
-    expect(editor().definition).toBe(end)
-    expect(editor().status).toBe('dirty')
+    expect(editor().definition).toEqual(end)
   })
 
   it('undoes a burst of typing in one step, and a pause or a new selection starts another', () => {
@@ -62,7 +74,7 @@ describe('undo and redo in the workflow editor', () => {
     typeCode('return 1 + 23')
     editor().select('code1')
     typeCode('return 1 + 234')
-    expect(editor().history.past).toHaveLength(3)
+    expect(past()).toBe(3)
     editor().undo()
     editor().undo()
     expect(json(editor().definition)).toContain('"return 1 + 2"')
@@ -105,8 +117,7 @@ describe('undo and redo in the workflow editor', () => {
   it('ignores an edit that rebuilds the definition without changing it', () => {
     typeCode('return 1')
     updateBlock('code1', (b) => ({ ...b }))
-    expect(editor().history.past).toEqual([])
-    expect(editor().status).toBe('saved')
+    expect(past()).toBe(0)
   })
 
   it('keeps the canvas selection: one block when selected in code, several from the canvas', () => {
@@ -122,37 +133,72 @@ describe('undo and redo in the workflow editor', () => {
     expect(editor().selection).toEqual([])
   })
 
-  it('raises the epoch on undo and redo, and clears the history when a draft is loaded', () => {
+  it('raises the epoch on undo and redo, and starts a new history when a draft is loaded', () => {
     typeCode('x')
     const epoch = editor().epoch
     editor().undo()
     editor().redo()
     expect(editor().epoch).toBe(epoch + 2)
     editor().load('w1', START, 4, 'hash')
-    expect(editor().history.past).toEqual([])
-    expect(editor().history.future).toEqual([])
+    expect(past()).toBe(0)
+    expect(future()).toBe(0)
   })
 
-  it('ignores edits and undo on a read-only draft, and undo while it conflicts', () => {
+  it('ignores edits until the shared document has synced, and on a read-only draft', () => {
+    editor().load('w1', START, 4, 'hash')
     typeCode('x')
-    editor().conflict()
-    editor().undo()
-    expect(json(editor().definition)).toContain('"x"')
-
-    editor().load('w1', START, 4, 'hash', { readOnly: true })
-    typeCode('y')
     editor().undo()
     expect(editor().definition).toBe(START)
-    expect(editor().history.past).toEqual([])
+    expect(past()).toBe(0)
+
+    editor().load('w1', START, 4, 'hash', { readOnly: true })
+    editor().attach(synced(START))
+    typeCode('y')
+    editor().undo()
+    expect(json(editor().definition)).toBe(json(START))
+    expect(past()).toBe(0)
   })
 
-  it('keeps a save in flight: `saved` decides whether the undone draft still needs saving', () => {
-    typeCode('x')
-    const sent = json(editor().definition)
-    editor().saving()
+  it("writes edits into the shared document, and shows others' edits from it", () => {
+    const shared = editor().shared!
+    typeCode('return 2')
+    expect(shared.value).toBe(editor().definition)
+    editor().setSelection(['startTrigger', 'code1'])
+    editor().inspect('code1')
+    // Someone else adds a block and deletes the selected one.
+    const theirs = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+    Y.applyUpdate(theirs.doc, Y.encodeStateAsUpdate(shared.doc))
+    const v = theirs.value
+    theirs.set({
+      ...v,
+      blocks: [
+        ...v.blocks.filter((b) => b.name !== 'code1'),
+        { name: 'other', type: 'code', config: { code: '' } },
+      ],
+      edges: [],
+    })
+    Y.applyUpdate(shared.doc, Y.encodeStateAsUpdate(theirs.doc))
+    editor().remote()
+    expect(editor().definition.blocks.map((b) => b.name)).toEqual(['startTrigger', 'other'])
+    expect(editor()).toMatchObject({ selected: null, selection: ['startTrigger'] })
+    expect(editor().diagnostics).toEqual(expect.any(Array))
+  })
+
+  it("undoes this editor's own edits only: someone else's stay", () => {
+    const shared = editor().shared!
+    typeCode('return "mine"')
+    const theirs = new SharedDefinition<WorkflowDefinition>(new Y.Doc(), workflowSpec)
+    Y.applyUpdate(theirs.doc, Y.encodeStateAsUpdate(shared.doc))
+    theirs.set({ ...theirs.value, edges: [] })
+    Y.applyUpdate(shared.doc, Y.encodeStateAsUpdate(theirs.doc))
+    editor().remote()
+    expect(editor().definition.edges).toEqual([])
     editor().undo()
-    expect(editor().status).toBe('saving')
-    editor().saved(4, sent, 'hash2')
-    expect(editor().status).toBe('dirty') // the server now has "x"; the draft is back to the start
+    expect(json(editor().definition)).toContain('"return 1"')
+    expect(editor().definition.edges).toEqual([])
+    expect(editor().canUndo).toBe(false)
+    editor().redo()
+    expect(json(editor().definition)).toContain('"return \\"mine\\""')
+    expect(editor().definition.edges).toEqual([])
   })
 })

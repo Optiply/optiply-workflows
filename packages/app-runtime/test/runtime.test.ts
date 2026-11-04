@@ -97,7 +97,8 @@ describe('AppRuntime', () => {
     )
     await t.runtime.start()
     expect(t.patches[0]!.values).toMatchObject({ 'search.value': 'a', 'table1.data': [], 'list.data': null })
-    expect(Object.keys(t.patches[0]!.values).some((k) => k.includes('$'))).toBe(false)
+    // Of the internal values, only a table's rows (M24), which its renderer reads.
+    expect(Object.keys(t.patches[0]!.values).filter((k) => k.includes('$'))).toEqual(['table1.$rows'])
     // current_user is evaluated on the server, so the browser doesn't send it.
     expect(t.calls).toEqual([
       { query: 'list', values: { " '%' + search.value + '%' ": '%a%' } },
@@ -385,6 +386,7 @@ describe('AppRuntime', () => {
               on('pageChange', { type: 'notify', message: 'page {{ t.page }}' }),
               on('sortChange', { type: 'notify', message: 'sort {{ t.sort?.column }}' }),
               on('searchChange', { type: 'notify', message: 'search {{ t.searchText }}' }),
+              on('filterChange', { type: 'notify', message: 'filters {{ t.filters.length }}' }),
             ],
           },
         ),
@@ -392,7 +394,7 @@ describe('AppRuntime', () => {
       queries: [
         sql(
           'page',
-          'select * from c where name ilike {{ t.searchText }} order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
+          'select * from c where name ilike {{ t.searchText }} and {{ t.filters.length }} >= 0 order by {{ t.sort?.column }} {{ t.sort?.desc }} limit {{ t.pagination.pageSize }} offset {{ t.pagination.offset }}',
         ),
       ],
     })
@@ -422,12 +424,25 @@ describe('AppRuntime', () => {
     expect(last()).toMatchObject({ ' t.searchText ': 'ada', ' t.pagination.offset ': 0 })
     await t.runtime.call('t', 'setSort', [null])
     expect(t.state['t.sort']).toBeNull()
+    // Filters (M24): kept normalized, back to the first page, an event; the query re-runs with them.
+    await t.runtime.call('t', 'setPage', [1])
+    await t.runtime.call('t', 'setFilters', [
+      [{ column: 'name', op: 'contains', value: 'a', type: 'text' }, { column: 'x', op: 'drop' }, 'junk'],
+    ])
+    await wait()
+    expect(t.state['t.filters']).toEqual([{ column: 'name', op: 'contains', value: 'a', type: 'text' }])
+    expect(last()).toMatchObject({ ' t.pagination.offset ': 0 })
+    await t.runtime.call('t', 'clearFilters')
+    expect(t.state['t.filters']).toEqual([])
     expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
       'page 2',
       'sort name',
       'page 1',
       'search ada',
       'sort ',
+      'page 1',
+      'filters 1',
+      'filters 0',
     ])
   })
 
@@ -463,6 +478,93 @@ describe('AppRuntime', () => {
     expect(await t.runtime.call('t', 'saveChanges')).toBe(true)
     expect(t.calls.at(-1)!.values).toEqual({ ' t.changesetArray ': changes })
     expect(t.state['t.changesetArray']).toEqual([])
+  })
+
+  it('adds rows to newRows, saved and cleared with the changeset (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          't',
+          'table',
+          { data: customers },
+          {
+            events: [
+              on('save', { type: 'controlQuery', query: 'insert', method: 'trigger' }),
+              on('addRow', { type: 'notify', message: 'added {{ t.newRows.length }}' }),
+            ],
+          },
+        ),
+      ],
+      queries: [sql('insert', 'insert into c select * from {{ t.newRows }}', 'manual')],
+    })
+    await t.runtime.start()
+    await t.runtime.call('t', 'addRow')
+    await t.runtime.call('t', 'addRow', [{ name: 'Ada', id: 9 }])
+    await t.runtime.call('t', 'addRow', ['not a row'])
+    expect(t.state['t.newRows']).toEqual([{}, { name: 'Ada', id: 9 }, {}])
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual([
+      'added 1',
+      'added 2',
+      'added 3',
+    ])
+    t.runtime.set({ 't.changesetArray': [{ id: 2, name: 'Grace' }] })
+    await t.runtime.call('t', 'clearChangeset')
+    expect([t.state['t.newRows'], t.state['t.changesetArray']]).toEqual([[], []])
+    await t.runtime.call('t', 'addRow', [{ name: 'Lin' }])
+    expect(await t.runtime.call('t', 'saveChanges')).toBe(true)
+    expect(t.calls.at(-1)!.values).toEqual({ ' t.newRows ': [{ name: 'Lin' }] })
+    expect(t.state['t.newRows']).toEqual([])
+  })
+
+  it('switches a container’s views, firing viewChange only when the view changes (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'box',
+          'container',
+          { views: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], defaultView: 'b' },
+          { events: [on('viewChange', { type: 'notify', message: 'now {{ box.currentView }}' })] },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    expect(t.state['box.currentView']).toBe('b')
+    await t.runtime.call('box', 'nextView')
+    await t.runtime.call('box', 'nextView')
+    expect(t.state['box.currentView']).toBe('c')
+    await t.runtime.call('box', 'setView', ['a'])
+    await t.runtime.call('box', 'setView', ['a'])
+    await t.runtime.call('box', 'previousView')
+    await expect(t.runtime.call('box', 'setView', ['nope'])).rejects.toThrow(
+      'box has no view "nope": it has a, b, c',
+    )
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual(['now c', 'now a'])
+  })
+
+  it('folds and unfolds a container, firing only when it changes (M24)', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'box',
+          'container',
+          { collapsible: true, defaultExpanded: false },
+          {
+            events: [
+              on('expand', { type: 'notify', message: 'open' }),
+              on('collapse', { type: 'notify', message: 'shut' }),
+            ],
+          },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    expect(t.state['box.expanded']).toBe(false)
+    await t.runtime.call('box', 'collapse')
+    await t.runtime.call('box', 'toggle')
+    await t.runtime.call('box', 'expand')
+    await t.runtime.call('box', 'toggle')
+    expect(t.state['box.expanded']).toBe(false)
+    expect(t.effects.map((e) => (e as { message: string }).message)).toEqual(['open', 'shut'])
   })
 
   it('debounces handlers that ask for it', async () => {

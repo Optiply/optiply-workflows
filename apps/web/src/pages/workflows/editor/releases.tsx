@@ -1,13 +1,15 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { Clock, Rocket, Undo2, Webhook } from 'lucide-react'
+import { Clock, GitCompare, Rocket, Undo2, Webhook } from 'lucide-react'
 import { useState } from 'react'
+import { CompareReleasesDialog } from '@/components/compare-releases'
+import { confirmDialog } from '@/components/confirm'
 import { ReleaseAuthor, useGitInfo } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
-import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
+import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
-import { ensureSaved } from './save'
+import { ensureSaved } from './collab'
 import { useEditor } from './store'
 
 type Workflow = RouterOutputs['workflows']['get']
@@ -254,6 +256,8 @@ function VersionChoice({
 export function ReleasesTab({ workflow, canEdit }: { workflow: Workflow; canEdit: boolean }) {
   const trpc = useTRPC()
   const { data: releases, error } = useQuery(trpc.releases.list.queryOptions({ workflowId: workflow.id }))
+  const draft = useEditor((s) => s.definition)
+  const [comparing, setComparing] = useState<string | null>(null)
   return (
     <div className="flex flex-col gap-5">
       <LiveTriggers workflowId={workflow.id} slug={workflow.slug} />
@@ -267,10 +271,27 @@ export function ReleasesTab({ workflow, canEdit }: { workflow: Workflow; canEdit
         )}
         <ul className="space-y-2" data-testid="releases">
           {releases?.map((r) => (
-            <ReleaseRow key={r.id} release={r} workflow={workflow} canEdit={canEdit} />
+            <ReleaseRow
+              key={r.id}
+              release={r}
+              workflow={workflow}
+              canEdit={canEdit}
+              onCompare={() => setComparing(r.id)}
+            />
           ))}
         </ul>
       </section>
+      {comparing && releases && (
+        <CompareReleasesDialog
+          kind="workflow"
+          objectId={workflow.id}
+          releases={releases}
+          releaseId={comparing}
+          draft={draft}
+          loadRelease={(id) => trpcClient.releases.get.query({ workflowId: workflow.id, id })}
+          onClose={() => setComparing(null)}
+        />
+      )}
     </div>
   )
 }
@@ -279,10 +300,12 @@ function ReleaseRow({
   release,
   workflow,
   canEdit,
+  onCompare,
 }: {
   release: Release
   workflow: Workflow
   canEdit: boolean
+  onCompare: () => void
 }) {
   const trpc = useTRPC()
   const refresh = useRefreshReleases(workflow.id)
@@ -302,6 +325,16 @@ function ReleaseRow({
         <span className="font-mono text-sm font-semibold">v{release.version}</span>
         {release.live && <Badge tone="success">Live</Badge>}
         <span className="flex-1" />
+        {canEdit && (
+          <Button
+            size="sm"
+            variant="ghost"
+            title="What changed: against the release before it, another one or the draft"
+            onClick={onCompare}
+          >
+            <GitCompare className="size-3.5" /> Compare
+          </Button>
+        )}
         {canSetLive && !release.live && (
           <Button
             size="sm"
@@ -312,13 +345,13 @@ function ReleaseRow({
                 ? 'Emergency rollback: it stays until the workflow’s next change in Git (or Deploy now)'
                 : 'Make this release live again'
             }
-            onClick={() => {
+            onClick={async () => {
               const current = workflow.liveRelease ? ` instead of v${workflow.liveRelease.version}` : ''
               const emergency = workflow.gitProtected
                 ? ' This workflow is protected: this stays until its next change in Git (or Deploy now).'
                 : ''
               if (
-                confirm(
+                await confirmDialog(
                   `Make v${release.version} live? Its webhook and schedules will run${current}.${emergency}`,
                 )
               ) {

@@ -1,7 +1,9 @@
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
+import { sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import type { RunObserver, ScheduleFire } from '@ow/engine'
+import { QUEUE_KINDS, QUEUE_OUTCOMES, queueStats, type RunObserver, type ScheduleFire } from '@ow/engine'
+import { pythonStats } from '@ow/sandbox'
 import { sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import client from 'prom-client'
@@ -21,6 +23,7 @@ export class Metrics {
   private readonly blocksFinished: client.Counter<'type' | 'status'>
   private readonly blockDuration: client.Histogram<'type'>
   private readonly scheduleFires: client.Counter<'result'>
+  private readonly webhookRejections: client.Counter<'reason'>
 
   constructor(db: Db) {
     const registers = [this.registry]
@@ -69,6 +72,87 @@ export class Metrics {
       help: 'Schedule fires this process handled: a run started, or skipped because one was still going',
       labelNames: ['result'],
       registers,
+    })
+
+    this.webhookRejections = new client.Counter({
+      name: 'ow_webhook_rejected_total',
+      help: 'Webhook calls this process refused with a 4xx, by reason (signature_mismatch, rate_limited, …)',
+      labelNames: ['reason'],
+      registers,
+    })
+
+    // SSH tunnels (M17), as this process's connectors count them.
+    new client.Gauge({
+      name: 'ow_ssh_tunnels_open',
+      help: 'SSH tunnels this process has connected now (one per resource configuration in use)',
+      registers,
+      collect() {
+        this.set(sshTunnelStats.open)
+      },
+    })
+    new client.Counter({
+      name: 'ow_ssh_tunnel_reconnects_total',
+      help: "Times one of this process's SSH tunnels connected again after its connection dropped",
+      registers,
+      collect() {
+        this.reset()
+        this.inc(sshTunnelStats.reconnects)
+      },
+    })
+    new client.Counter({
+      name: 'ow_iap_resumes_total',
+      help: "Times one of this process's Google IAP streams (M18) resumed after its WebSocket dropped",
+      registers,
+      collect() {
+        this.reset()
+        this.inc(sshTunnelStats.iapResumes)
+      },
+    })
+
+    // Python executions (M23), by the executor's jail: warm from its pool, or cold.
+    new client.Counter({
+      name: 'ow_python_executions_total',
+      help: "Python executions this process asked the code executor for, by jail (warm: from the executor's pool)",
+      labelNames: ['jail'],
+      registers,
+      collect() {
+        this.reset()
+        for (const jail of ['warm', 'cold'] as const) this.inc({ jail }, pythonStats[jail])
+      },
+    })
+
+    // Queue triggers (Pub/Sub M19, SQS and Kafka M26), as this process's consumer counts them, per kind.
+    new client.Counter({
+      name: 'ow_queue_messages_total',
+      help:
+        'Queue trigger messages this process finished with, by kind and outcome (acked, nacked, retried, ' +
+        'dead_lettered, dropped, duplicate, released past the hold)',
+      labelNames: ['kind', 'outcome'],
+      registers,
+      collect() {
+        this.reset()
+        for (const kind of QUEUE_KINDS)
+          for (const outcome of QUEUE_OUTCOMES) this.inc({ kind, outcome }, queueStats[kind][outcome])
+      },
+    })
+    new client.Gauge({
+      name: 'ow_queue_in_flight',
+      help: 'Queue trigger messages this process holds now, their runs under way, by kind',
+      labelNames: ['kind'],
+      registers,
+      collect() {
+        for (const kind of QUEUE_KINDS) this.set({ kind }, queueStats[kind].inFlight)
+      },
+    })
+    new client.Counter({
+      name: 'ow_queue_pull_errors_total',
+      help: "Receives of this process's queue triggers that failed (no access, a missing queue, the service down), by kind",
+      labelNames: ['kind'],
+      registers,
+      collect() {
+        this.reset()
+        for (const kind of QUEUE_KINDS) this.inc({ kind }, queueStats[kind].pullErrors)
+      },
     })
 
     // Read from the database when scraped: one query shared by the gauges of one scrape (prom-client collects them
@@ -143,6 +227,10 @@ export class Metrics {
 
   scheduleFired(fire: ScheduleFire) {
     this.scheduleFires.inc({ result: fire.runId ? 'started' : 'skipped' })
+  }
+
+  webhookRejected(reason: string) {
+    this.webhookRejections.inc({ reason })
   }
 
   /** Counts every request by its route pattern (`/api/v1/runs/:id`), never the raw URL. */

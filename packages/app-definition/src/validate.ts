@@ -1,11 +1,15 @@
-import type { QueryValidator } from '@ow/definition'
+import { checkLibraryReference, type LibraryInfo, type QueryValidator } from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
+import { type ComponentLibraryInfo, customComponentSpec, customInstanceInterface } from './component-library'
 import {
   constantFits,
+  type JsonValue,
   MODULE_PROPS,
   type ModuleInterface,
   moduleComponentSpec,
+  NAV_ICONS,
+  NAV_URL,
   QUERY_EVENTS,
 } from './components'
 import {
@@ -23,9 +27,11 @@ import {
   type AppComponent,
   type AppDefinition,
   appDefinitionSchema,
+  appNameSchema,
   type EventHandler,
   type LibraryAppQuery,
 } from './schema'
+import { CONTAINER_SLOTS, containerViews, FRAME_SLOTS } from './slots'
 
 export type AppDiagnosticCode =
   | 'schema'
@@ -36,6 +42,8 @@ export type AppDiagnosticCode =
   | 'invalid_prop'
   | 'unknown_parent'
   | 'invalid_parent'
+  /** A slot its parent doesn't have (M24), or a container's views written wrong. */
+  | 'invalid_slot'
   | 'invalid_layout'
   | 'unknown_event'
   | 'unknown_query'
@@ -57,14 +65,23 @@ export type AppDiagnosticCode =
   | 'other_page'
   | 'unknown_library'
   | 'unpublished_library'
+  /** A library query (or, M21, module) exists but the person lacks Use on it. */
+  | 'no_use_access'
   | 'unknown_version'
   | 'unknown_param'
   | 'missing_param'
   | 'module_pages'
-  | 'nested_module'
+  /** A module instance reaching the module it's in (M21). */
+  | 'module_cycle'
+  /** Module instances nested deeper than `MAX_MODULE_DEPTH` (M21). */
+  | 'module_depth'
   | 'not_in_module'
   | 'unknown_module'
   | 'unpublished_module'
+  /** A custom component's library (M25) isn't known, or has no live release, or lacks the component. */
+  | 'unknown_component_library'
+  | 'unpublished_component_library'
+  | 'unknown_custom_component'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -80,14 +97,6 @@ export interface AppDiagnostic {
   hint?: string
 }
 
-/** What the validator needs to know about a library query an app uses (M14). */
-export interface LibraryInfo {
-  /** The live release's version, or null when it has none. */
-  liveVersion: string | null
-  /** Each release's parameter names, by version. */
-  versions: Record<string, readonly string[]>
-}
-
 export interface AppValidateOptions {
   /** Server side: the connector for a resource slug, or undefined if there is no such resource. */
   resolveResource?: (slug: string) => QueryValidator | undefined
@@ -101,6 +110,23 @@ export interface AppValidateOptions {
    * take any props and events (their module isn't known).
    */
   resolveModule?: (slug: string) => ModuleInfo | undefined
+  /** The slug of the module being checked (M21): an instance reaching it back is a cycle. */
+  self?: string
+  /**
+   * The component libraries the app may use (M25), by slug; undefined for none with that slug. Without it, custom
+   * components take any props and events (their library isn't known).
+   */
+  resolveComponentLibrary?: (slug: string) => ComponentLibraryInfo | undefined
+}
+
+/** How deep modules nest below an app (M21): an app holds a module holding a module holding a module, no deeper. */
+export const MAX_MODULE_DEPTH = 3
+
+/** How a module release nests (M21): 1 plus the deepest module it holds, and every module it reaches. */
+export interface ModuleNesting {
+  depth: number
+  /** Slugs of the modules it holds, and those they hold, and so on (`latest` as the live release). */
+  reaches: readonly string[]
 }
 
 /** What the validator needs to know about a module an app places (M14). */
@@ -109,6 +135,38 @@ export interface ModuleInfo {
   liveVersion: string | null
   /** Each release's inputs, outputs and events, by version. */
   versions: Record<string, ModuleInterface>
+  /** Each release's nesting, by version (M21); without it, depth and cycles through it aren't checked. */
+  nesting?: Record<string, ModuleNesting>
+  /** The module exists but the person may not use it (M21): reported as needing use access, nothing else shown. */
+  noUse?: boolean
+}
+
+/**
+ * How a module definition nests (M21), from how the releases its instances run nest (`nesting(slug, version)`,
+ * undefined when unknown: counted as holding nothing).
+ */
+export function moduleNesting(
+  def: AppDefinition,
+  nesting: (slug: string, version: string) => ModuleNesting | undefined,
+): ModuleNesting {
+  let depth = 1
+  const reaches = new Set<string>()
+  for (const { slug, version } of placed(def)) {
+    const inner = nesting(slug, version)
+    depth = Math.max(depth, 1 + (inner?.depth ?? 1))
+    reaches.add(slug)
+    for (const s of inner?.reaches ?? []) reaches.add(s)
+  }
+  return { depth, reaches: [...reaches].sort() }
+}
+
+/**
+ * A module instance on a query's path, and the module release the page runs for it (M14; a path of them for
+ * modules inside modules, outermost first: M21). The browser sends it; the server walks it.
+ */
+export interface InstanceStep {
+  instance: string
+  releaseId: string
 }
 
 /**
@@ -198,10 +256,13 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   checkNames(def, report)
   const resolveModule = options.resolveModule
+  const resolveLibrary = options.resolveComponentLibrary
   const specFor: SpecFor = (c) =>
     c.type === 'module' && resolveModule
       ? moduleComponentSpec(instanceInterface(c, resolveModule))
-      : defaultSpecFor(c)
+      : c.type === 'custom' && resolveLibrary
+        ? customComponentSpec(customInstanceInterface(c, resolveLibrary))
+        : defaultSpecFor(c)
   const graph = buildAppGraph(def, { specFor })
   const { entities } = graph
   const pages = entityPages(def)
@@ -211,7 +272,8 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   def.components.forEach((c, i) => {
     const at = { entity: c.name }
     const spec = specFor(c)
-    if (c.type === 'module') checkModuleInstance(def, c, ['components', i], resolveModule, report)
+    if (c.type === 'module') checkModuleInstance(def, c, ['components', i], options, report)
+    if (c.type === 'custom') checkCustomInstance(c, ['components', i], options, report)
     if (!spec) {
       report({
         code: 'unknown_type',
@@ -258,20 +320,14 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         report({ code: 'invalid_parent', message: `"${c.name}" would end up inside itself`, path, ...at })
       }
     }
+    if (c.slot !== undefined) checkSlot(def, c, spec, ['components', i, 'slot'], at, report)
+    if (c.type === 'container' && c.props?.views !== undefined) {
+      checkViews(c.props.views, ['components', i, 'props', 'views'], at, report)
+    }
     const events = spec.openProps ? null : spec.events
     checkHandlers(def, c.events, ['components', i, 'events'], events, at.entity, entities, pages, report)
     if (c.type === 'navigation' && Array.isArray(c.props?.items)) {
-      c.props.items.forEach((item, n) => {
-        const page = item && typeof item === 'object' && !Array.isArray(item) ? item.page : undefined
-        if (typeof page === 'string' && !page.includes('{{') && !def.pages?.some((p) => p.name === page)) {
-          report({
-            code: 'unknown_page',
-            message: `No page is named "${page}"`,
-            path: ['components', i, 'props', 'items', n, 'page'],
-            ...at,
-          })
-        }
-      })
+      checkNavItems(def, c.props.items, ['components', i, 'props', 'items'], 0, at, report)
     }
   })
 
@@ -556,14 +612,15 @@ function checkHandlers(
         const method = Object.hasOwn(target.spec.methods, a.method)
           ? target.spec.methods[a.method]
           : undefined
-        if (!method) {
+        // An instance whose release isn't known yet (a module or custom component) can't tell its methods.
+        if (!method && !target.spec.openProps) {
           report({
             code: 'unknown_method',
             message: `${target.spec.label} has no method "${a.method}"`,
             path: [...path, 'action', 'method'],
             ...at,
           })
-        } else if ((a.args?.length ?? 0) > method.params.length) {
+        } else if (method && (a.args?.length ?? 0) > method.params.length) {
           report({
             severity: 'warning',
             code: 'invalid_args',
@@ -619,67 +676,15 @@ function checkQuery(
   }
 }
 
-/**
- * A library query's reference: the library query exists, the version is live (`latest`) or released, and the
- * parameters passed are the ones that release declares (one not passed is null: a warning).
- */
+/** A library query's reference (`checkLibraryReference`), reported on the query. */
 function checkLibraryUse(
   q: LibraryAppQuery,
   base: (string | number)[],
   resolve: NonNullable<AppValidateOptions['resolveLibrary']>,
   report: Report,
 ) {
-  const at = { entity: q.name }
-  const info = resolve(q.library)
-  if (!info) {
-    report({
-      code: 'unknown_library',
-      message: `No library query has the slug "${q.library}"`,
-      path: [...base, 'library'],
-      ...at,
-    })
-    return
-  }
-  const version = q.version === 'latest' ? info.liveVersion : q.version
-  if (version === null) {
-    report({
-      code: 'unpublished_library',
-      message: `Library query "${q.library}" has no live release yet`,
-      path: [...base, 'version'],
-      ...at,
-    })
-    return
-  }
-  const params = Object.hasOwn(info.versions, version) ? info.versions[version] : undefined
-  if (!params) {
-    report({
-      code: 'unknown_version',
-      message: `Library query "${q.library}" has no release ${version}`,
-      path: [...base, 'version'],
-      ...at,
-    })
-    return
-  }
-  for (const name of Object.keys(q.params ?? {})) {
-    if (!params.includes(name)) {
-      report({
-        code: 'unknown_param',
-        message: `"${q.library}" v${version} has no parameter "${name}"`,
-        path: [...base, 'params', name],
-        ...at,
-      })
-    }
-  }
-  for (const name of params) {
-    if (!Object.hasOwn(q.params ?? {}, name)) {
-      report({
-        severity: 'warning',
-        code: 'missing_param',
-        message: `No value for the parameter "${name}"; it will be null`,
-        path: [...base, 'params'],
-        ...at,
-      })
-    }
+  for (const problem of checkLibraryReference(q, resolve)) {
+    report({ ...problem, path: [...base, ...problem.path], entity: q.name })
   }
 }
 
@@ -694,6 +699,13 @@ function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, 
       code: 'module_pages',
       message: 'A module has no pages; it sits on a page of the app',
       path: ['pages'],
+    })
+  }
+  if (def.frame) {
+    report({
+      code: 'module_pages',
+      message: "A module has no frame; it sits inside the app's",
+      path: ['frame'],
     })
   }
   const owned = entities.get('inputs')
@@ -740,31 +752,31 @@ function checkModule(def: AppDefinition, entities: ReadonlyMap<string, Entity>, 
 }
 
 /**
- * A module instance (M14): it names a module by slug (not a template), isn't inside another module, and with
- * `resolve`, names a module and release that exist.
+ * A module instance (M14): it names a module by slug (not a template), and with `resolve`, a module and release
+ * that exist. In a module (M21), it doesn't reach that module back, and doesn't nest deeper than the limit leaves.
  */
 function checkModuleInstance(
   def: AppDefinition,
   c: AppComponent,
   base: (string | number)[],
-  resolve: AppValidateOptions['resolveModule'],
+  { resolveModule: resolve, self }: AppValidateOptions,
   report: Report,
 ) {
   const at = { entity: c.name }
-  if (def.module) {
-    report({
-      code: 'nested_module',
-      message: 'A module can’t hold another module',
-      path: [...base, 'type'],
-      ...at,
-    })
-    return
-  }
   const slug = c.props?.module
   if (typeof slug !== 'string' || !slug || slug.includes('{{')) {
     report({
       code: 'unknown_module',
       message: 'Pick a module: its slug, not a {{ }} template',
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+    return
+  }
+  if (self && slug === self) {
+    report({
+      code: 'module_cycle',
+      message: 'A module can’t hold itself',
       path: [...base, 'props', 'module'],
       ...at,
     })
@@ -777,6 +789,13 @@ function checkModuleInstance(
     report({
       code: 'unknown_module',
       message: `No module has the slug "${slug}"`,
+      path: [...base, 'props', 'module'],
+      ...at,
+    })
+  } else if (info.noUse) {
+    report({
+      code: 'no_use_access',
+      message: `You need use access to module "${slug}"`,
       path: [...base, 'props', 'module'],
       ...at,
     })
@@ -797,7 +816,249 @@ function checkModuleInstance(
       path: [...base, 'props', 'version'],
       ...at,
     })
+  } else {
+    const release = version === 'latest' ? info.liveVersion! : version
+    const nesting = info.nesting && Object.hasOwn(info.nesting, release) ? info.nesting[release] : undefined
+    if (self && nesting?.reaches.includes(self)) {
+      report({
+        code: 'module_cycle',
+        message: `Module "${slug}" holds this module (directly or through others): a module can’t hold itself`,
+        path: [...base, 'props', 'module'],
+        ...at,
+      })
+      return
+    }
+    const limit = def.module ? MAX_MODULE_DEPTH - 1 : MAX_MODULE_DEPTH
+    if (nesting && nesting.depth > limit) {
+      report({
+        code: 'module_depth',
+        message: def.module
+          ? `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep, and this module adds one`
+          : `Modules nest ${MAX_MODULE_DEPTH} levels deep at most: "${slug}" v${release} is ${nesting.depth} deep`,
+        path: [...base, 'props', 'module'],
+        ...at,
+      })
+    }
   }
+}
+
+/**
+ * A custom component (M25): it names a library, a release and a component by plain strings (no templates), and
+ * with `resolve`, ones that exist.
+ */
+function checkCustomInstance(
+  c: AppComponent,
+  base: (string | number)[],
+  { resolveComponentLibrary: resolve }: AppValidateOptions,
+  report: Report,
+) {
+  const at = { entity: c.name }
+  const slug = c.props?.library
+  const version = c.props?.version ?? 'latest'
+  const component = c.props?.component
+  const plain = (v: unknown): v is string => typeof v === 'string' && v !== '' && !v.includes('{{')
+  if (!plain(slug)) {
+    report({
+      code: 'unknown_component_library',
+      message: 'Pick a component library: its slug, not a {{ }} template',
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+    return
+  }
+  if (!plain(component)) {
+    report({
+      code: 'unknown_custom_component',
+      message: 'Pick a component: its name, not a {{ }} template',
+      path: [...base, 'props', 'component'],
+      ...at,
+    })
+    return
+  }
+  if (!resolve) return
+  const info = resolve(slug)
+  if (!info) {
+    report({
+      code: 'unknown_component_library',
+      message: `No component library has the slug "${slug}"`,
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+  } else if (info.noUse) {
+    report({
+      code: 'no_use_access',
+      message: `You need use access to component library "${slug}"`,
+      path: [...base, 'props', 'library'],
+      ...at,
+    })
+  } else if (version === 'latest' && info.liveVersion === null) {
+    report({
+      code: 'unpublished_component_library',
+      message: `Component library "${slug}" has no live release yet`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
+  } else if (
+    typeof version !== 'string' ||
+    (version !== 'latest' && !Object.hasOwn(info.versions, version))
+  ) {
+    report({
+      code: 'unknown_version',
+      message: `Component library "${slug}" has no release ${String(version)}`,
+      path: [...base, 'props', 'version'],
+      ...at,
+    })
+  } else {
+    const release = version === 'latest' ? info.liveVersion! : version
+    if (!Object.hasOwn(info.versions[release] ?? {}, component)) {
+      report({
+        code: 'unknown_custom_component',
+        message: `Component library "${slug}" v${release} has no component "${component}"`,
+        path: [...base, 'props', 'component'],
+        ...at,
+      })
+    }
+  }
+}
+
+/** Navigation items (M24): pages that exist, outside links that are web or mail, known icons, one level of groups. */
+function checkNavItems(
+  def: AppDefinition,
+  items: readonly JsonValue[],
+  path: (string | number)[],
+  depth: number,
+  at: { entity: string },
+  report: Report,
+) {
+  items.forEach((item, n) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return
+    const where = [...path, n]
+    const { page, url, icon, items: sub } = item
+    if (typeof page === 'string' && !page.includes('{{') && !def.pages?.some((p) => p.name === page)) {
+      report({ code: 'unknown_page', message: `No page is named "${page}"`, path: [...where, 'page'], ...at })
+    }
+    if (typeof url === 'string' && !url.includes('{{') && !NAV_URL.test(url.trim())) {
+      report({
+        code: 'invalid_prop',
+        message: 'A link opens a web page or an email: http://, https:// or mailto:',
+        path: [...where, 'url'],
+        ...at,
+      })
+    }
+    if (typeof icon === 'string' && !(NAV_ICONS as readonly string[]).includes(icon)) {
+      report({
+        severity: 'warning',
+        code: 'invalid_prop',
+        message: `No icon is named "${icon}": it shows without one`,
+        path: [...where, 'icon'],
+        ...at,
+      })
+    }
+    if (Array.isArray(sub)) {
+      if (depth > 0) {
+        report({
+          severity: 'warning',
+          code: 'invalid_prop',
+          message: 'A group holds links, not groups: these aren’t shown',
+          path: [...where, 'items'],
+          ...at,
+        })
+      } else checkNavItems(def, sub, [...where, 'items'], depth + 1, at, report)
+    }
+  })
+}
+
+/** A component's `slot` (M24): one its parent has (a container's view, header or footer; the frame's). */
+function checkSlot(
+  def: AppDefinition,
+  c: AppComponent,
+  spec: { overlay?: boolean },
+  path: (string | number)[],
+  at: { entity: string },
+  report: Report,
+) {
+  const parent = c.parent === undefined ? undefined : def.components.find((p) => p.name === c.parent)
+  if (spec.overlay) {
+    report({ code: 'invalid_slot', message: 'A modal opens over the page; it has no slot', path, ...at })
+    return
+  }
+  if (c.parent === undefined) {
+    if (!(FRAME_SLOTS as readonly string[]).includes(c.slot!)) {
+      report({
+        code: 'invalid_slot',
+        message: `At the top, a component is in the frame's ${FRAME_SLOTS.join(' or ')}, not "${c.slot}"`,
+        path,
+        ...at,
+      })
+    } else if (c.slot === 'sidebar' && c.page !== undefined) {
+      report({
+        code: 'invalid_slot',
+        message: 'Only components on every page sit in the sidebar',
+        path,
+        ...at,
+      })
+    } else if (c.slot === 'sidebar' && !def.frame?.sidebar) {
+      // Shown in the header meanwhile: a warning, as turning the sidebar off and on again shouldn't break the app.
+      report({
+        severity: 'warning',
+        code: 'invalid_slot',
+        message: 'The app has no sidebar: this shows with the other components on every page',
+        path,
+        ...at,
+      })
+    }
+    return
+  }
+  if (parent?.type !== 'container') {
+    if (parent) report({ code: 'invalid_slot', message: `"${c.parent}" has no slots`, path, ...at })
+    return
+  }
+  const allowed = [...CONTAINER_SLOTS, ...containerViews(parent).map((v) => v.name)]
+  if (!allowed.includes(c.slot!)) {
+    report({
+      code: 'invalid_slot',
+      message: `"${c.parent}" has no view or slot "${c.slot}": it has ${allowed.join(', ')}`,
+      path,
+      ...at,
+    })
+  }
+}
+
+/** A container's `views` (M24): a list of `{ name, label? }`, names valid, unused, not a slot's. */
+function checkViews(views: unknown, path: (string | number)[], at: { entity: string }, report: Report) {
+  if (!Array.isArray(views)) {
+    report({
+      code: 'invalid_slot',
+      message:
+        'Views are written as a list of { name, label }, not computed: components are placed in them by name',
+      path,
+      ...at,
+    })
+    return
+  }
+  const seen = new Set<string>()
+  views.forEach((v, n) => {
+    const name = v && typeof v === 'object' && !Array.isArray(v) ? (v as { name?: unknown }).name : undefined
+    const where = [...path, n]
+    if (typeof name !== 'string' || !appNameSchema.safeParse(name).success) {
+      report({
+        code: 'invalid_slot',
+        message: 'A view needs a name: a letter, then letters, digits or _',
+        path: where,
+        ...at,
+      })
+    } else if ((CONTAINER_SLOTS as readonly string[]).includes(name)) {
+      report({
+        code: 'invalid_slot',
+        message: `"${name}" is the container's ${name}, not a view`,
+        path: where,
+        ...at,
+      })
+    } else if (seen.has(name)) {
+      report({ code: 'invalid_slot', message: `Two views are named "${name}"`, path: where, ...at })
+    }
+    if (typeof name === 'string') seen.add(name)
+  })
 }
 
 /** Walking up from `name` through parents comes back to it. */

@@ -1,0 +1,25 @@
+{
+  "name": "@ow/collab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lib0": "0.2.119",
+    "node-diff3": "3.2.1",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@ow/app-definition": "workspace:*",
+    "@ow/definition": "workspace:*",
+    "vitest": "5.0.4"
+  }
+}

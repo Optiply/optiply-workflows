@@ -7,6 +7,12 @@ export type SqlDialect = 'postgres' | 'mysql' | 'bigquery'
 export interface SqlParam {
   /** Expression source between the braces; evaluated in the sandbox to produce the bound value. */
   code: string
+  /**
+   * Set for a value a fragment binds itself (`sql.where`'s filter values, M24): `value` is what's bound, `code` the
+   * fragment's, for errors.
+   */
+  bound?: true
+  value?: unknown
   /** Offsets of the whole `{{ … }}` in the original SQL. */
   start: number
   end: number
@@ -21,6 +27,20 @@ export type SqlFragmentSpec =
   | { kind: 'column'; columns: string[]; fallback?: string }
   /** `sql.direction(value)`: `ASC` or `DESC`. */
   | { kind: 'direction' }
+  /**
+   * `sql.where(table1.filters, ['name', 'total'])` (M24): a table's filters as a condition on the listed columns,
+   * their values bound (`TRUE` when there are none).
+   */
+  | { kind: 'where'; columns: string[] }
+
+/** A fragment's SQL: text with `FRAGMENT_PLACEHOLDER` where each of `values` is bound, in order. */
+export interface FragmentSql {
+  text: string
+  values: unknown[]
+}
+
+/** Marks a bound value's place in a fragment's text; `withFragments` puts the dialect's placeholder there. */
+export const FRAGMENT_PLACEHOLDER = '\u0000'
 
 export interface SqlFragment {
   /** The whole expression, evaluated like a parameter's (the `sql` helpers pick the column). */
@@ -34,6 +54,8 @@ export interface SqlFragment {
 }
 
 export interface CompiledSql {
+  /** The dialect it was compiled for: its placeholders' form. */
+  dialect: SqlDialect
   /** SQL with each `{{ }}` replaced by a placeholder: `$1`, `$2`, … (Postgres), `?` (MySQL), `@p1`, … (BigQuery). */
   text: string
   /** One per placeholder, in order: `params[0]` binds `$1`. */
@@ -174,10 +196,10 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
     i++
   }
 
-  return { text: out, params, offsets, fragments }
+  return { dialect, text: out, params, offsets, fragments }
 }
 
-const MENTIONS_HELPER = /\bsql\s*\??\.\s*(column|direction)\b/
+const MENTIONS_HELPER = /\bsql\s*\??\.\s*(column|direction|where)\b/
 const MISPLACED =
   "sql.column(…) and sql.direction(…) must be the whole {{ }}: {{ sql.column(table1.sort.column, ['name', 'price']) }}"
 /** Room for qualified names (`p.name`); quotes and control characters never. */
@@ -225,6 +247,23 @@ export function sqlFragment(code: string, start = 0, end = code.length): SqlFrag
     if (args.length !== 1) return fail('sql.direction takes one value: true or "desc" for DESC, else ASC')
     return { kind: 'direction' }
   }
+  if (call.callee.property.name === 'where') {
+    const list = args[1]
+    const columns =
+      list?.type === 'ArrayExpression' ? list.elements.map((e) => literal(e ?? undefined)) : [null]
+    if (args.length !== 2 || !columns.length || columns.includes(null)) {
+      return fail(
+        "sql.where takes the filters and the columns they may name, written as a list of strings: sql.where(table1.filters, ['name', 'total'])",
+      )
+    }
+    if (columns.length > MAX_COLUMNS) return fail(`sql.where takes at most ${MAX_COLUMNS} columns`)
+    for (const c of columns as string[]) {
+      if (!COLUMN.test(c) || c.split('.').some((part) => !part.trim())) {
+        return fail(`"${c}" can't be a column for sql.where (no quotes, no empty parts)`)
+      }
+    }
+    return { kind: 'where', columns: columns as string[] }
+  }
   if (call.callee.property.name !== 'column') return fail(MISPLACED)
   if (args.length < 2 || args.length > 3) {
     return fail(
@@ -258,7 +297,7 @@ function readsHelper(node: unknown): boolean {
     n.object.type === 'Identifier' &&
     n.object.name === 'sql' &&
     n.property.type === 'Identifier' &&
-    (n.property.name === 'column' || n.property.name === 'direction')
+    (n.property.name === 'column' || n.property.name === 'direction' || n.property.name === 'where')
   ) {
     return true
   }
@@ -282,6 +321,7 @@ export function fragmentText(
   value: unknown,
   dialect: SqlDialect = 'postgres',
 ): string {
+  if (spec.kind === 'where') throw new Error('sql.where binds values: use fragmentSql')
   if (spec.kind === 'direction') {
     if (value === true || (typeof value === 'string' && /^desc$/i.test(value))) return 'DESC'
     if (
@@ -307,11 +347,136 @@ export function fragmentText(
       `sql.column got ${describe(value)}: expected one of ${allowed.map((c) => JSON.stringify(c)).join(', ')}`,
     )
   }
+  return quoteColumn(column, dialect)
+}
+
+/** A checked column as an identifier for the dialect: `"p"."name"`, `` `p`.`name` ``. */
+function quoteColumn(column: string, dialect: SqlDialect): string {
   const quote = dialect === 'postgres' ? '"' : '`'
   return column
     .split('.')
     .map((part) => quote + part + quote)
     .join('.')
+}
+
+/** What a fragment becomes: `sql.where`'s condition with its values, or another helper's text. */
+export function fragmentSql(
+  spec: SqlFragmentSpec,
+  value: unknown,
+  dialect: SqlDialect = 'postgres',
+): FragmentSql {
+  return spec.kind === 'where'
+    ? whereSql(spec.columns, value, dialect)
+    : { text: fragmentText(spec, value, dialect), values: [] }
+}
+
+/** The operators a filter may use (M24); `between` takes `[from, to]`, `empty` and `notEmpty` no value. */
+export const FILTER_OPS = [
+  'contains',
+  'equals',
+  'notEquals',
+  'empty',
+  'notEmpty',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'between',
+] as const
+export type FilterOp = (typeof FILTER_OPS)[number]
+
+/** Filters `sql.where` takes at most. */
+export const MAX_FILTERS = 50
+
+const COMPARE: Partial<Record<FilterOp, string>> = {
+  equals: '=',
+  lt: '<',
+  lte: '<=',
+  gt: '>',
+  gte: '>=',
+}
+
+/**
+ * A table's filters (`[{ column, op, value?, type? }]`) as a condition, ANDed, each column checked against the
+ * query's list and each value bound. `type` (a table column's: `number`, `date`, `datetime`…) turns a number typed
+ * as text into a number, and in BigQuery casts the value to the column's kind (its parameters are typed).
+ */
+function whereSql(columns: readonly string[], value: unknown, dialect: SqlDialect): FragmentSql {
+  const fail = (message: string): never => {
+    throw new SqlFragmentError(`sql.where ${message}`)
+  }
+  if (value === null || value === undefined) return { text: 'TRUE', values: [] }
+  if (!Array.isArray(value)) fail(`got ${describe(value)}: expected a list of filters`)
+  const filters = value as unknown[]
+  if (filters.length > MAX_FILTERS) fail(`takes at most ${MAX_FILTERS} filters`)
+  if (!filters.length) return { text: 'TRUE', values: [] }
+  const P = FRAGMENT_PLACEHOLDER
+  const values: unknown[] = []
+  const parts = filters.map((filter) => {
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
+      return fail(`got ${describe(filter)}: each filter is { column, op, value }`)
+    }
+    const { column, op, value: raw, type } = filter as Record<string, unknown>
+    if (typeof column !== 'string' || !columns.includes(column)) {
+      return fail(
+        `got the column ${describe(column)}: expected one of ${columns.map((c) => JSON.stringify(c)).join(', ')}`,
+      )
+    }
+    if (typeof op !== 'string' || !(FILTER_OPS as readonly string[]).includes(op)) {
+      return fail(`got the operator ${describe(op)}: expected one of ${FILTER_OPS.join(', ')}`)
+    }
+    const q = quoteColumn(column, dialect)
+    const scalar = (v: unknown): unknown => {
+      if (v !== null && typeof v === 'object')
+        return fail(`got ${describe(v)} for ${column}: expected a single value`)
+      if (type === 'number' && typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)))
+        return Number(v)
+      return v ?? null
+    }
+    // BigQuery compares only like with like: a date or datetime filter casts both sides, so DATE, DATETIME and
+    // TIMESTAMP columns all compare (a DATETIME column against a TIMESTAMP value is an error there).
+    const cast =
+      dialect === 'bigquery' && type === 'date'
+        ? 'DATE'
+        : dialect === 'bigquery' && type === 'datetime'
+          ? 'TIMESTAMP'
+          : null
+    const qc = cast ? `CAST(${q} AS ${cast})` : q
+    const bind = (v: unknown) => {
+      values.push(v)
+      return cast ? `CAST(${P} AS ${cast})` : P
+    }
+    const asText =
+      dialect === 'postgres'
+        ? `${q}::text`
+        : dialect === 'mysql'
+          ? `CAST(${q} AS CHAR)`
+          : `CAST(${q} AS STRING)`
+    switch (op as FilterOp) {
+      case 'contains': {
+        const needle = scalar(raw)
+        values.push(needle === null ? '' : String(needle))
+        if (dialect === 'postgres') return `position(lower(${P}) in lower(${asText})) > 0`
+        if (dialect === 'mysql') return `LOCATE(LOWER(${P}), LOWER(${asText})) > 0`
+        return `STRPOS(LOWER(${asText}), LOWER(${P})) > 0`
+      }
+      case 'empty':
+        return `${q} IS NULL OR ${asText} = ''`
+      case 'notEmpty':
+        return `NOT (${q} IS NULL OR ${asText} = '')`
+      case 'notEquals':
+        return `${qc} <> ${bind(scalar(raw))} OR ${q} IS NULL`
+      case 'between': {
+        if (!Array.isArray(raw) || raw.length !== 2) {
+          return fail(`between on ${column} takes [from, to], got ${describe(raw)}`)
+        }
+        return `${qc} BETWEEN ${bind(scalar(raw[0]))} AND ${bind(scalar(raw[1]))}`
+      }
+      default:
+        return `${qc} ${COMPARE[op as FilterOp]} ${bind(scalar(raw))}`
+    }
+  })
+  return { text: parts.map((p) => `(${p})`).join(' AND '), values }
 }
 
 function describe(value: unknown): string {
@@ -320,22 +485,70 @@ function describe(value: unknown): string {
   return text.length > 60 ? `${text.slice(0, 57)}…` : text
 }
 
-/** The plan with each fragment's text in place (`texts[i]` for `fragments[i]`) and the placeholders moved along. */
-export function withFragments(plan: CompiledSql, texts: string[]): CompiledSql {
+/**
+ * The plan with each fragment's SQL in place (`pieces[i]` for `fragments[i]`: text, or text with the values it binds)
+ * and every placeholder numbered again in order for the dialect, so a fragment's values bind where they stand.
+ */
+export function withFragments(plan: CompiledSql, pieces: readonly (string | FragmentSql)[]): CompiledSql {
   if (!plan.fragments.length) return plan
+  const { dialect } = plan
+  const placeholder = (n: number) => (dialect === 'mysql' ? '?' : dialect === 'bigquery' ? `@p${n}` : `$${n}`)
+  // What sits in the text, in order: the plan's placeholders (each its param) and the fragments.
+  type Slot =
+    | { at: number; length: number; param: SqlParam }
+    | { at: number; length: 0; piece: FragmentSql; fragment: SqlFragment }
+  const slots: Slot[] = [
+    ...plan.params.map((param, i) => ({ at: plan.offsets[i]!, length: placeholder(i + 1).length, param })),
+    ...plan.fragments.map((fragment, i) => {
+      const piece = pieces[i]!
+      return {
+        at: fragment.at,
+        length: 0 as const,
+        piece: typeof piece === 'string' ? { text: piece, values: [] } : piece,
+        fragment,
+      }
+    }),
+  ].sort((a, b) => a.at - b.at)
   let text = ''
   let from = 0
-  const offsets = [...plan.offsets]
-  for (const [i, fragment] of plan.fragments.entries()) {
-    const inserted = texts[i]!
-    text += plan.text.slice(from, fragment.at) + inserted
-    from = fragment.at
-    for (let p = 0; p < offsets.length; p++) {
-      if (plan.offsets[p]! >= fragment.at) offsets[p] = offsets[p]! + inserted.length
+  const params: SqlParam[] = []
+  const offsets: number[] = []
+  const bindHere = (param: SqlParam) => {
+    params.push(param)
+    offsets.push(text.length)
+    text += placeholder(params.length)
+  }
+  for (const slot of slots) {
+    text += plan.text.slice(from, slot.at)
+    from = slot.at + slot.length
+    if ('param' in slot) {
+      bindHere(slot.param)
+      continue
+    }
+    const { piece, fragment } = slot
+    const chunks = piece.text.split(FRAGMENT_PLACEHOLDER)
+    if (chunks.length !== piece.values.length + 1)
+      throw new Error('A fragment binds as many values as it has places')
+    for (const [k, chunk] of chunks.entries()) {
+      text += chunk
+      if (k < piece.values.length) {
+        bindHere({
+          code: fragment.code,
+          start: fragment.start,
+          end: fragment.end,
+          bound: true,
+          value: piece.values[k],
+        })
+      }
     }
   }
   text += plan.text.slice(from)
-  return { text, params: plan.params, offsets, fragments: [] }
+  return { dialect, text, params, offsets, fragments: [] }
+}
+
+/** A param's value: bound by a fragment, or its code evaluated. */
+export async function paramValue(param: SqlParam, evaluate: (code: string) => unknown): Promise<unknown> {
+  return param.bound ? param.value : await evaluate(param.code)
 }
 
 /** In MySQL `--` starts a comment only when followed by whitespace, a control character or the end of input. */

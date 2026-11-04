@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyEdit,
+  filterLabel,
+  filterRows,
   formatCell,
   parseCell,
   rowKey,
@@ -8,6 +10,7 @@ import {
   sortedRows,
   tableColumns,
   tableView,
+  withColumnWidth,
 } from './table-model'
 
 const rows = [
@@ -33,12 +36,45 @@ describe('table model', () => {
           { key: 'score', label: 'Score', editable: true, width: 90 },
           { key: 'id', hidden: true },
           { label: 'no key' },
+          {
+            key: 'double',
+            value: '{{ currentRow.score * 2 }}',
+            editable: true,
+            type: 'number',
+            filterable: false,
+          },
         ],
         rows,
       ),
     ).toEqual([
-      { key: 'name', label: 'name', type: 'text', editable: false, width: null },
-      { key: 'score', label: 'Score', type: 'number', editable: true, width: 90 },
+      {
+        key: 'name',
+        label: 'name',
+        type: 'text',
+        editable: false,
+        width: null,
+        computed: false,
+        filterable: true,
+      },
+      {
+        key: 'score',
+        label: 'Score',
+        type: 'number',
+        editable: true,
+        width: 90,
+        computed: false,
+        filterable: true,
+      },
+      // A computed column (M24) isn't editable, whatever it says.
+      {
+        key: 'double',
+        label: 'double',
+        type: 'number',
+        editable: false,
+        width: null,
+        computed: true,
+        filterable: false,
+      },
     ])
   })
 
@@ -166,5 +202,98 @@ describe('table view', () => {
     expect(server).toMatchObject({ page: 4, total: null, pageCount: null })
     expect(view({ paging: 'server', totalRowCount: 95 })).toMatchObject({ total: 95, pageCount: 10 })
     expect(view({ paging: 'server', totalRowCount: 0 })).toMatchObject({ total: 0, pageCount: 1 })
+  })
+})
+
+describe('filters (M24)', () => {
+  const rows = [
+    { id: 1, name: 'Ada', qty: 3, day: '2026-01-05', ok: true },
+    { id: 2, name: 'Grace', qty: 10, day: '2026-02-01', ok: false },
+    { id: 3, name: 'Gómez', qty: null, day: null, ok: null },
+    { id: 4, name: '', qty: 7, day: '2026-01-20', ok: true },
+  ]
+  const columns = tableColumns([], rows)
+  const ids = (filters: Parameters<typeof filterRows>[2]) =>
+    filterRows(rows, columns, filters).map((i) => rows[i]!.id)
+
+  it('filters by each operator, the way sql.where has the database do it', () => {
+    expect(ids([{ column: 'name', op: 'contains', value: 'GÓ' }])).toEqual([3])
+    // As in SQL: contains ignores case but not accents; equals and the order are exact.
+    expect(ids([{ column: 'name', op: 'contains', value: 'GO' }])).toEqual([])
+    expect(ids([{ column: 'name', op: 'equals', value: 'Ada' }])).toEqual([1])
+    expect(ids([{ column: 'name', op: 'equals', value: 'ada' }])).toEqual([])
+    expect(ids([{ column: 'name', op: 'lt', value: 'B' }])).toEqual([1, 4])
+    expect(ids([{ column: 'name', op: 'empty' }])).toEqual([4])
+    expect(ids([{ column: 'qty', op: 'notEquals', value: '3' }])).toEqual([2, 3, 4])
+    expect(ids([{ column: 'qty', op: 'gte', value: '7' }])).toEqual([2, 4])
+    expect(ids([{ column: 'qty', op: 'lt', value: 7 }])).toEqual([1])
+    expect(ids([{ column: 'qty', op: 'between', value: [3, 7] }])).toEqual([1, 4])
+    expect(ids([{ column: 'day', op: 'gt', value: '2026-01-10', type: 'date' }])).toEqual([2, 4])
+    expect(ids([{ column: 'day', op: 'between', value: ['2026-01-01', '2026-01-31'] }])).toEqual([1, 4])
+    expect(ids([{ column: 'ok', op: 'equals', value: true }])).toEqual([1, 4])
+    expect(ids([{ column: 'ok', op: 'notEmpty' }])).toEqual([1, 2, 4])
+  })
+
+  it('ANDs filters, ignores a column the table lacks, and comes before the search', () => {
+    expect(
+      ids([
+        { column: 'qty', op: 'gt', value: 2 },
+        { column: 'day', op: 'lt', value: '2026-01-31' },
+        { column: 'gone', op: 'empty' },
+      ]),
+    ).toEqual([1, 4])
+    const view = tableView({
+      rows,
+      columns,
+      paging: 'pages',
+      page: 0,
+      pageSize: 50,
+      sort: { key: 'qty', desc: true },
+      searchText: 'a',
+      totalRowCount: null,
+      filters: [{ column: 'qty', op: 'gte', value: 3 }],
+    })
+    expect(view.rows.map((r) => r.row.id)).toEqual([2, 1])
+    expect(view.total).toBe(2)
+    // Server paging: the query filtered.
+    expect(
+      tableView({
+        ...{ rows, columns, page: 0, pageSize: 50, sort: null, searchText: '', totalRowCount: null },
+        paging: 'server',
+        filters: [{ column: 'qty', op: 'gt', value: 100 }],
+      }).rows,
+    ).toHaveLength(4)
+  })
+
+  it('reads as a chip', () => {
+    expect(filterLabel({ column: 'qty', op: 'gte', value: 3, type: 'number' }, 'Qty')).toBe('Qty ≥ 3')
+    expect(filterLabel({ column: 'day', op: 'lt', value: '2026-01-01', type: 'date' }, 'day')).toBe(
+      'day before 2026-01-01',
+    )
+    expect(filterLabel({ column: 'n', op: 'between', value: [1, 2], type: 'number' }, 'n')).toBe(
+      'n between 1 and 2',
+    )
+    expect(filterLabel({ column: 'n', op: 'empty' }, 'n')).toBe('n is empty')
+  })
+})
+
+describe('withColumnWidth (M24)', () => {
+  const shown = tableColumns([], [{ id: 1, name: 'a' }])
+
+  it('sets one column’s width in the stored columns, listing inferred ones first', () => {
+    expect(withColumnWidth(undefined, shown, 'name', 181.6)).toEqual([
+      { key: 'id' },
+      { key: 'name', width: 182 },
+    ])
+    expect(withColumnWidth([], shown, 'id', 10)).toEqual([{ key: 'id', width: 40 }, { key: 'name' }])
+    expect(withColumnWidth(['id', { key: 'name', label: 'Name', width: 90 }], shown, 'name', 200)).toEqual([
+      'id',
+      { key: 'name', label: 'Name', width: 200 },
+    ])
+    expect(withColumnWidth(['id'], shown, 'id', 120)).toEqual([{ key: 'id', width: 120 }])
+  })
+
+  it('leaves columns written as a template alone', () => {
+    expect(withColumnWidth('{{ cols.value }}', shown, 'id', 120)).toBeNull()
   })
 })

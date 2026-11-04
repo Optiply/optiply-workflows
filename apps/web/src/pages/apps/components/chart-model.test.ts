@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   type ChartPalette,
   compactNumber,
+  formatTime,
   chartModel as model,
   SERIES_SLOTS,
   sliceColors,
+  timeTicks,
   toNumber,
+  toTime,
   withAlpha,
 } from './chart-model'
 
@@ -68,6 +71,7 @@ describe('chart model', () => {
       kind: 'bar',
       xKey: null,
       labels: [],
+      time: null,
       series: [],
       omitted: [],
       folded: 0,
@@ -82,5 +86,53 @@ describe('chart model', () => {
     ])
     expect(compactNumber(2500)).toBe('2.5K')
     expect(withAlpha('#2a78d6', 0.1)).toBe('rgba(42, 120, 214, 0.1)')
+  })
+})
+
+describe('the time axis (M24)', () => {
+  const day = (d: number) => `2026-01-${String(d).padStart(2, '0')}`
+  const rows = [5, 1, 2, 4, 9].map((d) => ({ day: day(d), orders: d * 10 }))
+
+  it('reads ISO dates and datetimes, nothing else', () => {
+    expect(toTime('2026-01-05')).toBe(Date.UTC(2026, 0, 5))
+    expect(toTime('2026-01-05T10:30:00Z')).toBe(Date.UTC(2026, 0, 5, 10, 30))
+    expect(toTime('2026-01-05 10:30:00+01:00')).toBe(Date.UTC(2026, 0, 5, 9, 30))
+    for (const no of ['Jan 5', '5', 5, null, '2026-13-45x']) expect(toTime(no)).toBeNull()
+  })
+
+  it('places a line chart’s points by their dates, sorted, gaps kept as space', () => {
+    const model = chartModel({ kind: 'line', data: rows, xKey: 'day', series: ['orders'] })
+    expect(model.time?.values).toEqual([1, 2, 4, 5, 9].map((d) => Date.UTC(2026, 0, d)))
+    expect(model.series[0]!.values).toEqual([10, 20, 40, 50, 90])
+    expect(model.time?.utc).toBe(true)
+    expect(model.time?.unit).toBe('day')
+    expect(model.time?.ticks).toHaveLength(9)
+    expect(model.labels[0]).toMatch(/Jan.*1.*2026|1.*Jan.*2026/)
+  })
+
+  it('stays a category axis for bars, for category, and when an x isn’t a date', () => {
+    expect(chartModel({ kind: 'bar', data: rows, xKey: 'day', series: ['orders'] }).time).toBeNull()
+    expect(
+      chartModel({ kind: 'line', data: rows, xKey: 'day', series: ['orders'], xAxis: 'category' }).time,
+    ).toBeNull()
+    const mixed = [...rows, { day: 'later', orders: 1 }]
+    expect(chartModel({ kind: 'line', data: mixed, xKey: 'day', series: ['orders'] }).time).toBeNull()
+    // Forced, the rows without a date are left out.
+    expect(
+      chartModel({ kind: 'area', data: mixed, xKey: 'day', series: ['orders'], xAxis: 'time' }).time?.values,
+    ).toHaveLength(5)
+  })
+
+  it('ticks on days, Mondays, firsts of the month or of the year, by the span', () => {
+    const utc = (y: number, m: number, d: number) => Date.UTC(y, m, d)
+    expect(timeTicks(utc(2026, 0, 1), utc(2026, 0, 10), true)).toMatchObject({ unit: 'day' })
+    const weeks = timeTicks(utc(2026, 0, 1), utc(2026, 2, 1), true)
+    expect(weeks.unit).toBe('week')
+    expect(weeks.ticks.every((t) => new Date(t).getUTCDay() === 1)).toBe(true)
+    const months = timeTicks(utc(2025, 10, 15), utc(2026, 9, 1), true)
+    expect(months.unit).toBe('month')
+    expect(months.ticks.slice(0, 2)).toEqual([utc(2025, 11, 1), utc(2026, 0, 1)])
+    expect(timeTicks(utc(2020, 5, 1), utc(2026, 0, 1), true).ticks[0]).toBe(utc(2021, 0, 1))
+    expect(formatTime(utc(2026, 0, 1), 'year', true)).toBe('2026')
   })
 })

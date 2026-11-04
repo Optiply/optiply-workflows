@@ -1,8 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, GitBranch } from 'lucide-react'
 import { useState } from 'react'
-import { useFolders } from '@/components/folders'
+import { confirmDialog } from '@/components/confirm'
+import { FolderSelect, folderPath, useFolders } from '@/components/folders'
+import {
+  ProtectDialog,
+  ProtectedBadge,
+  UNPROTECT_SETTINGS_CONFIRM,
+  useGitInfo,
+  useUnprotectSettings,
+} from '@/components/git'
+import { SaveToBranchDialog } from '@/components/settings-git'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Spinner, Tabs } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -45,7 +54,9 @@ export function ResourceDetailPage() {
           <p className="font-mono text-xs text-muted">{resource.slug}</p>
           {resource.description && <p className="mt-1 text-sm text-muted">{resource.description}</p>}
         </div>
-        {owns && !resource.systemKind && <DeleteResource resource={resource} />}
+        {resource.gitProtected && <ProtectedBadge />}
+        {owns && !resource.systemKind && <GitActions resource={resource} />}
+        {owns && !resource.systemKind && !resource.gitProtected && <DeleteResource resource={resource} />}
       </div>
 
       {current && (
@@ -65,6 +76,7 @@ export function ResourceDetailPage() {
               <span className="size-2 rounded-full" style={{ background: envColor(e.environmentId) }} />
               {envName(e.environmentId)}
               {!e.config && <span className="text-xs">(not configured)</span>}
+              {e.needsSecrets && <span className="text-xs text-warning-strong">(needs secrets)</span>}
             </button>
           ))}
           <span className="ml-2 text-xs text-muted">
@@ -151,6 +163,7 @@ function GeneralCard({ resource }: { resource: ResourceDetail }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: folders } = useFolders('resource')
+  const [savingToBranch, setSavingToBranch] = useState(false)
   const [form, setForm] = useState({
     name: resource.name,
     description: resource.description ?? '',
@@ -185,32 +198,78 @@ function GeneralCard({ resource }: { resource: ResourceDetail }) {
           />
         </Field>
         <Field label="Folder">
-          <Select value={form.folderId} onChange={(e) => setForm({ ...form, folderId: e.target.value })}>
-            <option value="">None</option>
-            {folders?.folders.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </Select>
+          <FolderSelect
+            type="resource"
+            value={form.folderId || null}
+            onChange={(folderId) => setForm({ ...form, folderId: folderId ?? '' })}
+          />
         </Field>
       </div>
       <ErrorNote error={update.error} />
-      <Button
-        disabled={!dirty || !form.name.trim()}
-        loading={update.isPending}
-        onClick={() =>
-          update.mutate({
-            id: resource.id,
-            name: form.name,
-            description: form.description || null,
-            folderId: form.folderId || null,
-          })
-        }
-      >
-        Save details
-      </Button>
+      {resource.gitProtected ? (
+        // Git keeps them (M22): changed through a branch and its pull request.
+        <Button disabled={!dirty || !form.name.trim()} onClick={() => setSavingToBranch(true)}>
+          <GitBranch className="size-4" /> Save to branch…
+        </Button>
+      ) : (
+        <Button
+          disabled={!dirty || !form.name.trim()}
+          loading={update.isPending}
+          onClick={() =>
+            update.mutate({
+              id: resource.id,
+              name: form.name,
+              description: form.description || null,
+              folderId: form.folderId || null,
+            })
+          }
+        >
+          Save details
+        </Button>
+      )}
+      {savingToBranch && (
+        <SaveToBranchDialog
+          kind="resource"
+          object={resource}
+          edit={{
+            name: form.name.trim(),
+            description: form.description.trim() || null,
+            folder: folderPath(folders?.folders ?? [], form.folderId || null),
+          }}
+          onClose={() => setSavingToBranch(false)}
+        />
+      )}
     </Card>
+  )
+}
+
+/** Protect (Own; M22): its settings then come from Git; or Unprotect, to change them here again. */
+function GitActions({ resource }: { resource: ResourceDetail }) {
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
+  const unprotect = useUnprotectSettings('resource')
+  if (!git?.configured && !resource.gitProtected) return null
+  return (
+    <div className="space-y-2 text-right">
+      {resource.gitProtected ? (
+        <Button
+          size="sm"
+          loading={unprotect.isPending}
+          onClick={async () =>
+            (await confirmDialog(UNPROTECT_SETTINGS_CONFIRM)) &&
+            unprotect.mutate({ kind: 'resource', id: resource.id })
+          }
+        >
+          Unprotect
+        </Button>
+      ) : (
+        <Button size="sm" onClick={() => setProtecting(true)} data-testid="protect-resource">
+          <GitBranch className="size-4" /> Protect in Git
+        </Button>
+      )}
+      <ErrorNote error={unprotect.error} />
+      {protecting && <ProtectDialog kind="resource" object={resource} onClose={() => setProtecting(false)} />}
+    </div>
   )
 }
 
@@ -232,9 +291,12 @@ function DeleteResource({ resource }: { resource: ResourceDetail }) {
         variant="danger"
         size="sm"
         loading={remove.isPending}
-        onClick={() => {
+        onClick={async () => {
           if (
-            confirm(`Delete "${resource.name}" and its settings in every environment? This can't be undone.`)
+            await confirmDialog(
+              `Delete "${resource.name}" and its settings in every environment? This can't be undone.`,
+              { danger: true, confirm: 'Delete' },
+            )
           ) {
             remove.mutate({ id: resource.id })
           }

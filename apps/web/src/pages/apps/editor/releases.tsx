@@ -1,14 +1,17 @@
 import { bumpVersion, compareVersions, parseSemver, type VersionBump } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
-import { GitBranch, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
+import { GitBranch, GitCompare, History, Rocket, Settings, Trash2, Undo2, Users } from 'lucide-react'
 import { useState } from 'react'
+import { CompareReleasesDialog } from '@/components/compare-releases'
+import { confirmDialog } from '@/components/confirm'
+import { DroppedWarning } from '@/components/dropped-warning'
 import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { AccessEditor } from '../../resources/shared'
-import { ensureSaved } from './save'
+import { ensureSaved } from './collab'
 import { useAppEditor } from './store'
 
 type Release = RouterOutputs['apps']['releases'][number]
@@ -105,6 +108,13 @@ function useReleaseApi(app: EditorApp) {
     accessHelp:
       'Use opens the live release and runs its queries (no access to the resources needed) · Edit also changes the draft and publishes · Own also deletes and manages access.',
   }
+}
+
+/** Inputs this module release drops that apps or modules placing it on latest still pass (M21). */
+function ModuleDropped({ moduleId }: { moduleId: string }) {
+  const trpc = useTRPC()
+  const impact = useQuery(trpc.modules.publishImpact.queryOptions({ moduleId }))
+  return <DroppedWarning impact={impact.data} what="input" />
 }
 
 interface PublishInput {
@@ -278,6 +288,7 @@ function PublishDialog({
     >
       <div className="flex flex-col gap-4">
         <p className="text-sm text-muted">{api.publishHelp(live?.version ?? null)}</p>
+        {app.kind === 'module' && <ModuleDropped moduleId={app.id} />}
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">Version</span>
           <div className="grid grid-cols-2 gap-2">
@@ -369,6 +380,25 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
   const canSetLive = !app.gitProtected || me.isAdmin
   const live = releases.data?.find((r) => r.live)
   const setLive = useMutation({ mutationFn: api.setLive, onSuccess: () => api.released() })
+  const draft = useAppEditor((s) => s.definition)
+  const [comparing, setComparing] = useState<string | null>(null)
+  if (comparing && releases.data) {
+    return (
+      <CompareReleasesDialog
+        kind={app.kind}
+        objectId={app.id}
+        releases={releases.data}
+        releaseId={comparing}
+        draft={draft}
+        loadRelease={(id) =>
+          app.kind === 'module'
+            ? trpcClient.modules.release.query({ moduleId: app.id, id })
+            : trpcClient.apps.release.query({ appId: app.id, id })
+        }
+        onClose={() => setComparing(null)}
+      />
+    )
+  }
   return (
     <Dialog title="Releases" onClose={onClose}>
       <ErrorNote error={releases.error ?? setLive.error} />
@@ -386,6 +416,16 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               <span className="font-mono text-sm font-semibold">v{r.version}</span>
               {r.live && <Badge tone="success">Live</Badge>}
               <span className="flex-1" />
+              {app.level !== 'use' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  title="What changed: against the release before it, another one or the draft"
+                  onClick={() => setComparing(r.id)}
+                >
+                  <GitCompare className="size-3.5" /> Compare
+                </Button>
+              )}
               {canSetLive && !r.live && (
                 <Button
                   size="sm"
@@ -396,8 +436,9 @@ function ReleasesDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
                       ? `Emergency rollback: it stays until the ${app.kind}’s next change in Git (or Deploy now)`
                       : 'Make this release live again'
                   }
-                  onClick={() => {
-                    if (confirm(api.liveHelp(r.version, live?.version ?? null))) setLive.mutate(r.id)
+                  onClick={async () => {
+                    if (await confirmDialog(api.liveHelp(r.version, live?.version ?? null)))
+                      setLive.mutate(r.id)
                   }}
                 >
                   <Undo2 className="size-3.5" /> Make live
@@ -449,8 +490,8 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
               variant="danger"
               className="mr-auto"
               loading={remove.isPending}
-              onClick={() => {
-                if (confirm(api.deleteHelp)) remove.mutate()
+              onClick={async () => {
+                if (await confirmDialog(api.deleteHelp)) remove.mutate()
               }}
             >
               <Trash2 className="size-3.5" /> Delete {api.noun}
@@ -511,7 +552,9 @@ function GitProtection({ app }: { app: EditorApp }) {
             size="sm"
             variant="danger"
             loading={unprotect.isPending}
-            onClick={() => confirm(UNPROTECT_CONFIRM) && unprotect.mutate({ kind: app.kind, id: app.id })}
+            onClick={async () =>
+              (await confirmDialog(UNPROTECT_CONFIRM)) && unprotect.mutate({ kind: app.kind, id: app.id })
+            }
           >
             Unprotect
           </Button>

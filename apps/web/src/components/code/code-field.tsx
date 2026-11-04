@@ -1,7 +1,9 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from '@/lib/theme'
 import { monaco, optiplyTheme, setScope } from './monaco'
+import { showCursors } from './remote-cursors'
+import { bindText, type TextBinding } from './text-binding'
 
 export interface FieldProblem {
   start?: number
@@ -13,7 +15,7 @@ export interface FieldProblem {
 export interface CodeFieldProps {
   /** Unique per block and field, so each keeps its own model and undo history. */
   path: string
-  language: 'javascript' | 'python' | 'sql' | 'json' | 'plaintext'
+  language: 'javascript' | 'typescript' | 'css' | 'python' | 'sql' | 'json' | 'plaintext'
   value: string
   onChange: (value: string) => void
   /** Pixel height; one-line fields use about 34. */
@@ -21,6 +23,11 @@ export interface CodeFieldProps {
   singleLine?: boolean
   problems?: FieldProblem[]
   readOnly?: boolean
+  /**
+   * The field's text in the shared document (M16): typing goes into it and others' typing comes out of it, and ⌘Z
+   * undoes through the editor's shared undo. `onChange` isn't called while it's bound.
+   */
+  binding?: TextBinding | null
 }
 
 /** What completions know: declarations for the JavaScript service, sample values for `{{ }}` in SQL and text. */
@@ -42,9 +49,13 @@ export default function CodeField({
   singleLine,
   problems = [],
   readOnly,
+  binding,
   scope,
 }: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const [mounted, setMounted] = useState(false)
+  const bindingRef = useRef(binding)
+  bindingRef.current = binding
   const { theme } = useTheme()
   const themeName = useMemo(() => optiplyTheme(theme), [theme])
   // Without a scope, the page installs one itself (the app editor keeps a single scope for all its fields).
@@ -54,12 +65,60 @@ export default function CodeField({
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
+    setMounted(true)
+    // Bound to the shared document, undo is the editor's (one's own edits, everywhere); otherwise Monaco's own.
+    const undoRedo = (redo: boolean) => () => {
+      const bound = bindingRef.current
+      if (bound) redo ? bound.redo() : bound.undo()
+      else editor.trigger('keyboard', redo ? 'redo' : 'undo', null)
+    }
+    editor.addAction({
+      id: 'ow.undo',
+      label: 'Undo',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyZ],
+      run: undoRedo(false),
+    })
+    editor.addAction({
+      id: 'ow.redo',
+      label: 'Redo',
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyZ,
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyY,
+      ],
+      run: undoRedo(true),
+    })
     if (singleLine) {
       // Enter would add a second line to a one-line expression. With the suggestion list open, Enter still accepts
       // the suggestion (this command only applies while it's closed).
       editor.addCommand(monaco.KeyCode.Enter, () => {}, '!suggestWidgetVisible')
     }
   }
+
+  // The model (one per path) follows the bound text while both last.
+  const text = binding?.text
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `path` switches the editor's model
+  useEffect(() => {
+    const model = editorRef.current?.getModel()
+    const bound = bindingRef.current
+    if (!mounted || !model || !text || !bound) return
+    const disposable = bindText(model, {
+      text,
+      write: (change) => bindingRef.current?.write(change),
+      undo: () => bindingRef.current?.undo(),
+      redo: () => bindingRef.current?.redo(),
+    })
+    return () => disposable.dispose()
+  }, [mounted, text, path])
+
+  // Others' cursors in this text, and ours shared (after the binding: their positions read the model it keeps).
+  const awareness = binding?.awareness
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `path` switches the editor's model
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!mounted || !editor || !text || !awareness) return
+    const disposable = showCursors(editor, text, awareness)
+    return () => disposable.dispose()
+  }, [mounted, text, awareness, path])
 
   useEffect(() => {
     const model = editorRef.current?.getModel()
@@ -92,7 +151,9 @@ export default function CodeField({
         path={path}
         language={language}
         value={value}
-        onChange={(next) => onChange(next ?? '')}
+        onChange={(next) => {
+          if (!bindingRef.current?.text) onChange(next ?? '')
+        }}
         onMount={onMount}
         height={height}
         options={{

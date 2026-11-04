@@ -2,7 +2,14 @@ import { type Db, environments, maintenanceJobs, workflowReleases, workflows } f
 import { startTestDatabase } from '@ow/db/testing'
 import { sql as dsql, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { claimMaintenanceJob, claimRuns, deleteOldRuns, enqueueRun, RetentionJob } from '../src'
+import {
+  claimMaintenanceJob,
+  claimRuns,
+  deleteOldRuns,
+  enqueueRun,
+  PUBSUB_DELIVERY_DAYS,
+  RetentionJob,
+} from '../src'
 import { connect, wf } from './pg-harness'
 
 let db: Db
@@ -248,5 +255,73 @@ describe('the daily job', () => {
     expect(row!.lastResult).toMatchObject({ days: 30, runs: 2, blockRuns: 6 })
     // Another worker's check the same day does nothing.
     expect(await new RetentionJob({ db, days: 30 }).check()).toBeUndefined()
+  })
+})
+
+describe('deleteOldRuns: webhook bookkeeping', () => {
+  it('deletes ended rate windows, and rejections past 7 days or the latest 200 per webhook', async () => {
+    const trigger = async (name: string) => {
+      const [row] = await db.execute<{ id: string }>(dsql`
+        insert into workflow_triggers (id, workflow_id, release_id, kind, name)
+        values (gen_random_uuid(), ${workflowId}, ${releaseId}, 'schedule', ${name}) returning id`)
+      return row!.id
+    }
+    const busy = await trigger('busy')
+    const quiet = await trigger('quiet')
+    await db.execute(dsql`
+      insert into webhook_rate_windows (trigger_id, window_start, expires_at, count)
+      select ${busy}, now() - make_interval(mins => i + 1), now() - make_interval(mins => i), 5
+      from generate_series(1, 3) i`)
+    await db.execute(dsql`
+      insert into webhook_rate_windows (trigger_id, window_start, expires_at, count)
+      values (${busy}, now(), now() + interval '1 minute', 1)`)
+    const reject = (triggerId: string, n: number, minutesAgo: string) =>
+      db.execute(dsql`
+        insert into webhook_rejections (id, trigger_id, status, reason, message, created_at)
+        select gen_random_uuid(), ${triggerId}, 401, 'signature_mismatch', 'x',
+               now() - make_interval(mins => ${minutesAgo}::int + i)
+        from generate_series(1, ${n}) i`)
+    await reject(busy, 205, '0')
+    await reject(busy, 3, String(8 * 24 * 60))
+    await reject(quiet, 2, String(8 * 24 * 60))
+    await reject(quiet, 4, '0')
+
+    const result = await deleteOldRuns(db, { days: 30, pauseMs: 0 })
+    expect(result).toMatchObject({ rateWindows: 3, rejections: 5 + 3 + 2 })
+    const count = async (table: string, triggerId: string) =>
+      (
+        await db.execute<{ n: number }>(dsql`
+        select count(*)::int as n from ${dsql.identifier(table)} where trigger_id = ${triggerId}`)
+      )[0]!.n
+    expect(await count('webhook_rate_windows', busy)).toBe(1)
+    expect(await count('webhook_rejections', busy)).toBe(200)
+    expect(await count('webhook_rejections', quiet)).toBe(4)
+    // The 200 kept are the latest.
+    const [oldest] = await db.execute<{ minutes: number }>(dsql`
+      select round(extract(epoch from now() - min(created_at)) / 60)::int as minutes
+      from webhook_rejections where trigger_id = ${busy}`)
+    expect(oldest!.minutes).toBe(200)
+  })
+})
+
+describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
+  it("deletes finished deliveries past Pub/Sub's longest retention, never one whose run is under way", async () => {
+    const [trigger] = await db.execute<{ id: string }>(dsql`
+      insert into workflow_triggers (id, workflow_id, release_id, kind, name)
+      values (gen_random_uuid(), ${workflowId}, ${releaseId}, 'pubsub', 'orders') returning id`)
+    const deliver = (messageId: string, outcome: string | null, daysAgo: number) =>
+      db.execute(dsql`
+        insert into queue_deliveries (trigger_id, message_id, runs, outcome, updated_at)
+        values (${trigger!.id}, ${messageId}, 1, ${outcome}, now() - make_interval(days => ${daysAgo}))`)
+    await deliver('old-done', 'succeeded', PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('old-failed', 'failed', PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('old-running', null, PUBSUB_DELIVERY_DAYS + 1)
+    await deliver('recent', 'succeeded', PUBSUB_DELIVERY_DAYS - 1)
+    // `days` is the runs' horizon: deliveries keep their own.
+    const result = await deleteOldRuns(db, { days: 1, pauseMs: 0 })
+    expect(result.queueDeliveries).toBe(2)
+    const left = await db.execute<{ message_id: string }>(dsql`
+      select message_id from queue_deliveries where trigger_id = ${trigger!.id} order by message_id`)
+    expect(left.map((r) => r.message_id)).toEqual(['old-running', 'recent'])
   })
 })

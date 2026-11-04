@@ -106,7 +106,12 @@ const specs: ComponentSpec[] = [
     type: 'navigation',
     label: 'Navigation',
     props: {
-      /** `{ page, label? }` per link, in order (the label a template); empty links every page, by title. */
+      /**
+       * Per link, in order (M24): `{ page, params?, url?, label?, icon?, hidden?, items? }`: a page of the app (with
+       * URL params) or an outside `url` (http, https or mailto; opens in a new tab), an icon from `NAV_ICONS`, `hidden`
+       * a template, and `items`: one level of sub-links (a group). Labels, params and `hidden` may be templates. Empty
+       * links every page, by title.
+       */
       items: { type: 'array', default: [], label: 'Links' },
       orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
     },
@@ -203,8 +208,9 @@ const specs: ComponentSpec[] = [
     props: {
       data: { type: 'array', default: [], label: 'Data' },
       /**
-       * `{ key, label?, type?, editable?, hidden?, width? }` per column, in order; empty shows every key of the
-       * first rows.
+       * `{ key, label?, type?, editable?, hidden?, width?, value?, filterable? }` per column, in order; empty shows every key of
+       * the first rows. A column's `value` (M24) computes it: a template evaluated once per row of `data`, with the
+       * row as `currentRow` and its index as `i` (see `ROW_LOCALS`); such a column isn't editable.
        */
       columns: { type: 'array', default: [], label: 'Columns' },
       primaryKey: str('Primary key column', 'id'),
@@ -212,6 +218,10 @@ const specs: ComponentSpec[] = [
       emptyMessage: str('Empty message', 'No rows'),
       /** A search box above the rows; its text is `searchText`. */
       search: bool('Search box'),
+      /** A filter per column, set from its header (M24); they're `filters`. */
+      showFilters: bool('Column filters'),
+      /** An Add row button (M24): rows added and not saved yet are `newRows`. */
+      allowAddRow: bool('Add rows'),
       /**
        * `scroll`: every row, scrolled. `pages`: pages of `pageSize` rows. `server`: `data` is one page that a query
        * fetched with `pagination`, `sort` and `searchText` (the table neither sorts, searches nor pages it itself).
@@ -227,6 +237,8 @@ const specs: ComponentSpec[] = [
       selectedIndex: { default: null },
       /** Edited rows: the primary key plus the changed fields, for a bulk update query. */
       changesetArray: { default: [] },
+      /** Rows added in the table and not saved yet (M24), for an insert query; cleared with the changeset. */
+      newRows: { default: [] },
       /** The page shown, from 0. */
       page: { default: 0 },
       // `pagination` (`{ page, pageSize, offset }`) is derived from `page` and `pageSize`; see `appGraph`.
@@ -234,21 +246,45 @@ const specs: ComponentSpec[] = [
       /** `{ column, desc }`, or null when unsorted. */
       sort: { default: null },
       searchText: { default: '' },
+      /**
+       * `[{ column, op, value?, type? }]` (M24), ANDed: the table filters its rows by them, except with `server`
+       * paging, where a query reads them (`sql.where(table1.filters, [...])`). See `TABLE_FILTER_OPS`.
+       */
+      filters: { default: [] },
     },
     methods: {
       selectRow: { params: ['index'] },
       clearSelection: { params: [] },
+      /** Drops the changeset and the new rows. */
       clearChangeset: { params: [] },
-      /** Fires `save`, then clears the changeset when every handler succeeded (the table's Save button). */
+      /**
+       * Fires `save`, then clears the changeset and the new rows when every handler succeeded (the table's Save
+       * button).
+       */
       saveChanges: { params: [] },
+      /** Adds a row to `newRows` (empty, or `row`'s fields); fires `addRow`. */
+      addRow: { params: ['row'] },
       /** Shows page `page` (from 0) and fires `pageChange`. */
       setPage: { params: ['page'] },
       /** Sorts by `column` (null for none), descending when `desc`; back to the first page; fires `sortChange`. */
       setSort: { params: ['column', 'desc'] },
       /** Sets `searchText`; back to the first page; fires `searchChange`. */
       setSearchText: { params: ['text'] },
+      /** Sets `filters` (entries that aren't filters are dropped); back to the first page; fires `filterChange`. */
+      setFilters: { params: ['filters'] },
+      /** No filters; back to the first page; fires `filterChange`. */
+      clearFilters: { params: [] },
     },
-    events: ['rowSelect', 'changeCell', 'save', 'pageChange', 'sortChange', 'searchChange'],
+    events: [
+      'rowSelect',
+      'changeCell',
+      'save',
+      'pageChange',
+      'sortChange',
+      'searchChange',
+      'filterChange',
+      'addRow',
+    ],
     defaultSize: { w: 12, h: 20 },
   },
   {
@@ -271,10 +307,48 @@ const specs: ComponentSpec[] = [
     type: 'container',
     label: 'Container',
     container: true,
-    props: { title: str('Title'), showBorder: bool('Show border', true) },
-    state: {},
-    methods: {},
-    events: [],
+    props: {
+      title: str('Title'),
+      showBorder: bool('Show border', true),
+      /**
+       * `{ name, label? }` per view, in order (M24): each child is in one (its `slot`), and only the shown view's
+       * render. Written as a list (the names are the definition's); empty is one grid, as before.
+       */
+      views: { type: 'array', default: [], label: 'Views' },
+      /** Tabs above the views; without them, `setView` switches. */
+      showTabs: bool('Show tabs', true),
+      /** The view shown first; the first view when empty. */
+      defaultView: str('Default view'),
+      /** A button in the header folds it to its header (M24); what's below moves up. */
+      collapsible: bool('Collapsible'),
+      defaultExpanded: bool('Expanded at first', true),
+      /** The content scrolls inside the container's height instead of overflowing it (M24). */
+      scroll: bool('Scroll the content', true),
+      /** `surface`, `canvas` or `accent` (the theme's, so dark mode works), or a color (`#fef3c7`, `rgb(…)`). */
+      background: str('Background'),
+      padding: oneOf('Padding', ['none', 'small', 'medium', 'large'], 'medium'),
+    },
+    state: {
+      /** The view shown (M24): `defaultView` until `setView`; read it with the first view as the fallback. */
+      currentView: { from: 'defaultView' },
+      /** Unfolded (M24); only a collapsible container folds. */
+      expanded: { from: 'defaultExpanded' },
+    },
+    methods: {
+      /** Shows the view named `view`; fires `viewChange`. */
+      setView: { params: ['view'] },
+      /** The next view, staying on the last one (for steps); fires `viewChange` when it moves. */
+      nextView: { params: [] },
+      /** The previous view, staying on the first one; fires `viewChange` when it moves. */
+      previousView: { params: [] },
+      /** Unfolds it; fires `expand`. */
+      expand: { params: [] },
+      /** Folds it to its header (a collapsible container); fires `collapse`. */
+      collapse: { params: [] },
+      /** Folds or unfolds it. */
+      toggle: { params: [] },
+    },
+    events: ['viewChange', 'expand', 'collapse'],
     defaultSize: { w: 6, h: 12 },
   },
   {
@@ -300,6 +374,8 @@ const specs: ComponentSpec[] = [
       chartType: oneOf('Chart type', ['bar', 'line', 'area', 'pie'], 'bar'),
       data: { type: 'array', default: [], label: 'Data' },
       xKey: str('X axis key'),
+      /** `time` places line and area charts' points by their date (M24); `auto` does when every x is a date. */
+      xAxis: oneOf('X axis', ['auto', 'category', 'time'], 'auto'),
       /** Keys of the numeric series to plot; empty plots every number column but the x key. */
       series: { type: 'array', default: [], label: 'Series' },
       stacked: bool('Stacked'),
@@ -322,6 +398,97 @@ export const COMPONENTS: Readonly<Record<string, ComponentSpec>> = Object.fromEn
     },
   ]),
 )
+
+/** The icons a Navigation link can have (M24): lucide's, by these names (the web app maps them). */
+export const NAV_ICONS = [
+  'home',
+  'dashboard',
+  'list',
+  'table',
+  'chart',
+  'users',
+  'user',
+  'settings',
+  'search',
+  'inbox',
+  'mail',
+  'bell',
+  'calendar',
+  'clock',
+  'file',
+  'folder',
+  'box',
+  'truck',
+  'cart',
+  'tag',
+  'star',
+  'bookmark',
+  'database',
+  'layers',
+  'map',
+  'globe',
+  'building',
+  'briefcase',
+  'phone',
+  'info',
+  'help',
+  'alert',
+  'check',
+  'plus',
+  'edit',
+  'trash',
+  'link',
+  'external',
+] as const
+export type NavIcon = (typeof NAV_ICONS)[number]
+
+/** An outside link a Navigation item may open (M24): web and mail only, never `javascript:` or `data:`. */
+export const NAV_URL = /^(https?:\/\/|mailto:)/i
+
+/**
+ * The operators of a table's filters (M24), as `sql.where` takes them (`@ow/expressions` `FILTER_OPS`): `between`
+ * takes `[from, to]`, `empty` and `notEmpty` no value.
+ */
+export const TABLE_FILTER_OPS = [
+  'contains',
+  'equals',
+  'notEquals',
+  'empty',
+  'notEmpty',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'between',
+] as const
+export type TableFilterOp = (typeof TABLE_FILTER_OPS)[number]
+
+export interface TableFilter {
+  column: string
+  op: TableFilterOp
+  value?: JsonValue
+  /** The column's type when it was set (`number`, `date`…), for comparing and for `sql.where`'s binding. */
+  type?: string
+}
+
+/** Filters as `setFilters` keeps them: entries with a column and a known operator; anything else dropped. */
+export function tableFilters(value: unknown): TableFilter[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((f) => {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return []
+    const { column, op, value: v, type } = f as Record<string, unknown>
+    if (typeof column !== 'string' || !column) return []
+    if (typeof op !== 'string' || !(TABLE_FILTER_OPS as readonly string[]).includes(op)) return []
+    return [
+      {
+        column,
+        op: op as TableFilterOp,
+        ...(v !== undefined && { value: v as JsonValue }),
+        ...(typeof type === 'string' && { type }),
+      },
+    ]
+  })
+}
 
 /** A table's page size as the table and its `pagination` both use it: a whole number of rows, 50 when it isn't one. */
 export function pageSizeOf(value: unknown): number {

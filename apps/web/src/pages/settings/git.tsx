@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, GitBranch, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
+import { CheckCircle2, GitBranch, GitPullRequest, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
-import { CommitLink, GIT_KIND_ROOTS } from '@/components/git'
+import { confirmDialog } from '@/components/confirm'
+import { CommitLink, GIT_ALL_ROOTS, PullRequestLink } from '@/components/git'
 import {
   Badge,
   Button,
@@ -11,6 +12,8 @@ import {
   ErrorNote,
   Field,
   Input,
+  SecretInput,
+  Select,
   Spinner,
   Table,
   Td,
@@ -40,14 +43,19 @@ function GitSettings() {
   return (
     <div className="flex flex-col gap-6">
       <p className="max-w-3xl text-sm text-muted">
-        Protected workflows and apps live in a GitHub repo: they’re changed on branches, reviewed in pull
-        requests, and deployed here when a pull request merges into the deploy branch.
+        Protected workflows, apps, library queries, modules, resources and config vars live in a GitHub repo:
+        they’re changed on branches, reviewed in pull requests, and deployed here when a pull request merges
+        into the deploy branch.
       </p>
       <RepoForm settings={settings} />
       {settings.configured && (
         <>
           <WebhookHelp hasSecret={settings.webhookSecret.set} />
           <DeployPanel />
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <NotifyCard settings={settings} />
+            <PromoteCard branch={settings.branch} />
+          </div>
         </>
       )}
     </div>
@@ -121,9 +129,7 @@ function RepoForm({ settings }: { settings: Settings }) {
           hint="A fine-grained token for this one repo, with Contents and Pull requests (read and write)."
         >
           <div className="flex items-center gap-2">
-            <Input
-              type="password"
-              autoComplete="off"
+            <SecretInput
               value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder={settings.token.set ? 'Set: leave empty to keep it' : 'github_pat_…'}
@@ -199,10 +205,11 @@ function RepoForm({ settings }: { settings: Settings }) {
               <Button
                 variant="danger"
                 loading={clear.isPending}
-                onClick={() => {
+                onClick={async () => {
                   if (
-                    confirm(
+                    await confirmDialog(
                       'Disconnect the repo? Deploys stop. Protected workflows and apps stay protected until unprotected.',
+                      { danger: true, confirm: 'Disconnect' },
                     )
                   ) {
                     clear.mutate()
@@ -388,7 +395,7 @@ function DeployPanel() {
 function ObjectLink({ object }: { object: Status['objects'][number] }) {
   const label = (
     <span className="font-mono text-sm">
-      {GIT_KIND_ROOTS[object.kind]}/{object.slug}
+      {GIT_ALL_ROOTS[object.kind]}/{object.slug}
     </span>
   )
   if (object.objectId && object.status !== 'missing') {
@@ -415,6 +422,24 @@ function ObjectLink({ object }: { object: Status['objects'][number] }) {
       case 'module':
         return (
           <Link to="/modules/$slug" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'component_library':
+        return (
+          <Link to="/component-libraries/$slug" params={{ slug: object.slug }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'resource':
+        return (
+          <Link to="/resources/$resourceId" params={{ resourceId: object.objectId }} className={className}>
+            {label}
+          </Link>
+        )
+      case 'config_var':
+        return (
+          <Link to="/settings/config-vars" className={className}>
             {label}
           </Link>
         )
@@ -449,11 +474,18 @@ type Deploy = Status['deploys'][number]
 interface DeploySummary {
   subject?: string
   author?: { name: string }
-  objects?: Array<{ kind: string; slug: string; outcome: string; version?: string }>
+  objects?: Array<{
+    kind: keyof typeof GIT_ALL_ROOTS
+    slug: string
+    outcome: string
+    version?: string
+    /** Moved into the folder Git names (M22); null is the top level. */
+    folder?: { from: string | null; to: string | null }
+  }>
   problems?: Array<{ path: string; message: string }>
 }
 
-const TRIGGERS = { poll: 'Check', webhook: 'Push', manual: 'Deploy now' } as const
+const TRIGGERS = { poll: 'Check', webhook: 'Push', manual: 'Deploy now', retry: 'Retry' } as const
 
 function RecentDeploys({ deploys, webUrl }: { deploys: Deploy[]; webUrl: string | null | undefined }) {
   return (
@@ -476,7 +508,12 @@ function RecentDeploys({ deploys, webUrl }: { deploys: Deploy[]; webUrl: string 
               {!!summary.objects?.length && (
                 <div className="mt-1 pl-6 text-xs text-muted">
                   {summary.objects
-                    .map((o) => `${o.slug}: ${o.outcome}${o.version ? ` v${o.version}` : ''}`)
+                    .map(
+                      (o) =>
+                        `${GIT_ALL_ROOTS[o.kind] ?? o.kind}/${o.slug}: ${o.outcome}${o.version ? ` v${o.version}` : ''}${
+                          o.folder ? ` (moved to ${o.folder.to ?? 'the top level'})` : ''
+                        }`,
+                    )
                     .join(' · ')}
                 </div>
               )}
@@ -490,5 +527,118 @@ function RecentDeploys({ deploys, webUrl }: { deploys: Deploy[]; webUrl: string 
         })}
       </ul>
     </div>
+  )
+}
+
+/** The workflow run when a deploy's problems change (M22): its live release gets the deploy and the problems. */
+function NotifyCard({ settings }: { settings: Settings }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const { data: workflows } = useQuery(trpc.workflows.list.queryOptions())
+  const set = useMutation(
+    trpc.git.setNotifyWorkflow.mutationOptions({
+      onSuccess: (view) => queryClient.setQueryData(trpc.git.settings.queryKey(), view),
+    }),
+  )
+  const chosen = settings.notifyWorkflow
+  const live = workflows?.find((w) => w.id === chosen?.id)?.liveReleaseId
+  return (
+    <Card className="space-y-3 p-5" data-testid="git-notify">
+      <h3 className="font-semibold">When deploys have problems</h3>
+      <p className="text-sm text-muted">
+        Admins see a banner while objects can’t deploy. A workflow can be told too: its live release runs once
+        each time the problems change, and once more when they’re gone, with{' '}
+        <code className="font-mono text-xs">{'{ deploy, problems }'}</code>.
+      </p>
+      <Field label="Notify workflow">
+        <Select
+          value={chosen?.id ?? ''}
+          disabled={set.isPending}
+          onChange={(e) => set.mutate({ workflowId: e.target.value || null })}
+        >
+          <option value="">None</option>
+          {workflows?.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {chosen && workflows && !live && (
+        <p className="text-sm text-warning-strong">
+          {chosen.name} has no live release yet: publish it, or notifications are only logged.
+        </p>
+      )}
+      <ErrorNote error={set.error} />
+    </Card>
+  )
+}
+
+/** Promote (M22): a pull request from this instance's deploy branch into another branch, such as production's. */
+function PromoteCard({ branch }: { branch: string }) {
+  const trpc = useTRPC()
+  const { data: branches } = useQuery(trpc.git.branches.queryOptions())
+  const [target, setTarget] = useState('')
+  const promote = useMutation(trpc.git.openPromotion.mutationOptions())
+  const result = promote.data
+  return (
+    <Card className="space-y-3 p-5" data-testid="git-promote">
+      <h3 className="font-semibold">Promote</h3>
+      <p className="text-sm text-muted">
+        Opens a pull request from <span className="font-mono">{branch}</span> into another instance’s deploy
+        branch. Merging it deploys there; that instance keeps its own secrets, overrides and local values.
+      </p>
+      <div className="flex items-end gap-2">
+        <Field label="Into branch" className="flex-1">
+          <Input
+            className="font-mono"
+            list="promote-branches"
+            placeholder="production"
+            value={target}
+            onChange={(e) => {
+              setTarget(e.target.value)
+              promote.reset()
+            }}
+          />
+          <datalist id="promote-branches">
+            {branches
+              ?.filter((b) => !b.deploy)
+              .map((b) => (
+                <option key={b.name} value={b.name} />
+              ))}
+          </datalist>
+        </Field>
+        <Button
+          loading={promote.isPending}
+          disabled={!target.trim() || target.trim() === branch}
+          onClick={() => promote.mutate({ target: target.trim() })}
+        >
+          <GitPullRequest className="size-4" /> Open pull request
+        </Button>
+      </div>
+      {result?.status === 'up_to_date' && (
+        <p className="text-sm text-muted" data-testid="promote-result">
+          <CheckCircle2 className="mr-1 inline size-4 text-success" />
+          {target} already has everything on {branch}.
+        </p>
+      )}
+      {result?.status === 'opened' && (
+        <div className="space-y-2 text-sm" data-testid="promote-result">
+          {result.pullRequest ? (
+            <PullRequestLink pullRequest={result.pullRequest} />
+          ) : (
+            <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
+              No pull request was opened: {result.pullRequestError}
+            </p>
+          )}
+          {result.directories.length > 0 && (
+            <p className="text-muted">
+              Brings: <span className="font-mono text-xs">{result.directories.join(', ')}</span>
+            </p>
+          )}
+        </div>
+      )}
+      <ErrorNote error={promote.error} />
+    </Card>
   )
 }

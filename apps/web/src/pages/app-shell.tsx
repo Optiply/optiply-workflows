@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
 import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react'
+import { GitHealthBanner, GitProblemsBadge } from '@/components/git-health'
 import { Avatar, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
 import { setThemePreference, type ThemePreference, useTheme } from '@/lib/theme'
@@ -14,6 +15,7 @@ const NAV: { to: string; label: string }[] = [
   { to: '/apps', label: 'Apps' },
   { to: '/library', label: 'Library' },
   { to: '/modules', label: 'Modules' },
+  { to: '/component-libraries', label: 'Components' },
   { to: '/resources', label: 'Resources' },
   { to: '/database', label: 'Database' },
   { to: '/runs', label: 'Runs' },
@@ -63,10 +65,11 @@ export function AppShell() {
             to="/settings"
             aria-label="Settings"
             title="Settings"
-            activeProps={{ className: navClass(true, 'size-8 justify-center px-0') }}
-            inactiveProps={{ className: navClass(false, 'size-8 justify-center px-0') }}
+            activeProps={{ className: navClass(true, 'relative size-8 justify-center px-0') }}
+            inactiveProps={{ className: navClass(false, 'relative size-8 justify-center px-0') }}
           >
             <Settings className="size-5" />
+            {me.isAdmin && <GitProblemsBadge className="absolute -top-1 -right-1" />}
           </Link>
           <span className="h-6 w-px bg-border" />
           <Menu
@@ -107,6 +110,8 @@ export function AppShell() {
           </Menu>
         </div>
       </nav>
+
+      {me.isAdmin && <GitHealthBanner />}
 
       <main className={cn('min-h-0 flex-1', fullBleed ? 'overflow-hidden rounded-lg' : 'overflow-y-auto')}>
         {fullBleed ? (

@@ -6,14 +6,18 @@ import {
   codeClipSchema,
   componentClipSchema,
   componentSpec,
+  containerViews,
   copyCode,
   copyComponents,
   pasteCode,
   pasteComponents,
   runsByItself,
+  slotOf,
 } from '@ow/app-definition'
 import { canonicalJson } from '@ow/definition'
+import { confirmDialog } from '@/components/confirm'
 import { copiedHere, readClip, rememberCopy } from '@/lib/clipboard'
+import { shownViews } from '../grid-context'
 import type { Tone } from '../notifications'
 import { useAppEditor } from './store'
 
@@ -21,8 +25,9 @@ type Notify = (message: string, tone: Tone) => void
 
 /** What was chosen last as clipboard content: the selected component (with what's inside it), or the open code item. */
 function chosenClip(): ComponentClip | CodeClip | null {
-  const { definition, focus, selected, openCode } = useAppEditor.getState()
-  if (focus === 'component') return selected ? copyComponents(definition, [selected]) : null
+  const { definition, focus, selection, openCode } = useAppEditor.getState()
+  // Every selected component (M24), with what's inside each.
+  if (focus === 'component') return selection.length ? copyComponents(definition, selection) : null
   return openCode ? copyCode(definition, [openCode]) : null
 }
 
@@ -49,7 +54,14 @@ export function pasteText(text: string, notify: Notify): boolean {
     notify(read.error, 'error')
     return true
   }
-  if (!copiedHere(text) && !confirm(untrustedQuestion(read.clip))) return true
+  // Taken either way (the browser mustn't paste it elsewhere meanwhile); from elsewhere, pasted once confirmed.
+  if (!copiedHere(text)) {
+    const clip = read.clip
+    void confirmDialog(untrustedQuestion(clip), { title: 'Paste from elsewhere?', confirm: 'Paste' }).then(
+      (ok) => ok && paste(clip, notify),
+    )
+    return true
+  }
   paste(read.clip, notify)
   return true
 }
@@ -97,7 +109,16 @@ function targetFor(def: AppDefinition, clip: ComponentClip, opts: { duplicate?: 
   const into = chosen && componentSpec(chosen.type)?.container && !opts.duplicate && !isCopyOfIt
   const parent = into ? chosen.name : chosen?.parent
   const page = def.pages?.length ? (chosen && parent === undefined ? (chosen.page ?? null) : url.page) : null
-  return { ...(parent !== undefined && { parent }), page }
+  // Into the view a container shows, or beside the copied component in its slot (M24).
+  let slot: string | undefined
+  if (into) {
+    const views = containerViews(chosen).map((v) => v.name)
+    const shown = shownViews.get(chosen.name)
+    slot = views.length ? (shown && views.includes(shown) ? shown : views[0]) : undefined
+  } else if (chosen?.parent !== undefined) {
+    slot = slotOf(def, chosen)
+  }
+  return { ...(parent !== undefined && { parent }), page, ...(slot !== undefined && { slot }) }
 }
 
 function untrustedQuestion(clip: ComponentClip | CodeClip): string {

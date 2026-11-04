@@ -84,11 +84,22 @@ test('build a multipage app in the editor', async ({ page }) => {
   await expect(page.getByTestId('frame-text1')).toHaveCount(0)
   await expect(page.getByTestId('frame-navigation1')).toBeVisible()
 
+  // A component moved to another page from the inspector: the editor opens that page, the component still selected.
+  await page.getByTestId('frame-hello').click()
+  await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('detail')
+  await expect(pages.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
+  await expect(page.getByTestId('inspector-hello')).toBeVisible()
+  await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('page1')
+  await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
+
   // In the preview, the navigation moves between the pages.
   await page.getByRole('button', { name: 'Preview' }).click()
   const nav = page.getByRole('navigation', { name: 'navigation1' })
-  await expect(nav.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
-  await nav.getByRole('button', { name: 'Details' }).click()
+  // Navigation's links are links since M24.
+  await expect(nav.getByRole('link', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
+  await nav.getByRole('link', { name: 'Details' }).click()
   await expect(page.locator('[data-component="text1"]')).toContainText('On detail for')
   await expect(page.locator('[data-component="hello"]')).toHaveCount(0)
   await page.getByRole('button', { name: 'Edit', exact: true }).click()
@@ -106,7 +117,7 @@ test('build a multipage app in the editor', async ({ page }) => {
   await page.goto(`/apps/${slug}`)
   await expect(page.locator('[data-component="hello"]')).toContainText('Hello from the start')
   await expect(page).toHaveTitle('page1 · Paged')
-  await page.getByRole('navigation', { name: 'navigation1' }).getByRole('button', { name: 'Details' }).click()
+  await page.getByRole('navigation', { name: 'navigation1' }).getByRole('link', { name: 'Details' }).click()
   await expect(page).toHaveURL(new RegExp(`/apps/${slug}/detail$`))
   await expect(page).toHaveTitle('Details · Paged')
   await expect(page.locator('[data-component="text1"]')).toContainText('On detail for')
@@ -114,11 +125,12 @@ test('build a multipage app in the editor', async ({ page }) => {
   // Deleting a page takes what's on it.
   await page.goto(`/apps/${slug}/edit`)
   await pages.getByRole('button', { name: /Details/ }).click()
-  page.once('dialog', (d) => {
-    expect(d.message()).toBe('Delete page detail and the 2 components, queries and transformers on it?')
-    void d.accept()
-  })
   await pages.getByRole('button', { name: 'Delete the page' }).click()
+  const asked = page.getByRole('dialog', { name: 'Are you sure?' })
+  await expect(asked).toContainText(
+    'Delete page detail and the 2 components, queries and transformers on it?',
+  )
+  await asked.getByTestId('confirm-ok').click()
   await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveCount(0)
   await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10_000 })

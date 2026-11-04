@@ -16,14 +16,20 @@ import {
 } from '@ow/definition'
 import { describe, expect, it } from 'vitest'
 import {
+  type ConfigVarObject,
   decodeApp,
+  decodeConfigVar,
   decodeLibraryQuery,
   decodeModule,
+  decodeResource,
   decodeWorkflow,
   encodeApp,
+  encodeConfigVar,
   encodeLibraryQuery,
   encodeModule,
+  encodeResource,
   encodeWorkflow,
+  type ResourceObject,
   workflowForGit,
 } from '../src'
 
@@ -90,7 +96,14 @@ function block(r: Rng, name: string): Block {
       { method: 'GET', path: text(r) },
       {},
     ])
-  switch (r.int(8)) {
+  switch (r.int(9)) {
+    case 7:
+      return {
+        name,
+        type: 'libraryQuery',
+        config: { library: 'customers', version: r.pick(['latest', '1.2.0']), params: { id: text(r) } },
+        ...settings,
+      }
     case 0:
       return { name, type: 'code', config: { code: text(r), ...language(r) }, ...settings }
     case 1:
@@ -106,6 +119,7 @@ function block(r: Rng, name: string): Block {
             { kind: 'query' as const, resource: 'shop', query: query() },
             { kind: 'function' as const, function: 'fn0' },
             { kind: 'workflow' as const, workflow: 'child-flow', input: text(r) },
+            { kind: 'library' as const, library: 'customers', version: '1.0.0', params: { id: text(r) } },
           ]),
         },
       }
@@ -238,6 +252,55 @@ function libraryQueryDefinition(r: Rng): LibraryQueryDefinition {
   }
 }
 
+/** A JSON value as a connector's config holds: nested objects and arrays, the awkward strings, numbers, null. */
+function jsonValue(r: Rng, depth = 0): unknown {
+  const roll = r.int(depth > 2 ? 4 : 6)
+  if (roll === 0) return text(r)
+  if (roll === 1) return r.pick([0, -1, 5432, 1.5, 1e21])
+  if (roll === 2) return r.chance(0.5)
+  if (roll === 3) return null
+  if (roll === 4) return Array.from({ length: r.int(3) }, () => jsonValue(r, depth + 1))
+  return Object.fromEntries(names(r, 'k', r.int(4)).map((k) => [k, jsonValue(r, depth + 1)]))
+}
+
+/** No folder (a file from before M22) or null (the top level) half the time, else a path of awkward but valid names. */
+function folder(r: Rng): { folder?: string | null } {
+  if (r.chance(0.25)) return {}
+  if (r.chance(0.33)) return { folder: null }
+  const parts = Array.from({ length: 1 + r.int(3) }, () =>
+    r.pick(['Finance', 'Reports 2026', 'é漢🙂', 'a.b', '"q"', 'x'.repeat(80), 'In  between']),
+  )
+  return { folder: parts.join('/') }
+}
+
+const ENVIRONMENTS = ['production', 'staging', 'dev-2', 'eu_west']
+
+function resource(r: Rng): ResourceObject {
+  return {
+    name: `Resource ${r.int(100)}`,
+    description: r.chance(0.5) ? text(r).trim() || null : null,
+    ...folder(r),
+    type: r.pick(['postgres', 'rest', 'mysql', 'bigquery', 'pubsub']),
+    environments: Object.fromEntries(
+      ENVIRONMENTS.filter(() => r.chance(0.5)).map((env) => [
+        env,
+        { config: Object.fromEntries(names(r, 'field', r.int(5)).map((k) => [k, jsonValue(r)])) },
+      ]),
+    ),
+  }
+}
+
+function configVar(r: Rng): ConfigVarObject {
+  const secret = r.chance(0.3)
+  return {
+    description: r.chance(0.5) ? text(r).trim().slice(0, 500) || null : null,
+    secret,
+    values: secret
+      ? {}
+      : Object.fromEntries(ENVIRONMENTS.filter(() => r.chance(0.5)).map((e) => [e, text(r)])),
+  }
+}
+
 const SEEDS = Array.from({ length: 400 }, (_, i) => i + 1)
 
 describe('round trip', () => {
@@ -248,6 +311,7 @@ describe('round trip', () => {
     const object = {
       name: `Flow ${seed}`,
       description: r.chance(0.5) ? text(r).trim() || null : null,
+      ...folder(r),
       definition,
     }
     const { files } = encodeWorkflow(object)
@@ -256,6 +320,7 @@ describe('round trip', () => {
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(workflowForGit(definition)))
     expect(decoded.value.name).toBe(object.name)
     expect(decoded.value.description).toBe(object.description)
+    expect(decoded.value.folder).toBe(object.folder)
     expect(await definitionHash(decoded.value.definition)).toBe(await definitionHash(definition))
     // Encoding what came back gives the same files.
     expect(encodeWorkflow(decoded.value).files).toEqual(files)
@@ -265,12 +330,13 @@ describe('round trip', () => {
     const r = rng(seed)
     const definition = appDefinition(r)
     expect(appDefinitionSchema.safeParse(definition).success).toBe(true)
-    const object = { name: `App ${seed}`, description: null, definition }
+    const object = { name: `App ${seed}`, description: null, ...folder(r), definition }
     const { files } = encodeApp(object)
     const decoded = decodeApp(files)
     if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(canonicalizeApp(definition)))
     expect(await appDefinitionHash(decoded.value.definition)).toBe(await appDefinitionHash(definition))
+    expect(decoded.value.folder).toBe(object.folder)
     expect(encodeApp(decoded.value).files).toEqual(files)
   })
 
@@ -299,5 +365,23 @@ describe('round trip', () => {
     expect(canonicalJson(decoded.value.definition)).toBe(canonicalJson(definition))
     expect(await libraryQueryHash(decoded.value.definition)).toBe(await libraryQueryHash(definition))
     expect(encodeLibraryQuery(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('resource, seed %i', (seed) => {
+    const object = resource(rng(seed))
+    const { files } = encodeResource(object)
+    const decoded = decodeResource(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(canonicalJson(decoded.value)).toBe(canonicalJson(object))
+    expect(encodeResource(decoded.value).files).toEqual(files)
+  })
+
+  it.each(SEEDS)('config var, seed %i', (seed) => {
+    const object = configVar(rng(seed))
+    const { files } = encodeConfigVar(object)
+    const decoded = decodeConfigVar(files)
+    if (!decoded.ok) throw new Error(JSON.stringify(decoded.problems))
+    expect(decoded.value).toEqual(object)
+    expect(encodeConfigVar(decoded.value).files).toEqual(files)
   })
 })

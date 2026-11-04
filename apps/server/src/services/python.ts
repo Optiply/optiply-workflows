@@ -7,6 +7,7 @@ import {
 } from '@ow/definition'
 import { PythonExecutorClient, type PythonRunner, SandboxError } from '@ow/sandbox'
 import type { Config } from '../config'
+import { pythonBuilder } from './python-envs'
 
 /**
  * The process's code executor for Python (M12), from PYTHON_EXECUTOR_URL; null when there is none. Set up once at
@@ -55,16 +56,28 @@ export async function pythonDiagnostics(
       (field): Diagnostic => ({ ...where(field), severity: 'error', code: 'python_unavailable', message }),
     )
   if (!runner) return unavailable(UNAVAILABLE)
-  if (!opts.syntax) return []
+  const packages: Diagnostic[] =
+    definition.settings?.python?.requirements.length && !pythonBuilder()
+      ? [
+          {
+            path: ['settings', 'python', 'requirements'],
+            severity: 'error',
+            code: 'python_packages_unavailable',
+            message:
+              "This workflow's Python packages can't be installed here: the instance has no package builder (PYTHON_BUILDER_URL)",
+          },
+        ]
+      : []
+  if (!opts.syntax) return packages
   let problems: Awaited<ReturnType<PythonRunner['check']>>
   try {
     problems = await runner.check(fields.map((f) => ({ id: f.id, code: f.source })))
   } catch (err) {
-    if (err instanceof SandboxError) return unavailable(err.message)
+    if (err instanceof SandboxError) return [...packages, ...unavailable(err.message)]
     throw err
   }
   const byId = new Map(fields.map((f) => [f.id, f]))
-  return problems.flatMap((problem): Diagnostic[] => {
+  const syntax = problems.flatMap((problem): Diagnostic[] => {
     const field = byId.get(problem.id)
     if (!field) return []
     // Python may point just past the code (an expression cut off at the end): mark the last character then.
@@ -83,6 +96,7 @@ export async function pythonDiagnostics(
       },
     ]
   })
+  return [...packages, ...syntax]
 }
 
 function where(field: PythonField): Pick<Diagnostic, 'path' | 'block' | 'function'> {

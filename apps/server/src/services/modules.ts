@@ -2,6 +2,10 @@ import {
   type AppDefinition,
   appDefinitionHash,
   canonicalizeApp,
+  type InstanceStep,
+  instanceKeys,
+  instanceRelease,
+  MAX_MODULE_DEPTH,
   type ModuleInfo,
   moduleInterface,
 } from '@ow/app-definition'
@@ -9,14 +13,19 @@ import { type Db, type Module, type ModuleRelease, moduleReleases, modules } fro
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { type AnyColumn, and, eq, inArray, or, type SQL, sql } from 'drizzle-orm'
+import { z } from 'zod'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
 import { type Dependent, dependents } from './dependents'
+import { checkLiveNesting, loadNesting } from './module-nesting'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-/** The modules an app places, by slug, with what the validator needs (the live version, each release's interface). */
+/**
+ * The modules an app (or module) places, by slug, with what the validator needs: the live version, and each
+ * release's interface and nesting (M21).
+ */
 export async function moduleInfos(
   db: Db,
   slugs: string[],
@@ -40,6 +49,7 @@ export async function moduleInfos(
           ),
         )
     : []
+  const world = releases.length ? await loadNesting(db, undefined, slugs) : null
   return new Map(
     rows.map((module) => {
       const own = releases.filter((r) => r.moduleId === module.id)
@@ -47,6 +57,12 @@ export async function moduleInfos(
         liveVersion: own.find((r) => r.id === module.liveReleaseId)?.version ?? null,
         versions: Object.fromEntries(
           own.map((r) => [r.version, moduleInterface({ module: r.module ?? undefined })]),
+        ),
+        nesting: Object.fromEntries(
+          own.flatMap((r) => {
+            const nesting = world?.of(module.slug, r.version)
+            return nesting ? [[r.version, nesting]] : []
+          }),
         ),
       }
       return [module.slug, { module, info }]
@@ -123,6 +139,77 @@ export async function moduleReleasesByKey(
   return found
 }
 
+/**
+ * Every module release a page runs (M21): those `keys` name, and those their instances name, and so on, down to
+ * the nesting limit. Keyed by `slug@version` like `moduleReleasesByKey`. `visible` applies to the outermost ones
+ * only: the modules inside were vouched for by their publishers, as `walkInstancePath` runs them.
+ */
+export async function moduleReleaseTree(
+  db: Db,
+  keys: string[],
+  visible?: (module: Module) => boolean,
+): Promise<Record<string, InstanceRelease>> {
+  const found: Record<string, InstanceRelease> = {}
+  let next = [...new Set(keys)]
+  for (let level = 0; level < MAX_MODULE_DEPTH && next.length; level++) {
+    const got = await moduleReleasesByKey(db, next, level === 0 ? visible : undefined)
+    Object.assign(found, got)
+    next = [...new Set(Object.values(got).flatMap((r) => instanceKeys(r.definition)))].filter(
+      (key) => !Object.hasOwn(found, key),
+    )
+  }
+  return found
+}
+
+/** A step of a query's module path as the API takes it (`InstanceStep`), for both routers. */
+export const instanceStepSchema = z.object({ instance: z.string().max(64), releaseId: z.string().uuid() })
+
+/**
+ * Walks a query's module path from an app's or module's definition (M21): each instance in the definition before
+ * it, its release checked against the one the page runs (CONFLICT "reload" when it moved on), down to the
+ * innermost. A draft's runner needs Use on the outermost module (the ones inside were vouched for by its
+ * publisher). Returns the innermost instance's module, release and definition.
+ */
+export async function walkInstancePath(
+  db: Db,
+  access: Access,
+  definition: AppDefinition,
+  path: InstanceStep[],
+  opts: { draft: boolean; what: 'app' | 'module' },
+): Promise<{ module: Module; release: ModuleRelease }> {
+  let current = definition
+  let found: { module: Module; release: ModuleRelease } | undefined
+  for (const [i, step] of path.entries()) {
+    const component = current.components.find((c) => c.name === step.instance && c.type === 'module')
+    const ref = component && instanceRelease(component)
+    if (!ref) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: found
+          ? `Module "${found.module.slug}" has no module instance named "${step.instance}"`
+          : `The ${opts.what} has no module instance named "${step.instance}"`,
+      })
+    }
+    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
+    if (release.id !== step.releaseId) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: `Module "${module.slug}" has a new version; reload to get it`,
+      })
+    }
+    if (i === 0 && opts.draft && !atLeast(access.moduleLevel(module), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to module "${module.slug}" to run the draft's queries`,
+      })
+    }
+    found = { module, release }
+    current = release.definition
+  }
+  if (!found) throw new TRPCError({ code: 'BAD_REQUEST', message: 'An empty module path' })
+  return found
+}
+
 /** The release a module instance names: pinned, or the live one for `latest`. */
 export async function resolveModuleRelease(
   db: Db,
@@ -154,14 +241,15 @@ export async function resolveModuleRelease(
 const placesModule = (column: SQL | AnyColumn, slug: string) =>
   sql`${column} -> 'components' @> ${JSON.stringify([{ type: 'module', props: { module: slug } }])}::jsonb`
 
-/** The apps placing a module: in their draft, their live release or an open Git branch draft (no modules in modules). */
+/** The apps and modules (M21) placing a module: in their draft, their live release or an open Git branch draft. */
 export const moduleUsers = (db: Db, slug: string): Promise<Dependent[]> =>
-  dependents(db, (column) => placesModule(column, slug), { modules: false })
+  dependents(db, (column) => placesModule(column, slug), { modules: true })
 
 /**
  * What making a module release live takes. Apps run its queries without their viewers or publishers holding any
  * grant on its resources, so whoever publishes it vouches for them, like an app's publisher (`checkVouched`), with
- * Edit on the module. It must be a module (a `module` part). `access` null is Git sync.
+ * Edit on the module. It must be a module (a `module` part), and (M21) it mustn't make a module hold itself or
+ * nest an app's modules too deep, through those following it on `latest`. `access` null is Git sync.
  */
 async function checkReleasable(
   db: Db,
@@ -178,7 +266,8 @@ async function checkReleasable(
       message: "The module isn't valid: it has no inputs, outputs or events part",
     })
   }
-  await checkVouched(db, access, definition, 'module')
+  await checkVouched(db, access, definition, 'module', module.slug)
+  await checkLiveNesting(db, module.slug, definition.components)
 }
 
 const changedSince = (revision: number) =>
@@ -342,6 +431,8 @@ export async function runModuleDraftQuery(
     /** A Git branch draft's definition (M14), instead of the main draft. */
     definition?: AppDefinition
     query: string
+    /** A query of a module instance inside the module (M21): its path from the draft. */
+    path?: InstanceStep[]
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
@@ -353,14 +444,20 @@ export async function runModuleDraftQuery(
       message: 'You need edit access to this module to run its draft',
     })
   }
+  const draft = opts.definition ?? opts.module.draftDefinition
+  const labels = { ow_source: 'module', ow_module: opts.module.slug, ow_user: user.id }
+  // An instance's query runs from its release, vouched for by its publisher (Use on the outermost one is checked).
+  const inner = opts.path?.length
+    ? await walkInstancePath(deps.db, access, draft, opts.path, { draft: true, what: 'module' })
+    : null
   const { outcome, manual } = await runDefinitionQuery(deps, access, user, {
-    definition: opts.definition ?? opts.module.draftDefinition,
+    definition: inner ? inner.release.definition : draft,
     what: 'module',
     query: opts.query,
     environmentId: opts.environmentId,
     values: opts.values,
-    draft: true,
-    labels: { ow_source: 'module', ow_module: opts.module.slug, ow_user: user.id },
+    draft: !inner,
+    labels: inner ? { ...labels, ow_module: inner.module.slug } : labels,
     ...(opts.signal && { signal: opts.signal }),
   })
   return { outcome, manual }

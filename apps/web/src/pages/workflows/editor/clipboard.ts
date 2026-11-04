@@ -1,4 +1,5 @@
 import { type BlockClip, blockClipSchema, copyBlocks, type PasteResult, pasteBlocks } from '@ow/definition'
+import { confirmDialog } from '@/components/confirm'
 import { copiedHere, readClip, rememberCopy } from '@/lib/clipboard'
 import { NODE_WIDTH, positionsFor } from './layout'
 import { graphOf, useEditor, withGraph } from './store'
@@ -46,7 +47,20 @@ export function pasteText(text: string): boolean {
     return true
   }
   const clip = read.clip
-  if (!copiedHere(text) && !confirm(untrustedQuestion(clip))) return true
+  // Taken either way (the browser mustn't paste it elsewhere meanwhile); from elsewhere, pasted once confirmed, where
+  // the graph is then.
+  if (!copiedHere(text)) {
+    void confirmDialog(untrustedQuestion(clip), { title: 'Paste from elsewhere?', confirm: 'Paste' }).then(
+      (ok) => ok && pasteHere(clip),
+    )
+    return true
+  }
+  pasteHere(clip)
+  return true
+}
+
+/** Pastes blocks to the right of the chosen block (connected to it) or of the rightmost one. */
+function pasteHere(clip: BlockClip) {
   const { definition, graph: fn } = useEditor.getState()
   const positions = positionsFor(graphOf(definition, fn))
   // The one block copy would act on (highlighted, or inspected with nothing highlighted); none with several.
@@ -57,7 +71,6 @@ export function pasteText(text: string): boolean {
     ? { x: anchor.x + NODE_WIDTH + 80, y: anchor.y }
     : { x: Math.max(0, ...Object.values(positions).map((p) => p.x)) + NODE_WIDTH + 80, y: 0 }
   paste(clip, { at, connectFrom: from })
-  return true
 }
 
 /** Copies the chosen blocks next to themselves (⌘D), unconnected. */

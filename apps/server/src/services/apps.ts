@@ -4,7 +4,8 @@ import {
   appDefinitionHash,
   canonicalizeApp,
   expressionSide,
-  instanceRelease,
+  type InstanceStep,
+  usedComponentLibraries,
   usedLibraries,
   usedModules,
   validateApp,
@@ -15,6 +16,7 @@ import {
   type AppRelease,
   appReleases,
   apps,
+  type ComponentLibrary,
   type Db,
   environments,
   gitBranchDrafts,
@@ -26,8 +28,9 @@ import {
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
+import { componentLibraryInfos } from './component-libraries'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
-import { moduleInfos, resolveModuleRelease } from './modules'
+import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
@@ -49,18 +52,22 @@ function queriedResources(def: AppDefinition): string[] {
 export async function checkApp(
   db: Db,
   definition: AppDefinition,
+  /** Checking a module (M21): its slug, so instances reaching it back are cycles. */
+  self?: string,
 ): Promise<{
   resources: Resource[]
   libraries: LibraryQuery[]
   modules: Module[]
+  componentLibraries: ComponentLibrary[]
   errors: AppDiagnostic[]
   diagnostics: AppDiagnostic[]
 }> {
   const slugs = queriedResources(definition)
-  const [rows, libraries, placed] = await Promise.all([
+  const [rows, libraries, placed, components] = await Promise.all([
     slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
     libraryInfos(db, usedLibraries(definition)),
     moduleInfos(db, usedModules(definition)),
+    componentLibraryInfos(db, usedComponentLibraries(definition)),
   ])
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const { diagnostics } = validateApp(definition, {
@@ -70,11 +77,14 @@ export async function checkApp(
       return resource ? getConnector(resource.type) : undefined
     },
     resolveLibrary: (slug) => libraries.get(slug)?.info,
+    resolveComponentLibrary: (slug) => components.get(slug)?.info,
+    ...(self && { self }),
   })
   return {
     resources: rows,
     libraries: [...libraries.values()].map((l) => l.query),
     modules: [...placed.values()].map((m) => m.module),
+    componentLibraries: [...components.values()].map((c) => c.library),
     errors: diagnostics.filter((d) => d.severity === 'error'),
     diagnostics,
   }
@@ -108,8 +118,16 @@ export async function checkVouched(
   access: Access | null,
   definition: AppDefinition,
   what: 'app' | 'module',
+  /** A module's slug (M21; see `checkApp`). */
+  self?: string,
 ): Promise<void> {
-  const { resources: used, libraries, modules: placed, errors } = await checkApp(db, definition)
+  const {
+    resources: used,
+    libraries,
+    modules: placed,
+    componentLibraries,
+    errors,
+  } = await checkApp(db, definition, self)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
     throw new TRPCError({
@@ -131,6 +149,14 @@ export async function checkVouched(
       throw new TRPCError({
         code: 'FORBIDDEN',
         message: `You need use access to module "${module.slug}" to release this ${what}, which uses it`,
+      })
+    }
+  }
+  for (const library of componentLibraries) {
+    if (!atLeast(access.componentLibraryLevel(library), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to component library "${library.slug}" to release this ${what}, which uses it`,
       })
     }
   }
@@ -320,8 +346,8 @@ export async function runAppQuery(
     /** With `releaseId` null: a Git branch draft of a protected app (M11) instead of the main draft. */
     branchDraftId?: string
     query: string
-    /** A module instance's query (M14): the instance's name and the module release the page runs. */
-    module?: { instance: string; releaseId: string }
+    /** A module instance's query (M14): the path of instances from the app, outermost first (M21). */
+    module?: InstanceStep[]
     environmentId: string
     values: Record<string, unknown>
     signal?: AbortSignal
@@ -370,29 +396,11 @@ export async function runAppQuery(
   }
 
   const labels = { ow_source: 'app', ow_app: app.slug, ow_user: user.id }
-  if (opts.module) {
-    const { instance } = opts.module
-    const component = definition.components.find((c) => c.name === instance && c.type === 'module')
-    const ref = component && instanceRelease(component)
-    if (!ref) {
-      throw new TRPCError({
-        code: 'NOT_FOUND',
-        message: `The app has no module instance named "${instance}"`,
-      })
-    }
-    const { module, release } = await resolveModuleRelease(db, ref.slug, ref.version)
-    if (release.id !== opts.module.releaseId) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: `Module "${module.slug}" has a new version; reload to get it`,
-      })
-    }
-    if (opts.releaseId === null && !atLeast(access.moduleLevel(module), 'use')) {
-      throw new TRPCError({
-        code: 'FORBIDDEN',
-        message: `You need use access to module "${module.slug}" to run the draft's queries`,
-      })
-    }
+  if (opts.module?.length) {
+    const { module, release } = await walkInstancePath(db, access, definition, opts.module, {
+      draft: opts.releaseId === null,
+      what: 'app',
+    })
     const ran = await runDefinitionQuery(deps, access, user, {
       definition: release.definition,
       what: 'module',

@@ -1,5 +1,6 @@
 import { type FieldRef, fieldRefs } from '@ow/definition'
 import type { TemplateError } from '@ow/expressions'
+import { customComponentSpec } from './component-library'
 import {
   type ComponentSpec,
   componentSpec,
@@ -48,6 +49,8 @@ export type NodeKind =
   | 'formData'
   /** A table's `pagination`: `{ page, pageSize, offset }` from its `page` and `pageSize`. */
   | 'pagination'
+  /** A table's `$rows` (M24): `data` with its computed columns, what the table shows. */
+  | 'rows'
   /** A transformer's value. */
   | 'transformer'
   /** A variable's initial value, evaluated once when the app opens. */
@@ -103,12 +106,17 @@ export interface AppGraph {
 
 /**
  * How the graph learns a component's spec. By default the registry's, and for a module instance an open spec (M14);
- * `specFor` gives a module instance its release's interface (`moduleComponentSpec`).
+ * `specFor` gives a module instance its release's interface (`moduleComponentSpec`), and a custom component (M25)
+ * its library release's (`customComponentSpec`).
  */
 export type SpecFor = (component: AppComponent) => ComponentSpec | undefined
 
 export const defaultSpecFor: SpecFor = (c) =>
-  c.type === 'module' ? moduleComponentSpec(null) : componentSpec(c.type)
+  c.type === 'module'
+    ? moduleComponentSpec(null)
+    : c.type === 'custom'
+      ? customComponentSpec(null)
+      : componentSpec(c.type)
 
 /** The node key of a module's output (M14); not readable by code (`$` names aren't). */
 export const outputKey = (name: string) => nodeKey(OUTPUTS, name)
@@ -243,6 +251,7 @@ export function buildAppGraph(def: AppDefinition, opts: { specFor?: SpecFor } = 
             add(name, state, 'source')
           }
         }
+        if (entity.component.type === 'table') add(name, '$rows', 'rows')
         break
       }
       case 'query':
@@ -292,6 +301,7 @@ export function buildAppGraph(def: AppDefinition, opts: { specFor?: SpecFor } = 
     if (node.from) node.deps.push(node.from)
     if (node.kind === 'pagination')
       node.deps.push(nodeKey(node.entity, 'page'), nodeKey(node.entity, 'pageSize'))
+    if (node.kind === 'rows') node.deps.push(nodeKey(node.entity, 'data'), nodeKey(node.entity, 'columns'))
     if (node.inputs) {
       for (const input of node.inputs) node.deps.push(nodeKey(input, 'value'), nodeKey(input, 'formDataKey'))
     }

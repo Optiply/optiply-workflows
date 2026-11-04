@@ -52,8 +52,11 @@ export async function addBlock(page: Page, kind: string) {
 export async function typeInto(page: Page, editor: Locator, text: string) {
   const monaco = editor.locator('.monaco-editor')
   await expect(async () => {
-    // Near the top-left corner: with more lines than fit, the lines' middle is below the field, over the next one.
-    await monaco.locator('.view-lines').click({ position: { x: 4, y: 4 } })
+    // On the first visible line, in the field's middle: the lines can be taller and wider than the field (they
+    // scroll inside it), so a point on them can be outside it, under the next field or a header; the field's own
+    // box can't.
+    const box = await monaco.boundingBox()
+    await monaco.click({ position: { x: (box?.width ?? 40) / 2, y: Math.min(10, (box?.height ?? 20) / 2) } })
     await expect(monaco).toHaveClass(/focused/, { timeout: 1000 })
     await page.keyboard.press('ControlOrMeta+A')
     await page.keyboard.press('Backspace')
@@ -86,4 +89,99 @@ export async function drag(page: Page, from: Locator, to: Locator) {
 export async function clickEmptyCanvas(page: Page) {
   const box = (await page.locator('.react-flow__pane').boundingBox())!
   await page.mouse.click(box.x + box.width - 40, box.y + 80)
+}
+
+/** Global setup's fake Pub/Sub (`orders` and `refunds`, each with a `<topic>-sub`), through its control routes. */
+/** The fake SQS (M26), through the setup's control routes. */
+export const fakeSqs = {
+  send: async (
+    queue: string,
+    body: string,
+    opts: { attributes?: Record<string, string>; groupId?: string } = {},
+  ) =>
+    (
+      await (
+        await fetch(
+          `${process.env.E2E_IAP_CONTROL}/sqs/send?${new URLSearchParams({
+            queue,
+            body,
+            attributes: JSON.stringify(opts.attributes ?? {}),
+            groupId: opts.groupId ?? '',
+          })}`,
+          { method: 'POST' },
+        )
+      ).json()
+    ).messageId as string,
+  messages: async (queue: string) =>
+    (await (await fetch(`${process.env.E2E_IAP_CONTROL}/sqs/messages?queue=${queue}`)).json()) as {
+      messageId: string
+      body: string
+      receiveCount: number
+      deleted: boolean
+      movedFrom?: string
+    }[],
+}
+
+/** The Kafka broker (M26), through the setup's control routes; specs skip without E2E_KAFKA. */
+export const testKafka = {
+  produce: async (topic: string, value: string, key?: string, headers: Record<string, string> = {}) => {
+    await fetch(
+      `${process.env.E2E_IAP_CONTROL}/kafka/produce?${new URLSearchParams({ topic, value, key: key ?? '', headers: JSON.stringify(headers) })}`,
+      { method: 'POST' },
+    )
+  },
+  read: async (topic: string, count = 1) =>
+    (await (
+      await fetch(`${process.env.E2E_IAP_CONTROL}/kafka/read?topic=${topic}&count=${count}`)
+    ).json()) as {
+      key: string | null
+      value: string | null
+      headers: Record<string, string>
+    }[],
+}
+
+export const fakePubSub = {
+  publish: async (topic: string, data: string, attributes: Record<string, string> = {}) =>
+    (
+      await (
+        await fetch(
+          `${process.env.E2E_IAP_CONTROL}/pubsub/publish?${new URLSearchParams({ topic, data, attributes: JSON.stringify(attributes) })}`,
+          { method: 'POST' },
+        )
+      ).json()
+    ).messageId as string,
+  published: async (topic: string) =>
+    (await (await fetch(`${process.env.E2E_IAP_CONTROL}/pubsub/published?topic=${topic}`)).json()) as {
+      messageId: string
+      data: string
+    }[],
+  redeliver: async (subscription: string, messageId: string) => {
+    await fetch(
+      `${process.env.E2E_IAP_CONTROL}/pubsub/redeliver?${new URLSearchParams({ subscription, messageId })}`,
+      { method: 'POST' },
+    )
+  },
+  messages: async (subscription: string) =>
+    (await (
+      await fetch(`${process.env.E2E_IAP_CONTROL}/pubsub/messages?subscription=${subscription}`)
+    ).json()) as {
+      messageId: string
+      data: string
+      deliveries: number
+      acked: boolean
+    }[],
+}
+
+/**
+ * Confirms each confirmation the platform asks (M24: its dialog took the place of the browser's `confirm()`, which
+ * `page.on('dialog', …)` used to accept): from now on in this page, and after it navigates.
+ */
+export async function acceptConfirms(page: Page): Promise<void> {
+  const watch = () => {
+    const click = () => document.querySelector<HTMLButtonElement>('[data-testid="confirm-ok"]')?.click()
+    // The document itself: in an init script its root element may not exist yet.
+    new MutationObserver(click).observe(document, { childList: true, subtree: true })
+  }
+  await page.addInitScript(watch)
+  await page.evaluate(watch)
 }

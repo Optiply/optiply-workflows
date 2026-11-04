@@ -1,10 +1,26 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestIapServer,
+  startTestKafka,
+  startTestSshServer,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureAwsServer } from '../src/services/aws'
+import { configureGoogle } from '../src/services/google'
 import { saveTokens } from '../src/services/oauth-tokens'
+import { logSshTunnels } from '../src/services/ssh-log'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 // Distinctive values, so finding one anywhere in a response is unambiguous.
@@ -12,7 +28,27 @@ const PG_SECRET = 'Pg-R3ader-Secret-7731'
 const REST_SECRET = 'Rest-B3arer-Secret-9152'
 const HEADER_SECRET = 'Hdr-T0ken-Secret-4410'
 const TOKEN_SECRET = 'Cfg-Var-Secret-6628'
-const SECRETS = [PG_SECRET, REST_SECRET, HEADER_SECRET, TOKEN_SECRET]
+// M17: an SSH key (an encrypted test key from the connectors' fixtures), its passphrase and an SSH password.
+const SSH_KEY = readFileSync(
+  new URL('../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted', import.meta.url),
+  'utf8',
+)
+const SSH_PASSPHRASE = 'fixture pass'
+const SSH_PASSWORD = 'Ssh-Passw0rd-Secret-3307'
+/**
+ * A line from the end of the key (the encrypted private part; the file's first lines hold the public key, which the
+ * settings do show): any of the private key in a response would show up as this.
+ */
+const SSH_KEY_LINE = SSH_KEY.trim().split('\n').at(-2)!
+const SECRETS = [
+  PG_SECRET,
+  REST_SECRET,
+  HEADER_SECRET,
+  TOKEN_SECRET,
+  SSH_PASSPHRASE,
+  SSH_PASSWORD,
+  SSH_KEY_LINE,
+]
 
 let env: TestEnv
 let echo: Server
@@ -518,6 +554,748 @@ describe('config vars', () => {
   })
 })
 
+describe('SSH tunnel settings (M17)', () => {
+  let id: string
+  const bastion = { id: 'bastion', host: 'bastion.example.com', username: 'ow', auth: 'key' }
+  const jump = { id: 'jump', host: 'jump.example.com', port: 2222, username: 'hop', auth: 'password' }
+  const pin = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:AAAAbbbbCCCCddddEEEEffffGGGGhhhhIIIIjjjjKKK' }
+  const save = (ssh: unknown, secrets?: Record<string, unknown>) =>
+    admin.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh },
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    id = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Tunnelled', slug: 'tunnelled' }),
+    ).id
+  })
+
+  it('saves an SSH server with a key, masked like any secret', async () => {
+    const saved = await save(
+      { hops: [bastion] },
+      { password: PG_SECRET, ssh: { bastion: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } },
+    )
+    expect(saved.status).toBe(200)
+    expect(data(saved).config.ssh).toEqual({ hops: [{ ...bastion, port: 22 }] })
+    expect(data(saved).secrets).toEqual({
+      password: { set: true },
+      ssh: { bastion: { privateKey: { set: true }, passphrase: { set: true } } },
+    })
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).secrets.ssh,
+    ).toEqual({
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+  })
+
+  it("refuses a key it can't open, or a hop without its key or password, saying which server", async () => {
+    const wrong = await save({ hops: [bastion] }, { ssh: { bastion: { passphrase: 'not it' } } })
+    expect(wrong.status).toBe(400)
+    expect(wrong.body.error?.message).toBe(
+      "SSH server bastion.example.com: The passphrase doesn't open this key",
+    )
+    const noPassword = await save({ hops: [jump, bastion] })
+    expect(noPassword.body.error?.message).toBe('SSH server jump.example.com: enter the password')
+    const noKey = await save({ hops: [{ ...bastion, id: 'other' }] })
+    expect(noKey.body.error?.message).toBe('SSH server bastion.example.com: add a private key')
+    // Nothing was saved by the refusals.
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).config.ssh.hops,
+    ).toHaveLength(1)
+  })
+
+  it('keeps secrets only for the hops still there, and only what each signs in with', async () => {
+    const both = await save({ hops: [jump, bastion] }, { ssh: { jump: { password: SSH_PASSWORD } } })
+    expect(data(both).secrets.ssh).toEqual({
+      jump: { password: { set: true } },
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+    // The jump host goes: so does its password.
+    const one = await save({ hops: [bastion] })
+    expect(data(one).secrets.ssh).toEqual({
+      bastion: { privateKey: { set: true }, passphrase: { set: true } },
+    })
+    // Signing in with a password instead: the key isn't kept.
+    const password = await save(
+      { hops: [{ ...bastion, auth: 'password' }] },
+      { ssh: { bastion: { password: SSH_PASSWORD } } },
+    )
+    expect(data(password).secrets.ssh).toEqual({ bastion: { password: { set: true } } })
+    await save({ hops: [bastion] }, { ssh: { bastion: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } })
+  })
+
+  it('keeps a trusted host key as sent, even when its hop moves (what is trusted is the key)', async () => {
+    expect(data(await save({ hops: [{ ...bastion, hostKey: pin }] })).config.ssh.hops[0].hostKey).toEqual(pin)
+    // The same server under another name or port, its key trusted again: kept (the review: it used to be dropped).
+    const moved = await save({
+      hops: [{ ...bastion, host: 'bastion2.example.com', port: 2222, hostKey: pin }],
+    })
+    expect(data(moved).config.ssh.hops[0].hostKey).toEqual(pin)
+    // Cleared in the form (as it does on such an edit): no pin.
+    const cleared = await save({ hops: [{ ...bastion, host: 'bastion3.example.com' }] })
+    expect(data(cleared).config.ssh.hops[0].hostKey).toBeUndefined()
+  })
+
+  it('tests through a real SSH server hop by hop, trusts its host key, and then queries through it', async () => {
+    const ssh = await startTestSshServer({
+      users: [
+        {
+          username: 'ow',
+          publicKey: readFileSync(
+            new URL(
+              '../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted.pub',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        },
+      ],
+      hosts: { 'db.internal': String(pgConfig.host) },
+    })
+    try {
+      const viaId = data(
+        await admin.mutate('resources.create', {
+          type: 'postgres',
+          name: 'Via bastion',
+          slug: 'via_bastion',
+        }),
+      ).id
+      const hop = { id: 'b', host: ssh.host, port: ssh.port, username: 'ow', auth: 'key' }
+      const config = (hostKey?: unknown) => ({
+        ...pgConfig,
+        host: 'db.internal',
+        ssh: { hops: [{ ...hop, hostKey }] },
+      })
+      const saved = await admin.mutate('resources.saveConfig', {
+        resourceId: viaId,
+        environmentId: prodId,
+        config: config(),
+        secrets: { password: PG_SECRET, ssh: { b: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } },
+      })
+      // The key as the settings show it: its type, fingerprint and public half.
+      expect(data(saved).sshKeys).toEqual({
+        b: {
+          type: 'ssh-rsa',
+          fingerprint: expect.stringMatching(/^SHA256:/),
+          publicKey: expect.stringMatching(/^ssh-rsa AAAA/),
+        },
+      })
+
+      // Not trusted yet: the hop fails with the key it presented, and the database isn't tried.
+      const first = data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(first).toMatchObject({
+        ok: false,
+        error: { code: 'connection' },
+        ssh: [
+          {
+            hop: 'b',
+            ok: false,
+            hostKey: { ...ssh.hostKey, status: 'untrusted' },
+            error: { code: 'ssh_host_key_unknown' },
+          },
+        ],
+      })
+
+      // Trust: the fingerprint goes into the settings, then everything works through the tunnel.
+      const presented = first.ssh[0].hostKey
+      await admin.mutate('resources.saveConfig', {
+        resourceId: viaId,
+        environmentId: prodId,
+        config: config({ algorithm: presented.algorithm, fingerprint: presented.fingerprint }),
+      })
+      const second = data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(second).toMatchObject({
+        ok: true,
+        message: expect.stringMatching(/^PostgreSQL/),
+        ssh: [{ hop: 'b', ok: true, hostKey: { status: 'trusted' } }],
+      })
+      const run = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select count(*)::int as n from customers' },
+        }),
+      )
+      expect(run).toMatchObject({ ok: true, data: [{ n: 3 }] })
+      expect(ssh.forwards.at(-1)).toMatchObject({ host: 'db.internal', allowed: true })
+
+      const got = data(await admin.query('resources.get', { id: viaId }))
+      const prod = got.environments.find((e: { environmentId: string }) => e.environmentId === prodId)
+      expect(prod.sshKeys.b.fingerprint).toBe(data(saved).sshKeys.b.fingerprint)
+    } finally {
+      await ssh.close()
+    }
+  })
+
+  it('fails Test connection with why when a key is missing, before connecting anywhere', async () => {
+    const tested = data(
+      await admin.mutate('resources.test', {
+        resourceId: id,
+        environmentId: prodId,
+        config: { ...pgConfig, ssh: { hops: [{ ...bastion, id: 'fresh' }] } },
+      }),
+    )
+    expect(tested).toEqual({
+      ok: false,
+      error: expect.objectContaining({
+        code: 'invalid_config',
+        message: 'SSH server bastion.example.com: add a private key',
+      }),
+    })
+  })
+})
+
+describe('Google IAP settings (M18)', () => {
+  const google = new FakeGoogle()
+  /** A line of the service account's private key: none of it may come back. */
+  const iapKeyLine = (JSON.parse(google.keyJson).private_key as string).split('\n')[5]!
+  const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-iap-')), 'key.json')
+  const vm = { project: 'proj', zone: 'europe-west1-c', instance: 'bastion' }
+  const hop = (iap: Record<string, unknown> = {}, over: Record<string, unknown> = {}) => ({
+    id: 'b',
+    reach: 'iap',
+    iap: { ...vm, ...iap },
+    username: 'ow',
+    auth: 'password',
+    ...over,
+  })
+  let id: string
+  let other: string
+  const save = (
+    as: ReturnType<typeof trpc>,
+    resourceId: string,
+    h: unknown,
+    secrets?: Record<string, unknown>,
+  ) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh: { hops: [h] } },
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    SECRETS.push(iapKeyLine)
+    await google.start()
+    writeFileSync(keyFile, google.keyJson)
+    id = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Via IAP', slug: 'via_iap' }),
+    ).id
+    other = data(
+      await admin.mutate('resources.create', { type: 'postgres', name: 'Also IAP', slug: 'also_iap' }),
+    ).id
+    // The member may edit both in production.
+    const groupId = data(await admin.mutate('groups.create', { name: 'IAP editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    for (const objectId of [id, other]) {
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId,
+        groupId,
+        environmentId: prodId,
+        level: 'edit',
+      })
+    }
+  })
+
+  afterAll(async () => {
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await google.stop()
+  })
+
+  it("saves a VM reached with a service account key, showing only the key's account", async () => {
+    const saved = await save(admin, id, hop(), {
+      password: PG_SECRET,
+      ssh: { b: { password: SSH_PASSWORD, iapKey: google.keyJson } },
+    })
+    expect(saved.status).toBe(200)
+    expect(data(saved).config.ssh.hops[0]).toMatchObject({
+      host: 'bastion',
+      port: 22,
+      iap: { ...vm, interface: 'nic0', identity: 'key' },
+    })
+    expect(data(saved).secrets.ssh).toEqual({ b: { password: { set: true }, iapKey: { set: true } } })
+    const account = { b: { clientEmail: 'tunnel@fake-project.iam.gserviceaccount.com' } }
+    expect(data(saved).iapKeys).toEqual(account)
+    const got = data(await admin.query('resources.get', { id }))
+    expect(
+      got.environments.find((e: { environmentId: string }) => e.environmentId === prodId).iapKeys,
+    ).toEqual(account)
+  })
+
+  it('refuses a key that is missing or not a service account key, naming the server', async () => {
+    const bad = await save(admin, id, hop(), { ssh: { b: { iapKey: '{"private_key":"k3y"}' } } })
+    expect(bad.status).toBe(400)
+    expect(bad.body.error?.message).toMatch(/^SSH server bastion: The service account key is missing fields/)
+    const missing = await save(admin, other, hop(), {
+      password: PG_SECRET,
+      ssh: { b: { password: SSH_PASSWORD } },
+    })
+    expect(missing.status).toBe(400)
+    expect(missing.body.error?.message).toBe(
+      'SSH server bastion: add the service account key that opens the Google IAP tunnel',
+    )
+  })
+
+  it("refuses the server's own identity where the instance doesn't allow it", async () => {
+    const refused = await save(admin, id, hop({ identity: 'server' }))
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/doesn't let resources use its own Google identity/)
+  })
+
+  it("lets only admins point the server's identity at a VM; editors keep it and change the rest", async () => {
+    // Allowed, with a token endpoint and an IAP endpoint that go nowhere real.
+    configureGoogle(
+      {
+        GOOGLE_SERVER_IDENTITY: 'allow',
+        GOOGLE_TOKEN_URL: google.tokenUrl,
+        GOOGLE_IAP_URL: 'ws://127.0.0.1:1',
+      },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+    const server = hop({ identity: 'server' })
+    expect((await save(member, id, server)).status).toBe(403)
+    expect((await save(admin, id, server)).status).toBe(200)
+    // The key isn't used any more, so it isn't kept.
+    const prod = data(await admin.query('resources.get', { id })).environments.find(
+      (e: { environmentId: string }) => e.environmentId === prodId,
+    )
+    expect(prod.secrets.ssh.b).toEqual({ password: { set: true } })
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'resource.config_saved'))
+      .orderBy(desc(auditEvents.at))
+      .limit(1)
+    expect(audit!.metadata).toMatchObject({ serverIdentityTarget: 'proj/europe-west1-c/bastion/nic0:22' })
+
+    // Editors: the rest of the settings, yes; another VM, port or resource, no.
+    expect((await save(member, id, { ...server, username: 'someone' })).status).toBe(200)
+    expect((await save(member, id, hop({ identity: 'server', instance: 'other-vm' }))).status).toBe(403)
+    expect((await save(member, id, { ...server, port: 2222 })).status).toBe(403)
+    expect(
+      (await save(member, other, server, { password: PG_SECRET, ssh: { b: { password: SSH_PASSWORD } } }))
+        .status,
+    ).toBe(403)
+    // Moving away from the server's identity is fine.
+    expect((await save(member, id, hop(), { ssh: { b: { iapKey: google.keyJson } } })).status).toBe(200)
+    expect((await save(admin, id, server)).status).toBe(200)
+
+    // Test connection opens the tunnel too: the stored settings, yes (here IAP can't be reached); another VM, no.
+    const stored = await member.mutate('resources.test', { resourceId: id, environmentId: prodId })
+    expect(stored.status).toBe(200)
+    expect(data(stored).ok).toBe(false)
+    const moved = await member.mutate('resources.test', {
+      resourceId: id,
+      environmentId: prodId,
+      config: { ...pgConfig, ssh: { hops: [hop({ identity: 'server', instance: 'other-vm' })] } },
+    })
+    expect(moved.status).toBe(403)
+    expect(moved.body.error?.message).toBe(
+      "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+    )
+  })
+
+  it('tests through IAP step by step, queries through it, and shows what IAP refused', async () => {
+    // A fake Google issues the key's tokens; the fake IAP takes them and connects to the test SSH server (the "VM"),
+    // which forwards to the test database.
+    const ssh = await startTestSshServer({
+      users: [
+        {
+          username: 'ow',
+          publicKey: readFileSync(
+            new URL(
+              '../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted.pub',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        },
+      ],
+      hosts: { 'db.internal': String(pgConfig.host) },
+    })
+    const iap = await startTestIapServer({
+      tokens: [],
+      accept: (token) => /^sa-\d+$/.test(token),
+      instances: { 'proj/europe-west1-c/bastion': '127.0.0.1' },
+    })
+    configureGoogle({
+      GOOGLE_SERVER_IDENTITY: 'deny',
+      GOOGLE_IAP_URL: iap.url,
+      GOOGLE_TOKEN_URL: google.tokenUrl,
+    })
+    const logged: { fields: Record<string, unknown>; message: string }[] = []
+    const stopLog = logSshTunnels({
+      info: () => {},
+      warn: ((fields: Record<string, unknown>, message: string) => logged.push({ fields, message })) as never,
+    })
+    try {
+      const viaId = data(
+        await admin.mutate('resources.create', {
+          type: 'postgres',
+          name: 'Through IAP',
+          slug: 'through_iap',
+        }),
+      ).id
+      const config = (hostKey?: unknown) => ({
+        ...pgConfig,
+        host: 'db.internal',
+        ssh: { hops: [hop({}, { port: ssh.port, auth: 'key', hostKey })] },
+      })
+      const saveVia = (hostKey?: unknown) =>
+        admin.mutate('resources.saveConfig', {
+          resourceId: viaId,
+          environmentId: prodId,
+          config: config(hostKey),
+        })
+      const testVia = async () =>
+        data(await admin.mutate('resources.test', { resourceId: viaId, environmentId: prodId }))
+      expect(
+        (
+          await admin.mutate('resources.saveConfig', {
+            resourceId: viaId,
+            environmentId: prodId,
+            config: config(),
+            secrets: {
+              password: PG_SECRET,
+              ssh: { b: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE, iapKey: google.keyJson } },
+            },
+          })
+        ).status,
+      ).toBe(200)
+
+      // IAP opens with the key's account; the VM's host key isn't trusted yet.
+      const iapStep = {
+        via: 'iap',
+        host: 'bastion',
+        port: ssh.port,
+        ok: true,
+        identity: 'tunnel@fake-project.iam.gserviceaccount.com',
+      }
+      const first = await testVia()
+      expect(first).toMatchObject({
+        ok: false,
+        ssh: [iapStep, { hop: 'b', ok: false, hostKey: { status: 'untrusted' } }],
+      })
+      expect(iap.connects.at(-1)).toMatchObject({
+        project: 'proj',
+        zone: 'europe-west1-c',
+        instance: 'bastion',
+      })
+
+      // Trusted: through IAP and the VM to the database.
+      const { algorithm, fingerprint } = first.ssh[1].hostKey
+      await saveVia({ algorithm, fingerprint })
+      expect(await testVia()).toMatchObject({
+        ok: true,
+        message: expect.stringMatching(/^PostgreSQL/),
+        ssh: [iapStep, { hop: 'b', ok: true, hostKey: { status: 'trusted' } }],
+      })
+      const run = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select count(*)::int as n from customers' },
+        }),
+      )
+      expect(run).toMatchObject({ ok: true, data: [{ n: 3 }] })
+
+      // IAP refuses: Test connection stops at the IAP step and says why.
+      iap.refuseNext(4003, 'failed to connect to backend')
+      expect(await testVia()).toMatchObject({
+        ok: false,
+        error: { code: 'connection' },
+        ssh: [
+          {
+            via: 'iap',
+            ok: false,
+            error: { code: 'iap_target', message: expect.stringMatching(/firewall/) },
+          },
+        ],
+      })
+      iap.refuseNext(4033, 'not authorized')
+      expect(await testVia()).toMatchObject({ ssh: [{ via: 'iap', ok: false, error: { code: 'iap_auth' } }] })
+
+      // A query's tunnel (saved again, so a new one) failing at IAP: the run says so, and so does the log.
+      await saveVia({ algorithm, fingerprint })
+      iap.refuseNext(4033, 'not authorized')
+      const refused = data(
+        await admin.mutate('resources.run', {
+          resourceId: viaId,
+          environmentId: prodId,
+          query: { sql: 'select 1' },
+        }),
+      )
+      expect(refused).toMatchObject({ ok: false, error: { code: 'connection' } })
+      expect(logged).toContainEqual({
+        message: 'ssh tunnel failed',
+        fields: expect.objectContaining({ hop: 'b', code: 'iap_auth' }),
+      })
+    } finally {
+      stopLog()
+      await iap.close()
+      await ssh.close()
+    }
+  })
+})
+
+describe('Pub/Sub resources (M19)', () => {
+  const google = new FakeGoogle()
+  const keyLine = (JSON.parse(google.keyJson).private_key as string).split('\n')[5]!
+  const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-pubsub-')), 'key.json')
+  let pubsub: Awaited<ReturnType<typeof startFakePubSub>>
+  let id: string
+  let other: string
+  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+  const configure = (identity: 'allow' | 'deny') =>
+    configureGoogle(
+      { GOOGLE_SERVER_IDENTITY: identity, GOOGLE_PUBSUB_URL: pubsub.url, GOOGLE_TOKEN_URL: google.tokenUrl },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+
+  beforeAll(async () => {
+    SECRETS.push(keyLine)
+    await google.start()
+    writeFileSync(keyFile, google.keyJson)
+    pubsub = await startFakePubSub({ project: 'fake-project', pullWaitMs: 50 })
+    pubsub.createTopic('orders')
+    configure('deny')
+    id = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events_m19' }),
+    ).id
+    other = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'More', slug: 'more_m19' }),
+    ).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'Pub/Sub editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    for (const objectId of [id, other])
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId,
+        groupId,
+        environmentId: prodId,
+        level: 'edit',
+      })
+  })
+  afterAll(async () => {
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await pubsub.close()
+    await google.stop()
+  })
+
+  it('saves a key (masked), tests the connection as its account, and publishes', async () => {
+    expect((await save(admin, id, { identity: 'key' })).body.error?.message).toBe(
+      'Add the service account key',
+    )
+    const saved = await save(admin, id, { identity: 'key' }, { serviceAccountKey: google.keyJson })
+    expect(saved.status).toBe(200)
+    expect(data(saved).config).toEqual({ identity: 'key' })
+    expect(data(saved).secrets).toEqual({ serviceAccountKey: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { topic: 'orders', messages: '{"data": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
+    expect(pubsub.published('orders').at(-1)).toMatchObject({ data: '42' })
+  })
+
+  it("refuses the server's identity where the instance doesn't allow it, or without a project", async () => {
+    const refused = await save(admin, id, { identity: 'server', project: 'fake-project' })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toMatch(/doesn't let resources use its own Google identity/)
+    configure('allow')
+    expect((await save(admin, id, { identity: 'server' })).body.error?.message).toBe(
+      "Name the project: the server's identity has none of its own",
+    )
+  })
+
+  it("lets only admins use the server's identity for a project; editors keep it or go back to a key", async () => {
+    configure('allow')
+    const server = { identity: 'server', project: 'fake-project' }
+    expect((await save(member, other, server)).status).toBe(403)
+    expect((await save(member, other, server)).body.error?.message).toBe(
+      "Only admins can use this server's own Google identity for a Pub/Sub project",
+    )
+    expect((await save(admin, other, server)).status).toBe(200)
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'resource.config_saved'))
+      .orderBy(desc(auditEvents.at))
+      .limit(1)
+    expect(audit!.metadata).toMatchObject({ serverIdentityTarget: 'pubsub:fake-project' })
+    // Saved again as it is, yes; another project, no; Test connection with another project, no.
+    expect((await save(member, other, server)).status).toBe(200)
+    expect((await save(member, other, { ...server, project: 'elsewhere' })).status).toBe(403)
+    const moved = await member.mutate('resources.test', {
+      resourceId: other,
+      environmentId: prodId,
+      config: { ...server, project: 'elsewhere' },
+    })
+    expect(moved.status).toBe(403)
+    const tested = data(await member.mutate('resources.test', { resourceId: other, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
+    })
+    // Back to a key is anyone's to choose.
+    expect(
+      (await save(member, other, { identity: 'key' }, { serviceAccountKey: google.keyJson })).status,
+    ).toBe(200)
+  })
+})
+
+describe('SQS resources (M26)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  let user: ReturnType<Awaited<ReturnType<typeof startFakeAws>>['addUser']>
+  let id: string
+  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    aws = await startFakeAws({ sqs: { secondMs: 50 } })
+    user = aws.addUser('workflows')
+    SECRETS.push(user.secretAccessKey)
+    aws.sqs.createQueue('orders')
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+    id = data(await admin.mutate('resources.create', { type: 'sqs', name: 'Queues', slug: 'queues_m26' })).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'SQS editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    await admin.mutate('permissions.set', {
+      objectType: 'resource',
+      objectId: id,
+      groupId,
+      environmentId: prodId,
+      level: 'edit',
+    })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws.close()
+  })
+
+  it('saves an access key (the secret masked), tests the connection as its user, and sends', async () => {
+    const config = { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId }
+    expect((await save(admin, id, config)).body.error?.message).toBe('Add the secret access key')
+    const saved = await save(admin, id, config, { secretAccessKey: user.secretAccessKey })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ secretAccessKey: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({ ok: true, message: `SQS in eu-west-1 as ${user.arn}` })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { queue: 'orders', messages: '{"body": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
+    expect(aws.sqs.messages('orders').at(-1)).toMatchObject({ body: '42' })
+  })
+
+  it("lets only admins choose the server's credentials, change their role, or set an endpoint", async () => {
+    const server = { region: 'eu-west-1', identity: 'server' }
+    expect((await save(admin, id, server)).body.error?.message).toMatch(
+      /doesn't let resources use its own AWS/,
+    )
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'allow', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+    expect((await save(member, id, server)).body.error?.message).toBe(
+      "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them",
+    )
+    expect((await save(admin, id, server)).status).toBe(200)
+    expect((await save(member, id, server)).status).toBe(200)
+    const role = { ...server, roleArn: 'arn:aws:iam::123456789012:role/other' }
+    expect((await save(member, id, role)).status).toBe(403)
+    const endpoint = {
+      region: 'eu-west-1',
+      identity: 'key',
+      accessKeyId: user.accessKeyId,
+      endpoint: aws.url,
+    }
+    expect(
+      (await save(member, id, endpoint, { secretAccessKey: user.secretAccessKey })).body.error?.message,
+    ).toBe('Only admins can point an SQS resource at another endpoint')
+    expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
+    // Kept as it is by an editor, yes.
+    expect((await save(member, id, endpoint)).status).toBe(200)
+  })
+})
+
+describe.skipIf(!kafkaAvailable())('Kafka resources (M26)', () => {
+  let kafka: TestKafka
+  let id: string
+  const save = (config: object, secrets?: object) =>
+    admin.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    kafka = await startTestKafka()
+    await kafka.createTopic('orders')
+    SECRETS.push(kafka.users.scram256.password)
+    id = data(
+      await admin.mutate('resources.create', { type: 'kafka', name: 'Cluster', slug: 'cluster_m26' }),
+    ).id
+  }, 120_000)
+  afterAll(async () => {
+    await kafka?.stop()
+  })
+
+  it('saves SCRAM over TLS (the password masked), tests the connection as its user, and produces', async () => {
+    const config = {
+      brokers: [kafka.saslSsl],
+      auth: 'scram-sha-256',
+      tls: true,
+      username: kafka.users.scram256.username,
+      caCertificate: kafka.ca,
+    }
+    expect((await save(config)).body.error?.message).toBe('Add the password')
+    const saved = await save(config, { password: kafka.users.scram256.password })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ password: { set: true } })
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('as bob (SCRAM-SHA-256 over TLS)'),
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { topic: 'orders', messages: '{"key": "k", "value": {{ 6 * 7 }}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: [{ partition: 0, baseOffset: '0' }] })
+  }, 60_000)
+})
+
 describe('no secret in any API response', () => {
   it('appears nowhere in what any client received, nor in the audit log', async () => {
     // Read everything once more as both users, then scan every recorded response body.
@@ -527,6 +1305,7 @@ describe('no secret in any API response', () => {
     await admin.query('configVars.list')
     await admin.query('audit.list', {})
     await member.query('resources.get', { id: pgId })
+    await admin.query('resources.list')
     expect(responses.length).toBeGreaterThan(50)
     for (const body of responses) {
       for (const secret of SECRETS) expect(body).not.toContain(secret)

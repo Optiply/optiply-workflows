@@ -1,6 +1,7 @@
-import type { AppDefinition, LibraryQueryDefinition } from '@ow/app-definition'
+import type { AppDefinition, ComponentLibraryDefinition, LibraryQueryDefinition } from '@ow/app-definition'
 import {
   type App,
+  type ComponentLibrary,
   type Db,
   type GIT_DEPLOY_TRIGGERS,
   type GitObject,
@@ -12,7 +13,7 @@ import {
   type Module,
   type Workflow,
 } from '@ow/db'
-import type { WorkflowDefinition } from '@ow/definition'
+import { canonicalJson, type WorkflowDefinition } from '@ow/definition'
 import {
   checkManifest,
   decodeRepo,
@@ -22,38 +23,59 @@ import {
   type ObjectKind,
   objectDir,
   type RepoObject,
+  SETTINGS_ROOTS,
+  type SettingsKind,
+  settingsDir,
 } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { desc, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import { recordAudit } from '../../audit'
 import type { Config } from '../../config'
 import { deployAppFromGit } from '../apps'
+import { deployComponentLibraryFromGit } from '../component-libraries'
+import { componentBuildConfig, DEFAULT_NPM_REGISTRY } from '../components/build'
 import { deployLibraryQueryFromGit } from '../library-queries'
 import { deployModuleFromGit } from '../modules'
 import { deployWorkflowFromGit } from '../releases'
 import { GitError } from './cli'
+import { deployConfigVar, deployResource } from './deploy-settings'
+import { type FolderMove, moveToGitFolder } from './folders'
+import { notifyIfChanged } from './health'
 import { insertGitObject, loadGitObject, protectedObjectIds } from './kinds'
 import { openGitRepo } from './settings'
 
 export type DeployTrigger = (typeof GIT_DEPLOY_TRIGGERS)[number]
 
+/** Resources and config vars go before every other kind; config vars first, as resources may name them. */
+const SETTINGS_ORDER: readonly SettingsKind[] = ['config_var', 'resource']
+
 /** The order a deploy goes in: what other objects use comes first. */
-const DEPLOY_ORDER: readonly ObjectKind[] = ['library_query', 'module', 'workflow', 'app']
+const DEPLOY_ORDER: readonly ObjectKind[] = [
+  'component_library',
+  'library_query',
+  'module',
+  'workflow',
+  'app',
+]
 
 /** What a deploy did with one object directory. */
 export interface ObjectOutcome {
-  kind: ObjectKind
+  kind: ObjectKind | SettingsKind
   slug: string
   /**
-   * `created`: a new workflow, app, library query or module (and its first release, unless it has problems); `released`: a new live
-   * release; `unchanged`: the directory, or at least its definition, is what's already live; `problem`: not
-   * deployed (the live release stays); `missing`: the directory left the branch.
+   * `created`: a new workflow, app, library query, module or component library (and its first release, unless it has problems); `released`: a new live
+   * release; `updated`: a resource's or config var's settings changed, or an object moved to another folder without
+   * a new release (M22); `unchanged`: the directory, or at least
+   * its definition, is what's already live; `problem`: not deployed (the live release stays); `missing`: the
+   * directory left the branch.
    */
-  outcome: 'created' | 'released' | 'unchanged' | 'problem' | 'missing'
+  outcome: 'created' | 'released' | 'updated' | 'unchanged' | 'problem' | 'missing'
   objectId?: string | null
   treeSha?: string | null
   version?: string
   problems?: GitProblem[]
+  /** Moved into the folder Git names (M22). */
+  folder?: FolderMove
   /** Made by this deploy (a later pass may still release it). */
   created?: boolean
 }
@@ -69,7 +91,16 @@ export type DeployResult =
   | { status: 'up_to_date'; commit: string }
   | { status: 'deployed'; commit: string; ok: boolean; objects: ObjectOutcome[]; problems: GitProblem[] }
 
-type DeployConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
+type DeployConfig = Pick<
+  Config,
+  | 'keyring'
+  | 'GIT_CACHE_DIR'
+  | 'GIT_ALLOW_INSECURE_URLS'
+  | 'GOOGLE_SERVER_IDENTITY'
+  | 'AWS_SERVER_IDENTITY'
+  | 'PUBLIC_URL'
+> &
+  Partial<Pick<Config, 'NPM_REGISTRY_URL' | 'COMPONENT_BUILD_DIR'>>
 
 interface DeployLogger {
   info(obj: object, msg: string): void
@@ -82,6 +113,22 @@ const LEASE = sql`now() + interval '5 minutes'`
 const MAX_ROUNDS = 5
 /** Deploy history kept. */
 const KEEP_DEPLOYS = 200
+
+/**
+ * Audited changes a problem object may have been waiting for (M22): resources (secrets and overrides included),
+ * config vars, library queries, modules and (M25) component libraries. Running their queries changes nothing.
+ */
+const RETRY_ACTIONS = /^(resource|config_var|library_query|module|component_library)\.(?!query_run$)/
+
+/** Whether an audited action marks the last deploy's problem objects for a re-check. */
+export function asksForGitRetry(action: string): boolean {
+  return RETRY_ACTIONS.test(action)
+}
+
+/** Marks the last deploy's problem objects for a re-check by the next poll (nothing without Git sync). */
+export async function requestGitRetry(db: Db): Promise<void> {
+  await db.update(gitSettings).set({ retryRequestedAt: sql`now()` })
+}
 
 /**
  * Asks for a deploy (a webhook, an admin's Deploy now) and runs it here unless another process holds the lease, in
@@ -104,7 +151,14 @@ export async function requestGitDeploy(
 export async function runGitDeploy(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force?: boolean; log?: DeployLogger },
+  opts: {
+    trigger: DeployTrigger
+    force?: boolean
+    retry?: boolean
+    /** Re-checks the deployed commit only, without reading the branch (the timed retry: polling may be off). */
+    retryOnly?: boolean
+    log?: DeployLogger
+  },
 ): Promise<DeployResult> {
   const claimed = await db
     .update(gitSettings)
@@ -122,7 +176,9 @@ export async function runGitDeploy(
   let held = true
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      result = await deployOnce(db, config, { trigger, force, log: opts.log })
+      const retryOnly = round === 0 && (opts.retryOnly ?? false)
+      const retry = retryOnly || (round === 0 && (opts.retry ?? false))
+      result = await deployOnce(db, config, { trigger, force, retry, retryOnly, log: opts.log })
       const next = await handBackLease(db)
       if (!next.again) {
         held = false
@@ -164,18 +220,23 @@ export async function handBackLease(db: Db): Promise<{ again: boolean; by: Deplo
 async function deployOnce(
   db: Db,
   config: DeployConfig,
-  opts: { trigger: DeployTrigger; force: boolean; log?: DeployLogger },
+  opts: { trigger: DeployTrigger; force: boolean; retry: boolean; retryOnly?: boolean; log?: DeployLogger },
 ): Promise<DeployResult> {
   const opened = await openGitRepo(db, config)
   const [settings] = await db.select().from(gitSettings)
   if (!opened || !settings) return { status: 'not_configured' }
   const { repo, branch } = opened
+  // Only a read of the branch says it was checked (or why it couldn't be).
   const checked = (patch: Partial<typeof gitSettings.$inferInsert> = {}) =>
-    db.update(gitSettings).set({ checkedAt: sql`now()`, lastError: null, deployLeaseUntil: LEASE, ...patch })
+    db.update(gitSettings).set({
+      ...(opts.retryOnly ? {} : { checkedAt: sql`now()`, lastError: null }),
+      deployLeaseUntil: LEASE,
+      ...patch,
+    })
 
   let commit: string | null
   try {
-    commit = await repo.fetchBranch(branch)
+    commit = opts.retryOnly ? settings.deployedCommit : await repo.fetchBranch(branch)
   } catch (err) {
     if (!(err instanceof GitError)) throw err
     await checked({ lastError: err.message })
@@ -186,13 +247,22 @@ async function deployOnce(
     await checked()
     return { status: 'empty' }
   }
+  // Every deploy re-checks the problem objects, so it takes the retry mark (a mark set from here on stays).
+  const marked = await takeRetryMark(db)
+  // The deployed commit again for its problem objects, and directories marked to deploy again (a cleared local
+  // value: Git's comes back) (M22): asked for, or something they may need changed.
+  let retrying = false
   if (!opts.force && commit === settings.deployedCommit) {
-    await checked()
-    return { status: 'up_to_date', commit }
+    if (!((opts.retry || marked) && (await hasObjectsToRecheck(db)))) {
+      await checked()
+      return { status: 'up_to_date', commit }
+    }
+    retrying = true
   }
+  const trigger: DeployTrigger = retrying ? 'retry' : opts.trigger
 
   const startedAt = new Date()
-  const roots = Object.values(KIND_ROOTS)
+  const roots = [...Object.values(KIND_ROOTS), ...Object.values(SETTINGS_ROOTS)]
   const files = await repo.readFiles(commit, [MANIFEST_FILE, ...roots.map((r) => `${r}/`)])
   const trees = await repo.subtrees(commit, roots)
   const info = await repo.commitInfo(commit)
@@ -202,12 +272,65 @@ async function deployOnce(
   // An unchanged directory is skipped only while its object is still there and protected (one deleted on the
   // instance comes back).
   const protectedIds = await protectedObjectIds(db)
-  const rowOf = (kind: ObjectKind, slug: string) => rows.find((r) => r.kind === kind && r.slug === slug)
+  const rowOf = (kind: ObjectKind | SettingsKind, slug: string) =>
+    rows.find((r) => r.kind === kind && r.slug === slug)
+  const unchanged = (row: GitObject | undefined, treeSha: string | null) =>
+    !opts.force &&
+    row?.status === 'deployed' &&
+    row.treeSha === treeSha &&
+    !!row.objectId &&
+    protectedIds.has(row.objectId)
   const outcomes: ObjectOutcome[] = []
 
   // A repo in a format this version doesn't read (or without ow.json) deploys nothing.
-  const blocked = checkManifest(files).length > 0 && decoded.objects.length > 0
+  const blocked = checkManifest(files).length > 0 && decoded.objects.length + decoded.settings.length > 0
   if (!blocked) {
+    // Config vars, then resources (M22): what workflows and apps need is there before they're checked.
+    const settings = [...decoded.settings].sort(
+      (a, b) => SETTINGS_ORDER.indexOf(a.kind) - SETTINGS_ORDER.indexOf(b.kind),
+    )
+    for (const object of settings) {
+      const treeSha = trees.get(settingsDir(object.kind, object.slug)) ?? null
+      const row = rowOf(object.kind, object.slug)
+      if (unchanged(row, treeSha)) {
+        outcomes.push({
+          kind: object.kind,
+          slug: object.slug,
+          outcome: 'unchanged',
+          objectId: row!.objectId,
+          treeSha,
+        })
+        continue
+      }
+      if (!object.result.ok) {
+        outcomes.push({
+          kind: object.kind,
+          slug: object.slug,
+          outcome: 'problem',
+          objectId: row?.objectId ?? null,
+          treeSha,
+          problems: object.result.problems,
+        })
+        continue
+      }
+      const result = object.result.value
+      const item = { slug: object.slug, treeSha }
+      outcomes.push(
+        result.kind === 'config_var'
+          ? await deployConfigVar(db, { ...item, value: result.value }, { commit })
+          : await deployResource(
+              db,
+              { ...item, value: result.value },
+              { commit },
+              {
+                serverIdentity: config.GOOGLE_SERVER_IDENTITY === 'allow',
+                awsIdentity: config.AWS_SERVER_IDENTITY === 'allow',
+              },
+            ),
+      )
+      await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
+    }
+
     type Pending = {
       kind: ObjectKind
       slug: string
@@ -219,18 +342,12 @@ async function deployOnce(
     for (const object of decoded.objects) {
       const treeSha = trees.get(objectDir(object.kind, object.slug)) ?? null
       const row = rowOf(object.kind, object.slug)
-      if (
-        !opts.force &&
-        row?.status === 'deployed' &&
-        row.treeSha === treeSha &&
-        row.objectId &&
-        protectedIds.has(row.objectId)
-      ) {
+      if (unchanged(row, treeSha)) {
         outcomes.push({
           kind: object.kind,
           slug: object.slug,
           outcome: 'unchanged',
-          objectId: row.objectId,
+          objectId: row!.objectId,
           treeSha,
         })
         continue
@@ -256,7 +373,7 @@ async function deployOnce(
     for (;;) {
       const failed: Array<{ item: Pending; outcome: ObjectOutcome }> = []
       for (const item of remaining) {
-        const outcome = await deployObject(db, item, { commit, subject: releaseNotes(info) })
+        const outcome = await deployObject(db, config, item, { commit, subject: releaseNotes(info) })
         if (outcome.outcome === 'problem') failed.push({ item, outcome })
         else outcomes.push(outcome)
         await db.update(gitSettings).set({ deployLeaseUntil: LEASE })
@@ -269,7 +386,7 @@ async function deployOnce(
     }
 
     // Directories that left the branch: the objects stay, flagged, and stop deploying.
-    const present = new Set(decoded.objects.map((o) => `${o.kind}:${o.slug}`))
+    const present = new Set([...decoded.objects, ...decoded.settings].map((o) => `${o.kind}:${o.slug}`))
     for (const row of rows) {
       if (row.status !== 'missing' && !present.has(`${row.kind}:${row.slug}`)) {
         outcomes.push({
@@ -281,33 +398,42 @@ async function deployOnce(
         })
       }
     }
+    // A retry that changed nothing (the same problems again) isn't a deploy worth recording.
+    if (retrying && !outcomes.some((o) => isNews(o, rowOf(o.kind, o.slug)))) {
+      await checked()
+      return { status: 'up_to_date', commit }
+    }
     await saveOutcomes(db, commit, outcomes)
   }
 
   const objectProblems = outcomes.filter((o) => o.outcome === 'problem')
   const ok = repoProblems.length === 0 && objectProblems.length === 0
   const changed = outcomes.filter((o) => o.outcome !== 'unchanged')
-  await db.insert(gitDeploys).values({
-    commit,
-    previousCommit: settings.deployedCommit,
-    trigger: opts.trigger,
-    status: ok ? 'ok' : 'problems',
-    summary: {
-      subject: releaseNotes(info),
-      author: { name: info.authorName, email: info.authorEmail },
-      objects: changed.map(({ kind, slug, outcome, version, problems }) => ({
-        kind,
-        slug,
-        outcome,
-        version,
-        problems,
-      })),
-      unchanged: outcomes.length - changed.length,
-      problems: repoProblems,
-    },
-    startedAt,
-    finishedAt: new Date(),
-  })
+  const [recorded] = await db
+    .insert(gitDeploys)
+    .values({
+      commit,
+      previousCommit: settings.deployedCommit,
+      trigger,
+      status: ok ? 'ok' : 'problems',
+      summary: {
+        subject: releaseNotes(info),
+        author: { name: info.authorName, email: info.authorEmail },
+        objects: changed.map(({ kind, slug, outcome, version, problems, folder }) => ({
+          kind,
+          slug,
+          outcome,
+          version,
+          problems,
+          folder,
+        })),
+        unchanged: outcomes.length - changed.length,
+        problems: repoProblems,
+      },
+      startedAt,
+      finishedAt: new Date(),
+    })
+    .returning({ id: gitDeploys.id })
   await db.execute(sql`
     delete from git_deploys where id not in (
       select id from git_deploys order by started_at desc limit ${KEEP_DEPLOYS})`)
@@ -319,15 +445,50 @@ async function deployOnce(
     objectType: 'git_settings',
     metadata: {
       commit,
-      trigger: opts.trigger,
+      trigger,
       created: count('created'),
       released: count('released'),
+      updated: count('updated'),
       problems: objectProblems.length + repoProblems.length,
       missing: count('missing'),
     },
   })
-  opts.log?.info({ commit, trigger: opts.trigger, ok, changed: changed.length }, 'git deploy finished')
+  // When the problems changed (or went away), the notify workflow runs (M22).
+  await notifyIfChanged(db, config, { id: recorded!.id, commit }, opts.log)
+  opts.log?.info({ commit, trigger, ok, changed: changed.length }, 'git deploy finished')
   return { status: 'deployed', commit, ok, objects: outcomes, problems: repoProblems }
+}
+
+/** Takes the retry mark: whether one was set. */
+async function takeRetryMark(db: Db): Promise<boolean> {
+  const taken = await db
+    .update(gitSettings)
+    .set({ retryRequestedAt: null })
+    .where(sql`${gitSettings.retryRequestedAt} is not null`)
+    .returning({ id: gitSettings.id })
+  return taken.length > 0
+}
+
+async function hasObjectsToRecheck(db: Db): Promise<boolean> {
+  const [row] = await db
+    .select({ id: gitObjects.id })
+    .from(gitObjects)
+    .where(
+      or(
+        eq(gitObjects.status, 'problem'),
+        and(eq(gitObjects.status, 'deployed'), isNull(gitObjects.treeSha)),
+      ),
+    )
+    .limit(1)
+  return Boolean(row)
+}
+
+/** Whether an outcome differs from what the directory's row already says. */
+function isNews(outcome: ObjectOutcome, row: GitObject | undefined): boolean {
+  if (outcome.outcome === 'unchanged') return false
+  if (outcome.outcome !== 'problem' || row?.status !== 'problem') return true
+  // Compared canonically: jsonb doesn't keep the keys' order.
+  return canonicalJson(outcome.problems ?? []) !== canonicalJson(row.problems)
 }
 
 /**
@@ -343,6 +504,7 @@ export function releaseNotes(info: { subject: string; body: string }): string {
 /** Creates or updates one object of any kind from its decoded files. Problems come back as an outcome. */
 async function deployObject(
   db: Db,
+  config: DeployConfig,
   item: {
     kind: ObjectKind
     slug: string
@@ -421,6 +583,19 @@ async function deployObject(
             module: object as Module,
             definition: definition as AppDefinition,
           })
+        case 'component_library':
+          return deployComponentLibraryFromGit(
+            db,
+            componentBuildConfig({
+              NPM_REGISTRY_URL: config.NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY,
+              COMPONENT_BUILD_DIR: config.COMPONENT_BUILD_DIR,
+            }),
+            {
+              ...meta,
+              library: object as ComponentLibrary,
+              definition: definition as ComponentLibraryDefinition,
+            },
+          )
       }
     })()
     if (release) {
@@ -437,14 +612,41 @@ async function deployObject(
           commit: git.commit,
         },
       })
+      if ('originsChanged' in release && release.originsChanged) {
+        await recordAudit(db, {
+          actorUserId: null,
+          action: 'component_library.origins_changed',
+          objectType: kind,
+          objectId: object.id,
+          metadata: {
+            releaseId: release.id,
+            version: release.version,
+            allowedOrigins: (definition as ComponentLibraryDefinition).allowedOrigins,
+            source: 'git',
+            commit: git.commit,
+          },
+        })
+      }
+    }
+    // Into its Git folder once deployed: a directory with problems leaves the object where it is.
+    const folder = await moveToGitFolder(db, kind, object, item.value.folder, git)
+    if (folder && !created) {
+      await recordAudit(db, {
+        actorUserId: null,
+        action: `${kind}.updated`,
+        objectType: kind,
+        objectId: object.id,
+        metadata: { slug, folder: folder.to, source: 'git', commit: git.commit },
+      })
     }
     return {
       kind,
       slug,
-      outcome: created ? 'created' : release ? 'released' : 'unchanged',
+      outcome: created ? 'created' : release ? 'released' : folder ? 'updated' : 'unchanged',
       objectId: object.id,
       treeSha,
       version: release?.version,
+      ...(folder ? { folder } : {}),
     }
   } catch (err) {
     if (err instanceof TRPCError) return problem('invalid_definition', err.message, object.id)

@@ -1,11 +1,12 @@
 import type { AppRouter } from '@ow/server/trpc'
 import { QueryClient } from '@tanstack/react-query'
 import { createTRPCClient, httpBatchLink, TRPCClientError } from '@trpc/client'
-import type { inferRouterOutputs } from '@trpc/server'
+import type { inferRouterInputs, inferRouterOutputs } from '@trpc/server'
 import { createTRPCContext } from '@trpc/tanstack-react-query'
 import superjson from 'superjson'
 
 export type RouterOutputs = inferRouterOutputs<AppRouter>
+export type RouterInputs = inferRouterInputs<AppRouter>
 
 export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>()
 

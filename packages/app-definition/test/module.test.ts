@@ -6,9 +6,12 @@ import {
   addModuleItem,
   buildAppGraph,
   emptyModule,
+  MAX_MODULE_DEPTH,
   type ModuleInfo,
+  moduleNesting,
   removeModuleItem,
   renameAppEntity,
+  renameModuleInputReads,
   updateModuleItem,
   validateApp,
 } from '../src'
@@ -39,6 +42,9 @@ const picker = (extra: Partial<AppDefinition> = {}): AppDefinition => ({
   ...extra,
 })
 
+/** A resource query's SQL, by its index. */
+const sqlOf = (def: AppDefinition, i: number) => (def.queries[i] as { query?: { sql?: unknown } }).query?.sql
+
 const codes = (def: unknown, options = {}) =>
   validateApp(def, options).diagnostics.map((d) => [d.code, d.path.join('.'), d.severity])
 
@@ -62,7 +68,6 @@ describe('module definitions', () => {
     def.components[1]!.props!.value = '{{ inputs.nope }}'
     expect(codes(def)).toEqual([
       ['unknown_event', 'components.2.events.1.action.event', 'error'],
-      ['nested_module', 'components.4.type', 'error'],
       ['module_pages', 'pages', 'error'],
       ['invalid_name', 'components.3.name', 'error'],
       ['invalid_name', 'module.inputs.2.name', 'error'],
@@ -131,6 +136,7 @@ describe('module instances in apps', () => {
       },
     },
     draft_only: { liveVersion: null, versions: {} },
+    locked: { liveVersion: null, versions: {}, noUse: true },
   }
   const resolveModule = (slug: string) => modules[slug]
   const instance = (props: Record<string, unknown>, extra: object = {}) =>
@@ -176,6 +182,7 @@ describe('module instances in apps', () => {
         comp('b', 'module', { module: 'draft_only' }),
         comp('c', 'module', { module: 'customer_picker', version: '9.9.9' }),
         comp('d', 'module', { module: '{{ x }}' }),
+        comp('e', 'module', { module: 'locked' }),
       ],
     })
     expect(codes(bad, { resolveModule })).toEqual([
@@ -183,8 +190,77 @@ describe('module instances in apps', () => {
       ['unpublished_module', 'components.1.props.version', 'error'],
       ['unknown_version', 'components.2.props.version', 'error'],
       ['unknown_module', 'components.3.props.module', 'error'],
+      ['no_use_access', 'components.4.props.module', 'error'],
       ['unknown_identifier', 'components.3.props.module', 'error'],
     ])
+  })
+})
+
+describe('modules inside modules (M21)', () => {
+  const iface = { inputs: [], outputs: [], events: [] }
+  const nested = (depth: number, reaches: string[]) => ({ depth, reaches })
+  const modules: Record<string, ModuleInfo> = {
+    leaf: { liveVersion: '1.0.0', versions: { '1.0.0': iface }, nesting: { '1.0.0': nested(1, []) } },
+    middle: {
+      liveVersion: '2.0.0',
+      versions: { '1.0.0': iface, '2.0.0': iface },
+      nesting: { '1.0.0': nested(1, []), '2.0.0': nested(2, ['leaf']) },
+    },
+    top: {
+      liveVersion: '1.0.0',
+      versions: { '1.0.0': iface },
+      nesting: { '1.0.0': nested(3, ['leaf', 'middle']) },
+    },
+    // Holds `outer`, the module checked below, through `middle`-like nesting.
+    loop: { liveVersion: '1.0.0', versions: { '1.0.0': iface }, nesting: { '1.0.0': nested(2, ['outer']) } },
+  }
+  const resolveModule = (slug: string) => modules[slug]
+  const holding = (...instances: [string, string?][]) =>
+    app({
+      components: instances.map(([module, version], i) =>
+        comp(`m${i}`, 'module', { module, ...(version && { version }) }),
+      ),
+    })
+  const inModule = (def: AppDefinition): AppDefinition => ({
+    ...def,
+    module: { inputs: [], outputs: [], events: [] },
+  })
+
+  it('lets an app hold modules three deep, and a module one less', () => {
+    expect(MAX_MODULE_DEPTH).toBe(3)
+    expect(codes(holding(['top'], ['middle']), { resolveModule })).toEqual([])
+    expect(codes(inModule(holding(['middle'], ['leaf'])), { resolveModule, self: 'outer' })).toEqual([])
+    expect(codes(inModule(holding(['top'])), { resolveModule, self: 'outer' })).toEqual([
+      ['module_depth', 'components.0.props.module', 'error'],
+    ])
+    // A pinned release nests as that release does.
+    expect(codes(inModule(holding(['middle', '1.0.0'])), { resolveModule, self: 'outer' })).toEqual([])
+  })
+
+  it('refuses a module holding itself, directly or through others', () => {
+    expect(codes(inModule(holding(['outer'])), { self: 'outer' })).toEqual([
+      ['module_cycle', 'components.0.props.module', 'error'],
+    ])
+    const loop = validateApp(inModule(holding(['loop'])), { resolveModule, self: 'outer' }).diagnostics
+    expect(loop.map((d) => d.code)).toEqual(['module_cycle'])
+    expect(loop[0]!.message).toBe(
+      'Module "loop" holds this module (directly or through others): a module can’t hold itself',
+    )
+  })
+
+  it('computes how a definition nests from what its instances run', () => {
+    const lookup = (slug: string, version: string) => {
+      const info = modules[slug]
+      const at = version === 'latest' ? info?.liveVersion : version
+      return at ? info?.nesting?.[at] : undefined
+    }
+    expect(moduleNesting(holding(), lookup)).toEqual({ depth: 1, reaches: [] })
+    expect(moduleNesting(holding(['middle'], ['leaf']), lookup)).toEqual({
+      depth: 3,
+      reaches: ['leaf', 'middle'],
+    })
+    expect(moduleNesting(holding(['middle', '1.0.0']), lookup)).toEqual({ depth: 2, reaches: ['middle'] })
+    expect(moduleNesting(holding(['unknown']), lookup)).toEqual({ depth: 2, reaches: ['unknown'] })
   })
 })
 
@@ -203,12 +279,73 @@ describe('editing a module’s interface', () => {
     expect(renamed.components[2]!.events![0]!.action).toEqual({ type: 'moduleEvent', event: 'chosen' })
     expect(codes(renamed)).toEqual([])
 
-    // An input renamed: code still reading the old name is a problem to fix.
+    // An input renamed (M21): the module's reads of it follow.
     const input = updateModuleItem(picker(), 'inputs', 'region', { name: 'area', testValue: 'EU' })
     expect(input.module!.inputs[1]).toEqual({ name: 'area', testValue: 'EU' })
-    expect(codes(input).map(([code]) => code)).toContain('unknown_property')
+    expect(sqlOf(input, 0)).toBe('select * from customers where region = {{ inputs.area }}')
+    expect(codes(input)).toEqual([])
 
     expect(removeModuleItem(picker(), 'outputs', 'selectedId').module!.outputs).toEqual([])
+  })
+})
+
+describe('renaming a module input (M21)', () => {
+  it('rewrites inputs.<old> wherever the module reads it, and nothing else', () => {
+    const def = picker({
+      queries: [
+        sqlQuery(
+          'customers',
+          'select * from c where region = {{ inputs.region }} and x = {{ other.region }}',
+        ),
+        {
+          name: 'compute',
+          kind: 'js',
+          code: [
+            'const a = inputs.region + inputs["region"] + inputs.label',
+            'const f = (inputs) => inputs.region',
+            'return a + f({})',
+          ].join('\n'),
+        },
+      ] as AppDefinition['queries'],
+    })
+    def.module!.outputs[0]!.value = '{{ inputs?.region ?? null }}'
+    const renamed = renameModuleInputReads(def, 'region', 'area')
+    expect(sqlOf(renamed.definition, 0)).toBe(
+      'select * from c where region = {{ inputs.area }} and x = {{ other.region }}',
+    )
+    // A parameter named inputs is the function's own: its reads stay.
+    expect((renamed.definition.queries[1] as { code: string }).code).toBe(
+      [
+        'const a = inputs.area + inputs["area"] + inputs.label',
+        'const f = (inputs) => inputs.region',
+        'return a + f({})',
+      ].join('\n'),
+    )
+    expect(renamed.definition.module!.outputs[0]!.value).toBe('{{ inputs?.area ?? null }}')
+    expect(renamed.changed).toHaveLength(3)
+  })
+
+  it('leaves a field it can’t read alone, and says so', () => {
+    const def = picker()
+    def.components[1]!.props!.value = '{{ inputs.region +'
+    const renamed = renameModuleInputReads(def, 'region', 'area')
+    expect(renamed.skipped).toEqual([['components', 1, 'props', 'value']])
+    expect(renamed.definition.components[1]!.props!.value).toBe('{{ inputs.region +')
+  })
+
+  it('leaves the reads alone when the new name is another input’s, or two share the old one (review fix)', () => {
+    const def = picker()
+    // `label` and `region`: renaming region to label would merge their reads.
+    const merged = updateModuleItem(def, 'inputs', 'region', { name: 'label' })
+    expect(sqlOf(merged, 0)).toBe('select * from customers where region = {{ inputs.region }}')
+    // Two inputs now named label: renaming one back changes only the first, and no reads.
+    const back = updateModuleItem(merged, 'inputs', 'label', { name: 'other' })
+    expect(back.module!.inputs.map((i) => i.name)).toEqual(['other', 'label'])
+    expect(back.components[1]!.props!.value).toBe('{{ inputs.label }}')
+  })
+
+  it('waits for a valid name', () => {
+    expect(renameModuleInputReads(picker(), 'region', 'not valid').changed).toEqual([])
   })
 })
 

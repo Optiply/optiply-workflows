@@ -49,8 +49,18 @@ export interface CodeRuntime {
   dispose(): void
 }
 
-/** `unavailable`: Python's executor couldn't be reached, was busy, or couldn't start a jail. */
-export type SandboxErrorKind = 'timeout' | 'memory' | 'runtime' | 'syntax' | 'serialization' | 'unavailable'
+/**
+ * `unavailable`: Python's executor couldn't be reached, was busy, or couldn't start a jail. `python_packages`: the
+ * workflow's Python packages (M23) aren't installed where the code runs.
+ */
+export type SandboxErrorKind =
+  | 'timeout'
+  | 'memory'
+  | 'runtime'
+  | 'syntax'
+  | 'serialization'
+  | 'unavailable'
+  | 'python_packages'
 
 export class SandboxError extends Error {
   constructor(

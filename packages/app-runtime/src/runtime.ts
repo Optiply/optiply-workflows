@@ -4,6 +4,9 @@ import {
   type AppQuery,
   browserExpressions,
   type CodeRunner,
+  containerViews,
+  customComponentSpec,
+  customInstanceInterface,
   type Entity,
   type EventHandler,
   entityPages,
@@ -18,8 +21,17 @@ import {
   runsAutomatically,
   type ServerAppQuery,
   sameValue,
+  tableFilters,
 } from '@ow/app-definition'
-import type { Effect, LogLevel, ModuleReleases, QueryModule, QueryOutcome, StatePatch } from './protocol'
+import type {
+  ComponentLibraryReleases,
+  Effect,
+  LogLevel,
+  ModuleReleases,
+  QueryModule,
+  QueryOutcome,
+  StatePatch,
+} from './protocol'
 
 /**
  * Runs an app inside its sandbox: the reactive model, queries (automatic and manual, resource and JS), component
@@ -42,6 +54,11 @@ export interface HostBridge {
   /** Asks the user to confirm before a query runs. */
   confirm(message: string): Promise<boolean>
   effect(effect: Effect): void
+  /**
+   * Calls a custom component's method in its frame (M25) and resolves with what it answered; rejects with its error.
+   * Inside a module instance, `component` carries the instance's prefix (`picker1/chart1`).
+   */
+  callComponent?(component: string, method: string, args: unknown[]): Promise<unknown>
   /** What changed in the state, for the page to render. */
   publish(patch: StatePatch): void
   log(level: LogLevel, message: string): void
@@ -60,6 +77,11 @@ export interface AppRuntimeOptions {
    * release isn't here doesn't run, and takes any props.
    */
   modules?: ModuleReleases
+  /**
+   * The component library releases the app's custom components run (M25), by `slug@version`. A custom component
+   * whose release isn't here takes any props and has no methods.
+   */
+  libraries?: ComponentLibraryReleases
   /** In a module instance (M14): what `inputs.<name>` starts as. */
   inputs?: Record<string, unknown>
   /** In a module instance (M14): fires one of the module's events on the instance in the app. */
@@ -119,6 +141,21 @@ export class AppRuntime {
       ...(options.url && { url: options.url }),
       ...(options.inputs && { inputs: options.inputs }),
       specFor: (c) => {
+        if (c.type === 'custom') {
+          const libraries = options.libraries ?? {}
+          return customComponentSpec(
+            customInstanceInterface(c, (slug) => {
+              // The release the instance names, as the page resolved it: one version per key.
+              const prefix = `${slug}@`
+              const keys = Object.keys(libraries).filter((k) => k.startsWith(prefix))
+              if (!keys.length) return undefined
+              const versions = Object.fromEntries(
+                keys.map((k) => [k.slice(prefix.length), libraries[k]!.components]),
+              )
+              return { liveVersion: Object.hasOwn(versions, 'latest') ? 'latest' : null, versions }
+            }),
+          )
+        }
         const release = c.type === 'module' ? this.releaseOf(c) : undefined
         return release ? moduleComponentSpec(moduleInterface(release.definition)) : undefined
       },
@@ -130,6 +167,12 @@ export class AppRuntime {
     const ref = instanceRelease(component)
     const modules = this.options.modules
     return ref && modules && Object.hasOwn(modules, ref.key) ? { ...ref, ...modules[ref.key]! } : undefined
+  }
+
+  /** A custom component's method, through the page (M25). */
+  private callComponent(component: string, method: string, args: unknown[]): Promise<unknown> {
+    if (!this.bridge.callComponent) return Promise.reject(new Error('Custom components can’t be called here'))
+    return this.bridge.callComponent(component, method, args)
   }
 
   /** The page shown; null in an app without pages. */
@@ -165,7 +208,13 @@ export class AppRuntime {
           (this.stale.has(q.name) || !this.runs.has(q.name))),
     )
     for (const q of opening) this.stale.delete(q.name)
-    return Promise.allSettled(run.map((q) => this.runQuiet(q.name))).then(() => {})
+    // Module instances on the page start the first time it opens (M21), and keep their state after it closes.
+    const starting = this.definition.components.flatMap((c) =>
+      c.type === 'module' && this.pages.get(c.name) === next && !this.instances.has(c.name)
+        ? [this.startInstance(c)]
+        : [],
+    )
+    return Promise.allSettled([...starting, ...run.map((q) => this.runQuiet(q.name))]).then(() => {})
   }
 
   /**
@@ -185,7 +234,9 @@ export class AppRuntime {
     const loading = this.startInstances(previous)
     const values: Record<string, unknown> = {}
     for (const key of this.model.graph.order) {
-      if (!this.model.graph.nodes.get(key)!.property.startsWith('$')) values[key] = this.model.get(key)
+      // Of the internal values, only what renderers read: a table's `$rows` (M24).
+      const node = this.model.graph.nodes.get(key)!
+      if (!node.property.startsWith('$') || node.kind === 'rows') values[key] = this.model.get(key)
     }
     this.publish({ ...values, ...this.early })
     this.early = null
@@ -199,55 +250,71 @@ export class AppRuntime {
   }
 
   /**
-   * Starts a runtime for each module instance whose release the page sent, with its inputs from the instance's
-   * props; with `previous`, an instance of the same module there carries over (see `start`). Returns their loads.
-   * What they publish meanwhile goes into the app's first patch, and their outputs into its model, so the app's
-   * on-load queries see them (and run once).
+   * Starts a runtime for each module instance on the page shown (or on every page) whose release the page sent;
+   * those on other pages start when theirs first opens (M21). With `previous`, an instance of the same module there
+   * carries over (see `start`). Returns their loads. What they publish meanwhile goes into the app's first patch, and
+   * their outputs into its model, so the app's on-load queries see them (and run once).
    */
   private startInstances(previous?: AppRuntime): Promise<void>[] {
-    const loading: Promise<void>[] = []
     this.early = {}
-    for (const component of this.definition.components) {
-      if (component.type !== 'module') continue
-      const release = this.releaseOf(component)
-      if (!release) continue
-      const name = component.name
-      try {
-        const iface = moduleInterface(release.definition)
-        const inputs = Object.fromEntries(iface.inputs.map((i) => [i, this.model.get(`${name}.${i}`)]))
-        const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
-          ...(this.options.globals && { globals: this.options.globals }),
-          ...(this.options.runner && { runner: this.options.runner }),
-          autoRunDelayMs: this.autoRunDelayMs,
-          inputs,
-          onEvent: (event) => this.fire(name, event),
-        })
-        this.instances.set(name, {
-          runtime,
-          slug: release.slug,
-          releaseId: release.releaseId,
-          inputs: new Set(iface.inputs),
-          errors: {},
-        })
-        const before = previous?.instances.get(name)
-        loading.push(runtime.start(before?.slug === release.slug ? { previous: before.runtime } : {}))
-      } catch (err) {
-        this.bridge.log('error', `${name}: the module could not start: ${message(err)}`)
-      }
-    }
-    return loading
+    // Those already running before an edit keep running (and their state), whatever page is shown.
+    return this.definition.components.flatMap((component) =>
+      component.type === 'module' && (this.active(component.name) || previous?.instances.has(component.name))
+        ? [this.startInstance(component, previous)]
+        : [],
+    )
   }
 
-  /** What a module instance's runtime sees of the page: its queries tagged, its values under its prefix. */
+  /** Starts one module instance, with its inputs from the instance's props; resolves when its on-load work ends. */
+  private startInstance(
+    component: AppDefinition['components'][number],
+    previous?: AppRuntime,
+  ): Promise<void> {
+    const release = this.releaseOf(component)
+    if (!release) return Promise.resolve()
+    const name = component.name
+    try {
+      const iface = moduleInterface(release.definition)
+      const inputs = Object.fromEntries(iface.inputs.map((i) => [i, this.model.get(`${name}.${i}`)]))
+      const runtime = new AppRuntime(release.definition, this.instanceBridge(name), {
+        ...(this.options.globals && { globals: this.options.globals }),
+        ...(this.options.runner && { runner: this.options.runner }),
+        // Its own instances run from the same releases (M21: modules inside modules).
+        ...(this.options.modules && { modules: this.options.modules }),
+        ...(this.options.libraries && { libraries: this.options.libraries }),
+        autoRunDelayMs: this.autoRunDelayMs,
+        inputs,
+        onEvent: (event) => this.fire(name, event),
+      })
+      this.instances.set(name, {
+        runtime,
+        slug: release.slug,
+        releaseId: release.releaseId,
+        inputs: new Set(iface.inputs),
+        errors: {},
+      })
+      const before = previous?.instances.get(name)
+      return runtime.start(before?.slug === release.slug ? { previous: before.runtime } : {})
+    } catch (err) {
+      this.bridge.log('error', `${name}: the module could not start: ${message(err)}`)
+      return Promise.resolve()
+    }
+  }
+
+  /**
+   * What a module instance's runtime sees of the page: its queries tagged with their path (this instance first,
+   * then those inside it), its values under its prefix.
+   */
   private instanceBridge(name: string): HostBridge {
     return {
-      runQuery: (query, values) =>
-        this.bridge.runQuery(query, values, {
-          instance: name,
-          releaseId: this.instances.get(name)!.releaseId,
-        }),
+      runQuery: (query, values, inner) =>
+        this.bridge.runQuery(query, values, [
+          { instance: name, releaseId: this.instances.get(name)!.releaseId },
+          ...(inner ?? []),
+        ]),
       confirm: (text) => this.bridge.confirm(text),
       effect: (effect) => this.bridge.effect(effect),
+      callComponent: (component, method, args) => this.callComponent(`${name}/${component}`, method, args),
       log: (level, text) => this.bridge.log(level, `${name}/${text}`),
       publish: (patch) => this.fromInstance(name, patch),
     }
@@ -293,8 +360,14 @@ export class AppRuntime {
   private route(name: string): [AppRuntime, string] {
     const slash = name.indexOf('/')
     if (slash < 0) return [this, name]
-    const instance = this.instances.get(name.slice(0, slash))
-    if (!instance) throw new Error(`No module instance is named ${name.slice(0, slash)}`)
+    const owner = name.slice(0, slash)
+    // An instance on a page not opened yet starts when something reaches into it (M21).
+    if (!this.instances.has(owner)) {
+      const component = this.definition.components.find((c) => c.name === owner && c.type === 'module')
+      if (component) void this.startInstance(component)
+    }
+    const instance = this.instances.get(owner)
+    if (!instance) throw new Error(`No module instance is named ${owner}`)
     return [instance.runtime, name.slice(slash + 1)]
   }
 
@@ -627,6 +700,14 @@ export class AppRuntime {
       case 'component': {
         const type = entity.component.type
         methods.setHidden = (hidden: unknown) => this.apply({ [key('hidden')]: truthy(hidden) })
+        if (type === 'custom') {
+          // Its declared methods run in its frame (M25), on the page.
+          for (const method of Object.keys(entity.spec?.methods ?? {})) {
+            if (method !== 'setHidden') {
+              methods[method] = (...args: unknown[]) => this.callComponent(name, method, args)
+            }
+          }
+        }
         if (entity.spec?.input) {
           methods.setValue = (value: unknown) => this.apply({ [key('value')]: value })
           methods.clearValue = () =>
@@ -640,11 +721,17 @@ export class AppRuntime {
               [key('selectedRows')]: [],
               [key('selectedIndex')]: null,
             })
-          methods.clearChangeset = () => this.apply({ [key('changesetArray')]: [] })
+          methods.clearChangeset = () => this.apply({ [key('changesetArray')]: [], [key('newRows')]: [] })
           methods.saveChanges = async () => {
             const ok = await this.fire(name, 'save')
-            if (ok) this.apply({ [key('changesetArray')]: [] })
+            if (ok) this.apply({ [key('changesetArray')]: [], [key('newRows')]: [] })
             return ok
+          }
+          methods.addRow = (row?: unknown) => {
+            const current = this.model.get(key('newRows'))
+            const added = row && typeof row === 'object' && !Array.isArray(row) ? { ...row } : {}
+            this.apply({ [key('newRows')]: [...(Array.isArray(current) ? current : []), added] })
+            return this.fire(name, 'addRow')
           }
           methods.setPage = (page: unknown) => {
             const n = Number(page)
@@ -666,6 +753,48 @@ export class AppRuntime {
             })
             return this.fire(name, 'searchChange')
           }
+          const setFilters = (filters: unknown) => {
+            this.apply({ [key('filters')]: tableFilters(filters), [key('page')]: 0 })
+            return this.fire(name, 'filterChange')
+          }
+          methods.setFilters = setFilters
+          methods.clearFilters = () => setFilters([])
+        }
+        if (type === 'container') {
+          const views = () => containerViews(entity.component).map((v) => v.name)
+          const shown = () => {
+            const current = this.model.get(key('currentView'))
+            return views().includes(current as string) ? (current as string) : (views()[0] ?? null)
+          }
+          const show = (view: string) => {
+            if (view === shown()) return true
+            this.apply({ [key('currentView')]: view })
+            return this.fire(name, 'viewChange')
+          }
+          methods.setView = (view: unknown) => {
+            if (typeof view !== 'string' || !views().includes(view)) {
+              throw new Error(
+                `${name} has no view ${JSON.stringify(view)}: it has ${views().join(', ') || 'none'}`,
+              )
+            }
+            return show(view)
+          }
+          const step = (by: 1 | -1) => {
+            const list = views()
+            const at = list.indexOf(shown() ?? '')
+            const next = list[Math.max(0, Math.min(list.length - 1, at + by))]
+            return next === undefined ? true : show(next)
+          }
+          methods.nextView = () => step(1)
+          methods.previousView = () => step(-1)
+          const fold = (expanded: boolean) => {
+            if ((this.model.get(key('expanded')) !== false) === expanded) return true
+            this.apply({ [key('expanded')]: expanded })
+            return this.fire(name, expanded ? 'expand' : 'collapse')
+          }
+          methods.expand = () => fold(true)
+          methods.collapse = () => fold(false)
+          methods.toggle = () => fold(this.model.get(key('expanded')) === false)
         }
         if (type === 'form') {
           methods.submit = () => this.submitForm(name)

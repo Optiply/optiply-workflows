@@ -1,15 +1,21 @@
+import { equal, type SharedDefinition, SharedHistory } from '@ow/collab'
 import {
   type Block,
   type Diagnostic,
   type Edge,
+  usedLibraries,
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
+import type * as Y from 'yjs'
 import { create } from 'zustand'
-import { emptyHistory, type History, record, redo, sameValue, seal, undo } from '@/lib/history'
+import { LOCAL, type SaveStatus } from '@/lib/collab-session'
+import { changeKey } from '@/lib/history'
+import type { LibraryRef } from '@/lib/library-refs'
 import type { SampleResult } from './scope-types'
 
-export type SaveStatus = 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
+export { LOCAL, type SaveStatus }
 
 /** What the side panel shows when no block is selected. */
 export type SideTab = 'problems' | 'functions' | 'releases' | 'settings'
@@ -48,15 +54,18 @@ interface EditorState {
   workflowId: string | null
   /** The Git branch draft being edited (M11), or null for the workflow's own (main) draft. */
   branchDraftId: string | null
-  /** A protected workflow's main draft: shown and run, but edits are ignored (they're made on a branch). */
+  /** Watching only (Use, or a protected workflow's main draft): shown, run and updated live, but edits are ignored. */
   readOnly: boolean
   definition: WorkflowDefinition
-  /** The draft revision the server has; saves send it for optimistic concurrency. */
+  /**
+   * The document everyone edits (M16), once it has synced: edits go through it, and others' come back from it. Until
+   * then, `definition` is the draft as loaded and edits are ignored.
+   */
+  shared: SharedDefinition<WorkflowDefinition> | null
+  /** The draft revision the server last saved the document as. */
   revision: number
-  /** The server's hash of the saved draft; equal to the live release's when nothing is unpublished. */
+  /** The hash of the saved draft; equal to the live release's when nothing is unpublished. */
   draftHash: string | null
-  /** JSON of the definition the server has, to tell whether an edit (or an undo) changed anything. */
-  savedJson: string
   status: SaveStatus
   saveError: string | null
   /** The block whose inspector shows, in the open graph. */
@@ -68,14 +77,26 @@ interface EditorState {
   /** The function open on the canvas, or null for the workflow itself. */
   graph: string | null
   diagnostics: Diagnostic[]
+  /**
+   * What the server said about the library queries the workflow uses (M21), by slug; null for one that doesn't
+   * exist or the person can't see. The validator checks Library query blocks once every one used is known.
+   */
+  libraries: Record<string, LibraryRef | null>
   /** Results of the latest finished run, by block, for autocompletion. */
   samples: Record<string, SampleResult>
   sideTab: SideTab
-  /** The edits that can be undone and redone (M13); cleared when a draft is loaded. */
-  history: History<WorkflowDefinition, EditorView>
+  /**
+   * This editor's own edits to undo and redo (M13's steps, on the shared document's undo manager since M16: undoing
+   * never reverts someone else's edit); made afresh when a draft is loaded and synced.
+   */
+  history: SharedHistory<WorkflowDefinition, EditorView> | null
+  /** Whether this editor has edits of its own to undo, or undone ones to redo. */
+  canUndo: boolean
+  canRedo: boolean
   /** Raised by undo and redo: the side panel remounts, so what it read once (and Monaco's models) starts afresh. */
   epoch: number
 
+  /** Shows a draft as loaded, until `attach` hands over the shared document. */
   load(
     workflowId: string,
     definition: WorkflowDefinition,
@@ -83,8 +104,24 @@ interface EditorState {
     draftHash: string,
     opts?: { branchDraftId?: string | null; readOnly?: boolean },
   ): void
-  /** Applies an edit; the draft becomes dirty and is re-validated, and the edit can be undone. */
+  /** The shared document synced: it's the definition from now on, and edits go into it. */
+  attach(shared: SharedDefinition<WorkflowDefinition>): void
+  /** Someone else changed the shared document (or it synced again): shows it as it is now. */
+  remote(): void
+  /** How the connection stands. */
+  connection(status: SaveStatus, saveError: string | null, revision?: number): void
+  setDraftHash(definition: WorkflowDefinition, draftHash: string): void
+  /** Applies an edit to the shared document; it's re-validated, and can be undone. */
   update(edit: (def: WorkflowDefinition) => WorkflowDefinition): void
+  /**
+   * A code field typed into its text at `path` (`write` changes the `Y.Text`): undoable, grouped like `update`. With
+   * `removeEmpty`, a text left empty is removed (the field is optional, and absent means something else).
+   */
+  editText(
+    path: (string | number)[],
+    write: (transaction: Y.Transaction) => void,
+    opts?: { removeEmpty?: boolean },
+  ): void
   /** Puts back the definition before the last edit, and what was selected then. */
   undo(): void
   /** Makes the last undone edit again. */
@@ -98,14 +135,11 @@ interface EditorState {
   notify(message: string | null): void
   /** Opens a function on the canvas (or the workflow, with null), selecting `block` in it. */
   openGraph(fn: string | null, block?: string | null): void
-  saving(): void
-  /** The server stored `savedJson` as `revision`; later edits keep the draft dirty. */
-  saved(revision: number, savedJson: string, draftHash: string): void
-  conflict(): void
-  failed(message: string): void
   setSamples(samples: Record<string, SampleResult>): void
   /** Shows a workflow-level tab in the side panel (and deselects the block). */
   showTab(tab: SideTab): void
+  /** What the server said about library queries the workflow uses (merged into `libraries`); re-validates. */
+  setLibraries(libraries: Record<string, LibraryRef | null>): void
 }
 
 const EMPTY: WorkflowDefinition = { schemaVersion: 1, blocks: [], edges: [] }
@@ -116,19 +150,22 @@ export const useEditor = create<EditorState>()((set, get) => ({
   branchDraftId: null,
   readOnly: false,
   definition: EMPTY,
+  shared: null,
   revision: 0,
   draftHash: null,
-  savedJson: '',
-  status: 'saved',
+  status: 'connecting',
   saveError: null,
   selected: null,
   selection: [],
   notice: null,
   graph: null,
   diagnostics: [],
+  libraries: {},
   samples: {},
   sideTab: 'problems',
-  history: emptyHistory(),
+  history: null,
+  canUndo: false,
+  canRedo: false,
   epoch: 0,
 
   load: (workflowId, definition, revision, draftHash, opts = {}) =>
@@ -137,96 +174,141 @@ export const useEditor = create<EditorState>()((set, get) => ({
       branchDraftId: opts.branchDraftId ?? null,
       readOnly: opts.readOnly ?? false,
       definition,
+      shared: null,
       revision,
       draftHash,
-      savedJson: JSON.stringify(definition),
-      status: 'saved',
+      status: 'connecting',
       saveError: null,
       selected: null,
       selection: [],
       notice: null,
       graph: null,
-      diagnostics: validateDefinition(definition).diagnostics,
-      history: emptyHistory(),
+      diagnostics: validate(definition, get().libraries),
+      ...newHistory(get().history, null),
     }),
 
-  update: (edit) => {
-    const { readOnly, definition: before, selected, graph, history } = get()
-    if (readOnly) return
-    const definition = edit(before)
-    // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
-    if (definition === before || sameValue(before, definition)) return
-    set({
-      ...applied(get(), definition),
-      history: record(history, { before, after: definition, view: { selected, graph }, at: Date.now() }),
-    })
+  attach: (shared) => set({ shared, ...applied(shared.value), ...newHistory(get().history, shared) }),
+
+  remote: () => {
+    const state = get()
+    if (!state.shared) return
+    const definition = state.shared.value
+    if (definition === state.definition) return
+    // What's selected stays, minus what someone else deleted.
+    const view = restoredView(definition, state)
+    const names = new Set(graphOf(definition, view.graph).blocks.map((b) => b.name))
+    set({ ...applied(definition), ...view, selection: state.selection.filter((n) => names.has(n)) })
   },
 
+  // Ended for good (access lost): the editor stops taking edits.
+  connection: (status, saveError, revision) =>
+    set({
+      status,
+      saveError,
+      ...(revision !== undefined && { revision }),
+      ...(status === 'closed' && { readOnly: true }),
+    }),
+
+  setDraftHash: (definition, draftHash) => {
+    if (get().definition === definition) set({ draftHash })
+  },
+
+  update: (edit) => {
+    const { readOnly, shared, definition: before, selected, graph, history } = get()
+    if (readOnly || !shared || !history) return
+    const definition = edit(before)
+    // Rebuilt but the same (a field reporting the value it has): nothing to undo or save.
+    if (definition === before || equal(before, definition)) return
+    history.edit(definition, { selected, graph }, changeKey(before, definition), Date.now())
+    set({ ...applied(shared.value), ...undoable(history) })
+  },
+
+  editText: (path, write, opts = {}) => {
+    const { readOnly, shared, history, selected, graph } = get()
+    if (readOnly || !shared || !history) return
+    // The same key M13's changeKey gives an edit of this one value, so typing groups either way.
+    history.change({ selected, graph }, `.${path.join('.')}`, Date.now(), (transaction) => {
+      write(transaction)
+      if (opts.removeEmpty && shared.textAt(path)?.toString().trim() === '') shared.delete(path)
+    })
+    set({ ...applied(shared.value), ...undoable(history) })
+  },
+
+  // Undo and redo are one's own (M16): what others changed meanwhile stays.
   undo: () => {
-    const state = get()
-    if (state.readOnly || state.status === 'conflict') return
-    const step = undo(state.history, { selected: state.selected, graph: state.graph })
-    if (step)
+    const { readOnly, shared, history, selected, graph, epoch } = get()
+    if (readOnly || !shared || !history) return
+    const step = history.undo({ selected, graph })
+    if (step) {
       set({
-        ...applied(state, step.entry.before, step.entry.view),
-        history: step.history,
-        epoch: state.epoch + 1,
+        ...applied(shared.value, step.view ?? { selected, graph }),
+        ...undoable(history),
+        epoch: epoch + 1,
       })
+    }
   },
 
   redo: () => {
-    const state = get()
-    if (state.readOnly || state.status === 'conflict') return
-    const step = redo(state.history)
-    if (step)
+    const { readOnly, shared, history, selected, graph, epoch } = get()
+    if (readOnly || !shared || !history) return
+    const step = history.redo()
+    if (step) {
       set({
-        ...applied(state, step.entry.after, step.entry.redoView ?? step.entry.view),
-        history: step.history,
-        epoch: state.epoch + 1,
+        ...applied(shared.value, step.view ?? { selected, graph }),
+        ...undoable(history),
+        epoch: epoch + 1,
       })
+    }
   },
 
   // A new selection ends the step being typed: the next edit is undone on its own.
-  select: (selected) =>
-    set((s) => ({ selected, selection: selected ? [selected] : [], history: seal(s.history) })),
-  inspect: (selected) => set((s) => ({ selected, history: seal(s.history) })),
-  setSelection: (names) =>
-    // The same selection returns the state itself, so nothing is notified.
-    set((s) => (sameNames(s.selection, names) ? s : { selection: names, history: seal(s.history) })),
+  select: (selected) => {
+    get().history?.seal()
+    set({ selected, selection: selected ? [selected] : [] })
+  },
+  inspect: (selected) => {
+    get().history?.seal()
+    set({ selected })
+  },
+  setSelection: (names) => {
+    // The same selection changes nothing (no one is notified).
+    if (sameNames(get().selection, names)) return
+    get().history?.seal()
+    set({ selection: names })
+  },
   notify: (notice) => set({ notice }),
-  openGraph: (graph, block = null) =>
-    set((s) => ({ graph, selected: block, selection: block ? [block] : [], history: seal(s.history) })),
-  saving: () => set({ status: 'saving', saveError: null }),
-  saved: (revision, savedJson, draftHash) =>
-    set({
-      revision,
-      draftHash,
-      savedJson,
-      status: JSON.stringify(get().definition) === savedJson ? 'saved' : 'dirty',
-    }),
-  conflict: () => set({ status: 'conflict' }),
-  failed: (message) => set({ status: 'error', saveError: message }),
+  openGraph: (graph, block = null) => {
+    get().history?.seal()
+    set({ graph, selected: block, selection: block ? [block] : [] })
+  },
   setSamples: (samples) => set({ samples }),
   showTab: (sideTab) => set({ sideTab, selected: null }),
+  setLibraries: (found) => {
+    const libraries = { ...get().libraries, ...found }
+    set({ libraries, diagnostics: validate(get().definition, libraries) })
+  },
 }))
 
-/**
- * The state after `definition` replaces the current one: validated, and saved or dirty by whether it differs from
- * what the server has (undoing back to it needs no save). A save in flight finishes first: `saved` then sees whether
- * the definition still differs. With a `view` (undo, redo), what was selected comes back if it's still there.
- */
-function applied(
-  state: EditorState,
+/** The browser's checks, Library query blocks included once the server said about each one the workflow uses. */
+function validate(
   definition: WorkflowDefinition,
-  view?: EditorView,
-): Partial<EditorState> {
-  const { status } = state
-  const unchanged = JSON.stringify(definition) === state.savedJson
+  libraries: Record<string, LibraryRef | null>,
+): Diagnostic[] {
+  const known = usedLibraries(definition).every((slug) => Object.hasOwn(libraries, slug))
+  return validateDefinition(definition, {
+    checkBodySchema,
+    ...(known && { resolveLibrary: (slug: string) => libraries[slug] ?? undefined }),
+  }).diagnostics
+}
+
+/**
+ * The state after `definition` replaces the current one, validated. With a `view` (undo, redo, or someone else's edit),
+ * what was selected stays if it's still there.
+ */
+function applied(definition: WorkflowDefinition, view?: EditorView): Partial<EditorState> {
   return {
     definition,
-    diagnostics: validateDefinition(definition).diagnostics,
-    status: status === 'conflict' || status === 'saving' ? status : unchanged ? 'saved' : 'dirty',
-    ...(status === 'error' && unchanged && { saveError: null }),
+    diagnostics: validate(definition, useEditor.getState().libraries),
     ...(view && restoredView(definition, view)),
   }
 }
@@ -240,6 +322,20 @@ function restoredView(def: WorkflowDefinition, view: EditorView): EditorView & {
       : null
   return { graph, selected, selection: selected ? [selected] : [] }
 }
+
+/** A fresh undo history for `shared` (none before it syncs), the old one let go. */
+function newHistory(
+  old: SharedHistory<WorkflowDefinition, EditorView> | null,
+  shared: SharedDefinition<WorkflowDefinition> | null,
+): Pick<EditorState, 'history' | 'canUndo' | 'canRedo'> {
+  old?.destroy()
+  return { history: shared ? new SharedHistory(shared, LOCAL) : null, canUndo: false, canRedo: false }
+}
+
+const undoable = (history: SharedHistory<WorkflowDefinition, EditorView>) => ({
+  canUndo: history.canUndo,
+  canRedo: history.canRedo,
+})
 
 function sameNames(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((name, i) => name === b[i])

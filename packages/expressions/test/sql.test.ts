@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { compileSql, fragmentText, SqlFragmentError, sqlFragment, TemplateError, withFragments } from '../src'
+import {
+  compileSql,
+  fragmentSql,
+  fragmentText,
+  paramValue,
+  SqlFragmentError,
+  sqlFragment,
+  TemplateError,
+  withFragments,
+} from '../src'
 
 const text = (sql: string) => compileSql(sql).text
 const codes = (sql: string) => compileSql(sql).params.map((p) => p.code.trim())
@@ -42,7 +51,13 @@ describe('compileSql (postgres)', () => {
     ['select "{{col}}" from t', 'identifier'],
   ])('never turns {{ }} in quotes or comments into parameters: %s', (sql, where) => {
     if (where === 'comment') {
-      expect(compileSql(sql)).toEqual({ text: sql, params: [], offsets: [], fragments: [] })
+      expect(compileSql(sql)).toEqual({
+        dialect: 'postgres',
+        text: sql,
+        params: [],
+        offsets: [],
+        fragments: [],
+      })
     } else {
       expect(() => compileSql(sql)).toThrow(TemplateError)
     }
@@ -317,5 +332,95 @@ describe('sql.column and sql.direction', () => {
   it("can't appear inside strings, quoted identifiers or comments as SQL", () => {
     expect(() => compileSql('select \'{{ sql.column(v, ["a"]) }}\'')).toThrow(TemplateError)
     expect(compileSql("-- {{ sql.column(v, ['a']) }}\nselect 1").fragments).toEqual([])
+  })
+})
+
+describe('sql.where (M24)', () => {
+  const where = (sql: string, filters: unknown, dialect: 'postgres' | 'mysql' | 'bigquery' = 'postgres') => {
+    const plan = compileSql(sql, dialect)
+    return withFragments(
+      plan,
+      plan.fragments.map((f) => (f.spec.kind === 'where' ? fragmentSql(f.spec, filters, dialect) : '"x"')),
+    )
+  }
+  const sql =
+    "select * from t where {{ sql.where(t1.filters, ['name', 'total', 'p.day']) }} and id > {{ min }}"
+
+  it('is a fragment only as the whole {{ }}, with its columns written as strings', () => {
+    expect(sqlFragment("sql.where(t1.filters, ['a', 'b'])")).toEqual({ kind: 'where', columns: ['a', 'b'] })
+    for (const bad of [
+      'sql.where(t1.filters)',
+      'sql.where(t1.filters, cols)',
+      "sql.where(t1.filters, ['a', 1])",
+      "sql.where(t1.filters, ['a'], 'b')",
+      "sql.where(t1.filters, ['a\"b'])",
+      "'x' + sql.where(t1.filters, ['a'])",
+    ]) {
+      expect(() => sqlFragment(bad), bad).toThrow(TemplateError)
+    }
+  })
+
+  it('is TRUE without filters, and binds every value in order with the plan’s own', () => {
+    for (const none of [null, undefined, []]) {
+      expect(where(sql, none).text).toBe('select * from t where TRUE and id > $1')
+    }
+    const done = where(sql, [
+      { column: 'name', op: 'contains', value: "O'Brien %" },
+      { column: 'total', op: 'between', value: ['10', 20], type: 'number' },
+      { column: 'p.day', op: 'empty' },
+    ])
+    expect(done.text).toBe(
+      'select * from t where (position(lower($1) in lower("name"::text)) > 0) AND ("total" BETWEEN $2 AND $3) AND ("p"."day" IS NULL OR "p"."day"::text = \'\') and id > $4',
+    )
+    expect(done.params.map((p) => (p.bound ? ['bound', p.value] : ['code', p.code.trim()]))).toEqual([
+      ['bound', "O'Brien %"],
+      ['bound', 10],
+      ['bound', 20],
+      ['code', 'min'],
+    ])
+    expect(done.offsets.map((o) => done.text.slice(o, o + 2))).toEqual(['$1', '$2', '$3', '$4'])
+  })
+
+  it('writes each operator per dialect', () => {
+    const one = (op: string, value: unknown, dialect: 'postgres' | 'mysql' | 'bigquery', type?: string) =>
+      where("{{ sql.where(f, ['c']) }}", [{ column: 'c', op, value, ...(type && { type }) }], dialect).text
+    expect(one('equals', 1, 'postgres')).toBe('("c" = $1)')
+    expect(one('notEquals', 1, 'postgres')).toBe('("c" <> $1 OR "c" IS NULL)')
+    expect(one('lt', 1, 'postgres')).toBe('("c" < $1)')
+    expect(one('gte', 1, 'mysql')).toBe('(`c` >= ?)')
+    expect(one('contains', 'x', 'mysql')).toBe('(LOCATE(LOWER(?), LOWER(CAST(`c` AS CHAR))) > 0)')
+    expect(one('notEmpty', null, 'mysql')).toBe("(NOT (`c` IS NULL OR CAST(`c` AS CHAR) = ''))")
+    expect(one('contains', 'x', 'bigquery')).toBe('(STRPOS(LOWER(CAST(`c` AS STRING)), LOWER(@p1)) > 0)')
+    expect(one('gt', '2026-01-01', 'bigquery', 'date')).toBe('(CAST(`c` AS DATE) > CAST(@p1 AS DATE))')
+    expect(one('between', ['a', 'b'], 'bigquery', 'datetime')).toBe(
+      '(CAST(`c` AS TIMESTAMP) BETWEEN CAST(@p1 AS TIMESTAMP) AND CAST(@p2 AS TIMESTAMP))',
+    )
+  })
+
+  it('refuses what the query doesn’t allow, and never puts a value in the text', () => {
+    const plan = compileSql("select 1 where {{ sql.where(f, ['name']) }}")
+    const spec = plan.fragments[0]!.spec
+    for (const [filters, message] of [
+      [{ column: 'name' }, /expected a list of filters/],
+      [[{ column: 'owner', op: 'equals', value: 1 }], /the column "owner": expected one of "name"/],
+      [[{ column: 'name"; drop table t; --', op: 'equals', value: 1 }], /expected one of "name"/],
+      [[{ column: 'name', op: '; drop', value: 1 }], /the operator/],
+      [[{ column: 'name', op: 'equals', value: { a: 1 } }], /expected a single value/],
+      [[{ column: 'name', op: 'between', value: [1] }], /takes \[from, to\]/],
+      [['name'], /each filter is/],
+      [Array.from({ length: 51 }, () => ({ column: 'name', op: 'empty' })), /at most 50/],
+    ] as const) {
+      expect(() => fragmentSql(spec, filters), JSON.stringify(filters).slice(0, 60)).toThrow(message)
+    }
+    const evil = "x') or 1=1; drop table t; --"
+    const done = withFragments(plan, [fragmentSql(spec, [{ column: 'name', op: 'equals', value: evil }])])
+    expect(done.text).toBe('select 1 where ("name" = $1)')
+    expect(done.params[0]).toMatchObject({ bound: true, value: evil })
+  })
+
+  it('binds with paramValue: a bound value as it is, else the code evaluated', async () => {
+    const done = where(sql, [{ column: 'name', op: 'equals', value: 'a' }])
+    const evaluate = (code: string) => `evaluated ${code.trim()}`
+    expect(await Promise.all(done.params.map((p) => paramValue(p, evaluate)))).toEqual(['a', 'evaluated min'])
   })
 })

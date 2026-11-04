@@ -10,23 +10,27 @@ import type { Plugin } from 'vite'
  * which starts the Worker from it through a blob: URL, rather than loaded from a URL. Rebuilt whenever a file it
  * includes changes.
  */
-const ID = 'virtual:app-runtime'
-const RESOLVED = `\0${ID}`
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const ENTRY = resolve(ROOT, 'src/pages/apps/runtime/sandbox-entry.ts')
 
-export function appRuntimePlugin(): Plugin {
+/** A virtual module exporting one entry's IIFE bundle as a string; rebuilt whenever a file it includes changes. */
+function bundledScript(
+  name: string,
+  id: string,
+  entry: string,
+  options: { define?: (minify: boolean) => Record<string, string> } = {},
+): Plugin {
+  const resolved = `\0${id}`
   let minify = false
   return {
-    name: 'ow-app-runtime',
+    name,
     configResolved(config) {
       minify = config.command === 'build'
     },
-    resolveId: (id) => (id === ID ? RESOLVED : undefined),
-    async load(id) {
-      if (id !== RESOLVED) return
+    resolveId: (source) => (source === id ? resolved : undefined),
+    async load(loading) {
+      if (loading !== resolved) return
       const result = await build({
-        entryPoints: [ENTRY],
+        entryPoints: [entry],
         absWorkingDir: ROOT,
         bundle: true,
         format: 'iife',
@@ -37,6 +41,7 @@ export function appRuntimePlugin(): Plugin {
         write: false,
         metafile: true,
         logLevel: 'silent',
+        ...(options.define && { define: options.define(minify) }),
       })
       for (const input of Object.keys(result.metafile.inputs)) {
         if (!input.includes('node_modules')) this.addWatchFile(resolve(ROOT, input))
@@ -44,4 +49,28 @@ export function appRuntimePlugin(): Plugin {
       return `export default ${JSON.stringify(result.outputFiles[0]!.text)}`
     },
   }
+}
+
+export function appRuntimePlugin(): Plugin {
+  return bundledScript(
+    'ow-app-runtime',
+    'virtual:app-runtime',
+    resolve(ROOT, 'src/pages/apps/runtime/sandbox-entry.ts'),
+  )
+}
+
+/**
+ * `virtual:component-frame` (M25): the script of a custom component's frame (`@ow/component-sdk`'s `frame.tsx`:
+ * React, ReactDOM, the SDK and the message handling), written into the frame's document like the app sandbox's.
+ * React needs `process.env.NODE_ENV` replaced.
+ */
+export function componentFramePlugin(): Plugin {
+  return bundledScript(
+    'ow-component-frame',
+    'virtual:component-frame',
+    resolve(ROOT, '../../packages/component-sdk/src/frame.tsx'),
+    {
+      define: (minify) => ({ 'process.env.NODE_ENV': JSON.stringify(minify ? 'production' : 'development') }),
+    },
+  )
 }

@@ -1,6 +1,9 @@
 import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import { type Evaluate, TemplateError } from '@ow/expressions'
 import { type PoolManager, parseResource } from './pool'
+import { tunnelFor } from './ssh/client'
+import type { SshConfig, SshSecrets } from './ssh/settings'
+import type { SshTestStep } from './ssh/tunnel'
 import {
   type AnyConnector,
   ConnectorError,
@@ -69,25 +72,48 @@ export async function testResource(
   connector: AnyConnector,
   resource: ResolvedResource,
   opts: { timeoutMs?: number; credentials?: CredentialSource } = {},
-): Promise<{ ok: true; message?: string; durationMs: number } | { ok: false; error: ConnectorError }> {
+): Promise<
+  | { ok: true; message?: string; durationMs: number; ssh?: SshTestStep[] }
+  | { ok: false; error: ConnectorError; ssh?: SshTestStep[] }
+> {
   const started = performance.now()
   const timeoutMs = opts.timeoutMs ?? 15_000
   const signal = AbortSignal.timeout(timeoutMs)
   const { credentials, secrets } = scrubbing(resource, opts.credentials)
   let client: unknown
+  let ssh: SshTestStep[] | undefined
   try {
-    client = await connector.createClient(parseResource(connector, resource))
+    const parsed = parseResource(connector, resource)
+    // Through an SSH tunnel (M17): each hop first, reported on its own; the resource only once they all work.
+    const tunnel = tunnelFor(parsed.config as { ssh?: SshConfig }, parsed.secrets as { ssh?: SshSecrets }, {
+      connectTimeoutMs: timeoutMs,
+      // The whole chain within the test's own time limit.
+      deadline: Date.now() + timeoutMs,
+    })
+    if (tunnel) {
+      ssh = await tunnel.probe()
+      await tunnel.close()
+      const failed = ssh.find((s) => !s.ok)
+      if (failed?.error) {
+        const error = new ConnectorError('connection', failed.error.message, {
+          ssh: { code: failed.error.code, hop: failed.hop, host: failed.host },
+        })
+        return { ok: false, error, ssh }
+      }
+    }
+    client = await connector.createClient(parsed)
     const result = await connector.testConnection(client, {
       signal,
       timeoutMs,
       ...(credentials && { credentials }),
     })
     const message = result.message === undefined ? undefined : scrubSecrets(result.message, secrets)
-    return { ok: true, message, durationMs: Math.round(performance.now() - started) }
+    return { ok: true, message, durationMs: Math.round(performance.now() - started), ...(ssh ? { ssh } : {}) }
   } catch (err) {
     return {
       ok: false,
       error: toConnectorError(err, { timedOut: signal.aborted, timeoutMs, aborted: signal.aborted, secrets }),
+      ...(ssh ? { ssh } : {}),
     }
   } finally {
     if (client !== undefined) await connector.destroyClient(client).catch(() => {})

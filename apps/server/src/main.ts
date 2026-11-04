@@ -7,6 +7,7 @@ import { buildApp } from './api/app'
 import { loadConfig } from './config'
 import { Metrics, serveMetrics } from './metrics'
 import { DatabaseSetupError, provisionDatabases } from './services/database'
+import { logSshTunnels } from './services/ssh-log'
 import { startWorker } from './worker'
 
 const config = loadConfig()
@@ -28,6 +29,8 @@ async function main() {
 
   const { db, sql, close } = createDb(config.DATABASE_URL)
   const stops: (() => Promise<void>)[] = []
+  // Once per process, whatever runs in it: the API's and the worker's resources share these lines.
+  logSshTunnels(log.child({ component: 'ssh' }))
   const metrics = new Metrics(db)
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {

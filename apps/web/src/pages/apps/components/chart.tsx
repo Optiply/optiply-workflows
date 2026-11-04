@@ -49,6 +49,7 @@ export function ChartRenderer({ component }: RendererProps) {
   const data = useAppValue<unknown>(`${name}.data`)
   const xKey = useAppValue<string>(`${name}.xKey`)
   const series = useAppValue<unknown>(`${name}.series`)
+  const xAxis = useAppValue<string>(`${name}.xAxis`)
   const stacked = useAppValue<boolean>(`${name}.stacked`)
   const showLegend = useAppValue<boolean>(`${name}.showLegend`)
   const [asTable, setAsTable] = useState(false)
@@ -56,8 +57,8 @@ export function ChartRenderer({ component }: RendererProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: the tokens' values change with the theme
   const palette = useMemo(chartPalette, [theme])
   const model = useMemo(
-    () => chartModel({ kind, data, xKey, series, palette }),
-    [kind, data, xKey, series, palette],
+    () => chartModel({ kind, data, xKey, series, palette, xAxis }),
+    [kind, data, xKey, series, palette, xAxis],
   )
   const empty = !model.series.length || !model.labels.length
   const label = `${title || name}: ${model.kind} chart of ${model.series.map((s) => s.label).join(', ') || 'no data'}${model.xKey ? ` by ${model.xKey}` : ''}`

@@ -67,6 +67,19 @@ describe('pasteComponents', () => {
     expect(validateApp(d).diagnostics.filter((x) => x.code === 'duplicate_name')).toEqual([])
   })
 
+  it('doesn’t list a table column’s row locals as names from outside (M24)', () => {
+    const from = def(
+      app({
+        components: [
+          comp('t', 'table', { columns: [{ key: 'x', value: '{{ currentRow.a + i + rate.value }}' }] }),
+        ],
+        layout: { t: at(0, 0) },
+      }),
+    )
+    const result = pasteComponents(def(app({})), copyComponents(from, ['t'])!, { page: null })
+    expect(result.outside).toEqual([{ name: 'rate', inTarget: false }])
+  })
+
   it('pastes into a container, on a page, and keeps modals at the top without a position', () => {
     const target = def(
       app({

@@ -1,5 +1,5 @@
 import { type APIRequestContext, expect, type Page, test } from '@playwright/test'
-import { block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, block, field, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M4 end to end: turn on a workflow's webhook in the editor, publish v1.0.0, create an API key in Settings and call
@@ -7,7 +7,7 @@ import { block, field, signIn, trpcMutate, typeInto } from './helpers'
  * answer with it; roll back to v1.0.0 from the Releases tab and see the old answer again.
  */
 test('publish, call the webhook with an API key, and roll back', async ({ page, request }) => {
-  page.on('dialog', (dialog) => dialog.accept())
+  await acceptConfirms(page)
   const suffix = Date.now().toString(36)
   let workflowId = ''
   let apiKey = ''
@@ -90,6 +90,21 @@ test('publish, call the webhook with an API key, and roll back', async ({ page, 
     // The draft is v1.1.0's code, which is no longer what's live.
     await expect(page.getByTestId('release-status')).toContainText('Unpublished changes')
     expect(await greet(request, suffix, apiKey)).toEqual({ greeting: 'Hello Ada', lang: 'en' })
+  })
+
+  await test.step('compare v1.1.0 with v1.0.0 (M24): the code block’s line diff', async () => {
+    const releases = page.getByTestId('releases')
+    await releases
+      .locator('li')
+      .filter({ hasText: 'v1.1.0' })
+      .getByRole('button', { name: 'Compare' })
+      .click()
+    const compare = page.getByRole('dialog', { name: 'Compare' }).getByTestId('compare')
+    const blocks = compare.getByRole('region', { name: 'Blocks' })
+    await expect(blocks).toContainText('greet')
+    await expect(blocks.getByTestId('file-diff')).toContainText('+return "Hi " + startTrigger.data.name')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Compare' })).toBeHidden()
   })
 })
 

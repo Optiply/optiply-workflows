@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
+import { openApiDocument } from '../services/openapi'
 import { type Access, atLeast, loadAccess } from '../services/permissions'
 import type { RunEventHub } from '../services/run-events'
 import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
@@ -25,9 +26,13 @@ import { RunRequestError, startBlockRun, startManualRun } from '../services/work
  * The runs API: start a manual run, cancel runs, and read runs, their children, block results, loop iterations and
  * logs. Signed-in users authenticate with their session cookie. An API key may read, cancel and list the children of
  * one run (`GET /runs/:id`, `POST /runs/:id/cancel`, `GET /runs/:id/children`) of a workflow and environment it's
- * allowed, which is how async webhook callers follow the run they started. Errors are `{ error: { code, message, details? } }`.
+ * allowed, which is how async webhook callers follow the run they started. `GET /openapi.json` (M15) describes the
+ * webhooks the caller may call, for a session or an API key. Errors are `{ error: { code, message, details? } }`.
  */
-export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = async (app, { db, events }) => {
+export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicUrl: string }> = async (
+  app,
+  { db, events, publicUrl },
+) => {
   app.decorateRequest('user', null)
   app.decorateRequest('apiKey', null)
   app.addHook('preHandler', async (req, reply) => {
@@ -192,6 +197,20 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub }> = asy
       runs: rows.map((r) => runView(r.run, byId.get(r.run.workflowId)!, r.environment)),
       next: rows.length === query.limit ? rows.at(-1)!.run.id : null,
     }
+  })
+
+  /**
+   * The OpenAPI document of the webhooks the caller may call (M15): a signed-in user's are the workflows they can
+   * see, an API key's the workflows it's limited to.
+   */
+  app.get('/openapi.json', async (req) => {
+    const access = req.user ? await loadAccess(db, req.user) : null
+    const key = req.apiKey
+    return openApiDocument(db, {
+      publicUrl,
+      visible: (w) =>
+        key ? key.workflowIds === null || key.workflowIds.includes(w.id) : access!.workflowLevel(w) !== null,
+    })
   })
 
   app.get('/runs/:id', async (req) => {
@@ -479,6 +498,7 @@ const FINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 
 /** What an API key may call (besides webhooks): following and cancelling a run it may read. */
 const API_KEY_ROUTES = new Set([
+  'GET /api/v1/openapi.json',
   'GET /api/v1/runs/:id',
   'POST /api/v1/runs/:id/cancel',
   'GET /api/v1/runs/:id/children',

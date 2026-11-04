@@ -16,8 +16,10 @@ import {
   libraryQueryReleases,
   type Resource,
   resources,
+  users,
 } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
+import { BlockFailure, type LibraryQueries } from '@ow/engine'
 import { renderTemplate } from '@ow/expressions'
 import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
@@ -402,13 +404,44 @@ export async function libraryInfos(
   )
 }
 
-/** Where an app definition's queries use a library query: `[{ "kind": "library", "library": slug }]`. */
-const usesLibrary = (column: SQL | AnyColumn, slug: string) =>
-  sql`${column} -> 'queries' @> ${JSON.stringify([{ kind: 'library', library: slug }])}::jsonb`
+/**
+ * Where a definition uses a library query: an app's or module's queries (`[{ "kind": "library", "library": slug }]`),
+ * or anywhere in a workflow (M21: only Library query blocks and library runners have a `library` key).
+ */
+const usesLibrary = (column: SQL | AnyColumn, kind: Dependent['kind'], slug: string) =>
+  kind === 'workflow'
+    ? sql`jsonb_path_exists(${column}, '$.** ? (@.library == $slug)', jsonb_build_object('slug', ${slug}::text))`
+    : sql`${column} -> 'queries' @> ${JSON.stringify([{ kind: 'library', library: slug }])}::jsonb`
 
 /**
- * The apps and modules using a library query: in their draft, their live release or an open Git branch draft.
- * Deleting it is refused while any does.
+ * The apps, modules and workflows using a library query: in their draft, their live release or an open Git branch
+ * draft. Deleting it is refused while any does.
  */
 export const libraryUsers = (db: Db, slug: string): Promise<Dependent[]> =>
-  dependents(db, (column) => usesLibrary(column, slug), { modules: true })
+  dependents(db, (column, kind) => usesLibrary(column, kind, slug), { modules: true, workflows: true })
+
+/**
+ * The Query Library as workflow runs see it (M21): a reference's release (pinned, or live now for `latest`), and
+ * `current_user` for whoever started a run. No grants: the workflow's publisher vouched for using it, and a draft
+ * run's starter was checked when the run started.
+ */
+export function engineLibrary(db: Db): LibraryQueries {
+  return {
+    async resolve(slug, version) {
+      try {
+        const { release } = await resolveLibraryRelease(db, slug, version)
+        return { version: release.version, definition: release.definition }
+      } catch (err) {
+        if (err instanceof TRPCError) throw new BlockFailure('library', err.message)
+        throw err
+      }
+    },
+    async user(id) {
+      const [user] = await db
+        .select({ id: users.id, email: users.email, name: users.name })
+        .from(users)
+        .where(eq(users.id, id))
+      return user ?? null
+    },
+  }
+}

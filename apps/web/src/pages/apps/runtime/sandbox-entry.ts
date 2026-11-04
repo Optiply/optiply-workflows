@@ -9,6 +9,7 @@
 import {
   AppRuntime,
   CONNECT_MESSAGE,
+  type ComponentLibraryReleases,
   type Effect,
   type HostBridge,
   type HostMessage,
@@ -23,6 +24,7 @@ let port: MessagePort | null = null
 let runtime: AppRuntime | null = null
 let globals: Record<string, unknown> = {}
 let modules: ModuleReleases = {}
+let libraries: ComponentLibraryReleases = {}
 let inputs: Record<string, unknown> | undefined
 let nextId = 1
 const pending = new Map<number, (value: never) => void>()
@@ -130,6 +132,17 @@ const bridge: HostBridge = {
   runQuery: (query, values, module) =>
     request<QueryOutcome>((id) => ({ type: 'runQuery', id, query, values, ...(module && { module }) })),
   confirm: (message) => request<boolean>((id) => ({ type: 'confirm', id, message })),
+  callComponent: async (component, method, args) => {
+    const answer = await request<{ ok: boolean; value?: unknown; error?: string }>((id) => ({
+      type: 'callComponent',
+      id,
+      component,
+      method,
+      args: args.map(toPlain),
+    }))
+    if (!answer.ok) throw new Error(answer.error ?? `${component}.${method} failed`)
+    return answer.value
+  },
   effect: (effect: Effect) => send({ type: 'effect', effect }),
   publish,
   log,
@@ -143,11 +156,13 @@ function handle(message: HostMessage) {
         const g = globalThis as unknown as { _: unknown; dayjs: unknown; sql: unknown }
         globals = { ...message.globals, _: g._, dayjs: g.dayjs, sql: g.sql, console: appConsole }
         modules = message.modules ?? {}
+        libraries = message.libraries ?? {}
         inputs = message.inputs
         runtime = new AppRuntime(message.definition, bridge, {
           globals,
           url: message.url,
           modules,
+          libraries,
           ...(inputs && { inputs }),
         })
         const loading = runtime.start()
@@ -163,10 +178,12 @@ function handle(message: HostMessage) {
       try {
         // The page shown carries over with the rest of the state (see AppRuntime.start).
         if (message.modules) modules = message.modules
+        if (message.libraries) libraries = message.libraries
         if (message.inputs) inputs = message.inputs
         const next = new AppRuntime(message.definition, bridge, {
           globals,
           modules,
+          libraries,
           ...(inputs && { inputs }),
         })
         void next.start({ previous: runtime })
@@ -200,6 +217,9 @@ function handle(message: HostMessage) {
       return
     case 'confirmResult':
       settle(message.id, message.ok)
+      return
+    case 'componentResult':
+      settle(message.id, message)
       return
     case 'ping':
       send({ type: 'pong', id: message.id })

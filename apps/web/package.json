@@ -18,6 +18,8 @@
     "@monaco-editor/react": "4.7.0",
     "@ow/app-definition": "workspace:*",
     "@ow/app-runtime": "workspace:*",
+    "@ow/collab": "workspace:*",
+    "@ow/component-sdk": "workspace:*",
     "@ow/connectors": "workspace:*",
     "@ow/definition": "workspace:*",
     "@ow/sandbox": "workspace:*",
@@ -39,6 +41,7 @@
     "react-grid-layout": "2.2.4",
     "superjson": "2.2.6",
     "tailwind-merge": "3.7.0",
+    "yjs": "13.6.33",
     "zod": "4.6.7",
     "zustand": "5.0.15"
   },

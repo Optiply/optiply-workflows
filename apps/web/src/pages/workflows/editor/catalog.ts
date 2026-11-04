@@ -6,6 +6,7 @@ import {
   Filter,
   GitBranch,
   Hourglass,
+  Library,
   type LucideIcon,
   Play,
   Repeat,
@@ -15,7 +16,7 @@ import {
   UserCheck,
   Workflow,
 } from 'lucide-react'
-import { isSqlType } from '@/lib/resource-types'
+import { defaultQuery } from '@/lib/resource-types'
 
 export interface BlockKind {
   label: string
@@ -41,6 +42,12 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
     icon: Database,
     tone: 'bg-op-blue-1 text-op-blue-4',
     prefix: 'query',
+  },
+  libraryQuery: {
+    label: 'Library query',
+    icon: Library,
+    tone: 'bg-op-blue-1 text-op-blue-4',
+    prefix: 'library',
   },
   code: { label: 'Code', icon: Code2, tone: 'bg-op-orange-1 text-op-orange-4', prefix: 'code' },
   branch: { label: 'Branch', icon: GitBranch, tone: 'bg-op-purple-1 text-op-purple-4', prefix: 'branch' },
@@ -80,6 +87,7 @@ export function kindOf(block: Block): BlockKind {
 /** Block types the user can add (there's exactly one start trigger). */
 export const ADDABLE: Exclude<BlockType, 'startTrigger'>[] = [
   'resourceQuery',
+  'libraryQuery',
   'code',
   'branch',
   'filter',
@@ -135,11 +143,11 @@ export function newBlock(
         type,
         config: {
           resource: resource!.slug,
-          query: isSqlType(resource!.type)
-            ? { sql: 'select 1' }
-            : { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
+          query: defaultQuery(resource!.type),
         },
       }
+    case 'libraryQuery':
+      return { name, type, config: { library: '', version: 'latest' } }
     case 'code':
       return context.python
         ? { name, type, config: { code: 'return None', language: 'python' } }
@@ -185,6 +193,10 @@ export function summary(block: Block): string {
       const sql = block.config.query.sql
       return typeof sql === 'string' ? firstLine(sql) : `${block.config.resource}`
     }
+    case 'libraryQuery':
+      return block.config.library
+        ? `${block.config.library}@${block.config.version}`
+        : 'No library query chosen'
     case 'code':
       return firstLine(block.config.code)
     case 'branch':

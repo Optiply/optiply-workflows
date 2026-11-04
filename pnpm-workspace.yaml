@@ -4,6 +4,7 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+  - "@confluentinc/kafka-javascript"
   - isolated-vm
   - "@biomejs/biome"
   - "@embedded-postgres/darwin-arm64"

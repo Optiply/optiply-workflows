@@ -102,3 +102,20 @@ export async function startTestMysql(): Promise<TestMysql> {
     throw err
   }
 }
+
+export { type FakeAws, type FakeAwsKey, type FakeAwsRole, startFakeAws } from './aws/fake'
+export type { FakeSqs, FakeSqsMessage, FakeSqsQueueOptions } from './aws/fake-sqs'
+export { kafkaAvailable, startTestKafka, type TestKafka } from './kafka/test-kafka'
+export {
+  type FakeDelivery,
+  type FakePubSub,
+  type FakeSubscriptionSettings,
+  startFakePubSub,
+} from './pubsub/fake'
+export {
+  startTestIapServer,
+  startTestSshServer,
+  type TestIapServer,
+  type TestSshServer,
+  type TestSshUser,
+} from './ssh/testing'

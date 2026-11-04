@@ -35,6 +35,9 @@ export interface FieldRef {
   shorthand?: true
   /** With `{ properties: true }`: the property read straight off it (`b` in `a.b`). */
   property?: string
+  /** Where that property's name is, when known (M21: renaming a module's input). */
+  propertyStart?: number
+  propertyEnd?: number
 }
 
 /** Every field of a block that holds code or templates, in a stable order. */
@@ -47,6 +50,9 @@ export function codeFields(block: Block): CodeField[] {
     case 'resourceQuery':
       // Connector-agnostic: every string in the query is a template.
       return templateStrings(block.config.query, ['config', 'query'])
+    case 'libraryQuery':
+      // The parameters' templates; the library query's own `{{ }}`s read only its parameters (M21).
+      return argFields(block.config.params, ['config', 'params'])
     case 'branch':
       return block.config.conditions.map((c, i) => ({
         path: ['config', 'conditions', i, 'expression'],
@@ -126,7 +132,15 @@ export function fieldRefs(
   const collect = (code: string, kind: CodeKind, offset: number) => {
     try {
       for (const ref of freeIdentifierRefs(code, kind, options)) {
-        refs.push({ ...ref, start: ref.start + offset, end: ref.end + offset })
+        refs.push({
+          ...ref,
+          start: ref.start + offset,
+          end: ref.end + offset,
+          ...(ref.propertyStart !== undefined && {
+            propertyStart: ref.propertyStart + offset,
+            propertyEnd: ref.propertyEnd! + offset,
+          }),
+        })
       }
     } catch (err) {
       if (!(err instanceof TemplateError)) throw err
@@ -179,6 +193,7 @@ function runnerFields(runner: LoopRunner): CodeField[] {
       ]
     case 'query':
       return templateStrings(runner.query, [...at, 'query'], ITEM_LOCALS)
+    case 'library':
     case 'function':
       return argFields(runner.params, [...at, 'params'], ITEM_LOCALS)
     case 'workflow':

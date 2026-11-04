@@ -1,8 +1,22 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { kafkaClient, produceTo } from '@ow/connectors'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestKafka,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { createDb, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
+import { configureAwsServer } from '../src/services/aws'
+import { configureGoogle } from '../src/services/google'
 import { startWorker } from '../src/worker'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
@@ -325,7 +339,8 @@ describe('trigger projection', () => {
       kind: 'webhook',
       enabled: true,
       aliasShape: 'scheduled/:',
-      config: { enabled: true, alias: 'scheduled/:id', methods: ['POST'], syncTimeoutMs: 30_000 },
+      // Stored as written: resolveWebhookSettings applies the defaults (methods, sync timeout) per call.
+      config: { enabled: true, alias: 'scheduled/:id' },
       nextFireAt: null,
     })
     expect(byName.get('new-year')).toMatchObject({
@@ -432,6 +447,139 @@ describe('trigger projection', () => {
   })
 })
 
+describe('Pub/Sub trigger projection (M19)', () => {
+  let eventsId: string
+  const orders = { name: 'orders', enabled: true, resource: 'events', subscription: 'orders-sub' }
+  beforeAll(async () => {
+    eventsId = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events' }),
+    ).id
+    // Configured in both environments: a trigger can only go live where its resource is.
+    for (const environmentId of [prodId, stagingId])
+      data(
+        await admin.mutate('resources.saveConfig', {
+          resourceId: eventsId,
+          environmentId,
+          config: { identity: 'key' },
+          secrets: { serviceAccountKey: new FakeGoogle().keyJson },
+        }),
+      )
+  })
+
+  it('projects Pub/Sub triggers with their defaults and environment, keeping ids and leases across releases', async () => {
+    const wf = await workflowWith(
+      'subscribed',
+      definition([code('a', 'return 1')], {
+        triggers: { pubsub: [orders, { ...orders, name: 'staged', environment: 'staging', maxInFlight: 9 }] },
+      }),
+    )
+    data(await publish(wf))
+    const first = new Map((await triggersOf(wf.id)).map((r) => [r.name, r]))
+    expect(first.get('orders')).toMatchObject({
+      kind: 'pubsub',
+      enabled: true,
+      environmentId: prodId,
+      config: { ...orders, maxInFlight: 4, maxHoldMinutes: 60 },
+      nextFireAt: null,
+    })
+    expect(first.get('staged')).toMatchObject({ environmentId: stagingId, config: { maxInFlight: 9 } })
+
+    // A worker holds the lease; a new release keeps it (and the id), and drops the trigger it no longer has.
+    const leaseExpiresAt = new Date(Date.now() + 30_000)
+    await env.db
+      .update(workflowTriggers)
+      .set({ leaseOwner: 'worker-1', leaseExpiresAt })
+      .where(eq(workflowTriggers.id, first.get('orders')!.id))
+    await wf.save(
+      definition([code('a', 'return 2')], { triggers: { pubsub: [{ ...orders, maxHoldMinutes: 5 }] } }),
+    )
+    data(await publish(wf))
+    const second = await triggersOf(wf.id)
+    expect(second).toHaveLength(1)
+    expect(second[0]).toMatchObject({
+      id: first.get('orders')!.id,
+      leaseOwner: 'worker-1',
+      leaseExpiresAt,
+      config: { maxHoldMinutes: 5 },
+    })
+    expect(
+      data(await admin.query('workflows.triggers', { id: wf.id })).map((t: { name: string }) => t.name),
+    ).toEqual(['orders'])
+  })
+
+  it("refuses an environment that doesn't exist, a resource that isn't Pub/Sub, and one that isn't there", async () => {
+    const wf = await workflowWith(
+      'mis-subscribed',
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, environment: 'qa' }] } }),
+    )
+    expect(failure(await publish(wf))).toEqual({
+      code: 'BAD_REQUEST',
+      message: `Pub/Sub trigger "orders" runs in environment "qa", which doesn't exist`,
+    })
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'warehouse' }] } }),
+    )
+    expect(failure(await publish(wf)).message).toBe(
+      `The workflow isn't valid: Pub/Sub trigger "orders": "warehouse" isn't a Pub/Sub resource`,
+    )
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'nothing' }] } }),
+    )
+    expect(failure(await publish(wf)).message).toBe(
+      `The workflow isn't valid: Pub/Sub trigger "orders": no resource has the slug "nothing"`,
+    )
+  })
+
+  it("refuses a trigger in an environment where its resource isn't configured", async () => {
+    const { id: bare } = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Bare', slug: 'bare_events' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: bare,
+        environmentId: prodId,
+        config: { identity: 'key' },
+        secrets: { serviceAccountKey: new FakeGoogle().keyJson },
+      }),
+    )
+    const wf = await workflowWith(
+      'half-configured',
+      definition([code('a', 'return 1')], {
+        triggers: { pubsub: [{ ...orders, resource: 'bare_events', environment: 'staging' }] },
+      }),
+    )
+    expect(failure(await publish(wf))).toEqual({
+      code: 'BAD_REQUEST',
+      message: `Pub/Sub trigger "orders" runs in environment "staging", where resource "bare_events" isn't configured`,
+    })
+    await wf.save(
+      definition([code('a', 'return 1')], { triggers: { pubsub: [{ ...orders, resource: 'bare_events' }] } }),
+    )
+    expect(data(await publish(wf)).version).toBe('1.0.0')
+  })
+
+  it("needs use on the trigger's resource in every environment to release, like a queried one", async () => {
+    const wf = await workflowWith(
+      'member-subscribed',
+      definition([code('a', 'return 1')], { triggers: { pubsub: [orders] } }),
+    )
+    const grant = (
+      objectType: string,
+      objectId: string,
+      level: string,
+      environmentId: string | null = null,
+    ) =>
+      admin.mutate('permissions.set', { objectType, objectId, groupId: memberGroupId, environmentId, level })
+    data(await grant('workflow', wf.id, 'edit'))
+    expect(failure(await publish(wf, {}, member))).toEqual({
+      code: 'FORBIDDEN',
+      message: 'You need use access to resource "events" in every environment to release this workflow',
+    })
+    data(await grant('resource', eventsId, 'use'))
+    expect(data(await publish(wf, {}, member)).version).toBe('1.0.0')
+  })
+})
+
 describe('schedules on the worker', () => {
   it('runs the live release when a published schedule comes due', async () => {
     const wf = await workflowWith(
@@ -476,4 +624,257 @@ describe('schedules on the worker', () => {
     }
     throw new Error('the scheduled run did not succeed')
   })
+})
+
+describe('Pub/Sub triggers on the worker (M19)', () => {
+  const google = new FakeGoogle()
+  let pubsub: Awaited<ReturnType<typeof startFakePubSub>>
+  beforeAll(async () => {
+    await google.start()
+    const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-pubsub-')), 'key.json')
+    writeFileSync(keyFile, google.keyJson)
+    pubsub = await startFakePubSub({ project: 'fake-project', pullWaitMs: 100 })
+    pubsub.createTopic('orders')
+    pubsub.createSubscription('orders-live', { topic: 'orders' })
+    // Process-wide, so the worker's consumer (started with the test config) pulls from the fake as this server.
+    configureGoogle(
+      { GOOGLE_SERVER_IDENTITY: 'allow', GOOGLE_PUBSUB_URL: pubsub.url, GOOGLE_TOKEN_URL: google.tokenUrl },
+      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
+    )
+  })
+  afterAll(async () => {
+    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
+    await pubsub?.close()
+    await google.stop()
+  })
+
+  it('runs the live release per message, acks it, and the editor sees the trigger pulling', async () => {
+    const { id: resourceId } = data(
+      await admin.mutate('resources.create', { type: 'pubsub', name: 'Live events', slug: 'events_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId,
+        environmentId: prodId,
+        config: { identity: 'server', project: 'fake-project' },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_orders',
+      definition(
+        [
+          code(
+            'seen',
+            'return { doubled: startTrigger.data.n * 2, kind: startTrigger.message.attributes.kind }',
+          ),
+        ],
+        {
+          triggers: {
+            pubsub: [{ name: 'orders', enabled: true, resource: 'events_live', subscription: 'orders-live' }],
+          },
+        },
+      ),
+    )
+    data(await publish(wf))
+    await worker.queues.tick()
+    const messageId = pubsub.publish('orders', '{"n": 21}', { kind: 'created' })
+
+    await expect.poll(() => pubsub.messages('orders-live')[0]?.acked ?? false, { timeout: 15_000 }).toBe(true)
+    const listed = await env.app.inject({
+      method: 'GET',
+      url: '/api/v1/workflows/on_orders/runs',
+      headers: { cookie: adminCookie },
+    })
+    const [run] = listed.json().runs
+    expect(run).toMatchObject({
+      triggerType: 'pubsub',
+      status: 'succeeded',
+      environment: 'production',
+      version: 'live',
+    })
+    expect(run.input).toMatchObject({
+      data: { n: 21 },
+      message: { messageId, attributes: { kind: 'created' }, subscription: 'orders-live' },
+    })
+    const block = await env.app.inject({
+      method: 'GET',
+      url: `/api/v1/runs/${run.id}/blocks/seen`,
+      headers: { cookie: adminCookie },
+    })
+    expect(block.json().block.data).toEqual({ doubled: 42, kind: 'created' })
+
+    await worker.queues.tick()
+    const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id }))
+    expect(trigger).toMatchObject({
+      kind: 'pubsub',
+      environment: 'production',
+      queue: {
+        worker: worker.dispatcher.workerId,
+        state: { inFlight: 0, lastMessageAt: expect.any(String), lastError: null },
+        lastDay: { messages: 1, succeeded: 1, failed: 0, deadLettered: 0 },
+      },
+    })
+  })
+})
+
+describe('SQS triggers on the worker (M26)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  beforeAll(async () => {
+    aws = await startFakeAws({ sqs: { secondMs: 50 } })
+    aws.sqs.createQueue('jobs')
+    // Process-wide, so the worker's consumer receives from the fake.
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws?.close()
+  })
+
+  it('runs the live release per message, deletes it, and the editor sees the trigger receiving', async () => {
+    const user = aws.addUser('worker')
+    const { id: queuesId } = data(
+      await admin.mutate('resources.create', { type: 'sqs', name: 'Live queues', slug: 'queues_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: queuesId,
+        environmentId: prodId,
+        config: { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId },
+        secrets: { secretAccessKey: user.secretAccessKey },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_jobs',
+      definition(
+        [
+          code(
+            'seen',
+            'return { doubled: startTrigger.data.n * 2, count: startTrigger.message.receiveCount }',
+          ),
+        ],
+        {
+          triggers: { sqs: [{ name: 'jobs', enabled: true, resource: 'queues_live', queue: 'jobs' }] },
+        },
+      ),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'sqs',
+      config: { queue: 'jobs', maxInFlight: 4, maxHoldMinutes: 60 },
+    })
+    await worker.queues.tick()
+    const messageId = aws.sqs.send('jobs', '{"n": 21}')
+
+    await expect.poll(() => aws.sqs.messages('jobs')[0]?.deleted ?? false, { timeout: 15_000 }).toBe(true)
+    const listed = await env.app.inject({
+      method: 'GET',
+      url: '/api/v1/workflows/on_jobs/runs',
+      headers: { cookie: adminCookie },
+    })
+    const [run] = listed.json().runs
+    expect(run).toMatchObject({ triggerType: 'sqs', status: 'succeeded', version: 'live' })
+    expect(run.input).toMatchObject({ data: { n: 21 }, message: { messageId, receiveCount: 1 } })
+    await worker.queues.tick()
+    const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id }))
+    expect(trigger).toMatchObject({
+      kind: 'sqs',
+      queue: { worker: worker.dispatcher.workerId, lastDay: { messages: 1, succeeded: 1, failed: 0 } },
+    })
+  })
+})
+
+describe.skipIf(!kafkaAvailable())('Kafka triggers on the worker (M26)', () => {
+  let kafka: TestKafka
+  beforeAll(async () => {
+    kafka = await startTestKafka()
+    await kafka.createTopic('events')
+  }, 120_000)
+  afterAll(async () => {
+    await kafka?.stop()
+  })
+
+  it('projects the defaults, runs the live release per message, and commits past it', async () => {
+    const { id: clusterId } = data(
+      await admin.mutate('resources.create', { type: 'kafka', name: 'Live cluster', slug: 'cluster_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: clusterId,
+        environmentId: prodId,
+        config: { brokers: [kafka.plaintext], auth: 'none' },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_events',
+      definition([code('seen', 'return { key: startTrigger.message.key, n: startTrigger.data.n }')], {
+        triggers: {
+          kafka: [
+            {
+              name: 'events',
+              enabled: true,
+              resource: 'cluster_live',
+              topics: ['events'],
+              startAt: 'earliest',
+            },
+          ],
+        },
+      }),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'kafka',
+      config: {
+        topics: ['events'],
+        groupId: `ow-${wf.id}-events`,
+        startAt: 'earliest',
+        maxAttempts: 3,
+        retryBackoffSeconds: 10,
+        maxInFlight: 4,
+      },
+    })
+    const producer = kafkaClient(
+      { brokers: [kafka.plaintext], auth: 'none', tls: false, identity: 'key' },
+      {},
+    )
+    await produceTo(producer, 'events', [{ key: 'order-7', value: '{"n": 7}' }], AbortSignal.timeout(10_000))
+    await producer.close()
+    await worker.queues.tick()
+
+    let run: { status: string; triggerType: string; id: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_events/runs',
+            headers: { cookie: adminCookie },
+          })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'kafka' })
+    const block = await env.app.inject({
+      method: 'GET',
+      url: `/api/v1/runs/${run!.id}/blocks/seen`,
+      headers: { cookie: adminCookie },
+    })
+    expect(block.json().block.data).toEqual({ key: 'order-7', n: 7 })
+    await expect
+      .poll(
+        async () => {
+          await worker.queues.tick()
+          const [trigger] = data(await admin.query('workflows.triggers', { id: wf.id })) as {
+            queue?: { lastDay: { succeeded: number } }
+          }[]
+          return trigger?.queue?.lastDay.succeeded
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(1)
+  }, 90_000)
 })

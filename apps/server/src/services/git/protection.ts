@@ -12,6 +12,7 @@ import { TRPCError } from '@trpc/server'
 import type { Config } from '../../config'
 import { GitError } from './cli'
 import { commitToBranch, GitConflictError } from './commit'
+import { gitFolderPath } from './folders'
 import { GitHubError, openGitHub, type PullRequestView } from './github'
 import { type GitObjectRow, liveOrDraft, setGitProtected } from './kinds'
 import type { GitAuthor, GitRepo } from './repo'
@@ -23,10 +24,14 @@ type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_
 export function repoObject(
   kind: ObjectKind,
   slug: string,
-  value: { name: string; description: string | null; definition: unknown },
+  value: { name: string; description: string | null; folder?: string | null; definition: unknown },
 ): RepoObject {
-  const { name, description, definition } = value
-  return { kind, slug, value: { name, description, definition } } as RepoObject
+  const { name, description, folder, definition } = value
+  return {
+    kind,
+    slug,
+    value: { name, description, ...(folder !== undefined ? { folder } : {}), definition },
+  } as RepoObject
 }
 
 /** Refuses changing a protected object's main version on the instance: that's done on a branch and merged. */
@@ -148,26 +153,70 @@ export async function protectObject(
   const label = KIND_LABELS[kind]
   if (object.gitProtected)
     throw new TRPCError({ code: 'CONFLICT', message: `This ${label} is already protected` })
+  const definition = await liveOrDraft(db, kind, object)
+  const meta = {
+    name: object.name,
+    description: object.description,
+    folder: await gitFolderPath(db, object.folderId),
+  }
+  const { dir, files, warnings } = encodeObjectDir(repoObject(kind, object.slug, { ...meta, definition }))
+  return commitProtect(db, config, user, {
+    kind,
+    label,
+    slug: object.slug,
+    name: object.name,
+    dir,
+    files,
+    warnings,
+    branch: opts.branch,
+    what: definition === object.draftDefinition ? 'draft' : 'live release',
+    afterBase: 'edited on branches and deployed',
+    setProtected: () => setGitProtected(db, kind, object.id, true, { from: false }),
+  })
+}
+
+/**
+ * The part of protecting every kind shares: the directory committed onto a protect branch (made from the deploy
+ * branch, `ow.json` added when missing), the object marked protected, and the pull request opened.
+ */
+export async function commitProtect(
+  db: Db,
+  config: GitConfig,
+  user: { id: string; name: string; email: string },
+  opts: {
+    /** Names the default branch: `protect/<kind>-<slug>`. */
+    kind: string
+    label: string
+    slug: string
+    name: string
+    dir: string
+    files: Record<string, string>
+    warnings: Warning[]
+    branch?: string
+    /** What was committed, for the message: "live release", "settings". */
+    what: string
+    /** How it changes from now on, for the message. */
+    afterBase: string
+    /** Marks it protected; false when someone else just did. */
+    setProtected: () => Promise<boolean>
+  },
+): Promise<ProtectResult> {
+  const { label, dir } = opts
   const { repo, branch: base } = await requireGitRepo(db, config)
   if (opts.branch) requireNotDeployBranch(opts.branch, base)
-  const definition = await liveOrDraft(db, kind, object)
-  const meta = { name: object.name, description: object.description }
-  const { dir, files, warnings } = encodeObjectDir(repoObject(kind, object.slug, { ...meta, definition }))
   const author = { name: user.name, email: user.email }
   let branch: string
   let commit: string
   try {
-    branch = opts.branch ?? (await freeProtectBranch(repo, `protect/${kind}-${object.slug}`))
+    branch = opts.branch ?? (await freeProtectBranch(repo, `protect/${opts.kind}-${opts.slug}`))
     const main = await ensureBaseBranch(repo, base, author)
     const result = await commitToBranch(repo, {
       branch,
       base: main,
       createFrom: main,
-      directories: { [dir]: files },
+      directories: { [dir]: opts.files },
       files: await manifestIfMissing(repo, main),
-      message: `Protect ${label} ${object.slug}\n\nFrom Optiply Workflows: the ${label}'s ${
-        definition === object.draftDefinition ? 'draft' : 'live release'
-      }, so it's edited on branches and deployed from ${base} from now on.`,
+      message: `Protect ${label} ${opts.slug}\n\nFrom Optiply Workflows: the ${label}'s ${opts.what}, so it's ${opts.afterBase} from ${base} from now on.`,
       author,
     })
     commit = result.commit
@@ -175,15 +224,15 @@ export async function protectObject(
     throw gitTrpcError(err)
   }
 
-  if (!(await setGitProtected(db, kind, object.id, true, { from: false })))
+  if (!(await opts.setProtected()))
     throw new TRPCError({ code: 'CONFLICT', message: `This ${label} was just protected by someone else` })
 
   const { pullRequest, pullRequestError } = await openPullRequestFor(db, config, {
     branch,
-    title: `Protect ${label} "${object.name}"`,
+    title: `Protect ${label} "${opts.name}"`,
     body: `Adds \`${dir}/\` so the ${label} is deployed from this repo. Opened from Optiply Workflows by ${user.name}.`,
   })
-  return { branch, commit, pullRequest, pullRequestError, warnings }
+  return { branch, commit, pullRequest, pullRequestError, warnings: opts.warnings }
 }
 
 /** Lets an object be edited on the instance again. Its directory stays in the repo (and stops deploying). */
@@ -198,12 +247,13 @@ export async function unprotectObject(db: Db, kind: ObjectKind, object: GitObjec
 export async function openPullRequestFor(
   db: Db,
   config: Pick<Config, 'keyring' | 'GITHUB_API_URL'>,
-  opts: { branch: string; title: string; body: string },
+  /** `base`: the deploy branch unless given (Promote, M22). */
+  opts: { branch: string; title: string; body: string; base?: string },
 ): Promise<{ pullRequest: PullRequestView | null; pullRequestError: string | null }> {
   const opened = await openGitHub(db, config)
   if ('error' in opened) return { pullRequest: null, pullRequestError: opened.error }
   try {
-    const pullRequest = await opened.github.openPullRequest({ ...opts, base: opened.branch })
+    const pullRequest = await opened.github.openPullRequest({ ...opts, base: opts.base ?? opened.branch })
     return { pullRequest, pullRequestError: null }
   } catch (err) {
     if (err instanceof GitHubError) return { pullRequest: null, pullRequestError: err.message }

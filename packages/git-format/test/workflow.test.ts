@@ -5,6 +5,7 @@ import {
   encodeWorkflow,
   type Files,
   LAYOUT_FILE,
+  REQUIREMENTS_FILE,
   WORKFLOW_FILE,
   type WorkflowObject,
   workflowForGit,
@@ -228,6 +229,67 @@ describe('decodeWorkflow', () => {
     expect(problems({ ...files, [LAYOUT_FILE]: JSON.stringify(bad) })).toEqual([
       [LAYOUT_FILE, 'invalid_definition'],
       [LAYOUT_FILE, 'invalid_definition'],
+    ])
+  })
+})
+
+describe('Python packages', () => {
+  const withPackages = (settings: object): WorkflowObject => ({
+    name: 'Packages',
+    description: null,
+    definition: workflowDefinitionSchema.parse({
+      schemaVersion: 1,
+      settings,
+      blocks: [{ name: 'startTrigger', type: 'startTrigger' }],
+      edges: [],
+    }),
+  })
+
+  it('go into requirements.txt, out of the JSON, and read back', () => {
+    const workflow = withPackages({
+      timeoutMs: 60_000,
+      python: { requirements: ['polars==1.9.0', 'openpyxl>=3.1'] },
+    })
+    const { files } = encodeWorkflow(workflow)
+    expect(files[REQUIREMENTS_FILE]).toBe('polars==1.9.0\nopenpyxl>=3.1\n')
+    expect(files[WORKFLOW_FILE]).not.toContain('polars')
+    expect(JSON.parse(files[WORKFLOW_FILE]!).settings).toEqual({ timeoutMs: 60_000 })
+    const decoded = decodeWorkflow(files)
+    expect(decoded.ok && decoded.value.definition).toEqual(workflowForGit(workflow.definition))
+  })
+
+  it('leaves settings out when the packages were all there was, and keeps no file when there are none', () => {
+    const only = encodeWorkflow(withPackages({ python: { requirements: ['polars'] } })).files
+    expect(JSON.parse(only[WORKFLOW_FILE]!)).not.toHaveProperty('settings')
+    const decoded = decodeWorkflow(only)
+    expect(decoded.ok && decoded.value.definition.settings).toEqual({ python: { requirements: ['polars'] } })
+    const none = encodeWorkflow(withPackages({ python: { requirements: [] } })).files
+    expect(none).not.toHaveProperty(REQUIREMENTS_FILE)
+  })
+
+  it('reads a file edited by hand: blank lines and comments left out, the rest for the validator', () => {
+    const { files } = encodeWorkflow(withPackages({}))
+    const decoded = decodeWorkflow({
+      ...files,
+      [REQUIREMENTS_FILE]: '# data work\r\npolars==1.9.0\n\n  openpyxl  \n-e git+https://x\n',
+    })
+    expect(decoded.ok && decoded.value.definition.settings).toEqual({
+      python: { requirements: ['polars==1.9.0', 'openpyxl', '-e git+https://x'] },
+    })
+    const empty = decodeWorkflow({ ...files, [REQUIREMENTS_FILE]: '# nothing yet\n' })
+    expect(empty.ok && empty.value.definition.settings?.python).toBeUndefined()
+  })
+
+  it('refuses packages in the JSON as well as the file', () => {
+    const { files } = encodeWorkflow(withPackages({}))
+    const json = JSON.parse(files[WORKFLOW_FILE]!)
+    const decoded = decodeWorkflow({
+      ...files,
+      [WORKFLOW_FILE]: JSON.stringify({ ...json, settings: { python: { requirements: ['a'] } } }),
+      [REQUIREMENTS_FILE]: 'b\n',
+    })
+    expect(decoded.ok ? [] : decoded.problems.map((p) => [p.path, p.message])).toEqual([
+      [WORKFLOW_FILE, 'workflow.json: settings.python: the packages belong in requirements.txt'],
     ])
   })
 })

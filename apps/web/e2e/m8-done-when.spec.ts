@@ -64,6 +64,8 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
     )
     await expect(page.locator('[data-component="table1"]').getByRole('row')).toHaveCount(4)
     await inspector.getByRole('button', { name: 'From data' }).click()
+    // Columns are a list since M24; this types them as JSON.
+    await inspector.getByRole('button', { name: 'Edit as JSON' }).click()
     await typeInto(
       page,
       inspector.locator('[data-testid$="/components/0/props/columns"]'),

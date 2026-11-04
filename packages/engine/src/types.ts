@@ -6,7 +6,13 @@ import type {
   ResolvedResource,
 } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import type { OpenTaskField, TaskOutcome, WorkflowDefinition } from '@ow/definition'
+import type {
+  LibraryQueryDefinition,
+  LibraryUser,
+  OpenTaskField,
+  TaskOutcome,
+  WorkflowDefinition,
+} from '@ow/definition'
 import type { CodeRuntime, PythonRunner } from '@ow/sandbox'
 
 /** Why a block or run failed, as stored and shown. Messages are scrubbed of known secrets. */
@@ -50,6 +56,54 @@ export interface RunInput {
   headers?: Record<string, string>
   pathParams?: Record<string, string>
   urlParams?: Record<string, string>
+  /**
+   * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
+   * (`startTrigger.message`).
+   */
+  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage
+}
+
+/** What an SQS-triggered run sees of its message, besides its body (M26). */
+export interface SqsRunMessage {
+  messageId: string
+  /** The queue's URL. */
+  queue: string
+  /** SQS's own attributes (`SentTimestamp`, `ApproximateReceiveCount`, …), as SQS names them. */
+  attributes: Record<string, string>
+  /** The sender's message attributes, as text (binary ones as base64). */
+  messageAttributes: Record<string, string>
+  /** How many times SQS has handed it out, counting this one. */
+  receiveCount: number
+  sentAt: string
+  groupId?: string
+  deduplicationId?: string
+  sequenceNumber?: string
+}
+
+/** What a Kafka-triggered run sees of its message, besides its value (M26). */
+export interface KafkaRunMessage {
+  topic: string
+  partition: number
+  offset: string
+  key: string | null
+  headers: Record<string, string>
+  timestamp: string
+  /** This run's attempt at the message, counting from 1. */
+  attempt: number
+  groupId: string
+}
+
+/** What a Pub/Sub-triggered run sees of its message, besides its data. */
+export interface PubSubRunMessage {
+  messageId: string
+  publishTime: string
+  attributes: Record<string, string>
+  orderingKey?: string
+  /** Pub/Sub's count, on subscriptions with a dead-letter policy. */
+  deliveryAttempt?: number
+  subscription: string
+  /** The data's bytes, for binary payloads `data` can only show as text. */
+  dataBase64: string
 }
 
 /**
@@ -112,6 +166,25 @@ export interface EngineServices {
   tasks?: UserTasks
   /** Runs Python code (the code executor). Without it Python blocks fail with `python_unavailable`. */
   python?: PythonRunner
+  /**
+   * The run's Python packages (M23): the builder's env for its definition's requirements, asked for when a Python
+   * block first runs (shared by the rest). Absent when the definition declares none.
+   */
+  pythonEnv?: () => Promise<string>
+  /** Library queries (M21): Library query blocks and runners. Without it they fail with `library`. */
+  library?: LibraryQueries
+}
+
+/** The Query Library as runs see it (M21). */
+export interface LibraryQueries {
+  /**
+   * The release a reference runs: the pinned version, or the live one for `latest` (whichever is live now). Throws a
+   * BlockFailure when the library query or the release doesn't exist. Nobody's access is checked: the workflow's
+   * publisher vouched for using it (a draft run's starter was checked when the run started).
+   */
+  resolve(slug: string, version: string): Promise<{ version: string; definition: LibraryQueryDefinition }>
+  /** `current_user` for a run started by this person; null when there's no such user any more. */
+  user(userId: string): Promise<LibraryUser | null>
 }
 
 /** A User Task as its block sees it. */
@@ -182,6 +255,11 @@ export interface ExecuteRunOptions {
    * Null for runs of a release, which nobody is behind (webhooks, schedules, child runs).
    */
   actingUserId?: string | null
+  /**
+   * Whoever started the run (M21): manual, editor and app runs, inherited by child runs; null for schedules,
+   * webhooks and Pub/Sub. Library queries see them as `current_user`.
+   */
+  currentUserId?: string | null
   input: RunInput
   /** Merged into every evaluation's scope: `configVars`, `workflowContext`, `idempotencyKey`. */
   globals: Record<string, unknown>

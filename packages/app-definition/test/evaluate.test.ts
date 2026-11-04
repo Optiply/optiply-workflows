@@ -1,5 +1,6 @@
+import { FILTER_OPS } from '@ow/expressions'
 import { describe, expect, it, vi } from 'vitest'
-import { AppModel, sameValue } from '../src'
+import { AppModel, sameValue, TABLE_FILTER_OPS, tableFilters } from '../src'
 import { app, comp, sqlQuery } from './helpers'
 
 const model = (def: Parameters<typeof app>[0], options = {}) => {
@@ -84,7 +85,9 @@ describe('AppModel', () => {
         { id: 2, active: false },
       ],
     })
-    expect(changed).toEqual(new Set(['q.data', 'rows.value', 'details.$deps', 't.data', 'count.value']))
+    expect(changed).toEqual(
+      new Set(['q.data', 'rows.value', 'details.$deps', 't.data', 't.$rows', 'count.value']),
+    )
     expect(m.get('count.value')).toBe('1 rows')
     // A new result filtering to the same rows stops at the transformer: `details` doesn't run again.
     changed = m.set({
@@ -161,6 +164,71 @@ describe('AppModel', () => {
     expect(m.set({ 'other.value': 'a' }).has('auto.$deps')).toBe(false)
   })
 
+  it('computes a table’s columns per row into $rows, keeping the columns prop as written (M24)', () => {
+    const m = model({
+      components: [
+        comp('t', 'table', {
+          data: '{{ q.data }}',
+          columns: [
+            { key: 'name', label: '{{ "Name" }}' },
+            { key: 'total', value: '{{ currentRow.qty * currentRow.price * rate.value }}' },
+            { key: 'n', value: 'row {{ i + 1 }}' },
+          ],
+        }),
+        comp('rate', 'numberInput', { defaultValue: 2 }),
+      ],
+      queries: [sqlQuery('q', 'select 1')],
+    })
+    // The prop: templates evaluated, values as written.
+    expect(m.get('t.columns')).toEqual([
+      { key: 'name', label: 'Name' },
+      { key: 'total', value: '{{ currentRow.qty * currentRow.price * rate.value }}' },
+      { key: 'n', value: 'row {{ i + 1 }}' },
+    ])
+    expect(m.get('t.$rows')).toEqual([])
+    const rows = [
+      { name: 'a', qty: 2, price: 3 },
+      { name: 'b', qty: 1, price: 5 },
+    ]
+    expect(m.set({ 'q.data': rows })).toContain('t.$rows')
+    expect(m.get('t.$rows')).toEqual([
+      { name: 'a', qty: 2, price: 3, total: 12, n: 'row 1' },
+      { name: 'b', qty: 1, price: 5, total: 10, n: 'row 2' },
+    ])
+    // `data` is untouched; what the template reads re-computes the rows.
+    expect(m.get('t.data')).toEqual(rows)
+    expect(m.set({ 'rate.value': 1 })).toContain('t.$rows')
+    expect((m.get('t.$rows') as { total: number }[]).map((r) => r.total)).toEqual([6, 5])
+    // A cell that fails is null; the first failure is the node's error. Code can't read $rows.
+    m.set({ 'q.data': [{ qty: 1, price: 1 }, null, { qty: 2 }] })
+    expect(m.get('t.$rows')).toEqual([
+      { qty: 1, price: 1, total: 1, n: 'row 1' },
+      null,
+      { qty: 2, total: Number.NaN, n: 'row 3' },
+    ])
+    expect(m.set({ 'q.data': [{ qty: 1, price: 1 }, 5] })).toContain('t.$rows')
+    expect(m.error('t.$rows')).toBeUndefined()
+    expect(m.view('t')).not.toHaveProperty('$rows')
+  })
+
+  it('reports a failing computed column and leaves $rows as data without one', () => {
+    const m = model({
+      components: [
+        comp('t', 'table', {
+          data: [{ id: 1 }, { id: 2 }],
+          columns: [{ key: 'bad', value: '{{ currentRow.missing.deeper }}' }],
+        }),
+        comp('plain', 'table', { data: [{ id: 1 }] }),
+      ],
+    })
+    expect(m.get('t.$rows')).toEqual([
+      { id: 1, bad: null },
+      { id: 2, bad: null },
+    ])
+    expect(m.error('t.$rows')).toMatch(/^Column bad, row 0: .*deeper/)
+    expect(m.get('plain.$rows')).toBe(m.get('plain.data'))
+  })
+
   it('marks nodes on a loop and keeps the rest working', () => {
     const m = model({
       components: [
@@ -226,5 +294,28 @@ describe('AppModel', () => {
     expect(sameValue({ a: 1 }, { a: 2 })).toBe(false)
     expect(sameValue(Number.NaN, Number.NaN)).toBe(true)
     expect(sameValue(null, {})).toBe(false)
+  })
+})
+
+describe('table filters (M24)', () => {
+  it('has the operators sql.where takes', () => {
+    expect([...TABLE_FILTER_OPS]).toEqual([...FILTER_OPS])
+  })
+
+  it('keeps entries with a column and a known operator', () => {
+    expect(
+      tableFilters([
+        { column: 'a', op: 'between', value: [1, 2], type: 'number' },
+        { column: 'b', op: 'empty' },
+        { column: '', op: 'equals' },
+        { column: 'c', op: 'like' },
+        null,
+        ['a', 'equals'],
+      ]),
+    ).toEqual([
+      { column: 'a', op: 'between', value: [1, 2], type: 'number' },
+      { column: 'b', op: 'empty' },
+    ])
+    expect(tableFilters('a = 1')).toEqual([])
   })
 })

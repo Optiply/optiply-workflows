@@ -7,6 +7,7 @@ import {
   environments,
   gitBranchDrafts,
   groups,
+  type LibraryQuery,
   type Resource,
   resourceConfigs,
   resources,
@@ -24,9 +25,12 @@ import {
   type Diagnostic,
   literalAssignees,
   queriedResources,
+  triggerResources,
+  usedLibraries,
   validateDefinition,
   type WorkflowDefinition,
 } from '@ow/definition'
+import { checkBodySchema } from '@ow/definition/body-schema'
 import {
   BlockFailure,
   enqueueRun,
@@ -36,6 +40,7 @@ import {
 } from '@ow/engine'
 import type { CodeRuntime } from '@ow/sandbox'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { libraryInfos } from './library-queries'
 import { credentialsFor } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { pythonDiagnostics } from './python'
@@ -45,7 +50,7 @@ import { decryptForRow } from './secrets'
 /** A refused request, with the HTTP status to answer with. */
 export class RunRequestError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 429 | 503,
     readonly code: string,
     message: string,
     readonly details?: Record<string, unknown>,
@@ -194,7 +199,12 @@ async function prepareRun(
     source = { releaseId: release!.id }
   }
 
-  const { resources: rows, children, errors } = await checkDefinition(db, definition, 'run')
+  const {
+    resources: rows,
+    children,
+    libraries,
+    errors,
+  } = await checkDefinition(db, definition, 'run', version === 'draft')
   if (errors.length) {
     throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
       diagnostics: errors satisfies Diagnostic[],
@@ -208,6 +218,16 @@ async function prepareRun(
           403,
           'forbidden',
           `You need use access to workflow "${child.slug}" to run this draft, which calls it`,
+        )
+      }
+    }
+    // Its library queries too (not their resources: a library query's publisher vouched for those).
+    for (const library of libraries) {
+      if (!atLeast(access.libraryQueryLevel(library), 'use')) {
+        throw new RunRequestError(
+          403,
+          'forbidden',
+          `You need use access to library query "${library.slug}" to run this draft, which uses it`,
         )
       }
     }
@@ -260,8 +280,20 @@ export async function checkDefinition(
   definition: WorkflowDefinition,
   /** `run`: Python only needs an executor; `release` (the default): the executor checks its syntax too. */
   purpose: 'run' | 'release' = 'release',
-): Promise<{ resources: Resource[]; children: Workflow[]; errors: Diagnostic[] }> {
-  const slugs = queriedResources(definition)
+  /**
+   * Whether library queries are checked against the library (M21): not for a live release's run, which was checked
+   * when it was published (a library query's newer live release may have dropped a parameter it passes: a warning
+   * at that publish, ignored at run time).
+   */
+  checkLibraries = true,
+): Promise<{
+  resources: Resource[]
+  children: Workflow[]
+  libraries: LibraryQuery[]
+  errors: Diagnostic[]
+}> {
+  // A Pub/Sub trigger's resource is used with no one behind the run, like a queried one: checked and vouched for alike.
+  const slugs = [...new Set([...queriedResources(definition), ...triggerResources(definition)])]
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const childSlugs = calledWorkflows(definition)
@@ -269,6 +301,8 @@ export async function checkDefinition(
     ? await db.select().from(workflows).where(inArray(workflows.slug, childSlugs))
     : []
   const childBySlug = new Map(children.map((w) => [w.slug, w]))
+  // Library queries (M21): the release a reference names must exist; who may use them is the caller's to check.
+  const libraries = await libraryInfos(db, usedLibraries(definition))
   const assignees = literalAssignees(definition)
   const knownEmails = new Set(
     assignees.users.length
@@ -288,6 +322,7 @@ export async function checkDefinition(
       : [],
   )
   const validation = validateDefinition(definition, {
+    checkBodySchema,
     resolveAssignee: (kind, name) =>
       kind === 'user' ? knownEmails.has(name.toLowerCase()) : knownGroups.has(name),
     resolveResource: (slug) => {
@@ -299,13 +334,14 @@ export async function checkDefinition(
       if (!child) return undefined
       return child.liveReleaseId ? 'published' : 'unpublished'
     },
+    ...(checkLibraries && { resolveLibrary: (slug: string) => libraries.get(slug)?.info }),
   })
   const errors = validation.diagnostics.filter((d) => d.severity === 'error')
   // Python's syntax is the executor's to check (only when the rest is valid: a broken schema has no fields).
   if (!errors.some((d) => d.code === 'schema')) {
     errors.push(...(await pythonDiagnostics(definition, { syntax: purpose === 'release' })))
   }
-  return { resources: rows, children, errors }
+  return { resources: rows, children, libraries: [...libraries.values()].map((l) => l.query), errors }
 }
 
 /** The snapshot of the current draft revision, created on first use. */

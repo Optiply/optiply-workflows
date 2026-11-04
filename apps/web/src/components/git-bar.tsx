@@ -3,13 +3,18 @@ import {
   AlertTriangle,
   GitBranch,
   GitCommitHorizontal,
+  GitMerge,
   GitPullRequest,
   Lock,
+  Pencil,
   RefreshCw,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { CommitLink, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
+import { confirmDialog } from '@/components/confirm'
+import { folderPath, useFolders } from '@/components/folders'
+import { CommitLink, GIT_KIND_LABELS, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
+import { type ConflictGroup, MergeDialog } from '@/components/merge-dialog'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { lineDiff, withContext } from '@/lib/diff'
 import { errorMessage, type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -48,20 +53,23 @@ export function GitBar(props: GitBarProps) {
   const { kind, object, branch, draft } = props
   const trpc = useTRPC()
   const { data: git } = useGitInfo()
-  const branches = useQuery({ ...trpc.git.branches.queryOptions(), staleTime: 30_000 })
+  // This object's branches (M22): the ones changing it, or holding its draft, come first.
+  const branches = useQuery({ ...trpc.git.branches.queryOptions({ kind, id: object.id }), staleTime: 30_000 })
   const drafts = useQuery(trpc.branchDrafts.list.queryOptions({ kind, id: object.id }))
   const [naming, setNaming] = useState(false)
   const [newBranch, setNewBranch] = useState('')
   const [committing, setCommitting] = useState(false)
   const deploy = git?.branch ?? 'main'
 
-  const names = [
+  const others = (branches.data ?? []).filter((b) => !b.deploy)
+  const mine = [
     ...new Set([
       ...(drafts.data ?? []).map((d) => d.branch),
-      ...(branches.data ?? []).filter((b) => !b.deploy).map((b) => b.name),
+      ...others.filter((b) => b.changes || b.draft).map((b) => b.name),
       ...(branch ? [branch] : []),
     ]),
   ].sort()
+  const rest = others.map((b) => b.name).filter((name) => !mine.includes(name))
 
   return (
     <div
@@ -105,11 +113,24 @@ export function GitBar(props: GitBarProps) {
           }}
         >
           <option value="">{deploy} (deployed, read-only)</option>
-          {names.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
+          {mine.length > 0 && (
+            <optgroup label={`Changing this ${GIT_KIND_LABELS[kind]}`}>
+              {mine.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {rest.length > 0 && (
+            <optgroup label="Other branches">
+              {rest.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
           <option value={NEW_BRANCH}>New branch…</option>
         </Select>
       )}
@@ -145,16 +166,87 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
     enabled: draft.branchExists,
     refetchInterval: 60_000,
   })
+  const deploy = git?.branch ?? 'main'
+  /** Open while a merge has conflicts: from the branch (the draft's own) or from main (by object). */
+  const [merging, setMerging] = useState<{ from: 'branch' | 'main'; groups: ConflictGroup[] } | null>(null)
+  const [detailing, setDetailing] = useState(false)
+  /** Commit was clicked while the branch had moved: commit once the update is in. */
+  const [commitAfter, setCommitAfter] = useState(false)
+  /** What went wrong outside the mutations: saving before a merge, or the draft's update after main's merge. */
+  const [note, setNote] = useState<string | null>(null)
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }) }),
+      queryClient.invalidateQueries({ queryKey: trpc.git.pullRequest.queryKey() }),
+    ])
+  /** The draft's own update came back: replaced, or its conflicts to resolve. */
+  const updated = (result: RouterOutputs['branchDrafts']['updateFromBranch']) => {
+    if (result.status === 'conflicts') {
+      setMerging({
+        from: 'branch',
+        groups: [{ key: '', label: props.object.name, conflicts: result.conflicts }],
+      })
+      return
+    }
+    setMerging(null)
+    props.onReplaced(result.draft)
+    if (commitAfter) {
+      setCommitAfter(false)
+      props.onCommit()
+    }
+  }
   const update = useMutation(
     trpc.branchDrafts.updateFromBranch.mutationOptions({
-      onSuccess: async (updated) => {
-        props.onReplaced(updated)
-        await queryClient.invalidateQueries({
-          queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }),
-        })
+      onSuccess: async (result) => {
+        updated(result)
+        await refresh()
+      },
+      onError: () => setCommitAfter(false),
+    }),
+  )
+  const fromMain = useMutation(
+    trpc.branchDrafts.updateFromMain.mutationOptions({
+      onError: () => setCommitAfter(false),
+      onSuccess: async (result) => {
+        if (result.status === 'conflicts') {
+          setMerging({
+            from: 'main',
+            groups: result.objects.map((o) => ({ key: o.dir, label: o.name, conflicts: o.conflicts })),
+          })
+        } else if (result.status === 'merged') {
+          // Main is in; the draft's own changes may still conflict with what came in.
+          if (result.draft) updated(result.draft)
+          else {
+            setMerging(null)
+            setCommitAfter(false)
+            setNote(
+              `${deploy} is merged into ${branch}, but updating this draft failed (${result.draftError}): use Update from branch`,
+            )
+          }
+        } else {
+          setMerging(null)
+        }
+        await refresh()
       },
     }),
   )
+  /** Saves what's typed, then updates (the merge starts from the saved draft). */
+  const startUpdate = async (from: 'branch' | 'main', thenCommit = false) => {
+    setNote(null)
+    // A fresh start: no error left over from the other update in the dialog.
+    update.reset()
+    fromMain.reset()
+    setCommitAfter(thenCommit)
+    try {
+      await props.ensureSaved()
+    } catch (err) {
+      setCommitAfter(false)
+      setNote(`Your changes couldn't be saved, so nothing was merged: ${errorMessage(err)}`)
+      return
+    }
+    if (from === 'branch') update.mutate({ id: draft.id })
+    else fromMain.mutate({ id: draft.id })
+  }
   const discard = useMutation(
     trpc.branchDrafts.discard.mutationOptions({
       onSuccess: async () => {
@@ -174,53 +266,138 @@ function BranchStatus(props: GitBarProps & { draft: Draft; onCommit(): void }) {
       )}
       {c?.conflict ? (
         <span className="flex items-center gap-1.5 text-danger" data-testid="branch-conflict">
-          <AlertTriangle className="size-3.5" /> Someone changed this {props.kind} on {branch}: update before
-          committing
+          <AlertTriangle className="size-3.5" /> Someone changed this {props.kind} on {branch}:{' '}
+          {mergeOutlook(c.merge)}
         </span>
       ) : (
         c?.behind && <span className="text-warning-strong">{branch} has new commits</span>
       )}
+      {c?.mainAhead && (
+        <span className="text-warning-strong" data-testid="main-ahead">
+          {deploy} changed this {props.kind}
+        </span>
+      )}
       <span className="flex-1" />
+      {c?.mainAhead && (
+        <Button
+          size="sm"
+          loading={fromMain.isPending}
+          title={`Merge ${deploy} into ${branch}, keeping your changes`}
+          onClick={() => startUpdate('main')}
+          data-testid="update-from-main"
+        >
+          <GitMerge className="size-3.5" /> Update from {deploy}
+        </Button>
+      )}
       {c?.behind && (
         <Button
           size="sm"
-          loading={update.isPending}
-          title="Load the branch's files into this draft"
-          onClick={() => {
-            const discardChanges = (c.files.length ?? 0) > 0
-            if (
-              discardChanges &&
-              !confirm(
-                `Update from ${branch}? Your changes that aren't committed are replaced by the branch's.`,
-              )
-            ) {
-              return
-            }
-            update.mutate({ id: draft.id, discardChanges })
-          }}
+          loading={update.isPending && !commitAfter}
+          title="Merge the branch's new commits into this draft, keeping your changes"
+          onClick={() => startUpdate('branch')}
+          data-testid="update-from-branch"
         >
           <RefreshCw className="size-3.5" /> Update from branch
         </Button>
       )}
       {pr.data?.pullRequest && <PullRequestLink pullRequest={pr.data.pullRequest} />}
-      <Button size="sm" variant="primary" onClick={props.onCommit} data-testid="commit-open">
-        <GitCommitHorizontal className="size-3.5" />
-        Commit{c && c.files.length > 0 ? ` (${c.files.length})` : ''}
+      {c?.conflict ? (
+        <Button
+          size="sm"
+          variant="primary"
+          loading={update.isPending && commitAfter}
+          title="The branch changed this too: update from it first, then commit"
+          onClick={() => startUpdate('branch', true)}
+          data-testid="commit-open"
+        >
+          <GitCommitHorizontal className="size-3.5" />
+          Update, then commit
+        </Button>
+      ) : (
+        <Button size="sm" variant="primary" onClick={props.onCommit} data-testid="commit-open">
+          <GitCommitHorizontal className="size-3.5" />
+          Commit{c && c.files.length > 0 ? ` (${c.files.length})` : ''}
+        </Button>
+      )}
+      <Button size="sm" onClick={() => setDetailing(true)} data-testid="branch-details-open">
+        <Pencil className="size-3.5" /> Details
       </Button>
+      {detailing && (
+        <DetailsDialog
+          kind={props.kind}
+          draft={draft}
+          onClose={() => setDetailing(false)}
+          onSaved={async (next) => {
+            props.onUpdated(next)
+            await refresh()
+          }}
+        />
+      )}
       <Button
         size="icon"
         variant="ghost"
         title="Close this draft (what's committed stays on the branch)"
         loading={discard.isPending}
-        onClick={() => {
-          if (confirm(`Close the draft on ${branch}? Changes that aren't committed are lost.`)) {
+        onClick={async () => {
+          if (
+            await confirmDialog(`Close the draft on ${branch}? Changes that aren't committed are lost.`, {
+              danger: true,
+              confirm: 'Close',
+            })
+          ) {
             discard.mutate({ id: draft.id })
           }
         }}
       >
         <Trash2 className="size-4" />
       </Button>
-      <ErrorNote error={update.error ?? discard.error ?? changes.error} />
+      <ErrorNote
+        error={
+          // The updates' errors show in the dialog while it's open; the rest always here.
+          (merging ? null : (update.error ?? fromMain.error)) ??
+          discard.error ??
+          changes.error ??
+          (note ? new Error(note) : null)
+        }
+      />
+      {merging && (
+        <MergeDialog
+          title={merging.from === 'main' ? `Update from ${deploy}` : 'Update from branch'}
+          intro={
+            merging.from === 'main'
+              ? `${deploy} and ${branch} both changed these. Mine is ${branch}, theirs is ${deploy}. Nothing is committed until you apply.`
+              : `Your changes that aren't committed and the new commits on ${branch} both changed these. Mine is your draft, theirs is the branch. Nothing is saved until you apply.`
+          }
+          groups={merging.groups}
+          applying={update.isPending || fromMain.isPending}
+          error={merging.from === 'branch' ? update.error : fromMain.error}
+          secondary={
+            merging.from === 'branch'
+              ? {
+                  label: 'Discard mine, take the branch’s',
+                  onClick: async () => {
+                    if (
+                      await confirmDialog("Replace your changes that aren't committed with the branch's?", {
+                        danger: true,
+                        confirm: 'Replace',
+                      })
+                    ) {
+                      update.mutate({ id: draft.id, discardChanges: true })
+                    }
+                  },
+                }
+              : undefined
+          }
+          onApply={(resolutions) => {
+            if (merging.from === 'branch') update.mutate({ id: draft.id, resolutions: resolutions[''] ?? {} })
+            else fromMain.mutate({ id: draft.id, resolutions })
+          }}
+          onClose={() => {
+            setMerging(null)
+            setCommitAfter(false)
+          }}
+        />
+      )}
     </>
   )
 }
@@ -253,7 +430,7 @@ function CommitDialog(
     Promise.all([
       queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.changes.queryKey({ id: draft.id }) }),
       queryClient.invalidateQueries({ queryKey: trpc.branchDrafts.list.queryKey() }),
-      queryClient.invalidateQueries({ queryKey: trpc.git.branches.queryKey() }),
+      queryClient.invalidateQueries({ queryKey: trpc.git.branches.pathKey() }),
       queryClient.invalidateQueries({ queryKey: trpc.git.pullRequest.queryKey({ branch: branch! }) }),
     ])
   const commit = useMutation(
@@ -378,8 +555,8 @@ function CommitDialog(
         )}
         {c?.conflict && (
           <p className="rounded-md bg-danger/5 px-3 py-2 text-danger">
-            Someone changed this {kind} on {branch} since you started: close this, update from the branch,
-            then commit.
+            Someone changed this {kind} on {branch} since you started: close this, update from the branch (
+            {mergeOutlook(c.merge)}), then commit.
           </p>
         )}
         <Field label="Message">
@@ -391,8 +568,101 @@ function CommitDialog(
   )
 }
 
+/**
+ * The name, description and folder Git keeps for the object, on this branch (M22): saved on the draft without a new
+ * revision, committed with the next commit.
+ */
+function DetailsDialog({
+  kind,
+  draft,
+  onClose,
+  onSaved,
+}: {
+  kind: GitKind
+  draft: Draft
+  onClose(): void
+  onSaved(draft: Draft): Promise<unknown>
+}) {
+  const trpc = useTRPC()
+  const { data: folders } = useFolders(kind)
+  const [form, setForm] = useState({
+    name: draft.name,
+    description: draft.description ?? '',
+    folder: draft.folder ?? '',
+  })
+  const paths = [
+    ...new Set([
+      ...(folders?.folders ?? []).map((f) => folderPath(folders!.folders, f.id)!),
+      ...(draft.folder ? [draft.folder] : []),
+    ]),
+  ].sort()
+  const save = useMutation(
+    trpc.branchDrafts.setDetails.mutationOptions({
+      onSuccess: async (next) => {
+        await onSaved(next)
+        onClose()
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Details on ${draft.branch}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            disabled={!form.name.trim()}
+            loading={save.isPending}
+            onClick={() =>
+              save.mutate({
+                id: draft.id,
+                name: form.name.trim(),
+                description: form.description.trim() || null,
+                folder: form.folder || null,
+              })
+            }
+            data-testid="branch-details-save"
+          >
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4 text-sm">
+        <p className="text-muted">
+          Git keeps these with the {GIT_KIND_LABELS[kind]}: they change here when the branch merges and
+          deploys.
+        </p>
+        <Field label="Name">
+          <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </Field>
+        <Field label="Description">
+          <Textarea
+            rows={2}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
+        </Field>
+        <Field label="Folder" hint="The deploy makes a folder this instance doesn't have yet.">
+          <Select value={form.folder} onChange={(e) => setForm({ ...form, folder: e.target.value })}>
+            <option value="">Not in a folder</option>
+            {paths.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <ErrorNote error={save.error} />
+      </div>
+    </Dialog>
+  )
+}
+
 /** A file's changes, line by line (unchanged stretches folded). */
-function FileDiff({ before, after }: { before: string | null; after: string | null }) {
+export function FileDiff({ before, after }: { before: string | null; after: string | null }) {
   const diff = lineDiff(before ?? '', after ?? '')
   if (!diff) return <p className="px-3 pb-3 text-xs text-muted">Too long to compare here.</p>
   return (
@@ -424,4 +694,11 @@ function FileDiff({ before, after }: { before: string | null; after: string | nu
       )}
     </pre>
   )
+}
+
+/** What updating from the branch would do, as the changes query says. */
+function mergeOutlook(merge: { conflicts: number } | null): string {
+  if (!merge) return 'update before committing'
+  if (merge.conflicts === 0) return 'updating merges it with your changes'
+  return `updating leaves ${merge.conflicts} conflict${merge.conflicts === 1 ? '' : 's'} to resolve`
 }

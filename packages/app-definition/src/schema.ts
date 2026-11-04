@@ -1,4 +1,10 @@
-import { blockNameSchema, conditionIdSchema, resourceSlugSchema, workflowSlugSchema } from '@ow/definition'
+import {
+  blockNameSchema,
+  conditionIdSchema,
+  libraryVersionSchema,
+  resourceSlugSchema,
+  workflowSlugSchema,
+} from '@ow/definition'
 import { z } from 'zod'
 
 /**
@@ -106,6 +112,12 @@ export const componentSchema = z.strictObject({
    * component inside another is on its container's page.
    */
   page: appNameSchema.optional(),
+  /**
+   * Where it sits in its parent (M24): inside a container, one of its views (by name) or its `header` or `footer`;
+   * at the top, the app frame's `sidebar` (or `header`, the default). Missing: the parent's body (a container's
+   * first view when it has views). See `slotOf`.
+   */
+  slot: appNameSchema.optional(),
   /** Prop values by prop name, sparse: a missing prop takes the registry's default. */
   props: z.record(z.string().max(64), z.json()).optional(),
   events: handlersSchema.optional(),
@@ -152,13 +164,7 @@ export const jsAppQuerySchema = z.strictObject({
   code: z.string(),
 })
 
-/** `latest` (the library query's live release, whichever it is when the query runs) or a pinned `1.2.3`. */
-export const libraryVersionSchema = z.union([
-  z.literal('latest'),
-  z
-    .string()
-    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, 'Use latest or a version like 1.2.3'),
-])
+export { libraryVersionSchema }
 
 /**
  * A query from the Query Library (M14): the library query's own resource and query run on the server; the app
@@ -241,6 +247,19 @@ export const moduleSpecSchema = z.strictObject({
   events: z.array(moduleEventSchema).max(20),
 })
 
+/**
+ * The app frame (M24, architecture §2.27): a header bar fixed at the top and/or a sidebar at the left, around every
+ * page. Components on every page sit in the header (the default) or the sidebar (`slot: 'sidebar'`).
+ */
+export const frameSchema = z.strictObject({
+  header: z.boolean().optional(),
+  sidebar: z.enum(['narrow', 'medium', 'wide']).optional(),
+  /** The app's name in the header (in the sidebar without a header). */
+  showTitle: z.boolean().optional(),
+  /** The signed-in person in the header. */
+  showUser: z.boolean().optional(),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
   /** In order; the first opens by default. An app without pages is one page, holding everything. */
@@ -253,10 +272,13 @@ export const appDefinitionSchema = z.strictObject({
   layout: z.record(appNameSchema, positionSchema).optional(),
   /** Present on a module's definition (M14), never on an app's. */
   module: moduleSpecSchema.optional(),
+  /** A header bar and/or a sidebar around every page (M24); without it, global components sit above each page. */
+  frame: frameSchema.optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>
 export type AppPage = z.infer<typeof pageSchema>
+export type AppFrame = z.infer<typeof frameSchema>
 export type HandlerAction = z.infer<typeof handlerActionSchema>
 export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>

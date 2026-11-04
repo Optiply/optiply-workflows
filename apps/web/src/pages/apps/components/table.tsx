@@ -1,18 +1,34 @@
 // biome-ignore-all lint/a11y/useSemanticElements: an ARIA grid on divs, so rows can be virtualized (absolutely positioned)
 // biome-ignore-all lint/a11y/useFocusableInteractive: the grid holds focus and points at the active cell (aria-activedescendant)
 // biome-ignore-all lint/a11y/useKeyWithClickEvents: rows and cells are clicked; the keyboard works on the grid (arrows, Enter, Space)
+
+import { type TableFilter, tableFilters } from '@ow/app-definition'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Search } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ListFilter, Plus, Search, X } from 'lucide-react'
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { EditorActionsContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
-import { useAppHostContext, useAppValue } from '../runtime/react'
+import { useAppHostContext, useAppScope, useAppValue } from '../runtime/react'
 import {
   applyEdit,
+  type ColumnType,
   changeFor,
   editText,
+  FILTER_OPS_BY_TYPE,
+  filterLabel,
   formatCell,
+  MIN_COLUMN_WIDTH,
   type Paging,
   parseCell,
   type Row,
@@ -41,11 +57,20 @@ export function TableRenderer({ component }: RendererProps) {
   const gridId = useId()
   const name = component.name
   const data = useAppValue<unknown>(`${name}.data`)
+  // What it shows: `data` with its computed columns (M24); `data` itself until the runtime has it.
+  const shown = useAppValue<unknown>(`${name}.$rows`) ?? data
   const columnsProp = useAppValue<unknown>(`${name}.columns`)
   const primaryKey = useAppValue<string>(`${name}.primaryKey`) || 'id'
   const selection = useAppValue<'none' | 'single' | 'multiple'>(`${name}.rowSelection`)
   const emptyMessage = useAppValue<string>(`${name}.emptyMessage`)
   const changeset = useAppValue<Row[]>(`${name}.changesetArray`) ?? []
+  const allowAddRow = useAppValue<boolean>(`${name}.allowAddRow`) === true
+  const newRowsValue = useAppValue<unknown>(`${name}.newRows`)
+  const newRows = Array.isArray(newRowsValue) ? (newRowsValue as Row[]) : []
+  const actions = useContext(EditorActionsContext)
+  const scope = useAppScope()
+  /** Widths dragged here: while dragging, and in a running app until it reloads (the editor saves them). */
+  const [widths, setWidths] = useState<Record<string, number>>({})
   const selectedRows = useAppValue<Row[]>(`${name}.selectedRows`) ?? []
   const selectedIndex = useAppValue<number | null>(`${name}.selectedIndex`)
   const showSearch = useAppValue<boolean>(`${name}.search`) === true
@@ -55,8 +80,13 @@ export function TableRenderer({ component }: RendererProps) {
   const page = useAppValue<number>(`${name}.page`) ?? 0
   const sortState = useAppValue<{ column?: unknown; desc?: unknown } | null>(`${name}.sort`)
   const searchText = useAppValue<string>(`${name}.searchText`) ?? ''
+  const showFilters = useAppValue<boolean>(`${name}.showFilters`) === true
+  const filtersValue = useAppValue<unknown>(`${name}.filters`)
+  const filters = useMemo(() => tableFilters(filtersValue), [filtersValue])
+  /** The column whose filter is being set, in the bar above the rows. */
+  const [filtering, setFiltering] = useState<string | null>(null)
 
-  const rows = useMemo(() => (Array.isArray(data) ? (data as Row[]) : []), [data])
+  const rows = useMemo(() => (Array.isArray(shown) ? (shown as Row[]) : []), [shown])
   const columns = useMemo(() => tableColumns(columnsProp, rows), [columnsProp, rows])
   const sort = useMemo(
     () =>
@@ -76,8 +106,9 @@ export function TableRenderer({ component }: RendererProps) {
         sort,
         searchText: typeof searchText === 'string' ? searchText : '',
         totalRowCount: typeof totalRowCount === 'number' ? totalRowCount : null,
+        filters,
       }),
-    [rows, columns, paging, page, pageSize, sort, searchText, totalRowCount],
+    [rows, columns, paging, page, pageSize, sort, searchText, totalRowCount, filters],
   )
   const ordered = view.rows
   const [active, setActive] = useState<{ r: number; c: number } | null>(null)
@@ -119,7 +150,55 @@ export function TableRenderer({ component }: RendererProps) {
     return keys
   }, [selectedRows, selectedIndex, rows, primaryKey])
 
-  const template = columns.map((c) => `minmax(${c.width ?? 140}px, 1fr)`).join(' ')
+  // A width (set, or dragged) is the column's; the others share what's left.
+  const template = columns
+    .map((c) => {
+      const w = widths[c.key] ?? c.width
+      return w ? `${w}px` : 'minmax(140px, 1fr)'
+    })
+    .join(' ')
+
+  /** Drags a header's right edge: the width follows the pointer; in the editor the drop saves it (M24). */
+  const startResize = (e: PointerEvent<HTMLDivElement>, col: TableColumn) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const header = e.currentTarget.parentElement!
+    const start = header.getBoundingClientRect().width
+    const x0 = e.clientX
+    let width = start
+    const move = (ev: globalThis.PointerEvent) => {
+      width = Math.max(MIN_COLUMN_WIDTH, Math.round(start + ev.clientX - x0))
+      setWidths((w) => ({ ...w, [col.key]: width }))
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      if (!actions || width === start) return
+      actions.setColumnWidth(name, col.key, width, columns)
+      // Saved: the definition has it now (and undo can take it back).
+      setWidths(({ [col.key]: _saved, ...rest }) => rest)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  /**
+   * Changes `newRows` from what the page has now, not from the last render: adding a row and typing into another
+   * can come faster than renders, and every change replaces the whole list. Each goes through `set`, in order.
+   */
+  const changeNewRows = (change: (rows: Row[]) => Row[]) => {
+    const current = host.store.getState().values[`${scope}${name}.newRows`]
+    host.set({ [`${name}.newRows`]: change(Array.isArray(current) ? (current as Row[]) : []) })
+  }
+  /** A new row's field changed (`undefined` drops it). */
+  const setNewField = (at: number, key: string, value: unknown) =>
+    changeNewRows((rows) =>
+      rows.map((r, i) => {
+        if (i !== at) return r
+        const { [key]: _old, ...rest } = r
+        return value === undefined ? rest : { ...rest, [key]: value }
+      }),
+    )
   const cellValue = (row: Row, col: TableColumn) => {
     const change = changeFor(changeset, primaryKey, row)
     return change && col.key !== primaryKey && col.key in change ? change[col.key] : row[col.key]
@@ -141,9 +220,11 @@ export function TableRenderer({ component }: RendererProps) {
     }
     const key = selectionKey(row, primaryKey)
     const already = selectedRows.some((r) => selectionKey(r, primaryKey) === key)
+    // The row as `data` has it (as `selectRow` sets it), without computed columns.
+    const dataRow = Array.isArray(data) ? ((data[index] as Row | undefined) ?? row) : row
     const next = already
       ? selectedRows.filter((r) => selectionKey(r, primaryKey) !== key)
-      : [...selectedRows, row]
+      : [...selectedRows, dataRow]
     host.set({
       [`${name}.selectedRows`]: next,
       [`${name}.selectedRow`]: next.at(-1) ?? null,
@@ -225,6 +306,16 @@ export function TableRenderer({ component }: RendererProps) {
 
   const cellId = (r: number, c: number) => `${gridId}-${r}-${c}`
 
+  /** Sets the column's filter (one per column from the header; null removes it), as `setFilters` does. */
+  const setFilter = (column: string, filter: TableFilter | null) => {
+    setActive(null)
+    setFiltering(null)
+    const next = filters.filter((f) => f.column !== column)
+    host.call(name, 'setFilters', [filter ? [...next, filter] : next])
+    scrollRef.current?.scrollTo({ top: 0 })
+  }
+  const filteringColumn = filtering === null ? undefined : columns.find((c) => c.key === filtering)
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-surface text-sm">
       {showSearch && (
@@ -243,6 +334,52 @@ export function TableRenderer({ component }: RendererProps) {
               host.fire(name, 'searchChange')
             }}
           />
+        </div>
+      )}
+      {filteringColumn && (
+        <FilterBar
+          key={filteringColumn.key}
+          column={filteringColumn}
+          filter={filters.find((f) => f.column === filteringColumn.key)}
+          onApply={(filter) => setFilter(filteringColumn.key, filter)}
+          onCancel={() => setFiltering(null)}
+        />
+      )}
+      {filters.length > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5"
+          data-testid="filters"
+        >
+          {filters.map((f) => {
+            const label = columns.find((c) => c.key === f.column)?.label ?? f.column
+            return (
+              <span
+                key={f.column}
+                className="flex items-center gap-1 rounded-full bg-accent-soft py-0.5 pr-1 pl-2.5 text-xs text-accent"
+              >
+                <button type="button" onClick={() => setFiltering(f.column)} title="Change this filter">
+                  {filterLabel(f, label)}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove the filter on ${label}`}
+                  className="rounded-full p-0.5 hover:bg-surface"
+                  onClick={() => setFilter(f.column, null)}
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )
+          })}
+          {filters.length > 1 && (
+            <button
+              type="button"
+              className="text-xs text-muted hover:text-ink"
+              onClick={() => host.call(name, 'clearFilters')}
+            >
+              Clear all
+            </button>
+          )}
         </div>
       )}
       <div
@@ -270,7 +407,7 @@ export function TableRenderer({ component }: RendererProps) {
                   key={col.key}
                   role="columnheader"
                   aria-sort={sorted ? (sort.desc ? 'descending' : 'ascending') : 'none'}
-                  className="truncate"
+                  className="relative flex items-center truncate"
                 >
                   <button
                     type="button"
@@ -291,10 +428,71 @@ export function TableRenderer({ component }: RendererProps) {
                     {sorted &&
                       (sort.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
                   </button>
+                  {/* A computed column isn't in the database: a query can't filter by it. */}
+                  {showFilters && col.filterable && !(paging === 'server' && col.computed) && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label={`Filter ${col.label}`}
+                      className={cn(
+                        'mr-1 shrink-0 rounded p-1 hover:bg-canvas',
+                        filters.some((f) => f.column === col.key)
+                          ? 'text-accent'
+                          : 'text-muted hover:text-ink',
+                      )}
+                      onClick={() => setFiltering(filtering === col.key ? null : col.key)}
+                    >
+                      <ListFilter className="size-3.5" />
+                    </button>
+                  )}
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Resize ${col.label}`}
+                    className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-accent/30"
+                    onPointerDown={(e) => startResize(e, col)}
+                  />
                 </div>
               )
             })}
           </div>
+          {newRows.length > 0 && (
+            <div data-testid="new-rows" style={{ minWidth: 'max-content' }}>
+              {newRows.map((row, at) => (
+                <div
+                  // biome-ignore lint/suspicious/noArrayIndexKey: new rows have no identity yet but their place
+                  key={at}
+                  role="row"
+                  aria-label={`New row ${at + 1}`}
+                  className="relative grid border-b border-border bg-success/5"
+                  style={{ height: ROW_HEIGHT, gridTemplateColumns: template }}
+                >
+                  {columns.map((col) =>
+                    col.computed ? (
+                      <div key={col.key} role="gridcell" />
+                    ) : (
+                      <div key={col.key} role="gridcell" className="flex items-center px-1">
+                        <NewCell
+                          label={`New ${col.label}`}
+                          type={col.type}
+                          value={row[col.key]}
+                          onChange={(v) => setNewField(at, col.key, v)}
+                        />
+                      </div>
+                    ),
+                  )}
+                  <button
+                    type="button"
+                    aria-label={`Remove new row ${at + 1}`}
+                    className="absolute top-2.5 right-1 rounded p-0.5 text-muted hover:bg-surface hover:text-ink"
+                    onClick={() => changeNewRows((rows) => rows.filter((_, i) => i !== at))}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {ordered.length === 0 ? (
             <div className="p-6 text-center text-sm text-muted">{emptyMessage}</div>
           ) : (
@@ -388,7 +586,10 @@ export function TableRenderer({ component }: RendererProps) {
         <RowCount
           view={view}
           rows={rows.length}
-          searching={paging !== 'server' && typeof searchText === 'string' && searchText.trim() !== ''}
+          searching={
+            paging !== 'server' &&
+            ((typeof searchText === 'string' && searchText.trim() !== '') || filters.length > 0)
+          }
         />
         {paging !== 'scroll' && (
           <div className="flex items-center gap-1">
@@ -416,10 +617,29 @@ export function TableRenderer({ component }: RendererProps) {
             </button>
           </div>
         )}
-        {changeset.length > 0 && (
+        {allowAddRow && (
+          <button
+            type="button"
+            className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'gap-1')}
+            onClick={() => {
+              // As `addRow` does, through `set` like the other changes to the new rows.
+              changeNewRows((rows) => [...rows, {}])
+              host.fire(name, 'addRow')
+            }}
+          >
+            <Plus className="size-3.5" /> Add row
+          </button>
+        )}
+        {(changeset.length > 0 || newRows.length > 0) && (
           <>
             <span className="ml-auto text-ink">
-              {changeset.length} changed {changeset.length === 1 ? 'row' : 'rows'}
+              {[
+                changeset.length > 0 &&
+                  `${changeset.length} changed ${changeset.length === 1 ? 'row' : 'rows'}`,
+                newRows.length > 0 && `${newRows.length} new ${newRows.length === 1 ? 'row' : 'rows'}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </span>
             <button
               type="button"
@@ -442,11 +662,169 @@ export function TableRenderer({ component }: RendererProps) {
   )
 }
 
-/** "23 rows"; "5 of 23 rows" while searching; with server paging, the total when the app gives one. */
+/**
+ * Sets one column's filter (M24): an operator for its type and the value(s) it needs. Apply sets it, Remove drops
+ * it; a number typed is kept as a number.
+ */
+function FilterBar({
+  column,
+  filter,
+  onApply,
+  onCancel,
+}: {
+  column: TableColumn
+  filter: TableFilter | undefined
+  onApply: (filter: TableFilter | null) => void
+  onCancel: () => void
+}) {
+  const ops = FILTER_OPS_BY_TYPE[column.type]
+  const [op, setOp] = useState(filter && ops.some((o) => o.op === filter.op) ? filter.op : ops[0]!.op)
+  const initial = filter?.value
+  const [from, setFrom] = useState(
+    Array.isArray(initial) ? String(initial[0] ?? '') : initial === undefined ? '' : String(initial),
+  )
+  const [to, setTo] = useState(Array.isArray(initial) ? String(initial[1] ?? '') : '')
+  const inputType: Record<ColumnType, string> = {
+    text: 'text',
+    json: 'text',
+    number: 'number',
+    boolean: 'text',
+    date: 'date',
+    datetime: 'datetime-local',
+  }
+  const parse = (text: string) =>
+    column.type === 'number' && text.trim() !== '' && Number.isFinite(Number(text))
+      ? Number(text)
+      : column.type === 'boolean'
+        ? text === 'true'
+        : text
+  const apply = () => {
+    const base = { column: column.key, op, type: column.type }
+    if (op === 'empty' || op === 'notEmpty') return onApply(base)
+    if (op === 'between') return onApply({ ...base, value: [parse(from), parse(to)] })
+    onApply({ ...base, value: parse(column.type === 'boolean' && from === '' ? 'true' : from) })
+  }
+  const field = (value: string, set: (v: string) => void, label: string) =>
+    column.type === 'boolean' ? (
+      <select
+        aria-label={label}
+        value={value || 'true'}
+        onChange={(e) => set(e.target.value)}
+        className="h-7 rounded border border-border bg-surface px-1 text-xs"
+      >
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    ) : (
+      <input
+        aria-label={label}
+        type={inputType[column.type]}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && apply()}
+        className="h-7 min-w-0 flex-1 rounded border border-border bg-surface px-2 text-xs"
+      />
+    )
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 border-b border-border bg-canvas px-3 py-2 text-xs"
+      data-testid="filter-bar"
+    >
+      <span className="font-medium">{column.label}</span>
+      <select
+        aria-label="Operator"
+        value={op}
+        onChange={(e) => setOp(e.target.value as typeof op)}
+        className="h-7 rounded border border-border bg-surface px-1 text-xs"
+      >
+        {ops.map((o) => (
+          <option key={o.op} value={o.op}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {op !== 'empty' && op !== 'notEmpty' && field(from, setFrom, op === 'between' ? 'From' : 'Value')}
+      {op === 'between' && (
+        <>
+          <span>and</span>
+          {field(to, setTo, 'To')}
+        </>
+      )}
+      <span className="ml-auto flex gap-1">
+        <button type="button" className={buttonVariants({ variant: 'primary', size: 'sm' })} onClick={apply}>
+          Apply
+        </button>
+        {filter && (
+          <button type="button" className={buttonVariants({ size: 'sm' })} onClick={() => onApply(null)}>
+            Remove
+          </button>
+        )}
+        <button type="button" className={buttonVariants({ variant: 'ghost', size: 'sm' })} onClick={onCancel}>
+          Cancel
+        </button>
+      </span>
+    </div>
+  )
+}
+
+/** "23 rows"; "5 of 23 rows" while searching or filtering; with server paging, the total when the app gives one. */
 function RowCount({ view, rows, searching }: { view: TableView; rows: number; searching: boolean }) {
   const count = (n: number) => `${n} ${n === 1 ? 'row' : 'rows'}`
   if (view.total === null) return null
   return <span>{searching ? `${view.total} of ${count(rows)}` : count(view.total)}</span>
+}
+
+/**
+ * A field of a row being added (M24): typed text kept as typed, its value parsed for the column's type (a
+ * checkbox for booleans); an empty field leaves the field out of the row.
+ */
+function NewCell({
+  label,
+  type,
+  value,
+  onChange,
+}: {
+  label: string
+  type: TableColumn['type']
+  value: unknown
+  onChange: (value: unknown) => void
+}) {
+  const [text, setText] = useState(() => (value === undefined ? '' : editText(value, type)))
+  const [error, setError] = useState<string | null>(null)
+  if (type === 'boolean') {
+    return (
+      <input
+        type="checkbox"
+        aria-label={label}
+        checked={value === true}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mx-2 size-4 accent-accent"
+      />
+    )
+  }
+  return (
+    <input
+      aria-label={label}
+      value={text}
+      title={error ?? undefined}
+      aria-invalid={error ? true : undefined}
+      onChange={(e) => {
+        const next = e.target.value
+        setText(next)
+        if (next === '') {
+          setError(null)
+          return onChange(undefined)
+        }
+        const parsed = parseCell(next, type)
+        setError('error' in parsed ? parsed.error : null)
+        if (!('error' in parsed)) onChange(parsed.value)
+      }}
+      className={cn(
+        'h-7 w-full min-w-0 rounded border bg-surface px-2 text-sm outline-none',
+        error ? 'border-danger' : 'border-border focus:border-accent',
+      )}
+    />
+  )
 }
 
 function CellEditor({

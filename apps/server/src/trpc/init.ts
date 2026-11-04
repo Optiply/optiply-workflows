@@ -10,6 +10,7 @@ import type { AuditInput } from '../audit'
 import { recordAudit } from '../audit'
 import { lookupSession, SESSION_COOKIE } from '../auth/sessions'
 import type { Config } from '../config'
+import { asksForGitRetry, requestGitRetry } from '../services/git/deploy'
 
 /** Long-lived services shared by all requests. */
 export interface Services {
@@ -28,9 +29,14 @@ export function contextFactory(deps: { db: Db; config: Config; services: Service
       config: deps.config,
       services: deps.services,
       user,
-      /** Records an audit event attributed to the current user and request. */
-      audit: (event: Omit<AuditInput, 'actorUserId' | 'ip' | 'userAgent'>) =>
-        recordAudit(deps.db, { ...event, actorUserId: user?.id ?? null, ...requestMeta }),
+      /**
+       * Records an audit event attributed to the current user and request. A change a Git deploy's problem objects
+       * may have been waiting for (a resource, config var, library query or module) marks them for a re-check (M22).
+       */
+      audit: async (event: Omit<AuditInput, 'actorUserId' | 'ip' | 'userAgent'>) => {
+        await recordAudit(deps.db, { ...event, actorUserId: user?.id ?? null, ...requestMeta })
+        if (asksForGitRetry(event.action)) await requestGitRetry(deps.db)
+      },
     }
   }
 }

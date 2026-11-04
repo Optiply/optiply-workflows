@@ -1,4 +1,4 @@
-import { type LogLevel, SandboxError } from './types'
+import { type LogLevel, SandboxError, type SandboxErrorKind } from './types'
 
 /**
  * Python code blocks run by the code executor (apps/code-executor, docs/architecture.md §2.14), each in a fresh
@@ -16,7 +16,9 @@ export interface PythonRunOptions {
   timeoutMs: number
   /** Aborting hangs up on the executor, which kills the jail. */
   signal?: AbortSignal
-  /** What the code printed, a line each (stdout as `log`, stderr as `error`), once it ends. */
+  /** The workflow's packages (M23): the builder's env, ahead of the image's packages. */
+  envId?: string
+  /** What the code prints, a line each (stdout as `log`, stderr as `error`), as it prints it. */
   onLog?: (level: LogLevel, args: unknown[]) => void
 }
 
@@ -27,15 +29,22 @@ export interface PythonProblem {
   column: number | null
 }
 
+/**
+ * This process's Python executions by the jail they ran in (M23): `warm` ones from the executor's pool, `cold` ones
+ * started for them. Read by the server's metrics.
+ */
+export const pythonStats = { warm: 0, cold: 0 }
+
 interface Outcome {
   ok: boolean
+  warm?: boolean
   result?: unknown
   error?: { kind: string; message: string; line?: number | null; column?: number | null; traceback?: string }
   logs?: { level: string; message: string }[]
   problems?: PythonProblem[]
 }
 
-const KINDS = new Set(['syntax', 'runtime', 'timeout', 'memory', 'serialization'])
+const KINDS = new Set(['syntax', 'runtime', 'timeout', 'memory', 'serialization', 'python_packages'])
 /** The executor is asked to stop this much before the run's timeout, so it reports the timeout (with the prints). */
 const RUN_MARGIN_MS = 500
 /** How long a check may take, the executor's queue included, before it counts as unavailable. */
@@ -63,16 +72,27 @@ export class PythonExecutorClient implements PythonRunner {
     const timeoutMs = Math.max(1, Math.round(opts.timeoutMs))
     // Stop a little before the caller's own timeout: the executor's answer then carries the prints.
     const asked = timeoutMs > RUN_MARGIN_MS * 2 ? timeoutMs - RUN_MARGIN_MS : timeoutMs
-    const outcome = await this.post(
-      '/run',
-      { code, scope, timeoutMs: asked },
-      opts.signal,
-      timeoutMs + RUN_SLACK_MS,
-    )
-    for (const entry of outcome.logs ?? []) {
+    const onLog = (entry: { level: string; message: string }) => {
       const level = LEVELS.has(entry.level as LogLevel) ? (entry.level as LogLevel) : 'log'
       opts.onLog?.(level, [entry.message])
     }
+    const outcome = await this.request(
+      '/run',
+      { code, scope, timeoutMs: asked, stream: true, ...(opts.envId && { envId: opts.envId }) },
+      opts.signal,
+      timeoutMs + RUN_SLACK_MS,
+      async (res) => {
+        // An executor from before streaming answers JSON, its logs in the outcome.
+        if (!res.headers.get('content-type')?.startsWith('application/x-ndjson')) {
+          const whole = (await res.json()) as Outcome
+          for (const entry of whole.logs ?? []) onLog(entry)
+          return whole
+        }
+        return readStream(res, onLog)
+      },
+    )
+    // An executor from before the pool doesn't say.
+    if (outcome.warm !== undefined) pythonStats[outcome.warm ? 'warm' : 'cold']++
     if (outcome.ok) return outcome.result ?? null
     if (outcome.error?.kind === 'timeout') {
       throw new SandboxError('timeout', `The Python code didn't finish within ${timeoutMs} ms`)
@@ -85,11 +105,12 @@ export class PythonExecutorClient implements PythonRunner {
     opts: { signal?: AbortSignal } = {},
   ): Promise<PythonProblem[]> {
     if (!fields.length) return []
-    const outcome = await this.post(
+    const outcome = await this.request(
       '/check',
       { fields },
       opts.signal,
       this.opts.checkTimeoutMs ?? CHECK_TIMEOUT_MS,
+      async (res) => (await res.json()) as Outcome,
     )
     // A check that failed (no jail, out of time) says nothing about the code: never read it as "no problems".
     if (!outcome.ok) {
@@ -101,13 +122,26 @@ export class PythonExecutorClient implements PythonRunner {
     return outcome.problems ?? []
   }
 
-  private async post(
+  /** Posts `body` and reads the answer with `read`; the caller's signal and the deadline cover the reading too. */
+  private async request(
     path: string,
     body: unknown,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    read: (res: Response) => Promise<Outcome>,
   ): Promise<Outcome> {
     const deadline = AbortSignal.timeout(timeoutMs)
+    const failed = (err: unknown, doing: string): never => {
+      if (err instanceof SandboxError) throw err
+      if (signal?.aborted) throw signal.reason ?? err
+      if (deadline.aborted) {
+        throw new SandboxError(
+          'unavailable',
+          `The Python executor didn't answer within ${timeoutMs / 1000} s`,
+        )
+      }
+      throw new SandboxError('unavailable', `The Python executor ${doing}: ${(err as Error).message}`)
+    }
     let res: Response
     try {
       res = await fetch(`${this.url}${path}`, {
@@ -117,14 +151,7 @@ export class PythonExecutorClient implements PythonRunner {
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       })
     } catch (err) {
-      if (signal?.aborted) throw signal.reason ?? err
-      if (deadline.aborted) {
-        throw new SandboxError(
-          'unavailable',
-          `The Python executor didn't answer within ${timeoutMs / 1000} s`,
-        )
-      }
-      throw new SandboxError('unavailable', `The Python executor isn't reachable: ${(err as Error).message}`)
+      return failed(err, "isn't reachable")
     }
     if (res.status === 503) {
       throw new SandboxError('unavailable', 'The Python executor is busy; try again')
@@ -140,8 +167,41 @@ export class PythonExecutorClient implements PythonRunner {
         `The Python executor refused the request (${res.status}): ${message}`,
       )
     }
-    return (await res.json()) as Outcome
+    try {
+      return await read(res)
+    } catch (err) {
+      return failed(err, 'stopped answering')
+    }
   }
+}
+
+/** The executor's NDJSON stream: each `log` line to `onLog` as it comes, then the outcome (the last line). */
+async function readStream(
+  res: Response,
+  onLog: (entry: { level: string; message: string }) => void,
+): Promise<Outcome> {
+  if (!res.body) throw new SandboxError('unavailable', 'The Python executor sent no answer')
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffered = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffered += value
+    const lines = buffered.split('\n')
+    buffered = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line) continue
+      const item = JSON.parse(line) as { log?: { level: string; message: string }; outcome?: Outcome }
+      if (item.log) onLog(item.log)
+      else if (item.outcome) {
+        // Read to the end (the chunked answer's terminator), so the connection can be used again.
+        while (!(await reader.read()).done) {}
+        return item.outcome
+      }
+    }
+  }
+  // The executor went away mid-run (it was restarted, it died): what was printed so far has been logged.
+  throw new SandboxError('unavailable', 'The Python executor stopped answering before the code ended')
 }
 
 function toSandboxError(error: Outcome['error']): SandboxError {
@@ -160,7 +220,7 @@ function toSandboxError(error: Outcome['error']): SandboxError {
     return new SandboxError('unavailable', error.message)
   }
   return new SandboxError(
-    error.kind as 'syntax' | 'runtime' | 'timeout' | 'memory' | 'serialization',
+    error.kind as Exclude<SandboxErrorKind, 'unavailable'>,
     `${error.message}${where}`,
     error.traceback,
     Object.keys(details).length ? details : undefined,

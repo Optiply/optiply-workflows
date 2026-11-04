@@ -1,7 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
+import { GitBranch, GitBranchMinus, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
+import {
+  ProtectDialog,
+  ProtectedBadge,
+  UNPROTECT_SETTINGS_CONFIRM,
+  useGitInfo,
+  useUnprotectSettings,
+} from '@/components/git'
+import { SaveToBranchDialog } from '@/components/settings-git'
 import {
   Badge,
   Button,
@@ -73,6 +82,7 @@ export function ConfigVarsPage() {
                 <Td>
                   <div className="flex items-center gap-2 font-mono font-medium">
                     {v.name} {v.isSecret && <Lock className="size-3.5 text-muted" />}
+                    {v.gitProtected && <ProtectedBadge />}
                   </div>
                   {v.description && <div className="text-xs text-muted">{v.description}</div>}
                 </Td>
@@ -82,17 +92,28 @@ export function ConfigVarsPage() {
                   </Td>
                 ))}
                 {me.isAdmin && (
-                  <Td className="w-10">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      title="Delete variable"
-                      onClick={() => {
-                        if (confirm(`Delete ${v.name} in every environment?`)) remove.mutate({ id: v.id })
-                      }}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
+                  <Td className="w-24">
+                    <div className="flex justify-end">
+                      <GitActions variable={v} />
+                      {!v.gitProtected && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Delete variable"
+                          onClick={async () => {
+                            if (
+                              await confirmDialog(`Delete ${v.name} in every environment?`, {
+                                danger: true,
+                                confirm: 'Delete',
+                              })
+                            )
+                              remove.mutate({ id: v.id })
+                          }}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </div>
                   </Td>
                 )}
               </tr>
@@ -118,6 +139,10 @@ function ValueCell({
   const trpc = useTRPC()
   const current = variable.values[environmentId]
   const [draft, setDraft] = useState<string | null>(null)
+  // Protected and not secret (M22): the values are Git's; one set here only is a local value, kept by deploys.
+  const fromGit = variable.gitProtected && !variable.isSecret
+  const local = !!current && 'value' in current && !!current.local
+  const [toBranch, setToBranch] = useState<{ value: string | null } | null>(null)
   const setValue = useMutation(
     trpc.configVars.setValue.mutationOptions({
       onSuccess: async () => {
@@ -126,7 +151,24 @@ function ValueCell({
       },
     }),
   )
-  const save = (value: string | null) => setValue.mutate({ configVarId: variable.id, environmentId, value })
+  const save = (value: string | null) =>
+    setValue.mutate({
+      configVarId: variable.id,
+      environmentId,
+      value,
+      ...(fromGit && value !== null && { local: true }),
+    })
+  const branchDialog = toBranch && (
+    <SaveToBranchDialog
+      kind="config_var"
+      object={{ id: variable.id, slug: variable.name }}
+      edit={{ values: { [environmentId]: toBranch.value } }}
+      onClose={() => {
+        setToBranch(null)
+        setDraft(null)
+      }}
+    />
+  )
 
   if (draft !== null) {
     return (
@@ -145,13 +187,19 @@ function ValueCell({
             }}
           />
           <Button size="sm" variant="primary" loading={setValue.isPending} onClick={() => save(draft)}>
-            Save
+            {fromGit ? 'Save here only' : 'Save'}
           </Button>
+          {fromGit && (
+            <Button size="sm" onClick={() => setToBranch({ value: draft })}>
+              <GitBranch className="size-3.5" /> Save to branch…
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>
             Cancel
           </Button>
         </div>
         <ErrorNote error={setValue.error} />
+        {branchDialog}
       </div>
     )
   }
@@ -168,6 +216,11 @@ function ValueCell({
   return (
     <div className="flex items-center gap-1.5">
       {display}
+      {local && (
+        <Badge tone="warning" title="Set on this instance only: deploys from Git keep it">
+          local
+        </Badge>
+      )}
       {editable && (
         <>
           <Button
@@ -177,14 +230,70 @@ function ValueCell({
           >
             {current ? (variable.isSecret ? 'Replace' : 'Edit') : 'Set'}
           </Button>
-          {current && (
-            <Button size="sm" variant="ghost" loading={setValue.isPending} onClick={() => save(null)}>
-              Clear
-            </Button>
-          )}
+          {current &&
+            (fromGit && !local ? (
+              // Git's value: removed through a branch.
+              <Button size="sm" variant="ghost" onClick={() => setToBranch({ value: null })}>
+                Clear…
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={setValue.isPending}
+                title={local ? 'Back to Git’s value (from the next deploy)' : undefined}
+                onClick={() => save(null)}
+              >
+                Clear
+              </Button>
+            ))}
         </>
       )}
+      <ErrorNote error={setValue.error} />
+      {branchDialog}
     </div>
+  )
+}
+
+/** Protect (admins; M22): the description and non-secret values then come from Git; or Unprotect. */
+function GitActions({ variable }: { variable: ConfigVar }) {
+  const { data: git } = useGitInfo()
+  const [protecting, setProtecting] = useState(false)
+  const unprotect = useUnprotectSettings('config_var')
+  if (!git?.configured && !variable.gitProtected) return null
+  return (
+    <>
+      {variable.gitProtected ? (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Unprotect ${variable.name}`}
+          loading={unprotect.isPending}
+          onClick={async () =>
+            (await confirmDialog(UNPROTECT_SETTINGS_CONFIRM)) &&
+            unprotect.mutate({ kind: 'config_var', id: variable.id })
+          }
+        >
+          <GitBranchMinus className="size-4" />
+        </Button>
+      ) : (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Protect ${variable.name} in Git`}
+          onClick={() => setProtecting(true)}
+        >
+          <GitBranch className="size-4" />
+        </Button>
+      )}
+      {protecting && (
+        <ProtectDialog
+          kind="config_var"
+          object={{ id: variable.id, slug: variable.name, name: variable.name }}
+          onClose={() => setProtecting(false)}
+        />
+      )}
+    </>
   )
 }
 

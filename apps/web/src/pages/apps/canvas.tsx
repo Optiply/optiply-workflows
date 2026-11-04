@@ -6,11 +6,19 @@ import {
   entityPages,
   GRID_COLUMNS,
   type Position,
+  slotOf,
 } from '@ow/app-definition'
-import { Fragment, useContext, useMemo } from 'react'
+import { Menu as MenuIcon } from 'lucide-react'
+import { Fragment, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
+import { Avatar } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
-import { ChildGridContext, EditingContext } from './grid-context'
+import { foldedLayout } from './folded'
+import { placedChildren } from './placed'
+
+export { placedChildren }
+
+import { AppChromeContext, ChildGridContext, EditingContext } from './grid-context'
 import type { RendererProps } from './renderer'
 import { useAppHostState, useAppScope, useAppValue } from './runtime/react'
 
@@ -24,50 +32,39 @@ import { useAppHostState, useAppScope, useAppValue } from './runtime/react'
 /** Height of one grid row. */
 export const ROW_HEIGHT = 16
 
-/**
- * Each child of `parent` with its position, in reading order. At the top (no parent), `page` keeps those on that
- * page only (null: the global ones); every top-level component when it's left out.
- */
-export function placedChildren(
-  definition: AppDefinition,
-  parent: string | undefined,
-  page?: string | null,
-): { component: AppComponent; position: Position }[] {
-  const children = definition.components.filter(
-    (c) =>
-      c.parent === parent &&
-      !componentSpec(c.type)?.overlay &&
-      (parent !== undefined || page === undefined || (c.page ?? null) === page),
-  )
-  const layout = definition.layout ?? {}
-  let bottom = 0
-  for (const c of children) {
-    const p = layout[c.name]
-    if (p) bottom = Math.max(bottom, p.y + p.h)
-  }
-  const placed = children.map((component) => {
-    let position = layout[component.name]
-    if (!position) {
-      const size = defaultSpecFor(component)?.defaultSize ?? { w: 4, h: 4 }
-      position = { x: 0, y: bottom, w: Math.min(size.w, GRID_COLUMNS), h: size.h }
-      bottom += size.h
-    }
-    return { component, position }
-  })
-  return placed.sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
-}
-
 /** The grid of one parent's children (at the top, of one page's, or of the global ones with `page` null). */
 export function AppGrid({
   definition,
   parent,
   page,
+  slot,
 }: {
   definition: AppDefinition
   parent?: string
   page?: string | null
+  slot?: string
 }) {
-  const children = placedChildren(definition, parent, page)
+  const scope = useAppScope()
+  // Worked out once per definition: the selector below runs on every change of any value.
+  const placed = useMemo(
+    () => placedChildren(definition, parent, page, slot),
+    [definition, parent, page, slot],
+  )
+  const containers = useMemo(
+    () => placed.flatMap(({ component: c }) => (c.type === 'container' ? [c.name] : [])),
+    [placed],
+  )
+  // Folded containers (M24), by name: a string, so the grid re-renders only when one folds or unfolds.
+  const foldedKey = useAppHostState((s) =>
+    containers
+      .filter(
+        (name) =>
+          s.values[`${scope}${name}.collapsible`] === true && s.values[`${scope}${name}.expanded`] === false,
+      )
+      .map((name) => `${name}:${String(s.values[`${scope}${name}.padding`] ?? 'medium')}`)
+      .join(','),
+  )
+  const children = foldedLayout(placed, foldedKey)
   return (
     <div
       className="grid gap-x-3"
@@ -105,20 +102,33 @@ export function ComponentView({ component, definition }: RendererProps) {
   )
 }
 
-/** The page shown: the global components, then the page's, plus open modals of either. */
+const SIDEBAR_WIDTHS = { narrow: 'w-48', medium: 'w-64', wide: 'w-80' } as const
+
+/**
+ * The page shown: the global components, then the page's, plus open modals of either. With a frame (M24), the global
+ * components sit in a header bar fixed at the top (with the app's name and the signed-in person, when asked) and/or
+ * a sidebar at the left (behind a Menu button on narrow screens); the page scrolls beneath and beside them.
+ */
 export function AppCanvas({ definition, page = null }: { definition: AppDefinition; page?: string | null }) {
   const pages = useMemo(() => entityPages(definition), [definition])
   const modals = definition.components.filter(
     (c) => componentSpec(c.type)?.overlay && [null, page].includes(pages.get(c.name) ?? null),
   )
   const hasPages = !!definition.pages?.length
+  const pageGrid = hasPages && page !== null && (
+    <div data-page={page} className="mt-3">
+      <AppGrid definition={definition} page={page} />
+    </div>
+  )
   return (
     <ChildGridContext.Provider value={AppGrid}>
-      <AppGrid definition={definition} page={null} />
-      {hasPages && page !== null && (
-        <div data-page={page} className="mt-3">
-          <AppGrid definition={definition} page={page} />
-        </div>
+      {definition.frame ? (
+        <AppFrame definition={definition}>{pageGrid}</AppFrame>
+      ) : (
+        <>
+          <AppGrid definition={definition} page={null} />
+          {pageGrid}
+        </>
       )}
       {modals.map((m) => (
         <Fragment key={m.name}>
@@ -126,6 +136,91 @@ export function AppCanvas({ definition, page = null }: { definition: AppDefiniti
         </Fragment>
       ))}
     </ChildGridContext.Provider>
+  )
+}
+
+/** The frame around the page (M24): header bar, sidebar, or both. */
+function AppFrame({ definition, children }: { definition: AppDefinition; children: ReactNode }) {
+  const frame = definition.frame!
+  const { appName, user } = useContext(AppChromeContext)
+  const [menuOpen, setMenuOpen] = useState(false)
+  // Open over the page (narrow screens): Escape, a click beside it or a link followed in it closes it.
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menuOpen])
+  const title = frame.showTitle && appName && <span className="truncate text-lg font-bold">{appName}</span>
+  const sidebar = frame.sidebar && <AppGrid definition={definition} page={null} slot="sidebar" />
+  const menu = frame.sidebar && (
+    <button
+      type="button"
+      aria-label="Menu"
+      aria-expanded={menuOpen}
+      className="rounded p-1 text-muted hover:bg-canvas hover:text-ink md:hidden"
+      onClick={() => setMenuOpen(!menuOpen)}
+    >
+      <MenuIcon className="size-5" />
+    </button>
+  )
+  return (
+    <div className="flex min-h-full gap-4">
+      {menuOpen && (
+        <button
+          type="button"
+          aria-label="Close the menu"
+          className="fixed inset-0 z-30 cursor-default bg-app/60 md:hidden"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
+      {frame.sidebar && (
+        <aside
+          aria-label="Sidebar"
+          data-frame="sidebar"
+          onClickCapture={(e) => {
+            if (menuOpen && e.target instanceof Element && e.target.closest('a')) setMenuOpen(false)
+          }}
+          className={cn(
+            'shrink-0 self-start border-border bg-surface',
+            SIDEBAR_WIDTHS[frame.sidebar],
+            // Narrow screens: behind the Menu button, over the page.
+            menuOpen
+              ? 'fixed inset-y-0 left-0 z-40 overflow-y-auto border-r p-3 shadow-menu'
+              : 'sticky top-0 hidden max-h-screen overflow-y-auto rounded-lg border p-3 md:block',
+          )}
+        >
+          {!frame.header && title && <div className="mb-3">{title}</div>}
+          {sidebar}
+        </aside>
+      )}
+      <div className="min-w-0 flex-1">
+        {frame.header ? (
+          <header
+            data-frame="header"
+            className="sticky top-0 z-20 mb-3 flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2"
+          >
+            {menu}
+            {title}
+            <div className="min-w-0 flex-1">
+              <AppGrid definition={definition} page={null} />
+            </div>
+            {frame.showUser && user && (
+              <span className="flex shrink-0 items-center gap-2 text-sm" data-frame="user">
+                <Avatar name={user.name || user.email} />
+                <span className="hidden sm:inline">{user.name || user.email}</span>
+              </span>
+            )}
+          </header>
+        ) : (
+          <>
+            {menu}
+            <AppGrid definition={definition} page={null} />
+          </>
+        )}
+        {children}
+      </div>
+    </div>
   )
 }
 

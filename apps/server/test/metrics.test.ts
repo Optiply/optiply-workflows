@@ -1,4 +1,6 @@
+import { sshTunnelStats } from '@ow/connectors'
 import { createDb } from '@ow/db'
+import { pythonStats } from '@ow/sandbox'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Metrics, metricsAllowed, serveMetrics } from '../src/metrics'
@@ -57,6 +59,39 @@ describe('/metrics', () => {
     expect(value(text, 'ow_queue_lag_seconds')).toBe(0)
     expect(value(text, 'ow_user_tasks_open')).toBe(0)
     expect(value(text, 'ow_retention_last_finished_timestamp_seconds')).toBe(0)
+  })
+
+  it("reports this process's SSH tunnels (M17) and IAP resumes (M18)", async () => {
+    const before = { ...sshTunnelStats }
+    sshTunnelStats.open = 2
+    sshTunnelStats.reconnects = 5
+    sshTunnelStats.iapResumes = 3
+    try {
+      const text = (await scrape()).body
+      expect(value(text, 'ow_ssh_tunnels_open')).toBe(2)
+      expect(value(text, 'ow_ssh_tunnel_reconnects_total')).toBe(5)
+      expect(value(text, 'ow_iap_resumes_total')).toBe(3)
+      for (const kind of ['pubsub', 'sqs', 'kafka']) {
+        expect(text).toContain(`ow_queue_messages_total{kind="${kind}",outcome="acked"}`)
+        expect(value(text, `ow_queue_in_flight{kind="${kind}"}`)).toBe(0)
+        expect(value(text, `ow_queue_pull_errors_total{kind="${kind}"}`)).toBe(0)
+      }
+    } finally {
+      Object.assign(sshTunnelStats, before)
+    }
+  })
+
+  it("reports this process's Python executions by jail (M23)", async () => {
+    const before = { ...pythonStats }
+    pythonStats.warm = 7
+    pythonStats.cold = 2
+    try {
+      const text = (await scrape()).body
+      expect(value(text, 'ow_python_executions_total{jail="warm"}')).toBe(7)
+      expect(value(text, 'ow_python_executions_total{jail="cold"}')).toBe(2)
+    } finally {
+      Object.assign(pythonStats, before)
+    }
   })
 
   it('counts the runs and blocks a worker finishes, and the queue it leaves behind', async () => {

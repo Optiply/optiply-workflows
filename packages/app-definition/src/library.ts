@@ -1,52 +1,29 @@
-import { canonicalJson, fieldRefs, JS_GLOBALS, type QueryValidator, resourceSlugSchema } from '@ow/definition'
-import { z } from 'zod'
+import {
+  fieldRefs,
+  JS_GLOBALS,
+  type LibraryQueryDefinition,
+  libraryQueryDefinitionSchema,
+  type QueryValidator,
+} from '@ow/definition'
 import { templateStrings } from './fields'
 import { APP_STDLIB_GLOBALS, appNameReason } from './names'
 import { SERVER_QUERY_GLOBALS } from './query-values'
-import { appNameSchema } from './schema'
 import type { AppDiagnostic } from './validate'
 
-/**
- * A library query (M14): one resource query written once and used by many apps, with declared parameters the
- * apps pass. Its `{{ }}`s read **only its parameters** (by bare name: `{{ customerId }}`), `current_user` and the
- * stdlib, never an app's state, so it means the same in every app. It runs on the server: the app sends the
- * parameters' values, the server evaluates the `{{ }}`s with them in scope and binds the results as parameters.
- */
-
-export const LIBRARY_QUERY_SCHEMA_VERSION = 1
-
-const MAX_PARAMS = 50
-
-export const libraryParamSchema = z.strictObject({
-  /** Read in the query's `{{ }}`s by this name; apps pass a value for it. */
-  name: appNameSchema,
-  description: z.string().max(2000).optional(),
-  /** What the library editor's Run passes. Never used by apps. */
-  testValue: z.json().optional(),
-})
-
-export const libraryQueryDefinitionSchema = z.strictObject({
-  schemaVersion: z.literal(LIBRARY_QUERY_SCHEMA_VERSION),
-  resource: resourceSlugSchema,
-  /** The connector's query (`{ sql }` for SQL resources); every string is a template. */
-  query: z.record(z.string(), z.json()),
-  /** In the order the editor shows them. */
-  params: z.array(libraryParamSchema).max(MAX_PARAMS),
-  timeoutMs: z.number().int().min(100).max(600_000).optional(),
-})
-
-export type LibraryParam = z.infer<typeof libraryParamSchema>
-export type LibraryQueryDefinition = z.infer<typeof libraryQueryDefinitionSchema>
-
-/** A new library query: a `select 1` on the managed database, like a new app query. */
-export function emptyLibraryQuery(): LibraryQueryDefinition {
-  return {
-    schemaVersion: LIBRARY_QUERY_SCHEMA_VERSION,
-    resource: 'optiply_db',
-    query: { sql: 'select 1' },
-    params: [],
-  }
-}
+// The schema, `libraryScope` and `LibraryInfo` live in `@ow/definition` (M21: workflows and the engine use them);
+// the validator stays here, as it shares the app's names and stdlib.
+export {
+  emptyLibraryQuery,
+  LIBRARY_QUERY_SCHEMA_VERSION,
+  type LibraryInfo,
+  type LibraryParam,
+  type LibraryQueryDefinition,
+  type LibraryUser,
+  libraryParamSchema,
+  libraryQueryDefinitionSchema,
+  libraryQueryHash,
+  libraryScope,
+} from '@ow/definition'
 
 /** Names a library query's `{{ }}`s may read besides its parameters. */
 export function isLibraryGlobalName(name: string): boolean {
@@ -186,29 +163,4 @@ function checkLibraryResource(
       ...(err.hint && { hint: err.hint }),
     })
   }
-}
-
-/**
- * SHA-256 (hex) of a library query's canonical JSON: the identity of a release. Parameters keep their order (the
- * editor's), so reordering them is a change.
- */
-export async function libraryQueryHash(def: LibraryQueryDefinition): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(def))
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-/**
- * The values a library query's `{{ }}`s see: each declared parameter's value (null when not given; undeclared
- * names are dropped) and `current_user`.
- */
-export function libraryScope(
-  def: LibraryQueryDefinition,
-  values: Record<string, unknown>,
-  currentUser: { id: string; email: string; name: string },
-): Record<string, unknown> {
-  const scope: Record<string, unknown> = {}
-  for (const p of def.params) scope[p.name] = Object.hasOwn(values, p.name) ? (values[p.name] ?? null) : null
-  scope.current_user = currentUser
-  return scope
 }

@@ -1,4 +1,5 @@
-# The code executor: Python code blocks under nsjail (docs/architecture.md §2.14). Build from the repo root:
+# The code executor: Python code blocks under nsjail (docs/architecture.md §2.14), and its package builder (§2.26,
+# `--target builder`). Build from the repo root:
 #   docker build -f apps/code-executor/Dockerfile -t ow-code-executor apps/code-executor
 # Run with --cap-add SYS_ADMIN and the seccomp profile next to this file (docker-compose.yml does).
 
@@ -14,6 +15,20 @@ RUN git clone --depth 1 --branch "$NSJAIL_VERSION" https://github.com/google/nsj
  && cd /nsjail && test "$(git rev-parse HEAD)" = "$NSJAIL_COMMIT" \
  && make -j"$(nproc)" && strip nsjail
 
+# The package builder (M23): `--target builder`. The same Python and platform as the executor below, so the wheels it
+# installs fit the jail's interpreter; pip pinned. It runs as its own user and writes only /envs (a volume).
+FROM python:3.12-slim-bookworm AS builder
+COPY executor/builder-requirements.lock /opt/builder/requirements.lock
+RUN python -m pip install --no-cache-dir --require-hashes -r /opt/builder/requirements.lock \
+ && useradd --uid 10001 --create-home builder && mkdir /envs && chown builder /envs
+COPY executor/builder.py /opt/builder/
+USER builder
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=UTC
+EXPOSE 8080
+VOLUME /envs
+CMD ["python3", "-I", "/opt/builder/builder.py"]
+
+# The executor (the default target).
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends libnl-route-3-200 libprotobuf32 \
  && rm -rf /var/lib/apt/lists/*

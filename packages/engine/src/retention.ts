@@ -2,6 +2,12 @@ import { type Db, maintenanceJobs } from '@ow/db'
 import { sql } from 'drizzle-orm'
 import { sleep } from './retry'
 
+/** How long webhook rejections are kept, and how many per webhook at most. */
+export const REJECTION_DAYS = 7
+export const MAX_REJECTIONS_PER_WEBHOOK = 200
+/** How long finished Pub/Sub deliveries are kept: Pub/Sub keeps an unacked message 31 days at most. */
+export const PUBSUB_DELIVERY_DAYS = 32
+
 export interface RetentionOptions {
   /** Runs that finished longer ago than this many days are deleted. */
   days: number
@@ -25,6 +31,12 @@ export interface RetentionResult {
   payloads: number
   logs: number
   snapshots: number
+  /** Webhook rate-limit windows that had ended. */
+  rateWindows: number
+  /** Webhook rejections older than 7 days, or beyond the latest 200 of their webhook. */
+  rejections: number
+  /** Finished Pub/Sub deliveries past Pub/Sub's longest message retention (M19). */
+  queueDeliveries: number
   /** The longest single statement, in ms: each one is its own short transaction. */
   longestStatementMs: number
   durationMs: number
@@ -55,6 +67,9 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
     payloads: 0,
     logs: 0,
     snapshots: 0,
+    rateWindows: 0,
+    rejections: 0,
+    queueDeliveries: 0,
     longestStatementMs: 0,
     durationMs: 0,
     stopped: false,
@@ -153,6 +168,44 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
     )
   }
 
+  // Webhook bookkeeping (M15) has its own horizon, whatever `days` says.
+  if (!result.stopped) {
+    const now = (opts.now ?? new Date()).toISOString()
+    result.rateWindows = await drain(
+      'webhook_rate_windows',
+      () => sql`
+        delete from webhook_rate_windows where (trigger_id, window_start) in (
+          select trigger_id, window_start from webhook_rate_windows where expires_at < ${now}::timestamptz
+          limit ${chunk})
+        returning 1`,
+    )
+    result.rejections = await drain(
+      'webhook_rejections',
+      () => sql`
+        delete from webhook_rejections where id in (
+          select id from (
+            select id, created_at,
+              row_number() over (partition by trigger_id order by created_at desc, id desc) as n
+            from webhook_rejections) r
+          where r.created_at < ${now}::timestamptz - interval '${sql.raw(String(REJECTION_DAYS))} days'
+             or r.n > ${MAX_REJECTIONS_PER_WEBHOOK}
+          limit ${chunk})
+        returning 1`,
+    )
+    // Kept while Pub/Sub could still redeliver the message (31 days at most; SQS 14 days): a redelivery of one whose run
+    // succeeded must still be recognised.
+    result.queueDeliveries = await drain(
+      'queue_deliveries',
+      () => sql`
+        delete from queue_deliveries where (trigger_id, message_id) in (
+          select trigger_id, message_id from queue_deliveries
+          where outcome is not null
+            and updated_at < ${now}::timestamptz - interval '${sql.raw(String(PUBSUB_DELIVERY_DAYS))} days'
+          limit ${chunk})
+        returning 1`,
+    )
+  }
+
   result.durationMs = Math.round(performance.now() - started)
   result.longestStatementMs = Math.round(result.longestStatementMs)
   return result
@@ -207,6 +260,8 @@ export class RetentionJob {
       firstCheckMs?: number
       everyMs?: number
       log?: RetentionLogger
+      /** More clean-up on the same daily claim (the server's: unused component bundles, M25); its counts are logged. */
+      also?: () => Promise<Record<string, number>>
     } & Pick<RetentionOptions, 'batchRuns' | 'chunkRows' | 'pauseMs'>,
   ) {}
 
@@ -243,8 +298,9 @@ export class RetentionJob {
         pauseMs: this.opts.pauseMs,
         signal: this.stopping.signal,
       })
-      await finishMaintenanceJob(db, 'retention', { days: this.opts.days, ...result })
-      log?.info({ retention: result }, 'retention finished')
+      const more = (await this.opts.also?.()) ?? {}
+      await finishMaintenanceJob(db, 'retention', { days: this.opts.days, ...result, ...more })
+      log?.info({ retention: { ...result, ...more } }, 'retention finished')
       return result
     } catch (err) {
       log?.error({ err }, 'retention failed')

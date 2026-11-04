@@ -1,7 +1,15 @@
-import { createSign, randomUUID } from 'node:crypto'
-import { compileSql, TemplateError } from '@ow/expressions'
+import { randomUUID } from 'node:crypto'
+import { compileSql, paramValue, TemplateError } from '@ow/expressions'
 import { Agent, fetch } from 'undici'
 import { z } from 'zod'
+import {
+  GOOGLE_TOKEN_URL,
+  type GoogleTokens,
+  isServiceAccountKey,
+  parseServiceAccountKey,
+  type ServiceAccountKey,
+  serviceAccountTokens,
+} from './google-auth'
 import { networkError, readBody } from './http'
 import { resolveFragments } from './sql-fragments'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
@@ -35,13 +43,6 @@ const configSchema = z.object({
   labels: z.record(labelKey, labelValue).default({}),
 })
 
-const keySchema = z.object({
-  type: z.literal('service_account'),
-  project_id: z.string().min(1),
-  client_email: z.string().min(1),
-  private_key: z.string().min(1),
-})
-
 const secretsSchema = z.object({
   /** The service account's JSON key file, as text; checked on save (errors name the field, never the content). */
   serviceAccountKey: z
@@ -55,15 +56,14 @@ const querySchema = z.object({ sql: z.string().min(1) })
 type Config = z.output<typeof configSchema>
 type Secrets = z.output<typeof secretsSchema>
 type Query = z.output<typeof querySchema>
-type Key = z.output<typeof keySchema>
 
 interface Client {
   config: Config
-  key: Key
+  key: ServiceAccountKey
   projectId: string
   agent: Agent
   endpoints: BigQueryEndpoints
-  token?: Promise<{ value: string; expiresAt: number }>
+  tokens: GoogleTokens
 }
 
 export interface BigQueryEndpoints {
@@ -75,7 +75,7 @@ export interface BigQueryEndpoints {
 
 const GOOGLE: BigQueryEndpoints = {
   apiUrl: 'https://bigquery.googleapis.com/bigquery/v2',
-  tokenUrl: 'https://oauth2.googleapis.com/token',
+  tokenUrl: GOOGLE_TOKEN_URL,
 }
 const SCOPE = 'https://www.googleapis.com/auth/bigquery'
 /** How long one API call may wait for a job before we poll again. */
@@ -99,13 +99,20 @@ export function createBigQueryConnector(
     querySchema,
 
     createClient({ config, secrets }) {
-      const key = parseKey(secrets.serviceAccountKey)
+      const key = parseServiceAccountKey(secrets.serviceAccountKey, 'serviceAccountKey')
+      const agent = new Agent({ connections: 16 })
       return {
         config,
         key,
         projectId: config.projectId ?? key.project_id,
-        agent: new Agent({ connections: 16 }),
+        agent,
         endpoints,
+        tokens: serviceAccountTokens(key, {
+          scope: SCOPE,
+          field: 'serviceAccountKey',
+          tokenUrl: endpoints.tokenUrl,
+          dispatcher: agent,
+        }),
       }
     },
 
@@ -141,33 +148,6 @@ export function createBigQueryConnector(
 }
 
 export const bigqueryConnector = createBigQueryConnector()
-
-function isServiceAccountKey(text: string): boolean {
-  try {
-    return keySchema.safeParse(JSON.parse(text)).success
-  } catch {
-    return false
-  }
-}
-
-function parseKey(text: string): Key {
-  let json: unknown
-  try {
-    json = JSON.parse(text)
-  } catch {
-    // Never quote the text: it's a private key.
-    throw new ConnectorError('invalid_config', "The service account key isn't valid JSON", {
-      issues: [{ path: 'serviceAccountKey' }],
-    })
-  }
-  const key = keySchema.safeParse(json)
-  if (!key.success) {
-    throw new ConnectorError('invalid_config', 'The service account key is missing fields', {
-      issues: key.error.issues.map((i) => ({ path: ['serviceAccountKey', ...i.path].join('.') })),
-    })
-  }
-  return key.data
-}
 
 interface JobReference {
   projectId: string
@@ -211,7 +191,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
   const plan = await resolveFragments(compileSql(query.sql, 'bigquery'), 'bigquery', ctx.evaluate)
   const queryParameters: unknown[] = []
   for (const [i, param] of plan.params.entries()) {
-    queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await ctx.evaluate(param.code)) })
+    queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await paramValue(param, ctx.evaluate)) })
   }
 
   const statementTimeout = AbortSignal.timeout(Math.min(ctx.timeoutMs, config.statementTimeoutMs))
@@ -456,7 +436,7 @@ async function api<T = unknown>(
   retried = false,
 ): Promise<T> {
   const url = new URL(client.endpoints.apiUrl + path)
-  const token = await accessToken(client, signal, retried)
+  const token = await client.tokens.token(signal, retried)
   let res: Awaited<ReturnType<typeof fetch>>
   try {
     res = await fetch(url, {
@@ -479,70 +459,6 @@ async function api<T = unknown>(
   const text = (await readBody(res, MAX_RESPONSE_BYTES)).toString('utf8')
   if (!res.ok) throw apiError(res.status, text)
   return (text ? JSON.parse(text) : {}) as T
-}
-
-/** A cached access token from a signed JWT (RFC 7523), refreshed a minute before it expires. */
-async function accessToken(client: Client, signal: AbortSignal, force: boolean): Promise<string> {
-  const cached = force ? undefined : await client.token?.catch(() => undefined)
-  if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.value
-  const fresh = fetchToken(client, signal)
-  client.token = fresh
-  return (await fresh).value
-}
-
-async function fetchToken(
-  client: Client,
-  signal: AbortSignal,
-): Promise<{ value: string; expiresAt: number }> {
-  const { tokenUrl } = client.endpoints
-  const now = Math.floor(Date.now() / 1000)
-  const b64 = (json: object) => Buffer.from(JSON.stringify(json)).toString('base64url')
-  const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({
-    iss: client.key.client_email,
-    scope: SCOPE,
-    aud: tokenUrl,
-    iat: now,
-    exp: now + 3600,
-  })}`
-  let signature: string
-  try {
-    signature = createSign('RSA-SHA256').update(unsigned).sign(client.key.private_key, 'base64url')
-  } catch {
-    throw new ConnectorError('invalid_config', "The service account key's private key can't sign", {
-      issues: [{ path: 'serviceAccountKey.private_key' }],
-    })
-  }
-  const url = new URL(tokenUrl)
-  let res: Awaited<ReturnType<typeof fetch>>
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: `${unsigned}.${signature}`,
-      }).toString(),
-      signal,
-      dispatcher: client.agent,
-    })
-  } catch (err) {
-    throw networkError(err, url)
-  }
-  const text = (await readBody(res, 1024 * 1024)).toString('utf8')
-  let json: { access_token?: string; expires_in?: number; error?: string; error_description?: string } = {}
-  try {
-    json = JSON.parse(text)
-  } catch {
-    // Reported below.
-  }
-  if (!res.ok || !json.access_token) {
-    throw new ConnectorError(
-      'connection',
-      `Google refused the service account key: ${json.error_description ?? json.error ?? `HTTP ${res.status}`}`,
-      { status: res.status, error: json.error },
-    )
-  }
-  return { value: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 }
 }
 
 /** Google's error body: `{ error: { code, message, status, errors: [{ reason, location, message }] } }`. */

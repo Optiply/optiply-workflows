@@ -18,6 +18,8 @@ export interface GitAuthor {
 
 const EMPTY_SHA = '0000000000000000000000000000000000000000'
 const SHA = /^[0-9a-f]{40}$/
+/** When this process last pushed to each cache directory's remote: what was read of its branches before is old. */
+const pushedAt = new Map<string, number>()
 
 /**
  * A branch name git and GitHub both take: letters, digits, `.`, `_`, `-` and `/` between parts, none of git's
@@ -80,6 +82,23 @@ interface TreeEntry {
   type: string
   sha: string
   path: string
+}
+
+/** What `GitRepo.commit` writes. */
+export interface CommitOptions {
+  /** The first parent (null: a first commit). */
+  parent: string | null
+  /** More parents: a merge commit (made even when its tree is its first parent's). */
+  mergeParents?: string[]
+  /** The tree to start from instead of the first parent's (a merged tree). */
+  tree?: string
+  /** Each directory replaced by its files (null removes it). */
+  directories?: Record<string, Files | null>
+  /** Single files written. */
+  files?: Files
+  message: string
+  author: GitAuthor
+  date?: Date
 }
 
 /**
@@ -152,6 +171,32 @@ export class GitRepo {
     })
   }
 
+  /** Fetches every branch in one go (M22: which branches change an object) and returns each one's commit. */
+  fetchAllBranches(): Promise<Map<string, string>> {
+    return withLock(this.dir, async () => {
+      await this.network([
+        'fetch',
+        '--no-tags',
+        '--quiet',
+        '--prune',
+        this.remote.url,
+        '+refs/heads/*:refs/remotes/origin/*',
+      ])
+      const { stdout } = await this.git([
+        'for-each-ref',
+        '--format=%(objectname) %(refname)',
+        'refs/remotes/origin/',
+      ])
+      const heads = new Map<string, string>()
+      for (const line of stdout.split('\n')) {
+        const [sha, ref] = line.split(' ')
+        if (sha && ref?.startsWith('refs/remotes/origin/'))
+          heads.set(ref.slice('refs/remotes/origin/'.length), sha)
+      }
+      return heads
+    })
+  }
+
   /** Fetches a branch and returns its commit, or null when the remote has no such branch. */
   fetchBranch(branch: string): Promise<string | null> {
     const name = branchNameSchema.parse(branch)
@@ -216,34 +261,22 @@ export class GitRepo {
    * Commits on top of `parent` (null: a first commit): each directory in `directories` replaced by its files (null
    * removes it), and each single file in `files` written. Returns null when the tree comes out the same.
    */
-  commit(opts: {
-    parent: string | null
-    directories?: Record<string, Files | null>
-    files?: Files
-    message: string
-    author: GitAuthor
-    date?: Date
-  }): Promise<string | null> {
+  commit(opts: CommitOptions): Promise<string | null> {
     return withLock(this.dir, () => this.commitLocked(opts))
   }
 
-  private async commitLocked(opts: {
-    parent: string | null
-    directories?: Record<string, Files | null>
-    files?: Files
-    message: string
-    author: GitAuthor
-    date?: Date
-  }): Promise<string | null> {
+  private async commitLocked(opts: CommitOptions): Promise<string | null> {
     const index = join(this.dir, `ow-index-${randomUUID()}`)
     const env = { GIT_INDEX_FILE: index }
+    const start = opts.tree ?? opts.parent
+    const merge = (opts.mergeParents ?? []).length > 0
     try {
-      await this.git(opts.parent ? ['read-tree', opts.parent] : ['read-tree', '--empty'], { env })
+      await this.git(start ? ['read-tree', start] : ['read-tree', '--empty'], { env })
       const lines: string[] = []
       for (const [dir, files] of Object.entries(opts.directories ?? {})) {
         checkPath(dir)
-        if (opts.parent) {
-          for (const entry of await this.entries(opts.parent, [dir])) {
+        if (start) {
+          for (const entry of await this.entries(start, [dir])) {
             lines.push(`0 ${EMPTY_SHA}\t${entry.path}`)
           }
         }
@@ -257,13 +290,15 @@ export class GitRepo {
       if (lines.length > 0)
         await this.git(['update-index', '--index-info'], { env, input: `${lines.join('\n')}\n` })
       const tree = (await this.git(['write-tree'], { env })).stdout.trim()
-      if (opts.parent) {
+      // A merge commit is made even with its first parent's tree: it records the other parents.
+      if (opts.parent && !merge) {
         const parentTree = (await this.git(['rev-parse', `${opts.parent}^{tree}`])).stdout.trim()
         if (parentTree === tree) return null
       }
+      const parents = [...(opts.parent ? [opts.parent] : []), ...(opts.mergeParents ?? [])]
       const when = `${Math.floor((opts.date ?? new Date()).getTime() / 1000)} +0000`
       const { stdout } = await this.git(
-        ['commit-tree', tree, ...(opts.parent ? ['-p', opts.parent] : []), '-F', '-'],
+        ['commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-F', '-'],
         {
           input: opts.message.endsWith('\n') ? opts.message : `${opts.message}\n`,
           env: {
@@ -306,8 +341,14 @@ export class GitRepo {
         throw new GitError('failed', `git push failed: ${result.stderr.trim() || result.stdout.trim()}`)
       }
       await this.git(['update-ref', `refs/remotes/origin/${name}`, commit])
+      pushedAt.set(this.dir, Date.now())
       return 'ok'
     })
+  }
+
+  /** When this process last pushed through this cache directory (0: not yet). */
+  lastPushAt(): number {
+    return pushedAt.get(this.dir) ?? 0
   }
 
   /** A fetched commit's subject line, body and author. */
@@ -318,6 +359,41 @@ export class GitRepo {
       const { stdout } = await this.git(['show', '-s', '--format=%s%x00%an%x00%ae%x00%b', commit])
       const [subject = '', authorName = '', authorEmail = '', body = ''] = stdout.split('\0')
       return { subject, body: body.trim(), authorName, authorEmail }
+    })
+  }
+
+  /** The best common ancestor of two fetched commits, or null when they share no history. */
+  mergeBase(a: string, b: string): Promise<string | null> {
+    if (!SHA.test(a) || !SHA.test(b)) throw new GitError('failed', 'Expected commit shas')
+    return withLock(this.dir, async () => {
+      const { stdout, code } = await this.git(['merge-base', a, b], { okCodes: [1] })
+      return code === 0 ? stdout.trim() : null
+    })
+  }
+
+  /** Whether `ancestor` is `commit` or in its history (both fetched). */
+  isAncestor(ancestor: string, commit: string): Promise<boolean> {
+    if (!SHA.test(ancestor) || !SHA.test(commit)) throw new GitError('failed', 'Expected commit shas')
+    return withLock(this.dir, async () => {
+      const { code } = await this.git(['merge-base', '--is-ancestor', ancestor, commit], { okCodes: [1] })
+      return code === 0
+    })
+  }
+
+  /**
+   * Merges two fetched commits as git would, in the bare cache (no working tree): the merged tree, and the paths git
+   * couldn't merge (their files in the tree hold conflict markers). Nothing is committed.
+   */
+  mergeTree(ours: string, theirs: string): Promise<{ tree: string; conflicts: string[] }> {
+    if (!SHA.test(ours) || !SHA.test(theirs)) throw new GitError('failed', 'Expected commit shas')
+    return withLock(this.dir, async () => {
+      const { stdout } = await this.git(
+        ['merge-tree', '--write-tree', '--name-only', '-z', '--no-messages', ours, theirs],
+        { okCodes: [1] },
+      )
+      const [tree = '', ...paths] = stdout.split('\0')
+      if (!SHA.test(tree)) throw new GitError('failed', 'Unexpected merge-tree output')
+      return { tree, conflicts: [...new Set(paths.filter(Boolean))] }
     })
   }
 

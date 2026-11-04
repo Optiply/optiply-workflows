@@ -2,8 +2,10 @@ import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
+import { PresenceAvatars } from '@/components/presence-avatars'
 import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
@@ -11,20 +13,24 @@ import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trp
 import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
+import { AppChromeContext } from '../grid-context'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
 import { ComponentTree, EditCanvas, Palette } from './canvas'
+import { useCanvasKeys } from './canvas-keys'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { CodePanel } from './code-panel'
+import { closeSession, ensureSaved, openSession } from './collab'
+import { AddCustomComponent, useComponentLibrarySync } from './custom'
 import { ScopeSync } from './fields'
-import { ComponentInspector } from './inspector'
+import { ComponentInspector, SelectionInspector } from './inspector'
 import { useLibrarySync } from './library'
 import { ModulePanel } from './module-panel'
 import { AddModule, useModuleSync } from './modules'
 import { PagesPanel } from './pages'
+import { usePresence } from './presence'
 import { type EditorApp, ReleaseControls } from './releases'
-import { ensureSaved, saveDraftNow } from './save'
 import { type SaveStatus, useAppEditor } from './store'
 
 type BranchDraft = RouterOutputs['branchDrafts']['get']
@@ -32,8 +38,6 @@ type BranchDraft = RouterOutputs['branchDrafts']['get']
 const route = getRouteApi('/app/apps/$slug/edit')
 const appRoute = getRouteApi('/app')
 
-/** Autosave this long after the last edit. */
-const SAVE_DELAY_MS = 800
 /** The running draft follows edits this long after the last one. */
 const UPDATE_DELAY_MS = 300
 
@@ -53,6 +57,7 @@ export function AppEditorPage() {
   })
   useLibrarySync()
   useModuleSync()
+  useComponentLibrarySync()
   return (
     <DraftLoader
       kind="app"
@@ -117,12 +122,15 @@ export function DraftLoader({
     : null
 
   const loadDraft = useCallback(
-    (id: string, draft: BranchDraft) =>
+    (id: string, draft: BranchDraft) => {
       load(id, draft.definition as AppDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
         kind,
-      }),
-    [load, kind],
+        ...(data && { slug: data.slug }),
+      })
+      openSession(kind, id, draft.id)
+    },
+    [load, kind, data],
   )
   useEffect(() => {
     if (!data || !wanted || loadedFor === wanted || wanted.endsWith(':opening')) return
@@ -131,16 +139,29 @@ export function DraftLoader({
       load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
         readOnly: data.gitProtected,
         kind,
+        slug: data.slug,
       })
+      openSession(kind, data.id, null)
     }
     setLoadedFor(wanted)
   }, [data, wanted, loadedFor, branch, branchDraft, load, loadDraft, kind])
+  // The draft's document closes with the editor. Mounted again with the draft still loaded (React's StrictMode does
+  // it in development), it opens again.
+  const mountedBefore = useRef(false)
+  useEffect(() => {
+    if (mountedBefore.current) {
+      const { kind: loadedKind, appId, branchDraftId } = useAppEditor.getState()
+      if (appId) openSession(loadedKind, appId, branchDraftId)
+    }
+    mountedBefore.current = true
+    return closeSession
+  }, [])
 
   const switchBranch = async (next: string | null) => {
     try {
       await ensureSaved()
     } catch (err) {
-      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+      if (!(await confirmDialog(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`))) return
     }
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.
@@ -232,13 +253,15 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
   const { confirm, dialog: confirmation } = useConfirmations()
   const [preview, setPreview] = useState(false)
   const status = useAppEditor((s) => s.status)
+  const peers = usePresence((s) => s.peers)
   const selected = useAppEditor((s) => s.selected)
+  const selection = useAppEditor((s) => s.selection)
   const definition = useAppEditor((s) => s.definition)
 
   const readOnly = useAppEditor((s) => s.readOnly)
   const epoch = useAppEditor((s) => s.epoch)
-  const canUndo = useAppEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
-  const canRedo = useAppEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  const canUndo = useAppEditor((s) => s.canUndo)
+  const canRedo = useAppEditor((s) => s.canRedo)
   // Undo and redo while editing (not in Preview, where the keys are the app's).
   useEditorKeys({
     editable: !readOnly && !preview,
@@ -249,9 +272,12 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     copy: () => (preview ? null : copyText()),
     paste: (text) => pasteText(text, notify),
   })
+  // Escape, ⌘A, Delete and the arrow keys on the canvas's selection (M24); not in Preview.
+  useCanvasKeys(!preview)
   const { ref, host } = useAppHost(`${app.id}:${environment.id}:${branchDraftId ?? 'main'}`, {
     definition: useAppEditor.getState().definition,
     modules: useAppEditor.getState().moduleReleases,
+    libraries: useAppEditor.getState().libraryReleases,
     kind: app.kind,
     appId: app.id,
     releaseId: null,
@@ -282,11 +308,16 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     if (!host) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = useAppEditor.subscribe((state, before) => {
-      if (state.definition === before.definition && state.moduleReleases === before.moduleReleases) return
+      if (
+        state.definition === before.definition &&
+        state.moduleReleases === before.moduleReleases &&
+        state.libraryReleases === before.libraryReleases
+      )
+        return
       clearTimeout(timer)
       timer = setTimeout(() => {
-        const { definition, moduleReleases } = useAppEditor.getState()
-        host.update(definition, moduleReleases)
+        const { definition, moduleReleases, libraryReleases } = useAppEditor.getState()
+        host.update(definition, moduleReleases, libraryReleases)
       }, UPDATE_DELAY_MS)
     })
     return () => {
@@ -295,18 +326,12 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     }
   }, [host])
 
-  // Autosave.
-  useEffect(() => {
-    if (status !== 'dirty') return
-    const timer = setTimeout(() => void saveDraftNow(), SAVE_DELAY_MS)
-    return () => clearTimeout(timer)
-  })
-
-  // Leaving with unsaved edits asks first.
+  // Leaving with edits the server hasn't saved asks first.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       const s = useAppEditor.getState().status
-      if (s === 'dirty' || s === 'saving' || s === 'error') e.preventDefault()
+      if (!useAppEditor.getState().readOnly && (s === 'saving' || s === 'offline' || s === 'error'))
+        e.preventDefault()
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
@@ -317,6 +342,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
       <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
         <h1 className="truncate text-lg leading-6 font-bold">{app.name}</h1>
         <SaveBadge status={status} />
+        <PresenceAvatars peers={peers} me={me.id} />
         {!readOnly && !preview && (
           <div className="flex items-center">
             <UndoButtons
@@ -360,58 +386,70 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
         </div>
       </header>
       {git}
-      {status === 'conflict' && (
-        <div role="alert" className="flex items-center gap-3 rounded-lg bg-accent-soft px-4 py-2 text-sm">
-          Someone else saved this {app.kind} since you opened it. Your edits here can't be saved.
-          <Button size="sm" onClick={() => window.location.reload()}>
-            Reload
-          </Button>
-        </div>
-      )}
       <div ref={ref} className="hidden" />
       {host ? (
         <AppHostProvider host={host}>
-          <ScopeSync />
-          <div className="flex min-h-0 flex-1 gap-2">
-            {!preview && (
-              <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
-                {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
-                {!readOnly && (
-                  <section>
-                    <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
-                    <Palette />
-                    {/* No modules inside modules. */}
-                    {app.kind === 'app' && (
+          <AppChromeContext.Provider
+            value={{
+              appName: app.name,
+              user: { name: me.name, email: me.email },
+              // Where the app is used: a link opened in a new tab goes there, not into the editor.
+              pageHref: (page, params) => {
+                const query = new URLSearchParams(params).toString()
+                return `/apps/${encodeURIComponent(app.slug)}/${encodeURIComponent(page)}${query ? `?${query}` : ''}`
+              },
+            }}
+          >
+            <ScopeSync />
+            <div className="flex min-h-0 flex-1 gap-2">
+              {!preview && (
+                <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
+                  {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
+                  {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
+                  {!readOnly && (
+                    <section>
+                      <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
+                      <Palette />
+                      {/* Modules inside modules too (M21), as deep as the limit allows. */}
                       <div className="mt-1.5">
                         <AddModule />
                       </div>
-                    )}
+                      <div className="mt-1.5">
+                        <AddCustomComponent />
+                      </div>
+                    </section>
+                  )}
+                  <section>
+                    <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
+                    <ComponentTree />
                   </section>
-                )}
-                <section>
-                  <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
-                  <ComponentTree />
-                </section>
-              </aside>
-            )}
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              {/* On the page background, as people see the app. */}
-              <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
-                <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
-              </div>
-              {!preview && (
-                <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
-                  <CodePanel key={epoch} />
+                </aside>
+              )}
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                {/* On the page background, as people see the app. */}
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
+                  <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
                 </div>
+                {!preview && (
+                  <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
+                    <CodePanel key={epoch} />
+                  </div>
+                )}
+              </div>
+              {!preview && selected && (
+                <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
+                  {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
+                  <fieldset disabled={readOnly} className="contents" data-testid="inspector">
+                    {selection.length > 1 ? (
+                      <SelectionInspector names={selection} onDuplicate={() => duplicateChosen(notify)} />
+                    ) : (
+                      <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                    )}
+                  </fieldset>
+                </aside>
               )}
             </div>
-            {!preview && selected && (
-              <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
-                <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
-              </aside>
-            )}
-          </div>
+          </AppChromeContext.Provider>
         </AppHostProvider>
       ) : (
         <Centered>
@@ -446,11 +484,12 @@ function Running({ children }: { children: React.ReactNode }) {
 }
 
 const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {
+  connecting: { text: 'Connecting…', className: 'text-muted' },
   saved: { text: 'Saved', className: 'text-muted' },
-  dirty: { text: 'Unsaved changes', className: 'text-muted' },
   saving: { text: 'Saving…', className: 'text-muted' },
-  conflict: { text: 'Not saved: conflict', className: 'text-danger' },
+  offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
   error: { text: 'Not saved', className: 'text-danger' },
+  closed: { text: 'Disconnected: reload', className: 'text-danger' },
 }
 
 function SaveBadge({ status }: { status: SaveStatus }) {

@@ -1,0 +1,23 @@
+# Optional (M18, M19): lets SSH tunnels through Google Cloud IAP and Pub/Sub resources use this server's own Google
+# identity, taken from the host's gcloud application-default login (`gcloud auth application-default login`, an
+# `authorized_user` file). Only admins can choose that identity for a resource (docs/runbooks/ssh-tunnels.md,
+# "Through Google Cloud IAP", and docs/runbooks/pubsub.md).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gcloud.yml up -d
+#
+# or, to keep it for every docker compose command, in .env:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gcloud.yml
+#
+# On Google Cloud, leave the file out: the VM's metadata server is found without a mount (set only
+# GOOGLE_SERVER_IDENTITY=allow). A service account key file works too: point GCLOUD_ADC_FILE at it.
+x-google-identity: &google-identity
+  environment:
+    GOOGLE_SERVER_IDENTITY: allow
+    GOOGLE_APPLICATION_CREDENTIALS: /run/gcloud/adc.json
+  volumes:
+    - ${GCLOUD_ADC_FILE:-${HOME}/.config/gcloud/application_default_credentials.json}:/run/gcloud/adc.json:ro
+
+services:
+  api: *google-identity
+  worker: *google-identity

@@ -115,6 +115,15 @@ describe('modules', () => {
       outputs: [{ name: 'selectedRegion' }],
       events: [{ name: 'picked' }],
     })
+    // One release's definition, for Compare (M24): Edit only.
+    const one = data(await admin.query('modules.release', { moduleId: m.id, id: v1.id }))
+    expect(one.version).toBe('1.0.0')
+    expect(one.definition.queries[0].query.sql).toContain("'v1' as tag")
+    await grant('module', m.id, 'use')
+    expect(failure(await member.query('modules.release', { moduleId: m.id, id: v1.id })).code).toBe(
+      'FORBIDDEN',
+    )
+    await grant('module', m.id, null)
     await admin.mutate('modules.setLive', { moduleId: m.id, releaseId: v1.id })
     expect(data(await admin.query('modules.list')).find((l: { id: string }) => l.id === m.id)).toMatchObject({
       liveVersion: '1.0.0',
@@ -217,6 +226,10 @@ describe('apps placing modules', () => {
       code: 'FORBIDDEN',
       message: 'You need use access to module "placed_picker" to release this app, which uses it',
     })
+    // Someone who may not use it learns only that (M21): "needs use access" rather than "unknown".
+    expect(data(await member.query('modules.resolve', { slugs: ['placed_picker', 'nope'] }))).toEqual({
+      placed_picker: { liveVersion: null, versions: {}, noUse: true },
+    })
     await grant('module', m.id, 'use')
     expect(data(await publish()).version).toBe('1.0.0')
 
@@ -226,6 +239,7 @@ describe('apps placing modules', () => {
         expect.objectContaining({ slug: 'wrong_props_app', where: ['draft'] }),
       ],
       modules: [],
+      workflows: [],
       hidden: 0,
     })
     expect(failure(await admin.mutate('modules.delete', { id: m.id }))).toEqual({
@@ -242,6 +256,7 @@ describe('apps placing modules', () => {
         name: 'placed_picker',
         liveVersion: '1.0.0',
         versions: { '1.0.0': { inputs: ['region'], outputs: ['selectedRegion'], events: ['picked'] } },
+        nesting: { '1.0.0': { depth: 1, reaches: [] } },
       },
     })
     for (const [type, id] of [
@@ -282,7 +297,7 @@ describe('apps placing modules', () => {
         appId: a.id,
         releaseId: opts.appRelease === undefined ? live.id : opts.appRelease,
         query: 'regions',
-        module: { instance, releaseId },
+        module: [{ instance, releaseId }],
         environmentId: prodId,
         values: { ' inputs.region ': 'US' },
       })

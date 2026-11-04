@@ -1,6 +1,14 @@
 import { runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
-import { type Block, type BlockOf, calledFunctions, MAX_WAIT_MS, taskOutcomes } from '@ow/definition'
+import {
+  type Block,
+  type BlockOf,
+  calledFunctions,
+  type LibraryReference,
+  libraryScope,
+  MAX_WAIT_MS,
+  taskOutcomes,
+} from '@ow/definition'
 import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
 import type { HostFunction } from '@ow/sandbox'
 import { childResult, waitForChild } from './children'
@@ -23,6 +31,8 @@ export interface BlockContext {
   environmentId: string
   /** See `ExecuteRunOptions.actingUserId`. */
   actingUserId: string | null
+  /** See `ExecuteRunOptions.currentUserId` (M21). */
+  currentUserId: string | null
   services: EngineServices
   /** Aborted on timeout, run failure or interruption. */
   signal: AbortSignal
@@ -91,6 +101,7 @@ const executors: { [T in Block['type']]: Executor<T> } = {
         headers: input.headers ?? {},
         pathParams: input.pathParams ?? {},
         urlParams: input.urlParams ?? {},
+        ...(input.message ? { message: input.message } : {}),
       },
     }
   },
@@ -102,6 +113,10 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   async resourceQuery(block, ctx) {
     const { data, metadata } = await runResourceQuery(block.config.resource, block.config.query, ctx, ctx)
     return { data, metadata }
+  },
+
+  async libraryQuery(block, ctx) {
+    return runLibraryQuery(block.config, ctx, ctx)
   },
 
   async branch(block, ctx) {
@@ -443,13 +458,44 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
   if (!python) {
     throw new BlockFailure('python_unavailable', "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)")
   }
+  const envId = ctx.services.pythonEnv ? await waitForEnv(ctx.services.pythonEnv(), work) : undefined
   // As JSON (the client serializes it once; results already are JSON).
   return python.run(code, work.scope, {
     timeoutMs: work.timeoutMs,
     signal: work.signal,
+    ...(envId && { envId }),
     onLog: (level, args) => work.log(level, formatLogArgs(args)),
   })
 }
+
+/**
+ * The run's Python packages, saying so in the block's log when they take a while (a first install): a block timeout
+ * then reads in context (the install goes on, for a retry or the next run). Leaves early when the work stops.
+ */
+function waitForEnv(env: Promise<string>, work: Work): Promise<string> {
+  if (work.signal.aborted) return Promise.reject(work.signal.reason)
+  return new Promise((resolve, reject) => {
+    let waiting = false
+    const timer = setTimeout(() => {
+      waiting = true
+      work.log('info', "Waiting for the workflow's Python packages to install…")
+    }, ENV_WAIT_LOG_MS)
+    const stop = () => reject(work.signal.reason)
+    work.signal.addEventListener('abort', stop, { once: true })
+    env
+      .then((id) => {
+        if (waiting) work.log('info', "The workflow's Python packages are installed")
+        resolve(id)
+      }, reject)
+      .finally(() => {
+        clearTimeout(timer)
+        work.signal.removeEventListener('abort', stop)
+      })
+  })
+}
+
+/** A Python block waiting this long for its packages says so in its log. */
+const ENV_WAIT_LOG_MS = 1000
 
 /** Runs a query (a query block, or a loop's query runner) against a resource in the run's environment. */
 export async function runResourceQuery(
@@ -457,6 +503,7 @@ export async function runResourceQuery(
   query: Record<string, unknown>,
   work: Work,
   ctx: BlockContext,
+  opts: { evaluate?: Evaluate; timeoutMs?: number; labels?: Record<string, string> } = {},
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
@@ -469,9 +516,9 @@ export async function runResourceQuery(
     | { workflowId?: string; environment?: string; triggerType?: string }
     | undefined
   const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
-    evaluate: evaluatorFor(work, ctx),
+    evaluate: opts.evaluate ?? evaluatorFor(work, ctx),
     signal: work.signal,
-    timeoutMs: work.timeoutMs,
+    timeoutMs: opts.timeoutMs ?? work.timeoutMs,
     ...(target.credentials && { credentials: target.credentials }),
     labels: {
       ow_source: 'workflow',
@@ -479,9 +526,69 @@ export async function runResourceQuery(
       ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
       ...(workflow?.environment && { ow_environment: workflow.environment }),
       ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
+      ...opts.labels,
     },
   })
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+}
+
+/** What a block attempt looked up for its library queries (M21): releases and the user, by key. */
+const attemptCaches = new WeakMap<BlockContext, Map<string, Promise<unknown>>>()
+
+/**
+ * Runs a library query (a Library query block, or a loop's library runner; M21): the release's resource and query,
+ * resolved now (so `latest` follows the live release on every attempt). The parameters are rendered in the work's
+ * scope; the library query's own `{{ }}`s see only them, `current_user` (whoever started the run) and the stdlib.
+ */
+export async function runLibraryQuery(
+  ref: LibraryReference & { params?: Record<string, string> | undefined },
+  work: Work,
+  ctx: BlockContext,
+): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
+  const library = ctx.services.library
+  if (!library) throw new BlockFailure('library', "Library queries aren't available here")
+  // Looked up once per attempt: the release (a loop's iterations share it; a retry resolves `latest` again) and
+  // the user.
+  const cache = attemptCaches.get(ctx) ?? new Map<string, Promise<unknown>>()
+  attemptCaches.set(ctx, cache)
+  const once = <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    if (!cache.has(key)) cache.set(key, load())
+    return cache.get(key) as Promise<T>
+  }
+  const { version, definition } = await once(`release:${ref.library}@${ref.version}`, () =>
+    library.resolve(ref.library, ref.version),
+  )
+  const evaluate = evaluatorFor(work, ctx)
+  const values: Record<string, unknown> = {}
+  for (const [name, template] of Object.entries(ref.params ?? {})) {
+    try {
+      values[name] = (await renderTemplate(template, evaluate)) ?? null
+    } catch (err) {
+      if (err instanceof BlockFailure) {
+        throw new BlockFailure(err.code, `Parameter ${name}: ${err.message}`)
+      }
+      throw err
+    }
+  }
+  const userId = ctx.currentUserId
+  const user = userId ? await once(`user:${userId}`, () => library.user(userId)) : null
+  const scope = libraryScope(definition, values, user)
+  const evaluateLibrary: Evaluate = async (code) => {
+    try {
+      return await ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: work.timeoutMs })
+    } catch (err) {
+      throw new BlockFailure(
+        'expression',
+        `Error in {{ ${code.trim()} }} of library query "${ref.library}": ${(err as Error).message}`,
+      )
+    }
+  }
+  const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
+    evaluate: evaluateLibrary,
+    timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
+    labels: { ow_library: ref.library },
+  })
+  return { data, metadata: { ...metadata, library: { slug: ref.library, version } } }
 }
 
 /** Calls a workflow function with argument templates (a Function block, or a loop's function runner). */

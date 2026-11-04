@@ -1,5 +1,8 @@
 import {
+  configVars,
+  configVarValues,
   type Db,
+  type Environment,
   environments,
   resourceConfigs,
   type Workflow,
@@ -11,20 +14,26 @@ import {
 import {
   canonicalize,
   canonicalJson,
-  DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
   definitionHash,
   nextScheduleFire,
+  type PythonLock,
   parseWebhookAlias,
+  type ResolvedWebhook,
+  resolveWebhookSettings,
   type ScheduleTrigger,
   type VersionBump,
   type WorkflowDefinition,
+  webhookEnvironments,
 } from '@ow/definition'
+import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
+import { releaseLock } from './python-envs'
 import { nextReleaseVersion } from './release-versions'
+import { effectiveConfig } from './resources'
 import { checkDefinition } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -56,7 +65,7 @@ export async function publishRelease(
     })
   }
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, access, workflow, definition)
+  const plan = await checkReleasable(db, access, workflow, definition, { actorUserId: user.id })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one workflow.
@@ -73,6 +82,7 @@ export async function publishRelease(
       notes: opts.notes,
       createdBy: user.id,
       gitCommit: null,
+      pythonLock: plan.pythonLock,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -105,7 +115,7 @@ export async function deployWorkflowFromGit(
 ): Promise<WorkflowRelease | null> {
   const definition = canonicalize(opts.definition)
   const hash = await definitionHash(definition)
-  const plan = await checkReleasable(db, null, opts.workflow, definition)
+  const plan = await checkReleasable(db, null, opts.workflow, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(workflows).where(eq(workflows.id, opts.workflow.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The workflow was deleted meanwhile' })
@@ -125,6 +135,7 @@ export async function deployWorkflowFromGit(
       notes: opts.notes,
       createdBy: null,
       gitCommit: opts.commit,
+      pythonLock: plan.pythonLock,
     })
     if ('unchanged' in release) return null
     await makeLive(tx, locked.id, release, plan, opts.now ?? new Date())
@@ -147,6 +158,7 @@ async function insertRelease(
     notes?: string | null
     createdBy: string | null
     gitCommit: string | null
+    pythonLock: PythonLock | null
   },
 ): Promise<WorkflowRelease | { unchanged: string }> {
   const existing = await tx
@@ -173,6 +185,7 @@ async function insertRelease(
       notes: opts.notes?.trim() || null,
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
+      pythonLock: opts.pythonLock,
     })
     .returning()
   return release!
@@ -182,14 +195,24 @@ async function insertRelease(
 export async function setLiveRelease(
   db: Db,
   access: Access,
-  opts: { workflow: Workflow; releaseId: string; now?: Date },
+  opts: { workflow: Workflow; releaseId: string; now?: Date; actorUserId?: string | null },
 ): Promise<WorkflowRelease> {
   const [release] = await db
     .select()
     .from(workflowReleases)
     .where(and(eq(workflowReleases.id, opts.releaseId), eq(workflowReleases.workflowId, opts.workflow.id)))
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
-  const plan = await checkReleasable(db, access, opts.workflow, release.definition)
+  const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
+    actorUserId: opts.actorUserId ?? null,
+    lock: release.pythonLock,
+  })
+  // A release from before its packages had a lock (or before M23) gets one now: live runs install it.
+  if (plan.pythonLock && !release.pythonLock) {
+    await db
+      .update(workflowReleases)
+      .set({ pythonLock: plan.pythonLock })
+      .where(eq(workflowReleases.id, release.id))
+  }
   await db.transaction(async (tx) => {
     await tx
       .select({ id: workflows.id })
@@ -205,13 +228,18 @@ export async function setLiveRelease(
 interface ReleasePlan {
   /** Schedule name → environment id. */
   scheduleEnvironments: Map<string, string>
+  /** Queue trigger (`<kind>:<name>`: Pub/Sub, SQS, Kafka) → environment id. */
+  queueEnvironments: Map<string, string>
   aliasShape: string | null
+  /** The Python packages' lock (M23), installed: null without packages or Python. */
+  pythonLock: PythonLock | null
 }
 
 /**
  * The checks for making a definition live. Its runs start from webhooks and schedules with no user behind them, so
  * whoever makes it live vouches for it: they need Edit on the workflow, Use on every resource it queries in every
- * environment (a webhook can pick any environment), and Use on every workflow it calls (each must be published).
+ * environment (a webhook can pick any environment), Use on every workflow it calls (each must be published) and on
+ * every library query it uses (M21; the release it names must exist).
  * The definition must be valid, with each query checked by its connector, its schedules' environments must exist,
  * and its webhook alias must be free. `access` null is Git sync (M11): no grants are checked, the rest is.
  */
@@ -220,11 +248,12 @@ async function checkReleasable(
   access: Access | null,
   workflow: Workflow,
   definition: WorkflowDefinition,
+  python: { actorUserId: string | null; lock?: PythonLock | null },
 ): Promise<ReleasePlan> {
   if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
   }
-  const { resources, children, errors } = await checkDefinition(db, definition)
+  const { resources, children, libraries, errors } = await checkDefinition(db, definition)
   if (errors.length) {
     const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''
     throw new TRPCError({
@@ -257,6 +286,7 @@ async function checkReleasable(
         resourceId: resourceConfigs.resourceId,
         environmentId: resourceConfigs.environmentId,
         config: resourceConfigs.config,
+        overrides: resourceConfigs.overrides,
       })
       .from(resourceConfigs)
       .where(
@@ -265,7 +295,7 @@ async function checkReleasable(
           resources.map((r) => r.id),
         ),
       )
-    const perUser = configs.find((c) => authorizationCode(c.config)?.tokens === 'perUser')
+    const perUser = configs.find((c) => authorizationCode(effectiveConfig(c))?.tokens === 'perUser')
     if (perUser) {
       const resource = resources.find((r) => r.id === perUser.resourceId)!
       const env = envs.find((e) => e.id === perUser.environmentId)
@@ -286,6 +316,16 @@ async function checkReleasable(
     }
   }
 
+  // Its library queries (M21): whoever releases vouches for using them, as for an app's.
+  for (const library of access ? libraries : []) {
+    if (!atLeast(access!.libraryQueryLevel(library), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to library query "${library.slug}" to release this workflow, which uses it`,
+      })
+    }
+  }
+
   const defaultEnv = envs.find((e) => e.isDefault) ?? envs[0]!
   const scheduleEnvironments = new Map<string, string>()
   for (const schedule of definition.triggers?.schedules ?? []) {
@@ -298,8 +338,36 @@ async function checkReleasable(
     }
     scheduleEnvironments.set(schedule.name, env.id)
   }
+  const queueEnvironments = new Map<string, string>()
+  for (const { kind, trigger } of queueTriggers(definition)) {
+    const label = QUEUE_LABELS[kind]
+    const env = trigger.environment ? envs.find((e) => e.slug === trigger.environment) : defaultEnv
+    if (!env) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `${label} trigger "${trigger.name}" runs in environment "${trigger.environment}", which doesn't exist`,
+      })
+    }
+    queueEnvironments.set(`${kind}:${trigger.name}`, env.id)
+    // A trigger receives with its resource's settings in its environment: they must be there, or every pull would
+    // fail.
+    const resource = resources.find((r) => r.slug === trigger.resource)
+    if (!resource) continue
+    const [configured] = await db
+      .select({ id: resourceConfigs.id })
+      .from(resourceConfigs)
+      .where(and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, env.id)))
+    if (!configured) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `${label} trigger "${trigger.name}" runs in environment "${env.slug}", where resource "${trigger.resource}" isn't configured`,
+      })
+    }
+  }
 
   const webhook = definition.triggers?.webhook
+  if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)
+
   let aliasShape: string | null = null
   if (webhook?.enabled && webhook.alias !== undefined) {
     const parsed = parseWebhookAlias(webhook.alias)
@@ -318,7 +386,61 @@ async function checkReleasable(
       })
     }
   }
-  return { scheduleEnvironments, aliasShape }
+  // Last, as it may take a while (a first install): every cheaper reason to refuse comes first.
+  let pythonLock: PythonLock | null
+  try {
+    pythonLock = await releaseLock(db, definition, python.lock ?? null, {
+      workflowId: workflow.id,
+      actorUserId: python.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
+  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock }
+}
+
+/**
+ * A live webhook's environments exist, and a signed one's secret is a secret config var with a value in each
+ * environment the webhook runs in (its value isn't read here).
+ */
+async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Environment[]) {
+  if (typeof webhook.environments !== 'string') {
+    const unknown = webhook.environments.find((slug) => !envs.some((e) => e.slug === slug))
+    if (unknown) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `The webhook runs in environment "${unknown}", which doesn't exist`,
+      })
+    }
+  }
+  const runsIn = webhookEnvironments(webhook, envs)
+  if (webhook.auth.type !== 'signature') return
+  const name = webhook.auth.secret
+  const [variable] = await db.select().from(configVars).where(eq(configVars.name, name))
+  if (!variable) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `The webhook's signing secret is config var "${name}", which doesn't exist`,
+    })
+  }
+  if (!variable.isSecret) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `Config var "${name}" isn't secret: make it a secret to sign webhooks with it`,
+    })
+  }
+  const values = await db
+    .select({ environmentId: configVarValues.environmentId })
+    .from(configVarValues)
+    .where(eq(configVarValues.configVarId, variable.id))
+  const missing = runsIn.filter((env) => !values.some((v) => v.environmentId === env.id))
+  if (missing.length) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `Config var "${name}" has no value in ${missing.map((e) => e.name).join(', ')}, where the webhook runs`,
+    })
+  }
 }
 
 /** Points the workflow at the release and projects its triggers. Runs in the caller's transaction. */
@@ -349,7 +471,7 @@ async function projectTriggers(
 ) {
   const triggers = release.definition.triggers
   const existing = await tx.select().from(workflowTriggers).where(eq(workflowTriggers.workflowId, workflowId))
-  const find = (kind: 'webhook' | 'schedule', name: string) =>
+  const find = (kind: (typeof workflowTriggers.$inferSelect)['kind'], name: string) =>
     existing.find((t) => t.kind === kind && t.name === name)
 
   const rows: (typeof workflowTriggers.$inferInsert)[] = []
@@ -360,11 +482,8 @@ async function projectTriggers(
       kind: 'webhook',
       name: 'webhook',
       enabled: triggers.webhook.enabled,
-      config: {
-        methods: ['POST'],
-        syncTimeoutMs: DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS,
-        ...triggers.webhook,
-      },
+      // As written: resolveWebhookSettings applies the defaults when a call comes in.
+      config: { ...triggers.webhook },
       environmentId: null,
       aliasShape: plan.aliasShape,
       nextFireAt: null,
@@ -391,6 +510,20 @@ async function projectTriggers(
     })
   }
 
+  for (const { kind, trigger } of queueTriggers({ triggers })) {
+    rows.push({
+      workflowId,
+      releaseId: release.id,
+      kind,
+      name: trigger.name,
+      enabled: trigger.enabled,
+      config: { ...queueDefaults(kind, workflowId, trigger.name), ...trigger },
+      environmentId: plan.queueEnvironments.get(`${kind}:${trigger.name}`)!,
+      aliasShape: null,
+      nextFireAt: null,
+    })
+  }
+
   const keep = rows.map((r) => find(r.kind, r.name)?.id).filter((id): id is string => !!id)
   await tx
     .delete(workflowTriggers)
@@ -404,5 +537,37 @@ async function projectTriggers(
     const current = find(row.kind, row.name)
     if (current) await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
     else await tx.insert(workflowTriggers).values(row)
+  }
+}
+
+const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+
+/** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
+function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
+  const t = definition.triggers
+  return [
+    ...(t?.pubsub ?? []).map((trigger) => ({ kind: 'pubsub' as const, trigger })),
+    ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
+    ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
+  ]
+}
+
+/**
+ * What a queue trigger leaves out, as its consumer reads it. Kafka's group is named after the workflow's id, so a
+ * renamed workflow keeps its offsets.
+ */
+function queueDefaults(
+  kind: 'pubsub' | 'sqs' | 'kafka',
+  workflowId: string,
+  name: string,
+): Record<string, unknown> {
+  const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
+  if (kind !== 'kafka') return shared
+  return {
+    ...shared,
+    startAt: 'latest',
+    maxAttempts: 3,
+    retryBackoffSeconds: 10,
+    groupId: `ow-${workflowId}-${name}`,
   }
 }

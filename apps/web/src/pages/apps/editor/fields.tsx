@@ -1,18 +1,52 @@
 import { type AppDiagnostic, renameAppEntity } from '@ow/app-definition'
 import { lazy, type ReactNode, Suspense, useEffect, useMemo, useState } from 'react'
 import type { CodeFieldProps, FieldProblem } from '@/components/code/code-field'
+import type { TextBinding } from '@/components/code/text-binding'
 import { Input } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useAppHostState } from '../runtime/react'
+import { currentAwareness } from './collab'
 import { appScope } from './scope'
 import { useAppEditor } from './store'
 
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('@/components/code/code-field'))
 
-/** A Monaco field for app code; its completions come from the one scope `ScopeSync` keeps installed. */
-export function AppCodeField(props: Omit<CodeFieldProps, 'path'> & { path: (string | number)[] }) {
+/**
+ * A Monaco field for app code; its completions come from the one scope `ScopeSync` keeps installed. `path` is where
+ * its value is in the definition: a text there is edited together with others (M16), unless `bind` is false (fields
+ * whose text is parsed into the value, which typing straight into the text would bypass).
+ */
+export function AppCodeField({
+  bind = true,
+  removeEmpty,
+  ...props
+}: Omit<CodeFieldProps, 'path'> & {
+  path: (string | number)[]
+  bind?: boolean
+  /** Cleared, the field is removed from the definition (optional fields where absent means something else). */
+  removeEmpty?: boolean
+}) {
   const appId = useAppEditor((s) => s.appId)
+  const shared = useAppEditor((s) => s.shared)
+  const readOnly = useAppEditor((s) => s.readOnly)
+  const definition = useAppEditor((s) => s.definition)
+  const at = props.path
+  const key = at.join('\u0000')
+  // Looked up again as the definition changes: the text appears with the field's first value, and is replaced when
+  // its item is.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is `at`; `definition` marks the document changing
+  const binding = useMemo((): TextBinding | null => {
+    const text = bind && shared && !readOnly ? shared.textAt(at) : null
+    if (!text) return null
+    return {
+      text,
+      write: (change) => useAppEditor.getState().editText(at, change, { removeEmpty }),
+      undo: () => useAppEditor.getState().undo(),
+      redo: () => useAppEditor.getState().redo(),
+      awareness: currentAwareness(),
+    }
+  }, [key, bind, shared, readOnly, definition, removeEmpty])
   return (
     <Suspense
       fallback={
@@ -22,7 +56,13 @@ export function AppCodeField(props: Omit<CodeFieldProps, 'path'> & { path: (stri
         />
       }
     >
-      <LazyCodeField {...props} path={`file:///app/${appId}/${props.path.join('/')}`} />
+      <LazyCodeField
+        {...props}
+        // A protected app on main (M22): shown, not edited.
+        readOnly={props.readOnly || readOnly}
+        binding={binding}
+        path={`file:///app/${appId}/${props.path.join('/')}`}
+      />
     </Suspense>
   )
 }
@@ -141,6 +181,7 @@ export function EditorField({
 /** The name of a component, query, transformer or variable; renaming rewrites every reference to it. */
 export function NameField({ name, onRenamed }: { name: string; onRenamed?: (next: string) => void }) {
   const update = useAppEditor((s) => s.update)
+  const readOnly = useAppEditor((s) => s.readOnly)
   const [text, setText] = useState(name)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -161,6 +202,7 @@ export function NameField({ name, onRenamed }: { name: string; onRenamed?: (next
       <Input
         aria-label="Name"
         value={text}
+        disabled={readOnly}
         className="h-8 font-mono text-sm"
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}

@@ -88,6 +88,21 @@ const executable = { ...named, settings: blockSettingsSchema.optional() }
 /** Parameter values for a function call: templates by parameter name. */
 const functionArgsSchema = z.record(identifierSchema, z.string())
 
+/** `latest` (the library query's live release, whichever it is when it runs) or a pinned `1.2.3` (M14, M21). */
+export const libraryVersionSchema = z.union([
+  z.literal('latest'),
+  z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/, 'Use latest or a version like 1.2.3'),
+])
+
+/** A library query's slug, version and parameter values (templates by name; one not given is null) (M21). */
+const libraryCallShape = {
+  library: workflowSlugSchema,
+  version: libraryVersionSchema,
+  params: functionArgsSchema.optional(),
+}
+
 const keyValueSchema = z.strictObject({ key: z.string(), value: z.string() })
 
 export const startTriggerBlockSchema = z.strictObject({
@@ -129,6 +144,16 @@ export const resourceQueryBlockSchema = z.strictObject({
     /** The connector's query, checked against its `querySchema` when resources are known. Strings are templates. */
     query: z.record(z.string(), z.json()),
   }),
+})
+
+/**
+ * Runs a library query (M21): its release's resource and query, vouched for by whoever published it; the workflow
+ * passes the parameters, evaluated in the run's scope. Its data and metadata are a resource query's.
+ */
+export const libraryQueryBlockSchema = z.strictObject({
+  ...executable,
+  type: z.literal('libraryQuery'),
+  config: z.strictObject(libraryCallShape),
 })
 
 export const branchBlockSchema = z.strictObject({
@@ -195,6 +220,10 @@ export const loopRunnerSchema = z.discriminatedUnion('kind', [
     kind: z.literal('query'),
     resource: resourceSlugSchema,
     query: z.record(z.string(), z.json()),
+  }),
+  z.strictObject({
+    kind: z.literal('library'),
+    ...libraryCallShape,
   }),
   z.strictObject({
     kind: z.literal('function'),
@@ -335,6 +364,7 @@ export const blockSchema = z.discriminatedUnion('type', [
   startTriggerBlockSchema,
   codeBlockSchema,
   resourceQueryBlockSchema,
+  libraryQueryBlockSchema,
   branchBlockSchema,
   filterBlockSchema,
   responseBlockSchema,
@@ -355,6 +385,11 @@ export const edgeSchema = z.strictObject({
 export const workflowSettingsSchema = z.strictObject({
   /** Whole-run limit. Time spent waiting (M5) doesn't count. */
   timeoutMs: z.number().int().min(1000).max(MAX_RUN_TIMEOUT_MS).optional(),
+  /**
+   * The workflow's Python packages (M23): pip requirements, installed for its Python blocks. Loose here (the
+   * validator says what's wrong with each, see `requirementProblems`), so a bad line doesn't hide other problems.
+   */
+  python: z.strictObject({ requirements: z.array(z.string().max(1000)).max(100) }).optional(),
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
@@ -367,6 +402,49 @@ export const MIN_SCHEDULE_INTERVAL_MS = 60_000
  * set. Values people type (the alias) are checked by the validator rather than the schema, so a draft with a
  * half-typed one still saves.
  */
+export const WEBHOOK_SIGNATURE_PRESETS = [
+  'stripe',
+  'github',
+  'slack',
+  'hubspot',
+  'shopify',
+  'custom',
+] as const
+export const WEBHOOK_HMAC_ALGORITHMS = ['sha256', 'sha1', 'sha512'] as const
+export const WEBHOOK_SIGNATURE_ENCODINGS = ['hex', 'base64'] as const
+
+/**
+ * How a webhook authenticates its callers (M15): one of our API keys (the default when `auth` is left out), an HMAC
+ * signature, or not at all. Header names and the secret's name are checked by the validator.
+ */
+export const webhookAuthSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('apiKey') }),
+  z.strictObject({ type: z.literal('public') }),
+  z.strictObject({
+    type: z.literal('signature'),
+    preset: z.enum(WEBHOOK_SIGNATURE_PRESETS),
+    /** The name of a secret config var holding the signing secret, so it's set per environment. */
+    secret: z.string().max(64),
+    /** `custom` only: the header with the signature. */
+    header: z.string().max(100).optional(),
+    /** `custom` only; default sha256. */
+    algorithm: z.enum(WEBHOOK_HMAC_ALGORITHMS).optional(),
+    /** `custom` only; default hex. */
+    encoding: z.enum(WEBHOOK_SIGNATURE_ENCODINGS).optional(),
+    /** `custom` only: text before the signature in the header, e.g. `sha256=`. */
+    prefix: z.string().max(50).optional(),
+    /** `custom` only: the header with the time the request was signed (Unix seconds). */
+    timestampHeader: z.string().max(100).optional(),
+    /** `custom` only: what is signed, over `{timestamp}`, `{body}`, `{method}` and `{url}`. Default `{body}`. */
+    signedPayload: z.string().max(200).optional(),
+    /** How old a signed timestamp may be, for presets with one and custom with `timestampHeader`. Default 300. */
+    toleranceSeconds: z.number().int().min(1).max(86_400).optional(),
+  }),
+])
+
+export const MAX_WEBHOOK_RATE_LIMIT_REQUESTS = 100_000
+export const MAX_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS = 86_400
+
 export const webhookTriggerSchema = z.strictObject({
   enabled: z.boolean(),
   /** Path segments separated by `/`; a segment `:name` captures `startTrigger.pathParams.name`. */
@@ -375,6 +453,24 @@ export const webhookTriggerSchema = z.strictObject({
   methods: z.array(z.enum(WEBHOOK_METHODS)).min(1).max(WEBHOOK_METHODS.length).optional(),
   /** How long a call waits for the Response block before answering `202 { runId }`. Default 30 s. */
   syncTimeoutMs: z.number().int().min(0).max(MAX_WEBHOOK_SYNC_TIMEOUT_MS).optional(),
+  /** Default `{ type: 'apiKey' }`. */
+  auth: webhookAuthSchema.optional(),
+  /** A JSON Schema (2020-12) the body must match; checked before a run starts. */
+  bodySchema: z.record(z.string(), z.unknown()).optional(),
+  /** At most `requests` calls per `windowSeconds`. Signed and public webhooks default to 60 per 60 s. */
+  rateLimit: z
+    .strictObject({
+      requests: z.number().int().min(1).max(MAX_WEBHOOK_RATE_LIMIT_REQUESTS),
+      windowSeconds: z.number().int().min(1).max(MAX_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS),
+    })
+    .optional(),
+  /**
+   * Environment slugs `?environment=` may pick. API-key webhooks default to all (the key's own limits apply);
+   * signed and public ones to the default environment only.
+   */
+  environments: z.array(z.string().max(63)).min(1).max(20).optional(),
+  /** A request header used as the Idempotency-Key when the caller sends none (presets fill in the provider's). */
+  idempotencyHeader: z.string().max(100).optional(),
 })
 
 /**
@@ -397,9 +493,90 @@ export const scheduleTriggerSchema = z.strictObject({
   environment: z.string().max(63).optional(),
 })
 
+export const MAX_PUBSUB_IN_FLIGHT = 100
+export const MAX_PUBSUB_HOLD_MINUTES = 24 * 60
+
+/**
+ * A Pub/Sub subscription of the live release (M19, architecture §2.22): each message starts a run in `environment`
+ * (default: the default environment), through the `pubsub` resource `resource`'s settings there; the message is acked
+ * when its run succeeds and nacked when it fails.
+ */
+export const pubsubTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `pubsub` resource. */
+  resource: z.string().max(63),
+  /** The subscription's id in the resource's project, or its full name (`projects/…/subscriptions/…`). */
+  subscription: z.string().min(1).max(300),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's acked and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
+/** SQS keeps a message invisible for 12 hours at most: a hold can't outlast that. */
+export const MAX_SQS_HOLD_MINUTES = 12 * 60
+
+/**
+ * An SQS queue of the live release (M26, architecture §2.29): each message starts a run in `environment` (default: the
+ * default environment), through the `sqs` resource `resource`'s settings there; the message is deleted when its run
+ * succeeds and made visible again when it fails (the queue's redrive policy applies).
+ */
+export const sqsTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of an `sqs` resource. */
+  resource: z.string().max(63),
+  /** The queue's URL, or its name in the resource's region and account. */
+  queue: z.string().min(1).max(300),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's deleted and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_SQS_HOLD_MINUTES).optional(),
+})
+
+export const MAX_KAFKA_ATTEMPTS = 20
+export const MAX_KAFKA_BACKOFF_SECONDS = 15 * 60
+
+/**
+ * Kafka topics of the live release (M26, architecture §2.29), read as one member of the consumer group `groupId`
+ * (default `ow-<workflow id>-<name>`): each message starts a run in `environment`; a key's messages run one at a time,
+ * in order. A run that fails is retried after `retryBackoffSeconds` (doubling) up to `maxAttempts` runs, then the
+ * message goes to `deadLetterTopic` (or is dropped without one) and its partition moves on.
+ */
+export const kafkaTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `kafka` resource. */
+  resource: z.string().max(63),
+  topics: z.array(z.string().min(1).max(249)).min(1).max(10),
+  groupId: z.string().min(1).max(255).optional(),
+  /** Where a group with no committed offsets starts: new messages only (default) or the topics' beginning. */
+  startAt: z.enum(['latest', 'earliest']).optional(),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4). */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** Runs per message before it is dead-lettered (default 3). */
+  maxAttempts: z.number().int().min(1).max(MAX_KAFKA_ATTEMPTS).optional(),
+  /** The wait before the first retry (default 10), doubling, at most 15 minutes. */
+  retryBackoffSeconds: z.number().int().min(1).max(MAX_KAFKA_BACKOFF_SECONDS).optional(),
+  /** Where a message goes after its last failed attempt; without one it is dropped (logged and counted). */
+  deadLetterTopic: z.string().min(1).max(249).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's settled and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const triggersSchema = z.strictObject({
   webhook: webhookTriggerSchema.optional(),
   schedules: z.array(scheduleTriggerSchema).max(20).optional(),
+  pubsub: z.array(pubsubTriggerSchema).max(20).optional(),
+  sqs: z.array(sqsTriggerSchema).max(20).optional(),
+  kafka: z.array(kafkaTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
@@ -451,7 +628,12 @@ export type Edge = z.output<typeof edgeSchema>
 export type BlockSettings = z.output<typeof blockSettingsSchema>
 export type RetrySettings = z.output<typeof retrySettingsSchema>
 export type WebhookTrigger = z.output<typeof webhookTriggerSchema>
+export type WebhookAuth = z.output<typeof webhookAuthSchema>
+export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
+export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
+export type SqsTrigger = z.output<typeof sqsTriggerSchema>
+export type KafkaTrigger = z.output<typeof kafkaTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>
 export type LoopRunner = z.output<typeof loopRunnerSchema>

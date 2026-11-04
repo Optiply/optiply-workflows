@@ -1,3 +1,4 @@
+import type { MergeConflict, MergeResult, Resolution } from '@ow/collab'
 import { type Db, type GitBranchDraft, gitBranchDrafts } from '@ow/db'
 import {
   decodeObject,
@@ -13,16 +14,19 @@ import { and, eq } from 'drizzle-orm'
 import type { Config } from '../../config'
 import { invalidInput } from '../../trpc/errors'
 import { commitToBranch, GitConflictError } from './commit'
+import { folderPathOf, gitFolderPath } from './folders'
 import {
   definitionSchema,
   draftColumn,
   draftOwner,
   draftTarget,
+  type GitMergeObject,
   type GitObjectRow,
   kindDefinitionHash,
   kindDiagnostics,
   liveOrDraft,
   loadGitObject,
+  mergeKindObject,
 } from './kinds'
 import {
   ensureBaseBranch,
@@ -53,6 +57,7 @@ export async function branchDraftView(draft: GitBranchDraft) {
     branch: draft.branch,
     name: draft.name,
     description: draft.description,
+    folder: draft.folder,
     definition: draft.definition,
     revision: draft.revision,
     baseCommit: draft.baseCommit,
@@ -65,7 +70,7 @@ export async function branchDraftView(draft: GitBranchDraft) {
 }
 
 /** The object's directory at a commit: its files (inside the directory) and, when there are any, what they decode to. */
-async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slug: string) {
+export async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slug: string) {
   const dir = objectDir(kind, slug)
   const raw = await repo.readFiles(commit, [`${dir}/`])
   const files: Files = Object.fromEntries(
@@ -76,7 +81,7 @@ async function readObjectAt(repo: GitRepo, commit: string, kind: ObjectKind, slu
   return { dir, files, decoded }
 }
 
-function problemsError(problems: Problem[]): TRPCError {
+export function problemsError(problems: Problem[]): TRPCError {
   const more = problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''
   return new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -126,11 +131,12 @@ export async function openBranchDraft(
   } catch (err) {
     throw gitTrpcError(err)
   }
-  let value: { name: string; description: string | null; definition: unknown }
+  let value: GitMergeObject
   if (!read.decoded) {
     value = {
       name: object.name,
       description: object.description,
+      folder: await gitFolderPath(db, object.folderId),
       definition: await liveOrDraft(db, kind, object),
     }
   } else if (!read.decoded.ok) {
@@ -146,8 +152,12 @@ export async function openBranchDraft(
       definition: value.definition as GitBranchDraft['definition'],
       name: value.name,
       description: value.description,
+      // A file from before M22 names no folder: the draft starts from where the object is.
+      folder: value.folder !== undefined ? value.folder : await gitFolderPath(db, object.folderId),
       baseCommit: base,
       branchExists,
+      // The merge base until the draft's base commit has files for it (M20).
+      baseValue: read.decoded ? null : value,
       createdBy: user.id,
       updatedBy: user.id,
     })
@@ -172,6 +182,8 @@ export async function saveBranchDraft(
     definition: unknown
     name?: string
     description?: string | null
+    /** A folder path (`Finance/Reports`); null for the top level. */
+    folder?: string | null
   },
 ): Promise<GitBranchDraft> {
   const { kind } = draftTarget(opts.draft)
@@ -183,6 +195,7 @@ export async function saveBranchDraft(
       definition: parsed.data as GitBranchDraft['definition'],
       ...(opts.name !== undefined ? { name: opts.name } : {}),
       ...(opts.description !== undefined ? { description: opts.description } : {}),
+      ...(opts.folder !== undefined ? { folder: opts.folder || null } : {}),
       revision: opts.revision + 1,
       updatedBy: user.id,
     })
@@ -207,7 +220,9 @@ export interface DraftFileChange {
 /**
  * What committing the draft would change on the branch: its files against the branch's tip (or the deploy branch,
  * for a branch not made yet). `behind`: the branch moved since the draft's base; `conflict`: the object's files
- * changed there too, so a commit would be refused until the draft is updated from the branch.
+ * changed there too, so a commit would be refused until the draft is updated from the branch; `merge`: whether that
+ * update would merge cleanly or how many conflicts it would leave (null when it can't tell); `mainAhead`: the deploy
+ * branch changed the object since the branch left it (Update from main brings it in).
  */
 export async function branchDraftChanges(
   db: Db,
@@ -215,14 +230,17 @@ export async function branchDraftChanges(
   target: DraftObject,
   draft: GitBranchDraft,
 ) {
-  const { repo } = await requireGitRepo(db, config)
+  const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   try {
     const tip = await repo.fetchBranch(draft.branch)
+    const main = await repo.fetchBranch(deployBranch)
     // A new process's cache (a restart, another replica) may not have the base yet.
     const haveBase = await repo.ensureCommit(draft.baseCommit)
     if (!tip && !haveBase) throw lostBase()
     const against = tip ?? draft.baseCommit
-    const { dir, files: now } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
+    const { dir, files: now } = encodeObjectDir(
+      repoObject(target.kind, target.object.slug, objectValue(draft)),
+    )
     const { files: there } = await readObjectAt(repo, against, target.kind, target.object.slug)
     const paths = [...new Set([...Object.keys(now), ...Object.keys(there)])].sort()
     const clip = (text: string | undefined) =>
@@ -245,9 +263,76 @@ export async function branchDraftChanges(
       behind && haveBase
         ? (await repo.entryAt(tip!, dir)) !== (await repo.entryAt(draft.baseCommit, dir))
         : behind
-    return { tip, behind, conflict, files }
+    // Both only change with the commits (and the draft's revision): cached, as every open editor asks every 30 s.
+    const merge =
+      conflict && haveBase
+        ? await cached(`outlook:${draft.id}:${draft.revision}:${draft.baseCommit}:${tip}`, () =>
+            updateOutlook(db, repo, target, draft, tip!),
+          )
+        : null
+    const fromMain =
+      main !== null &&
+      main !== tip &&
+      (await cached(`main:${main}:${tip ?? draft.baseCommit}:${dir}`, () =>
+        mainAhead(repo, main, draft, tip, dir),
+      ))
+    return { tip, behind, conflict, merge, mainAhead: fromMain, files }
   } catch (err) {
     throw gitTrpcError(err)
+  }
+}
+
+/** Results that depend only on commits (and a draft's revision), by key; the oldest go past `CACHE_SIZE`. */
+const outlooks = new Map<string, unknown>()
+const CACHE_SIZE = 500
+
+async function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
+  if (outlooks.has(key)) return outlooks.get(key) as T
+  const value = await compute()
+  outlooks.set(key, value)
+  if (outlooks.size > CACHE_SIZE) outlooks.delete(outlooks.keys().next().value!)
+  return value
+}
+
+/**
+ * Whether the deploy branch changed the object since the draft's branch left it (the Git bar offers Update from
+ * main): for a branch, since their merge base; for a branch not made yet, since the draft's base.
+ */
+async function mainAhead(
+  repo: GitRepo,
+  main: string,
+  draft: GitBranchDraft,
+  tip: string | null,
+  dir: string,
+): Promise<boolean> {
+  const from = tip ?? draft.baseCommit
+  if (!(await repo.ensureCommit(from))) return false
+  if (await repo.isAncestor(main, from)) return false
+  const base = tip ? await repo.mergeBase(tip, main) : from
+  if (!base) return false
+  return (await repo.entryAt(main, dir)) !== (await repo.entryAt(base, dir))
+}
+
+/**
+ * What updating the draft from the branch would do now: merge cleanly (`conflicts: 0`) or leave conflicts to
+ * resolve. Null where it can't merge (the branch's files have problems, or no longer hold the object).
+ */
+async function updateOutlook(
+  db: Db,
+  repo: GitRepo,
+  target: DraftObject,
+  draft: GitBranchDraft,
+  tip: string,
+): Promise<{ conflicts: number } | null> {
+  const theirs = await readObjectAt(repo, tip, target.kind, target.object.slug)
+  if (!theirs.decoded?.ok) return null
+  try {
+    const merged = await mergeIntoDraft(db, repo, target, draft, theirs.decoded.value.value, undefined)
+    return { conflicts: merged.conflicts.length }
+  } catch (err) {
+    // The base's files have problems: updating says so.
+    if (err instanceof TRPCError) return null
+    throw err
   }
 }
 
@@ -259,74 +344,189 @@ const lostBase = () =>
       'The commit this draft started from is no longer in the repo (was the branch rewritten?): update it from the branch and discard its changes',
   })
 
-/** Whether the draft holds changes its base commit doesn't have (anything a commit would write). */
-async function hasUncommittedChanges(
-  repo: GitRepo,
-  target: DraftObject,
-  draft: GitBranchDraft,
-): Promise<boolean> {
-  const { files: now } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
-  const { files: there } = await readObjectAt(repo, draft.baseCommit, target.kind, target.object.slug)
-  const paths = new Set([...Object.keys(now), ...Object.keys(there)])
-  return [...paths].some((path) => now[path] !== there[path])
-}
+/** What updating a draft from its branch did: merged and saved it, or found conflicts for the person to resolve. */
+export type BranchDraftUpdate =
+  | { status: 'updated'; draft: GitBranchDraft }
+  | { status: 'conflicts'; tip: string; conflicts: MergeConflict[] }
+
+/** How often a merge is tried again when the draft was saved while merging (people typing in it). */
+const MERGE_ATTEMPTS = 3
 
 /**
- * Loads the branch's current files into the draft (after someone else committed there, or to resolve a conflict).
- * Refused while the draft has changes not committed, unless `discardChanges`.
+ * Brings the branch's current files into the draft (after someone else committed there): a three-way merge of the
+ * draft's uncommitted changes and the branch's since the draft's base (architecture §2.23). Conflicts come back
+ * without saving anything; called again with `resolutions` (by conflict id), it merges again from the draft as it is
+ * then and saves only when no conflict is left. `discardChanges` drops what isn't committed instead.
  */
 export async function updateBranchDraftFromBranch(
   db: Db,
   config: GitConfig,
   user: User,
-  opts: { target: DraftObject; draft: GitBranchDraft; discardChanges: boolean },
-): Promise<GitBranchDraft> {
-  const { target, draft } = opts
+  opts: {
+    target: DraftObject
+    draft: GitBranchDraft
+    discardChanges: boolean
+    resolutions?: Readonly<Record<string, Resolution>>
+  },
+): Promise<BranchDraftUpdate> {
   const { repo } = await requireGitRepo(db, config)
   let tip: string | null
+  try {
+    tip = await repo.fetchBranch(opts.draft.branch)
+  } catch (err) {
+    throw gitTrpcError(err)
+  }
+  if (!tip)
+    throw new TRPCError({ code: 'NOT_FOUND', message: `The repo has no branch ${opts.draft.branch} yet` })
+  return updateDraftTo(db, repo, user, { ...opts, tip, branchExists: true })
+}
+
+/**
+ * Merges the object at `tip` into the draft (from the draft's base) and makes `tip` its base: the branch's tip, or
+ * for a branch not made yet, the deploy branch's (Update from main).
+ */
+export async function updateDraftTo(
+  db: Db,
+  repo: GitRepo,
+  user: User,
+  opts: {
+    target: DraftObject
+    draft: GitBranchDraft
+    tip: string
+    branchExists: boolean
+    discardChanges: boolean
+    resolutions?: Readonly<Record<string, Resolution>>
+  },
+): Promise<BranchDraftUpdate> {
+  const { target, tip } = opts
+  const { kind, object } = target
+  let theirs: Awaited<ReturnType<typeof readObjectAt>>
+  try {
+    theirs = await readObjectAt(repo, tip, kind, object.slug)
+  } catch (err) {
+    throw gitTrpcError(err)
+  }
+  if (theirs.decoded && !theirs.decoded.ok) throw problemsError(theirs.decoded.problems)
+
+  let draft = opts.draft
+  for (let attempt = 1; ; attempt++) {
+    let value: GitMergeObject
+    if (opts.discardChanges || !theirs.decoded) {
+      // Dropping the draft's changes, or the branch has no files for it (deleted there): nothing to merge.
+      value = theirs.decoded?.ok ? theirs.decoded.value.value : objectValue(draft)
+    } else {
+      const merged = await mergeIntoDraft(
+        db,
+        repo,
+        target,
+        draft,
+        theirs.decoded.value.value,
+        opts.resolutions,
+      )
+      if (merged.conflicts.length > 0) return { status: 'conflicts', tip, conflicts: merged.conflicts }
+      value = merged.merged
+    }
+    const [updated] = await db
+      .update(gitBranchDrafts)
+      .set({
+        definition: value.definition as GitBranchDraft['definition'],
+        name: value.name,
+        description: value.description,
+        folder: value.folder !== undefined ? value.folder : draft.folder,
+        baseCommit: tip,
+        branchExists: opts.branchExists,
+        // From here the base commit has the object's files (when the tip has them) and is the merge base.
+        ...(theirs.decoded ? { baseValue: null } : {}),
+        revision: draft.revision + 1,
+        updatedBy: user.id,
+      })
+      .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.revision, draft.revision)))
+      .returning()
+    if (updated) return { status: 'updated', draft: updated }
+    // Dropping changes the person hasn't seen isn't theirs to do.
+    if (opts.discardChanges || !theirs.decoded) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: 'The draft was saved while updating it from the branch: reload, then update again',
+      })
+    }
+    // Saved meanwhile (someone typing): merge again from what's there now.
+    const now = await reloadDraft(db, draft)
+    if (attempt >= MERGE_ATTEMPTS) {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: 'The draft kept changing while updating it from the branch: try again in a moment',
+      })
+    }
+    draft = now
+  }
+}
+
+/** The draft as it is now (saves may have come in meanwhile). */
+export async function reloadDraft(db: Db, draft: GitBranchDraft): Promise<GitBranchDraft> {
+  const [now] = await db.select().from(gitBranchDrafts).where(eq(gitBranchDrafts.id, draft.id))
+  if (!now) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft not found' })
+  return now
+}
+
+/** A draft's object (name, description, folder, definition). */
+const objectValue = (draft: GitBranchDraft): GitMergeObject => ({
+  name: draft.name,
+  description: draft.description,
+  folder: draft.folder,
+  definition: draft.definition,
+})
+
+/**
+ * The draft merged with `theirs` (the branch's version), from the draft's base commit. Where the base has no files
+ * for the object (it was created protected, or its protect pull request wasn't merged when the draft was opened),
+ * the base is what the draft started from on the instance (kept in `baseValue` when it was opened).
+ */
+async function mergeIntoDraft(
+  db: Db,
+  repo: GitRepo,
+  target: DraftObject,
+  draft: GitBranchDraft,
+  theirs: GitMergeObject,
+  resolutions: Readonly<Record<string, Resolution>> | undefined,
+): Promise<MergeResult<GitMergeObject>> {
+  const { kind, object } = target
   let read: Awaited<ReturnType<typeof readObjectAt>>
   try {
-    tip = await repo.fetchBranch(draft.branch)
-    if (!tip)
-      throw new TRPCError({ code: 'NOT_FOUND', message: `The repo has no branch ${draft.branch} yet` })
-    if (!opts.discardChanges) {
-      // Without its base (the branch was rewritten) nobody can tell what's uncommitted: ask, as with changes.
-      if (!(await repo.ensureCommit(draft.baseCommit))) throw lostBase()
-      if (await hasUncommittedChanges(repo, target, draft)) {
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: 'The draft has changes that aren’t committed: commit them, or update and discard them',
-        })
-      }
-    }
-    read = await readObjectAt(repo, tip, target.kind, target.object.slug)
+    // Without its base (the branch was rewritten) nobody can tell what's uncommitted: ask, as with changes.
+    if (!(await repo.ensureCommit(draft.baseCommit))) throw lostBase()
+    read = await readObjectAt(repo, draft.baseCommit, kind, object.slug)
   } catch (err) {
     throw gitTrpcError(err)
   }
   if (read.decoded && !read.decoded.ok) throw problemsError(read.decoded.problems)
-  const value = read.decoded?.ok
+  // Where the base commit has no files for the object, what the draft started from (drafts opened before M20
+  // didn't keep it: the object's live release or draft now, the best guess left).
+  const base: GitMergeObject = read.decoded?.ok
     ? read.decoded.value.value
-    : { name: draft.name, description: draft.description, definition: draft.definition }
-  const [updated] = await db
-    .update(gitBranchDrafts)
-    .set({
-      definition: value.definition as GitBranchDraft['definition'],
-      name: value.name,
-      description: value.description,
-      baseCommit: tip,
-      branchExists: true,
-      revision: draft.revision + 1,
-      updatedBy: user.id,
-    })
-    .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.revision, draft.revision)))
-    .returning()
-  if (!updated) {
-    throw new TRPCError({
-      code: 'CONFLICT',
-      message: 'The draft was saved while updating it from the branch: reload, then update again',
-    })
-  }
-  return updated
+    : (draft.baseValue ?? {
+        name: object.name,
+        description: object.description,
+        folder: await folderPathOf(db, object.folderId),
+        definition: await liveOrDraft(db, kind, object),
+      })
+  return mergeKindObject(
+    kind,
+    normalized(kind, object.slug, base),
+    normalized(kind, object.slug, objectValue(draft)),
+    theirs,
+    resolutions,
+  )
+}
+
+/**
+ * An object as reading its files gives it back, so the three sides of a merge compare alike (a draft may hold what
+ * the files leave out, such as an empty workflow layout).
+ */
+function normalized(kind: ObjectKind, slug: string, value: GitMergeObject): GitMergeObject {
+  const { files } = encodeObjectDir(repoObject(kind, slug, value))
+  const decoded = decodeObject({ kind, slug, files })
+  return decoded.ok ? decoded.value.value : value
 }
 
 /**
@@ -350,7 +550,7 @@ export async function commitBranchDraft(
   const { repo, branch: deployBranch } = await requireGitRepo(db, config)
   // A draft opened before the deploy branch was changed in Settings → Git could be on it now.
   requireNotDeployBranch(draft.branch, deployBranch)
-  const { dir, files } = encodeObjectDir(repoObject(target.kind, target.object.slug, draft))
+  const { dir, files } = encodeObjectDir(repoObject(target.kind, target.object.slug, objectValue(draft)))
   let result: { commit: string; changed: boolean }
   try {
     const main = await ensureBaseBranch(repo, deployBranch, user)
@@ -375,6 +575,7 @@ export async function commitBranchDraft(
     .set({
       baseCommit: result.commit,
       branchExists: true,
+      baseValue: null,
       ...(result.changed ? { committedCommit: result.commit } : {}),
     })
     .where(and(eq(gitBranchDrafts.id, draft.id), eq(gitBranchDrafts.baseCommit, draft.baseCommit)))

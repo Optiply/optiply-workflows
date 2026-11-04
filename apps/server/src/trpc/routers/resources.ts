@@ -1,4 +1,14 @@
-import { ConnectorError, connectors, getConnector, runQuery, testResource } from '@ow/connectors'
+import {
+  ConnectorError,
+  connectors,
+  getConnector,
+  type KafkaConfig,
+  type KafkaSecrets,
+  kafkaSettingsProblem,
+  runQuery,
+  SshSettingsError,
+  testResource,
+} from '@ow/connectors'
 import {
   type Db,
   environments,
@@ -8,10 +18,14 @@ import {
   resourceConfigs,
   resources,
 } from '@ow/db'
+import { canonicalJson } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
+import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
+import { requireSettingsUnprotected } from '../../services/git/settings-objects'
+import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
 import {
   type AccountKind,
   connectTarget,
@@ -29,11 +43,18 @@ import {
 import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
+  applyOverrides,
   applySecretPatch,
   decryptConfigSecrets,
+  effectiveConfig,
+  iapKeyInfo,
+  isOverridePath,
   maskSecrets,
   patchedSecretFields,
   publicConfigVars,
+  serverIdentityTarget,
+  settleSsh,
+  sshKeyInfo,
   toResolved,
 } from '../../services/resources'
 import { encryptForRow } from '../../services/secrets'
@@ -52,6 +73,66 @@ const Name = z.string().trim().min(1).max(120)
 const Description = z.string().trim().max(1000).nullish()
 /** Write-only secret patch: string sets, null clears, absent keeps (see applySecretPatch). */
 const SecretPatch = z.record(z.string(), z.unknown()).optional()
+
+/** Runs `settle`, turning wrong SSH settings into a bad request that says what's wrong (never a secret). */
+function sshSettled<T>(settle: () => T): T {
+  try {
+    return settle()
+  } catch (err) {
+    if (err instanceof SshSettingsError) throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+    throw err
+  }
+}
+
+/**
+ * Why a queue resource's settings couldn't sign in, checked on save (M19, M26): Pub/Sub's key or project, SQS's AWS
+ * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity). Null when fine, or for other types.
+ */
+function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
+  if (type === 'pubsub') return pubsubSettingsProblem(config, secrets)
+  if (type === 'sqs') return awsSettingsProblem(config, secrets)
+  if (type === 'kafka') {
+    const c = (config ?? {}) as KafkaConfig
+    return (
+      kafkaSettingsProblem(c, secrets as KafkaSecrets) ??
+      (c.auth === 'aws-msk-iam' ? awsSettingsProblem(config, secrets) : null)
+    )
+  }
+  return null
+}
+
+/**
+ * Settings that use the server's own Google identity (M18, M19) or AWS credentials (M26) somewhere other than the
+ * stored settings' need an admin, as does an SQS endpoint: editors may keep such settings (and change the rest), not
+ * choose or move them. Returns the new target.
+ */
+function requireAdminForServerIdentity(
+  user: { isAdmin: boolean },
+  type: string,
+  stored: unknown,
+  next: unknown,
+): string | null {
+  // An SQS resource's own endpoint (M26) receives signed requests and the queues' messages: admins choose it.
+  const endpoint = (c: unknown) => (c as { endpoint?: unknown } | null)?.endpoint ?? null
+  if (type === 'sqs' && endpoint(next) && endpoint(next) !== endpoint(stored) && !user.isAdmin)
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Only admins can point an SQS resource at another endpoint',
+    })
+  const target = serverIdentityTarget(next, type)
+  if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message:
+        type === 'pubsub'
+          ? "Only admins can use this server's own Google identity for a Pub/Sub project"
+          : target.startsWith('aws:')
+            ? "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them"
+            : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+    })
+  }
+  return target
+}
 
 /** Each `{{ }}` in the playground gets this long in the sandbox. */
 const EXPRESSION_TIMEOUT_MS = 5_000
@@ -159,6 +240,7 @@ export const resourcesRouter = router({
           description: r.description,
           folderId: r.folderId,
           systemKind: r.systemKind,
+          gitProtected: r.gitProtected,
           environments: envIds.map((e) => ({
             environmentId: e,
             level: levels[e] ?? null,
@@ -185,18 +267,39 @@ export const resourcesRouter = router({
         const level = access.level(resource, environmentId)
         if (!level) return []
         const row = byEnv.get(environmentId)
+        const secrets = row ? decryptConfigSecrets(ctx.config.keyring, row) : null
         return [
           {
             environmentId,
             level,
             config: row ? row.config : null,
-            secrets: row ? maskSecrets(decryptConfigSecrets(ctx.config.keyring, row)) : null,
+            /** This instance's own values over `config` (M22), by path. */
+            overrides: row ? row.overrides : null,
+            /** Configured from Git without the secrets its connector needs yet (M22): an admin fills them in. */
+            secretsSet: !!row?.secrets,
+            needsSecrets:
+              !!row && !row.secrets && !connectorFor(resource.type).secretsSchema.safeParse({}).success,
+            secrets: secrets ? maskSecrets(secrets) : null,
+            sshKeys: secrets ? sshKeyInfo(secrets) : null,
+            iapKeys: secrets ? iapKeyInfo(secrets) : null,
             updatedAt: row?.updatedAt ?? null,
           },
         ]
       }),
     }
   }),
+
+  /**
+   * Whether SSH tunnels may open Google Cloud IAP with this server's own identity (M18, GOOGLE_SERVER_IDENTITY), whose
+   * it is, and whether this user may choose it (admins only).
+   */
+  serverIdentity: authedProcedure.query(({ ctx }) => serverIdentityView(ctx.user)),
+
+  /**
+   * Whether SQS resources and Kafka's MSK IAM may use this server's own AWS credentials (M26, AWS_SERVER_IDENTITY),
+   * whose they are, and whether this user may choose them (admins only).
+   */
+  awsIdentity: authedProcedure.query(({ ctx }) => awsIdentityView(ctx.user)),
 
   create: authedProcedure
     .input(
@@ -245,6 +348,7 @@ export const resourcesRouter = router({
       const { access, resource, envIds } = await visibleResource(ctx, input.id)
       requireLevel(access.levelEverywhere(resource, envIds), 'edit', 'this resource in every environment')
       assertNotBuiltIn(resource)
+      requireSettingsUnprotected(resource, 'resource', 'its name, description and folder change')
       await ctx.db
         .update(resources)
         .set({ name: input.name, description: input.description ?? null, folderId: input.folderId ?? null })
@@ -261,6 +365,12 @@ export const resourcesRouter = router({
     const { access, resource, envIds } = await visibleResource(ctx, input.id)
     requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
     assertNotBuiltIn(resource)
+    if (resource.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This resource is kept in Git: unprotect it before deleting it',
+      })
+    }
     const configIds = await ctx.db.transaction(async (tx) => {
       const rows = await tx
         .select({ id: resourceConfigs.id })
@@ -298,10 +408,37 @@ export const resourcesRouter = router({
       if (!config.success) throw invalidInput('configuration', config.error.issues)
 
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
-      const secrets = applySecretPatch(
-        existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
-        input.secrets,
+      // A protected resource's settings are Git's (M22): here only its secrets change (and overrides, apart).
+      if (resource.gitProtected) {
+        const stored = existing && connector.configSchema.safeParse(existing.config)
+        if (
+          !stored ||
+          canonicalJson(stored.success ? stored.data : existing.config) !== canonicalJson(config.data)
+        ) {
+          requireSettingsUnprotected(
+            resource,
+            'resource',
+            existing
+              ? 'its settings change (secrets and overrides here)'
+              : 'it gets settings in a new environment',
+          )
+        }
+      }
+      const settled = sshSettled(() =>
+        settleSsh(
+          config.data as Record<string, unknown>,
+          applySecretPatch(existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {}, input.secrets),
+        ),
       )
+      const iapTarget = requireAdminForServerIdentity(
+        ctx.user,
+        resource.type,
+        existing?.config,
+        settled.config,
+      )
+      const secrets = settled.secrets
+      const problem = settingsProblem(resource.type, settled.config, secrets)
+      if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {
         throw invalidInput('credentials', parsedSecrets.error.issues, { pathsOnly: true })
@@ -309,7 +446,7 @@ export const resourcesRouter = router({
 
       const row = { id: existing?.id ?? uuidv7(), environmentId: input.environmentId }
       const values = {
-        config: config.data as Record<string, unknown>,
+        config: resource.gitProtected ? existing!.config : settled.config,
         secrets: Object.keys(secrets).length
           ? encryptForRow(ctx.config.keyring, 'resource_configs', row, secrets)
           : null,
@@ -317,8 +454,9 @@ export const resourcesRouter = router({
         updatedAt: new Date(),
       }
       // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
-      const before = existing ? authFingerprint(existing.config) : null
-      const consentChanged = before !== null && before !== authFingerprint(values.config)
+      const before = existing ? authFingerprint(effectiveConfig(existing)) : null
+      const consentChanged =
+        before !== null && before !== authFingerprint(applyOverrides(values.config, existing!.overrides))
       let disconnectedAccounts = 0
       if (existing) {
         disconnectedAccounts = await ctx.db.transaction(async (tx) => {
@@ -337,10 +475,101 @@ export const resourcesRouter = router({
         metadata: {
           environment: envSlug,
           changedCredentials: patchedSecretFields(input.secrets),
+          ...(iapTarget &&
+            iapTarget !== serverIdentityTarget(existing?.config, resource.type) && {
+              serverIdentityTarget: iapTarget,
+            }),
           ...(disconnectedAccounts && { disconnectedAccounts }),
         },
       })
-      return { config: values.config, secrets: maskSecrets(secrets) }
+      return {
+        config: values.config,
+        secrets: maskSecrets(secrets),
+        sshKeys: sshKeyInfo(secrets),
+        iapKeys: iapKeyInfo(secrets),
+      }
+    }),
+
+  /**
+   * This instance's own values for single non-secret fields of a protected resource (M22), by path (`host`,
+   * `ssh.host`): applied over Git's settings wherever they're read, never touched by a deploy. Replaces the
+   * environment's overrides; `{}` clears them.
+   */
+  setOverrides: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        overrides: z
+          .record(
+            z.string().refine(isOverridePath, "Expected a setting's path, such as host or ssh.host"),
+            z.unknown(),
+          )
+          .refine((o) => Object.keys(o).length <= 50, 'At most 50 overrides'),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      assertNotBuiltIn(resource)
+      if (!resource.gitProtected) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: "Overrides are for resources kept in Git: change this one's settings instead",
+        })
+      }
+      const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!existing) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "This resource isn't configured in this environment: its settings come from Git",
+        })
+      }
+      const connector = connectorFor(resource.type)
+      const next = connector.configSchema.safeParse(applyOverrides(existing.config, input.overrides))
+      if (!next.success) throw invalidInput('configuration', next.error.issues)
+      // A path the connector doesn't keep would be dropped silently: say so instead.
+      for (const [path, value] of Object.entries(input.overrides)) {
+        const kept = path
+          .split('.')
+          .reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], next.data)
+        if (canonicalJson(kept ?? null) !== canonicalJson(value ?? null)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: `"${path}" isn't a setting of this resource` })
+        }
+      }
+      const secrets = decryptConfigSecrets(ctx.config.keyring, existing)
+      sshSettled(() => settleSsh(next.data as Record<string, unknown>, secrets))
+      const iapTarget = requireAdminForServerIdentity(
+        ctx.user,
+        resource.type,
+        effectiveConfig(existing),
+        next.data,
+      )
+      const consentChanged = authFingerprint(effectiveConfig(existing)) !== authFingerprint(next.data)
+      const disconnectedAccounts = await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(resourceConfigs)
+          .set({ overrides: input.overrides, updatedBy: ctx.user.id, updatedAt: new Date() })
+          .where(eq(resourceConfigs.id, existing.id))
+        return consentChanged ? deleteTokens(tx, existing.id) : 0
+      })
+      await ctx.services.pool.invalidate(existing.id)
+      await ctx.audit({
+        action: 'resource.overrides_saved',
+        objectType: 'resource',
+        objectId: resource.id,
+        environmentId: input.environmentId,
+        metadata: {
+          environment: await environmentSlug(ctx.db, input.environmentId),
+          paths: Object.keys(input.overrides).sort(),
+          ...(iapTarget &&
+            iapTarget !== serverIdentityTarget(effectiveConfig(existing), resource.type) && {
+              serverIdentityTarget: iapTarget,
+            }),
+          ...(disconnectedAccounts && { disconnectedAccounts }),
+        },
+      })
+      return { overrides: input.overrides, config: next.data as Record<string, unknown> }
     }),
 
   deleteConfig: authedProcedure
@@ -349,6 +578,7 @@ export const resourcesRouter = router({
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
       assertNotBuiltIn(resource)
+      requireSettingsUnprotected(resource, 'resource', 'its settings in an environment are removed')
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       if (!existing) return
       await ctx.db.delete(resourceConfigs).where(eq(resourceConfigs.id, existing.id))
@@ -382,12 +612,32 @@ export const resourcesRouter = router({
         resourceId: resource.id,
         environmentId: input.environmentId,
         version: 'test',
-        config: input.config ?? existing?.config ?? {},
+        config:
+          input.config === undefined
+            ? existing
+              ? effectiveConfig(existing)
+              : {}
+            : // A protected resource runs here with this instance's overrides on Git's settings (M22): tested so too.
+              resource.gitProtected && existing && typeof input.config === 'object' && input.config !== null
+              ? applyOverrides(input.config as Record<string, unknown>, existing.overrides)
+              : input.config,
         secrets: applySecretPatch(
           existing ? decryptConfigSecrets(ctx.config.keyring, existing) : {},
           input.secrets,
         ),
       }
+      // The SSH part as it would be saved; a key that can't be used fails the test with why (M17).
+      const parsedConfig = connector.configSchema.safeParse(tested.config)
+      if (parsedConfig.success) {
+        try {
+          Object.assign(tested, settleSsh(parsedConfig.data as Record<string, unknown>, tested.secrets))
+        } catch (err) {
+          if (!(err instanceof SshSettingsError)) throw err
+          return { ok: false as const, error: errorView(new ConnectorError('invalid_config', err.message)) }
+        }
+      }
+      // Testing opens the tunnel too: the server's identity goes only where an admin pointed it (M18).
+      requireAdminForServerIdentity(ctx.user, resource.type, existing?.config, tested.config)
       // Connected accounts belong to the saved settings: changed consent settings need a reconnect first. A custom
       // auth flow signs in afresh for the test, without storing what it gets (`store: false`).
       const custom = (tested.config as { auth?: { type?: unknown } }).auth?.type === 'custom'
@@ -401,9 +651,11 @@ export const resourcesRouter = router({
             )
           : undefined
       const result = await testResource(connector, tested, credentials ? { credentials } : {})
+      // Each SSH hop's own result and host key (M17): the browser offers Trust for an untrusted or changed key.
+      const ssh = result.ssh ?? null
       return result.ok
-        ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs }
-        : { ok: false as const, error: errorView(result.error) }
+        ? { ok: true as const, message: result.message ?? null, durationMs: result.durationMs, ssh }
+        : { ok: false as const, error: errorView(result.error), ssh }
     }),
 
   /**
@@ -426,7 +678,7 @@ export const resourcesRouter = router({
       const level = access.level(resource, environmentId)
       if (!level) continue
       const row = await getConfigRow(ctx.db, resource.id, environmentId)
-      const auth = row && authorizationCode(row.config)
+      const auth = row && authorizationCode(effectiveConfig(row))
       if (!row || !auth) {
         environments.push({
           environmentId,
@@ -438,7 +690,7 @@ export const resourcesRouter = router({
         continue
       }
       const shared = auth.tokens === 'shared'
-      const consent = authFingerprint(row.config)!
+      const consent = authFingerprint(effectiveConfig(row))!
       let connectedPeople: number | null = null
       if (!shared && atLeast(level, 'edit')) {
         const [counted] = await ctx.db

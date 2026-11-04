@@ -10,9 +10,11 @@ import {
 } from '@tanstack/react-router'
 import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-react-query'
 import { z } from 'zod'
+import { ConfirmHost } from './components/confirm'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
+import { ComponentLibrariesPage } from './pages/component-libraries/list'
 import { InboxPage } from './pages/inbox/list'
 import { TaskPage } from './pages/inbox/task'
 import { LibraryPage } from './pages/library/list'
@@ -37,7 +39,17 @@ export interface RouterContext {
   trpc: TRPCOptionsProxy<AppRouter>
 }
 
-const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Outlet })
+/** Every page: what it shows, and the confirmation dialog anything on it may ask (M24). */
+function Root() {
+  return (
+    <>
+      <Outlet />
+      <ConfirmHost />
+    </>
+  )
+}
+
+const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Root })
 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -66,9 +78,12 @@ const indexRoute = createRoute({
   },
 })
 
+/** The lists (workflows, resources, apps, library queries, modules) open one folder at a time: `folder` is its id. */
+const folderSearch = z.object({ folder: z.string().uuid().optional() })
 const workflowsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows',
+  validateSearch: folderSearch,
   component: WorkflowsPage,
 })
 /** The editor (canvas, validator, later Monaco) is its own chunk, loaded when a workflow is opened. */
@@ -83,6 +98,7 @@ const workflowEditorRoute = createRoute({
 const resourcesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/resources',
+  validateSearch: folderSearch,
   component: ResourcesPage,
 })
 const resourceDetailRoute = createRoute({
@@ -101,6 +117,7 @@ const databaseRoute = createRoute({
 const appsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps',
+  validateSearch: folderSearch,
   component: AppsPage,
 })
 /**
@@ -129,6 +146,7 @@ const appEditorRoute = createRoute({
 const libraryRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/library',
+  validateSearch: folderSearch,
   component: LibraryPage,
 })
 const libraryEditorRoute = createRoute({
@@ -142,6 +160,7 @@ const libraryEditorRoute = createRoute({
 const modulesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/modules',
+  validateSearch: folderSearch,
   component: ModulesPage,
 })
 const moduleEditorRoute = createRoute({
@@ -151,6 +170,23 @@ const moduleEditorRoute = createRoute({
   /** `branch` edits a protected module's draft on that Git branch (M14). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
+})
+/** Component libraries (M25): the list, and each one's editor in its own chunk (Monaco loads with it). */
+const componentLibrariesRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/component-libraries',
+  validateSearch: folderSearch,
+  component: ComponentLibrariesPage,
+})
+const componentLibraryEditorRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/component-libraries/$slug',
+  /** `branch` edits a protected library's draft on that Git branch. */
+  validateSearch: z.object({ branch: z.string().optional() }),
+  component: lazyRouteComponent(
+    () => import('./pages/component-libraries/editor'),
+    'ComponentLibraryEditorPage',
+  ),
 })
 const runsRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -229,6 +265,8 @@ const routeTree = rootRoute.addChildren([
     libraryEditorRoute,
     modulesRoute,
     moduleEditorRoute,
+    componentLibrariesRoute,
+    componentLibraryEditorRoute,
     runsRoute,
     inboxRoute,
     taskRoute,

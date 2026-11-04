@@ -1,13 +1,31 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { executorAvailable, startTestExecutor } from '@ow/code-executor/testing'
+import {
+  executorAvailable,
+  startTestBuilder,
+  startTestExecutor,
+  startTestIndex,
+  testEnvsVolume,
+} from '@ow/code-executor/testing'
+import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
+import {
+  kafkaAvailable,
+  startFakeAws,
+  startFakePubSub,
+  startTestIapServer,
+  startTestKafka,
+  type TestKafka,
+} from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
+import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { fakeGitHub } from '../../server/test/fake-github'
+import { startTestRegistry } from '../../server/test/npm-registry'
 import { E2E_PORT } from '../playwright.config'
 
 const serverDir = fileURLToPath(new URL('../../server', import.meta.url))
@@ -21,6 +39,8 @@ export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
 /** The token the fake GitHub takes (M11). */
 export const E2E_GITHUB_TOKEN = 'github_pat_e2e_not_secret'
+/** The VM the fake IAP endpoint reaches (at 127.0.0.1, on the port asked for: specs start the SSH server) (M18). */
+export const E2E_IAP_VM = { project: 'e2e-project', zone: 'europe-west1-b', instance: 'bastion' }
 
 /**
  * Starts what the editor needs, as in production: an embedded Postgres, the bundled server (API and worker in one
@@ -35,6 +55,8 @@ export default async function globalSetup() {
   }
 
   const pg = await startTestDatabase()
+  // For specs that point a resource of their own at this database (M17's SSH tunnel spec, through a test SSH server).
+  process.env.E2E_PG_URL = pg.url
   const seed = createDb(pg.url, { max: 1 })
   await seed.sql.unsafe(`
     create table customers (id int primary key, email text not null, plan text not null);
@@ -56,8 +78,212 @@ export default async function globalSetup() {
 
   // Python (M12): the code executor in a container, when Docker is there (CI must have it). Specs that need it read
   // E2E_PYTHON.
-  const executor = executorAvailable() ? await startTestExecutor() : null
+  // Workflows' packages (M23): a local package index, the builder and the executor sharing an envs volume, unless
+  // the executor is another one (PYTHON_EXECUTOR_TEST_URL). Specs that need them read E2E_PYTHON_PACKAGES.
+  const docker = executorAvailable()
+  const packages = docker && !process.env.PYTHON_EXECUTOR_TEST_URL
+  const index = packages
+    ? await startTestIndex([
+        {
+          name: 'owtest-a',
+          version: '1.0.0',
+          requires: ['owtest-b'],
+          files: { 'owtest_a/__init__.py': 'from owtest_b import VERSION as B\nNAME = "owtest-a"\n' },
+        },
+        { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
+      ])
+    : null
+  const volume = packages ? testEnvsVolume() : null
+  // The builder first: a new volume takes its /envs and their owner.
+  const builder =
+    index && volume ? await startTestBuilder({ indexUrl: index.url, envsVolume: volume.name }) : null
+  const executor = docker ? await startTestExecutor(volume ? { envsVolume: volume.name } : {}) : null
   if (executor) process.env.E2E_PYTHON = '1'
+  if (builder) process.env.E2E_PYTHON_PACKAGES = '1'
+
+  // Google Cloud IAP (M18): a fake Google issues tokens (for a service account key, and from its metadata server as
+  // this server's own identity) and a fake IAP endpoint takes them. Specs read the key from E2E_IAP_KEY.
+  const google = new FakeGoogle()
+  await google.start()
+  const iap = await startTestIapServer({
+    tokens: [],
+    accept: (token) => /^(sa|md)-\d+$/.test(token),
+    instances: { [`${E2E_IAP_VM.project}/${E2E_IAP_VM.zone}/${E2E_IAP_VM.instance}`]: '127.0.0.1' },
+  })
+  process.env.E2E_IAP_KEY = google.keyJson
+  // Specs steer the fake IAP from their own process: POST /drop cuts every WebSocket (sessions stay, as on a dropped
+  // network), POST /refuse-next?code=&reason= closes the next connect so; GET /stats counts connects and reconnects.
+  // Pub/Sub (M19): a fake in project `fake-project`, a topic per spec part with a subscription each (`<topic>-sub`):
+  // `flaky-sub` dead-letters to `flaky-dead` after 3 deliveries, `slow-sub` gives 2 s to ack. Specs publish and look
+  // through E2E_IAP_CONTROL's /pubsub routes.
+  const pubsub = await startFakePubSub({ project: 'fake-project' })
+  pubsub.createTopic('flaky-dead')
+  for (const topic of ['orders', 'refunds', 'm19', 'flaky', 'slow', 'busy', 'chain', 'paused']) {
+    pubsub.createTopic(topic)
+    pubsub.createSubscription(`${topic}-sub`, {
+      topic,
+      ...(topic === 'flaky' && {
+        deadLetterPolicy: { deadLetterTopic: 'flaky-dead', maxDeliveryAttempts: 3 },
+      }),
+      ...(topic === 'slow' && { ackDeadlineSeconds: 2 }),
+    })
+  }
+  // SQS (M26): a fake AWS (STS and SQS, signatures checked) with a queue per spec part: `m26-flaky` moves a message to
+  // `m26-dlq` after 2 receives, `m26-slow` hides one for 2 s, `m26-groups.fifo` deduplicates by content. Specs sign in
+  // with E2E_AWS_KEY_ID / E2E_AWS_SECRET (or assume E2E_AWS_ROLE with external id `optiply-e2e`), and send and look
+  // through E2E_IAP_CONTROL's /sqs routes. The server's own credentials are a fake user's, never the developer's.
+  const aws = await startFakeAws()
+  const awsUser = aws.addUser('e2e')
+  const awsServer = aws.addUser('server')
+  const awsRole = aws.addRole('m26-reader', { trusted: [awsUser.arn], externalId: 'optiply-e2e' })
+  aws.sqs.createQueue('m26-dlq')
+  for (const queue of ['orders', 'm26', 'm26-busy', 'm26-sent']) aws.sqs.createQueue(queue)
+  aws.sqs.createQueue('m26-slow', { visibilityTimeout: 2 })
+  aws.sqs.createQueue('m26-flaky', { redrive: { deadLetterQueue: 'm26-dlq', maxReceiveCount: 2 } })
+  aws.sqs.createQueue('m26-groups.fifo', { contentBasedDeduplication: true })
+  process.env.E2E_AWS_KEY_ID = awsUser.accessKeyId
+  process.env.E2E_AWS_SECRET = awsUser.secretAccessKey
+  process.env.E2E_AWS_ROLE = awsRole.arn
+  process.env.E2E_AWS_SERVER_ARN = awsServer.arn
+  process.env.E2E_AWS_USER_ARN = awsUser.arn
+
+  // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
+  // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
+  let kafka: TestKafka | undefined
+  if (kafkaAvailable()) {
+    kafka = await startTestKafka()
+    for (const topic of [
+      'kafka-ui',
+      'm26-keys',
+      'm26-retry',
+      'm26-retry-dlt',
+      'm26-takeover',
+      'm26-produced',
+    ])
+      await kafka.createTopic(topic)
+    process.env.E2E_KAFKA = kafka.plaintext
+    process.env.E2E_KAFKA_SCRAM = JSON.stringify({
+      broker: kafka.saslSsl,
+      ...kafka.users.scram256,
+      ca: kafka.ca,
+      clientCertificate: kafka.clientCertificate,
+      clientKey: kafka.clientKey,
+      mtls: kafka.mtls,
+    })
+  }
+  const kafkaPlain = () =>
+    kafkaClient({ brokers: [kafka!.plaintext], auth: 'none', tls: false, identity: 'key' }, {})
+
+  const iapControl = createServer((req, res) => {
+    control(req, res).catch((err: unknown) => {
+      if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' })
+      res.end(String(err))
+    })
+  })
+  async function control(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? '/', 'http://x')
+    const json = (body: unknown) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    const param = (name: string) => url.searchParams.get(name) ?? ''
+    if (url.pathname === '/pubsub/publish' && req.method === 'POST')
+      return json({
+        messageId: pubsub.publish(param('topic'), param('data'), JSON.parse(param('attributes') || '{}')),
+      })
+    if (url.pathname === '/pubsub/messages') return json(pubsub.messages(param('subscription')))
+    if (url.pathname === '/sqs/send' && req.method === 'POST')
+      return json({
+        messageId: aws.sqs.send(param('queue'), param('body'), {
+          attributes: JSON.parse(param('attributes') || '{}'),
+          ...(param('groupId') ? { groupId: param('groupId') } : {}),
+        }),
+      })
+    if (url.pathname === '/sqs/messages') return json(aws.sqs.messages(param('queue')))
+    if (url.pathname === '/kafka/produce' && req.method === 'POST') {
+      const client = kafkaPlain()
+      try {
+        await produceTo(
+          client,
+          param('topic'),
+          [
+            {
+              ...(param('key') ? { key: param('key') } : {}),
+              value: param('value'),
+              headers: JSON.parse(param('headers') || '{}'),
+            },
+          ],
+          AbortSignal.timeout(10_000),
+        )
+      } finally {
+        await client.close()
+      }
+      return json({})
+    }
+    if (url.pathname === '/kafka/read') {
+      // A topic from its beginning, by a group of its own: what was produced to it (dead letters).
+      const client = kafkaPlain()
+      const consumer = await kafkaConsumer(client, {
+        groupId: `e2e-reader-${randomBytes(4).toString('hex')}`,
+        topics: [param('topic')],
+        startAt: 'earliest',
+        onAssign() {},
+        onRevoke() {},
+      })
+      const got: { key: string | null; value: string | null; headers: Record<string, string> }[] = []
+      try {
+        const deadline = Date.now() + 10_000
+        while (got.length < Number(param('count') || 1) && Date.now() < deadline)
+          for (const m of await consumer.consume(10, 500))
+            got.push({ key: m.key, value: m.value?.toString() ?? null, headers: m.headers })
+      } finally {
+        await consumer.close()
+        await client.close()
+      }
+      return json(got)
+    }
+    if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
+    if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
+      pubsub.redeliver(param('subscription'), param('messageId'))
+      return json({})
+    }
+    if (req.method === 'POST' && url.pathname === '/drop') iap.dropAll()
+    else if (req.method === 'POST' && url.pathname === '/refuse-next')
+      iap.refuseNext(Number(url.searchParams.get('code')), url.searchParams.get('reason') ?? '')
+    else if (req.method !== 'GET' || url.pathname !== '/stats') {
+      res.writeHead(404).end()
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ connects: iap.connects.length, reconnects: iap.reconnects.length }))
+  }
+  await new Promise<void>((r) => iapControl.listen(0, '127.0.0.1', r))
+  process.env.E2E_IAP_CONTROL = `http://127.0.0.1:${(iapControl.address() as { port: number }).port}`
+
+  // Custom components (M25): an npm registry with a package to bundle, and two origins a component can fetch from
+  // (CORS open), one of which a spec allows. Specs read E2E_ORIGIN_ALLOWED and E2E_ORIGIN_OTHER.
+  const registry = await startTestRegistry([
+    {
+      name: 'tiny-format',
+      version: '1.0.0',
+      files: { 'index.js': 'module.exports = (n) => "#" + String(n).padStart(3, "0")' },
+    },
+  ])
+  const origins = await Promise.all(
+    ['allowed', 'other'].map(async (which) => {
+      const origin = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
+        res.end(JSON.stringify({ from: which }))
+      })
+      await new Promise<void>((resolve) => origin.listen(0, '127.0.0.1', resolve))
+      return origin
+    }),
+  )
+  const originUrl = (o: (typeof origins)[number]) =>
+    `http://127.0.0.1:${(o.address() as { port: number }).port}`
+  process.env.E2E_ORIGIN_ALLOWED = originUrl(origins[0]!)
+  process.env.E2E_ORIGIN_OTHER = originUrl(origins[1]!)
+  const componentBuilds = mkdtempSync(join(tmpdir(), 'ow-e2e-components-'))
 
   const base = `http://127.0.0.1:${E2E_PORT}`
   const env = {
@@ -69,6 +295,8 @@ export default async function globalSetup() {
     HOST: '127.0.0.1',
     PORT: String(E2E_PORT),
     PUBLIC_URL: base,
+    // Editors notice lost access quickly (M16).
+    COLLAB_ACCESS_CHECK_MS: '500',
     DATABASE_URL: pg.url,
     SESSION_SECRET: randomBytes(32).toString('base64url'),
     ENCRYPTION_KEYS: `v1:${randomBytes(32).toString('base64')}`,
@@ -81,6 +309,25 @@ export default async function globalSetup() {
     GITHUB_API_URL: github.url,
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
+    ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
+    NPM_REGISTRY_URL: registry.url,
+    COMPONENT_BUILD_DIR: componentBuilds,
+    GOOGLE_SERVER_IDENTITY: 'allow',
+    GOOGLE_IAP_URL: iap.url,
+    GOOGLE_PUBSUB_URL: pubsub.url,
+    GOOGLE_TOKEN_URL: google.tokenUrl,
+    // The server's identity is the fake metadata server's, never the developer's own gcloud login.
+    GOOGLE_APPLICATION_CREDENTIALS: '',
+    AWS_SERVER_IDENTITY: 'allow',
+    AWS_STS_URL: aws.url,
+    AWS_SQS_URL: aws.url,
+    // The server's own AWS credentials: the fake's `server` user, never the developer's.
+    AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
+    AWS_SECRET_ACCESS_KEY: awsServer.secretAccessKey,
+    AWS_SESSION_TOKEN: '',
+    AWS_PROFILE: '',
+    HOME: gitRoot,
+    GCE_METADATA_HOST: google.metadataHost,
   }
 
   for (const [email, name] of [
@@ -143,11 +390,23 @@ export default async function globalSetup() {
     await pg.stop()
     await github.close()
     await executor?.stop()
+    await builder?.stop()
+    await index?.stop()
+    volume?.remove()
+    await new Promise((r) => iapControl.close(r))
+    await iap.close()
+    await pubsub.close()
+    await aws.close()
+    await kafka?.stop()
+    await google.stop()
+    await registry.stop()
+    for (const origin of origins) await new Promise((r) => origin.close(r))
+    rmSync(componentBuilds, { recursive: true, force: true })
     rmSync(gitRoot, { recursive: true, force: true })
   }
 }
 
-function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+export function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('node', ['--no-node-snapshot', ...args], { cwd: serverDir, env, stdio: 'inherit' })
     child.once('exit', (code) =>
@@ -156,7 +415,7 @@ function run(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   })
 }
 
-async function waitForHealth(url: string, server: ChildProcess) {
+export async function waitForHealth(url: string, server: ChildProcess) {
   for (let i = 0; i < 120; i++) {
     if (server.exitCode !== null) throw new Error(`the server exited with ${server.exitCode}`)
     try {

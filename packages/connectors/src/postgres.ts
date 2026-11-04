@@ -1,7 +1,10 @@
-import { compileSql, TemplateError } from '@ow/expressions'
+import { compileSql, paramValue, TemplateError } from '@ow/expressions'
 import postgres from 'postgres'
 import { z } from 'zod'
 import { resolveFragments } from './sql-fragments'
+import { sshConnectionError, tunnelFor } from './ssh/client'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import { type Connector, ConnectorError, type QueryResult } from './types'
 
 const configSchema = z.object({
@@ -22,9 +25,11 @@ const configSchema = z.object({
   /** Queries returning more rows than this fail rather than load everything into memory. */
   maxRows: z.number().int().positive().default(10_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
+  /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
+  ssh: sshConfigSchema.optional(),
 })
 
-const secretsSchema = z.object({ password: z.string().optional() })
+const secretsSchema = z.object({ password: z.string().optional(), ssh: sshSecretsSchema.optional() })
 
 const querySchema = z.object({ sql: z.string().min(1) })
 
@@ -35,6 +40,8 @@ type Query = z.output<typeof querySchema>
 interface Client {
   sql: postgres.Sql
   config: Config
+  /** The SSH tunnel every connection of the pool goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 const JSON_TYPES = new Set([114, 3802]) // json, jsonb
@@ -48,7 +55,15 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
   querySchema,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const sql = postgres({
+      // Each connection (and each cancel request) is a channel through the tunnel; TLS goes over it, checked against
+      // `host` as the last SSH server reaches it. (`socket` is in postgres's README, not its types.)
+      ...(tunnel
+        ? ({
+            socket: ({ host: [h], port: [p] }: { host: string[]; port: number[] }) => tunnel.open(h!, p!),
+          } as object)
+        : {}),
       host: config.host,
       port: config.port,
       database: config.database,
@@ -64,11 +79,12 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         ...(config.readOnly ? { default_transaction_read_only: true } : {}),
       },
     })
-    return { sql, config }
+    return { sql, config, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ sql }) {
+  async destroyClient({ sql, tunnel }) {
     await sql.end({ timeout: 5 })
+    await tunnel?.close()
   },
 
   async testConnection({ sql }, { signal }) {
@@ -76,6 +92,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
     const cancel = () => void q.cancel()
     signal.addEventListener('abort', cancel, { once: true })
     try {
+      signal.throwIfAborted()
       const [row] = await q
       return { message: String(row?.version ?? '').split(',')[0] }
     } catch (err) {
@@ -112,7 +129,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         const statement = await tx.unsafe(plan.text, [], opts).describe()
         const values: unknown[] = []
         for (const [i, param] of plan.params.entries()) {
-          values.push(toParam(await ctx.evaluate(param.code), statement.types[i]))
+          values.push(toParam(await paramValue(param, ctx.evaluate), statement.types[i]))
         }
 
         if (statement.columns.length === 0) {
@@ -126,6 +143,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
         const cancel = () => void q.cancel()
         ctx.signal.addEventListener('abort', cancel, { once: true })
         try {
+          ctx.signal.throwIfAborted()
           for await (const batch of q.cursor(Math.min(CURSOR_BATCH, config.maxRows + 1))) {
             for (const row of batch) rows.push({ ...row })
             if (rows.length > config.maxRows) {
@@ -178,7 +196,10 @@ function toParam(value: unknown, typeOid: number | undefined): unknown {
   return value
 }
 
-/** Awaits a postgres.js query, cancelling it server-side if the signal aborts. */
+/**
+ * Awaits a postgres.js query, cancelling it server-side if the signal aborts. A signal that aborted before this
+ * (while the query waited for a connection, or ran its describe) never fires the listener: the query isn't run.
+ */
 async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }>(
   q: T,
   signal: AbortSignal,
@@ -186,6 +207,7 @@ async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }
   const cancel = () => void q.cancel()
   signal.addEventListener('abort', cancel, { once: true })
   try {
+    signal.throwIfAborted()
     return await q
   } finally {
     signal.removeEventListener('abort', cancel)
@@ -195,6 +217,8 @@ async function withCancel<T extends PromiseLike<unknown> & { cancel(): unknown }
 /** Postgres errors keep their SQLSTATE and position; connection failures are told apart from query failures. */
 function toError(err: unknown): unknown {
   if (err instanceof ConnectorError) return err
+  const ssh = sshConnectionError(err)
+  if (ssh) return ssh
   if (err instanceof postgres.PostgresError) {
     if (err.code === '57014') {
       return new ConnectorError(

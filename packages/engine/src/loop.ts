@@ -15,6 +15,7 @@ import {
   type LoopIterations,
   runChild,
   runCode,
+  runLibraryQuery,
   runResourceQuery,
   type Work,
 } from './blocks'
@@ -204,6 +205,8 @@ async function runner(block: LoopBlock, ctx: BlockContext, work: Work, key: stri
       return runCode(block, runner.code, work, ctx, runner.language)
     case 'query':
       return (await runResourceQuery(runner.resource, runner.query, work, ctx)).data
+    case 'library':
+      return (await runLibraryQuery(runner, work, ctx)).data
     case 'function':
       return callWorkflowFunction(runner.function, runner.params, work, ctx)
     case 'workflow':

@@ -1,5 +1,7 @@
 import {
   addModuleItem,
+  appNameReason,
+  appNameSchema,
   type ModulePart,
   type ModuleSpec,
   removeModuleItem,
@@ -107,12 +109,29 @@ function ItemSettings({
   const readOnly = useAppEditor((s) => s.readOnly)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const [name, setName] = useState(item.name)
+  const [nameError, setNameError] = useState<string | null>(null)
   useEffect(() => setName(item.name), [item.name])
+  const siblings = useAppEditor((s) => s.definition.module?.[part] ?? [])
   const at = ['module', part, index]
   const change = (next: Item) => update((def) => updateModuleItem(def, part, item.name, next))
+  const label = part === 'inputs' ? 'Input' : part === 'outputs' ? 'Output' : 'Event'
+  // A name that isn't one, or is taken, isn't applied (M21): renaming an input rewrites the code reading it, which
+  // only works from one valid, unique name to another.
   const rename = () => {
     const to = name.trim()
+    setNameError(null)
     if (!to || to === item.name) return setName(item.name)
+    const parsed = appNameSchema.safeParse(to)
+    const reason = !parsed.success
+      ? (parsed.error.issues[0]?.message ?? 'Not a valid name')
+      : (appNameReason(to) ??
+        (siblings.some((i) => i.name === to)
+          ? `Another ${label.toLowerCase()} is already named "${to}"`
+          : null))
+    if (reason) {
+      setNameError(reason)
+      return setName(item.name)
+    }
     change({ ...item, name: to })
     onRenamed(to)
   }
@@ -122,7 +141,6 @@ function ItemSettings({
     if (value === undefined || value === '') delete next[key]
     change(next as Item)
   }
-  const label = part === 'inputs' ? 'Input' : part === 'outputs' ? 'Output' : 'Event'
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-md border border-border p-2">
       <EditorField label="Name">
@@ -138,6 +156,7 @@ function ItemSettings({
             if (e.key === 'Escape') setName(item.name)
           }}
         />
+        {nameError && <p className="text-xs text-danger">{nameError}</p>}
         <ProblemList path={[...at, 'name']} />
       </EditorField>
       {'value' in item && (
@@ -195,7 +214,7 @@ function ItemSettings({
   )
 }
 
-/** The apps placing the module, in their draft, live release or a Git branch draft. */
+/** The apps and (M21) modules placing the module, in their draft, live release or a Git branch draft. */
 function UsedBy() {
   const trpc = useTRPC()
   const moduleId = useAppEditor((s) => s.appId)
@@ -204,11 +223,13 @@ function UsedBy() {
     enabled: !!moduleId,
   })
   if (!usedBy.data) return null
-  const { apps, hidden } = usedBy.data
+  const { apps, modules, hidden } = usedBy.data
   return (
     <div data-testid="module-used-by">
       <h2 className={cn('mb-1', sectionLabelClass)}>Used by</h2>
-      {apps.length === 0 && !hidden && <p className="px-1 text-xs text-muted">No app uses it yet.</p>}
+      {apps.length === 0 && modules.length === 0 && !hidden && (
+        <p className="px-1 text-xs text-muted">Nothing uses it yet.</p>
+      )}
       <ul className="flex flex-col">
         {apps.map((a) => (
           <li key={a.id}>
@@ -222,12 +243,20 @@ function UsedBy() {
             </Link>
           </li>
         ))}
+        {modules.map((m) => (
+          <li key={m.id}>
+            <Link
+              to="/modules/$slug"
+              params={{ slug: m.slug }}
+              className="block truncate rounded px-2 py-1 text-xs text-accent hover:bg-canvas"
+              title={`A module · in its ${m.where.join(', ')}`}
+            >
+              {m.name} <span className="text-muted">(module)</span>
+            </Link>
+          </li>
+        ))}
       </ul>
-      {hidden > 0 && (
-        <p className="px-1 text-xs text-muted">
-          and {hidden} {hidden === 1 ? 'app' : 'apps'} you can't see
-        </p>
-      )}
+      {hidden > 0 && <p className="px-1 text-xs text-muted">and {hidden} more you can't see</p>}
     </div>
   )
 }

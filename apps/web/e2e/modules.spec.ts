@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * Modules at run time (M14 step 5c): two instances of one module in a published app, each with its own state and
@@ -176,7 +176,7 @@ test('module instances in the app editor', async ({ page }) => {
 
 /** The module editor (M14 step 6a): made from the Modules page, its draft run with test inputs, published. */
 test('create, run and publish a module', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const name = `Plan badge ${Date.now()}`
   await page.getByRole('link', { name: 'Modules' }).click()
@@ -256,7 +256,7 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
     },
   })
   await page.goto(`/modules/${slug}`)
-  await expect(page.getByTestId('module-used-by')).toContainText('No app uses it yet')
+  await expect(page.getByTestId('module-used-by')).toContainText('Nothing uses it yet')
   // A module has no pages: no Navigation to add.
   await expect(page.getByRole('button', { name: 'Navigation', exact: true })).toHaveCount(0)
 
@@ -356,7 +356,7 @@ test('place a module in an app', async ({ page }) => {
 
 /** Protected in Git (M14 step 7d): a module protected from its settings, edited and run on a branch, committed. */
 test('protect a module and edit it on a branch', async ({ page }) => {
-  page.on('dialog', (d) => void d.accept())
+  await acceptConfirms(page)
   await signIn(page)
   const repoUrl = process.env.E2E_GIT_REPO_URL!
   const repoDir = process.env.E2E_GIT_REPO_DIR ?? new URL(repoUrl).pathname

@@ -411,4 +411,28 @@ describe('sql.column and sql.direction', () => {
     expect(query.query).toBe('SELECT * FROM shop.orders WHERE n > @p1 ORDER BY `o`.`created_at` DESC')
     expect(query.queryParameters.map((p: { name: string }) => p.name)).toEqual(['p1'])
   })
+
+  it('sql.where (M24): a condition with typed, numbered parameters among the others', async () => {
+    await runQuery(
+      pool,
+      connector,
+      bqResource(),
+      { sql: "SELECT * FROM shop.orders WHERE {{ sql.where(f, ['day', 'name']) }} AND n > {{ n }}" },
+      {
+        evaluate: codeEvaluator({
+          n: 1,
+          "sql.where(f, ['day', 'name'])": [
+            { column: 'day', op: 'gte', value: '2026-01-01', type: 'date' },
+            { column: 'name', op: 'contains', value: 'ab' },
+          ],
+        }),
+      },
+    ).catch(() => {})
+    const { query } = insertBody().configuration
+    expect(query.query).toBe(
+      'SELECT * FROM shop.orders WHERE (CAST(`day` AS DATE) >= CAST(@p1 AS DATE)) AND (STRPOS(LOWER(CAST(`name` AS STRING)), LOWER(@p2)) > 0) AND n > @p3',
+    )
+    expect(query.queryParameters.map((p: { name: string }) => p.name)).toEqual(['p1', 'p2', 'p3'])
+    expect(query.queryParameters[0].parameterValue).toEqual({ value: '2026-01-01' })
+  })
 })

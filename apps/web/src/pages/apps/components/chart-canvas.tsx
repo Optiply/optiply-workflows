@@ -24,7 +24,7 @@ import {
   Tooltip,
 } from 'chart.js'
 import { useEffect, useRef } from 'react'
-import { type ChartModel, compactNumber, sliceColors, withAlpha } from './chart-model'
+import { type ChartModel, compactNumber, formatTime, sliceColors, withAlpha } from './chart-model'
 
 Chart.register(
   BarController,
@@ -122,6 +122,8 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
             : (model.series[item.datasetIndex]?.color ?? ink.muted)
         return { borderColor: color, backgroundColor: color, borderWidth: 2 }
       },
+      // A point's time, not its number (M24).
+      title: (items: { dataIndex: number }[]) => (items[0] ? (model.labels[items[0].dataIndex] ?? '') : ''),
       // Values lead, labels follow.
       label: (item: { parsed: unknown; dataset: { label?: string }; label: string }) => {
         const v = kind === 'pie' ? (item.parsed as number) : (item.parsed as { y: number }).y
@@ -177,7 +179,8 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       : {
           type: 'line' as const,
           label: s.label,
-          data: s.values,
+          // On a time axis (M24), each point at its time.
+          data: model.time ? s.values.map((y, j) => ({ x: model.time!.values[j]!, y })) : s.values,
           borderColor: s.color,
           backgroundColor: area ? withAlpha(s.color, 0.1) : s.color,
           borderWidth: 2,
@@ -203,12 +206,31 @@ function config(model: ChartModel, opts: { stacked: boolean; showLegend: boolean
       interaction: { mode: 'index', intersect: kind === 'bar' },
       plugins: { legend, tooltip, owCrosshair: { color: ink.axis } },
       scales: {
-        x: {
-          stacked: opts.stacked,
-          grid: { display: false },
-          border: { color: ink.axis },
-          ticks: { color: ink.muted, maxRotation: 0, autoSkip: true },
-        },
+        x: model.time
+          ? {
+              // Time as a number line (M24): points by their time, gaps kept; ticks on days, Mondays, months or
+              // years, labelled in the viewer's language (no date adapter needed).
+              type: 'linear' as const,
+              min: model.time.min,
+              max: model.time.max,
+              grid: { display: false },
+              border: { color: ink.axis },
+              afterBuildTicks: (axis: { ticks: { value: number }[] }) => {
+                axis.ticks = model.time!.ticks.map((value) => ({ value }))
+              },
+              ticks: {
+                color: ink.muted,
+                maxRotation: 0,
+                autoSkip: true,
+                callback: (v: string | number) => formatTime(Number(v), model.time!.unit, model.time!.utc),
+              },
+            }
+          : {
+              stacked: opts.stacked,
+              grid: { display: false },
+              border: { color: ink.axis },
+              ticks: { color: ink.muted, maxRotation: 0, autoSkip: true },
+            },
         y: {
           stacked: opts.stacked,
           beginAtZero: true,
@@ -266,7 +288,12 @@ export default function ChartCanvas({
   )
 
   return (
-    <div className="relative h-full w-full">
+    // The x axis's kind and tick unit, for tests: what's drawn on the canvas can't be read.
+    <div
+      className="relative h-full w-full"
+      data-x-axis={model.time ? 'time' : 'category'}
+      data-time-unit={model.time?.unit}
+    >
       <canvas ref={canvasRef} role="img" aria-label={label} />
     </div>
   )

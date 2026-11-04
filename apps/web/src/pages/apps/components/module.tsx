@@ -1,7 +1,7 @@
 import { instanceRelease } from '@ow/app-definition'
 import { Puzzle } from 'lucide-react'
 import { AppCanvas } from '../canvas'
-import { EditingContext } from '../grid-context'
+import { EditingContext, EditorActionsContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
 import { AppScope, useAppHostState } from '../runtime/react'
 
@@ -28,9 +28,12 @@ export function ModuleRenderer({ component }: RendererProps) {
   return (
     <div className="h-full overflow-auto" data-module={ref!.slug}>
       <EditingContext.Provider value={false}>
-        <AppScope instance={component.name}>
-          <AppCanvas definition={release.definition} />
-        </AppScope>
+        {/* The instance's definition is the module's release: nothing on it is edited from here. */}
+        <EditorActionsContext.Provider value={null}>
+          <AppScope instance={component.name}>
+            <AppCanvas definition={release.definition} />
+          </AppScope>
+        </EditorActionsContext.Provider>
       </EditingContext.Provider>
     </div>
   )

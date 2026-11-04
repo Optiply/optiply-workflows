@@ -7,6 +7,7 @@ import {
 } from '@ow/definition'
 import { ArrowLeft, Plus, SquareFunction, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { useEditor } from './store'
 
@@ -134,8 +135,14 @@ export function FunctionSettings({ name, canEdit }: { name: string; canEdit: boo
             size="icon"
             variant="ghost"
             title="Delete function"
-            onClick={() => {
-              if (!confirm(`Delete function "${name}"? Blocks that call it will show a problem.`)) return
+            onClick={async () => {
+              if (
+                !(await confirmDialog(`Delete function "${name}"? Blocks that call it will show a problem.`, {
+                  danger: true,
+                  confirm: 'Delete',
+                }))
+              )
+                return
               useEditor.getState().openGraph(null)
               useEditor.getState().update((def) => ({
                 ...def,

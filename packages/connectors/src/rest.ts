@@ -1,10 +1,15 @@
-import { parseTemplate, renderJson, renderText, TemplateError } from '@ow/expressions'
-import { Agent, fetch, Headers, type Response } from 'undici'
+import { isIP } from 'node:net'
+import { connect as tlsConnect } from 'node:tls'
+import { parseTemplate, renderJson, renderTemplate, renderText, TemplateError } from '@ow/expressions'
+import { Agent, type buildConnector, FormData, fetch, Headers, type Response } from 'undici'
 import { z } from 'zod'
 import { networkError, readBody } from './http'
 import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
 import { clientCredentialsToken } from './oauth'
 import { OAUTH_PROVIDERS } from './oauth-presets'
+import { sshConnectionError, tunnelFor } from './ssh/client'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { SshTunnel } from './ssh/tunnel'
 import {
   type Connector,
   ConnectorError,
@@ -15,6 +20,22 @@ import {
 
 const keyValues = z.array(z.object({ key: z.string(), value: z.string() })).default([])
 
+/**
+ * One part of a multipart body. A text part's `value` is a template; a file part's `file` is a lone `{{ }}` that
+ * evaluates to base64 text or to `{ base64, filename?, contentType? }` (what a webhook delivers), and `filename` and
+ * `contentType` (templates) override what the value says.
+ */
+const multipartPartSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('text'), key: z.string(), value: z.string().default('') }),
+  z.object({
+    kind: z.literal('file'),
+    key: z.string(),
+    file: z.string().default(''),
+    filename: z.string().default(''),
+    contentType: z.string().default(''),
+  }),
+])
+
 const bodySchema = z
   .discriminatedUnion('type', [
     z.object({ type: z.literal('none') }),
@@ -22,6 +43,8 @@ const bodySchema = z
     z.object({ type: z.literal('json'), json: z.string() }),
     z.object({ type: z.literal('form'), fields: keyValues }),
     z.object({ type: z.literal('raw'), raw: z.string(), contentType: z.string().default('text/plain') }),
+    /** `multipart/form-data` (M15): text fields, and files from base64 or a webhook's file object. */
+    z.object({ type: z.literal('multipart'), parts: z.array(multipartPartSchema).default([]) }),
   ])
   .default({ type: 'none' })
 
@@ -43,6 +66,9 @@ function queryTemplates(query: z.output<typeof querySchema>): string[] {
     ...(query.body.type === 'json' ? [query.body.json] : []),
     ...(query.body.type === 'form' ? query.body.fields.map((f) => f.value) : []),
     ...(query.body.type === 'raw' ? [query.body.raw] : []),
+    ...(query.body.type === 'multipart'
+      ? query.body.parts.flatMap((p) => (p.kind === 'text' ? [p.value] : [p.file, p.filename, p.contentType]))
+      : []),
   ]
 }
 
@@ -182,6 +208,8 @@ const configSchema = z.object({
     .int()
     .positive()
     .default(10 * 1024 * 1024),
+  /** Reach the API through an SSH server (and jump hosts) rather than directly (M17). */
+  ssh: sshConfigSchema.optional(),
 })
 
 const secretsSchema = z.object({
@@ -193,6 +221,7 @@ const secretsSchema = z.object({
   headers: z.record(z.string(), z.string()).default({}),
   /** Named values a custom auth flow reads as `{{ secrets.NAME }}` (a username, a password…). */
   values: z.record(z.string(), z.string()).default({}),
+  ssh: sshSecretsSchema.optional(),
 })
 
 type Config = z.output<typeof configSchema>
@@ -207,6 +236,8 @@ interface Client {
   secrets: Secrets
   agent: Agent
   token?: { value: string; expiresAt: number }
+  /** The SSH tunnel every request goes through (M17), if the resource has one. */
+  tunnel?: SshTunnel
 }
 
 const MAX_REDIRECTS = 5
@@ -222,15 +253,17 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   scrubResultData: true,
 
   createClient({ config, secrets }) {
+    const tunnel = tunnelFor(config, secrets)
     const agent = new Agent({
       connections: 32,
-      connect: config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
+      connect: tunnel ? tunnelConnector(tunnel) : config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
     })
-    return { config, secrets, agent }
+    return { config, secrets, agent, ...(tunnel ? { tunnel } : {}) }
   },
 
-  async destroyClient({ agent }) {
+  async destroyClient({ agent, tunnel }) {
     await agent.close()
+    await tunnel?.close()
   },
 
   async testConnection(client, { signal, credentials }) {
@@ -268,6 +301,8 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
     const { url, params } = await buildUrl(client, query, ctx)
     const queryHeaders: [string, string][] = []
     for (const { key, value } of query.headers) {
+      // A multipart body's Content-Type carries its boundary: fetch sets it.
+      if (query.body.type === 'multipart' && key.toLowerCase() === 'content-type') continue
       if (key) queryHeaders.push([key, await renderText(value, ctx.evaluate)])
     }
     const { body, contentType } = await buildBody(query, ctx)
@@ -352,7 +387,10 @@ async function buildUrl(
 }
 
 /** The body and the content type it implies (used unless a header sets one). */
-async function buildBody(query: Query, ctx: QueryContext): Promise<{ body?: string; contentType?: string }> {
+async function buildBody(
+  query: Query,
+  ctx: QueryContext,
+): Promise<{ body?: string | FormData; contentType?: string }> {
   const body = query.body
   switch (body.type) {
     case 'none':
@@ -370,6 +408,82 @@ async function buildBody(query: Query, ctx: QueryContext): Promise<{ body?: stri
     }
     case 'raw':
       return { body: await renderText(body.raw, ctx.evaluate), contentType: body.contentType }
+    case 'multipart': {
+      // No content type here: fetch sets it, with the boundary.
+      const form = new FormData()
+      for (const part of body.parts) {
+        if (!part.key) continue
+        if (part.kind === 'text') {
+          form.append(part.key, await renderText(part.value, ctx.evaluate))
+          continue
+        }
+        const file = multipartFile(part.key, await renderTemplate(part.file, ctx.evaluate))
+        const filename = (await renderText(part.filename, ctx.evaluate)) || file.filename || part.key
+        const type =
+          (await renderText(part.contentType, ctx.evaluate)) || file.contentType || 'application/octet-stream'
+        form.append(part.key, new Blob([new Uint8Array(file.bytes)], { type }), filename)
+      }
+      return { body: form }
+    }
+  }
+}
+
+const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
+
+/** A file part's value: base64 text, or a webhook's file object (`{ base64, filename?, contentType? }`). */
+function multipartFile(
+  key: string,
+  value: unknown,
+): { bytes: Buffer; filename?: string; contentType?: string } {
+  const object = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
+  const base64 = typeof value === 'string' ? value : object?.base64
+  const text = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : null
+  if (text === null || !BASE64.test(text)) {
+    throw new ConnectorError(
+      'query',
+      `File part "${key}" needs base64 text or a file object ({ base64, filename, contentType }), like a webhook's upload`,
+    )
+  }
+  return {
+    bytes: Buffer.from(text, 'base64'),
+    ...(typeof object?.filename === 'string' && { filename: object.filename }),
+    ...(typeof object?.contentType === 'string' && { contentType: object.contentType }),
+  }
+}
+
+/**
+ * Whether private addresses may be reached: when allowed, or through an SSH tunnel (M17), where what's reached is the
+ * SSH server's network, which is the point (the guard protects this machine's network).
+ */
+function privateNetworkAllowed(config: Config): boolean {
+  return config.allowPrivateNetwork || config.ssh !== undefined
+}
+
+/**
+ * Connects undici's requests through an SSH tunnel: a channel to the host and port from the last SSH server, and for
+ * https TLS over it, with the hostname for SNI and the certificate check. Every request of the resource goes this
+ * way, an OAuth2 client-credentials token included.
+ */
+function tunnelConnector(tunnel: SshTunnel): buildConnector.connector {
+  return ({ hostname, protocol, port, servername }, callback) => {
+    const https = protocol === 'https:'
+    tunnel.open(hostname, Number(port) || (https ? 443 : 80)).then(
+      (channel) => {
+        if (!https) return callback(null, channel as never)
+        const socket = tlsConnect({
+          socket: channel,
+          servername: servername || (isIP(hostname) ? undefined : hostname),
+          ALPNProtocols: ['http/1.1'],
+        })
+        const failed = (err: Error) => callback(err, null)
+        socket.once('error', failed)
+        socket.once('secureConnect', () => {
+          socket.off('error', failed)
+          callback(null, socket)
+        })
+      },
+      (err) => callback(sshConnectionError(err) ?? err, null),
+    )
   }
 }
 
@@ -387,7 +501,7 @@ function checkHost(config: Config, url: URL): void {
     )
   }
   // IP literals skip DNS, so the connect-time guard never sees them.
-  if (!config.allowPrivateNetwork && isPrivateAddress(url.hostname)) {
+  if (!privateNetworkAllowed(config) && isPrivateAddress(url.hostname)) {
     throw new ConnectorError('blocked', `${url.hostname} is a private address`)
   }
 }
@@ -399,16 +513,27 @@ function checkHost(config: Config, url: URL): void {
 async function send(
   client: Client,
   url: URL,
-  init: { method: string; headers: Headers; body?: string },
+  init: { method: string; headers: Headers; body?: string | FormData },
   signal: AbortSignal,
   /** Headers carrying credentials besides the usual ones (a custom auth flow's), dropped like them. */
   sensitive: string[] = [],
 ): Promise<Response> {
   let current = url
+  let previous: URL | undefined
   let { method, body } = init
   const headers = new Headers(init.headers)
   for (let hop = 0; ; hop++) {
-    checkHost(client.config, current)
+    try {
+      checkHost(client.config, current)
+    } catch (err) {
+      // Say that the server sent us there: a refused redirect otherwise reads like a mistyped base URL. The target
+      // is shown without its query string, which may carry tokens.
+      if (!previous || !(err instanceof ConnectorError)) throw err
+      throw new ConnectorError(
+        err.code,
+        `${previous.host} redirected to ${current.origin}${current.pathname}. ${err.message}`,
+      )
+    }
     let res: Response
     try {
       res = await fetch(current, {
@@ -447,6 +572,7 @@ async function send(
       body = undefined
       headers.delete('content-type')
     }
+    previous = current
     current = next
   }
 }
@@ -577,7 +703,7 @@ async function getToken(client: Client, signal: AbortSignal, force = false): Pro
   const secret = requireSecret(client.secrets.clientSecret, 'OAuth2 client secret')
   const token = await clientCredentialsToken(auth, secret, {
     signal,
-    allowPrivateNetwork: client.config.allowPrivateNetwork,
+    allowPrivateNetwork: privateNetworkAllowed(client.config),
     dispatcher: client.agent,
   })
   client.token = {

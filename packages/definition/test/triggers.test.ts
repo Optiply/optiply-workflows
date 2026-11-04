@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import { matchWebhookAlias, nextScheduleFire, parseWebhookAlias, validateDefinition } from '../src'
 import { start, wf } from './helpers'
 
@@ -167,5 +168,205 @@ describe('validateDefinition: triggers', () => {
     )
     expect(result.definition).toBeDefined()
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('Pub/Sub triggers (M19)', () => {
+  const resources: Record<string, { type: string }> = {
+    events: { type: 'pubsub' },
+    shop: { type: 'postgres' },
+  }
+  const check = (pubsub: object[], withResources = true) =>
+    validateDefinition(wf([start], [], { triggers: { pubsub } }), {
+      ...(withResources && {
+        resolveResource: (slug: string) =>
+          resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+      }),
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a subscription by id or full name, with its limits', () => {
+    expect(
+      check([
+        { name: 'orders', enabled: true, resource: 'events', subscription: 'orders-sub', maxInFlight: 10 },
+        {
+          name: 'other',
+          enabled: false,
+          resource: 'events',
+          subscription: 'projects/elsewhere/subscriptions/their-sub',
+          environment: 'staging',
+          maxHoldMinutes: 120,
+        },
+      ]),
+    ).toEqual([])
+  })
+
+  it('refuses a duplicate name, a resource that is not Pub/Sub or not there, and a bad subscription', () => {
+    expect(
+      check([
+        { name: 'a', enabled: true, resource: 'events', subscription: 'ok-sub' },
+        { name: 'a', enabled: true, resource: 'shop', subscription: '9bad' },
+        { name: 'b', enabled: true, resource: 'gone', subscription: 'projects/p/topics/t' },
+      ]),
+    ).toEqual([
+      {
+        code: 'duplicate_pubsub',
+        message: 'Another Pub/Sub trigger is already named "a"',
+        path: ['triggers', 'pubsub', 1, 'name'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message: 'Pub/Sub trigger "a": "shop" isn\'t a Pub/Sub resource',
+        path: ['triggers', 'pubsub', 1, 'resource'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message: 'Pub/Sub trigger "a": "9bad" isn\'t a subscription id or projects/…/subscriptions/… name',
+        path: ['triggers', 'pubsub', 1, 'subscription'],
+      },
+      {
+        code: 'unknown_resource',
+        message: 'Pub/Sub trigger "b": no resource has the slug "gone"',
+        path: ['triggers', 'pubsub', 2, 'resource'],
+      },
+      {
+        code: 'invalid_pubsub',
+        message:
+          'Pub/Sub trigger "b": "projects/p/topics/t" isn\'t a subscription id or projects/…/subscriptions/… name',
+        path: ['triggers', 'pubsub', 2, 'subscription'],
+      },
+    ])
+    // The browser has no resources to check against: only the rest.
+    expect(check([{ name: 'a', enabled: true, resource: 'gone', subscription: 'ok-sub' }], false)).toEqual([])
+  })
+
+  it('bounds the limits in the schema', () => {
+    const codes = check([
+      { name: 'a', enabled: true, resource: 'events', subscription: 'ok-sub', maxInFlight: 0 },
+    ])
+    expect(codes).toMatchObject([{ code: 'schema', path: ['triggers', 'pubsub', 0, 'maxInFlight'] }])
+  })
+})
+
+describe('SQS and Kafka triggers (M26)', () => {
+  const resources: Record<string, { type: string }> = {
+    queue: { type: 'sqs' },
+    cluster: { type: 'kafka' },
+    events: { type: 'pubsub' },
+  }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a queue by name or URL, and topics with a group, retries and a dead-letter topic', () => {
+    expect(
+      check({
+        sqs: [
+          { name: 'orders', enabled: true, resource: 'queue', queue: 'orders.fifo', maxHoldMinutes: 720 },
+          {
+            name: 'other',
+            enabled: true,
+            resource: 'queue',
+            queue: 'https://sqs.eu-west-1.amazonaws.com/123456789012/other',
+          },
+        ],
+        kafka: [
+          {
+            name: 'orders',
+            enabled: true,
+            resource: 'cluster',
+            topics: ['orders', 'orders.v2'],
+            groupId: 'billing',
+            startAt: 'earliest',
+            maxAttempts: 5,
+            retryBackoffSeconds: 30,
+            deadLetterTopic: 'orders.dlt',
+          },
+        ],
+      }),
+    ).toEqual([])
+  })
+
+  it('refuses duplicates, resources of another kind, a bad queue, bad topics and a dead-letter topic it reads', () => {
+    expect(
+      check({
+        sqs: [
+          { name: 'a', enabled: true, resource: 'queue', queue: 'ok' },
+          { name: 'a', enabled: true, resource: 'events', queue: 'has space' },
+        ],
+        kafka: [
+          {
+            name: 'k',
+            enabled: true,
+            resource: 'queue',
+            topics: ['ok', 'ok', 'bad topic', '..'],
+            groupId: ' padded',
+            deadLetterTopic: 'ok',
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        code: 'duplicate_sqs',
+        message: 'Another SQS trigger is already named "a"',
+        path: ['triggers', 'sqs', 1, 'name'],
+      },
+      {
+        code: 'invalid_sqs',
+        message: 'SQS trigger "a": "events" isn\'t an SQS resource',
+        path: ['triggers', 'sqs', 1, 'resource'],
+      },
+      {
+        code: 'invalid_sqs',
+        message: 'SQS trigger "a": "has space" isn\'t a queue name or URL',
+        path: ['triggers', 'sqs', 1, 'queue'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": "queue" isn\'t a Kafka resource',
+        path: ['triggers', 'kafka', 0, 'resource'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": "bad topic" isn\'t a topic name',
+        path: ['triggers', 'kafka', 0, 'topics', 2],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": ".." isn\'t a topic name',
+        path: ['triggers', 'kafka', 0, 'topics', 3],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k" names a topic twice',
+        path: ['triggers', 'kafka', 0, 'topics'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": the group id can\'t start or end with a space',
+        path: ['triggers', 'kafka', 0, 'groupId'],
+      },
+      {
+        code: 'invalid_kafka',
+        message: 'Kafka trigger "k": the dead-letter topic can\'t be one it reads',
+        path: ['triggers', 'kafka', 0, 'deadLetterTopic'],
+      },
+    ])
+  })
+
+  it('bounds the limits in the schema: SQS holds at most 12 hours, Kafka at most 20 attempts', () => {
+    expect(
+      check({
+        sqs: [{ name: 'a', enabled: true, resource: 'queue', queue: 'q', maxHoldMinutes: 721 }],
+        kafka: [{ name: 'b', enabled: true, resource: 'cluster', topics: ['t'], maxAttempts: 21 }],
+      }),
+    ).toMatchObject([
+      { code: 'schema', path: ['triggers', 'sqs', 0, 'maxHoldMinutes'] },
+      { code: 'schema', path: ['triggers', 'kafka', 0, 'maxAttempts'] },
+    ])
+    expect(check({ kafka: [{ name: 'b', enabled: true, resource: 'cluster', topics: [] }] })).toMatchObject([
+      { code: 'schema', path: ['triggers', 'kafka', 0, 'topics'] },
+    ])
   })
 })

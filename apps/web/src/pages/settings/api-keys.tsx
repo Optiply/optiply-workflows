@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus } from 'lucide-react'
 import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import {
   Badge,
   Button,
@@ -11,6 +12,7 @@ import {
   ErrorNote,
   Field,
   Input,
+  linkClass,
   Spinner,
   Table,
   Td,
@@ -54,7 +56,11 @@ function ApiKeys() {
         <p className="max-w-2xl text-sm text-muted">
           Other systems send a key in the <code className="font-mono">X-Api-Key</code> header to call workflow
           webhooks, and can then read the runs they started. Limit a key to the workflows and environments it
-          needs.
+          needs. The{' '}
+          <a className={linkClass} href="/api/v1/openapi.json" target="_blank" rel="noreferrer">
+            OpenAPI document
+          </a>{' '}
+          describes the live webhooks (a key sees only the ones it may call).
         </p>
         <Button variant="primary" onClick={() => setCreating(!creating)}>
           <Plus className="size-4" /> New API key
@@ -114,8 +120,13 @@ function ApiKeys() {
                     <Button
                       size="sm"
                       variant="danger"
-                      onClick={() => {
-                        if (confirm(`Revoke "${k.name}"? Calls with it stop working at once.`)) {
+                      onClick={async () => {
+                        if (
+                          await confirmDialog(`Revoke "${k.name}"? Calls with it stop working at once.`, {
+                            danger: true,
+                            confirm: 'Revoke',
+                          })
+                        ) {
                           revoke.mutate({ id: k.id })
                         }
                       }}

@@ -251,6 +251,28 @@ describe('apps: running queries', () => {
     await app.save(crudApp())
   })
 
+  it('filters by the table filters the browser sends, only on the columns in the stored query (M24)', async () => {
+    const where = " sql.where(table1.filters, ['name']) "
+    await app.save(
+      crudApp({
+        queries: [sqlQuery('filtered', `select name from customers where {{${where}}} order by id`)],
+      }),
+    )
+    const names = async (filters: unknown) => data(await run(admin, app.id, 'filtered', { [where]: filters }))
+    expect((await names([])).data).toHaveLength(2)
+    expect((await names([{ column: 'name', op: 'contains', value: 'ad' }])).data).toEqual([{ name: 'Ada' }])
+    for (const hostile of [
+      [{ column: 'owner', op: 'equals', value: 'x' }],
+      [{ column: 'name', op: 'or 1=1' }],
+    ]) {
+      expect(await names(hostile)).toMatchObject({
+        ok: false,
+        error: { code: 'expression', message: expect.stringContaining('sql.where') },
+      })
+    }
+    await app.save(crudApp())
+  })
+
   it('evaluates current_user on the server, whatever the browser sends', async () => {
     const who = data(await run(admin, app.id, 'whoami', { ' current_user.email ': 'ceo@optiply.nl' }))
     expect(who).toMatchObject({ ok: true, data: [{ email: 'admin@optiply.nl' }] })
@@ -392,6 +414,12 @@ describe('apps: releases', () => {
       ['1.1.0', false],
       ['1.0.0', true],
     ])
+    // One release's definition, for Compare (M24): Edit only; another app's release isn't found through this one.
+    const one = data(await admin.query('apps.release', { appId: app.id, id: v2.id }))
+    expect(one).toMatchObject({ id: v2.id, version: '1.1.0', definition: { layout: { search: { x: 1 } } } })
+    expect(failure(await member.query('apps.release', { appId: app.id, id: v2.id })).code).toBe('FORBIDDEN')
+    const other = await appWith('other_orders', crudApp())
+    expect(failure(await admin.query('apps.release', { appId: other.id, id: v2.id })).code).toBe('NOT_FOUND')
     expect(failure(await publish(admin, { version: '1.0.5' }))).toMatchObject({ code: 'CONFLICT' })
   })
 
@@ -463,6 +491,50 @@ describe('apps: folders', () => {
       .from(auditEvents)
       .where(and(eq(auditEvents.action, 'folder.deleted'), eq(auditEvents.objectId, folder.id)))
     expect(deleted!.metadata).toEqual({ name: 'Sales', type: 'app' })
+  })
+
+  it('moves folders into others of their kind, never into themselves, with grants reaching down', async () => {
+    const top = data(await admin.mutate('folders.create', { name: 'Ops', type: 'app' }))
+    const mid = data(await admin.mutate('folders.create', { name: 'Reports', type: 'app', parentId: top.id }))
+    const leaf = data(await admin.mutate('folders.create', { name: 'Weekly', type: 'app', parentId: mid.id }))
+    const other = data(await admin.mutate('folders.create', { name: 'Flows', type: 'workflow' }))
+    const loop = { code: 'BAD_REQUEST', message: "A folder can't move into itself or a folder inside it" }
+    expect(failure(await admin.mutate('folders.move', { id: top.id, parentId: top.id }))).toMatchObject(loop)
+    expect(failure(await admin.mutate('folders.move', { id: top.id, parentId: leaf.id }))).toMatchObject(loop)
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: other.id }))).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'No app folder has that id',
+    })
+    expect(failure(await member.mutate('folders.move', { id: leaf.id, parentId: null }))).toMatchObject({
+      code: 'FORBIDDEN',
+    })
+
+    // A grant on the top folder reaches an app two folders down; moving the branch out takes it away.
+    const app = await appWith('deep', crudApp())
+    data(await admin.mutate('apps.update', { id: app.id, folderId: leaf.id }))
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'folder',
+        objectId: top.id,
+        groupId: memberGroupId,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    expect(data(await member.query('apps.list')).map((a: { id: string }) => a.id)).toContain(app.id)
+    data(await admin.mutate('folders.move', { id: mid.id, parentId: null }))
+    expect(data(await member.query('apps.list')).map((a: { id: string }) => a.id)).not.toContain(app.id)
+    // Moving it back under a folder now inside it would be a loop; a name taken in the target is a conflict.
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: leaf.id }))).toMatchObject(loop)
+    data(await admin.mutate('folders.create', { name: 'Reports', type: 'app', parentId: top.id }))
+    expect(failure(await admin.mutate('folders.move', { id: mid.id, parentId: top.id }))).toMatchObject({
+      code: 'CONFLICT',
+    })
+    const [moved] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, 'folder.moved'), eq(auditEvents.objectId, mid.id)))
+    expect(moved!.metadata).toEqual({ from: top.id, to: null })
   })
 
   it('needs Own to move an app between folders, and only into app folders', async () => {

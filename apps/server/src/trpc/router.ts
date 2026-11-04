@@ -5,6 +5,7 @@ import { apiKeysRouter } from './routers/api-keys'
 import { appsRouter } from './routers/apps'
 import { auditRouter } from './routers/audit'
 import { branchDraftsRouter } from './routers/branch-drafts'
+import { componentLibrariesRouter } from './routers/component-libraries'
 import { configVarsRouter } from './routers/config-vars'
 import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
@@ -54,6 +55,7 @@ export const appRouter = router({
   apps: appsRouter,
   libraryQueries: libraryQueriesRouter,
   modules: modulesRouter,
+  componentLibraries: componentLibrariesRouter,
   git: gitRouter,
   branchDrafts: branchDraftsRouter,
 })

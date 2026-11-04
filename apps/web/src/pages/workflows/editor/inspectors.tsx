@@ -15,15 +15,23 @@ import {
   type WaitUnit,
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowDown, ArrowUp, Play, Plus, Trash2, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } from 'lucide-react'
 import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
+import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
-import { isSqlType } from '@/lib/resource-types'
+import {
+  defaultQuery,
+  isMessageKind,
+  MESSAGE_QUERIES,
+  type MessageKind,
+  queryKind,
+} from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
 import { kindOf } from './catalog'
-import type { CodeFieldProps, FieldProblem } from './code-field'
+import type { FieldProblem, WorkflowCodeFieldProps } from './code-field'
 import { usePythonCheck } from './python-check'
 import { runBlock, useRun } from './run-state'
 import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
@@ -32,7 +40,7 @@ import { TriggersForm } from './triggers'
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('./code-field'))
 
-function Code(props: CodeFieldProps) {
+function Code(props: WorkflowCodeFieldProps) {
   return (
     <Suspense
       fallback={
@@ -85,7 +93,7 @@ export function Inspector({ name }: { name: string }) {
       .map((d) => ({ start: d.start, end: d.end, message: d.message, severity: d.severity }))
   // Block names repeat across functions, so the function is part of each field's model.
   const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
-  const ctx: FormContext = { problemsAt, modelPath }
+  const ctx: FormContext = { problemsAt, modelPath, text: (...path) => [...base, ...path] }
   const kind = kindOf(block)
   const Icon = kind.icon
 
@@ -129,6 +137,8 @@ export function Inspector({ name }: { name: string }) {
 interface FormContext {
   problemsAt: (...path: (string | number)[]) => FieldProblem[]
   modelPath: (field: string) => string
+  /** A field of this block's place in the definition: where its text is in the shared document (M16). */
+  text: (...path: (string | number)[]) => (string | number)[]
 }
 
 function startsWith(path: (string | number)[], prefix: (string | number)[]) {
@@ -225,6 +235,8 @@ function TypeForm({ block, ctx }: { block: Block; ctx: FormContext }) {
       return <CodeForm block={block} ctx={ctx} />
     case 'resourceQuery':
       return <QueryForm block={block} ctx={ctx} />
+    case 'libraryQuery':
+      return <LibraryQueryForm block={block} ctx={ctx} />
     case 'branch':
       return <BranchForm block={block} ctx={ctx} />
     case 'filter':
@@ -301,6 +313,7 @@ function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) 
           'A function body: read other blocks as variables (query1.data) and return the data. pandas and numpy are available; no network.',
       }}
       problems={ctx.problemsAt('config', 'code')}
+      text={ctx.text('config', 'code')}
       ctx={ctx}
       onChange={(next) =>
         updateBlock<BlockOf<'code'>>(block.name, (b) => ({
@@ -329,11 +342,14 @@ function LanguageCode({
   height,
   hints,
   problems,
+  text,
   ctx,
   onChange,
 }: {
   language: 'python' | undefined
   code: string
+  /** The code's place in the definition (shared editing). */
+  text: (string | number)[]
   /** The Monaco model's name: `<model>.js` or `<model>.py`. */
   model: string
   height: number
@@ -362,6 +378,7 @@ function LanguageCode({
           height={height}
           value={code}
           problems={[...problems, ...check.problems]}
+          text={text}
           onChange={(next) => onChange({ code: next })}
         />
         {check.unavailable && (
@@ -378,14 +395,6 @@ function LanguageCode({
 }
 
 type KeyValue = { key: string; value: string }
-const DEFAULT_REST: Record<string, unknown> = {
-  method: 'GET',
-  path: '',
-  params: [],
-  headers: [],
-  body: { type: 'none' },
-}
-
 function QueryForm({ block, ctx }: { block: BlockOf<'resourceQuery'>; ctx: FormContext }) {
   return (
     <QueryEditor
@@ -425,6 +434,14 @@ function QueryEditor({
   const { data } = useQuery(trpc.resources.list.queryOptions())
   const resources = data?.resources ?? []
   const current = resources.find((r) => r.slug === resource)
+  // Without the resource (deleted, or not visible): guessed from the query's own fields.
+  const guessed =
+    typeof query.messages === 'string' ? (typeof query.queue === 'string' ? 'sqs' : 'pubsub') : null
+  const messageKind = current
+    ? isMessageKind(queryKind(current.type))
+      ? (queryKind(current.type) as MessageKind)
+      : null
+    : guessed
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
@@ -444,12 +461,7 @@ function QueryEditor({
             onChange({
               resource: e.target.value,
               // Switching kinds of resource starts a fresh query.
-              query:
-                next && current && next.type === current.type
-                  ? query
-                  : isSqlType(next?.type)
-                    ? { sql: 'select 1' }
-                    : DEFAULT_REST,
+              query: next && current && next.type === current.type ? query : defaultQuery(next?.type),
             })
           }}
         >
@@ -461,7 +473,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {isSqlType(current?.type) || (!current && typeof query.sql === 'string') ? (
+      {(current ? queryKind(current.type) === 'sql' : typeof query.sql === 'string') ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -469,12 +481,68 @@ function QueryEditor({
             height={200}
             value={String(query.sql ?? '')}
             problems={ctx.problemsAt(...at, 'query', 'sql')}
+            text={ctx.text(...at, 'query', 'sql')}
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
+      ) : messageKind ? (
+        <MessageQueryForm
+          kind={messageKind}
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+        />
       ) : (
         <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
       )}
+    </div>
+  )
+}
+
+/**
+ * A message resource's query (Pub/Sub M19, SQS and Kafka M26): send to a topic or queue, messages as JSON with
+ * `{{ }}`.
+ */
+function MessageQueryForm({
+  kind,
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+}: {
+  kind: MessageKind
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+}) {
+  const q = MESSAGE_QUERIES[kind]
+  return (
+    <div className="flex flex-col gap-4">
+      <Field label={q.label} hint={q.hint}>
+        <Input
+          className="font-mono"
+          placeholder="orders"
+          data-testid={`query-${q.target}`}
+          value={String(query[q.target] ?? '')}
+          onChange={(e) => setQuery({ [q.target]: e.target.value })}
+        />
+      </Field>
+      <EditorField label="Messages" hint={q.messagesHint}>
+        <Code
+          path={ctx.modelPath(`${models}messages`)}
+          language="plaintext"
+          height={140}
+          value={String(query.messages ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'messages')}
+          text={ctx.text(...at, 'query', 'messages')}
+          onChange={(messages) => setQuery({ messages })}
+        />
+      </EditorField>
     </div>
   )
 }
@@ -497,6 +565,7 @@ function RestQueryForm({
     json?: string
     raw?: string
     fields?: KeyValue[]
+    parts?: MultipartPart[]
   }
   return (
     <div className="flex flex-col gap-4">
@@ -537,13 +606,16 @@ function RestQueryForm({
                     ? { type, fields: [] }
                     : type === 'raw'
                       ? { type, raw: '', contentType: 'text/plain' }
-                      : { type: 'none' },
+                      : type === 'multipart'
+                        ? { type, parts: [] }
+                        : { type: 'none' },
             })
           }}
         >
           <option value="none">No body</option>
           <option value="json">JSON</option>
           <option value="form">Form</option>
+          <option value="multipart">Multipart</option>
           <option value="raw">Raw</option>
         </Select>
       </Field>
@@ -554,6 +626,7 @@ function RestQueryForm({
           height={140}
           value={body.json ?? ''}
           problems={ctx.problemsAt(...at, 'query', 'body', 'json')}
+          text={ctx.text(...at, 'query', 'body', 'json')}
           onChange={(json) => setQuery({ body: { type: 'json', json } })}
         />
       )}
@@ -562,6 +635,13 @@ function RestQueryForm({
           label="Form fields"
           rows={body.fields ?? []}
           onChange={(fields) => setQuery({ body: { type: 'form', fields } })}
+        />
+      )}
+      {body.type === 'multipart' && (
+        <MultipartParts
+          compact
+          parts={body.parts ?? []}
+          onChange={(parts) => setQuery({ body: { type: 'multipart', parts } })}
         />
       )}
       {body.type === 'raw' && (
@@ -656,6 +736,7 @@ function BranchForm({ block, ctx }: { block: BlockOf<'branch'>; ctx: FormContext
               height={30}
               value={c.expression}
               problems={ctx.problemsAt('config', 'conditions', i, 'expression')}
+              text={ctx.text('config', 'conditions', i, 'expression')}
               onChange={(expression) =>
                 setConditions(conditions.map((x) => (x.id === c.id ? { ...x, expression } : x)))
               }
@@ -725,6 +806,7 @@ function FilterForm({ block, ctx }: { block: BlockOf<'filter'>; ctx: FormContext
           height={30}
           value={block.config.input}
           problems={ctx.problemsAt('config', 'input')}
+          text={ctx.text('config', 'input')}
           onChange={(input) => set({ input })}
         />
       </EditorField>
@@ -736,6 +818,7 @@ function FilterForm({ block, ctx }: { block: BlockOf<'filter'>; ctx: FormContext
           height={30}
           value={block.config.condition}
           problems={ctx.problemsAt('config', 'condition')}
+          text={ctx.text('config', 'condition')}
           onChange={(condition) => set({ condition })}
         />
       </EditorField>
@@ -763,6 +846,7 @@ function ResponseForm({ block, ctx }: { block: BlockOf<'response'>; ctx: FormCon
           height={140}
           value={block.config.body ?? ''}
           problems={ctx.problemsAt('config', 'body')}
+          text={ctx.text('config', 'body')}
           onChange={(body) => set({ body })}
         />
       </EditorField>
@@ -776,12 +860,18 @@ function TemplateLine({
   value,
   onChange,
   problems,
+  text,
+  removeEmpty,
   placeholder,
 }: {
   path: string
   value: string
   onChange: (value: string) => void
   problems?: FieldProblem[]
+  /** The template's place in the definition (shared editing). */
+  text?: (string | number)[]
+  /** Cleared, the template is removed from the definition. */
+  removeEmpty?: boolean
   placeholder?: string
 }) {
   return (
@@ -793,6 +883,8 @@ function TemplateLine({
         height={30}
         value={value}
         problems={problems}
+        text={text}
+        removeEmpty={removeEmpty}
         onChange={onChange}
       />
     </div>
@@ -832,6 +924,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
           path={ctx.modelPath('input.txt')}
           value={config.input}
           problems={ctx.problemsAt('config', 'input')}
+          text={ctx.text('config', 'input')}
           onChange={(input) => set({ input })}
         />
       </EditorField>
@@ -893,18 +986,21 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
                   ? {
                       kind,
                       resource: resource?.slug ?? '',
-                      query: (isSqlType(resource?.type) || !resource
-                        ? { sql: 'select {{ value }}' }
-                        : DEFAULT_REST) as never,
+                      query: (resource
+                        ? defaultQuery(resource.type, 'select {{ value }}')
+                        : { sql: 'select {{ value }}' }) as never,
                     }
                   : kind === 'function'
                     ? { kind, function: functions[0]?.name ?? '' }
-                    : { kind, workflow: '' },
+                    : kind === 'library'
+                      ? { kind, library: '', version: 'latest' }
+                      : { kind, workflow: '' },
             )
           }}
         >
           <option value="code">Code</option>
           <option value="query">A resource query</option>
+          <option value="library">A library query</option>
           <option value="function">A function</option>
           <option value="workflow">A workflow</option>
         </Select>
@@ -920,6 +1016,7 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
             python: "value is the item and index its position; return the item's result (no network).",
           }}
           problems={ctx.problemsAt('config', 'runner', 'code')}
+          text={ctx.text('config', 'runner', 'code')}
           ctx={ctx}
           onChange={(next) => setRunner(withLanguage({ ...runner, ...next }))}
         />
@@ -934,6 +1031,15 @@ function LoopForm({ block, ctx }: { block: BlockOf<'loop'>; ctx: FormContext }) 
           onChange={(next) =>
             setRunner({ kind: 'query', resource: next.resource, query: next.query as never })
           }
+        />
+      )}
+      {runner.kind === 'library' && (
+        <LibraryCall
+          call={runner}
+          at={['config', 'runner']}
+          ctx={ctx}
+          hint="Parameters may use value and index."
+          onChange={(call) => setRunner({ kind: 'library', ...call })}
         />
       )}
       {runner.kind === 'function' && (
@@ -1043,12 +1149,14 @@ function FunctionArgs({
             path={ctx.modelPath(`${at.join('.')}.params.${param.name}.txt`)}
             value={params?.[param.name] ?? ''}
             problems={ctx.problemsAt(...at, 'params', param.name)}
+            text={ctx.text(...at, 'params', param.name)}
             onChange={(value) => {
               const next = { ...params }
               if (value) next[param.name] = value
               else delete next[param.name]
               onChange(fn, Object.keys(next).length ? next : undefined)
             }}
+            removeEmpty
           />
         </EditorField>
       ))}
@@ -1070,6 +1178,151 @@ function FunctionCallForm({ block, ctx }: { block: BlockOf<'function'>; ctx: For
           config: { function: fn, ...(params && { params }) },
         }))
       }
+    />
+  )
+}
+
+type LibraryCallConfig = BlockOf<'libraryQuery'>['config']
+
+/**
+ * The library query to run, its version and the parameters' templates (a Library query block, a loop's library
+ * runner; M21). The parameters shown are the chosen release's, plus any passed that it doesn't declare.
+ */
+function LibraryCall({
+  call,
+  onChange,
+  at,
+  ctx,
+  hint,
+}: {
+  call: LibraryCallConfig
+  onChange: (call: LibraryCallConfig) => void
+  at: (string | number)[]
+  ctx: FormContext
+  hint?: string
+}) {
+  const trpc = useTRPC()
+  const list = useQuery(trpc.libraryQueries.list.queryOptions())
+  const ref = useEditor((s) => s.libraries[call.library])
+  const id = ref?.id ?? list.data?.find((q) => q.slug === call.library)?.id
+  const releases = useQuery({
+    ...trpc.libraryQueries.releases.queryOptions({ libraryQueryId: id ?? '' }),
+    enabled: !!id,
+  })
+  const published = (list.data ?? []).filter((q) => q.liveVersion)
+  const chosen = published.find((q) => q.slug === call.library)
+  const release = releases.data?.find((r) =>
+    call.version === 'latest' ? r.live : r.version === call.version,
+  )
+  const declared = release?.params ?? []
+  const extra = Object.keys(call.params ?? {}).filter((name) => !declared.some((p) => p.name === name))
+  const setParam = (name: string, value: string) => {
+    const params = { ...call.params }
+    if (value) params[name] = value
+    else delete params[name]
+    const { params: _old, ...rest } = call
+    onChange(Object.keys(params).length ? { ...rest, params } : rest)
+  }
+  return (
+    <div className="flex flex-col gap-3" data-testid="library-call">
+      <div className="flex items-end gap-2">
+        <Field label="Library query" className="min-w-0 flex-1">
+          <Select
+            value={call.library}
+            onChange={(e) => onChange({ library: e.target.value, version: 'latest' })}
+          >
+            {!chosen && (
+              <option value={call.library}>
+                {call.library ? `${call.library} (not found)` : 'Choose a library query…'}
+              </option>
+            )}
+            {published.map((q) => (
+              <option key={q.slug} value={q.slug}>
+                {q.name} ({q.slug})
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {call.library && (
+          <Link
+            to="/library/$slug"
+            params={{ slug: call.library }}
+            title="Open in the Query Library"
+            className="mb-2 text-muted hover:text-ink"
+          >
+            <ExternalLink className="size-4" />
+          </Link>
+        )}
+      </div>
+      {list.data && published.length === 0 && (
+        <p className="text-xs text-muted">
+          Only published library queries you can use are listed.{' '}
+          <Link to="/library" className="text-accent hover:underline">
+            Open the Query Library
+          </Link>
+        </p>
+      )}
+      {call.library && (
+        <Field label="Version">
+          <Select value={call.version} onChange={(e) => onChange({ ...call, version: e.target.value })}>
+            <option value="latest">
+              Latest, whichever is live{ref?.liveVersion ? ` (now v${ref.liveVersion})` : ''}
+            </option>
+            {releases.data?.map((r) => (
+              <option key={r.id} value={r.version}>
+                v{r.version}
+              </option>
+            ))}
+            {call.version !== 'latest' && !releases.data?.some((r) => r.version === call.version) && (
+              <option value={call.version}>v{call.version}</option>
+            )}
+          </Select>
+        </Field>
+      )}
+      <Problems list={[...ctx.problemsAt(...at, 'library'), ...ctx.problemsAt(...at, 'version')]} />
+      {release && declared.length === 0 && extra.length === 0 && (
+        <p className="text-xs text-muted">This release has no parameters.</p>
+      )}
+      {[...declared, ...extra.map((name) => ({ name, description: undefined }))].map((p) => (
+        <EditorField
+          key={p.name}
+          label={<span className="font-mono">{p.name}</span>}
+          hint={p.description ?? (extra.includes(p.name) ? 'Not a parameter of this release' : undefined)}
+        >
+          <TemplateLine
+            path={ctx.modelPath(`${at.join('.')}.params.${p.name}.txt`)}
+            value={call.params?.[p.name] ?? ''}
+            problems={ctx.problemsAt(...at, 'params', p.name)}
+            text={ctx.text(...at, 'params', p.name)}
+            onChange={(value) => setParam(p.name, value)}
+            removeEmpty
+          />
+        </EditorField>
+      ))}
+      {hint && declared.length > 0 && <p className="-mt-1 text-xs text-muted">{hint}</p>}
+      {release && (
+        <details className="rounded-md border border-border" data-testid="library-call-query">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+            The query (v{release.version}, on {release.resource})
+          </summary>
+          <pre className="overflow-x-auto px-3 pb-3 font-mono text-xs whitespace-pre-wrap">
+            {typeof release.query.sql === 'string'
+              ? release.query.sql
+              : JSON.stringify(release.query, null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function LibraryQueryForm({ block, ctx }: { block: BlockOf<'libraryQuery'>; ctx: FormContext }) {
+  return (
+    <LibraryCall
+      call={block.config}
+      at={['config']}
+      ctx={ctx}
+      onChange={(config) => updateBlock<BlockOf<'libraryQuery'>>(block.name, (b) => ({ ...b, config }))}
     />
   )
 }
@@ -1119,6 +1372,7 @@ function ChildWorkflow({
           height={90}
           value={input ?? ''}
           problems={ctx.problemsAt(...at, 'input')}
+          text={ctx.text(...at, 'input')}
           onChange={(next) => onChange({ input: next })}
         />
       </EditorField>
@@ -1183,6 +1437,7 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
               path={ctx.modelPath('amount.txt')}
               value={config.amount}
               problems={ctx.problemsAt('config', 'amount')}
+              text={ctx.text('config', 'amount')}
               onChange={(amount) => set({ ...config, amount })}
             />
           </EditorField>
@@ -1205,6 +1460,7 @@ function WaitForm({ block, ctx }: { block: BlockOf<'wait'>; ctx: FormContext }) 
             path={ctx.modelPath('until.txt')}
             value={config.until}
             problems={ctx.problemsAt('config', 'until')}
+            text={ctx.text('config', 'until')}
             onChange={(until) => set({ kind: 'until', until })}
           />
         </EditorField>
@@ -1260,6 +1516,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
           path={ctx.modelPath('title.txt')}
           value={config.title}
           problems={ctx.problemsAt('config', 'title')}
+          text={ctx.text('config', 'title')}
           onChange={(title) => set({ title })}
         />
       </EditorField>
@@ -1270,7 +1527,9 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
           height={80}
           value={config.description ?? ''}
           problems={ctx.problemsAt('config', 'description')}
+          text={ctx.text('config', 'description')}
           onChange={(description) => set({ description: description || undefined })}
+          removeEmpty
         />
       </EditorField>
 
@@ -1287,6 +1546,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
                 path={ctx.modelPath(`assignee-${i}.txt`)}
                 value={u}
                 problems={ctx.problemsAt('config', 'assignees', 'users', i)}
+                text={ctx.text('config', 'assignees', 'users', i)}
                 onChange={(v) => setAssignees({ users: users.map((x, j) => (j === i ? v : x)) })}
               />
             </div>
@@ -1503,6 +1763,7 @@ function UserTaskForm({ block, ctx }: { block: BlockOf<'userTask'>; ctx: FormCon
               path={ctx.modelPath('due.txt')}
               value={config.due.amount}
               problems={ctx.problemsAt('config', 'due', 'amount')}
+              text={ctx.text('config', 'due', 'amount')}
               onChange={(amount) => set({ due: { ...config.due!, amount } })}
             />
             <Select

@@ -3,7 +3,9 @@ import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
+import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
+import { MAX_REQUIREMENTS, requirementProblems } from './requirements'
 import {
   type Block,
   type BlockOf,
@@ -13,15 +15,25 @@ import {
   MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
   suspends,
+  type WebhookTrigger,
   type WorkflowDefinition,
   workflowDefinitionSchema,
 } from './schema'
-import { parseWebhookAlias } from './triggers'
+import {
+  CONFIG_VAR_NAME,
+  DEFAULT_SIGNED_PAYLOAD,
+  isHeaderName,
+  MAX_BODY_SCHEMA_BYTES,
+  parseSignedPayload,
+  parseWebhookAlias,
+  WEBHOOK_PRESETS,
+} from './triggers'
 import {
   type BlockGraphSource,
   blockGraphs,
   calledFunctions,
   functionReturnBlock,
+  libraryCall,
   pythonFields,
 } from './walk'
 
@@ -44,10 +56,25 @@ export type DiagnosticCode =
   | 'unknown_resource'
   | 'invalid_query'
   | 'invalid_alias'
+  /** A webhook's signature settings (secret name, header names, preset-only fields, the signed payload). */
+  | 'invalid_webhook_auth'
+  /** A webhook's body schema doesn't compile, or is too large. */
+  | 'invalid_body_schema'
+  /** A webhook's other settings: allowed environments, the idempotency header. */
+  | 'invalid_webhook'
   | 'invalid_schedule'
   | 'invalid_cron'
   | 'invalid_timezone'
   | 'duplicate_schedule'
+  /** A Pub/Sub trigger's settings: its resource (a `pubsub` one) or subscription name (M19). */
+  | 'invalid_pubsub'
+  | 'duplicate_pubsub'
+  /** An SQS trigger's settings (M26): its resource (an `sqs` one) or queue. */
+  | 'invalid_sqs'
+  | 'duplicate_sqs'
+  /** A Kafka trigger's settings (M26): its resource (a `kafka` one), topics, group or dead-letter topic. */
+  | 'invalid_kafka'
+  | 'duplicate_kafka'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -63,6 +90,12 @@ export type DiagnosticCode =
   | 'task_in_handler'
   | 'unknown_workflow'
   | 'unpublished_workflow'
+  /** A Library query block's or runner's library query (M21): see `checkLibraryReference`. */
+  | 'unknown_library'
+  | 'no_use_access'
+  | 'unpublished_library'
+  | 'unknown_version'
+  | 'missing_param'
   | 'python_unsupported'
   | 'python_builtin'
   /** Python code assigns a block's or run global's name: there it's the code's own variable (a warning). */
@@ -71,6 +104,10 @@ export type DiagnosticCode =
   | 'python_keyword'
   /** The server's: no code executor for Python (or it couldn't be reached to check the code). */
   | 'python_unavailable'
+  /** A workflow's Python package (M23): not a plain requirement, a duplicate, or too many. */
+  | 'invalid_requirement'
+  /** The server's: packages declared, no package builder to install them (M23). */
+  | 'python_packages_unavailable'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -90,6 +127,8 @@ export interface Diagnostic {
 
 /** What the validator needs from a connector; `AnyConnector` from @ow/connectors fits. */
 export interface QueryValidator {
+  /** The resource type (`postgres`, `pubsub`, …): a Pub/Sub trigger needs a `pubsub` resource. */
+  type?: string
   querySchema: z.ZodType
   validateQuery(query: never): TemplateError[]
 }
@@ -106,10 +145,20 @@ export interface ValidateOptions {
    */
   resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
   /**
+   * The library queries the workflow may use (M21), by slug; undefined for none with that slug. When given, every
+   * Library query block and library loop runner is checked (`checkLibraryReference`).
+   */
+  resolveLibrary?: (slug: string) => LibraryInfo | undefined
+  /**
    * Whether a User Task assignee written out in full (no `{{ }}`) exists: a user by email, a group by name. When
    * given, each one is checked; templated ones are checked when the task opens.
    */
   resolveAssignee?: (kind: 'user' | 'group', name: string) => boolean
+  /**
+   * Why a webhook's body schema doesn't compile, or null when it does: `checkBodySchema` from
+   * `@ow/definition/body-schema`. Without it only the schema's size is checked.
+   */
+  checkBodySchema?: (schema: unknown) => string | null
 }
 
 export interface ValidationResult {
@@ -142,7 +191,8 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
     if (!source.function) start = found
   }
   checkRecursion(def, functions, report)
-  checkTriggers(def, start, report)
+  checkTriggers(def, start, report, options)
+  checkRequirements(def, report)
 
   // User Task assignees written out in full exist.
   if (options.resolveAssignee) {
@@ -190,6 +240,24 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
           block: block.name,
           ...(fn && { function: fn.name }),
         })
+      })
+    }
+  }
+
+  // Library queries exist, may be used, have the release named, and get the parameters they declare (M21).
+  if (options.resolveLibrary) {
+    for (const { blocks, path, function: fn } of blockGraphs(def)) {
+      blocks.forEach((block, i) => {
+        const use = libraryCall(block)
+        if (!use) return
+        for (const problem of checkLibraryReference(use.call, options.resolveLibrary!)) {
+          report({
+            ...problem,
+            path: [...path, 'blocks', i, ...use.at, ...problem.path],
+            block: block.name,
+            ...(fn && { function: fn.name }),
+          })
+        }
       })
     }
   }
@@ -763,7 +831,25 @@ function checkRecursion(
 }
 
 /** Trigger problems are pinned to the start trigger, whose inspector edits them. */
-function checkTriggers(def: WorkflowDefinition, start: string | undefined, report: Report) {
+/** M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS. */
+function checkRequirements(def: WorkflowDefinition, report: Report) {
+  const requirements = def.settings?.python?.requirements
+  if (!requirements) return
+  const path = ['settings', 'python', 'requirements']
+  if (requirements.length > MAX_REQUIREMENTS) {
+    report({ code: 'invalid_requirement', message: `At most ${MAX_REQUIREMENTS} packages`, path })
+  }
+  for (const { index, message } of requirementProblems(requirements)) {
+    report({ code: 'invalid_requirement', message, path: [...path, index] })
+  }
+}
+
+function checkTriggers(
+  def: WorkflowDefinition,
+  start: string | undefined,
+  report: Report,
+  options: ValidateOptions,
+) {
   const at = (path: (string | number)[]) => ({ path: ['triggers', ...path], ...(start && { block: start }) })
   const alias = def.triggers?.webhook?.alias
   if (alias !== undefined) {
@@ -777,6 +863,11 @@ function checkTriggers(def: WorkflowDefinition, start: string | undefined, repor
       })
     }
   }
+  if (def.triggers?.webhook)
+    checkWebhook(def.triggers.webhook, (path) => at(['webhook', ...path]), report, options)
+  checkQueueTriggers('pubsub', def.triggers?.pubsub, at, report, options)
+  checkQueueTriggers('sqs', def.triggers?.sqs, at, report, options)
+  checkQueueTriggers('kafka', def.triggers?.kafka, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -828,6 +919,228 @@ function checkTriggers(def: WorkflowDefinition, start: string | undefined, repor
       })
     }
   })
+}
+
+/** A subscription id (Pub/Sub's rule: a letter, then 2–254 of letters, digits and `-_.~+%`), or a full name. */
+const PUBSUB_SUBSCRIPTION = /^(projects\/[^/]+\/subscriptions\/)?[A-Za-z][\w.~+%-]{2,254}$/
+/** A queue name (SQS's rule: up to 80 of letters, digits, `-` and `_`, `.fifo` for FIFO queues), or an https URL. */
+const SQS_QUEUE = /^(https?:\/\/[^\s/]+\/[^\s]+|[\w-]{1,80}(\.fifo)?)$/
+/** A topic name (Kafka's rule: up to 249 of letters, digits, `.`, `_` and `-`; not `.` or `..`). */
+const KAFKA_TOPIC = /^(?!\.{1,2}$)[\w.-]{1,249}$/
+/** A consumer group id: printable, no spaces at the ends. */
+const KAFKA_GROUP = /^\S(.*\S)?$/
+
+const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
+
+/**
+ * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
+ * known), and the kind's own settings: a subscription name, a queue, topics and a group.
+ */
+function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka'>(
+  kind: K,
+  triggers: QueueTriggers[K],
+  at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
+  report: Report,
+  options: ValidateOptions,
+) {
+  const label = QUEUE_LABELS[kind]
+  const invalid = `invalid_${kind}` as const
+  const names = new Set<string>()
+  triggers?.forEach((trigger, i) => {
+    const where = `${label} trigger "${trigger.name}"`
+    if (names.has(trigger.name))
+      report({
+        code: `duplicate_${kind}`,
+        message: `Another ${label} trigger is already named "${trigger.name}"`,
+        ...at([kind, i, 'name']),
+      })
+    names.add(trigger.name)
+    if (options.resolveResource) {
+      const connector = options.resolveResource(trigger.resource)
+      if (!connector)
+        report({
+          code: 'unknown_resource',
+          message: `${where}: no resource has the slug "${trigger.resource}"`,
+          ...at([kind, i, 'resource']),
+        })
+      else if (connector.type !== kind)
+        report({
+          code: invalid,
+          message: `${where}: "${trigger.resource}" isn't ${kind === 'sqs' ? 'an' : 'a'} ${label} resource`,
+          ...at([kind, i, 'resource']),
+        })
+    }
+    if ('subscription' in trigger && !PUBSUB_SUBSCRIPTION.test(trigger.subscription))
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.subscription}" isn't a subscription id or projects/…/subscriptions/… name`,
+        ...at([kind, i, 'subscription']),
+      })
+    if ('queue' in trigger && !SQS_QUEUE.test(trigger.queue))
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.queue}" isn't a queue name or URL`,
+        hint: 'Use the name (letters, digits, - and _, .fifo for a FIFO queue) or the https:// URL',
+        ...at([kind, i, 'queue']),
+      })
+    if ('topics' in trigger) {
+      trigger.topics.forEach((topic, t) => {
+        if (!KAFKA_TOPIC.test(topic))
+          report({
+            code: invalid,
+            message: `${where}: "${topic}" isn't a topic name`,
+            hint: 'Letters, digits, ., _ and -',
+            ...at([kind, i, 'topics', t]),
+          })
+      })
+      if (new Set(trigger.topics).size !== trigger.topics.length)
+        report({ code: invalid, message: `${where} names a topic twice`, ...at([kind, i, 'topics']) })
+      if (trigger.groupId !== undefined && !KAFKA_GROUP.test(trigger.groupId))
+        report({
+          code: invalid,
+          message: `${where}: the group id can't start or end with a space`,
+          ...at([kind, i, 'groupId']),
+        })
+      if (trigger.deadLetterTopic !== undefined) {
+        if (!KAFKA_TOPIC.test(trigger.deadLetterTopic))
+          report({
+            code: invalid,
+            message: `${where}: "${trigger.deadLetterTopic}" isn't a topic name`,
+            ...at([kind, i, 'deadLetterTopic']),
+          })
+        else if (trigger.topics.includes(trigger.deadLetterTopic))
+          report({
+            code: invalid,
+            message: `${where}: the dead-letter topic can't be one it reads`,
+            hint: 'A failing message would come back to it forever',
+            ...at([kind, i, 'deadLetterTopic']),
+          })
+      }
+    }
+  })
+}
+
+const CUSTOM_SIGNATURE_FIELDS = [
+  'header',
+  'algorithm',
+  'encoding',
+  'prefix',
+  'timestampHeader',
+  'signedPayload',
+] as const
+
+/** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */
+function checkWebhook(
+  webhook: WebhookTrigger,
+  at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
+  report: Report,
+  options: ValidateOptions,
+) {
+  const auth = webhook.auth
+  if (auth?.type === 'signature') {
+    const authAt = (field: string) => at(['auth', field])
+    if (!auth.secret) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'Choose the secret config var that holds the signing secret',
+        ...authAt('secret'),
+      })
+    } else if (!CONFIG_VAR_NAME.test(auth.secret)) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: `"${auth.secret}" isn't a config var name`,
+        hint: 'Use letters, digits and underscores, not starting with a digit',
+        ...authAt('secret'),
+      })
+    }
+    let timestamped: boolean
+    if (auth.preset === 'custom') {
+      if (!auth.header) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'Name the header that carries the signature',
+          ...authAt('header'),
+        })
+      }
+      for (const field of ['header', 'timestampHeader'] as const) {
+        const name = auth[field]
+        if (name && !isHeaderName(name)) {
+          report({ code: 'invalid_webhook_auth', message: `"${name}" isn't a header name`, ...authAt(field) })
+        }
+      }
+      const payload = parseSignedPayload(auth.signedPayload ?? DEFAULT_SIGNED_PAYLOAD)
+      if (!payload.ok) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: payload.error,
+          ...authAt('signedPayload'),
+          ...(payload.hint && { hint: payload.hint }),
+        })
+      }
+      const signsTimestamp = payload.ok && payload.pieces.some((p) => 'part' in p && p.part === 'timestamp')
+      if (signsTimestamp && !auth.timestampHeader) {
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'The signed payload uses {timestamp}: name the header that carries it',
+          ...authAt('timestampHeader'),
+        })
+      }
+      timestamped = auth.timestampHeader !== undefined
+    } else {
+      const preset = WEBHOOK_PRESETS[auth.preset]
+      for (const field of CUSTOM_SIGNATURE_FIELDS) {
+        if (auth[field] !== undefined) {
+          report({
+            code: 'invalid_webhook_auth',
+            message: `The ${preset.label} preset sets "${field}" itself; it's for custom signatures only`,
+            ...authAt(field),
+          })
+        }
+      }
+      timestamped = preset.timestamped
+    }
+    if (auth.toleranceSeconds !== undefined && !timestamped) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'A tolerance only applies to signatures with a timestamp',
+        ...authAt('toleranceSeconds'),
+      })
+    }
+  }
+
+  if (webhook.bodySchema !== undefined) {
+    const size = new TextEncoder().encode(JSON.stringify(webhook.bodySchema)).length
+    const error =
+      size > MAX_BODY_SCHEMA_BYTES
+        ? `The body schema is larger than ${MAX_BODY_SCHEMA_BYTES / 1024} KB`
+        : options.checkBodySchema?.(webhook.bodySchema)
+    if (error) report({ code: 'invalid_body_schema', message: error, ...at(['bodySchema']) })
+  }
+
+  const seen = new Set<string>()
+  webhook.environments?.forEach((slug, i) => {
+    if (!slug) {
+      report({ code: 'invalid_webhook', message: 'Choose an environment', ...at(['environments', i]) })
+    } else if (seen.has(slug)) {
+      report({ code: 'invalid_webhook', message: `"${slug}" is listed twice`, ...at(['environments', i]) })
+    }
+    seen.add(slug)
+  })
+
+  if (webhook.idempotencyHeader !== undefined && webhook.auth?.type === 'public') {
+    report({
+      code: 'invalid_webhook',
+      message: "A public webhook doesn't use an idempotency header: any caller could replay another's run",
+      ...at(['idempotencyHeader']),
+    })
+  } else if (webhook.idempotencyHeader !== undefined && !isHeaderName(webhook.idempotencyHeader)) {
+    report({
+      code: 'invalid_webhook',
+      message: `"${webhook.idempotencyHeader}" isn't a header name`,
+      ...at(['idempotencyHeader']),
+    })
+  }
 }
 
 function checkQuery(

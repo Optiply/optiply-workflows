@@ -1,24 +1,106 @@
 import {
   type AppComponent,
+  CUSTOM_PROPS,
   componentSpec,
+  containerViews,
   type JsonValue,
   MODULE_PROPS,
   moveToParent,
+  outermostOf,
   type PropSpec,
   removeComponent,
+  removeComponents,
   setEntityPage,
   setHandlers,
   setProp,
+  slotOf,
   withDescendants,
 } from '@ow/app-definition'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { Button, Checkbox, Select, sectionLabelClass } from '@/components/ui'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppValue } from '../runtime/react'
+import { ColumnsEditor } from './columns'
+import { CustomInstanceFields } from './custom'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
 import { HandlersEditor } from './handlers'
 import { ModuleInstanceFields } from './modules'
+import { NavItemsEditor } from './nav-items'
 import { specOf, useAppEditor } from './store'
+import { ViewsEditor } from './views'
+
+/**
+ * Several components selected (M24): how many and which (a name selects just it), and what applies to all of them:
+ * delete, duplicate, move into a container (or out to the page).
+ */
+export function SelectionInspector({ names, onDuplicate }: { names: string[]; onDuplicate: () => void }) {
+  const definition = useAppEditor((s) => s.definition)
+  const update = useAppEditor((s) => s.update)
+  const select = useAppEditor((s) => s.select)
+  const page = useAppEditor((s) => s.url.page)
+  const inside = new Set(names.flatMap((n) => [...withDescendants(definition, n)]))
+  const targets = definition.components.filter((c) => componentSpec(c.type)?.container && !inside.has(c.name))
+  return (
+    <div className="flex flex-col gap-4 p-4" data-testid="inspector-selection">
+      <div>
+        <div className="text-sm font-medium">{names.length} components selected</div>
+        <div className="mt-0.5 text-xs text-muted">
+          Shift- or ⌘-click adds and removes; the arrow keys move them.
+        </div>
+      </div>
+      <ul className="flex flex-wrap gap-1">
+        {names.map((n) => (
+          <li key={n}>
+            <button
+              type="button"
+              className="rounded bg-subtle px-1.5 py-0.5 font-mono text-xs hover:bg-accent-soft"
+              onClick={() => select(n)}
+            >
+              {n}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <EditorField label="Move into">
+        <Select
+          aria-label="Move into"
+          value="-"
+          onChange={(e) => {
+            const to = e.target.value === '' ? undefined : e.target.value
+            // Only the outermost: what's inside a selected container moves with it.
+            update((def) => outermostOf(def, names).reduce((d, n) => moveToParent(d, n, to, { page }), def))
+          }}
+        >
+          <option value="-" disabled>
+            Pick a place
+          </option>
+          <option value="">{definition.pages?.length ? `Page ${page}` : 'The page'}</option>
+          {targets.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </EditorField>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onDuplicate}>
+          Duplicate
+        </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => {
+            update((def) => removeComponents(def, names))
+            select(null)
+          }}
+        >
+          <Trash2 className="size-3.5" /> Delete {names.length}
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 /** Everything about the selected component: name, parent, props and event handlers. */
 export function ComponentInspector({ name }: { name: string }) {
@@ -26,12 +108,15 @@ export function ComponentInspector({ name }: { name: string }) {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const page = useAppEditor((s) => s.url.page)
+  const setUrl = useAppEditor((s) => s.setUrl)
   const modules = useAppEditor((s) => s.modules)
+  const componentLibraries = useAppEditor((s) => s.componentLibraries)
   const index = definition.components.findIndex((c) => c.name === name)
   const component = definition.components[index]
   if (!component) return null
-  const spec = specOf(component, modules)
+  const spec = specOf(component, modules, componentLibraries)
   const instance = component.type === 'module'
+  const custom = component.type === 'custom'
   const base = ['components', index]
 
   if (!spec) {
@@ -43,6 +128,10 @@ export function ComponentInspector({ name }: { name: string }) {
   }
   const inside = withDescendants(definition, name)
   const parents = definition.components.filter((c) => componentSpec(c.type)?.container && !inside.has(c.name))
+  // The container it's in (M24): its views, header and footer to pick from.
+  const holder = definition.components.find((c) => c.name === component.parent)
+  const inContainer = holder?.type === 'container'
+  const parentViews = containerViews(holder)
 
   return (
     <div className="flex flex-col gap-4 p-4" data-testid={`inspector-${name}`}>
@@ -81,19 +170,74 @@ export function ComponentInspector({ name }: { name: string }) {
         </EditorField>
       )}
 
+      {inContainer && (
+        <EditorField label="Area">
+          <Select
+            aria-label="Area"
+            value={slotOf(definition, component) ?? ''}
+            onChange={(e) =>
+              update((def) =>
+                moveToParent(def, name, component.parent, { slot: e.target.value || undefined }),
+              )
+            }
+          >
+            {parentViews.length ? (
+              parentViews.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.label || v.name}
+                </option>
+              ))
+            ) : (
+              <option value="">Body</option>
+            )}
+            <option value="header">Header</option>
+            <option value="footer">Footer</option>
+          </Select>
+        </EditorField>
+      )}
+
+      {component.parent === undefined &&
+        !spec.overlay &&
+        definition.frame?.sidebar &&
+        component.page === undefined && (
+          <EditorField label="Area">
+            <Select
+              aria-label="Area"
+              value={component.slot === 'sidebar' ? 'sidebar' : ''}
+              onChange={(e) =>
+                update((def) =>
+                  moveToParent(def, name, undefined, { slot: e.target.value || undefined, page: null }),
+                )
+              }
+            >
+              <option value="">{definition.frame.header ? 'Header' : 'Above the page'}</option>
+              <option value="sidebar">Sidebar</option>
+            </Select>
+          </EditorField>
+        )}
+
       {definition.pages?.length && component.parent === undefined ? (
         <PageField
           value={component.page ?? null}
-          onChange={(to) => update((def) => setEntityPage(def, name, to))}
+          onChange={(to) => {
+            update((def) => setEntityPage(def, name, to))
+            // Moved to another page: open it, so the component stays in view (and selected).
+            if (to !== null) setUrl(to)
+          }}
         />
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <h3 className={sectionLabelClass}>{instance ? 'Module' : 'Properties'}</h3>
+        <h3 className={sectionLabelClass}>
+          {instance ? 'Module' : custom ? 'Custom component' : 'Properties'}
+        </h3>
         {instance && <ModuleInstanceFields component={component} index={index} />}
+        {custom && <CustomInstanceFields component={component} index={index} />}
         {Object.entries(spec.props)
-          // An instance's module and version have their own fields; the rest are the module's inputs.
+          // An instance's module and version have their own fields; the rest are the module's inputs. A custom
+          // component's library, component and version likewise (M25); the rest are its declared props.
           .filter(([prop]) => !instance || !(MODULE_PROPS as readonly string[]).includes(prop))
+          .filter(([prop]) => !custom || !(CUSTOM_PROPS as readonly string[]).includes(prop))
           .map(([prop, propSpec]) => (
             <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
           ))}
@@ -154,6 +298,22 @@ function PropField({
   const path = ['components', index, 'props', prop]
   const set = (next: JsonValue | undefined) => update((def) => setProp(def, component.name, prop, next))
   const multiLine = spec.type === 'array' || spec.type === 'object'
+  // A table's columns and a Navigation's links as lists (M24), or as JSON on request; a template is always text.
+  const [asJson, setAsJson] = useState(false)
+  const listable = (value === undefined || Array.isArray(value)) && !asJson
+  const columnsList =
+    component.type === 'table' && prop === 'columns' && (value === undefined || Array.isArray(value))
+  const itemsList =
+    component.type === 'navigation' && prop === 'items' && (value === undefined || Array.isArray(value))
+  const jsonToggle = (columnsList || itemsList) && (
+    <button
+      type="button"
+      className="rounded px-1 text-[11px] text-accent hover:underline"
+      onClick={() => setAsJson(!asJson)}
+    >
+      {asJson ? 'Edit as list' : 'Edit as JSON'}
+    </button>
+  )
   const fx = (
     <button
       type="button"
@@ -186,6 +346,16 @@ function PropField({
         ))}
       </Select>
     )
+  } else if (
+    component.type === 'container' &&
+    prop === 'views' &&
+    (value === undefined || Array.isArray(value))
+  ) {
+    control = <ViewsEditor name={component.name} />
+  } else if (columnsList && listable) {
+    control = <ColumnsEditor name={component.name} index={index} columns={(value as JsonValue[]) ?? []} />
+  } else if (itemsList && listable) {
+    control = <NavItemsEditor name={component.name} items={(value as JsonValue[]) ?? []} />
   } else {
     control = (
       <ParsedField
@@ -202,7 +372,12 @@ function PropField({
   const aside = fixedKind ? (
     fx
   ) : component.type === 'table' && prop === 'columns' ? (
-    <ColumnsFromData name={component.name} />
+    <span className="flex items-center gap-1">
+      <ColumnsFromData name={component.name} />
+      {jsonToggle}
+    </span>
+  ) : itemsList ? (
+    jsonToggle
   ) : undefined
   return (
     <EditorField
@@ -273,6 +448,8 @@ function ParsedField({
   return (
     <AppCodeField
       path={path}
+      // Parsed into the prop's value (a number, JSON or a template): not bound to a shared text.
+      bind={false}
       language="plaintext"
       singleLine={!multiLine}
       height={multiLine ? 96 : 30}
@@ -294,9 +471,11 @@ export function PageSelect({
   className?: string
 }) {
   const pages = useAppEditor((s) => s.definition.pages) ?? []
+  const readOnly = useAppEditor((s) => s.readOnly)
   return (
     <Select
       aria-label="Page"
+      disabled={readOnly}
       className={className}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || null)}

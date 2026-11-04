@@ -289,6 +289,51 @@ describe.skipIf(!available)('MySQL connector', () => {
     })
   })
 
+  describe('sql.where (M24)', () => {
+    const sql =
+      "SELECT id FROM customers WHERE id IN ({{ ids }}) AND {{ sql.where(t.filters, ['id', 'email', 'profile']) }} ORDER BY id"
+    const filtered = (filters: unknown) =>
+      runQuery(
+        pool,
+        mysqlConnector,
+        myResource(),
+        { sql },
+        {
+          evaluate: codeEvaluator({
+            ids: [1, 2, 3, 12, 20],
+            "sql.where(t.filters, ['id', 'email', 'profile'])": filters,
+          }),
+        },
+      )
+    const ids = async (filters: unknown) =>
+      ((await filtered(filters)).data as { id: number }[]).map((r) => r.id)
+
+    it('filters with its values bound, the array before it still expanded', async () => {
+      expect(await ids([])).toEqual([1, 2, 3, 12, 20])
+      expect(await ids([{ column: 'email', op: 'contains', value: 'USER2' }])).toEqual([2, 20])
+      expect(await ids([{ column: 'id', op: 'between', value: ['2', '12'], type: 'number' }])).toEqual([
+        2, 3, 12,
+      ])
+      expect(
+        await ids([
+          { column: 'profile', op: 'empty' },
+          { column: 'id', op: 'gt', value: 3 },
+        ]),
+      ).toEqual([12, 20])
+      expect(await ids([{ column: 'email', op: 'contains', value: "%' OR '1'='1" }])).toEqual([])
+    })
+
+    it('refuses other columns and operators', async () => {
+      for (const hostile of [
+        [{ column: 'id` OR 1=1 --', op: 'equals', value: 1 }],
+        [{ column: 'id', op: 'sleep' }],
+      ]) {
+        expect((await failure(filtered(hostile))).code).toBe('expression')
+      }
+      expect(await countRows()).toBe(30)
+    })
+  })
+
   describe('guards', () => {
     it('read-only resources cannot write or change the schema', async () => {
       const ro = myResource({ readOnly: true })

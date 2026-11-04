@@ -1,5 +1,5 @@
 import type { AppDefinition } from '@ow/app-definition'
-import type { AppUrl, ModuleReleases } from '@ow/app-runtime'
+import type { AppUrl, ComponentLibraryReleases, ModuleReleases } from '@ow/app-runtime'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
 import { useEffect, useMemo } from 'react'
@@ -7,6 +7,7 @@ import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
+import { AppChromeContext } from './grid-context'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from './runtime/react'
 import { AppStopped } from './stopped'
@@ -79,6 +80,7 @@ export function AppViewPage() {
         definition: app.data.release.definition,
       }}
       modules={app.data.modules}
+      libraries={app.data.libraries}
       environment={environment}
       environments={environments.data}
     />
@@ -94,11 +96,13 @@ interface RunningAppProps {
   release: { id: string; version: string; definition: AppDefinition }
   /** The module releases its instances run (M14). */
   modules: ModuleReleases
+  /** The component library releases its custom components run (M25). */
+  libraries: ComponentLibraryReleases
   environment: { id: string; slug: string; name: string }
   environments: { id: string; slug: string; name: string }[]
 }
 
-function RunningApp({ app, release, modules, environment, environments }: RunningAppProps) {
+function RunningApp({ app, release, modules, libraries, environment, environments }: RunningAppProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const router = useRouter()
@@ -127,6 +131,7 @@ function RunningApp({ app, release, modules, environment, environments }: Runnin
   const { ref, host } = useAppHost(`${release.id}:${environment.id}`, {
     definition: release.definition,
     modules,
+    libraries,
     appId: app.id,
     releaseId: release.id,
     environmentId: environment.id,
@@ -191,7 +196,15 @@ function RunningApp({ app, release, modules, environment, environments }: Runnin
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-4">
         {host && (
           <AppHostProvider host={host}>
-            <AppBody definition={release.definition} appName={app.name} />
+            <AppChromeContext.Provider
+              value={{
+                appName: app.name,
+                user: { name: me.name, email: me.email },
+                pageHref: (to, params) => router.buildLocation(pageLocation(to, params)).href,
+              }}
+            >
+              <AppBody definition={release.definition} appName={app.name} />
+            </AppChromeContext.Provider>
           </AppHostProvider>
         )}
       </div>

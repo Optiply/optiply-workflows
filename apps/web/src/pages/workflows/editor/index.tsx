@@ -1,27 +1,41 @@
-import type { BlockType, Diagnostic, WorkflowDefinition } from '@ow/definition'
+import { type BlockType, type Diagnostic, usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, ArrowLeft, CheckCircle2, History, LayoutGrid, Loader2, Play, Plus } from 'lucide-react'
+import {
+  AlertCircle,
+  ArrowLeft,
+  CheckCircle2,
+  CloudOff,
+  History,
+  LayoutGrid,
+  Loader2,
+  Play,
+  Plus,
+} from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
-import { Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
+import { PresenceAvatars } from '@/components/presence-avatars'
+import { Avatar, Badge, Button, ErrorNote, Select, Spinner, Tabs } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
+import { useLibraryRefs } from '@/lib/library-refs'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { Canvas } from './canvas'
 import { addableIn, BLOCK_KINDS, newBlock, nextName, PYTHON_KIND } from './catalog'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
+import { closeSession, ensureSaved, openSession } from './collab'
 import { FunctionBanner, FunctionSettings, FunctionsTab } from './functions'
 import { Inspector } from './inspectors'
 import { useLastRunSamples } from './last-run'
 import { autoLayout, NODE_WIDTH, positionsFor } from './layout'
 import { useRunEvents } from './live'
+import { usePresence } from './presence'
 import { ReleaseControls, ReleasesTab } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
-import { ensureSaved, saveDraftNow } from './save'
 import { graphOf, type SaveStatus, type SideTab, updateGraph, useEditor } from './store'
 import { WorkflowSettingsTab } from './workflow-settings'
 
@@ -29,9 +43,6 @@ const route = getRouteApi('/app/workflows/$workflowId')
 
 type Workflow = RouterOutputs['workflows']['get']
 type BranchDraft = RouterOutputs['branchDrafts']['get']
-
-/** How long the draft must be idle before it's saved. */
-const AUTOSAVE_MS = 800
 
 export function WorkflowEditorPage() {
   const { workflowId } = route.useParams()
@@ -64,10 +75,12 @@ export function WorkflowEditorPage() {
   const wantDraftId = branch && gitProtected ? (branchDraft?.id ?? undefined) : null
 
   const loadDraft = useCallback(
-    (draft: BranchDraft) =>
+    (draft: BranchDraft) => {
       load(workflowId, draft.definition as WorkflowDefinition, draft.revision, draft.draftHash, {
         branchDraftId: draft.id,
-      }),
+      })
+      openSession(workflowId, draft.id)
+    },
     [load, workflowId],
   )
 
@@ -82,27 +95,26 @@ export function WorkflowEditorPage() {
       (wantDraftId === null && state.readOnly !== mainReadOnly(data))
     if (!stale) return
     if (wantDraftId && branchDraft) loadDraft(branchDraft)
-    else
+    else {
       load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
         readOnly: mainReadOnly(data),
       })
+      openSession(data.id, null)
+    }
   }, [workflow.data, wantDraftId, branchDraft, load, loadDraft])
   // Coming back to the editor later loads the workflow afresh.
-  useEffect(() => () => useEditor.setState({ workflowId: null, branchDraftId: null }), [])
-  const reload = async () => {
-    const draftId = useEditor.getState().branchDraftId
-    if (draftId) return loadDraft(await trpcClient.branchDrafts.get.query({ id: draftId }))
-    const { data } = await workflow.refetch()
-    if (data)
-      load(data.id, data.draftDefinition, data.draftRevision, data.draftHash, {
-        readOnly: mainReadOnly(data),
-      })
-  }
+  useEffect(
+    () => () => {
+      closeSession()
+      useEditor.setState({ workflowId: null, branchDraftId: null })
+    },
+    [],
+  )
   const switchBranch = async (next: string | null) => {
     try {
       await ensureSaved()
     } catch (err) {
-      if (!confirm(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`)) return
+      if (!(await confirmDialog(`${errorMessage(err)} Switch anyway, losing the unsaved changes?`))) return
     }
     setDraftInfo(null)
     // Main may have moved while on a branch (a merge deployed it): load what's there now.
@@ -130,7 +142,6 @@ export function WorkflowEditorPage() {
     <EditorLayout
       workflow={workflow.data}
       canEdit={canEdit}
-      onReload={reload}
       git={
         gitProtected && canEdit ? (
           <GitBar
@@ -164,12 +175,10 @@ function mainReadOnly(workflow: Workflow): boolean {
 function EditorLayout({
   workflow,
   canEdit,
-  onReload,
   git,
 }: {
   workflow: Workflow
   canEdit: boolean
-  onReload: () => void
   /** A protected workflow's Git bar (M11). */
   git: React.ReactNode
 }) {
@@ -191,6 +200,11 @@ function EditorLayout({
     if (fallback && !useRun.getState().environment) useRun.getState().setEnvironment(fallback.slug)
   }, [environments, slug])
   useLastRunSamples(slug)
+  // The library queries Library query blocks use, for the validator and the inspector (M21).
+  useLibraryRefs(
+    useEditor((s) => usedLibraries(s.definition).join(',')),
+    useEditor((s) => s.setLibraries),
+  )
   useRunEvents()
   // A protected workflow's main draft is read-only: it changes on branches. Running it still works.
   const readOnly = useEditor((s) => s.readOnly)
@@ -201,7 +215,6 @@ function EditorLayout({
       <div className="flex h-full flex-col gap-2">
         <Header workflow={workflow} canEdit={canEdit} environments={environments ?? []} />
         {git}
-        <ConflictBanner onReload={onReload} />
         <div className="flex min-h-0 flex-1 gap-2">
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
@@ -215,7 +228,7 @@ function EditorLayout({
           <SidePanel workflow={workflow} canEdit={editable} hasEdit={canEdit} />
         </div>
       </div>
-      {editable && <Autosave />}
+      {editable && <LeaveWarning />}
       <EditorShortcuts editable={editable} />
     </ReactFlowProvider>
   )
@@ -231,6 +244,8 @@ function Header({
   environments: { slug: string; name: string }[]
 }) {
   const { name, slug } = workflow
+  const { me } = route.useRouteContext()
+  const peers = usePresence((s) => s.peers)
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
       <Link
@@ -246,6 +261,7 @@ function Header({
       </div>
       <SaveIndicator />
       <div className="flex-1" />
+      <PresenceAvatars peers={peers} me={me.id} />
       {!canEdit && <Badge>Read only</Badge>}
       {/* A protected workflow is published by merging on Git. */}
       <ReleaseControls workflow={workflow} canEdit={canEdit && !workflow.gitProtected} />
@@ -342,10 +358,10 @@ function Toolbar() {
   )
 }
 
-/** Undo and Redo. Off while the draft conflicts (its edits can't be saved). */
+/** Undo and Redo. Off until the shared document has synced. */
 function WorkflowUndoButtons() {
-  const canUndo = useEditor((s) => s.history.past.length > 0 && s.status !== 'conflict')
-  const canRedo = useEditor((s) => s.history.future.length > 0 && s.status !== 'conflict')
+  const canUndo = useEditor((s) => s.canUndo)
+  const canRedo = useEditor((s) => s.canRedo)
   return (
     <UndoButtons
       canUndo={canUndo}
@@ -455,11 +471,12 @@ function RunControls({
 }
 
 const STATUS_TEXT: Record<SaveStatus, string> = {
+  connecting: 'Connecting…',
   saved: 'Saved',
-  dirty: 'Unsaved changes',
   saving: 'Saving…',
-  conflict: 'Not saved',
+  offline: 'Offline: changes will sync',
   error: 'Not saved',
+  closed: 'Disconnected: reload',
 }
 
 function SaveIndicator() {
@@ -471,52 +488,32 @@ function SaveIndicator() {
       title={error ?? undefined}
       className={cn(
         'ml-2 inline-flex items-center gap-1 whitespace-nowrap text-xs',
-        status === 'conflict' || status === 'error' ? 'text-danger' : 'text-muted',
+        status === 'error' || status === 'closed'
+          ? 'text-danger'
+          : status === 'offline'
+            ? 'text-warning-strong'
+            : 'text-muted',
       )}
     >
-      {status === 'saving' && <Loader2 className="size-3 animate-spin" />}
+      {(status === 'saving' || status === 'connecting') && <Loader2 className="size-3 animate-spin" />}
       {status === 'saved' && <CheckCircle2 className="size-3 text-success" />}
-      {(status === 'conflict' || status === 'error') && <AlertCircle className="size-3" />}
+      {status === 'offline' && <CloudOff className="size-3" />}
+      {(status === 'error' || status === 'closed') && <AlertCircle className="size-3" />}
       {STATUS_TEXT[status]}
     </span>
   )
 }
 
-function ConflictBanner({ onReload }: { onReload: () => void }) {
-  const status = useEditor((s) => s.status)
-  if (status !== 'conflict') return null
-  return (
-    <div className="flex items-center gap-3 rounded-lg bg-danger-soft px-4 py-2 text-sm text-danger">
-      <AlertCircle className="size-4" />
-      Someone else saved this workflow while you were editing. Reload to get their version; your unsaved
-      changes will be lost.
-      <Button size="sm" onClick={onReload}>
-        Reload
-      </Button>
-    </div>
-  )
-}
-
-/** Saves the draft once it has been idle for a moment, and warns before leaving with unsaved changes. */
-function Autosave() {
-  const status = useEditor((s) => s.status)
-  const definition = useEditor((s) => s.definition)
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `definition` restarts the timer on every edit
-  useEffect(() => {
-    if (status !== 'dirty') return
-    const timer = setTimeout(saveDraftNow, AUTOSAVE_MS)
-    return () => clearTimeout(timer)
-  }, [status, definition])
-
+/** Warns before leaving while edits made here aren't saved yet. */
+function LeaveWarning() {
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (useEditor.getState().status !== 'saved') e.preventDefault()
+      const { status } = useEditor.getState()
+      if (status === 'saving' || status === 'offline' || status === 'error') e.preventDefault()
     }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [])
-
   return null
 }
 
