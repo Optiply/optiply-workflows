@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -34,6 +34,7 @@ import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { fakeGitHub } from '../../server/test/fake-github'
+import { fakeGitLab } from '../../server/test/fake-gitlab'
 import { startTestRegistry } from '../../server/test/npm-registry'
 import { E2E_PORT } from '../playwright.config'
 
@@ -81,9 +82,46 @@ export default async function globalSetup() {
   execFileSync('git', ['init', '--bare', '--quiet', '--initial-branch=main', repoPath], {
     env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
   })
-  const github = await fakeGitHub({ repoPath, owner: 'optiply', repo: 'flows', token: E2E_GITHUB_TOKEN })
+  // M31: the fake GitHub also has a GitHub App installed on the repo (E2E_GITHUB_APP: its id and private key).
+  const appKeys = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  })
+  const github = await fakeGitHub({
+    repoPath,
+    owner: 'optiply',
+    repo: 'flows',
+    token: E2E_GITHUB_TOKEN,
+    app: { id: '424242', publicKey: appKeys.publicKey },
+  })
   process.env.E2E_GIT_REPO_URL = `file://${repoPath}`
   process.env.E2E_FAKE_GITHUB = github.url
+  process.env.E2E_GITHUB_APP = JSON.stringify({ id: '424242', privateKey: appKeys.privateKey })
+  // M31: a second repo (optiply/data/flows) behind a fake GitLab, its project the file:// path as GitLab reads it
+  // (E2E_GITLAB: the fake's URL, the repo, the project and the token).
+  mkdirSync(join(gitRoot, 'optiply', 'data'))
+  const gitlabRepo = join(gitRoot, 'optiply', 'data', 'flows.git')
+  execFileSync('git', ['init', '--bare', '--quiet', '--initial-branch=main', gitlabRepo], {
+    env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  })
+  const gitlabProject = gitlabRepo
+    .replace(/\.git$/, '')
+    .split('/')
+    .filter(Boolean)
+    .join('/')
+  const gitlab = await fakeGitLab({
+    repoPath: gitlabRepo,
+    project: gitlabProject,
+    token: 'glpat-e2e-not-secret',
+  })
+  process.env.E2E_GITLAB = JSON.stringify({
+    url: gitlab.url,
+    repoUrl: `file://${gitlabRepo}`,
+    repoDir: gitlabRepo,
+    project: gitlabProject,
+    token: 'glpat-e2e-not-secret',
+  })
 
   // Python (M12): the code executor in a container, when Docker is there (CI must have it). Specs that need it read
   // E2E_PYTHON.
@@ -425,6 +463,7 @@ export default async function globalSetup() {
     GIT_ALLOW_INSECURE_URLS: 'true',
     GIT_CACHE_DIR: join(gitRoot, 'cache'),
     GITHUB_API_URL: github.url,
+    GITLAB_API_URL: gitlab.url,
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
@@ -521,6 +560,7 @@ export default async function globalSetup() {
     await new Promise((resolve) => server.once('exit', resolve))
     await pg.stop()
     await github.close()
+    await gitlab.close()
     await executor?.stop()
     await builder?.stop()
     await index?.stop()
