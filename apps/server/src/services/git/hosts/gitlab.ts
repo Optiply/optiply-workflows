@@ -1,6 +1,22 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
-import { type GitHost, GitHostError, type GitWebhookCheck, type PullRequestView } from './types'
+import {
+  type GitHost,
+  type GitHostCheck,
+  GitHostError,
+  type GitWebhookCheck,
+  type PullRequestView,
+} from './types'
+
+/** GitLab's role levels: Developer can push and open merge requests; Maintainer may push to protected branches. */
+const ROLES: Record<number, string> = {
+  10: 'Guest',
+  15: 'Planner',
+  20: 'Reporter',
+  30: 'Developer',
+  40: 'Maintainer',
+  50: 'Owner',
+}
 
 /** Where a project's API is, and its full path (`group/subgroup/project`). */
 export interface GitLabTarget {
@@ -121,7 +137,43 @@ export class GitLabHost implements GitHost {
     return view(await this.request<RawMergeRequest>('GET', `/merge_requests/${number}`))
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async check(): Promise<GitHostCheck> {
+    const project = await this.request<{
+      path_with_namespace: string
+      permissions?: {
+        project_access?: { access_level?: number } | null
+        group_access?: { access_level?: number } | null
+      }
+    }>('GET', '')
+    const level = Math.max(
+      project.permissions?.project_access?.access_level ?? 0,
+      project.permissions?.group_access?.access_level ?? 0,
+    )
+    const problems: string[] = []
+    if (level && level < 30)
+      problems.push(
+        `The token's role is ${ROLES[level] ?? level}: it needs Developer (Maintainer for protected branches)`,
+      )
+    // The token's scopes, where GitLab tells (personal, project and group tokens; not every version).
+    const scopes = await this.request<{ scopes?: string[] }>(
+      'GET',
+      '/personal_access_tokens/self',
+      undefined,
+      '',
+    )
+      .then((t) => t.scopes)
+      .catch(() => undefined)
+    if (scopes && !scopes.includes('api')) problems.push('The token needs the api scope (for merge requests)')
+    if (scopes && !scopes.includes('write_repository') && !scopes.includes('api'))
+      problems.push('The token needs the write_repository scope (to push)')
+    return {
+      message: `GitLab: ${project.path_with_namespace}${level ? ` (${ROLES[level] ?? level})` : ''}`,
+      problems,
+    }
+  }
+
+  /** `base`: the project's API (the default), or '' for the instance's own (`/personal_access_tokens/self`). */
+  private async request<T>(method: string, path: string, body?: unknown, base?: string): Promise<T> {
     const token = await this.token()
     if (!token)
       throw new GitHostError(
@@ -131,7 +183,7 @@ export class GitLabHost implements GitHost {
     const { api, project } = this.target
     let res: Response
     try {
-      res = await fetch(`${api}/projects/${encodeURIComponent(project)}${path}`, {
+      res = await fetch(`${api}${base ?? `/projects/${encodeURIComponent(project)}`}${path}`, {
         method,
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),

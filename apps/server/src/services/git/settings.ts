@@ -9,12 +9,21 @@ import { v7 as uuidv7 } from 'uuid'
 import type { Config } from '../../config'
 import { decryptForRow, encryptForRow } from '../secrets'
 import { GitError, type GitErrorKind } from './cli'
-import { detectGitHost, gitCredentials } from './hosts'
+import {
+  appPrivateKey,
+  detectGitHost,
+  forgetGitHubAppTokens,
+  GitHostError,
+  gitCredentials,
+  gitHostFor,
+} from './hosts'
 import { checkRepoUrl, GitRepo } from './repo'
 
 export interface GitSecrets {
   token?: string
   webhookSecret?: string
+  /** A GitHub App's private key (PEM; M31). */
+  appPrivateKey?: string
 }
 
 /** What admins see: never the token or the webhook secret, only whether they're set. */
@@ -25,6 +34,10 @@ export interface GitSettingsView {
   /** Where the repo is hosted (M31), and GitLab's API URL for an instance under a path. */
   host: GitHostKind
   apiUrl: string | null
+  /** GitHub's sign-in (M31): a token, or a GitHub App (its id; its private key never shown). */
+  githubAuth: 'token' | 'app'
+  githubAppId: string | null
+  appPrivateKey: { set: boolean }
   token: { set: boolean }
   webhookSecret: { set: boolean }
   /** Run when a deploy's problems change (M22). */
@@ -56,6 +69,9 @@ export async function gitSettingsView(db: Db, keyring: Keyring): Promise<GitSett
     branch: loaded?.row.branch ?? 'main',
     host: loaded?.row.host ?? 'github',
     apiUrl: loaded?.row.apiUrl ?? null,
+    githubAuth: loaded?.row.githubAuth ?? 'token',
+    githubAppId: loaded?.row.githubAppId ?? null,
+    appPrivateKey: { set: Boolean(loaded?.secrets.appPrivateKey) },
     token: { set: Boolean(loaded?.secrets.token) },
     webhookSecret: { set: Boolean(loaded?.secrets.webhookSecret) },
     notifyWorkflow: await notifyWorkflowOf(db, loaded?.row.notifyWorkflowId ?? null),
@@ -104,10 +120,14 @@ export async function saveGitSettings(
     branch: string
     host?: GitHostKind
     apiUrl?: string | null
+    /** GitHub only (M31): undefined keeps the stored one for the same host, else a token. */
+    githubAuth?: 'token' | 'app'
+    githubAppId?: string | null
+    appPrivateKey?: string | null
     token?: string | null
     webhookSecret?: string | null
   },
-): Promise<{ tokenChanged: boolean; webhookSecretChanged: boolean }> {
+): Promise<{ tokenChanged: boolean; webhookSecretChanged: boolean; appKeyChanged: boolean }> {
   let repoUrl: string
   try {
     repoUrl = checkRepoUrl(input.repoUrl, { allowInsecure: config.GIT_ALLOW_INSECURE_URLS })
@@ -127,12 +147,44 @@ export async function saveGitSettings(
           : null
         : checkApiUrl(input.apiUrl, repoUrl, config.GIT_ALLOW_INSECURE_URLS)
   const secrets: GitSecrets = { ...existing?.secrets }
-  if (existing?.secrets.token && input.token === undefined && (!sameOrigin || existing.row.host !== host)) {
+  const otherHost = !sameOrigin || existing.row.host !== host
+  if (existing?.secrets.token && input.token === undefined && otherHost) {
     throw new TRPCError({
       code: 'BAD_REQUEST',
       message: 'The repo is on another host now: enter the token again',
     })
   }
+  const githubAuth =
+    host !== 'github' ? 'token' : (input.githubAuth ?? (otherHost ? 'token' : existing.row.githubAuth))
+  const githubAppId =
+    githubAuth !== 'app'
+      ? null
+      : input.githubAppId === undefined
+        ? (existing?.row.githubAppId ?? null)
+        : input.githubAppId?.trim() || null
+  if (githubAuth === 'app') {
+    if (!githubAppId || !/^\d+$/.test(githubAppId))
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: "Enter the GitHub App's id (a number, on its settings page)",
+      })
+    if (existing?.secrets.appPrivateKey && input.appPrivateKey === undefined && otherHost)
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: "The repo is on another host now: enter the GitHub App's private key again",
+      })
+    if (input.appPrivateKey !== undefined) {
+      if (input.appPrivateKey) secrets.appPrivateKey = input.appPrivateKey.trim()
+      else delete secrets.appPrivateKey
+    }
+    if (!secrets.appPrivateKey)
+      throw new TRPCError({ code: 'BAD_REQUEST', message: "Add the GitHub App's private key (a .pem file)" })
+    try {
+      appPrivateKey(secrets.appPrivateKey)
+    } catch (err) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message })
+    }
+  } else delete secrets.appPrivateKey
   if (input.token !== undefined) {
     if (input.token) secrets.token = input.token
     else delete secrets.token
@@ -153,6 +205,8 @@ export async function saveGitSettings(
     branch: input.branch,
     host,
     apiUrl,
+    githubAuth,
+    githubAppId,
     secrets: encrypted,
     updatedBy: user.id,
     ...(moved ? { deployedCommit: null, lastError: null } : {}),
@@ -161,7 +215,10 @@ export async function saveGitSettings(
     .insert(gitSettings)
     .values({ id, ...values })
     .onConflictDoUpdate({ target: gitSettings.singleton, set: { ...values, updatedAt: sql`now()` } })
+  // Tokens minted for the old settings mustn't outlive them.
+  forgetGitHubAppTokens()
   return {
+    appKeyChanged: (secrets.appPrivateKey ?? null) !== (existing?.secrets.appPrivateKey ?? null),
     tokenChanged: input.token !== undefined && (input.token || null) !== (existing?.secrets.token ?? null),
     webhookSecretChanged:
       input.webhookSecret !== undefined &&
@@ -200,19 +257,25 @@ export async function clearGitSettings(db: Db): Promise<boolean> {
 /** The repo through this process's cache, or null when no repo is set up. */
 export async function openGitRepo(
   db: Db,
-  config: Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>,
+  config: Pick<
+    Config,
+    'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+  >,
 ): Promise<{ repo: GitRepo; branch: string; secrets: GitSecrets } | null> {
   const loaded = await loadGitSettings(db, config.keyring)
   if (!loaded) return null
   const repo = await GitRepo.open(
     gitCacheRoot(config),
-    { url: loaded.row.repoUrl, token: null, credentials: gitCredentials(loaded) },
+    { url: loaded.row.repoUrl, token: null, credentials: gitCredentials(loaded, config) },
     { allowInsecure: config.GIT_ALLOW_INSECURE_URLS },
   )
   return { repo, branch: loaded.row.branch, secrets: loaded.secrets }
 }
 
-export type GitTestResult =
+/** The host's API, signed in to for the repo (M31): what it found and what's missing, or why it couldn't. */
+export type GitHostReport = { ok: true; message: string; problems: string[] } | { ok: false; message: string }
+
+export type GitTestResult = (
   | {
       ok: true
       /** The deploy branch's commit, or null when the repo doesn't have it yet (an empty repo). */
@@ -225,11 +288,45 @@ export type GitTestResult =
       apps: number
     }
   | { ok: false; kind: GitErrorKind | 'not_configured'; message: string }
+) & { host?: GitHostReport }
 
-/** Signs in to the repo, reads the deploy branch and counts what's on it. Writes nothing. */
+/** The host's own check (pull requests need its API, not only git), for Test connection. */
+async function hostReport(
+  db: Db,
+  config: Pick<Config, 'keyring' | 'GITHUB_API_URL' | 'GITLAB_API_URL'>,
+): Promise<GitHostReport | undefined> {
+  const loaded = await loadGitSettings(db, config.keyring)
+  if (!loaded) return undefined
+  // Without a token there's no API to sign in to (a public or local repo): nothing to report.
+  if (!loaded.secrets.token && loaded.row.githubAuth !== 'app') return undefined
+  const host = gitHostFor(loaded, config)
+  if ('error' in host) return { ok: false, message: host.error }
+  try {
+    return { ok: true, ...(await host.check()) }
+  } catch (err) {
+    if (err instanceof GitHostError) return { ok: false, message: err.message }
+    throw err
+  }
+}
+
+/** Signs in to the repo, reads the deploy branch and counts what's on it, and asks the host's API. Writes nothing. */
 export async function testGitConnection(
   db: Db,
-  config: Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>,
+  config: Pick<
+    Config,
+    'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+  >,
+): Promise<GitTestResult> {
+  const [repo, host] = await Promise.all([testGitRepo(db, config), hostReport(db, config)])
+  return host ? { ...repo, host } : repo
+}
+
+async function testGitRepo(
+  db: Db,
+  config: Pick<
+    Config,
+    'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+  >,
 ): Promise<GitTestResult> {
   const opened = await openGitRepo(db, config)
   if (!opened) return { ok: false, kind: 'not_configured', message: 'No repo is set up' }

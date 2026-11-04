@@ -54,6 +54,14 @@ export interface GitHost {
     body: string
   }): Promise<PullRequestView & { created: boolean }>
   getChangeRequest(number: number): Promise<PullRequestView>
+  /** Signs in to the host's API for the repo (Test connection): what it found, and what's missing for Git sync. */
+  check(): Promise<GitHostCheck>
+}
+
+export interface GitHostCheck {
+  /** e.g. "GitHub App optiply-sync, installed on optiply", "GitLab: optiply/flows (Developer)". */
+  message: string
+  problems: string[]
 }
 
 /** A push webhook delivery, checked: refused, or what it is. */

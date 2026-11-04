@@ -38,7 +38,10 @@ import {
 } from './protection'
 import type { GitRepo } from './repo'
 
-type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
+type GitConfig = Pick<
+  Config,
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+>
 type User = { id: string; name: string; email: string }
 
 /** Larger files are listed in a draft's changes without their text. */

@@ -34,6 +34,9 @@ export async function fakeGitLab(opts: {
   project: string
   token: string
   host?: string
+  /** The token's role on the project (30 Developer by default) and its scopes, for Test connection. */
+  accessLevel?: number
+  scopes?: string[]
 }) {
   const mergeRequests: FakeMergeRequest[] = []
   const calls: string[] = []
@@ -130,7 +133,14 @@ export async function fakeGitLab(opts: {
     }
     if (req.method === 'GET' && rawPath === '/_test/merge_requests') return send(res, 200, mergeRequests)
     if (req.headers['private-token'] !== opts.token) return send(res, 401, { message: '401 Unauthorized' })
+    if (req.method === 'GET' && rawPath === '/personal_access_tokens/self')
+      return send(res, 200, { name: 'optiply-sync', scopes: opts.scopes ?? ['api', 'write_repository'] })
     const prefix = `/projects/${encodeURIComponent(opts.project)}`
+    if (req.method === 'GET' && rawPath === prefix)
+      return send(res, 200, {
+        path_with_namespace: opts.project,
+        permissions: { project_access: { access_level: opts.accessLevel ?? 30 }, group_access: null },
+      })
     if (!rawPath.startsWith(`${prefix}/`)) return send(res, 404, { message: '404 Project Not Found' })
     const path = rawPath.slice(prefix.length)
     const now = new Date().toISOString()

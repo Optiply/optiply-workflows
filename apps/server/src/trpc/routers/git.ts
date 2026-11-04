@@ -118,6 +118,9 @@ export const gitRouter = router({
         /** M31: undefined detects it from the URL. */
         host: z.enum(GIT_HOSTS).optional(),
         apiUrl: z.string().trim().max(500).nullish(),
+        githubAuth: z.enum(['token', 'app']).optional(),
+        githubAppId: z.string().trim().max(20).nullish(),
+        appPrivateKey: z.string().max(10_000).nullish(),
         token: Secret,
         webhookSecret: Secret,
       }),
@@ -128,6 +131,9 @@ export const gitRouter = router({
         branch: input.branch,
         host: input.host,
         apiUrl: input.apiUrl,
+        githubAuth: input.githubAuth,
+        githubAppId: input.githubAppId,
+        appPrivateKey: input.appPrivateKey,
         // `nullish` gives undefined (keep) or null (clear); zod keeps the difference.
         token: input.token,
         webhookSecret: input.webhookSecret,
@@ -141,9 +147,11 @@ export const gitRouter = router({
           repoUrl: view.repoUrl,
           branch: view.branch,
           host: view.host,
+          githubAuth: view.githubAuth,
           changed: [
             ...(changed.tokenChanged ? ['token'] : []),
             ...(changed.webhookSecretChanged ? ['webhook'] : []),
+            ...(changed.appKeyChanged ? ['app key'] : []),
           ],
         },
       })

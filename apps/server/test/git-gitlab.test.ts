@@ -108,7 +108,7 @@ describe('GitLab projects and settings', () => {
       ).toBe('BAD_REQUEST')
     // Git signs in as GitLab's `oauth2`.
     const loaded = await loadGitSettings(env.db, env.config.keyring)
-    expect(await gitCredentials(loaded!)()).toEqual({ username: 'oauth2', token: TOKEN })
+    expect(await gitCredentials(loaded!, env.config)()).toEqual({ username: 'oauth2', token: TOKEN })
   })
 })
 
@@ -176,6 +176,13 @@ describe('merge requests on GitLab', () => {
     data(
       await admin.mutate('git.saveSettings', { repoUrl: `file://${remote}`, host: 'gitlab', token: TOKEN }),
     )
+  })
+
+  it('Test connection asks GitLab too: the project and the token’s role', async () => {
+    expect(data(await admin.mutate('git.testConnection'))).toMatchObject({
+      ok: true,
+      host: { ok: true, message: `GitLab: ${project} (Developer)`, problems: [] },
+    })
   })
 
   it('deploys on GitLab’s push webhook, checked by its secret token', async () => {

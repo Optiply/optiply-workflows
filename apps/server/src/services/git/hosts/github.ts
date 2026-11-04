@@ -1,6 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
-import { type GitHost, GitHostError, type GitWebhookCheck, type PullRequestView } from './types'
+import { type GitHubAppTokens, missingAppPermissions } from './github-app'
+import {
+  type GitHost,
+  type GitHostCheck,
+  GitHostError,
+  type GitWebhookCheck,
+  type PullRequestView,
+} from './types'
 
 /** Where a repo's REST API is, and its owner and name. */
 export interface GitHubTarget {
@@ -72,8 +79,27 @@ export class GitHubHost implements GitHost {
   constructor(
     private readonly target: GitHubTarget,
     /** The token for the next call; null when none is set. */
-    private readonly token: () => Promise<string | null>,
+    private readonly token: (opts?: { refresh?: boolean }) => Promise<string | null>,
+    /** Signed in as a GitHub App (M31): its tokens are minted again when GitHub refuses one. */
+    private readonly app?: GitHubAppTokens,
   ) {}
+
+  async check(): Promise<GitHostCheck> {
+    const problems: string[] = []
+    let message = ''
+    if (this.app) {
+      const installation = await this.app.installation()
+      message = `GitHub App ${installation.appSlug ?? ''}`.trim() + `, installed on ${installation.account}`
+      const missing = missingAppPermissions(installation.permissions)
+      if (missing.length) problems.push(`The App's installation needs ${missing.join(', ')}`)
+    }
+    const repo = await this.request<{ full_name: string; permissions?: { push?: boolean } }>('GET', '')
+    if (!this.app) {
+      message = `GitHub: ${repo.full_name}`
+      if (repo.permissions && !repo.permissions.push) problems.push("The token can't push to the repo")
+    } else message += ` (${repo.full_name})`
+    return { message, problems }
+  }
 
   /** The newest pull request from `branch` into `base`, open ones first; null when there's none. */
   async findChangeRequest(branch: string, base: string): Promise<PullRequestView | null> {
@@ -113,8 +139,8 @@ export class GitHubHost implements GitHost {
     return view(await this.request<RawPull>('GET', `/pulls/${number}`))
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const token = await this.token()
+  private async request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+    const token = await this.token(retried ? { refresh: true } : {})
     if (!token)
       throw new GitHostError('auth', 'Set a GitHub token in the Git settings to work with pull requests')
     const { api, owner, repo } = this.target
@@ -144,13 +170,20 @@ export class GitHubHost implements GitHost {
       json = null
     }
     if (res.ok) return json as T
+    // An App's token can be revoked before it expires: once with a new one.
+    if (res.status === 401 && this.app && !retried) return this.request(method, path, body, true)
     const message = (json as { message?: string; errors?: Array<{ message?: string }> } | null) ?? {}
     const detail = [message.message, ...(message.errors ?? []).map((e) => e.message)]
       .filter(Boolean)
       .join(': ')
     const said = `GitHub said ${res.status}${detail ? `: ${detail}` : ''}`
     if (res.status === 401 || res.status === 403) {
-      throw new GitHostError('auth', `${said}. The token needs Pull requests (read and write) on the repo`)
+      throw new GitHostError(
+        'auth',
+        this.app
+          ? `${said}. The GitHub App's installation needs Pull requests (read and write) on the repo`
+          : `${said}. The token needs Pull requests (read and write) on the repo`,
+      )
     }
     if (res.status === 404)
       throw new GitHostError('not_found', `${said}. Is the repo URL right, and can the token see it?`)

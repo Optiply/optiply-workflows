@@ -1,12 +1,21 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Db, GitSettings } from '@ow/db'
 import type { Config } from '../../../config'
+import { GitError } from '../cli'
 import { type GitSecrets, loadGitSettings } from '../settings'
 import { checkGitHubWebhook, GitHubHost, githubTarget } from './github'
+import { GitHubAppTokens } from './github-app'
 import { checkGitLabWebhook, GitLabHost, gitlabTarget } from './gitlab'
-import type { GitCredentials, GitHost, GitHostKind, GitWebhookCheck } from './types'
+import {
+  type GitCredentials,
+  type GitHost,
+  GitHostError,
+  type GitHostKind,
+  type GitWebhookCheck,
+} from './types'
 
 export { githubTarget } from './github'
+export { appJwt, appPrivateKey, forgetGitHubAppTokens, GitHubAppTokens } from './github-app'
 export { gitlabTarget } from './gitlab'
 export * from './types'
 
@@ -45,8 +54,26 @@ export function gitHostFor(loaded: Loaded, config: HostConfig): GitHost | { erro
   }
   const target = githubTarget(loaded.row.repoUrl, config.GITHUB_API_URL)
   if (!target) return { error: "The repo isn't on GitHub: open the pull request there yourself" }
+  const app = githubApp(loaded, config)
+  if (app && 'error' in app) return app
+  if (app) return new GitHubHost(target, (opts) => app.token(opts), app)
   const token = loaded.secrets.token ?? null
   return new GitHubHost(target, async () => token)
+}
+
+/** The GitHub App's tokens for the repo, when GitHub is signed in to as an App (M31); null for a token. */
+function githubApp(loaded: Loaded, config: HostConfig): GitHubAppTokens | { error: string } | null {
+  if (loaded.row.host !== 'github' || loaded.row.githubAuth !== 'app') return null
+  const { githubAppId } = loaded.row
+  const key = loaded.secrets.appPrivateKey
+  if (!githubAppId || !key) return { error: "Set the GitHub App's id and private key in the Git settings" }
+  const target = githubTarget(loaded.row.repoUrl, config.GITHUB_API_URL)
+  if (!target) return { error: "The repo isn't on GitHub: a GitHub App can't sign in to it" }
+  try {
+    return new GitHubAppTokens(target, githubAppId, key)
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
 }
 
 /** The configured repo's host, or why there isn't one. */
@@ -65,7 +92,27 @@ export async function openGitHost(
  * What git signs in to the remote with, asked before each command that talks to it (so a short-lived token is
  * fresh): the host's username and the token. Null: no token set (a public or local repo).
  */
-export function gitCredentials(loaded: Loaded): () => Promise<GitCredentials | null> {
+export function gitCredentials(loaded: Loaded, config: HostConfig): () => Promise<GitCredentials | null> {
+  const app = githubApp(loaded, config)
+  if (app && 'error' in app)
+    return async () => {
+      throw new GitError('auth', app.error)
+    }
+  // A GitHub App's installation token, as GitHub's docs say: user `x-access-token`.
+  if (app)
+    return async () => {
+      try {
+        return { username: 'x-access-token', token: await app.token() }
+      } catch (err) {
+        // Git's callers know GitError: the App's sign-in failing is git's sign-in failing.
+        if (err instanceof GitHostError)
+          throw new GitError(
+            err.kind === 'not_found' ? 'not_found' : err.kind === 'auth' ? 'auth' : 'failed',
+            err.message,
+          )
+        throw err
+      }
+    }
   const token = loaded.secrets.token ?? null
   // GitLab takes any username with an access token; `oauth2` is the one its docs give.
   const username = loaded.row.host === 'gitlab' ? 'oauth2' : 'x-access-token'

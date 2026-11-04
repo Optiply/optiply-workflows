@@ -78,13 +78,21 @@ describe('git settings', () => {
         repoUrl: 'https://github.com/optiply/flows.git',
         branch: 'main',
         host: 'github',
+        githubAuth: 'token',
         changed: ['token', 'webhook'],
       },
-      { repoUrl: 'https://github.com/optiply/other.git', branch: 'production', host: 'github', changed: [] },
+      {
+        repoUrl: 'https://github.com/optiply/other.git',
+        branch: 'production',
+        host: 'github',
+        githubAuth: 'token',
+        changed: [],
+      },
       {
         repoUrl: 'https://github.com/optiply/other.git',
         branch: 'main',
         host: 'github',
+        githubAuth: 'token',
         changed: ['webhook'],
       },
     ])

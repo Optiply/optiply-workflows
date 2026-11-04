@@ -23,7 +23,10 @@ import { mergeKindObject } from './kinds'
 import { gitTrpcError, repoObject, requireGitRepo, requireNotDeployBranch } from './protection'
 import type { GitRepo } from './repo'
 
-type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
+type GitConfig = Pick<
+  Config,
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+>
 type User = { id: string; name: string; email: string }
 
 /** How often the merge commit is made again when the branch moved before its push. */
