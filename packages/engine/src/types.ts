@@ -282,6 +282,18 @@ export interface ChildRuns {
   }): Promise<string>
   get(runId: string): Promise<ChildRunState | null>
   cancel(runId: string): Promise<void>
+  /**
+   * The workflows an AI agent may call as tools (M35): their names, descriptions and Start triggers' body schemas,
+   * from their live releases. Throws a BlockFailure for one that's unknown or not published.
+   */
+  describe?(slugs: string[]): Promise<ChildWorkflowInfo[]>
+}
+
+export interface ChildWorkflowInfo {
+  slug: string
+  name: string
+  description: string | null
+  bodySchema: Record<string, unknown> | null
 }
 
 export interface ExecuteRunOptions {
@@ -329,6 +341,11 @@ export interface ExecuteRunOptions {
   handlerTimeoutMs?: number
   /** Values scrubbed from logs and errors (secret config var values). */
   secrets?: readonly string[]
+  /**
+   * The tokens the run's AI calls have used (M35), shared with its function calls. Omit: counted from the
+   * checkpoints.
+   */
+  aiBudget?: { spent(): number; add(tokens: number): void }
 }
 
 export interface RunOutcome {

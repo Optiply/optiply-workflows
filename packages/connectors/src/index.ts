@@ -36,6 +36,7 @@ export {
   costOf,
   DEFAULT_ANTHROPIC_MODEL,
 } from './ai/prices'
+export { aiStats } from './ai/stats'
 export { type FlowSandbox, runAuthFlow } from './auth-flow'
 export {
   type AwsDefaults,

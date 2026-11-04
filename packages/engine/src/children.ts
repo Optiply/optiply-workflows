@@ -1,9 +1,9 @@
-import { type Db, workflowRuns, workflows } from '@ow/db'
-import { eq, sql } from 'drizzle-orm'
+import { type Db, workflowReleases, workflowRuns, workflows } from '@ow/db'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { BlockFailure } from './errors'
 import { cancelRun, startRun } from './queue'
 import { sleep } from './retry'
-import type { ChildRunState, ChildRuns, EngineError, RunResponse } from './types'
+import type { ChildRunState, ChildRuns, ChildWorkflowInfo, EngineError, RunResponse } from './types'
 
 const FINAL = new Set(['succeeded', 'failed', 'cancelled'])
 /** How deep workflows may call workflows. Stops a workflow that (indirectly) calls itself from recursing forever. */
@@ -87,6 +87,37 @@ export class PgChildRuns implements ChildRuns {
 
   async cancel(runId: string): Promise<void> {
     await cancelRun(this.db, runId)
+  }
+
+  async describe(slugs: string[]): Promise<ChildWorkflowInfo[]> {
+    if (!slugs.length) return []
+    const rows = await this.db
+      .select({
+        slug: workflows.slug,
+        name: workflows.name,
+        description: workflows.description,
+        liveReleaseId: workflows.liveReleaseId,
+        definition: workflowReleases.definition,
+      })
+      .from(workflows)
+      .leftJoin(workflowReleases, eq(workflowReleases.id, workflows.liveReleaseId))
+      .where(inArray(workflows.slug, slugs))
+    const bySlug = new Map(rows.map((r) => [r.slug, r]))
+    return slugs.map((slug) => {
+      const row = bySlug.get(slug)
+      if (!row) throw new BlockFailure('unknown_workflow', `No workflow has the slug "${slug}"`)
+      if (!row.liveReleaseId || !row.definition) {
+        throw new BlockFailure('not_published', `Workflow "${slug}" isn't published`)
+      }
+      const schema = (row.definition as { triggers?: { webhook?: { bodySchema?: unknown } } }).triggers
+        ?.webhook?.bodySchema
+      return {
+        slug,
+        name: row.name,
+        description: row.description,
+        bodySchema: schema && typeof schema === 'object' ? (schema as Record<string, unknown>) : null,
+      }
+    })
   }
 }
 

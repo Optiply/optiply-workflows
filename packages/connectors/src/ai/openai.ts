@@ -46,7 +46,14 @@ const RETRIES = 2
 
 interface ChatResponse {
   model?: string
-  choices?: { message?: { content?: string | null; refusal?: string | null }; finish_reason?: string }[]
+  choices?: {
+    message?: {
+      content?: string | null
+      refusal?: string | null
+      tool_calls?: { id: string; type?: string; function?: { name?: string; arguments?: string } }[]
+    }
+    finish_reason?: string
+  }[]
   usage?: {
     prompt_tokens?: number
     completion_tokens?: number
@@ -68,8 +75,24 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
     messages: [
       ...(request.system ? [{ role: 'system', content: request.system }] : []),
       { role: 'user', content: request.prompt },
+      // The agent's turns: the model's message as it sent it, then a `tool` message per result.
+      ...(request.turns ?? []).flatMap((turn) =>
+        turn.kind === 'assistant'
+          ? [turn.raw]
+          : turn.results.map((r) => ({
+              role: 'tool',
+              tool_call_id: r.id,
+              content: r.isError ? `Error: ${r.content}` : r.content,
+            })),
+      ),
     ],
     max_tokens: request.maxTokens,
+    ...(request.tools?.length && {
+      tools: request.tools.map((t) => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.inputSchema },
+      })),
+    }),
     ...(request.schema && {
       response_format: {
         type: 'json_schema',
@@ -96,13 +119,44 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
           cacheRead: client.config.inputPrice,
         }
       : undefined
+  const toolCalls = (choice?.message?.tool_calls ?? []).flatMap((call) =>
+    call.function?.name
+      ? [{ id: call.id, name: call.function.name, input: parseArguments(call.function.arguments) }]
+      : [],
+  )
   return {
     text: choice?.message?.content ?? '',
+    ...(toolCalls.length && {
+      toolCalls,
+      raw: {
+        role: 'assistant',
+        content: choice?.message?.content ?? null,
+        tool_calls: choice?.message?.tool_calls,
+      },
+    }),
     model: res.model ?? request.model,
     usage,
-    stopReason: refused ? 'refusal' : finish === 'length' ? 'max_tokens' : finish === 'stop' ? 'end' : finish,
+    stopReason: refused
+      ? 'refusal'
+      : finish === 'length'
+        ? 'max_tokens'
+        : finish === 'tool_calls'
+          ? 'tool_use'
+          : finish === 'stop'
+            ? 'end'
+            : finish,
     refusalCategory: refused ? (choice?.message?.refusal ?? 'content_filter') : null,
     costUsd: costOf(usage, price),
+  }
+}
+
+/** A tool call's arguments: JSON text, kept as text when it isn't JSON (the workflow sees what the model wrote). */
+function parseArguments(text: string | undefined): unknown {
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
   }
 }
 

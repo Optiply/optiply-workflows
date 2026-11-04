@@ -30,6 +30,7 @@ import {
   WEBHOOK_PRESETS,
 } from './triggers'
 import {
+  agentTools,
   type BlockGraphSource,
   blockGraphs,
   calledFunctions,
@@ -229,25 +230,35 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   if (options.resolveWorkflow) {
     for (const { blocks, path, function: fn } of blockGraphs(def)) {
       blocks.forEach((block, i) => {
-        const call =
+        const calls: { slug: string; at: (string | number)[] }[] =
           block.type === 'workflow'
-            ? { slug: block.config.workflow, at: ['config', 'workflow'] }
+            ? [{ slug: block.config.workflow, at: ['config', 'workflow'] }]
             : block.type === 'loop' && block.config.runner.kind === 'workflow'
-              ? { slug: block.config.runner.workflow, at: ['config', 'runner', 'workflow'] }
-              : undefined
-        if (!call) return
-        const state = options.resolveWorkflow!(call.slug)
-        if (state === 'published') return
-        report({
-          code: state === undefined ? 'unknown_workflow' : 'unpublished_workflow',
-          message:
-            state === undefined
-              ? `No workflow has the slug "${call.slug}"`
-              : `Workflow "${call.slug}" isn't published; publish it so this one can call it`,
-          path: [...path, 'blocks', i, ...call.at],
-          block: block.name,
-          ...(fn && { function: fn.name }),
-        })
+              ? [{ slug: block.config.runner.workflow, at: ['config', 'runner', 'workflow'] }]
+              : // An AI agent's tools (M35).
+                block.type === 'resourceQuery'
+                ? agentTools(block.config.query).map((slug) => ({ slug, at: ['config', 'query', 'tools'] }))
+                : block.type === 'loop' && block.config.runner.kind === 'query'
+                  ? agentTools(block.config.runner.query).map((slug) => ({
+                      slug,
+                      at: ['config', 'runner', 'query', 'tools'],
+                    }))
+                  : []
+        for (const call of calls) {
+          if (call.slug.includes('{{')) continue
+          const state = options.resolveWorkflow!(call.slug)
+          if (state === 'published') continue
+          report({
+            code: state === undefined ? 'unknown_workflow' : 'unpublished_workflow',
+            message:
+              state === undefined
+                ? `No workflow has the slug "${call.slug}"`
+                : `Workflow "${call.slug}" isn't published; publish it so this one can call it`,
+            path: [...path, 'blocks', i, ...call.at],
+            block: block.name,
+            ...(fn && { function: fn.name }),
+          })
+        }
       })
     }
   }

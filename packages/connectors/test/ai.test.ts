@@ -400,3 +400,215 @@ describe('OpenAI-compatible', () => {
     })
   })
 })
+
+describe('the agent', () => {
+  /** A tool host with `lookup-customer` (an object schema) and `broken` (fails), recording the calls. */
+  function host(opts: { fail?: boolean } = {}) {
+    const calls: { slug: string; input: unknown; callId: string }[] = []
+    let budget = 0
+    const ai: AiRunContext = {
+      budget: {
+        spent: () => budget,
+        add: (n) => {
+          budget += n
+        },
+      },
+      tools: {
+        describe: async (slugs) =>
+          slugs.map((name) => ({
+            name,
+            description: `The ${name} workflow`,
+            inputSchema: {
+              type: 'object',
+              properties: { email: { type: 'string' } },
+              required: ['email'],
+            },
+          })),
+        run: async (slug, input, _signal, callId) => {
+          calls.push({ slug, input, callId })
+          return opts.fail
+            ? { ok: false, data: { error: 'no such customer' }, runId: `run-${calls.length}` }
+            : { ok: true, data: { name: 'Ada', tier: 'gold' }, runId: `run-${calls.length}` }
+        },
+      },
+    }
+    return { ai, calls, spent: () => budget }
+  }
+
+  it('calls a workflow as a tool and answers with what it returned (Anthropic)', async () => {
+    const h = host()
+    const before = fake.requests.length
+    const result = await run(
+      anthropicConnector,
+      anthropic(),
+      {
+        action: 'agent',
+        instructions: 'You help support.',
+        prompt: 'Who is ada@example.com?',
+        tools: 'lookup-customer',
+      },
+      {},
+      h.ai,
+    )
+    expect(h.calls).toEqual([
+      {
+        slug: 'lookup-customer',
+        input: { email: 'email from the text' },
+        callId: expect.stringMatching(/^toolu_/),
+      },
+    ])
+    expect(result.data).toEqual({
+      answer: 'Done: {"name":"Ada","tier":"gold"}',
+      steps: [
+        { workflow: 'lookup-customer', input: { email: 'email from the text' }, runId: 'run-1', ok: true },
+      ],
+    })
+    expect(result.metadata).toMatchObject({
+      provider: 'anthropic',
+      steps: 1,
+      usage: { inputTokens: expect.any(Number) },
+      costUsd: expect.any(Number),
+      request: { system: 'You help support.', prompt: 'Who is ada@example.com?' },
+    })
+    // Two model calls: the second sent the model's tool_use back with the tool's result.
+    const sent = fake.requests.slice(before).map((r) => r.body)
+    expect(sent).toHaveLength(2)
+    expect(sent[0]!.tools).toEqual([
+      expect.objectContaining({ name: 'lookup-customer', description: 'The lookup-customer workflow' }),
+    ])
+    const messages = sent[1]!.messages as { role: string; content: unknown }[]
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    expect(messages[2]!.content).toEqual([
+      expect.objectContaining({ type: 'tool_result', content: '{"name":"Ada","tier":"gold"}' }),
+    ])
+    // Both calls count against the run's budget.
+    expect(h.spent()).toBe(
+      (result.metadata.usage as { inputTokens: number; outputTokens: number }).inputTokens +
+        (result.metadata.usage as { outputTokens: number }).outputTokens,
+    )
+  })
+
+  it('calls a workflow as a tool through function calling (OpenAI-compatible), a failing tool as an error result', async () => {
+    const h = host({ fail: true })
+    const before = fake.requests.length
+    const result = await run(
+      openaiCompatibleConnector,
+      openai(),
+      { action: 'agent', prompt: 'Who is ada@example.com?', tools: 'lookup-customer' },
+      {},
+      h.ai,
+    )
+    expect(result.data).toMatchObject({
+      answer: expect.stringContaining('Error: {"error":"no such customer"}'),
+      steps: [{ workflow: 'lookup-customer', ok: false, runId: 'run-1' }],
+    })
+    const second = fake.requests.slice(before)[1]!.body
+    expect((second.messages as { role: string }[]).map((m) => m.role)).toEqual(['user', 'assistant', 'tool'])
+    expect(second.tools).toEqual([
+      expect.objectContaining({
+        type: 'function',
+        function: expect.objectContaining({ name: 'lookup-customer' }),
+      }),
+    ])
+  })
+
+  it('fails at max steps, and at the budget between steps, with the usage so far', async () => {
+    // The model keeps calling tools: with one step allowed, the second turn's call fails the agent.
+    fake.next('anthropic', {
+      body: {
+        id: 'msg_loop',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-5-5',
+        content: [{ type: 'tool_use', id: 'toolu_a', name: 'lookup-customer', input: { email: 'a' } }],
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })
+    fake.next('anthropic', {
+      body: {
+        id: 'msg_loop2',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-5-5',
+        content: [{ type: 'tool_use', id: 'toolu_b', name: 'lookup-customer', input: { email: 'b' } }],
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })
+    const h = host()
+    const max = await failure(
+      run(
+        anthropicConnector,
+        anthropic(),
+        { action: 'agent', prompt: 'Look up ada', tools: 'lookup-customer', maxSteps: '1' },
+        {},
+        h.ai,
+      ),
+    )
+    expect(max).toMatchObject({
+      code: 'ai_max_steps',
+      details: {
+        steps: [{ workflow: 'lookup-customer', input: { email: 'a' } }],
+        usage: { inputTokens: 20 },
+      },
+    })
+    expect(h.calls).toHaveLength(1)
+
+    // A budget the first turn spends: the second call is refused, carrying the first's usage.
+    const tight = host()
+    const spent = await failure(
+      run(
+        anthropicConnector,
+        anthropic({ budgetTokens: 1 }),
+        { action: 'agent', prompt: 'Look up ada', tools: 'lookup-customer' },
+        {},
+        tight.ai,
+      ),
+    )
+    expect(spent).toMatchObject({
+      code: 'ai_budget',
+      details: { provider: 'anthropic', usage: { inputTokens: expect.any(Number) }, steps: [{ ok: true }] },
+    })
+  })
+
+  it('refuses tools written as expressions, an unknown tool name as an error result', async () => {
+    const expr = await failure(
+      run(
+        anthropicConnector,
+        anthropic(),
+        { action: 'agent', prompt: 'x', tools: '{{ tools }}' },
+        {},
+        host().ai,
+      ),
+    )
+    expect(expr.message).toContain('not {{ }} expressions')
+    fake.next('anthropic', {
+      body: {
+        id: 'msg_x',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-5-5',
+        content: [{ type: 'tool_use', id: 'toolu_x', name: 'delete-everything', input: {} }],
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })
+    const h = host()
+    const result = await run(
+      anthropicConnector,
+      anthropic(),
+      { action: 'agent', prompt: 'x', tools: 'lookup-customer' },
+      {},
+      h.ai,
+    )
+    expect(h.calls).toHaveLength(0)
+    expect(result.data).toMatchObject({
+      answer: 'Done: There\'s no tool named "delete-everything"',
+      steps: [],
+    })
+  })
+})

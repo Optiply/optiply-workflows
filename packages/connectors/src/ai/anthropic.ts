@@ -71,7 +71,14 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
         model: request.model,
         max_tokens: request.maxTokens,
         ...(request.system && { system: request.system }),
-        messages: [{ role: 'user', content: request.prompt }],
+        messages: [{ role: 'user', content: request.prompt }, ...turnsOf(request)],
+        ...(request.tools?.length && {
+          tools: request.tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            input_schema: t.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
+          })),
+        }),
         ...(Object.keys(outputConfig).length && { output_config: outputConfig }),
         // Automatic prompt caching: repeated system prompts and inputs cost a tenth.
         cache_control: { type: 'ephemeral' },
@@ -85,7 +92,24 @@ async function complete(client: Client, request: AiCompletionRequest): Promise<A
   return completionOf(message)
 }
 
-/** The answer's text (thinking left out), usage and cost. */
+/** The agent's turns after the prompt: the model's own content sent back as it was, the tools' results as a user turn. */
+function turnsOf(request: AiCompletionRequest): Anthropic.Beta.BetaMessageParam[] {
+  return (request.turns ?? []).map((turn) =>
+    turn.kind === 'assistant'
+      ? { role: 'assistant', content: turn.raw as Anthropic.Beta.BetaContentBlockParam[] }
+      : {
+          role: 'user',
+          content: turn.results.map((r) => ({
+            type: 'tool_result' as const,
+            tool_use_id: r.id,
+            content: r.content,
+            ...(r.isError && { is_error: true }),
+          })),
+        },
+  )
+}
+
+/** The answer's text (thinking left out), the tools it calls, usage and cost. */
 export function completionOf(message: Anthropic.Beta.BetaMessage): AiCompletion {
   const text = message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
   const usage = {
@@ -95,8 +119,12 @@ export function completionOf(message: Anthropic.Beta.BetaMessage): AiCompletion 
     cacheWriteTokens: message.usage.cache_creation_input_tokens ?? 0,
   }
   const stop = message.stop_reason
+  const toolCalls = message.content.flatMap((block) =>
+    block.type === 'tool_use' ? [{ id: block.id, name: block.name, input: block.input }] : [],
+  )
   return {
     text,
+    ...(toolCalls.length && { toolCalls, raw: message.content }),
     model: message.model,
     usage,
     stopReason: stop === 'end_turn' || stop === 'stop_sequence' ? 'end' : (stop ?? 'end'),

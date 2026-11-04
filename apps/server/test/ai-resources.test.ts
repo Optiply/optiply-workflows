@@ -107,4 +107,57 @@ describe('AI resources', () => {
     )
     expect(ran).toMatchObject({ ok: true, data: { label: 'refund' } })
   })
+
+  it("runs an app's AI query on the server, with the data typed by its action; the agent stays in workflows", async () => {
+    await resourceOf(
+      'anthropic',
+      'claude_app',
+      { baseUrl: fake.anthropicUrl, allowPrivateNetwork: true },
+      { apiKey: fake.anthropicKey },
+    )
+    const app = data(await admin.mutate('apps.create', { slug: 'inbox', name: 'Inbox' }))
+    data(
+      await admin.mutate('apps.saveDraft', {
+        id: app.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          components: [{ name: 'email', type: 'textInput', props: { label: 'Email' } }],
+          queries: [
+            {
+              name: 'kind',
+              kind: 'resource',
+              resource: 'claude_app',
+              query: { action: 'classify', input: '{{ email.value }}', labels: 'order, complaint' },
+              run: 'manual',
+            },
+            {
+              name: 'helper',
+              kind: 'resource',
+              resource: 'claude_app',
+              query: { action: 'agent', prompt: '{{ email.value }}', tools: 'lookup' },
+              run: 'manual',
+            },
+          ],
+          layout: { email: { x: 0, y: 0, w: 4, h: 3 } },
+        },
+      }),
+    )
+    const run = (query: string) =>
+      admin.mutate('apps.runQuery', {
+        appId: app.id,
+        releaseId: null,
+        query,
+        environmentId: prodId,
+        values: { ' email.value ': 'LABEL=complaint the lamp broke' },
+      })
+    const kind = data(await run('kind'))
+    expect(kind).toMatchObject({
+      ok: true,
+      data: { label: 'complaint', reason: expect.any(String) },
+      metadata: { provider: 'anthropic', usage: { inputTokens: expect.any(Number) } },
+    })
+    const helper = data(await run('helper'))
+    expect(helper).toMatchObject({ ok: false, error: { message: expect.stringContaining('workflows only') } })
+  })
 })

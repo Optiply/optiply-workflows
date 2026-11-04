@@ -56,15 +56,34 @@ export function triggerResources(def: WorkflowDefinition): string[] {
   ]
 }
 
-/** Slugs of every workflow the definition calls: Workflow blocks and loop workflow runners, functions included. */
+/**
+ * Slugs of every workflow the definition calls: Workflow blocks, loop workflow runners and AI agents' tools (M35:
+ * queries with `action: 'agent'`), functions included.
+ */
 export function calledWorkflows(def: WorkflowDefinition): string[] {
   const slugs = new Set<string>()
   for (const block of allBlocks(def)) {
     if (block.type === 'workflow') slugs.add(block.config.workflow)
     if (block.type === 'loop' && block.config.runner.kind === 'workflow')
       slugs.add(block.config.runner.workflow)
+    const query =
+      block.type === 'resourceQuery'
+        ? block.config.query
+        : block.type === 'loop' && block.config.runner.kind === 'query'
+          ? block.config.runner.query
+          : undefined
+    for (const slug of agentTools(query)) slugs.add(slug)
   }
   return [...slugs]
+}
+
+/** The workflows an AI agent query (M35) names as its tools: a list, or a comma-separated text. Empty for others. */
+export function agentTools(query: unknown): string[] {
+  if (!query || typeof query !== 'object') return []
+  const { action, tools } = query as { action?: unknown; tools?: unknown }
+  if (action !== 'agent') return []
+  const list = Array.isArray(tools) ? tools : typeof tools === 'string' ? tools.split(',') : []
+  return [...new Set(list.map((t) => String(t).trim()).filter(Boolean))]
 }
 
 /** The library query a block uses (M21): a Library query block's or a library loop runner's, with its path. */

@@ -2,7 +2,9 @@ import { compileBodySchema } from '@ow/definition/body-schema'
 import { isPrivateAddress } from '../net-guard'
 import { type ActionQuery, fieldReader } from '../services/common'
 import { ConnectorError, type QueryContext, type QueryResult } from '../types'
+import { runAgent } from './agent'
 import { type AiUsage, tokensOf } from './prices'
+import { countAiCall } from './stats'
 
 // What the two AI connectors share (M35, docs/architecture.md §2.38): the actions read from a query, turned into one
 // model call each (the agent: several, in ai/agent.ts), and their answers checked and described.
@@ -20,6 +22,27 @@ export interface AiCompletionRequest {
   schema?: Record<string, unknown>
   signal: AbortSignal
   timeoutMs: number
+  /** The agent's tools (workflows), offered to the model. */
+  tools?: AiToolSpec[]
+  /** The agent's conversation after the prompt: the model's turns (as it sent them) and the tools' results. */
+  turns?: AiTurn[]
+}
+
+/** A turn of the agent's conversation after the first prompt. */
+export type AiTurn = { kind: 'assistant'; raw: unknown } | { kind: 'results'; results: AiToolResult[] }
+
+/** A tool the model asked to call: the provider's call id, the tool's name and its input. */
+export interface AiToolCall {
+  id: string
+  name: string
+  input: unknown
+}
+
+/** A tool's result going back to the model. */
+export interface AiToolResult {
+  id: string
+  content: string
+  isError: boolean
 }
 
 export interface AiCompletion {
@@ -31,6 +54,10 @@ export interface AiCompletion {
   stopReason: string
   refusalCategory?: string | null
   costUsd: number | null
+  /** The tools the model asked to call (the agent; stopReason `tool_use`). */
+  toolCalls?: AiToolCall[]
+  /** The model's turn as the provider sent it, to send back with the tools' results. */
+  raw?: unknown
 }
 
 /** A provider as the actions use it. */
@@ -60,10 +87,12 @@ export interface AiRunContext {
 /** Workflows as an agent's tools (M35, step 3): their descriptions, and running one with an input. */
 export interface AiToolHost {
   describe(slugs: string[]): Promise<AiToolSpec[]>
+  /** Runs the workflow (a child run, keyed by the model's call id so a retried call doesn't start another). */
   run(
     slug: string,
     input: unknown,
     signal: AbortSignal,
+    callId: string,
   ): Promise<{ ok: boolean; data: unknown; runId: string | null }>
 }
 
@@ -106,9 +135,7 @@ export async function executeAiQuery(
     ...(effort && { effort }),
   }
 
-  if (query.action === 'agent') {
-    throw new ConnectorError('invalid_query', 'The agent runs in workflows only (an app can call a workflow)')
-  }
+  if (query.action === 'agent') return runAgent(provider, settings, query, ctx, f, base)
 
   let request: AiCompletionRequest
   let read: (completion: AiCompletion) => unknown
@@ -227,26 +254,65 @@ export async function executeAiQuery(
       throw new ConnectorError('invalid_query', `Unknown action ${query.action}`)
   }
 
-  checkBudget(settings, ctx)
+  const completion = await completeCounted(provider, settings, request, ctx)
+  const metadata = describe(provider, settings, completion.answer, completion.durationMs, request)
+  let outcome = 'ok'
+  try {
+    if (completion.answer.stopReason === 'refusal') {
+      throw new ConnectorError(
+        'ai_refused',
+        `The model declined to answer${completion.answer.refusalCategory ? ` (${completion.answer.refusalCategory})` : ''}`,
+        metadata,
+      )
+    }
+    if (completion.answer.stopReason === 'max_tokens') {
+      throw new ConnectorError(
+        'ai_max_tokens',
+        `The answer was cut off at ${request.maxTokens} tokens: raise Max tokens`,
+        metadata,
+      )
+    }
+    return { data: read(completion.answer), metadata }
+  } catch (err) {
+    if (!(err instanceof ConnectorError)) {
+      outcome = 'error'
+      throw err
+    }
+    outcome = err.code
+    // The answer's usage and cost go with the failure too (the run log line).
+    if (err.code !== 'ai_invalid_output') throw err
+    throw new ConnectorError(err.code, err.message, { ...metadata, ...err.details })
+  } finally {
+    countAiCall(provider.name, completion.answer.model, outcome, completion.answer)
+  }
+}
+
+/**
+ * One model call, within the run's budget: refused when it's spent, its tokens added once answered. A call that
+ * never answers is counted here; one that did, by the caller once it has read the answer.
+ */
+export async function completeCounted(
+  provider: AiProvider,
+  settings: AiSettings,
+  request: AiCompletionRequest,
+  ctx: Pick<QueryContext, 'ai'>,
+): Promise<{ answer: AiCompletion; durationMs: number }> {
+  try {
+    checkBudget(settings, ctx)
+  } catch (err) {
+    countAiCall(provider.name, request.model, 'ai_budget')
+    throw err
+  }
   const started = Date.now()
-  const completion = await provider.complete(request)
-  ctx.ai?.budget?.add(tokensOf(completion.usage))
-  const metadata = describe(provider, settings, completion, Date.now() - started, request)
-  if (completion.stopReason === 'refusal') {
-    throw new ConnectorError(
-      'ai_refused',
-      `The model declined to answer${completion.refusalCategory ? ` (${completion.refusalCategory})` : ''}`,
-      metadata,
-    )
+  let answer: AiCompletion
+  try {
+    answer = await provider.complete(request)
+  } catch (err) {
+    countAiCall(provider.name, request.model, err instanceof ConnectorError ? err.code : 'error')
+    throw err
   }
-  if (completion.stopReason === 'max_tokens') {
-    throw new ConnectorError(
-      'ai_max_tokens',
-      `The answer was cut off at ${request.maxTokens} tokens: raise Max tokens`,
-      metadata,
-    )
-  }
-  return { data: read(completion), metadata }
+  ctx.ai?.budget?.add(tokensOf(answer.usage))
+  return { answer, durationMs: Date.now() - started }
 }
 
 /** Refuses a call when the run has spent the resource's budget already. */

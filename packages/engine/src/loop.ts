@@ -204,7 +204,7 @@ async function runner(block: LoopBlock, ctx: BlockContext, work: Work, key: stri
     case 'code':
       return runCode(block, runner.code, work, ctx, runner.language)
     case 'query':
-      return (await runResourceQuery(runner.resource, runner.query, work, ctx)).data
+      return (await runResourceQuery(runner.resource, runner.query, work, ctx, { key })).data
     case 'library':
       return (await runLibraryQuery(runner, work, ctx)).data
     case 'function':

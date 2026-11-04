@@ -11,6 +11,7 @@ import {
   validateDefinition,
   type WorkflowGraph,
 } from '@ow/definition'
+import { RunAiBudget } from './ai'
 import {
   type BlockContext,
   type BlockOutput,
@@ -157,6 +158,8 @@ class RunExecution {
   private resolveOutcome!: (outcome: RunOutcome) => void
   private deadlineTimer: NodeJS.Timeout | undefined
   private readonly onExternalAbort = () => this.externalAbort()
+  /** The tokens the run's AI calls have used (M35). */
+  private readonly aiBudget: NonNullable<ExecuteRunOptions['aiBudget']>
 
   constructor(
     private readonly opts: ExecuteRunOptions,
@@ -178,6 +181,7 @@ class RunExecution {
     this.suspendAfterMs = opts.suspendAfterMs ?? DEFAULT_SUSPEND_AFTER_MS
     this.responded = opts.responded ?? false
     for (const [name, state] of opts.waits ?? []) this.waitState.set(name, state)
+    this.aiBudget = opts.aiBudget ?? RunAiBudget.fromCheckpoints(opts.checkpoints)
   }
 
   run(): Promise<RunOutcome> {
@@ -465,6 +469,7 @@ class RunExecution {
       callFunction: (name, args, signal) =>
         this.callFunction(name, args, signal, (level, message) => this.log(block.name, level, message)),
       iterations,
+      ai: { budget: this.aiBudget },
     }
     let timer: NodeJS.Timeout | undefined
     let onAbort: (() => void) | undefined
@@ -515,6 +520,7 @@ class RunExecution {
         ...this.opts,
         globals: { ...this.opts.globals, params: toJsonData(params).data },
         store: new FunctionCallStore(name, log),
+        aiBudget: this.aiBudget,
         checkpoints: undefined,
         waits: undefined,
         only: undefined,
