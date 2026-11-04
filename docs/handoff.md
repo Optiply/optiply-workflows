@@ -1995,7 +1995,7 @@ M31 (Git sync's last gaps: GitLab, a GitHub App) is planned in `architecture.md`
 5. **Done-when and docs:** `m31-done-when.spec.ts` (GitLab and the GitHub App, each from Settings to a deploy through a merged request); `docs/runbooks/git-sync.md` (GitHub token, GitHub App, GitLab, webhooks, errors); §9z, "As built".
 6. **Review** (the `code-review` skill, high), fixes, full e2e.
 
-**Progress:** step 0 committed.
+**Progress:** step 0 `c022032`. Step 1 (the host interface): `services/git/hosts/` (`types.ts`: `GitHost` with `findChangeRequest`/`openChangeRequest`/`getChangeRequest`, `PullRequestView` gains `kind` (`pull`/`merge`), `GitHostError` (was `GitHubError`, same messages), `GitCredentials`, `GitWebhookCheck`; `github.ts` moved from `services/git/github.ts`: `GitHubHost` taking a token provider, `checkGitHubWebhook` moved out of `api/git-webhook.ts`; `index.ts`: `openGitHost` (was `openGitHub`), `gitHostFor`, `gitCredentials`, `checkGitWebhook`, `changeRequestNoun`); `GitRepo`'s remote takes `credentials()`, asked before each remote command, its username to askpass (`OW_GIT_USERNAME`); **migration 0036** (`git_settings.host` `github`/`gitlab`, `github_auth` `token`/`app`, `github_app_id`, `api_url`, check constraints; `GIT_HOSTS` in `@ow/db`). Tests: M11's and M22's git suites, component releases and config pass unchanged (164); git-repo +1 (credentials asked per command with GitLab's `oauth2`, GitHub's username refused there; the HTTP git test server takes a username).
 
 ## 15. How to start the next session
 

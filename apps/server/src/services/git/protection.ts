@@ -13,7 +13,7 @@ import type { Config } from '../../config'
 import { GitError } from './cli'
 import { commitToBranch, GitConflictError } from './commit'
 import { gitFolderPath } from './folders'
-import { GitHubError, openGitHub, type PullRequestView } from './github'
+import { GitHostError, openGitHost, type PullRequestView } from './hosts'
 import { type GitObjectRow, liveOrDraft, setGitProtected } from './kinds'
 import type { GitAuthor, GitRepo } from './repo'
 import { openGitRepo } from './settings'
@@ -70,7 +70,7 @@ export function requireRollbackAllowed(
 export function gitTrpcError(err: unknown): TRPCError {
   if (err instanceof TRPCError) return err
   if (err instanceof GitConflictError) return new TRPCError({ code: 'CONFLICT', message: err.message })
-  if (err instanceof GitError || err instanceof GitHubError) {
+  if (err instanceof GitError || err instanceof GitHostError) {
     const code =
       err.kind === 'auth' || err.kind === 'not_found' || err.kind === 'refused' || err.kind === 'unsupported'
         ? 'PRECONDITION_FAILED'
@@ -250,13 +250,13 @@ export async function openPullRequestFor(
   /** `base`: the deploy branch unless given (Promote, M22). */
   opts: { branch: string; title: string; body: string; base?: string },
 ): Promise<{ pullRequest: PullRequestView | null; pullRequestError: string | null }> {
-  const opened = await openGitHub(db, config)
+  const opened = await openGitHost(db, config)
   if ('error' in opened) return { pullRequest: null, pullRequestError: opened.error }
   try {
-    const pullRequest = await opened.github.openPullRequest({ ...opts, base: opts.base ?? opened.branch })
+    const pullRequest = await opened.host.openChangeRequest({ ...opts, base: opts.base ?? opened.branch })
     return { pullRequest, pullRequestError: null }
   } catch (err) {
-    if (err instanceof GitHubError) return { pullRequest: null, pullRequestError: err.message }
+    if (err instanceof GitHostError) return { pullRequest: null, pullRequestError: err.message }
     throw err
   }
 }

@@ -1268,6 +1268,10 @@ export const maintenanceJobs = pgTable('maintenance_jobs', {
  * The instance's Git repo (M11): one row at most. The token and webhook secret are one encrypted JSON value
  * (`git_settings:<id>:-`), never returned to the browser.
  */
+/** The Git hosts sync works with (M31). */
+export const GIT_HOSTS = ['github', 'gitlab'] as const
+export type GitHostKind = (typeof GIT_HOSTS)[number]
+
 export const gitSettings = pgTable(
   'git_settings',
   {
@@ -1278,7 +1282,16 @@ export const gitSettings = pgTable(
     repoUrl: text().notNull(),
     /** The branch deploys come from. */
     branch: text().notNull().default('main'),
-    /** Encrypted JSON `{ token?, webhookSecret? }` (`@ow/crypto` token). */
+    /** Where the repo is hosted (M31): its pull or merge requests, webhook and sign-in. */
+    host: text({ enum: GIT_HOSTS }).notNull().default('github'),
+    /** GitHub's sign-in (M31): a token, or a GitHub App (its id here, its private key a secret). */
+    githubAuth: text({ enum: ['token', 'app'] })
+      .notNull()
+      .default('token'),
+    githubAppId: text(),
+    /** GitLab's API for an instance under a path (M31); null: `<origin>/api/v4`. */
+    apiUrl: text(),
+    /** Encrypted JSON `{ token?, webhookSecret?, appPrivateKey? }` (`@ow/crypto` token). */
     secrets: text(),
     /** The branch commit the last deploy went through (null: never, or the repo or branch changed since). */
     deployedCommit: text(),
@@ -1306,6 +1319,8 @@ export const gitSettings = pgTable(
   (t) => [
     unique('git_settings_singleton_uq').on(t.singleton),
     check('git_settings_singleton_ck', sql`${t.singleton}`),
+    check('git_settings_host_ck', sql`${t.host} in ('github', 'gitlab')`),
+    check('git_settings_github_auth_ck', sql`${t.githubAuth} in ('token', 'app')`),
   ],
 )
 

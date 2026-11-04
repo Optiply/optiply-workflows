@@ -3,8 +3,8 @@ import { folderPathSchema } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
-import { GitHubError, openGitHub } from '../../services/git/github'
 import { gitHealth } from '../../services/git/health'
+import { GitHostError, openGitHost } from '../../services/git/hosts'
 import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import { objectBranches } from '../../services/git/object-branches'
 import { openPromotion } from '../../services/git/promotion'
@@ -324,12 +324,12 @@ export const gitRouter = router({
 
   /** The branch's pull request into the deploy branch (open ones first), or null. */
   pullRequest: authedProcedure.input(z.object({ branch: branchNameSchema })).query(async ({ ctx, input }) => {
-    const opened = await openGitHub(ctx.db, ctx.config)
+    const opened = await openGitHost(ctx.db, ctx.config)
     if ('error' in opened) return { pullRequest: null, error: opened.error }
     try {
-      return { pullRequest: await opened.github.findPullRequest(input.branch, opened.branch), error: null }
+      return { pullRequest: await opened.host.findChangeRequest(input.branch, opened.branch), error: null }
     } catch (err) {
-      if (err instanceof GitHubError) return { pullRequest: null, error: err.message }
+      if (err instanceof GitHostError) return { pullRequest: null, error: err.message }
       throw err
     }
   }),

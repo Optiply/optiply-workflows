@@ -9,6 +9,7 @@ import { v7 as uuidv7 } from 'uuid'
 import type { Config } from '../../config'
 import { decryptForRow, encryptForRow } from '../secrets'
 import { GitError, type GitErrorKind } from './cli'
+import { gitCredentials } from './hosts'
 import { checkRepoUrl, GitRepo } from './repo'
 
 export interface GitSecrets {
@@ -163,7 +164,7 @@ export async function openGitRepo(
   if (!loaded) return null
   const repo = await GitRepo.open(
     gitCacheRoot(config),
-    { url: loaded.row.repoUrl, token: loaded.secrets.token ?? null },
+    { url: loaded.row.repoUrl, token: null, credentials: gitCredentials(loaded) },
     { allowInsecure: config.GIT_ALLOW_INSECURE_URLS },
   )
   return { repo, branch: loaded.row.branch, secrets: loaded.secrets }

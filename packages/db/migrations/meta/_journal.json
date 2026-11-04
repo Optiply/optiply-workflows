@@ -253,6 +253,13 @@
       "when": 1793741314048,
       "tag": "0035_brokers",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793787117541,
+      "tag": "0036_git_hosts",
+      "breakpoints": true
     }
   ]
 }

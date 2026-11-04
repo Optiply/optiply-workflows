@@ -1,32 +1,6 @@
-import type { Db } from '@ow/db'
-import type { Config } from '../../config'
-import { loadGitSettings } from './settings'
-
-/** A pull request as the instance shows it. */
-export interface PullRequestView {
-  number: number
-  url: string
-  title: string
-  state: 'open' | 'closed'
-  merged: boolean
-  draft: boolean
-  /** The branch it merges, and where to. */
-  head: string
-  base: string
-  updatedAt: string
-}
-
-export type GitHubErrorKind = 'auth' | 'not_found' | 'unsupported' | 'invalid' | 'failed'
-
-export class GitHubError extends Error {
-  constructor(
-    readonly kind: GitHubErrorKind,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'GitHubError'
-  }
-}
+import { createHmac, timingSafeEqual } from 'node:crypto'
+import type { IncomingHttpHeaders } from 'node:http'
+import { type GitHost, GitHostError, type GitWebhookCheck, type PullRequestView } from './types'
 
 /** Where a repo's REST API is, and its owner and name. */
 export interface GitHubTarget {
@@ -76,6 +50,7 @@ interface RawPull {
 }
 
 const view = (p: RawPull): PullRequestView => ({
+  kind: 'pull',
   number: p.number,
   url: p.html_url,
   title: p.title,
@@ -87,15 +62,21 @@ const view = (p: RawPull): PullRequestView => ({
   updatedAt: p.updated_at,
 })
 
-/** The pull request calls the instance makes, with the repo's token. Redirects are refused, so the token stays put. */
-export class GitHub {
+/**
+ * GitHub's pull requests, with the repo's token (a personal token, or a GitHub App's installation token: M31). Redirects
+ * are refused, so the token stays put.
+ */
+export class GitHubHost implements GitHost {
+  readonly kind = 'github' as const
+
   constructor(
     private readonly target: GitHubTarget,
-    private readonly token: string | null,
+    /** The token for the next call; null when none is set. */
+    private readonly token: () => Promise<string | null>,
   ) {}
 
   /** The newest pull request from `branch` into `base`, open ones first; null when there's none. */
-  async findPullRequest(branch: string, base: string): Promise<PullRequestView | null> {
+  async findChangeRequest(branch: string, base: string): Promise<PullRequestView | null> {
     const query = new URLSearchParams({
       head: `${this.target.owner}:${branch}`,
       base,
@@ -111,13 +92,13 @@ export class GitHub {
   }
 
   /** Opens a pull request, or returns the one already open for the branch (`created` false). */
-  async openPullRequest(opts: {
+  async openChangeRequest(opts: {
     branch: string
     base: string
     title: string
     body: string
   }): Promise<PullRequestView & { created: boolean }> {
-    const existing = await this.findPullRequest(opts.branch, opts.base)
+    const existing = await this.findChangeRequest(opts.branch, opts.base)
     if (existing?.state === 'open') return { ...existing, created: false }
     const created = await this.request<RawPull>('POST', '/pulls', {
       title: opts.title,
@@ -128,13 +109,14 @@ export class GitHub {
     return { ...view(created), created: true }
   }
 
-  async getPullRequest(number: number): Promise<PullRequestView> {
+  async getChangeRequest(number: number): Promise<PullRequestView> {
     return view(await this.request<RawPull>('GET', `/pulls/${number}`))
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    if (!this.token)
-      throw new GitHubError('auth', 'Set a GitHub token in the Git settings to work with pull requests')
+    const token = await this.token()
+    if (!token)
+      throw new GitHostError('auth', 'Set a GitHub token in the Git settings to work with pull requests')
     const { api, owner, repo } = this.target
     let res: Response
     try {
@@ -144,7 +126,7 @@ export class GitHub {
         signal: AbortSignal.timeout(15_000),
         headers: {
           accept: 'application/vnd.github+json',
-          authorization: `Bearer ${this.token}`,
+          authorization: `Bearer ${token}`,
           'x-github-api-version': '2022-11-28',
           'user-agent': 'optiply-workflows',
           ...(body ? { 'content-type': 'application/json' } : {}),
@@ -152,7 +134,7 @@ export class GitHub {
         body: body ? JSON.stringify(body) : undefined,
       })
     } catch (err) {
-      throw new GitHubError('failed', `GitHub didn't answer: ${(err as Error).message}`)
+      throw new GitHostError('failed', `GitHub didn't answer: ${(err as Error).message}`)
     }
     const text = await res.text()
     let json: unknown
@@ -168,23 +150,40 @@ export class GitHub {
       .join(': ')
     const said = `GitHub said ${res.status}${detail ? `: ${detail}` : ''}`
     if (res.status === 401 || res.status === 403) {
-      throw new GitHubError('auth', `${said}. The token needs Pull requests (read and write) on the repo`)
+      throw new GitHostError('auth', `${said}. The token needs Pull requests (read and write) on the repo`)
     }
     if (res.status === 404)
-      throw new GitHubError('not_found', `${said}. Is the repo URL right, and can the token see it?`)
-    if (res.status === 422) throw new GitHubError('invalid', said)
-    throw new GitHubError('failed', said)
+      throw new GitHostError('not_found', `${said}. Is the repo URL right, and can the token see it?`)
+    if (res.status === 422) throw new GitHostError('invalid', said)
+    throw new GitHostError('failed', said)
   }
 }
 
-/** The GitHub API for the configured repo, or why there isn't one. */
-export async function openGitHub(
-  db: Db,
-  config: Pick<Config, 'keyring' | 'GITHUB_API_URL'>,
-): Promise<{ github: GitHub; branch: string } | { error: string }> {
-  const loaded = await loadGitSettings(db, config.keyring)
-  if (!loaded) return { error: "Git sync isn't set up" }
-  const target = githubTarget(loaded.row.repoUrl, config.GITHUB_API_URL)
-  if (!target) return { error: "The repo isn't on GitHub: open the pull request there yourself" }
-  return { github: new GitHub(target, loaded.secrets.token ?? null), branch: loaded.row.branch }
+/**
+ * GitHub's push webhook (the repo's, or a GitHub App's: M31): the body signed with the webhook secret
+ * (`X-Hub-Signature-256`, HMAC-SHA256 of the exact bytes). JSON and form-encoded deliveries both work.
+ */
+export function checkGitHubWebhook(
+  secret: string,
+  headers: IncomingHttpHeaders,
+  raw: Buffer,
+): GitWebhookCheck {
+  const signature = headers['x-hub-signature-256']
+  const expected = Buffer.from(`sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`)
+  const given = Buffer.from(typeof signature === 'string' ? signature : '')
+  if (given.length !== expected.length || !timingSafeEqual(given, expected))
+    return { ok: false, status: 401, code: 'bad_signature', message: 'The signature does not match' }
+  const event = headers['x-github-event']
+  if (event === 'ping') return { ok: true, event: 'ping' }
+  if (event !== 'push') return { ok: true, event: 'other', name: String(event ?? 'unknown') }
+  let payload: { ref?: unknown }
+  try {
+    const text = String(headers['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')
+      ? (new URLSearchParams(raw.toString('utf8')).get('payload') ?? '')
+      : raw.toString('utf8')
+    payload = JSON.parse(text)
+  } catch {
+    return { ok: false, status: 400, code: 'invalid_request', message: 'The payload is not valid JSON' }
+  }
+  return { ok: true, event: 'push', ref: typeof payload.ref === 'string' ? payload.ref : '' }
 }

@@ -5,10 +5,14 @@ import type { Files } from '@ow/git-format'
 import { z } from 'zod'
 import { askpassScript, GitError, type GitRunOptions, runGit } from './cli'
 
-/** Where the repo is and how to sign in. The token is a GitHub token with Contents (and Pull requests) access. */
+/**
+ * Where the repo is and how to sign in: a token (GitHub's username `x-access-token`), or `credentials`, asked before
+ * each command that talks to the remote (M31: the host's username, and a token that may be short-lived).
+ */
 export interface GitRemote {
   url: string
   token: string | null
+  credentials?: () => Promise<{ username: string; token: string } | null>
 }
 
 export interface GitAuthor {
@@ -146,15 +150,24 @@ export class GitRepo {
   }
 
   /** A command that talks to the remote: the allowed protocols, no redirects, the token through askpass. */
-  private network(args: string[], opts: Omit<GitRunOptions, 'gitDir'> = {}) {
+  private async network(args: string[], opts: Omit<GitRunOptions, 'gitDir'> = {}) {
     const protocols = ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always']
     if (this.allowInsecure)
       protocols.push('-c', 'protocol.http.allow=always', '-c', 'protocol.file.allow=always')
-    const token = this.remote.token
+    const signIn = this.remote.credentials
+      ? await this.remote.credentials()
+      : this.remote.token
+        ? { username: 'x-access-token', token: this.remote.token }
+        : null
     return this.git([...protocols, '-c', 'http.followRedirects=false', ...args], {
       ...opts,
-      env: { ...opts.env, ...(token ? { GIT_ASKPASS: this.askpass, OW_GIT_TOKEN: token } : {}) },
-      secrets: token ? [token] : [],
+      env: {
+        ...opts.env,
+        ...(signIn
+          ? { GIT_ASKPASS: this.askpass, OW_GIT_USERNAME: signIn.username, OW_GIT_TOKEN: signIn.token }
+          : {}),
+      },
+      secrets: signIn ? [signIn.token] : [],
     })
   }
 

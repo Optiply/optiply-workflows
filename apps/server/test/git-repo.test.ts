@@ -371,6 +371,38 @@ describe('over HTTP with a token', () => {
     expect(await repo.push(commit!, 'feature')).toBe('ok')
   })
 
+  it('signs in with credentials asked per command: the host’s username, a fresh token (M31)', async () => {
+    const gitlab = await gitHttpServer(join(root, 'served'), TOKEN, '127.0.0.1', 'oauth2')
+    try {
+      let asked = 0
+      const repo = await GitRepo.open(
+        join(root, 'http-cache-credentials'),
+        {
+          url: `${gitlab.url}/flows.git`,
+          token: null,
+          credentials: async () => {
+            asked++
+            return { username: 'oauth2', token: TOKEN }
+          },
+        },
+        insecure,
+      )
+      await repo.listBranches()
+      await repo.listBranches()
+      expect(asked).toBe(2)
+      expect(gitlab.requests.authorized).toBeGreaterThan(0)
+      // GitHub's username isn't taken there.
+      const github = await GitRepo.open(
+        join(root, 'http-cache-credentials-gh'),
+        { url: `${gitlab.url}/flows.git`, token: TOKEN },
+        insecure,
+      )
+      await expect(github.listBranches()).rejects.toMatchObject({ kind: 'auth' })
+    } finally {
+      await gitlab.close()
+    }
+  })
+
   it('reports a repo that is not there', async () => {
     const repo = await GitRepo.open(
       join(root, 'http-cache-404'),

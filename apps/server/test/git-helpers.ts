@@ -38,6 +38,8 @@ export async function gitHttpServer(
   token: string,
   /** Where to listen; 0.0.0.0 to serve containers too (a Compose check). */
   host = '127.0.0.1',
+  /** The username it takes with the token: GitHub's, or GitLab's `oauth2` (M31). */
+  username = 'x-access-token',
 ): Promise<{
   url: string
   port: number
@@ -48,7 +50,7 @@ export async function gitHttpServer(
     execFileSync('git', ['--exec-path'], { env: cleanEnv }).toString().trim(),
     'git-http-backend',
   )
-  const expected = `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+  const expected = `Basic ${Buffer.from(`${username}:${token}`).toString('base64')}`
   const requests = { authorized: 0, refused: 0 }
   const server: Server = createServer((req, res) => {
     if (req.headers.authorization !== expected) {
