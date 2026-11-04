@@ -13,6 +13,17 @@ export function useGitInfo() {
   return useQuery({ ...trpc.git.info.queryOptions(), staleTime: 60_000 })
 }
 
+/**
+ * What the Git host calls a change request (M31): GitHub's pull request, GitLab's merge request, and how its number
+ * is written (`#3`, `!3`).
+ */
+export function useChangeRequest() {
+  const { data } = useGitInfo()
+  return data?.host === 'gitlab'
+    ? { noun: 'merge request', Noun: 'Merge request', mark: '!' }
+    : { noun: 'pull request', Noun: 'Pull request', mark: '#' }
+}
+
 /** A short commit sha, linking to the commit when the repo is on the web. */
 export function CommitLink({ sha, webUrl }: { sha: string; webUrl: string | null | undefined }) {
   const short = <span className="font-mono">{sha.slice(0, 7)}</span>
@@ -57,11 +68,11 @@ export function ProtectedBadge() {
   )
 }
 
-/** A pull request's link with its state. */
+/** A pull (or merge) request's link with its state. */
 export function PullRequestLink({
   pullRequest,
 }: {
-  pullRequest: { number: number; url: string; state: string; merged: boolean; draft?: boolean }
+  pullRequest: { number: number; url: string; state: string; merged: boolean; draft?: boolean; kind?: string }
 }) {
   const state = pullRequest.merged ? 'Merged' : pullRequest.state === 'open' ? 'Open' : 'Closed'
   return (
@@ -72,7 +83,8 @@ export function PullRequestLink({
       className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
       data-testid="pull-request-link"
     >
-      <GitPullRequest className="size-3.5" /> #{pullRequest.number}
+      <GitPullRequest className="size-3.5" /> {pullRequest.kind === 'merge' ? '!' : '#'}
+      {pullRequest.number}
       <Badge tone={pullRequest.merged ? 'success' : pullRequest.state === 'open' ? 'accent' : 'neutral'}>
         {state}
       </Badge>
@@ -94,6 +106,7 @@ export function ProtectDialog({
   object: { id: string; slug: string; name: string }
   onClose: () => void
 }) {
+  const cr = useChangeRequest()
   const trpc = useTRPC()
   const refresh = useRefreshKind(kind)
   const { data: git } = useGitInfo()
@@ -155,11 +168,11 @@ export function ProtectDialog({
           </p>
           {result.pullRequest ? (
             <div>
-              Review and merge the pull request: <PullRequestLink pullRequest={result.pullRequest} />
+              Review and merge the {cr.noun}: <PullRequestLink pullRequest={result.pullRequest} />
             </div>
           ) : (
             <div className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
-              No pull request was opened: {result.pullRequestError}
+              No {cr.noun} was opened: {result.pullRequestError}
               {git?.webUrl && (
                 <>
                   {' '}
@@ -189,13 +202,13 @@ export function ProtectDialog({
           <p>
             A protected {label} is reviewed before it changes.{' '}
             {settings ? 'Its settings (never its secrets)' : 'Its live version'} {settings ? 'are' : 'is'}{' '}
-            committed to a branch and a pull request into{' '}
+            committed to a branch and a {cr.noun} into{' '}
             <span className="font-mono">{git?.branch ?? 'main'}</span> is opened. From then on:
           </p>
           {settings ? (
             <ul className="list-disc space-y-1 pl-5 text-muted">
               <li>
-                Its settings are read-only here: change them with Save to branch, and review the pull request.
+                Its settings are read-only here: change them with Save to branch, and review the {cr.noun}.
               </li>
               <li>Merging deploys them to every instance deploying that branch.</li>
               <li>
@@ -206,7 +219,7 @@ export function ProtectDialog({
             </ul>
           ) : (
             <ul className="list-disc space-y-1 pl-5 text-muted">
-              <li>Changes are made in a draft on a branch, committed, and reviewed in a pull request.</li>
+              <li>Changes are made in a draft on a branch, committed, and reviewed in a {cr.noun}.</li>
               <li>Merging deploys it as a new release; nobody publishes it here any more.</li>
               <li>Only admins can roll it back here, in an emergency, until its next change in Git.</li>
             </ul>

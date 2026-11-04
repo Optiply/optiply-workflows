@@ -89,7 +89,7 @@ export class GitHubHost implements GitHost {
     let message = ''
     if (this.app) {
       const installation = await this.app.installation()
-      message = `GitHub App ${installation.appSlug ?? ''}`.trim() + `, installed on ${installation.account}`
+      message = `GitHub App${installation.appSlug ? ` ${installation.appSlug}` : ''}, installed on ${installation.account}`
       const missing = missingAppPermissions(installation.permissions)
       if (missing.length) problems.push(`The App's installation needs ${missing.join(', ')}`)
     }

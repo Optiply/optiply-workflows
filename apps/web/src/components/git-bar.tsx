@@ -13,7 +13,14 @@ import {
 import { useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { folderPath, useFolders } from '@/components/folders'
-import { CommitLink, GIT_KIND_LABELS, type GitKind, PullRequestLink, useGitInfo } from '@/components/git'
+import {
+  CommitLink,
+  GIT_KIND_LABELS,
+  type GitKind,
+  PullRequestLink,
+  useChangeRequest,
+  useGitInfo,
+} from '@/components/git'
 import { type ConflictGroup, MergeDialog } from '@/components/merge-dialog'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { lineDiff, withContext } from '@/lib/diff'
@@ -408,6 +415,7 @@ function CommitDialog(
 ) {
   const { draft, branch, object, kind } = props
   const trpc = useTRPC()
+  const cr = useChangeRequest()
   const queryClient = useQueryClient()
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -473,11 +481,11 @@ function CommitDialog(
           </p>
           {pullRequest?.state === 'open' ? (
             <div>
-              It’s in the pull request: <PullRequestLink pullRequest={pullRequest} />
+              It’s in the {cr.noun}: <PullRequestLink pullRequest={pullRequest} />
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              <p className="text-muted">Open a pull request to have it reviewed; merging it deploys it.</p>
+              <p className="text-muted">Open a {cr.noun} to have it reviewed; merging it deploys it.</p>
               <Button
                 className="self-start"
                 variant="primary"
@@ -487,7 +495,7 @@ function CommitDialog(
                 }
                 data-testid="open-pull-request"
               >
-                <GitPullRequest className="size-4" /> Open pull request
+                <GitPullRequest className="size-4" /> Open {cr.noun}
               </Button>
               {openPr.data?.pullRequestError && (
                 <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">

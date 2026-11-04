@@ -99,12 +99,20 @@ async function gitObject(
 const Secret = z.string().trim().min(1).max(1000).nullish()
 
 export const gitRouter = router({
-  /** For everyone: whether Git sync is set up, its deploy branch, and the repo's web address for links. */
+  /**
+   * For everyone: whether Git sync is set up, its deploy branch, the repo's web address for links, and its host (M31:
+   * the UI says "merge request" for GitLab).
+   */
   info: authedProcedure.query(async ({ ctx }) => {
     const loaded = await loadGitSettings(ctx.db, ctx.config.keyring)
     return loaded
-      ? { configured: true, branch: loaded.row.branch, webUrl: repoWebUrl(loaded.row.repoUrl) }
-      : { configured: false, branch: null, webUrl: null }
+      ? {
+          configured: true,
+          branch: loaded.row.branch,
+          webUrl: repoWebUrl(loaded.row.repoUrl),
+          host: loaded.row.host,
+        }
+      : { configured: false, branch: null, webUrl: null, host: 'github' as const }
   }),
 
   /** The repo settings; the token and webhook secret only as `{ set }`. */

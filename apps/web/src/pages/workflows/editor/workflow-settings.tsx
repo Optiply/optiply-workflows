@@ -8,7 +8,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
+import {
+  ProtectDialog,
+  UNPROTECT_CONFIRM,
+  useChangeRequest,
+  useGitInfo,
+  useUnprotect,
+} from '@/components/git'
 import { Button, ErrorNote, Field, Input, Spinner, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
@@ -228,6 +234,7 @@ function formatBytes(bytes: number): string {
 
 /** Owners protect the workflow in Git (M11), or unprotect it. */
 function GitProtection({ workflow }: { workflow: Workflow }) {
+  const cr = useChangeRequest()
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
   const unprotect = useUnprotect('workflow')
@@ -258,7 +265,7 @@ function GitProtection({ workflow }: { workflow: Workflow }) {
       <span className="text-xs text-muted">
         {workflow.gitProtected
           ? `Protected: edited on branches, deployed by merging into ${git?.branch ?? 'the deploy branch'}.`
-          : 'Protect it to have changes reviewed in pull requests before they go live.'}
+          : `Protect it to have changes reviewed in ${cr.noun}s before they go live.`}
       </span>
       <ErrorNote error={unprotect.error} />
       {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}
