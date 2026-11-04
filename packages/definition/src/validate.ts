@@ -5,7 +5,7 @@ import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
 import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
-import { MAX_REQUIREMENTS, requirementProblems } from './requirements'
+import { MAX_REQUIREMENTS, PYTHON_INDEX_SLUG, requirementProblems } from './requirements'
 import {
   type Block,
   type BlockOf,
@@ -113,6 +113,7 @@ export type DiagnosticCode =
   | 'python_unavailable'
   /** A workflow's Python package (M23): not a plain requirement, a duplicate, or too many. */
   | 'invalid_requirement'
+  | 'invalid_python_index'
   /** The server's: packages declared, no package builder to install them (M23). */
   | 'python_packages_unavailable'
 
@@ -838,8 +839,19 @@ function checkRecursion(
 }
 
 /** Trigger problems are pinned to the start trigger, whose inspector edits them. */
-/** M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS. */
+/**
+ * M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS; M32's index a
+ * slug (whether it exists is the server's to say, when it installs them).
+ */
 function checkRequirements(def: WorkflowDefinition, report: Report) {
+  const index = def.settings?.python?.index
+  if (index !== undefined && !PYTHON_INDEX_SLUG.test(index)) {
+    report({
+      code: 'invalid_python_index',
+      message: 'A package index is named by its slug: lowercase letters, digits, - and _',
+      path: ['settings', 'python', 'index'],
+    })
+  }
   const requirements = def.settings?.python?.requirements
   if (!requirements) return
   const path = ['settings', 'python', 'requirements']

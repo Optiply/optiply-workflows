@@ -389,7 +389,13 @@ export const workflowSettingsSchema = z.strictObject({
    * The workflow's Python packages (M23): pip requirements, installed for its Python blocks. Loose here (the
    * validator says what's wrong with each, see `requirementProblems`), so a bad line doesn't hide other problems.
    */
-  python: z.strictObject({ requirements: z.array(z.string().max(1000)).max(100) }).optional(),
+  python: z
+    .strictObject({
+      requirements: z.array(z.string().max(1000)).max(100),
+      /** The package index to resolve them from (M32): an admin-defined index's slug; none for the default. */
+      index: z.string().max(100).optional(),
+    })
+    .optional(),
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const

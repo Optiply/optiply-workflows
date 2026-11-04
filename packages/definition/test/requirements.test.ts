@@ -77,4 +77,17 @@ describe('requirements', () => {
     expect(validateDefinition(withPackages(['polars'])).ok).toBe(true)
     expect(validateDefinition(withPackages(['-e .'])).ok).toBe(false)
   })
+
+  it('takes a package index by its slug (M32)', () => {
+    const withIndex = (index: string) =>
+      wf([start, python], [['startTrigger', 'python1']], {
+        settings: { python: { requirements: ['owtest-private'], index } },
+      })
+    expect(validateDefinition(withIndex('private-pypi_2')).ok).toBe(true)
+    const bad = validateDefinition(withIndex('Not A Slug'))
+    expect(bad.ok).toBe(false)
+    expect(bad.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'invalid_python_index', path: ['settings', 'python', 'index'] }),
+    )
+  })
 })

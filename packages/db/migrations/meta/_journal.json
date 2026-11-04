@@ -260,6 +260,13 @@
       "when": 1793787117541,
       "tag": "0036_git_hosts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793802958538,
+      "tag": "0037_python_indexes",
+      "breakpoints": true
     }
   ]
 }

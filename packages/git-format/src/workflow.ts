@@ -40,7 +40,8 @@ export interface WorkflowObject extends ObjectMeta {
  * - `functions/<function>/blocks/…`: the same for a function's blocks;
  * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any;
  * - `requirements.txt`: the Python packages (`settings.python.requirements`), when there are any. Read back, blank
- *   lines and comment lines are left out (people edit it on GitHub too).
+ *   lines and comment lines are left out (people edit it on GitHub too). Its package index (M32,
+ *   `settings.python.index`) is its first line, `# index: <slug>` (a comment to pip).
  *
  * Everything else (conditions, REST queries, templates) stays in the JSON. Empty layouts aren't kept: they read
  * back as none, which is the same canvas.
@@ -54,8 +55,11 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
     blocks: fn.blocks.map((block) => moveOut(block, `functions/${fn.name}/blocks/`, files)),
   }))
   const { layout: _layout, ...logic } = withoutRequirements(def)
-  const requirements = def.settings?.python?.requirements
-  if (requirements?.length) files[REQUIREMENTS_FILE] = textFile(requirements.join('\n'))
+  const requirements = def.settings?.python?.requirements ?? []
+  const index = def.settings?.python?.index
+  if (requirements.length || index) {
+    files[REQUIREMENTS_FILE] = textFile([...(index ? [`# index: ${index}`] : []), ...requirements].join('\n'))
+  }
   files[WORKFLOW_FILE] = canonicalJson(
     { ...metaFields(workflow), ...logic, blocks, ...(functions ? { functions } : {}) },
     { pretty: true },
@@ -101,8 +105,12 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
       problems.push(invalid(WORKFLOW_FILE, `settings.python: the packages belong in ${REQUIREMENTS_FILE}`))
     }
     const requirements = readRequirements(files[REQUIREMENTS_FILE])
-    if (requirements.length) {
-      raw.settings = { ...(isRecord(raw.settings) ? raw.settings : {}), python: { requirements } }
+    const index = readRequirementsIndex(files[REQUIREMENTS_FILE])
+    if (requirements.length || index) {
+      raw.settings = {
+        ...(isRecord(raw.settings) ? raw.settings : {}),
+        python: { requirements, ...(index && { index }) },
+      }
     }
   }
 
@@ -151,6 +159,15 @@ export function readRequirements(content: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'))
+}
+
+/** `requirements.txt`'s package index (M32): its `# index: <slug>` line, if it has one. */
+export function readRequirementsIndex(content: string): string | undefined {
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^#\s*index:\s*(\S+)$/.exec(line.trim())
+    if (match) return match[1]
+  }
+  return undefined
 }
 
 /** The block without the strings that get files, which go into `files`. */

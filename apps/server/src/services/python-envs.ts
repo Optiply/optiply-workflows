@@ -1,10 +1,22 @@
 import { createHash } from 'node:crypto'
-import { type Db, pythonEnvs, type WorkflowRun, workflowReleases } from '@ow/db'
+import type { Keyring } from '@ow/crypto'
+import {
+  configVars,
+  configVarValues,
+  type Db,
+  environments,
+  type PythonIndex,
+  pythonEnvs,
+  pythonIndexes,
+  type WorkflowRun,
+  workflowReleases,
+} from '@ow/db'
 import { type PythonLock, pythonFields, type WorkflowDefinition } from '@ow/definition'
 import { BlockFailure, type PythonEnvProvider } from '@ow/engine'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { recordAudit } from '../audit'
 import type { Config } from '../config'
+import { decryptForRow } from './secrets'
 
 /**
  * Workflows' Python packages (M23, docs/architecture.md §2.26): the package builder (`python-builder`, from
@@ -13,8 +25,13 @@ import type { Config } from '../config'
  * what was published. Set up once at startup, like the executor (`configurePython`).
  */
 let builder: PythonBuilderClient | null = null
+/** For package indexes' passwords (M32), kept beside the builder. */
+let keyring: Keyring | null = null
 
-export function configurePythonPackages(config: Pick<Config, 'PYTHON_BUILDER_URL' | 'PYTHON_BUILDER_TOKEN'>) {
+type PackagesConfig = Pick<Config, 'PYTHON_BUILDER_URL' | 'PYTHON_BUILDER_TOKEN'> & { keyring?: Keyring }
+
+export function configurePythonPackages(config: PackagesConfig) {
+  if (config.keyring) keyring = config.keyring
   builder =
     config.PYTHON_BUILDER_URL && config.PYTHON_BUILDER_TOKEN
       ? new PythonBuilderClient({ url: config.PYTHON_BUILDER_URL, token: config.PYTHON_BUILDER_TOKEN })
@@ -27,13 +44,21 @@ export function pythonBuilder(): PythonBuilderClient | null {
 }
 
 /** The engine's provider for this process (`configurePythonPackages` once), or none without a builder. */
-export function pythonEnvProvider(
-  db: Db,
-  config: Pick<Config, 'PYTHON_BUILDER_URL' | 'PYTHON_BUILDER_TOKEN'>,
-): PythonEnvProvider | undefined {
+export function pythonEnvProvider(db: Db, config: PackagesConfig): PythonEnvProvider | undefined {
   const client = configurePythonPackages(config)
   return client ? dbPythonEnvs(db, client) : undefined
 }
+
+/** A package index as the builder takes it (M32): its credentials for this request only. */
+export interface BuilderIndex {
+  name: string
+  url: string
+  username?: string
+  password?: string
+  mode: 'primary' | 'extra'
+}
+
+export type CheckIndexAnswer = { ok: boolean; status: number | null; message?: string }
 
 export type BuildAnswer =
   | { ok: true; envId: string; lock?: PythonLock; sizeBytes: number; cached: boolean; log: string }
@@ -51,13 +76,22 @@ export class PythonBuilderClient {
   }
 
   /** Resolves the requirements into a lock and installs it (an env already there answers `cached`). */
-  build(requirements: string[]): Promise<BuildAnswer> {
-    return this.post('/build', { requirements })
+  build(requirements: string[], indexes: BuilderIndex[] = []): Promise<BuildAnswer> {
+    return this.post('/build', { requirements, ...(indexes.length && { indexes }) })
   }
 
   /** Installs a lock made before (a release's), unless its env is there; never resolves. */
-  install(lock: PythonLock): Promise<BuildAnswer> {
-    return this.post('/install', { lock })
+  install(lock: PythonLock, indexes: BuilderIndex[] = []): Promise<BuildAnswer> {
+    return this.post('/install', { lock, ...(indexes.length && { indexes }) })
+  }
+
+  /** Whether a package index answers and takes its sign-in (M32, Settings → Python's Test). */
+  async checkIndex(index: BuilderIndex): Promise<CheckIndexAnswer> {
+    const answer = (await this.post('/check-index', { index })) as unknown as
+      | CheckIndexAnswer
+      | Extract<BuildAnswer, { ok: false }>
+    if ('error' in answer) return { ok: false, status: null, message: answer.error.message }
+    return answer
   }
 
   /** The platform the builder installs for (`cp312-linux-aarch64`), asked once; null while it can't be reached. */
@@ -104,10 +138,75 @@ export class PythonBuilderClient {
   }
 }
 
-/** The key of a set of requirements: their SHA-256, trimmed and sorted (pip doesn't care about their order). */
-export function requirementsHash(requirements: readonly string[]): string {
-  const canonical = JSON.stringify([...requirements.map((r) => r.trim())].sort())
+/**
+ * The key of a set of requirements: their SHA-256, trimmed and sorted (pip doesn't care about their order); with a
+ * package index (M32), of the requirements and the index's id (so M23's keys stay as they were).
+ */
+export function requirementsHash(requirements: readonly string[], indexId: string | null = null): string {
+  const sorted = [...requirements.map((r) => r.trim())].sort()
+  const canonical = JSON.stringify(indexId ? { requirements: sorted, index: indexId } : sorted)
   return createHash('sha256').update(canonical).digest('hex')
+}
+
+/** A package index's row by its slug (M32), or a `python_packages` failure naming it. */
+export async function pythonIndexBySlug(db: Db, slug: string): Promise<PythonIndex> {
+  const [row] = await db.select().from(pythonIndexes).where(eq(pythonIndexes.slug, slug))
+  if (!row) {
+    throw new BlockFailure(
+      'python_packages',
+      `The workflow's Python packages come from the package index "${slug}", which doesn't exist on this instance (Settings → Python)`,
+    )
+  }
+  return row
+}
+
+/**
+ * An index as the builder takes it: its password read from its secret config var in the default environment (an
+ * env serves every environment, so what fetches it does too). A missing value is a `python_packages` failure.
+ */
+export async function builderIndex(db: Db, row: PythonIndex): Promise<BuilderIndex> {
+  const index: BuilderIndex = { name: row.slug, url: row.url, mode: row.mode }
+  if (row.username) index.username = row.username
+  if (row.passwordConfigVar) {
+    const password = await defaultEnvSecret(db, row.passwordConfigVar)
+    if (password === null) {
+      throw new BlockFailure(
+        'python_packages',
+        `The package index "${row.slug}" takes its password from the config var ${row.passwordConfigVar}, which isn't a secret with a value in the default environment`,
+      )
+    }
+    index.password = password
+  }
+  return index
+}
+
+/** A secret config var's value in the default environment; null when it isn't one, or has none. */
+async function defaultEnvSecret(db: Db, name: string): Promise<string | null> {
+  if (!keyring) return null
+  const [row] = await db
+    .select({ isSecret: configVars.isSecret, value: configVarValues })
+    .from(configVars)
+    .innerJoin(configVarValues, eq(configVarValues.configVarId, configVars.id))
+    .innerJoin(
+      environments,
+      and(eq(environments.id, configVarValues.environmentId), eq(environments.isDefault, true)),
+    )
+    .where(eq(configVars.name, name))
+  if (!row?.isSecret || !row.value.valueEncrypted) return null
+  const plain = String(
+    decryptForRow<string>(keyring, 'config_var_values', row.value, row.value.valueEncrypted),
+  )
+  return plain || null
+}
+
+/** The indexes a lock's packages name (M32), as the builder takes them. */
+async function lockIndexes(db: Db, lock: PythonLock): Promise<BuilderIndex[]> {
+  const slugs = [...new Set(lock.packages.flatMap((p) => (p.index ? [p.index] : [])))]
+  if (!slugs.length) return []
+  const rows = await db.select().from(pythonIndexes).where(inArray(pythonIndexes.slug, slugs))
+  const missing = slugs.find((slug) => !rows.some((r) => r.slug === slug))
+  if (missing) await pythonIndexBySlug(db, missing) // throws, naming it
+  return Promise.all(rows.map((row) => builderIndex(db, row)))
 }
 
 /** A failed build or install as the Python block's failure, pip's output in its details. */
@@ -130,11 +229,15 @@ export async function envForRequirements(
   requirements: string[],
   /** Whose workflow it is, for the audit of a new install (`python.env_built`). */
   who: { workflowId: string; actorUserId: string | null },
+  /** The package index to resolve from (M32: `settings.python.index`), else the builder's default. */
+  indexSlug?: string,
 ): Promise<{ envId: string; lock: PythonLock }> {
-  const hash = requirementsHash(requirements)
+  const indexRow = indexSlug ? await pythonIndexBySlug(db, indexSlug) : null
+  const indexes = indexRow ? [await builderIndex(db, indexRow)] : []
+  const hash = requirementsHash(requirements, indexRow?.id ?? null)
   const [row] = await db.select().from(pythonEnvs).where(eq(pythonEnvs.requirementsHash, hash))
   if (row?.state === 'ready' && row.lock) {
-    const installed = await client.install(row.lock)
+    const installed = await client.install(row.lock, indexes)
     if (installed.ok) {
       await db.update(pythonEnvs).set({ lastUsedAt: new Date() }).where(eq(pythonEnvs.requirementsHash, hash))
       return { envId: installed.envId, lock: row.lock }
@@ -142,7 +245,7 @@ export async function envForRequirements(
     // Only a lock for another platform (the builder moved) is worth resolving again; the rest is the failure.
     if (installed.error.kind !== 'platform') throw packagesFailure(installed)
   }
-  const built = await client.build(requirements)
+  const built = await client.build(requirements, indexes)
   const recorded = built.ok
     ? {
         state: 'ready' as const,
@@ -156,7 +259,7 @@ export async function envForRequirements(
     : { state: 'failed' as const, error: built.error, log: built.log }
   await db
     .insert(pythonEnvs)
-    .values({ requirementsHash: hash, requirements, ...recorded })
+    .values({ requirementsHash: hash, requirements, indexId: indexRow?.id ?? null, ...recorded })
     .onConflictDoUpdate({ target: pythonEnvs.requirementsHash, set: { ...recorded, lastUsedAt: sql`now()` } })
   if (!built.ok || !built.lock) {
     throw packagesFailure(
@@ -173,7 +276,10 @@ export async function envForRequirements(
       objectId: who.workflowId,
       metadata: {
         requirements,
-        packages: built.lock.packages.map((p) => `${p.name}==${p.version}`),
+        ...(indexSlug && { index: indexSlug }),
+        packages: built.lock.packages.map(
+          (p) => `${p.name}==${p.version}${p.source ? ` (${p.source})` : ''}`,
+        ),
         envId: built.envId,
         sizeBytes: built.sizeBytes,
       },
@@ -202,7 +308,7 @@ export async function releaseLock(
     )
   }
   if (existing) return (await installLock(db, builder, existing, who)).lock
-  return (await envForRequirements(db, builder, requirements, who)).lock
+  return (await envForRequirements(db, builder, requirements, who, definition.settings?.python?.index)).lock
 }
 
 /**
@@ -221,11 +327,12 @@ async function installLock(
       client,
       lock.packages.map((p) => `${p.name}==${p.version}`),
       who,
+      lock.packages.find((p) => p.index)?.index,
     )
   // Known to be another platform's: straight to its versions (every live run would ask the builder twice).
   const platform = await client.platform()
   if (platform && platform !== lock.platform) return pinned()
-  const installed = await client.install(lock)
+  const installed = await client.install(lock, await lockIndexes(db, lock))
   if (installed.ok) return { envId: installed.envId, lock }
   if (installed.error.kind !== 'platform') throw packagesFailure(installed)
   return pinned()
@@ -243,8 +350,8 @@ export function dbPythonEnvs(db: Db, client: PythonBuilderClient): PythonEnvProv
           .where(eq(workflowReleases.id, run.releaseId))
         if (release?.lock) return (await installLock(db, client, release.lock, who)).envId
       }
-      return (await envForRequirements(db, client, definition.settings?.python?.requirements ?? [], who))
-        .envId
+      const python = definition.settings?.python
+      return (await envForRequirements(db, client, python?.requirements ?? [], who, python?.index)).envId
     },
   }
 }

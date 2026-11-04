@@ -2,6 +2,7 @@ import {
   environments,
   permissions,
   pythonEnvs,
+  pythonIndexes,
   queueDeliveries,
   type Workflow,
   webhookRejections,
@@ -13,6 +14,7 @@ import {
   definitionHash,
   MAX_REQUIREMENT_LENGTH,
   MAX_REQUIREMENTS,
+  PYTHON_INDEX_SLUG,
   requirementProblems,
   validateDefinition,
   type WorkflowDefinition,
@@ -41,6 +43,8 @@ import { authedProcedure, type Context, router } from '../init'
 const Id = z.string().uuid()
 /** A workflow's Python packages (M23), as the editor's field holds them. */
 const requirementsInput = z.array(z.string().max(MAX_REQUIREMENT_LENGTH)).min(1).max(MAX_REQUIREMENTS)
+/** A package index's slug (M32), as `settings.python.index`. */
+const indexInput = z.string().regex(PYTHON_INDEX_SLUG).optional()
 const NO_BUILDER =
   "This instance can't install Python packages: it has no package builder (PYTHON_BUILDER_URL)"
 /** Appears in webhook URLs (M4), so it's a stable identifier. */
@@ -356,16 +360,16 @@ export const workflowsRouter = router({
    * (pip's reason and output) or not yet. The editor sends what its field holds, saved or not.
    */
   pythonEnv: authedProcedure
-    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .input(z.object({ workflowId: Id, requirements: requirementsInput, index: indexInput }))
     .query(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
-      return pythonEnvState(ctx.db, input.requirements)
+      return pythonEnvState(ctx.db, input.requirements, input.index)
     }),
 
   /** Installs a set of Python packages now (M23), so the next run doesn't wait; the answer is the new state. */
   installPythonEnv: authedProcedure
-    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .input(z.object({ workflowId: Id, requirements: requirementsInput, index: indexInput }))
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
@@ -379,15 +383,25 @@ export const workflowsRouter = router({
       const client = pythonBuilder()
       if (!client) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: NO_BUILDER })
       try {
-        await envForRequirements(ctx.db, client, input.requirements, {
-          workflowId: workflow.id,
-          actorUserId: ctx.user.id,
-        })
+        await envForRequirements(
+          ctx.db,
+          client,
+          input.requirements,
+          { workflowId: workflow.id, actorUserId: ctx.user.id },
+          input.index,
+        )
       } catch (err) {
         if (!(err instanceof BlockFailure)) throw err
-        // Recorded as failed: the state says why.
+        // Recorded as failed (the state says why), unless the index itself is the problem (said here).
+        if (input.index) {
+          const state = await pythonEnvState(ctx.db, input.requirements, input.index)
+          if (state.available && state.state === 'none') {
+            return { ...state, state: 'failed' as const, error: err.message, log: '', at: new Date() }
+          }
+          return state
+        }
       }
-      return pythonEnvState(ctx.db, input.requirements)
+      return pythonEnvState(ctx.db, input.requirements, input.index)
     }),
 
   /** Deletes the workflow with its releases and run history. */
@@ -490,13 +504,30 @@ const workflowCallers = (db: Context['db'], slug: string) =>
     { modules: false, workflows: true },
   ).then((found) => found.filter((d) => d.kind === 'workflow'))
 
-/** `python_envs`' row for these requirements, as the editor shows it. */
-async function pythonEnvState(db: Context['db'], requirements: string[]) {
+/** `python_envs`' row for these requirements (from this package index, M32), as the editor shows it. */
+async function pythonEnvState(db: Context['db'], requirements: string[], index?: string) {
   if (!pythonBuilder()) return { available: false as const, message: NO_BUILDER }
+  let indexId: string | null = null
+  if (index) {
+    const [found] = await db
+      .select({ id: pythonIndexes.id })
+      .from(pythonIndexes)
+      .where(eq(pythonIndexes.slug, index))
+    if (!found) {
+      return {
+        available: true as const,
+        state: 'failed' as const,
+        error: `The package index "${index}" doesn't exist on this instance (Settings → Python)`,
+        log: '',
+        at: null,
+      }
+    }
+    indexId = found.id
+  }
   const [row] = await db
     .select()
     .from(pythonEnvs)
-    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements)))
+    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements, indexId)))
   if (!row) return { available: true as const, state: 'none' as const }
   if (row.state === 'failed') {
     return {
@@ -511,6 +542,11 @@ async function pythonEnvState(db: Context['db'], requirements: string[]) {
     available: true as const,
     state: 'ready' as const,
     packages: (row.lock?.packages ?? []).map((p) => `${p.name}==${p.version}`),
+    /** Each package's index and whether it was built from its sdist (M32), by position. */
+    details: (row.lock?.packages ?? []).map((p) => ({
+      ...(p.index && { index: p.index }),
+      ...(p.source && { source: p.source }),
+    })),
     sizeBytes: row.sizeBytes ?? 0,
     at: row.builtAt,
   }

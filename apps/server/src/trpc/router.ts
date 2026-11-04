@@ -14,6 +14,7 @@ import { groupsRouter } from './routers/groups'
 import { libraryQueriesRouter } from './routers/library-queries'
 import { modulesRouter } from './routers/modules'
 import { permissionsRouter } from './routers/permissions'
+import { pythonIndexesRouter } from './routers/python-indexes'
 import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
 import { tasksRouter } from './routers/tasks'
@@ -57,6 +58,7 @@ export const appRouter = router({
   modules: modulesRouter,
   componentLibraries: componentLibrariesRouter,
   git: gitRouter,
+  pythonIndexes: pythonIndexesRouter,
   branchDrafts: branchDraftsRouter,
 })
 

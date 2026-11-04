@@ -267,6 +267,23 @@ describe('Python packages', () => {
     expect(none).not.toHaveProperty(REQUIREMENTS_FILE)
   })
 
+  it('keeps the package index as the first line, and reads it back (M32)', () => {
+    const workflow = withPackages({ python: { requirements: ['owtest-private'], index: 'private' } })
+    const { files } = encodeWorkflow(workflow)
+    expect(files[REQUIREMENTS_FILE]).toBe('# index: private\nowtest-private\n')
+    expect(files[WORKFLOW_FILE]).not.toContain('private')
+    const decoded = decodeWorkflow(files)
+    expect(decoded.ok && decoded.value.definition.settings).toEqual({
+      python: { requirements: ['owtest-private'], index: 'private' },
+    })
+    // Edited by hand: anywhere, with spaces; other comments stay comments.
+    const edited = decodeWorkflow({ ...files, [REQUIREMENTS_FILE]: '# data\npolars\n#index:   mirror  \n' })
+    expect(edited.ok && edited.value.definition.settings?.python).toEqual({
+      requirements: ['polars'],
+      index: 'mirror',
+    })
+  })
+
   it('reads a file edited by hand: blank lines and comments left out, the rest for the validator', () => {
     const { files } = encodeWorkflow(withPackages({}))
     const decoded = decodeWorkflow({

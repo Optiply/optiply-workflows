@@ -1523,10 +1523,44 @@ export type CollabDocument = typeof collabDocuments.$inferSelect
  * lock and env. Draft runs reuse the lock while the requirements stay the same; releases keep theirs in
  * `workflow_releases.python_lock`.
  */
+/**
+ * Package indexes an admin defines (M32, docs/architecture.md §2.35), picked by a workflow's
+ * `settings.python.index` (its slug). Not in Git: the instance's own settings, like Git's.
+ */
+export const pythonIndexes = pgTable(
+  'python_indexes',
+  {
+    id: id(),
+    /** What workflows name it by (`settings.python.index`, the lock's packages). */
+    slug: text().notNull(),
+    name: text().notNull(),
+    /** The simple index's URL (PEP 503), without credentials. */
+    url: text().notNull(),
+    username: text(),
+    /** A secret config var's name holding the password, read in the default environment when a build needs it. */
+    passwordConfigVar: text(),
+    /** `primary` replaces the builder's default index; `extra` is searched with it. */
+    mode: text().$type<'primary' | 'extra'>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('python_indexes_slug_uq').on(t.slug),
+    check('python_indexes_mode_ck', sql`${t.mode} in ('primary', 'extra')`),
+  ],
+)
+
+export type PythonIndex = typeof pythonIndexes.$inferSelect
+
 export const pythonEnvs = pgTable('python_envs', {
-  /** `requirementsHash`: the requirements' SHA-256, sorted. */
+  /**
+   * `requirementsHash`: the requirements' SHA-256, sorted; with a package index (M32), of the requirements and
+   * the index's id.
+   */
   requirementsHash: text().primaryKey(),
   requirements: jsonb().$type<string[]>().notNull(),
+  /** The package index the requirements resolve from (M32); null for the builder's default. */
+  indexId: uuid().references(() => pythonIndexes.id, { onDelete: 'cascade' }),
   /** `ready` (the lock and env below) or `failed` (the error and log; the next run tries again). */
   state: text().$type<'ready' | 'failed'>().notNull(),
   lock: jsonb().$type<PythonLock>(),
