@@ -310,6 +310,50 @@ interface OwResponse {
 declare function fetch(url: string, init?: { method?: string; headers?: Record<string, string> | [string, string][]; body?: string }): Promise<OwResponse>
 `
 
+/** An AI query's metadata (M35): who answered, the tokens and the cost. */
+const AI_METADATA =
+  'provider: string; model: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }; costUsd: number | null; stopReason: string; durationMs: number;'
+
+/**
+ * What an AI query's data is (M35), from its action: text, the extract schema's type, the classify labels, the
+ * agent's answer and steps. Undefined when the action isn't one of them.
+ */
+export function aiDataType(query: unknown): string | undefined {
+  if (!query || typeof query !== 'object') return undefined
+  const q = query as Record<string, unknown>
+  switch (q.action) {
+    case 'generate':
+    case 'summarize':
+      return 'string'
+    case 'extract': {
+      let schema = q.schema
+      if (typeof schema === 'string') {
+        try {
+          schema = JSON.parse(schema)
+        } catch {
+          return 'unknown'
+        }
+      }
+      return schemaType(schema)
+    }
+    case 'classify': {
+      const list = Array.isArray(q.labels)
+        ? q.labels
+        : typeof q.labels === 'string'
+          ? q.labels.split(',')
+          : []
+      const labels = [...new Set(list.map((l) => String(l).trim()).filter((l) => l && !l.includes('{{')))]
+      const label = labels.length ? labels.map(literal).join(' | ') : 'string'
+      const several = q.multiple === true || q.multiple === 'true'
+      return several ? `{ labels: (${label})[]; reason: string }` : `{ label: ${label}; reason: string }`
+    }
+    case 'agent':
+      return '{ answer: string; steps: { workflow: string; input: unknown; runId: string | null; ok: boolean }[] }'
+    default:
+      return undefined
+  }
+}
+
 /**
  * Declarations for every block's result in the open graph, typed from the last run where there is one, so
  * `query1.data[0].` completes in code. Also declares the workflow's functions (`await name(...)`) and, inside a
@@ -324,6 +368,8 @@ export function scopeDeclarations(
   bodySchema?: Record<string, unknown>,
   /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
   queues: readonly QueueTriggerKind[] = [],
+  /** Slugs of the AI resources (M35): their queries' data is typed from the action. */
+  aiResources: ReadonlySet<string> = new Set(),
 ): { dts: string; sample: Record<string, unknown> } {
   const MESSAGE_TYPES = {
     pubsub: 'OwPubSubMessage',
@@ -356,18 +402,24 @@ export function scopeDeclarations(
   for (const block of blocks) {
     // Function blocks have no run samples (function calls aren't recorded per block).
     const result = inFunction ? undefined : samples[block.name]
+    const ai =
+      block.type === 'resourceQuery' && aiResources.has(block.config.resource)
+        ? aiDataType(block.config.query)
+        : undefined
     const data =
       block.type === 'startTrigger' && bodySchema
         ? schemaType(bodySchema)
-        : result
-          ? typeOf(result.data)
-          : 'unknown'
+        : ai
+          ? ai
+          : result
+            ? typeOf(result.data)
+            : 'unknown'
     const extra =
       block.type === 'startTrigger'
         ? ` headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: ${messageType};`
         : ''
     lines.push(
-      `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; [key: string]: unknown };${extra} }`,
+      `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; ${ai ? AI_METADATA : ''} [key: string]: unknown };${extra} }`,
     )
     sample[block.name] = {
       data: result?.data ?? null,

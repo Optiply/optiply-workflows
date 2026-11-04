@@ -419,6 +419,7 @@ function BlockResult({
           Child run: <RunLink runId={childRunOf(block)!} />
         </p>
       )}
+      <AiCall block={block} />
       {block.status !== 'waiting' && typeof block.metadata?.taskId === 'string' && (
         <p className="text-xs text-muted">
           <Link to="/inbox/$taskId" params={{ taskId: block.metadata.taskId }} className="hover:text-accent">
@@ -453,6 +454,90 @@ function BlockInputs({ runId, name, views }: { runId: string; name: string; view
   if (results.some((r) => r.isLoading)) return <Spinner />
   const value = Object.fromEntries(from.map((key, i) => [key, results[i]?.data?.data ?? null]))
   return <JsonTree value={value} name={`${name}-inputs`} root="" label="inputs" className="h-full" />
+}
+
+interface AiMeta {
+  provider: string
+  model: string
+  usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }
+  costUsd?: number | null
+  durationMs?: number
+  promptsHidden?: boolean
+  request?: { system?: string; prompt?: string }
+}
+
+interface AgentStepView {
+  workflow: string
+  input: unknown
+  runId: string | null
+  ok: boolean
+}
+
+/** An AI call's metadata (M35): a query's, or a failed one's error details. */
+function aiMetaOf(block: BlockView & { data: unknown }): AiMeta | null {
+  for (const m of [block.metadata, block.error?.details] as unknown[]) {
+    const meta = m as Partial<AiMeta> | null | undefined
+    if (meta && (meta.provider === 'anthropic' || meta.provider === 'openai_compatible') && meta.usage) {
+      return meta as AiMeta
+    }
+  }
+  return null
+}
+
+/**
+ * An AI call (M35): the model, tokens, cost and time; the prompts sent unless the resource hides them; an agent's
+ * steps, each a link to its child run.
+ */
+function AiCall({ block }: { block: BlockView & { data: unknown } }) {
+  const ai = aiMetaOf(block)
+  if (!ai) return null
+  const n = (v: number | undefined) => (v ?? 0).toLocaleString('en-US')
+  const cached = (ai.usage.cacheReadTokens ?? 0) + (ai.usage.cacheWriteTokens ?? 0)
+  const steps =
+    ((block.data as { steps?: unknown } | null)?.steps as AgentStepView[] | undefined) ??
+    ((block.error?.details as { steps?: unknown } | undefined)?.steps as AgentStepView[] | undefined)
+  const provider = ai.provider === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible'
+  const cost =
+    typeof ai.costUsd === 'number' ? `$${ai.costUsd.toFixed(ai.costUsd < 0.01 ? 6 : 4)}` : 'cost unknown'
+  return (
+    <div className="space-y-1.5 rounded-md border border-border px-3 py-2 text-xs" data-testid="ai-call">
+      <p className="text-muted">
+        <span className="font-mono text-ink">{ai.model}</span> ({provider}) · {n(ai.usage.inputTokens)} input
+        + {n(ai.usage.outputTokens)} output tokens
+        {cached ? ` (${n(ai.usage.cacheReadTokens)} from cache)` : ''} · {cost}
+        {typeof ai.durationMs === 'number' ? ` · ${(ai.durationMs / 1000).toFixed(1)} s` : ''}
+      </p>
+      {ai.promptsHidden ? (
+        <p className="text-muted">Prompts hidden (the resource keeps them out of run history).</p>
+      ) : ai.request ? (
+        <details>
+          <summary className="cursor-pointer text-muted hover:text-ink">Prompts sent</summary>
+          {ai.request.system && (
+            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-subtle p-2 font-mono">
+              <span className="text-muted">system: </span>
+              {ai.request.system}
+            </pre>
+          )}
+          <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-subtle p-2 font-mono">
+            {ai.request.prompt}
+          </pre>
+        </details>
+      ) : null}
+      {steps?.length ? (
+        <div data-testid="ai-steps">
+          <p className="text-muted">Tool calls:</p>
+          <ol className="ml-4 list-decimal">
+            {steps.map((step) => (
+              <li key={step.runId ?? `${step.workflow}:${JSON.stringify(step.input)}`}>
+                <span className="font-mono">{step.workflow}</span> {step.ok ? '' : '(failed) '}
+                {step.runId && <RunLink runId={step.runId} />}
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 /** The child run a Workflow block started, from its metadata (or its waiting state). */

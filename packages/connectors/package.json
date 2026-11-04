@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./oauth-presets": "./src/oauth-presets.ts",
     "./testing": "./src/testing.ts",
-    "./actions": "./src/services/actions.ts"
+    "./actions": "./src/services/actions.ts",
+    "./ai-models": "./src/ai/prices.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

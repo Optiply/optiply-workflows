@@ -127,4 +127,6 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   rabbitmq: { label: 'RMQ', className: 'bg-op-orange-2 text-op-orange-4' },
   sns: { label: 'SNS', className: 'bg-op-red-1 text-op-red-4' },
   kinesis: { label: 'KIN', className: 'bg-op-orange-1 text-op-orange-4' },
+  anthropic: { label: 'AI', className: 'bg-op-orange-2 text-op-orange-4' },
+  openai_compatible: { label: 'AI', className: 'bg-op-green-2 text-op-green-4' },
 }

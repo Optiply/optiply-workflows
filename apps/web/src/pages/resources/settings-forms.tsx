@@ -13,10 +13,12 @@ import { OverridesCard } from './overrides'
 import { KafkaFields, KinesisFields, RabbitFields, S3Fields, SnsFields, SqsFields } from './queue-settings'
 import {
   AirtableFields,
+  AnthropicFields,
   GoogleSheetsFields,
   HubSpotFields,
   JiraFields,
   NotionFields,
+  OpenAiCompatibleFields,
   SalesforceFields,
   SendGridFields,
   SlackFields,
@@ -78,6 +80,8 @@ const DEFAULTS: Record<string, Config> = {
   hubspot: { auth: { type: 'token' } },
   sendgrid: { region: 'global' },
   stripe: {},
+  anthropic: { model: 'claude-sonnet-5-5', hidePrompts: false, fallback: true, allowPrivateNetwork: false },
+  openai_compatible: { baseUrl: '', model: '', hidePrompts: false, allowPrivateNetwork: false },
   airtable: {},
   jira: { siteUrl: '', deployment: 'cloud', allowPrivateNetwork: false },
   notion: {},
@@ -264,6 +268,10 @@ export function SettingsPanel({
           <SendGridFields {...props} />
         ) : resource.type === 'stripe' ? (
           <StripeFields {...props} />
+        ) : resource.type === 'anthropic' ? (
+          <AnthropicFields {...props} />
+        ) : resource.type === 'openai_compatible' ? (
+          <OpenAiCompatibleFields {...props} />
         ) : resource.type === 'airtable' ? (
           <AirtableFields {...props} />
         ) : resource.type === 'jira' ? (

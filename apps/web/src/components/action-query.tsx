@@ -128,6 +128,9 @@ export function ActionQueryForm({
             {type === 'hubspot' && field.key === 'properties' && lookup && (
               <HubSpotPropertyHint lookup={lookup} objectType={String(query.objectType ?? '')} />
             )}
+            {action === 'agent' && field.key === 'tools' && !disabled && (
+              <WorkflowToolPicker value={value} onChange={set} />
+            )}
           </Field>
         )
       })}
@@ -244,6 +247,42 @@ export function RequestAuthFields({
           {text('value', 'Key', '{{ configVars.API_KEY }}')}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Under an AI agent's tools (M35): the published workflows, each added with a click (the agent can only call a live
+ * release; a draft-only one is left out). Its description and Start trigger's body schema are what the model sees.
+ */
+function WorkflowToolPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.workflows.list.queryOptions())
+  const chosen = new Set(
+    value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
+  const offered = (data ?? []).filter((w) => w.liveReleaseId && !chosen.has(w.slug))
+  if (!offered.length) return null
+  return (
+    <div
+      className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted"
+      data-testid="agent-tool-picker"
+    >
+      <span>Add:</span>
+      {offered.slice(0, 30).map((w) => (
+        <button
+          key={w.id}
+          type="button"
+          className="rounded border border-border px-1.5 py-0.5 font-mono hover:border-accent hover:text-ink"
+          title={w.description ?? w.name}
+          onClick={() => onChange([...chosen, w.slug].join(', '))}
+        >
+          {w.slug}
+        </button>
+      ))}
     </div>
   )
 }

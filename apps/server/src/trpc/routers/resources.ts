@@ -1078,6 +1078,8 @@ const TYPE_GROUPS: Record<string, string> = {
   jira: 'Services',
   notion: 'Services',
   salesforce: 'Services',
+  anthropic: 'AI',
+  openai_compatible: 'AI',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

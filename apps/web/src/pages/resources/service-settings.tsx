@@ -1,3 +1,4 @@
+import { ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL } from '@ow/connectors/ai-models'
 import { oauthPresets } from '@ow/connectors/oauth-presets'
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
@@ -467,6 +468,160 @@ export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) 
           onChange={(e) => props.set('testSpreadsheet', e.target.value || undefined)}
         />
       </Field>
+    </>
+  )
+}
+
+/** A whole number or a price from a text box: empty is none. */
+function numberField(props: FieldsProps, key: string, integer: boolean) {
+  return {
+    value: props.config[key] === undefined ? '' : String(props.config[key]),
+    disabled: props.disabled,
+    inputMode: 'decimal' as const,
+    onChange: (e: { target: { value: string } }) => {
+      const text = e.target.value.trim()
+      const n = integer ? Number.parseInt(text, 10) : Number(text)
+      props.set(key, text === '' || !Number.isFinite(n) ? undefined : n)
+    },
+  }
+}
+
+/** What both AI resources share (M35): the run's token budget, prompts kept out of run history, private networks. */
+function AiCommonFields({ props, privateHint }: { props: FieldsProps; privateHint: string }) {
+  return (
+    <>
+      <Field
+        label="Token budget per run"
+        hint="Input and output tokens a run's AI calls may use in all, across its blocks; a call is refused once they're spent. Empty: no limit."
+      >
+        <Input {...numberField(props, 'budgetTokens', true)} placeholder="200000" data-testid="ai-budget" />
+      </Field>
+      <Checkbox
+        label="Hide prompts in run history"
+        hint="The system prompt and prompt sent aren't kept with the run (for prompts holding personal data). Tokens and cost still are."
+        checked={props.config.hidePrompts === true}
+        disabled={props.disabled}
+        onChange={(v) => props.set('hidePrompts', v)}
+      />
+      <Checkbox
+        label="Allow a private network address"
+        hint={privateHint}
+        checked={props.config.allowPrivateNetwork === true}
+        disabled={props.disabled}
+        onChange={(v) => props.set('allowPrivateNetwork', v)}
+      />
+    </>
+  )
+}
+
+/** Anthropic (M35): an API key, the default model, an optional base URL (a proxy), the budget and switches. */
+export function AnthropicFields(props: FieldsProps) {
+  return (
+    <>
+      <SecretInput
+        props={props}
+        name="apiKey"
+        label="API key"
+        placeholder="sk-ant-…"
+        hint="console.anthropic.com → API keys. Kept encrypted; never sent to the browser."
+      />
+      <Grid>
+        <Field
+          label="Default model"
+          hint="Blocks and queries that name no model use this one. Any model id works."
+        >
+          <Input
+            value={String(props.config.model ?? DEFAULT_ANTHROPIC_MODEL)}
+            disabled={props.disabled}
+            onChange={(e) => props.set('model', e.target.value.trim() || DEFAULT_ANTHROPIC_MODEL)}
+            list="anthropic-models"
+            data-testid="ai-model"
+          />
+          <datalist id="anthropic-models">
+            {ANTHROPIC_MODELS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </Field>
+        <Field
+          label="Base URL"
+          hint="Optional: a proxy or gateway in front of Anthropic's API (empty: api.anthropic.com)."
+        >
+          <Input
+            value={String(props.config.baseUrl ?? '')}
+            disabled={props.disabled}
+            onChange={(e) => props.set('baseUrl', e.target.value.trim() || undefined)}
+            placeholder="https://api.anthropic.com"
+            data-testid="ai-base-url"
+          />
+        </Field>
+      </Grid>
+      <AiCommonFields props={props} privateHint="For a proxy inside Optiply's network." />
+      <Checkbox
+        label="Fall back on refusal"
+        hint="When the model declines, Anthropic answers with its fallback model instead (on the models that offer it)."
+        checked={props.config.fallback !== false}
+        disabled={props.disabled}
+        onChange={(v) => props.set('fallback', v)}
+      />
+    </>
+  )
+}
+
+/** OpenAI-compatible (M35): the API's base URL, an optional key, the model, its prices, the budget and switches. */
+export function OpenAiCompatibleFields(props: FieldsProps) {
+  return (
+    <>
+      <Grid>
+        <Field
+          label="Base URL"
+          hint="Up to /v1: https://api.openai.com/v1, Azure OpenAI's …/openai/v1, http://ollama:11434/v1."
+        >
+          <Input
+            value={String(props.config.baseUrl ?? '')}
+            disabled={props.disabled}
+            onChange={(e) => props.set('baseUrl', e.target.value.trim())}
+            placeholder="https://api.openai.com/v1"
+            data-testid="ai-base-url"
+          />
+        </Field>
+        <Field label="Model" hint="The model's id at that API (required).">
+          <Input
+            value={String(props.config.model ?? '')}
+            disabled={props.disabled}
+            onChange={(e) => props.set('model', e.target.value.trim())}
+            placeholder="gpt-5.1"
+            data-testid="ai-model"
+          />
+        </Field>
+      </Grid>
+      <SecretInput
+        props={props}
+        name="apiKey"
+        label="API key"
+        placeholder="sk-…"
+        hint="Optional (a local model may need none). Kept encrypted; never sent to the browser."
+      />
+      <Grid>
+        <Field label="Input price" hint="US dollars per million input tokens, for the cost. Empty: unknown.">
+          <Input
+            {...numberField(props, 'inputPrice', false)}
+            placeholder="1.25"
+            data-testid="ai-input-price"
+          />
+        </Field>
+        <Field label="Output price" hint="US dollars per million output tokens.">
+          <Input
+            {...numberField(props, 'outputPrice', false)}
+            placeholder="10"
+            data-testid="ai-output-price"
+          />
+        </Field>
+      </Grid>
+      <AiCommonFields
+        props={props}
+        privateHint="For a model served inside Optiply's network (Ollama, vLLM)."
+      />
     </>
   )
 }

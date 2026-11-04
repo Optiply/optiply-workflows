@@ -17,6 +17,7 @@ import {
   kafkaAvailable,
   rabbitAvailable,
   s3Available,
+  startFakeAi,
   startFakeAws,
   startFakePubSub,
   startFakeRegistry,
@@ -266,6 +267,15 @@ export default async function globalSetup() {
     jira: { site: services.urls.jiraCloud, email: services.jira.email, token: services.jira.apiToken },
     notion: { token: services.notion.token, database: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b' },
     salesforce: { clientId: services.salesforce.clientId, clientSecret: services.salesforce.clientSecret },
+  })
+  // M35: fakes of Anthropic's Messages API and an OpenAI-compatible API on one server (markers in prompts steer them:
+  // REFUSE_ME, RATE_LIMIT_ONCE, LABEL=). Specs read the URLs and keys from E2E_AI.
+  const ai = await startFakeAi()
+  process.env.E2E_AI = JSON.stringify({
+    anthropicUrl: ai.anthropicUrl,
+    anthropicKey: ai.anthropicKey,
+    openaiUrl: ai.openaiUrl,
+    openaiKey: ai.openaiKey,
   })
   // S3 (M29): an S3-compatible store in Docker where Docker runs (the spec's S3 part skips without E2E_S3).
   let s3: TestS3 | undefined
@@ -614,6 +624,7 @@ export default async function globalSetup() {
     await s3?.stop()
     await google.stop()
     await services.stop()
+    await ai.stop()
     await graphql.stop()
     await registry.stop()
     await privateNpm.stop()

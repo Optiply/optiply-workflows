@@ -217,3 +217,40 @@ describe('draftSchema', () => {
     )
   })
 })
+
+describe('AI queries (M35)', () => {
+  const ai = (name: string, query: object) =>
+    ({ name, type: 'resourceQuery', config: { resource: 'claude', query } }) as never
+  it('types the data from the action: the extract schema, the classify labels, text, the agent', () => {
+    const blocks = [
+      ai('order', {
+        action: 'extract',
+        schema: '{"type":"object","properties":{"qty":{"type":"integer"}},"required":["qty"]}',
+      }),
+      ai('kind', { action: 'classify', labels: 'order, complaint' }),
+      ai('kinds', { action: 'classify', labels: 'a, b', multiple: 'true' }),
+      ai('gist', { action: 'summarize' }),
+      ai('agent', { action: 'agent' }),
+      {
+        name: 'other',
+        type: 'resourceQuery',
+        config: { resource: 'db', query: { action: 'extract' } },
+      } as never,
+    ]
+    const { dts } = scopeDeclarations(blocks, {}, [], undefined, undefined, [], new Set(['claude']))
+    expect(dts).toContain('declare const order: { data: { qty: number; [key: string]: unknown }')
+    expect(dts).toContain('declare const kind: { data: { label: "order" | "complaint"; reason: string }')
+    expect(dts).toContain('declare const kinds: { data: { labels: ("a" | "b")[]; reason: string }')
+    expect(dts).toContain('declare const gist: { data: string;')
+    expect(dts).toContain('declare const agent: { data: { answer: string; steps:')
+    expect(dts).toContain('costUsd: number | null')
+    expect(dts).toContain('declare const other: { data: unknown;')
+    for (const block of ['order', 'kind', 'kinds', 'agent']) {
+      const type = dts
+        .split('\n')
+        .find((l) => l.startsWith(`declare const ${block}:`))!
+        .slice(`declare const ${block}: `.length)
+      expect(parses(type)).toBe(true)
+    }
+  })
+})
