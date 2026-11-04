@@ -26,6 +26,18 @@ const SHA = /^[0-9a-f]{40}$/
 const pushedAt = new Map<string, number>()
 
 /**
+ * What to change when the host refused a push to a protected branch (M31), from what it said: GitLab's "not allowed
+ * to push code to protected branches", GitHub's GH006. Empty for other refusals.
+ */
+export function protectedHint(stderr: string): string {
+  if (/not allowed to push code to protected branches/i.test(stderr))
+    return ' (the branch is protected on GitLab: give the token\'s role "Allowed to push" in the project\'s protected branches, or use Maintainer)'
+  if (/GH006|Protected branch update failed/i.test(stderr))
+    return " (the branch is protected on GitHub: let the token's user or the GitHub App bypass its rules, or protect the objects here so changes go through pull requests)"
+  return ''
+}
+
+/**
  * A branch name git and GitHub both take: letters, digits, `.`, `_`, `-` and `/` between parts, none of git's
  * forbidden sequences.
  */
@@ -346,7 +358,10 @@ export class GitRepo {
       if (refLine?.startsWith('!')) {
         if (/\[remote rejected\]/.test(refLine)) {
           const reason = /\[remote rejected\]\s*(?:\((.*)\))?/.exec(refLine)?.[1] ?? 'refused by the server'
-          throw new GitError('refused', `The push to ${name} was refused: ${reason}`)
+          throw new GitError(
+            'refused',
+            `The push to ${name} was refused: ${reason}${protectedHint(result.stderr)}`,
+          )
         }
         return 'rejected'
       }

@@ -18,7 +18,10 @@ import { type GitObjectRow, liveOrDraft, setGitProtected } from './kinds'
 import type { GitAuthor, GitRepo } from './repo'
 import { openGitRepo } from './settings'
 
-type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL'>
+type GitConfig = Pick<
+  Config,
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+>
 
 /** An object as the repo holds it; its definition is the kind's (as stored for it). */
 export function repoObject(
@@ -246,7 +249,7 @@ export async function unprotectObject(db: Db, kind: ObjectKind, object: GitObjec
 /** Opens (or finds) the branch's pull request; failures come back as a message rather than an error. */
 export async function openPullRequestFor(
   db: Db,
-  config: Pick<Config, 'keyring' | 'GITHUB_API_URL'>,
+  config: Pick<Config, 'keyring' | 'GITHUB_API_URL' | 'GITLAB_API_URL'>,
   /** `base`: the deploy branch unless given (Promote, M22). */
   opts: { branch: string; title: string; body: string; base?: string },
 ): Promise<{ pullRequest: PullRequestView | null; pullRequestError: string | null }> {

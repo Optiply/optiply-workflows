@@ -20,11 +20,16 @@ export function bareRepo(path: string): string {
 }
 
 /** A hook on the remote that refuses every push to `branch`, like GitHub's branch protection. */
-export async function protectBranch(repoPath: string, branch: string): Promise<void> {
+export async function protectBranch(
+  repoPath: string,
+  branch: string,
+  /** What the hook says, as a host would (M31: GitLab's or GitHub's wording). */
+  message = 'protected branch hook declined',
+): Promise<void> {
   const hook = join(repoPath, 'hooks', 'pre-receive')
   await writeFile(
     hook,
-    `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = "refs/heads/${branch}" ]; then echo "protected branch hook declined" >&2; exit 1; fi\ndone\n`,
+    `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = "refs/heads/${branch}" ]; then echo "${message}" >&2; exit 1; fi\ndone\n`,
     { mode: 0o755 },
   )
 }

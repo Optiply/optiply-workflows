@@ -371,6 +371,29 @@ describe('over HTTP with a token', () => {
     expect(await repo.push(commit!, 'feature')).toBe('ok')
   })
 
+  it('says what to change when GitLab or GitHub refuses a push to a protected branch (M31)', async () => {
+    const repo = await open(TOKEN, 'protected-hosts')
+    const tip = await repo.fetchBranch('main')
+    const commit = await repo.commit({ parent: tip, files: { 'y.txt': 'y' }, message: 'm', author })
+    await protectBranch(
+      remotePath,
+      'main',
+      'GitLab: You are not allowed to push code to protected branches on this project.',
+    )
+    await expect(repo.push(commit!, 'main')).rejects.toMatchObject({
+      kind: 'refused',
+      message: expect.stringContaining('protected on GitLab'),
+    })
+    await protectBranch(
+      remotePath,
+      'main',
+      'error: GH006: Protected branch update failed for refs/heads/main.',
+    )
+    await expect(repo.push(commit!, 'main')).rejects.toMatchObject({
+      message: expect.stringContaining('protected on GitHub'),
+    })
+  })
+
   it('signs in with credentials asked per command: the host’s username, a fresh token (M31)', async () => {
     const gitlab = await gitHttpServer(join(root, 'served'), TOKEN, '127.0.0.1', 'oauth2')
     try {

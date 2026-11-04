@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Keyring } from '@ow/crypto'
-import { type Db, type GitSettings, gitObjects, gitSettings, workflows } from '@ow/db'
+import { type Db, type GitHostKind, type GitSettings, gitObjects, gitSettings, workflows } from '@ow/db'
 import { checkManifest, KIND_ROOTS, MANIFEST_FILE, splitRepo } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { eq, sql } from 'drizzle-orm'
@@ -9,7 +9,7 @@ import { v7 as uuidv7 } from 'uuid'
 import type { Config } from '../../config'
 import { decryptForRow, encryptForRow } from '../secrets'
 import { GitError, type GitErrorKind } from './cli'
-import { gitCredentials } from './hosts'
+import { detectGitHost, gitCredentials } from './hosts'
 import { checkRepoUrl, GitRepo } from './repo'
 
 export interface GitSecrets {
@@ -22,6 +22,9 @@ export interface GitSettingsView {
   configured: boolean
   repoUrl: string | null
   branch: string
+  /** Where the repo is hosted (M31), and GitLab's API URL for an instance under a path. */
+  host: GitHostKind
+  apiUrl: string | null
   token: { set: boolean }
   webhookSecret: { set: boolean }
   /** Run when a deploy's problems change (M22). */
@@ -51,6 +54,8 @@ export async function gitSettingsView(db: Db, keyring: Keyring): Promise<GitSett
     configured: Boolean(loaded),
     repoUrl: loaded?.row.repoUrl ?? null,
     branch: loaded?.row.branch ?? 'main',
+    host: loaded?.row.host ?? 'github',
+    apiUrl: loaded?.row.apiUrl ?? null,
     token: { set: Boolean(loaded?.secrets.token) },
     webhookSecret: { set: Boolean(loaded?.secrets.webhookSecret) },
     notifyWorkflow: await notifyWorkflowOf(db, loaded?.row.notifyWorkflowId ?? null),
@@ -86,13 +91,22 @@ export async function setNotifyWorkflow(db: Db, workflowId: string | null): Prom
 
 /**
  * Saves the repo settings. `token` and `webhookSecret`: a string sets it, null clears it, undefined keeps it.
- * Pointing the repo at another host needs the token again, so a stored token can't be sent somewhere new.
+ * Pointing the repo at another host needs the token again, so a stored token can't be sent somewhere new; so does
+ * another kind of host (M31). `host`: undefined detects it from the URL (github.com, gitlab.com), else keeps the
+ * stored one for the same origin, else GitHub. `apiUrl` (GitLab only): undefined keeps it, null clears it.
  */
 export async function saveGitSettings(
   db: Db,
   config: Pick<Config, 'keyring' | 'GIT_ALLOW_INSECURE_URLS'>,
   user: { id: string },
-  input: { repoUrl: string; branch: string; token?: string | null; webhookSecret?: string | null },
+  input: {
+    repoUrl: string
+    branch: string
+    host?: GitHostKind
+    apiUrl?: string | null
+    token?: string | null
+    webhookSecret?: string | null
+  },
 ): Promise<{ tokenChanged: boolean; webhookSecretChanged: boolean }> {
   let repoUrl: string
   try {
@@ -101,12 +115,19 @@ export async function saveGitSettings(
     throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message })
   }
   const existing = await loadGitSettings(db, config.keyring)
+  const sameOrigin = existing && new URL(existing.row.repoUrl).origin === new URL(repoUrl).origin
+  const host: GitHostKind =
+    input.host ?? detectGitHost(repoUrl) ?? (sameOrigin ? existing.row.host : 'github')
+  const apiUrl =
+    host !== 'gitlab'
+      ? null
+      : input.apiUrl === undefined
+        ? sameOrigin
+          ? existing.row.apiUrl
+          : null
+        : checkApiUrl(input.apiUrl, repoUrl, config.GIT_ALLOW_INSECURE_URLS)
   const secrets: GitSecrets = { ...existing?.secrets }
-  if (
-    existing?.secrets.token &&
-    input.token === undefined &&
-    new URL(existing.row.repoUrl).origin !== new URL(repoUrl).origin
-  ) {
+  if (existing?.secrets.token && input.token === undefined && (!sameOrigin || existing.row.host !== host)) {
     throw new TRPCError({
       code: 'BAD_REQUEST',
       message: 'The repo is on another host now: enter the token again',
@@ -130,6 +151,8 @@ export async function saveGitSettings(
   const values = {
     repoUrl,
     branch: input.branch,
+    host,
+    apiUrl,
     secrets: encrypted,
     updatedBy: user.id,
     ...(moved ? { deployedCommit: null, lastError: null } : {}),
@@ -144,6 +167,25 @@ export async function saveGitSettings(
       input.webhookSecret !== undefined &&
       (input.webhookSecret || null) !== (existing?.secrets.webhookSecret ?? null),
   }
+}
+
+/** GitLab's API URL for an instance under a path: on the repo's own origin, over https; null when empty. */
+function checkApiUrl(apiUrl: string | null, repoUrl: string, allowInsecure: boolean): string | null {
+  const text = apiUrl?.trim()
+  if (!text) return null
+  let url: URL
+  try {
+    url = new URL(text)
+  } catch {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: "The API URL isn't a URL" })
+  }
+  if (url.protocol !== 'https:' && !(allowInsecure && url.protocol === 'http:'))
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'The API URL must use https' })
+  if (url.origin !== new URL(repoUrl).origin)
+    throw new TRPCError({ code: 'BAD_REQUEST', message: "The API URL must be on the repo's own host" })
+  if (url.username || url.password || url.search || url.hash)
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Leave credentials and queries out of the API URL' })
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
 export async function clearGitSettings(db: Db): Promise<boolean> {

@@ -1,4 +1,4 @@
-import { environments, GIT_OBJECT_KINDS, GIT_SETTINGS_KINDS } from '@ow/db'
+import { environments, GIT_HOSTS, GIT_OBJECT_KINDS, GIT_SETTINGS_KINDS } from '@ow/db'
 import { folderPathSchema } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
@@ -115,6 +115,9 @@ export const gitRouter = router({
       z.object({
         repoUrl: z.string().trim().min(1).max(500),
         branch: branchNameSchema.default('main'),
+        /** M31: undefined detects it from the URL. */
+        host: z.enum(GIT_HOSTS).optional(),
+        apiUrl: z.string().trim().max(500).nullish(),
         token: Secret,
         webhookSecret: Secret,
       }),
@@ -123,6 +126,8 @@ export const gitRouter = router({
       const changed = await saveGitSettings(ctx.db, ctx.config, ctx.user, {
         repoUrl: input.repoUrl,
         branch: input.branch,
+        host: input.host,
+        apiUrl: input.apiUrl,
         // `nullish` gives undefined (keep) or null (clear); zod keeps the difference.
         token: input.token,
         webhookSecret: input.webhookSecret,
@@ -135,6 +140,7 @@ export const gitRouter = router({
         metadata: {
           repoUrl: view.repoUrl,
           branch: view.branch,
+          host: view.host,
           changed: [
             ...(changed.tokenChanged ? ['token'] : []),
             ...(changed.webhookSecretChanged ? ['webhook'] : []),

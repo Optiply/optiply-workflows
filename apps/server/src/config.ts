@@ -74,6 +74,8 @@ const ConfigSchema = z
     GIT_RETRY_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
     GITHUB_API_URL: z.string().url().optional(),
+    /** GitLab's API, for tests (M31); by default `<origin>/api/v4`, or the settings' API URL. */
+    GITLAB_API_URL: z.string().url().optional(),
     /**
      * The code executor that runs Python code blocks (M12, apps/code-executor), e.g. `http://code-executor:8080`.
      * Without it, workflows with Python can't run or be published.
