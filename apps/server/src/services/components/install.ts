@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { type NpmRegistryAccess, npmAuthKey } from './registries'
 
 /**
@@ -48,9 +48,22 @@ export async function installDependencies(
   )
   if (Object.keys(opts.dependencies).length === 0) return { ok: true, lock: null, log: '' }
   if (opts.lock) await writeFile(join(dir, 'package-lock.json'), opts.lock)
-  // npm reads these instead of the server's own files.
-  const home = join(dir, '.home')
-  await mkdir(home, { recursive: true })
+  // npm reads these instead of the server's own files. Outside the build directory (the bundler may read anything
+  // inside it, and the library's code chooses what it imports: M33's tokens are in .npmrc), gone once npm is done.
+  const home = await mkdtemp(join(dirname(dir), '.npm-home-'))
+  try {
+    return await install(dir, home, opts, limits)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+async function install(
+  dir: string,
+  home: string,
+  opts: Parameters<typeof installDependencies>[1],
+  limits: InstallLimits,
+): Promise<InstallResult> {
   const npmrc = join(home, '.npmrc')
   const globalrc = join(home, 'global.npmrc')
   let registry = opts.registry

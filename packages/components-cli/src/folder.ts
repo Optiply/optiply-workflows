@@ -23,7 +23,7 @@ export interface FolderState {
 }
 
 /** Skipped when reading a folder: npm's and git's, build output, and hidden files (the state among them). */
-const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage'])
+export const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage'])
 
 export type Files = Record<string, string>
 

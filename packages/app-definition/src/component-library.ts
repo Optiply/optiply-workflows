@@ -24,7 +24,7 @@ const MAX_COMPONENTS = 100
 /** Props every custom component instance has besides its declared ones: the library, release and component. */
 export const CUSTOM_PROPS = ['library', 'version', 'component'] as const
 /** Names a component's declared props, state and methods can't take (the instance's own, and the common ones). */
-const RESERVED_MEMBERS = new Set<string>([...CUSTOM_PROPS, 'hidden', 'setHidden', 'heightMode'])
+const RESERVED_MEMBERS = new Set<string>([...CUSTOM_PROPS, 'hidden', 'setHidden'])
 
 const jsonValue: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -217,6 +217,8 @@ export function customComponentSpec(iface: CustomComponentInterface | null): Com
       openProps: true,
     }
   }
+  // A library from before M33 may declare its own `heightMode`: its prop, then (it follows the default height).
+  if (Object.hasOwn(iface.props, 'heightMode')) delete props.heightMode
   for (const [name, spec] of Object.entries(iface.props)) if (!Object.hasOwn(props, name)) props[name] = spec
   for (const [name, spec] of Object.entries(iface.methods))
     if (!Object.hasOwn(methods, name)) methods[name] = spec

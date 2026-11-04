@@ -147,6 +147,10 @@ describe('the components CLI', () => {
     expect(files['src/Hello.tsx']).toContain('// edited locally')
     expect(files['src/extra.ts']).toBe('export const EXTRA = 1\n')
     expect(lib.liveRelease).toMatchObject({ version: '1.0.0' })
+    // Nothing changed since: nothing saved.
+    const again = await cli(['push'], { cwd: dir })
+    expect(again.out).toContain('Nothing to push')
+    expect((await libraryBySlug('cli-lib')).draftRevision).toBe(2)
     // Open editors learn of the push (and rebuild their Preview).
     expect(
       data(await admin.query('componentLibraries.lastPush', { componentLibraryId: lib.id })),
@@ -236,7 +240,7 @@ describe('the components CLI', () => {
     expect(unsigned.err).toContain('Not signed in')
   })
 
-  it('dev pushes a saved change into the draft', async () => {
+  it('dev pushes a saved change into the draft', { timeout: 120_000 }, async () => {
     const dir = join(work, 'dev-lib')
     expect((await cli(['init', 'dev-lib'])).code).toBe(0)
     const child = spawn(process.execPath, [cliFile, 'dev'], {
@@ -251,7 +255,7 @@ describe('the components CLI', () => {
       output += chunk
     })
     try {
-      await expect.poll(() => output, { timeout: 60_000 }).toContain('Built')
+      await expect.poll(() => output, { timeout: 60_000 }).toContain('Watching')
       await writeFile(
         join(dir, 'src/Hello.tsx'),
         'export default function Hello() {\n  return <b>from dev</b>\n}\n',

@@ -69,7 +69,8 @@ const MAX_REPORTED_HEIGHT = 4000
 
 /**
  * Reports the content's height whenever it changes, at most once a frame (M33): how far down what the component
- * rendered reaches (the root itself fills the frame, so its own size says nothing). The page uses it for a
+ * rendered reaches (the root itself fills the frame, so its own size says nothing), watched through the sizes of
+ * the root's children. The page uses it for a
  * component on Auto height and ignores it otherwise. One that fills its frame reports the frame's height: stable.
  */
 function watchHeight(root: HTMLElement, report: (px: number) => void) {
@@ -100,10 +101,11 @@ function watchHeight(root: HTMLElement, report: (px: number) => void) {
     sizes.observe(root)
     for (const child of Array.from(root.children)) sizes.observe(child)
   }
+  // Children coming and going (sizes within them are the ResizeObserver's).
   new MutationObserver(() => {
     watchChildren()
     schedule()
-  }).observe(root, { childList: true, subtree: true, characterData: true, attributes: true })
+  }).observe(root, { childList: true })
   watchChildren()
   schedule()
 }

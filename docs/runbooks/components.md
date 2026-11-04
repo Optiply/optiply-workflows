@@ -73,7 +73,11 @@ the **default environment**; a build writes it to its own temporary `.npmrc` (`/
 600), which only npm reads (install scripts never run, so no package code sees it), and npm's log is scrubbed of it.
 The lock keeps tarball URLs, never the token. **Test** asks the registry `/-/whoami` with the token. Libraries need
 nothing: an `@acme/…` dependency resolves from `@acme`'s registry. A token var without a value fails the build's
-install naming it. `NPM_ALLOW_INSECURE_REGISTRIES=true` allows `http://` registries (a local mirror, tests).
+install naming it, and so does one with a space or line break (it would add settings to `.npmrc`).
+`NPM_ALLOW_INSECURE_REGISTRIES=true` allows `http://` registries (a local mirror, tests). The `.npmrc` lives beside
+the build directory, never in it (the bundler reads what a library imports from inside it), and goes once npm is
+done. **Who defines registries chooses which secret config var goes to which URL** (Test sends it too): the same
+trust as a workflow's REST query, which can send `{{ configVars.X }}` anywhere; keep the admins few.
 
 ## Auto height (M33)
 

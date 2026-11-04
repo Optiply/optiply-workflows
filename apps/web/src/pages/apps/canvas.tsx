@@ -16,7 +16,7 @@ import { RENDERERS } from './components'
 import { foldedLayout } from './folded'
 import { placedChildren } from './placed'
 import { resizedLayout } from './resized'
-import { useContentHeights } from './runtime/content-heights'
+import { contentHeight, useContentHeights } from './runtime/content-heights'
 
 export { placedChildren }
 
@@ -70,7 +70,7 @@ export function AppGrid({
   const sizedKey = useContentHeights((s) =>
     placed
       .flatMap(({ component: c }) => {
-        const px = c.type === 'custom' ? s.px[`${scope}${c.name}`] : undefined
+        const px = c.type === 'custom' ? contentHeight(s.px, `${scope}${c.name}`) : undefined
         return px === undefined ? [] : [`${c.name}:${Math.max(1, Math.ceil(px / ROW_HEIGHT))}`]
       })
       .join(','),

@@ -1,7 +1,7 @@
 import { watch } from 'node:fs'
 import { resolve } from 'node:path'
 import { CliError, type Output, push } from './commands'
-import { readState, STATE_FILE } from './folder'
+import { readState, SKIP, STATE_FILE } from './folder'
 
 /** How long the folder must stay quiet after a save before it's pushed (editors write a file in several steps). */
 const DEBOUNCE_MS = 300
@@ -17,8 +17,6 @@ export async function dev(opts: { dir?: string }, io: Output): Promise<void> {
   const state = await readState(dir)
   if (!state)
     throw new CliError(`${dir} isn't a library's folder (no .ow-components.json): init or pull first`)
-  io.out(`Watching ${dir} for ${state.slug} on ${state.url} (Ctrl-C to stop)`)
-
   let timer: NodeJS.Timeout | null = null
   let running = false
   let again = false
@@ -29,7 +27,7 @@ export async function dev(opts: { dir?: string }, io: Output): Promise<void> {
     }
     running = true
     try {
-      await push({ dir, build: true }, io)
+      await push({ dir, build: true, onlyIfChanged: true }, io)
     } catch (err) {
       io.err((err as Error).message)
     } finally {
@@ -45,18 +43,16 @@ export async function dev(opts: { dir?: string }, io: Output): Promise<void> {
     timer = setTimeout(() => void once(), DEBOUNCE_MS)
   }
 
-  await once()
+  // Watching first, then said, then the first push: a save right after the message is seen.
   const watcher = watch(dir, { recursive: true }, (_event, file) => {
     const name = String(file ?? '')
-    if (
-      !name ||
-      name === STATE_FILE ||
-      name.split(/[\\/]/).some((p) => p.startsWith('.') || p === 'node_modules')
-    ) {
+    if (!name || name === STATE_FILE || name.split(/[\\/]/).some((p) => p.startsWith('.') || SKIP.has(p))) {
       return
     }
     schedule()
   })
+  io.out(`Watching ${dir} for ${state.slug} on ${state.url} (Ctrl-C to stop)`)
+  await once()
   await new Promise<void>((done) => {
     const stop = () => {
       watcher.close()

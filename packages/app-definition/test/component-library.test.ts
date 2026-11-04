@@ -150,6 +150,12 @@ describe('custom components in an app', () => {
     expect(
       componentLibraryInterface({ ...lib, components: [{ ...lib.components[0]!, autoHeight: true }] }).Hello,
     ).toMatchObject({ autoHeight: true })
+    // A library declaring its own heightMode (before M33) keeps it.
+    const own = customComponentSpec({
+      ...iface,
+      props: { ...iface.props, heightMode: { type: 'string', default: 'x', label: 'Mine' } },
+    })
+    expect(own.props.heightMode).toMatchObject({ label: 'Mine' })
     expect(Object.keys(spec.state)).toEqual(['clicks'])
     expect(Object.keys(spec.methods)).toEqual(['setHidden', 'highlight'])
     expect(spec.events).toEqual(['click'])

@@ -145,6 +145,8 @@ export async function pull(
 }
 
 export interface PushOptions {
+  /** Push (and build) only when the folder changed since it last synced (`dev`). */
+  onlyIfChanged?: boolean
   dir?: string
   force?: boolean
   build?: boolean
@@ -167,11 +169,25 @@ export async function push(opts: PushOptions, io: Output): Promise<boolean> {
   const local = folderLibrary(files)
   if (!local.ok) throw new CliError(`The folder's library isn't valid:\n  ${local.problems.join('\n  ')}`)
   const lib = await library(api, { id: state.id })
+  const unchanged = filesHash(files) === state.hash && lib.draftRevision === state.revision
+  if (unchanged && opts.onlyIfChanged) return true
+  if (unchanged && !opts.force && !opts.build && !opts.publish) {
+    io.out(`Nothing to push: ${lib.slug}'s draft is the folder already`)
+    return true
+  }
   if (lib.draftRevision !== state.revision && !opts.force) {
     throw new CliError(
       `The draft changed on ${api.url} since this folder last synced (revision ${state.revision}, now ${lib.draftRevision}): ` +
         'pull (after keeping your changes elsewhere) or push --force to replace it',
     )
+  }
+  if (unchanged && !opts.force) {
+    // The draft is the folder already: only what was asked besides.
+    if (opts.build || opts.publish) {
+      if (!(await build(api, lib.id, io))) return false
+    }
+    if (opts.publish) await publish(api, lib, lib.draftRevision, opts, io)
+    return true
   }
   if (local.name !== lib.name || (local.description ?? null) !== (lib.description ?? null)) {
     await api.mutate('componentLibraries.update', {
@@ -197,16 +213,18 @@ export async function push(opts: PushOptions, io: Output): Promise<boolean> {
   if (opts.build || opts.publish) {
     if (!(await build(api, lib.id, io))) return false
   }
-  if (opts.publish) {
-    const release = await api.mutate<{ version: string }>('componentLibraries.publish', {
-      componentLibraryId: lib.id,
-      draftRevision: saved.revision,
-      version: opts.publish,
-      notes: opts.notes ?? null,
-    })
-    io.out(`Published ${lib.slug} ${release.version}`)
-  }
+  if (opts.publish) await publish(api, lib, saved.revision, opts, io)
   return true
+}
+
+async function publish(api: Api, lib: LibraryView, revision: number, opts: PushOptions, io: Output) {
+  const release = await api.mutate<{ version: string }>('componentLibraries.publish', {
+    componentLibraryId: lib.id,
+    draftRevision: revision,
+    version: opts.publish,
+    notes: opts.notes ?? null,
+  })
+  io.out(`Published ${lib.slug} ${release.version}`)
 }
 
 /** Builds the draft, printing problems as `file:line:column: message`. */

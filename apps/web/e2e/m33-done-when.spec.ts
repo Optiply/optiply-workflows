@@ -140,7 +140,8 @@ test("M33's done-when", async ({ page, baseURL }) => {
 
   await test.step('dev sends an edit that the open library editor’s Preview shows', async () => {
     await page.goto(`/component-libraries/${slug}`)
-    await expect(page.getByTestId('library-build')).toBeVisible()
+    // The editor knows the last push (the publish's) before dev starts: a later one is new to it.
+    await expect(page.getByTestId('library-last-push')).toBeVisible()
     dev = spawn(process.execPath, [cliFile, 'dev'], {
       cwd: dir,
       env: { PATH: process.env.PATH, OW_CONFIG_DIR: join(work, 'config') },
@@ -152,8 +153,9 @@ test("M33's done-when", async ({ page, baseURL }) => {
     dev.stderr?.on('data', (c) => {
       output += c
     })
-    // Its first push saves the same draft (nothing for the editor to follow); then an edit.
-    await expect.poll(() => output, { timeout: 60_000 }).toContain('Built')
+    // The folder is the draft already: nothing to push until an edit.
+    await expect.poll(() => output, { timeout: 60_000 }).toContain('Watching')
+    await page.waitForTimeout(500)
     const preview = page.getByTestId('library-preview').frameLocator('iframe')
     const hello = await readFile(join(dir, 'src/Hello.tsx'), 'utf8')
     await writeFile(join(dir, 'src/Hello.tsx'), hello.replace('Hello {name}', 'Edited in my editor, {name}'))

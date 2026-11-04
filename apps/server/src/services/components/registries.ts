@@ -30,6 +30,13 @@ export async function npmRegistryAccess(
           message: `The npm registry for ${row.scope ?? 'all packages'} takes its token from the config var ${row.tokenConfigVar}, which isn't a secret with a value in the default environment`,
         }
       }
+      // One line of .npmrc: a token with a line break (or a space) could add settings of its own there.
+      if (/\s/.test(token)) {
+        return {
+          ok: false,
+          message: `The token in ${row.tokenConfigVar} has spaces or line breaks: a registry token has neither`,
+        }
+      }
       entry.token = token
     }
     registries.push(entry)

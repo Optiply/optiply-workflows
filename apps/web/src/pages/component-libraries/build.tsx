@@ -48,6 +48,9 @@ export function BuildCard({
     enabled: canEdit && !branchDraftId,
   })
   const followed = useRef<number | null>(null)
+  /** A push came while a build ran: build again when it's done (the latest `run`, through the ref). */
+  const again = useRef(false)
+  const latestRun = useRef<() => Promise<void>>(async () => {})
 
   const run = async () => {
     setSaveError(null)
@@ -66,9 +69,15 @@ export function BuildCard({
             if (!branchDraftId) setLock(result.lock)
           }
         },
+        onSettled: () => {
+          if (!again.current) return
+          again.current = false
+          void latestRun.current()
+        },
       },
     )
   }
+  latestRun.current = run
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: asks again after a change from elsewhere
   useEffect(() => {
@@ -86,7 +95,9 @@ export function BuildCard({
     }
     if (at > followed.current) {
       followed.current = at
-      if (canEdit && !build.isPending) void run()
+      if (!canEdit) return
+      if (build.isPending) again.current = true
+      else void run()
     }
   }, [lastPush.data])
 

@@ -98,7 +98,14 @@ export const useComponentLibraryEditor = create<ComponentLibraryEditorState>()((
       ...newHistory(get().history, null),
     }),
 
-  attach: (shared) => set({ shared, ...applied(shared.value), ...newHistory(get().history, shared) }),
+  // A draft changed while the document synced (a push from the CLI, M33) counts as a change from elsewhere.
+  attach: (shared) =>
+    set({
+      shared,
+      ...applied(shared.value),
+      ...newHistory(get().history, shared),
+      remoteChanges: get().remoteChanges + (equal(get().definition, shared.value) ? 0 : 1),
+    }),
 
   remote: () => {
     const { shared, definition } = get()

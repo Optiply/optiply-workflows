@@ -52,7 +52,8 @@ async function checked(db: Db, insecureOk: boolean, input: FieldsInput) {
       })
     }
   }
-  return { scope: input.scope, url: url.toString().replace(/\/+$/, '/'), tokenConfigVar }
+  // Always ending in /: npm's auth key and `new URL('-/whoami', url)` keep the registry's whole path then.
+  return { scope: input.scope, url: url.toString().replace(/\/*$/, '/'), tokenConfigVar }
 }
 
 export const npmRegistriesRouter = router({

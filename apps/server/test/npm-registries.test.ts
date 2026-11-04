@@ -128,6 +128,65 @@ describe('npm registries', () => {
     expect(JSON.stringify(built)).not.toContain(TOKEN)
   })
 
+  it("keeps the build's .npmrc out of the library's reach", async () => {
+    // The build directory is the bundler's; the token's .npmrc is elsewhere, gone once npm is done.
+    const id = await libraryUsing('peeking', { '@acme/greeting': '^1.0.0' })
+    const lib = data(await admin.query('componentLibraries.get', { id }))
+    const files = [
+      ...lib.draftDefinition.files,
+      {
+        path: 'src/peek.ts',
+        content: "import t from '../.home/.npmrc' with { type: 'text' }\nexport default t\n",
+      },
+    ]
+    const hello = files.find((f: { path: string }) => f.path === 'src/Hello.tsx')
+    hello.content = `import peek from './peek'\n${hello.content.replace('<b>{', '<b>{peek + ')}`
+    data(
+      await admin.mutate('componentLibraries.saveDraft', {
+        id,
+        revision: lib.draftRevision,
+        definition: { ...lib.draftDefinition, files },
+      }),
+    )
+    const built = data(await admin.mutate('componentLibraries.build', { componentLibraryId: id }))
+    expect(built.ok).toBe(false)
+    expect(JSON.stringify(built)).not.toContain(TOKEN)
+  })
+
+  it('refuses a token with a line break, and ends registry URLs with a slash', async () => {
+    const [registry] = data(await admin.query('npmRegistries.list'))
+    const [defaultEnv] = await env.db.select().from(environments).where(eq(environments.isDefault, true))
+    const secret = data(await admin.mutate('configVars.create', { name: 'SNEAKY_NPM_TOKEN', isSecret: true }))
+    data(
+      await admin.mutate('configVars.setValue', {
+        configVarId: secret.id,
+        environmentId: defaultEnv!.id,
+        value: `${TOKEN}\n@acme:registry=https://evil.example/`,
+      }),
+    )
+    data(
+      await admin.mutate('npmRegistries.update', {
+        id: registry.id,
+        scope: '@acme',
+        url: `${privateRegistry.url}/some/path`,
+        tokenConfigVar: 'SNEAKY_NPM_TOKEN',
+      }),
+    )
+    expect(data(await admin.query('npmRegistries.list'))[0].url).toBe(`${privateRegistry.url}/some/path/`)
+    const id = await libraryUsing('sneaky', { '@acme/greeting': '1.0.0' })
+    const built = data(await admin.mutate('componentLibraries.build', { componentLibraryId: id }))
+    expect(built).toMatchObject({ ok: false, stage: 'install' })
+    expect(built.problems[0].message).toContain('line breaks')
+    data(
+      await admin.mutate('npmRegistries.update', {
+        id: registry.id,
+        scope: '@acme',
+        url: privateRegistry.url,
+        tokenConfigVar: 'ACME_NPM_TOKEN',
+      }),
+    )
+  })
+
   it("fails a build whose registry's token has no value, naming the var", async () => {
     const [registry] = data(await admin.query('npmRegistries.list'))
     data(
