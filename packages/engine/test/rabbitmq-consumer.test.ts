@@ -13,6 +13,7 @@ import { startTestDatabase } from '@ow/db/testing'
 import { and, asc, sql as dsql, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { QueueConsumer, type QueueConsumerOptions, queueStats, type ResourceProvider } from '../src'
+import { rabbitmqAdapter } from '../src/queue-adapters/rabbitmq'
 import type { RabbitRunMessage } from '../src/types'
 import { connect, wf } from './pg-harness'
 
@@ -216,5 +217,44 @@ describe.skipIf(!available)('QueueConsumer: RabbitMQ', () => {
     await rabbit.declare(`${queue}-later`)
     await rabbit.send(`${queue}-later`, 'finally', { messageId: 'late' })
     await expect.poll(async () => (await runsOf(trigger.id)).length, { timeout: 15_000 }).toBe(1)
+  })
+
+  it('starts a run for a message with a NUL in a header (jsonb can’t hold one) (review fix)', async () => {
+    const { trigger, queue } = await queued()
+    await rabbit.send(queue, '{"n": 1}', { messageId: 'nul-1', headers: { note: 'a\u0000b' } })
+    consumer().start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length, { timeout: 10_000 }).toBe(1)
+    expect(messageOf((await runsOf(trigger.id))[0]!).headers).toEqual({ note: 'a\ufffdb' })
+  })
+
+  it('hands a delivery whose run couldn’t start back to the queue, freeing its prefetch slot (review fix)', async () => {
+    const { trigger, queue } = await queued({ maxInFlight: 1 })
+    await rabbit.send(queue, 'job', { messageId: 'u-1' })
+    const adapter = rabbitmqAdapter({
+      trigger: {
+        id: trigger.id,
+        workflow_id: trigger.workflowId,
+        release_id: trigger.releaseId,
+        environment_id: prodId,
+        kind: 'rabbitmq',
+        name: 'jobs',
+        config: trigger.config as never,
+      },
+      resources,
+      opts: { db, resources, workerId: 'w1', retryMs: 50 },
+      log: () => {},
+      settled: async () => {},
+    })
+    try {
+      const [first] = await adapter.pull(1, AbortSignal.timeout(10_000))
+      expect(first?.id).toBe('id:u-1')
+      adapter.undelivered!(first!)
+      // Back in the queue and delivered again, marked redelivered.
+      const [again] = await adapter.pull(1, AbortSignal.timeout(10_000))
+      expect(again?.id).toBe('id:u-1')
+      expect((again!.input as { message: RabbitRunMessage }).message.redelivered).toBe(true)
+    } finally {
+      await adapter.close([])
+    }
   })
 })

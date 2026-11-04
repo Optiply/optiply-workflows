@@ -1,3 +1,4 @@
+import { QUEUE_TRIGGER_KINDS } from '@ow/definition'
 import { useMemo } from 'react'
 import CodeField, { type CodeFieldProps } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
@@ -29,9 +30,7 @@ export default function WorkflowCodeField({ text: at, removeEmpty, ...props }: W
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
     const bodySchema = open ? undefined : definition.triggers?.webhook?.bodySchema
     const t = definition.triggers
-    const queues = (['pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const).filter(
-      (kind) => !!t?.[kind]?.length,
-    )
+    const queues = QUEUE_TRIGGER_KINDS.filter((kind) => !!t?.[kind]?.length)
     return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open, bodySchema, queues)
   }, [definition, samples, fn])
   // Looked up again as the definition changes: the text appears with the field's first value, and is replaced when

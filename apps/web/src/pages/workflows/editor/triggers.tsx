@@ -7,6 +7,7 @@ import {
   type KinesisTrigger,
   type PubSubTrigger,
   parseCron,
+  type QueueTriggerKind,
   type RabbitmqTrigger,
   resolveWebhookSettings,
   type ScheduleTrigger,
@@ -435,7 +436,7 @@ function ScheduleCard({ index, schedule }: { index: number; schedule: ScheduleTr
   )
 }
 
-type QueueKind = 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis'
+type QueueKind = QueueTriggerKind
 type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger | RabbitmqTrigger | KinesisTrigger
 
 /** What differs between the queue triggers' sections (Pub/Sub M19, SQS and Kafka M26). */
@@ -773,11 +774,18 @@ function QueueCard({
           />
           <Problems problems={at('maxInFlight')} />
         </Field>
-        <Field label="Hold up to (minutes)" hint="Longer runs: the message is let go and the run goes on.">
+        <Field
+          label="Hold up to (minutes)"
+          hint={
+            kind === 'rabbitmq'
+              ? "Longer runs: the message is acked and the run goes on. Keep it below the broker's consumer_timeout (30 min by default)."
+              : 'Longer runs: the message is let go and the run goes on.'
+          }
+        >
           <Input
             type="number"
             min={1}
-            placeholder="60"
+            placeholder={kind === 'rabbitmq' ? '25' : '60'}
             value={trigger.maxHoldMinutes ?? ''}
             onChange={(e) => patch({ maxHoldMinutes: number(e.target.value, q.maxHoldMinutes) })}
           />

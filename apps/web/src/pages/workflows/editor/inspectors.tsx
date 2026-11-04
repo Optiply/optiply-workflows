@@ -10,6 +10,7 @@ import {
   type Diagnostic,
   isTrigger,
   MAX_LOOP_CONCURRENCY,
+  QUEUE_TRIGGER_KINDS,
   renameBlock,
   resolveBlockSettings,
   TASK_DUE_UNITS,
@@ -386,7 +387,7 @@ function EnabledTriggers({ name }: { name: string }) {
   const triggers = useEditor((s) => s.definition.triggers)
   const on = [
     triggers?.webhook?.enabled ? 'Webhook' : null,
-    ...(['schedules', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const).map((kind) => {
+    ...(['schedules', ...QUEUE_TRIGGER_KINDS] as const).map((kind) => {
       const n = (triggers?.[kind] ?? []).filter((t) => t.enabled).length
       return n ? `${TRIGGER_LABELS[kind]}${n > 1 ? ` (${n})` : ''}` : null
     }),

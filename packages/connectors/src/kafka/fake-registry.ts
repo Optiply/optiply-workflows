@@ -9,6 +9,8 @@ export interface FakeRegistry {
   password: string
   /** Registers a schema under a subject: its id. */
   register(subject: string, schema: object, type?: 'AVRO' | 'JSON'): number
+  /** While true, every request is answered 503 (the registry down). */
+  down: boolean
   stop(): Promise<void>
 }
 
@@ -18,11 +20,13 @@ export async function startFakeRegistry(): Promise<FakeRegistry> {
   const schemas = new Map<number, { schema: string; schemaType: string }>()
   const subjects = new Map<string, number[]>()
   let next = 1
+  const state = { down: false }
   const server = createServer((req, res) => {
     const reply = (status: number, body: unknown) => {
       res.writeHead(status, { 'content-type': 'application/vnd.schemaregistry.v1+json' })
       res.end(JSON.stringify(body))
     }
+    if (state.down) return reply(503, { error_code: 50301, message: 'Service unavailable' })
     if (req.headers.authorization !== `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`)
       return reply(401, { error_code: 401, message: 'Unauthorized' })
     const url = new URL(req.url ?? '/', 'http://x')
@@ -45,6 +49,12 @@ export async function startFakeRegistry(): Promise<FakeRegistry> {
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
   return {
+    get down() {
+      return state.down
+    },
+    set down(value: boolean) {
+      state.down = value
+    },
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     username,
     password,

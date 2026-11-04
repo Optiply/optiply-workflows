@@ -2,7 +2,7 @@ import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import amqp, { type ChannelModel, type ConfirmChannel } from 'amqplib'
 import { z } from 'zod'
-import { isPrivateAddress } from '../net-guard'
+import { guardedLookup, isPrivateAddress } from '../net-guard'
 import { ConnectorError } from '../types'
 
 // RabbitMQ (M30): an AMQP 0-9-1 connection per resource configuration, a confirm channel for publishing, and plain
@@ -80,6 +80,8 @@ export function rabbitClient(config: RabbitConfig, secrets: RabbitSecrets): Rabb
       },
       {
         timeout: 10_000,
+        // Checked again on the addresses the socket uses: a name that re-resolves to a private one is still refused.
+        ...(!config.allowPrivateNetwork && { lookup: guardedLookup }),
         ...(config.tls && config.caCertificate ? { ca: [config.caCertificate] } : {}),
         ...(config.tls ? { servername: config.host } : {}),
       },

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { configureAws, kinesisConnector } from '@ow/connectors'
 import { type FakeAws, type FakeAwsKey, startFakeAws } from '@ow/connectors/testing'
 import {
@@ -68,7 +69,14 @@ afterAll(async () => {
 const definition = wf([{ name: 'a', type: 'code', config: { code: 'return 1' } }], [['startTrigger', 'a']])
 let n = 0
 
-async function streamed(opts: { shards?: number; maxAttempts?: number; maxInFlight?: number } = {}) {
+async function streamed(
+  opts: {
+    shards?: number
+    maxAttempts?: number
+    maxInFlight?: number
+    startAt?: 'latest' | 'trimHorizon'
+  } = {},
+) {
   const i = ++n
   const stream = `events-${i}`
   aws.kinesis.createStream(stream, opts.shards ?? 1)
@@ -92,7 +100,7 @@ async function streamed(opts: { shards?: number; maxAttempts?: number; maxInFlig
         enabled: true,
         resource: 'streams',
         stream,
-        startAt: 'trimHorizon',
+        startAt: opts.startAt ?? 'trimHorizon',
         maxInFlight: opts.maxInFlight ?? 4,
         maxAttempts: opts.maxAttempts ?? 3,
         retryBackoffSeconds: 1,
@@ -132,6 +140,14 @@ const end = (runId: string, status: 'succeeded' | 'failed') =>
 const messageOf = (run: { input: unknown }) => (run.input as { message: KinesisRunMessage }).message
 const dataOf = (run: { input: unknown }) => (run.input as { data: unknown }).data
 const poll = { timeout: 10_000 }
+/** A partition key whose records land on the shard (by the MD5 of the key, as Kinesis hashes it). */
+function keyFor(stream: string, shardId: string): string {
+  const shard = aws.kinesis.shards(stream).find((s) => s.id === shardId)!
+  for (let i = 0; ; i++) {
+    const hash = BigInt(`0x${createHash('md5').update(`k${i}`).digest('hex')}`)
+    if (hash >= shard.start && hash <= shard.end) return `k${i}`
+  }
+}
 /** Ends every queued run of the trigger, as it comes, until `count` have ended. */
 async function endAll(triggerId: string, count: number, status: 'succeeded' | 'failed' = 'succeeded') {
   const ended = new Set<string>()
@@ -238,5 +254,51 @@ describe('QueueConsumer: Kinesis', () => {
       .from(kinesisCheckpoints)
       .where(and(eq(kinesisCheckpoints.triggerId, trigger.id), eq(kinesisCheckpoints.shardId, parent!.id)))
     expect(finished[0]?.finished).toBe(true)
+  })
+
+  it('with startAt latest, a resharded stream’s children start from now, not from their history (review fix)', async () => {
+    const { stream, trigger } = await streamed({ startAt: 'latest' })
+    const [parent] = aws.kinesis.shards(stream)
+    aws.kinesis.put(stream, 'old', 'a')
+    const [left] = aws.kinesis.split(stream, parent!.id)
+    for (const key of ['a', 'b', 'c', 'd']) aws.kinesis.put(stream, `old ${key}`, key)
+    consumer().start()
+    // Its iterators made at LATEST: then a new record.
+    await new Promise((r) => setTimeout(r, 1_500))
+    aws.kinesis.put(stream, 'new', keyFor(stream, left!))
+    await expect.poll(async () => (await runsOf(trigger.id)).map(dataOf), poll).toEqual(['new'])
+    await new Promise((r) => setTimeout(r, 300))
+    expect((await runsOf(trigger.id)).map(dataOf)).toEqual(['new'])
+  })
+
+  it('starts a merged shard only once both of its parents are read to their end (review fix)', async () => {
+    const { stream, trigger } = await streamed({ shards: 2 })
+    const [low, high] = aws.kinesis.shards(stream)
+    aws.kinesis.put(stream, 'low', keyFor(stream, low!.id))
+    aws.kinesis.put(stream, 'high', keyFor(stream, high!.id))
+    const child = aws.kinesis.merge(stream, low!.id, high!.id)
+    aws.kinesis.put(stream, 'merged', keyFor(stream, child))
+    consumer().start()
+    await expect.poll(async () => (await runsOf(trigger.id)).length, poll).toBe(2)
+    const byData = async (d: string) => (await runsOf(trigger.id)).find((r) => dataOf(r) === d)!
+    await end((await byData('low')).id, 'succeeded')
+    // A few pull rounds (a second apart when idle): the adjacent parent's record still runs, so the child waits.
+    await new Promise((r) => setTimeout(r, 2_500))
+    expect(await runsOf(trigger.id)).toHaveLength(2)
+    await end((await byData('high')).id, 'succeeded')
+    await expect.poll(async () => (await runsOf(trigger.id)).map(dataOf), poll).toContain('merged')
+  })
+
+  it('hands out records already read when another shard’s read fails (review fix)', async () => {
+    const { stream, trigger } = await streamed({ shards: 2 })
+    const [first, second] = aws.kinesis.shards(stream)
+    aws.kinesis.put(stream, 'first', keyFor(stream, first!.id))
+    aws.kinesis.put(stream, 'second', keyFor(stream, second!.id))
+    aws.kinesis.failNext(stream, second!.id, 'KMSAccessDeniedException')
+    consumer().start()
+    // The first shard's record isn't lost with the round (its shard would wait for it for good).
+    await expect
+      .poll(async () => (await runsOf(trigger.id)).map(dataOf).sort(), poll)
+      .toEqual(['first', 'second'])
   })
 })

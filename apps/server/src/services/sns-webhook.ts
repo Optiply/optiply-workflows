@@ -41,6 +41,10 @@ export function configureSnsWebhooks(hosts: string): void {
     .split(',')
     .map((h) => h.trim())
     .filter(Boolean)
+  // A fresh start (tests): certificates fetched or refused before are forgotten.
+  certificates.clear()
+  failedCertificates.clear()
+  certificateFetches.length = 0
 }
 
 const AWS_HOST = /^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$/
@@ -91,14 +95,45 @@ async function fetchText(url: string): Promise<string> {
   }
 }
 
+/** Certificates that couldn't be fetched, until when they aren't tried again. */
+const failedCertificates = new Map<string, number>()
+const fetchingCertificates = new Map<string, Promise<KeyObject>>()
+/**
+ * When new certificates were fetched in the last minute. Deliveries are checked before the webhook's rate limit (they aren't
+ * authenticated yet), so anyone knowing a listed topic could otherwise make this server fetch a URL per request. SNS
+ * signs with a handful of certificates; more than this many new ones a minute is refused until the next.
+ */
+const certificateFetches: number[] = []
+const MAX_NEW_CERTIFICATES_PER_MINUTE = 10
+const FAILED_CERT_TTL_MS = 5 * 60_000
+
 async function signingKey(url: string): Promise<KeyObject> {
   const known = certificates.get(url)
   if (known && known.at > Date.now() - CERT_TTL_MS) return known.key
-  const pem = await fetchText(url)
-  const key = pem.includes('BEGIN CERTIFICATE') ? new X509Certificate(pem).publicKey : createPublicKey(pem)
-  certificates.set(url, { at: Date.now(), key })
-  if (certificates.size > 50) certificates.delete(certificates.keys().next().value!)
-  return key
+  if ((failedCertificates.get(url) ?? 0) > Date.now()) throw new Error('it failed a moment ago')
+  const fetching = fetchingCertificates.get(url)
+  if (fetching) return fetching
+  while (certificateFetches.length && certificateFetches[0]! < Date.now() - 60_000) certificateFetches.shift()
+  if (certificateFetches.length >= MAX_NEW_CERTIFICATES_PER_MINUTE)
+    throw new Error('too many new signing certificates this minute')
+  certificateFetches.push(Date.now())
+  const fetched = (async () => {
+    const pem = await fetchText(url)
+    return pem.includes('BEGIN CERTIFICATE') ? new X509Certificate(pem).publicKey : createPublicKey(pem)
+  })()
+  fetchingCertificates.set(url, fetched)
+  try {
+    const key = await fetched
+    certificates.set(url, { at: Date.now(), key })
+    if (certificates.size > 50) certificates.delete(certificates.keys().next().value!)
+    return key
+  } catch (err) {
+    failedCertificates.set(url, Date.now() + FAILED_CERT_TTL_MS)
+    if (failedCertificates.size > 200) failedCertificates.delete(failedCertificates.keys().next().value!)
+    throw err
+  } finally {
+    fetchingCertificates.delete(url)
+  }
 }
 
 /** The text SNS signs: the type's fields in order, each `Name\nvalue\n`. */

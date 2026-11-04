@@ -189,7 +189,8 @@ test('draft a body schema, and complete startTrigger.data from it', async ({ pag
   await code.locator('.view-lines').click({ position: { x: 4, y: 4 } })
   await page.keyboard.press('End')
   await page.keyboard.press('Control+Space')
-  const suggestions = page.locator('.suggest-widget')
+  // The visible one: the body schema's JSON editor keeps a (hidden) suggest widget of its own.
+  const suggestions = page.locator('.suggest-widget.visible')
   await expect(suggestions).toContainText('orderId')
   await expect(suggestions).toContainText('lines')
 })

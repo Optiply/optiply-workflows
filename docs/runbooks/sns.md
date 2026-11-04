@@ -66,6 +66,7 @@ workflow ──publish──▶ topic ──HTTPS POST (signed)──▶ /api/v1
 | SNS's delivery logs show 401 | The topic isn't in the webhook's list, raw message delivery is on, or the message was altered on the way (a proxy rewriting the body). |
 | `The SNS subscription couldn't be confirmed: …` (503) | The instance couldn't fetch the SubscribeURL (outbound HTTPS to `sns.<region>.amazonaws.com`). SNS sends the confirmation again a few times; or subscribe again. |
 | Runs failing | The workflow fails: its runs say why. SNS retries a delivery that wasn't answered 2xx (by the topic's delivery policy); the message id is the idempotency key, so a retry doesn't start a second run. |
+| The log says `too many new signing certificates this minute` | More than 10 new certificate URLs a minute (each fetched once a day and kept): deliveries forged with made-up certificate URLs. Real ones go on once the minute passes; a URL that failed isn't fetched again for 5 minutes. |
 | `AWS refused … (AuthorizationError)` (publishing) | The identity's policy: `sns:Publish` on the topic. |
 | `"…" isn't a topic ARN` / `A FIFO topic needs a groupId on every message` | The query's topic ARN, or the messages' `groupId`. |
 

@@ -824,7 +824,7 @@ describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () 
     const [projected] = await triggersOf(wf.id)
     expect(projected).toMatchObject({
       kind: 'rabbitmq',
-      config: { queue: 'm30-jobs', maxInFlight: 4, maxHoldMinutes: 60 },
+      config: { queue: 'm30-jobs', maxInFlight: 4, maxHoldMinutes: 25 },
     })
     await rabbit.send('m30-jobs', '{"n": 9}', { messageId: 'job-9' })
     await worker.queues.tick()
@@ -934,6 +934,32 @@ describe('Kinesis triggers on the worker (M30)', () => {
           timeout: 10_000,
         })
         .toEqual([aws.kinesis.shards('clicks')[0]!.records[0]!.seq])
+
+      // A release reading another stream starts afresh: the old stream's checkpoints go (review fix), the trigger
+      // keeps its id.
+      aws.kinesis.createStream('clicks-v2')
+      await wf.save(
+        definition([code('seen', 'return startTrigger.data')], {
+          triggers: {
+            kinesis: [
+              {
+                name: 'clicks',
+                enabled: true,
+                resource: 'streams_live',
+                stream: 'clicks-v2',
+                startAt: 'trimHorizon',
+              },
+            ],
+          },
+        }),
+      )
+      data(await publish(wf))
+      const [moved] = await triggersOf(wf.id)
+      expect(moved).toMatchObject({ id: projected!.id, config: { stream: 'clicks-v2' } })
+      await new Promise((r) => setTimeout(r, 500))
+      expect(
+        await db.db.select().from(kinesisCheckpoints).where(eq(kinesisCheckpoints.triggerId, projected!.id)),
+      ).toEqual([])
     } finally {
       await db.close()
     }

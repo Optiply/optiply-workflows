@@ -4,6 +4,7 @@ import {
   type Db,
   type Environment,
   environments,
+  kinesisCheckpoints,
   resourceConfigs,
   type Workflow,
   type WorkflowRelease,
@@ -18,6 +19,7 @@ import {
   nextScheduleFire,
   type PythonLock,
   parseWebhookAlias,
+  type QueueTriggerKind,
   type ResolvedWebhook,
   resolveWebhookSettings,
   type ScheduleTrigger,
@@ -540,9 +542,28 @@ async function projectTriggers(
     )
   for (const row of rows) {
     const current = find(row.kind, row.name)
-    if (current) await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
-    else await tx.insert(workflowTriggers).values(row)
+    if (current) {
+      await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
+      // M30: a Kinesis trigger reading another stream (or the same name elsewhere) starts afresh: its checkpoints
+      // name the old stream's shards. After the update, which locks the row: the old adapter's saves wait for it.
+      if (row.kind === 'kinesis' && kinesisSourceChanged(current, row))
+        await tx.delete(kinesisCheckpoints).where(eq(kinesisCheckpoints.triggerId, current.id))
+    } else await tx.insert(workflowTriggers).values(row)
   }
+}
+
+/** Whether a Kinesis trigger now reads another stream, through another resource or in another environment. */
+function kinesisSourceChanged(
+  before: typeof workflowTriggers.$inferSelect,
+  after: typeof workflowTriggers.$inferInsert,
+): boolean {
+  const a = before.config as { stream?: string; resource?: string }
+  const b = after.config as { stream?: string; resource?: string }
+  return (
+    a.stream !== b.stream ||
+    a.resource !== b.resource ||
+    before.environmentId !== (after.environmentId ?? null)
+  )
 }
 
 const QUEUE_LABELS = {
@@ -569,12 +590,11 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
  * What a queue trigger leaves out, as its consumer reads it. Kafka's group is named after the workflow's id, so a
  * renamed workflow keeps its offsets.
  */
-function queueDefaults(
-  kind: 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis',
-  workflowId: string,
-  name: string,
-): Record<string, unknown> {
+function queueDefaults(kind: QueueTriggerKind, workflowId: string, name: string): Record<string, unknown> {
   const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
+  // RabbitMQ closes a channel whose delivery stays unacked past its consumer_timeout (30 minutes by default),
+  // handing every message on it back: the hold lets go before that.
+  if (kind === 'rabbitmq') return { ...shared, maxHoldMinutes: 25 }
   if (kind === 'kinesis') return { ...shared, startAt: 'latest', maxAttempts: 3, retryBackoffSeconds: 10 }
   if (kind !== 'kafka') return shared
   return {

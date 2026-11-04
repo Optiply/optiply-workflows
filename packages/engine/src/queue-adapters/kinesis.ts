@@ -7,7 +7,7 @@ import {
 } from '@ow/connectors'
 import { kinesisCheckpoints } from '@ow/db'
 import type { KinesisTrigger } from '@ow/definition'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { AdapterContext, QueueAdapter, QueueMessage } from '../queue-consumer'
 import type { KinesisRunMessage } from '../types'
 import { bodyData } from './pubsub'
@@ -17,7 +17,12 @@ type Config = KinesisTrigger &
 
 interface ShardState {
   id: string
-  parent?: string
+  /** The shards it was split or merged from (a merge has two): it starts once they're read to their end. */
+  parents: string[]
+  /** Closed when first listed (a split or merge had ended it). */
+  closed: boolean
+  /** Read by this trigger (it has a checkpoint, or was opened while open): its children carry on from their start. */
+  followed: boolean
   iterator: string | null
   /** No iterator asked for yet (one is made from the checkpoint or `startAt`). */
   fresh: boolean
@@ -82,7 +87,9 @@ export function kinesisAdapter(ctx: AdapterContext): QueueAdapter {
       const cp = byShard.get(s.ShardId)
       shards.set(s.ShardId, {
         id: s.ShardId,
-        ...(s.ParentShardId && { parent: s.ParentShardId }),
+        parents: [s.ParentShardId, s.AdjacentParentShardId].filter((p): p is string => !!p),
+        closed: !!s.SequenceNumberRange?.EndingSequenceNumber,
+        followed: !!cp,
         iterator: null,
         fresh: true,
         buffer: [],
@@ -93,21 +100,30 @@ export function kinesisAdapter(ctx: AdapterContext): QueueAdapter {
     listedAt = Date.now()
   }
 
-  /** A shard may be read once its parent (if the stream still lists it) is read to its end. */
-  const ready = (s: ShardState) => {
-    if (s.finished) return false
-    const parent = s.parent ? shards.get(s.parent) : undefined
-    return !parent || parent.finished
-  }
+  /** A shard may be read once its parents (those the stream still lists) are read to their end. */
+  const ready = (s: ShardState) => !s.finished && s.parents.every((p) => shards.get(p)?.finished ?? true)
 
+  /**
+   * Saves a shard's checkpoint while the trigger still reads this stream from this resource: a release that changes
+   * them clears the trigger's checkpoints (they'd name another stream's shards), and this adapter may still be settling
+   * a record until the consumer restarts it. The trigger's row is locked for share, so a save waits for such a release
+   * to commit, and then doesn't happen.
+   */
   async function save(shardId: string, sequenceNumber: string | undefined, finished: boolean) {
-    await db
-      .insert(kinesisCheckpoints)
-      .values({ triggerId: ctx.trigger.id, shardId, sequenceNumber: sequenceNumber ?? null, finished })
-      .onConflictDoUpdate({
-        target: [kinesisCheckpoints.triggerId, kinesisCheckpoints.shardId],
-        set: { ...(sequenceNumber && { sequenceNumber }), finished, updatedAt: new Date() },
-      })
+    await db.execute(sql`
+      insert into kinesis_checkpoints (trigger_id, shard_id, sequence_number, finished)
+      select ${ctx.trigger.id}, ${shardId}, ${sequenceNumber ?? null}, ${finished}
+      where exists (
+        select 1 from workflow_triggers
+        where id = ${ctx.trigger.id}
+          and config->>'stream' = ${config.stream}
+          and config->>'resource' = ${config.resource}
+          and environment_id is not distinct from ${ctx.trigger.environment_id}
+        for share)
+      on conflict (trigger_id, shard_id) do update
+        set sequence_number = coalesce(excluded.sequence_number, kinesis_checkpoints.sequence_number),
+            finished = excluded.finished,
+            updated_at = now()`)
   }
 
   function toMessage(s: ShardState, record: KinesisRecord): QueueMessage {
@@ -138,16 +154,23 @@ export function kinesisAdapter(ctx: AdapterContext): QueueAdapter {
     if (!s.buffer.length) {
       const k = await kinesis()
       if (s.fresh) {
+        // Without a checkpoint: from the start when the trigger says so, or when the shard carries on from one this
+        // trigger read (a split or merge of it); else from now, and a shard already closed has nothing new to give.
+        const fromStart = config.startAt === 'trimHorizon' || s.parents.some((p) => shards.get(p)?.followed)
+        if (!s.checkpoint && !fromStart && s.closed) {
+          s.finished = true
+          return null
+        }
         s.iterator = await k.iterator(
           config.stream,
           s.id,
           s.checkpoint
             ? { type: 'AFTER_SEQUENCE_NUMBER', sequenceNumber: s.checkpoint }
-            : // A child of a split or merge starts at its beginning; a shard of its own where the trigger says.
-              { type: s.parent || config.startAt === 'trimHorizon' ? 'TRIM_HORIZON' : 'LATEST' },
+            : { type: fromStart ? 'TRIM_HORIZON' : 'LATEST' },
           signal,
         )
         s.fresh = false
+        s.followed = true
       }
       if (!s.iterator) {
         s.finished = true
@@ -201,7 +224,15 @@ export function kinesisAdapter(ctx: AdapterContext): QueueAdapter {
             if (s.retry.at <= Date.now()) out.push(toMessage(s, s.retry.record))
             continue
           }
-          const record = await next(s, signal)
+          let record: KinesisRecord | null
+          try {
+            record = await next(s, signal)
+          } catch (err) {
+            // Records already taken this round are handed out (their shards wait for them); the next pull meets the
+            // error again if it lasts.
+            if (out.length) return out
+            throw err
+          }
           if (record) out.push(toMessage(s, record))
         }
         if (out.length || Date.now() > deadline || signal.aborted) return out

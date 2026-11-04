@@ -396,4 +396,25 @@ describe.skipIf(!available)('QueueConsumer: Kafka', () => {
     })
     expect(byKey.get('a')!.message.encoding).toBeUndefined()
   })
+
+  it('decodes a message again on its retry when the registry was away for its first attempt (review fix)', async () => {
+    registry.register('m30-retry-value', { type: 'record', name: 'R', fields: [{ name: 'n', type: 'int' }] })
+    const { trigger, send, producer } = await subscribed({ maxAttempts: 2 })
+    const framed = await producer.registry!.encode('m30-retry-value', { n: 5 }, AbortSignal.timeout(5000))
+    registry.down = true
+    try {
+      await send({ key: 'r', value: framed })
+      consumer().start()
+      await expect.poll(async () => (await runsOf(trigger.id)).length, { timeout: 15_000 }).toBe(1)
+      expect(messageOf((await runsOf(trigger.id))[0]!).schemaError).toMatch(/Service unavailable/)
+    } finally {
+      registry.down = false
+    }
+    await end((await runsOf(trigger.id))[0]!.id, 'failed')
+    await expect.poll(async () => (await runsOf(trigger.id)).length, { timeout: 15_000 }).toBe(2)
+    const retry = (await runsOf(trigger.id))[1]!
+    expect(dataOf(retry)).toEqual({ n: 5 })
+    expect(messageOf(retry)).toMatchObject({ attempt: 2, schemaId: expect.any(Number) })
+    expect(messageOf(retry).schemaError).toBeUndefined()
+  })
 })

@@ -18,6 +18,8 @@ export function rabbitmqAdapter(ctx: AdapterContext): QueueAdapter {
   let channel: Channel | undefined
   /** Bumped per channel: a handle from an earlier one is stale (its delivery went back to the queue). */
   let generation = 0
+  /** How long a delivery whose run couldn't start waits before it's handed back (tests shorten it). */
+  const requeueDelayMs = ctx.opts.retryMs ?? 5_000
   const buffer: ConsumeMessage[] = []
   const deliveries = new Map<string, { msg: ConsumeMessage; channel: Channel }>()
   let wake: (() => void) | undefined
@@ -134,7 +136,17 @@ export function rabbitmqAdapter(ctx: AdapterContext): QueueAdapter {
       return buffer.splice(0, max).map((msg) => toMessage(msg, ch))
     },
     async extend() {
-      // Unacked deliveries stay with the channel as long as it lives: nothing to renew.
+      // Unacked deliveries stay with the channel as long as it lives (up to the broker's consumer_timeout, which the
+      // hold's default stays below): nothing to renew.
+    },
+    undelivered(message) {
+      // Its run couldn't start (the database away): handed back to the queue, after a pause so a message that can
+      // never start doesn't spin, and its prefetch slot freed.
+      const d = deliveries.get(message.handle)
+      if (!d) return
+      setTimeout(() => {
+        if (delivery(message.handle)) d.channel.nack(d.msg, false, true)
+      }, requeueDelayMs).unref?.()
     },
     async ack(held) {
       const d = delivery(held.handle)

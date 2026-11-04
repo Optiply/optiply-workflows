@@ -1,4 +1,4 @@
-import type { Block, FunctionDefinition } from '@ow/definition'
+import type { Block, FunctionDefinition, QueueTriggerKind } from '@ow/definition'
 
 /** What the last run produced for a block, if anything. */
 export interface SampleResult {
@@ -323,7 +323,7 @@ export function scopeDeclarations(
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
   /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
-  queues: readonly ('pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis')[] = [],
+  queues: readonly QueueTriggerKind[] = [],
 ): { dts: string; sample: Record<string, unknown> } {
   const MESSAGE_TYPES = {
     pubsub: 'OwPubSubMessage',

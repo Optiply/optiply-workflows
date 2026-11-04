@@ -15,7 +15,10 @@ producer ──▶ stream ── shard 0 ─┐
 
 - A **Kinesis resource** holds a region and an AWS identity (the same choices as SQS: `docs/runbooks/sqs.md`), per
   environment. A **trigger** on a workflow names the resource, a stream (its name or ARN), an environment and where a
-  new shard starts: **new records only** (latest, the default) or **the oldest kept** (trim horizon).
+  new shard starts: **new records only** (latest, the default) or **the oldest kept** (trim horizon). With "new records
+  only", the shards open when the trigger first reads them start at their newest record, and shards already closed
+  then (split or merged away before) are skipped; a shard split or merged from one the trigger read starts at its
+  beginning, so nothing between is missed.
 - The trigger takes effect when the workflow is **published**. One worker at a time reads for it (a lease on the
   trigger; another worker takes over within about 35 s if it goes away).
 - **One record per shard at a time**: a shard's records run in order, shards alongside each other (up to "At once", 4
@@ -28,9 +31,11 @@ producer ──▶ stream ── shard 0 ─┐
 - A failed run is **retried** after "Retry after" (10 s by default), doubling each time up to 15 minutes, until
   "Attempts" (3 by default) have run; then the record is **skipped** (recorded as `dropped`) and the shard moves on.
   The shard's later records wait meanwhile.
-- **Resharding**: when a shard is split or merged, its children start only once the parent has been read to its end,
-  so a partition key's records stay in order. An iterator that expired (after 5 minutes idle) is made again from the
+- **Resharding**: when a shard is split or merged, its children start only once the parent (both parents, for a merge)
+  has been read to its end, so a partition key's records stay in order. An iterator that expired (after 5 minutes idle) is made again from the
   checkpoint.
+- A release that changes the trigger's **stream, resource or environment** clears its checkpoints: it starts afresh
+  on the new stream, at its starting point.
 - Kinesis keeps records 24 hours by default (up to a year): a trigger stopped for longer misses the ones that expired.
 
 ## Setting one up

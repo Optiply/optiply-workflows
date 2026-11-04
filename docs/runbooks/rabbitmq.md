@@ -24,7 +24,12 @@ publisher ──▶ exchange ──▶ queue ◀──consume (prefetch)── w
 - The consumer's **prefetch** is the trigger's "At once" (4 by default, 100 at most): RabbitMQ hands out no more
   unacknowledged messages than that. A message is **acked** when its run succeeds, and **rejected without requeueing**
   when it fails or is cancelled, so the queue's **dead-letter exchange** takes it. Without one, RabbitMQ drops it.
-- A message held past "Hold up to" (60 minutes by default, 24 hours at most) is acked anyway; the run goes on.
+- A message held past "Hold up to" (**25 minutes** by default, 24 hours at most) is acked anyway; the run goes on. The
+  default stays below RabbitMQ's **`consumer_timeout`** (30 minutes by default): past it the broker closes the channel
+  and hands every message on it back. For a longer hold, raise the broker's timeout first (`consumer_timeout` in
+  `rabbitmq.conf`, or the queue's `x-consumer-timeout` argument or `consumer-timeout` policy) above it.
+- A message whose run couldn't start (the database away) is handed back to the queue after 5 s. A NUL character in a
+  header (which Postgres can't store) arrives as U+FFFD.
 - A lost connection or channel hands the unacknowledged messages back to the broker, which delivers them again
   (`redelivered: true`). A redelivery is recognised by its **message id**: one whose run already succeeded is acked
   without a run, one whose run is under way is held for it. **Publishers should set `messageId`**; without one, each
@@ -77,6 +82,7 @@ The trigger card shows the last error; the same goes to the worker's log (`compo
 | `… a private network address …` | Tick "Allow a private network address" for a broker inside Optiply's network. |
 | `RabbitMQ: NOT_FOUND - no queue 'orders' in vhost '/'` | Declare the queue (step 1), or fix its name or the virtual host. |
 | `RabbitMQ: … ACCESS_REFUSED …` | The user's permissions (step 2). |
+| `… PRECONDITION_FAILED - delivery acknowledgement on channel … timed out …` | A run outlasted the broker's `consumer_timeout`: lower "Hold up to" below it, or raise the timeout. Messages without a `messageId` may run twice. |
 | `The broker cancelled the consumer of "orders"` | The queue was deleted: declare it again; the trigger picks it up on its next try. |
 | `No queue is bound to … with routing key "…"` (a publish query) | A binding from the exchange, or the queue's name as the routing key on the default exchange. |
 | Runs failing, messages in the dead-letter queue | The workflow fails: its runs say why. Move the messages back (the shovel plugin, or `rabbitmqadmin`) once it's fixed. |

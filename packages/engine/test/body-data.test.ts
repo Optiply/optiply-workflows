@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bodyData } from '../src/queue-adapters/pubsub'
+import { storable } from '../src/queue-consumer'
 
 // A broker message's bytes as run data (M30): JSON or text, else base64 (Postgres's jsonb can't hold a NUL).
 describe('bodyData', () => {
@@ -19,5 +20,12 @@ describe('bodyData', () => {
   it('keeps JSON whose escapes parse to a NUL as its text', () => {
     const text = '{"a":"x\\u0000y"}'
     expect(bodyData(Buffer.from(text))).toEqual({ data: text, binary: false })
+  })
+
+  it('storable: a NUL anywhere in a run’s input becomes U+FFFD; escaped text stays', () => {
+    expect(storable({ headers: { a: 'x\u0000y' }, n: 1 })).toEqual({ headers: { a: 'x\ufffdy' }, n: 1 })
+    // The six characters \u0000 (text, not a NUL) are left alone.
+    expect(storable({ s: '\\u0000' })).toEqual({ s: '\\u0000' })
+    expect(storable({ s: '\\\u0000' })).toEqual({ s: '\\\ufffd' })
   })
 })

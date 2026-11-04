@@ -400,4 +400,31 @@ describe('SNS webhooks (M30)', () => {
     }
     expect(await runCount()).toBe(before + 2)
   })
+
+  it('fetches a bounded number of new certificates, and not one that just failed again (review fix)', async () => {
+    const { configureSnsWebhooks, verifySnsDelivery } = await import('../src/services/sns-webhook')
+    configureSnsWebhooks(new URL(aws.url).host)
+    const body = (certUrl: string) =>
+      Buffer.from(
+        JSON.stringify({ ...aws.sns.envelope('Notification', topic, 'x'), SigningCertURL: certUrl }),
+      )
+    const missing = (i: number) => `${aws.url}/missing-${i}.pem`
+    const messages: string[] = []
+    for (let i = 0; i < 11; i++) {
+      const check = await verifySnsDelivery(body(missing(i)), [topic])
+      messages.push(check.ok ? 'ok' : check.message)
+    }
+    // Ten fetched (and failed), the eleventh refused without a fetch.
+    expect(messages.slice(0, 10).every((m) => /couldn't be read/.test(m) && !/too many/.test(m))).toBe(true)
+    expect(messages[10]).toMatch(/too many new signing certificates/)
+    // One that failed isn't fetched again for a while.
+    configureSnsWebhooks(new URL(aws.url).host)
+    expect((await verifySnsDelivery(body(missing(0)), [topic])) as { message: string }).toMatchObject({
+      message: expect.stringMatching(/couldn't be read/),
+    })
+    expect((await verifySnsDelivery(body(missing(0)), [topic])) as { message: string }).toMatchObject({
+      message: expect.stringMatching(/failed a moment ago/),
+    })
+    configureSnsWebhooks(new URL(aws.url).host)
+  })
 })

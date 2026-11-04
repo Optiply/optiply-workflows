@@ -14,6 +14,7 @@ import {
   isTrigger,
   MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
+  type QueueTriggerKind,
   suspends,
   type WebhookTrigger,
   type WorkflowDefinition,
@@ -951,7 +952,7 @@ type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
  * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
  * known), and the kind's own settings: a subscription name, a queue, topics and a group.
  */
-function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka' | 'rabbitmq' | 'kinesis'>(
+function checkQueueTriggers<K extends QueueTriggerKind>(
   kind: K,
   triggers: QueueTriggers[K],
   at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },

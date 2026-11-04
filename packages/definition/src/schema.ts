@@ -625,6 +625,10 @@ export const kafkaTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
 })
 
+/** The triggers that start a run per message (M19, M26, M30): each a list under its kind in `triggers`. */
+export const QUEUE_TRIGGER_KINDS = ['pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
+export type QueueTriggerKind = (typeof QUEUE_TRIGGER_KINDS)[number]
+
 export const triggersSchema = z.strictObject({
   webhook: webhookTriggerSchema.optional(),
   schedules: z.array(scheduleTriggerSchema).max(20).optional(),

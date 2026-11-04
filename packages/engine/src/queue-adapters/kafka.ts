@@ -261,7 +261,10 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
    * be (its schema gone, the registry down) runs as it came, with `schemaError` saying why.
    */
   async function decode(entries: Entry[], signal: AbortSignal) {
-    const framed = entries.filter((e) => !e.decoded && wireSchemaId(e.received.value) !== undefined)
+    // Decoded once; a failure (the registry away, the pull aborted) is tried again on the message's next attempt.
+    const framed = entries.filter(
+      (e) => (!e.decoded || 'error' in e.decoded) && wireSchemaId(e.received.value) !== undefined,
+    )
     if (!framed.length) return
     const registry = (await resourceClient()).registry
     if (!registry) return
