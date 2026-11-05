@@ -17,6 +17,7 @@ import { AppChromeContext } from '../grid-context'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
+import { ThemedApp } from '../themed'
 import { EditCanvas } from './canvas'
 import { useCanvasKeys } from './canvas-keys'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
@@ -417,9 +418,9 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
               {!preview && <CodeDock />}
               {/* On the page background, as people see the app; never squeezed below a usable width by the panels. */}
               <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-lg border border-divider px-6 py-4">
-                <div className="min-w-[640px]">
+                <ThemedApp definition={definition} className="min-w-[640px]">
                   <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
-                </div>
+                </ThemedApp>
               </div>
               {!preview && inspectorOpen && (
                 <aside aria-label="Inspector" className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">

@@ -5,6 +5,7 @@
 import { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
+import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 import { token } from '@/lib/tokens'
@@ -14,6 +15,8 @@ self.MonacoEnvironment = {
   getWorker(_id, label) {
     if (label === 'typescript' || label === 'javascript') return new TsWorker()
     if (label === 'json') return new JsonWorker()
+    // The app's custom CSS (session 41).
+    if (label === 'css' || label === 'scss' || label === 'less') return new CssWorker()
     return new EditorWorker()
   },
 }

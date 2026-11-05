@@ -306,6 +306,7 @@ function PaletteDialog({ actions, onClose }: { actions: CommandActions; onClose:
       ['code', 'Show the code'],
       ['search', 'Search the app'],
       ['state', 'Show the state'],
+      ...(kind === 'app' ? [['settings', 'Show the app settings (theme, CSS)'] as [LeftPanel, string]] : []),
     ]
     const go: PaletteItem[] = [
       ...definition.components.map((c) => ({

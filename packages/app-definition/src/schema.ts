@@ -298,6 +298,24 @@ export const frameSchema = z.strictObject({
   showUser: z.boolean().optional(),
 })
 
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'A colour as #rrggbb')
+
+/** The app's look (session 41, after Retool's app theme): colours, corner radius and font; unset keeps Optiply's. */
+export const themeSchema = z.strictObject({
+  /** Buttons, links, selections, focus rings. */
+  primary: hexColor.optional(),
+  /** Behind the app's components. */
+  background: hexColor.optional(),
+  /** The main text colour. */
+  text: hexColor.optional(),
+  danger: hexColor.optional(),
+  success: hexColor.optional(),
+  warning: hexColor.optional(),
+  /** Corner radius of fields, buttons and cards, in pixels. */
+  radius: z.number().int().min(0).max(24).optional(),
+  font: z.enum(['system', 'serif', 'mono']).optional(),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
   /** In order; the first opens by default. An app without pages is one page, holding everything. */
@@ -312,11 +330,19 @@ export const appDefinitionSchema = z.strictObject({
   module: moduleSpecSchema.optional(),
   /** A header bar and/or a sidebar around every page (M24); without it, global components sit above each page. */
   frame: frameSchema.optional(),
+  /** The app's look (session 41). */
+  theme: themeSchema.optional(),
+  /**
+   * The app's own CSS (session 41), applied inside the app only (nested under its root); `url()` and `@import` are
+   * dropped, so styles can't load anything from elsewhere.
+   */
+  css: z.string().max(50_000).optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>
 export type AppPage = z.infer<typeof pageSchema>
 export type AppFrame = z.infer<typeof frameSchema>
+export type AppTheme = z.infer<typeof themeSchema>
 export type HandlerAction = z.infer<typeof handlerActionSchema>
 export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>

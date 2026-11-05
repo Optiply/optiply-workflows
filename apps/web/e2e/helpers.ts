@@ -246,6 +246,7 @@ export type EditorPanel =
   | 'Code'
   | 'Search'
   | 'State'
+  | 'App settings'
 
 /** Shows that panel in the app or module editor (a no-op when it's already showing). */
 export async function openEditorPanel(page: Page, panel: EditorPanel) {

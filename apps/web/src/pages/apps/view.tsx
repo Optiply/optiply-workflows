@@ -11,6 +11,7 @@ import { AppChromeContext } from './grid-context'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from './runtime/react'
 import { AppStopped } from './stopped'
+import { ThemedApp } from './themed'
 
 const appRoute = getRouteApi('/app')
 
@@ -246,7 +247,9 @@ function AppBody({ definition, appName }: { definition: AppDefinition; appName: 
       )}
       <AppStopped />
       <NeededConnections />
-      <AppCanvas definition={definition} page={page} />
+      <ThemedApp definition={definition}>
+        <AppCanvas definition={definition} page={page} />
+      </ThemedApp>
     </>
   )
 }

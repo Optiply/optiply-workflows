@@ -8,6 +8,7 @@ import {
   type AppDefinition,
   type AppFrame,
   type AppQuery,
+  type AppTheme,
   appNameSchema,
   type EventHandler,
   GRID_COLUMNS,
@@ -155,6 +156,21 @@ export function updateComponent(
   edit: (component: AppComponent) => AppComponent,
 ): AppDefinition {
   return { ...def, components: def.components.map((c) => (c.name === name ? edit(c) : c)) }
+}
+
+/** Sets the app's theme (session 41); an empty one is removed. */
+export function setTheme(def: AppDefinition, theme: AppTheme): AppDefinition {
+  const kept = Object.fromEntries(
+    Object.entries(theme).filter(([, v]) => v !== undefined && v !== ''),
+  ) as AppTheme
+  const { theme: _old, ...rest } = def
+  return Object.keys(kept).length ? { ...rest, theme: kept } : rest
+}
+
+/** Sets the app's custom CSS (session 41); empty removes it. */
+export function setCustomCss(def: AppDefinition, css: string): AppDefinition {
+  const { css: _old, ...rest } = def
+  return css.trim() ? { ...rest, css } : rest
 }
 
 /** Sets a component's note for editors; an empty one is removed. */

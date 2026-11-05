@@ -11,12 +11,14 @@ import {
   Plus,
   Puzzle,
   Search,
+  Settings,
   X,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useMemo, useRef, useState } from 'react'
 import { Button, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useAppHostState } from '../runtime/react'
+import { AppSettingsPanel } from './app-settings'
 import { ComponentTree, Palette } from './canvas'
 import { CodeList, ConsoleList, OpenCode, ProblemsList, StatePanel } from './code-panel'
 import { AddCustomComponent } from './custom'
@@ -47,6 +49,8 @@ function railItems(kind: 'app' | 'module'): RailItem[] {
     { id: 'code', label: 'Code', icon: Code2 },
     { id: 'search', label: 'Search', icon: Search },
     { id: 'state', label: 'State', icon: Braces },
+    // A module takes the look of the app it's placed in.
+    ...(kind === 'app' ? [{ id: 'settings' as const, label: 'App settings', icon: Settings }] : []),
   ]
 }
 
@@ -113,7 +117,7 @@ export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
       style={{ width }}
       className="relative flex shrink-0 flex-col overflow-hidden rounded-lg bg-surface"
     >
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
         {panel === 'components' &&
           titled(
             'Components',
@@ -141,6 +145,7 @@ export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
         {panel === 'code' && <CodeList key={epoch} />}
         {panel === 'search' && titled('Search', <SearchPanel />)}
         {panel === 'state' && titled('State', <StatePanel />)}
+        {panel === 'settings' && kind === 'app' && titled('App settings', <AppSettingsPanel />)}
       </div>
       {/* What the selection reads and is read by (Retool docks it under these two). */}
       {(panel === 'tree' || panel === 'code') && (
