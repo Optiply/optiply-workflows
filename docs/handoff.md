@@ -1881,7 +1881,6 @@ Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-action
 - ★ **Idempotency keys are unique per workflow, not per environment** (`workflow_runs_idempotency_uq` on `(workflow_id, idempotency_key)`, migration 0002): a key used in staging replays that run for a production call too. Needs a migration (the index with the environment).
 - ★ **A webhook body schema's `pattern`** runs as a JavaScript regex (Ajv) on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
 - ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
-- ★ **The validator's `function_call` message** says `await name({ ... })` (`packages/definition/src/validate.ts:659`, and the doc comment in `schema.ts:667`); calls are positional (`await name(a, b)`).
 - ★ **The library editor's default query for a non-SQL resource is REST's** (`{ method: 'GET', path: '/' }`, `pages/library/editor.tsx:331`): a library query on a Pub/Sub, broker, service or AI resource starts as REST and needs its JSON changed.
 - ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
 

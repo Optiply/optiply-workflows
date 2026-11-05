@@ -654,9 +654,11 @@ function checkGraph(
           }
         } else if (functions.has(ref.name)) {
           if (field.kind !== 'function-body') {
+            // Calls are positional: the arguments in the order of the function's params.
+            const args = (functions.get(ref.name)?.params ?? []).map((p) => p.name).join(', ')
             report({
               code: 'function_call',
-              message: `Functions can only be called from code, as await ${ref.name}({ ... })`,
+              message: `Functions can only be called from code, as await ${ref.name}(${args})`,
               hint: 'Use a Function block, or call it from a code block',
               ...where,
             })

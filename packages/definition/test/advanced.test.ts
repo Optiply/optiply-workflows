@@ -388,10 +388,16 @@ describe('validating M5 blocks', () => {
         withFunctions(
           [start, { name: 'b', type: 'branch', config: { conditions: [{ id: 'c', expression: 'helper' }] } }],
           [['startTrigger', 'b']],
-          [fn([code('x')])],
+          [fn([code('x')], [], { params: [{ name: 'rows' }, { name: 'rate' }] })],
         ),
       )
-      expect(d).toEqual([expect.objectContaining({ code: 'function_call', block: 'b' })])
+      expect(d).toEqual([
+        expect.objectContaining({
+          code: 'function_call',
+          block: 'b',
+          message: 'Functions can only be called from code, as await helper(rows, rate)',
+        }),
+      ])
     })
 
     it('allows fetch in code only', () => {

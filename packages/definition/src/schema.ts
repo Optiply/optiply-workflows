@@ -664,7 +664,8 @@ export const layoutSchema = z.strictObject({
 })
 
 /**
- * A reusable subflow, called from a Function block, a Loop's function runner, or `await name({ ... })` in code.
+ * A reusable subflow, called from a Function block, a Loop's function runner, or `await name(a, b)` in code
+ * (positional: the arguments in the order of `params`).
  * Its blocks read the arguments as `{{ params.<name> }}`; every block nothing connects into starts the function.
  * Block names are local to the function. It returns the data of its `returns` block (by default the only block
  * nothing follows). Function calls aren't checkpointed: they belong to the block that calls them.
