@@ -252,6 +252,12 @@ export const appsRouter = router({
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, input)
     requireLevel(access.appLevel(app), 'own', 'this app')
+    if (app.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This app is kept in Git: unprotect it before deleting it',
+      })
+    }
     await ctx.db.transaction(async (tx) => {
       await tx.delete(apps).where(eq(apps.id, input.id))
       // Grants reference objects polymorphically, so they're removed here rather than by a foreign key.
@@ -267,6 +273,44 @@ export const appsRouter = router({
     })
     return { ok: true }
   }),
+
+  /**
+   * A copy of an app's draft under a new slug and name (session 40, as workflows have): no releases, not in Git,
+   * in the same folder unless another is given. Needs Edit on the original (Use opens the live app without its draft,
+   * which a copy would show) and the right to create apps.
+   */
+  duplicate: authedProcedure
+    .input(z.object({ id: Id, slug: Slug, name: Name, folderId: Id.nullish() }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, app } = await visibleApp(ctx, { id: input.id })
+      requireLevel(access.appLevel(app), 'edit', 'this app')
+      if (!access.canCreateApps) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to all apps to create one' })
+      }
+      const folderId = input.folderId === undefined ? app.folderId : input.folderId
+      await checkFolderType(ctx.db, 'app', folderId)
+      const [copy] = await uniqueOr('An app with that slug already exists', () =>
+        ctx.db
+          .insert(apps)
+          .values({
+            slug: input.slug,
+            name: input.name,
+            description: app.description,
+            folderId,
+            draftDefinition: app.draftDefinition,
+            createdBy: ctx.user.id,
+            updatedBy: ctx.user.id,
+          })
+          .returning(),
+      )
+      await ctx.audit({
+        action: 'app.created',
+        objectType: 'app',
+        objectId: copy!.id,
+        metadata: { slug: input.slug, duplicateOf: { id: app.id, slug: app.slug } },
+      })
+      return summary(copy!, access)
+    }),
 
   /** Releases, newest first, without definitions. */
   releases: authedProcedure.input(z.object({ appId: Id })).query(async ({ ctx, input }) => {

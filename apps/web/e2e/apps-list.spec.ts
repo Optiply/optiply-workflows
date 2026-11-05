@@ -72,3 +72,34 @@ test('search, sort by last published, and drag apps onto the folder tree', async
   await inSales.dragTo(tree.getByTestId('tree-all'))
   await expect(salesNode).toContainText('1')
 })
+
+test('duplicate an app from the list into the editor, then delete the copy', async ({ page }) => {
+  await signIn(page)
+  const t = Date.now().toString(36)
+  const folder = await trpcMutate<{ id: string }>(page, 'folders.create', { name: `Kept ${t}`, type: 'app' })
+  const id = await app(page, `board-${t}`, true)
+  await trpcMutate(page, 'apps.update', { id, folderId: folder.id })
+
+  await page.goto('/apps')
+  await page.getByRole('searchbox', { name: 'Search apps' }).fill(`board-${t}`)
+  await page.getByTestId(`duplicate-board-${t}`).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByLabel('Name')).toHaveValue(`board-${t} (copy)`)
+  await expect(dialog.getByLabel('Slug')).toHaveValue(`board-${t}-copy`)
+  await page.getByTestId('duplicate-confirm').click()
+  // The copy opens in the editor, with the original's component.
+  await expect(page).toHaveURL(new RegExp(`/apps/board-${t}-copy/edit$`))
+  await expect(page.getByText('Hello').first()).toBeVisible()
+
+  // In the same folder, not published; then deleted after confirming.
+  await page.goto('/apps')
+  await page.getByRole('searchbox', { name: 'Search apps' }).fill(`board-${t}`)
+  const copy = page.getByTestId(`app-board-${t}-copy`)
+  await expect(copy.getByTestId('app-folder')).toHaveText(`Kept ${t}`)
+  await expect(copy.getByText('Never published')).toBeVisible()
+  await page.getByTestId(`delete-board-${t}-copy`).click()
+  await expect(page.getByRole('dialog')).toContainText(`Delete board-${t} (copy) with its releases?`)
+  await page.getByTestId('confirm-ok').click()
+  await expect(copy).toHaveCount(0)
+  await expect(page.getByTestId(`app-board-${t}`)).toBeVisible()
+})

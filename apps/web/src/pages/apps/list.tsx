@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
+  Copy,
   Folder,
   FolderInput,
   FolderPlus,
@@ -9,8 +10,10 @@ import {
   LayoutGrid,
   Pencil,
   Plus,
+  Trash2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { APP_DRAG_TYPE, FolderTree } from '@/components/folder-tree'
 import {
   FolderBrowser,
@@ -209,6 +212,14 @@ function AppRow({
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const remove = useMutation(
+    trpc.apps.delete.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() }),
+    }),
+  )
   const movable = hasFolders && app.level === 'own'
   const body = (
     <>
@@ -293,6 +304,39 @@ function AppRow({
         </Button>
       )}
       {protecting && <ProtectDialog kind="app" object={app} onClose={() => setProtecting(false)} />}
+      {canEdit && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Duplicate ${app.name}`}
+          data-testid={`duplicate-${app.slug}`}
+          onClick={() => setDuplicating(true)}
+        >
+          <Copy className="size-4" />
+        </Button>
+      )}
+      {duplicating && <DuplicateDialog app={app} onClose={() => setDuplicating(false)} />}
+      {app.level === 'own' && !app.gitProtected && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Delete ${app.name}`}
+          data-testid={`delete-${app.slug}`}
+          loading={remove.isPending}
+          onClick={async () => {
+            if (
+              await confirmDialog(
+                `Delete ${app.name} with its releases? Everyone using it loses it at once. This can't be undone.`,
+                { danger: true, confirm: 'Delete' },
+              )
+            ) {
+              remove.mutate({ id: app.id })
+            }
+          }}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      )}
       {movable && (
         <Button
           size="icon"
@@ -315,7 +359,62 @@ function AppRow({
           <Pencil className="size-4" />
         </Link>
       )}
+      <ErrorNote error={remove.error} />
     </div>
+  )
+}
+
+/** A copy of the app's draft under a new name and slug, in the same folder, then opened in the editor. */
+function DuplicateDialog({ app, onClose }: { app: AppSummary; onClose: () => void }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [name, setName] = useState(`${app.name} (copy)`)
+  const [slug, setSlug] = useState(`${app.slug}-copy`)
+  const duplicate = useMutation(
+    trpc.apps.duplicate.mutationOptions({
+      onSuccess: async (copy) => {
+        await queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() })
+        onClose()
+        await navigate({ to: '/apps/$slug/edit', params: { slug: copy.slug } })
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Duplicate ${app.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            loading={duplicate.isPending}
+            disabled={!name || !slug}
+            data-testid="duplicate-confirm"
+            onClick={() => duplicate.mutate({ id: app.id, name, slug })}
+          >
+            Duplicate
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          The copy has the draft (pages, components and queries) and isn't published. Releases and grants stay
+          with the original.
+        </p>
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Slug" hint="Its address: /apps/<slug>">
+          <Input className="font-mono" value={slug} onChange={(e) => setSlug(e.target.value)} />
+        </Field>
+        <ErrorNote error={duplicate.error} />
+      </div>
+    </Dialog>
   )
 }
 

@@ -445,6 +445,61 @@ describe('apps: releases', () => {
     const left = await env.db.select().from(permissions).where(eq(permissions.objectId, app.id))
     expect(left).toEqual([])
     expect(failure(await admin.query('apps.get', { id: app.id }))).toMatchObject({ code: 'NOT_FOUND' })
+
+    // An app kept in Git is unprotected first (session 40, as workflows).
+    const kept = await appWith('kept', crudApp())
+    await env.db.update(appsTable).set({ gitProtected: true }).where(eq(appsTable.id, kept.id))
+    expect(failure(await admin.mutate('apps.delete', { id: kept.id }))).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'This app is kept in Git: unprotect it before deleting it',
+    })
+  })
+
+  it('duplicates an app’s draft, in its folder, without releases (session 40)', async () => {
+    const folder = data(await admin.mutate('folders.create', { name: 'Copies', type: 'app' }))
+    const original = await appWith('original', crudApp())
+    data(await admin.mutate('apps.update', { id: original.id, folderId: folder.id }))
+    data(await admin.mutate('apps.publish', { appId: original.id, draftRevision: original.revision() }))
+
+    const copy = data(
+      await admin.mutate('apps.duplicate', {
+        id: original.id,
+        slug: 'original-copy',
+        name: 'Original (copy)',
+      }),
+    )
+    expect(copy).toMatchObject({
+      slug: 'original-copy',
+      name: 'Original (copy)',
+      folderId: folder.id,
+      liveReleaseId: null,
+    })
+    const [a, b] = await Promise.all([
+      admin.query('apps.get', { id: original.id }),
+      admin.query('apps.get', { id: copy.id }),
+    ])
+    expect(data(b).draftDefinition).toEqual(data(a).draftDefinition)
+    expect(data(await admin.query('apps.releases', { appId: copy.id }))).toEqual([])
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.objectId, copy.id), eq(auditEvents.action, 'app.created')))
+    expect(audit!.metadata).toMatchObject({ duplicateOf: { id: original.id, slug: 'original' } })
+
+    // A taken slug; Use on the original isn't enough (the draft isn't theirs to see).
+    expect(
+      failure(await admin.mutate('apps.duplicate', { id: original.id, slug: 'original-copy', name: 'Again' }))
+        .code,
+    ).toBe('CONFLICT')
+    await grantApp(original.id, 'use')
+    expect(
+      failure(await member.mutate('apps.duplicate', { id: original.id, slug: 'member-copy', name: 'Mine' }))
+        .code,
+    ).toBe('FORBIDDEN')
+    // Leave no folder behind for the folders tests below.
+    data(await admin.mutate('apps.delete', { id: copy.id }))
+    data(await admin.mutate('apps.delete', { id: original.id }))
+    data(await admin.mutate('folders.delete', { id: folder.id }))
   })
 })
 
