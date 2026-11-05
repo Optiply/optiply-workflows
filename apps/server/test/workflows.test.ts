@@ -170,6 +170,47 @@ describe('workflows API', () => {
     expect((await admin.mutate('workflows.create', { slug: 'Not A Slug', name: 'X' })).status).toBe(400)
   })
 
+  it('lists each workflow with its last editor, live triggers and latest run (session 40)', async () => {
+    const wf = await workflowWith('listed', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const definition = data(await admin.query('workflows.get', { id: wf.id })).draftDefinition
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: wf.id,
+        revision: wf.revision,
+        definition: {
+          ...definition,
+          triggers: {
+            schedules: [
+              { name: 'nightly', cron: '0 3 * * *', enabled: true },
+              { name: 'hourly', intervalMs: 3_600_000, enabled: true },
+              { name: 'off', intervalMs: 60_000, enabled: false },
+            ],
+            webhook: { enabled: true },
+          },
+        },
+      }),
+    )
+    data(await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: saved.revision }))
+    const quiet = await workflowWith('listed-quiet', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const started = (await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, { input: {} })).body.run
+    await waitForRun(started.id)
+
+    const list = data(await admin.query('workflows.list'))
+    const listed = list.find((w: { id: string }) => w.id === wf.id)
+    expect(listed).toMatchObject({
+      updatedByName: expect.any(String),
+      triggers: [
+        { kind: 'schedule', count: 2 },
+        { kind: 'webhook', count: 1 },
+      ],
+      lastRun: { id: started.id, status: 'succeeded', triggerType: 'manual', environment: 'production' },
+    })
+    expect(new Date(listed.lastRun.createdAt).getTime()).toBeGreaterThan(0)
+    expect(list.find((w: { id: string }) => w.id === quiet.id)).toMatchObject({ triggers: [], lastRun: null })
+    // Others' workflows aren't there, nor their runs.
+    expect(data(await member.query('workflows.list')).some((w: { id: string }) => w.id === wf.id)).toBe(false)
+  })
+
   it('needs edit access to all workflows to create one', async () => {
     expect((await member.mutate('workflows.create', { slug: 'nope', name: 'Nope' })).status).toBe(403)
   })

@@ -4,6 +4,7 @@ import {
   pythonEnvs,
   pythonIndexes,
   queueDeliveries,
+  users,
   type Workflow,
   webhookRejections,
   workflowReleases,
@@ -92,11 +93,83 @@ const summary = (w: Workflow, access: Access) => ({
   level: access.workflowLevel(w)!,
 })
 
+/** A workflow's latest run in any environment, as the list shows it. */
+interface LastRun {
+  id: string
+  status: string
+  triggerType: string
+  environment: string | null
+  createdAt: Date
+  finishedAt: Date | null
+}
+
 export const workflowsRouter = router({
+  /**
+   * The workflows the user can see, with what the list shows about each (session 40): who edited it last, its live
+   * triggers (enabled, by kind) and its latest run.
+   */
   list: authedProcedure.query(async ({ ctx }) => {
     const access = await loadAccess(ctx.db, ctx.user)
-    const rows = await ctx.db.select().from(workflows).orderBy(asc(workflows.name))
-    return rows.filter((w) => access.workflowLevel(w) !== null).map((w) => summary(w, access))
+    const rows = await ctx.db
+      .select({ workflow: workflows, editor: users.name })
+      .from(workflows)
+      .leftJoin(users, eq(users.id, workflows.updatedBy))
+      .orderBy(asc(workflows.name))
+    const visible = rows.filter((r) => access.workflowLevel(r.workflow) !== null)
+    if (!visible.length) return []
+    const ids = visible.map((r) => r.workflow.id)
+    const [triggers, lastRuns] = await Promise.all([
+      ctx.db
+        .select({
+          workflowId: workflowTriggers.workflowId,
+          kind: workflowTriggers.kind,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(workflowTriggers)
+        .where(and(inArray(workflowTriggers.workflowId, ids), eq(workflowTriggers.enabled, true)))
+        .groupBy(workflowTriggers.workflowId, workflowTriggers.kind)
+        .orderBy(asc(workflowTriggers.kind)),
+      // One index probe per workflow (workflow_runs_workflow_idx), not a scan of every run.
+      ctx.db.execute<{
+        workflow_id: string
+        id: string
+        status: string
+        trigger_type: string
+        environment: string | null
+        created_at: string
+        finished_at: string | null
+      }>(sql`
+        select w.id as workflow_id, r.id, r.status, r.trigger_type, e.slug as environment, r.created_at, r.finished_at
+        from workflows w
+        cross join lateral (
+          select id, status, trigger_type, environment_id, created_at, finished_at from workflow_runs
+          where workflow_id = w.id order by created_at desc limit 1
+        ) r
+        left join environments e on e.id = r.environment_id`),
+    ])
+    const triggersOf = new Map<string, { kind: string; count: number }[]>()
+    for (const t of triggers) {
+      triggersOf.set(t.workflowId, [...(triggersOf.get(t.workflowId) ?? []), { kind: t.kind, count: t.n }])
+    }
+    const lastRunOf = new Map<string, LastRun>(
+      [...lastRuns].map((r) => [
+        r.workflow_id,
+        {
+          id: r.id,
+          status: r.status,
+          triggerType: r.trigger_type,
+          environment: r.environment,
+          createdAt: new Date(r.created_at),
+          finishedAt: r.finished_at ? new Date(r.finished_at) : null,
+        },
+      ]),
+    )
+    return visible.map(({ workflow, editor }) => ({
+      ...summary(workflow, access),
+      updatedByName: editor,
+      triggers: triggersOf.get(workflow.id) ?? [],
+      lastRun: lastRunOf.get(workflow.id) ?? null,
+    }))
   }),
 
   /**
