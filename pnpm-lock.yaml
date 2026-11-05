@@ -6,11 +6,6 @@ settings:
 
 pnpmfileChecksum: sha256-zLm/o0cedGAS6vFIulxVOF7dh7UCvWz4qzai6gabJZg=
 
-patchedDependencies:
-  isolated-vm@7.0.1:
-    hash: dfb090c7d2c26b6de16e83eea4e35755a5d038afc171444018c14863901f51dc
-    path: patches/isolated-vm@7.0.1.patch
-
 importers:
 
   .:
@@ -145,8 +140,8 @@ importers:
         specifier: 16.14.2
         version: 16.14.2
       isolated-vm:
-        specifier: 7.0.1
-        version: 7.0.1(patch_hash=dfb090c7d2c26b6de16e83eea4e35755a5d038afc171444018c14863901f51dc)
+        specifier: 7.0.2
+        version: 7.0.2
       lib0:
         specifier: 0.2.119
         version: 0.2.119
@@ -673,8 +668,8 @@ importers:
   packages/sandbox:
     dependencies:
       isolated-vm:
-        specifier: 7.0.1
-        version: 7.0.1(patch_hash=dfb090c7d2c26b6de16e83eea4e35755a5d038afc171444018c14863901f51dc)
+        specifier: 7.0.2
+        version: 7.0.2
     devDependencies:
       dayjs:
         specifier: 1.11.23
@@ -2379,8 +2374,8 @@ packages:
     resolution: {integrity: sha512-iQcBXcd+Rv/pkubRyGh2utW2j1oPG5hZY6TUhVPpqK4G+o3IbxpJNx04hgksjc/N7GK5pEorUxDeg31cFgEk/w==}
     engines: {node: '>=18'}
 
-  isolated-vm@7.0.1:
-    resolution: {integrity: sha512-nBCQ1hXEaYKYJ79wwfhaF44ITOJC30Hw0wPEsFeNsdD3hdeKK7FW1SGMQYBUA+qasvkqdOazI+iBuq0lcbN/aw==}
+  isolated-vm@7.0.2:
+    resolution: {integrity: sha512-Z1sYxpptGyGiKblG16EJEdP5x9/68C6AuqFFsewnrxlwSlrTLHKqtRMogOjcYZ0f8/cijMaRi+XwiHVQ1+uG+g==}
     engines: {node: '>=24.0.0'}
 
   isomorphic.js@0.2.5:
@@ -4830,7 +4825,7 @@ snapshots:
 
   isbot@5.2.2: {}
 
-  isolated-vm@7.0.1(patch_hash=dfb090c7d2c26b6de16e83eea4e35755a5d038afc171444018c14863901f51dc):
+  isolated-vm@7.0.2:
     dependencies:
       node-gyp-build: 4.8.4
 

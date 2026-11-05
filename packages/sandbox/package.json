@@ -14,7 +14,7 @@
     "bench": "SANDBOX_BENCH=1 vitest run test/ivm-bench.test.ts --reporter=verbose"
   },
   "dependencies": {
-    "isolated-vm": "7.0.1"
+    "isolated-vm": "7.0.2"
   },
   "devDependencies": {
     "dayjs": "1.11.23",

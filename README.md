@@ -27,7 +27,7 @@ TypeScript monorepo (pnpm + Turborepo):
 
 Requires Node ≥ 24. Docker is **not** needed for development: Postgres comes from the `embedded-postgres` npm package.
 
-`pnpm install` compiles isolated-vm from source, because it carries a patch (`patches/isolated-vm@7.0.1.patch`, the unreleased upstream fix for a timer-thread stack overflow), so a C++ toolchain is needed: the Xcode command-line tools on macOS, `python3 make g++` on Debian/Ubuntu. Drop the patch once isolated-vm releases the fix.
+isolated-vm (7.0.2, which has the upstream fix for a timer-thread stack overflow) loads a prebuilt addon for macOS and Linux (glibc or musl, x64 or arm64) on Node 24; elsewhere `pnpm install` compiles it, which needs a C++ toolchain (the Xcode command-line tools on macOS, `python3 make g++` on Debian/Ubuntu).
 
 ```bash
 corepack enable                  # provides pnpm (or prefix commands with `corepack pnpm`)

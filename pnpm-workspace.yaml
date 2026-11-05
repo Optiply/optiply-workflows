@@ -11,5 +11,3 @@ onlyBuiltDependencies:
   - "@embedded-postgres/darwin-x64"
   - "@embedded-postgres/linux-x64"
   - "@embedded-postgres/linux-arm64"
-patchedDependencies:
-  isolated-vm@7.0.1: patches/isolated-vm@7.0.1.patch
