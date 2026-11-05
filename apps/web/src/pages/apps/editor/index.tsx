@@ -414,7 +414,7 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
             <ScopeSync />
             <div className="flex min-h-0 flex-1 gap-2">
               {!preview && <Rail kind={app.kind} />}
-              {!preview && <LeftPanelArea kind={app.kind} />}
+              {!preview && <LeftPanelArea kind={app.kind} slug={app.slug} />}
               {!preview && <CodeDock />}
               {/* On the page background, as people see the app; never squeezed below a usable width by the panels. */}
               <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-lg border border-divider px-6 py-4">

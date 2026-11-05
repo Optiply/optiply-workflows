@@ -10,8 +10,9 @@ import {
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
+import { getAppVersion, listAppVersions, recordAppVersion } from '../../services/app-history'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { componentLibraryReleasesByKey } from '../../services/component-libraries'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
@@ -241,6 +242,13 @@ export const appsRouter = router({
           message: `Someone else saved this app since revision ${input.revision}; reload to get their changes`,
         })
       }
+      // The editor's History (session 41).
+      await recordAppVersion(ctx.db, {
+        appId: input.id,
+        definition,
+        revision: saved.revision,
+        userId: ctx.user.id,
+      })
       return {
         revision: saved.revision,
         draftHash: await appDefinitionHash(definition),
@@ -280,13 +288,27 @@ export const appsRouter = router({
    * which a copy would show) and the right to create apps.
    */
   duplicate: authedProcedure
-    .input(z.object({ id: Id, slug: Slug, name: Name, folderId: Id.nullish() }))
+    .input(
+      z.object({
+        id: Id,
+        slug: Slug,
+        name: Name,
+        folderId: Id.nullish(),
+        /** A version from the app's history (session 41) instead of its draft. */
+        fromVersionId: Id.optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const { access, app } = await visibleApp(ctx, { id: input.id })
       requireLevel(access.appLevel(app), 'edit', 'this app')
       if (!access.canCreateApps) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to all apps to create one' })
       }
+      const version = input.fromVersionId
+        ? await getAppVersion(ctx.db, app.id, input.fromVersionId)
+        : undefined
+      if (input.fromVersionId && !version)
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
       const folderId = input.folderId === undefined ? app.folderId : input.folderId
       await checkFolderType(ctx.db, 'app', folderId)
       const [copy] = await uniqueOr('An app with that slug already exists', () =>
@@ -297,7 +319,7 @@ export const appsRouter = router({
             name: input.name,
             description: app.description,
             folderId,
-            draftDefinition: app.draftDefinition,
+            draftDefinition: version?.definition ?? app.draftDefinition,
             createdBy: ctx.user.id,
             updatedBy: ctx.user.id,
           })
@@ -307,10 +329,98 @@ export const appsRouter = router({
         action: 'app.created',
         objectType: 'app',
         objectId: copy!.id,
-        metadata: { slug: input.slug, duplicateOf: { id: app.id, slug: app.slug } },
+        metadata: {
+          slug: input.slug,
+          duplicateOf: { id: app.id, slug: app.slug },
+          ...(version && { fromVersion: { id: version.id, revision: version.revision } }),
+        },
       })
       return summary(copy!, access)
     }),
+
+  /**
+   * The draft's history (session 41), newest first, a page at a time: each entry's label parts, who and when. Edit
+   * access, as for the draft itself.
+   */
+  history: authedProcedure
+    .input(
+      z.object({
+        appId: Id,
+        before: z.object({ updatedAt: z.coerce.date(), id: Id }).optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { access, app } = await visibleApp(ctx, { id: input.appId })
+      requireLevel(access.appLevel(app), 'edit', 'this app')
+      const page = await listAppVersions(ctx.db, app.id, input.before ? { before: input.before } : {})
+      const authorIds = [...new Set(page.versions.flatMap((v) => (v.createdBy ? [v.createdBy] : [])))]
+      const authors = authorIds.length
+        ? await ctx.db
+            .select({ id: users.id, name: users.name, email: users.email })
+            .from(users)
+            .where(inArray(users.id, authorIds))
+        : []
+      const byId = new Map(authors.map((a) => [a.id, a]))
+      return {
+        versions: page.versions.map((v) => ({
+          ...v,
+          author: v.createdBy ? (byId.get(v.createdBy) ?? null) : null,
+        })),
+        more: page.more,
+      }
+    }),
+
+  /** One version of the draft (session 41), to compare with the draft or preview. */
+  historyVersion: authedProcedure.input(z.object({ appId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    const version = await getAppVersion(ctx.db, app.id, input.id)
+    if (!version)
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
+    return {
+      id: version.id,
+      revision: version.revision,
+      definition: version.definition,
+      updatedAt: version.updatedAt,
+    }
+  }),
+
+  /**
+   * Makes a version the draft again (session 41): the draft is replaced (open editors fold it in, as after any save
+   * from elsewhere) and the restore is a history entry of its own. Not on a Git-protected app's main draft.
+   */
+  restoreVersion: authedProcedure.input(z.object({ appId: Id, id: Id })).mutation(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    requireUnprotected(app, 'app', 'restore a version')
+    const revision = await ctx.db.transaction(async (tx) => {
+      const version = await getAppVersion(tx, app.id, input.id)
+      if (!version)
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
+      const [locked] = await tx.select().from(apps).where(eq(apps.id, app.id)).for('update')
+      if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The app was deleted meanwhile' })
+      const next = locked.draftRevision + 1
+      await tx
+        .update(apps)
+        .set({ draftDefinition: version.definition, draftRevision: next, updatedBy: ctx.user.id })
+        .where(eq(apps.id, app.id))
+      await recordAppVersion(tx, {
+        appId: app.id,
+        definition: version.definition,
+        revision: next,
+        userId: ctx.user.id,
+        restoredFrom: version.id,
+      })
+      return next
+    })
+    await ctx.audit({
+      action: 'app.draft_restored',
+      objectType: 'app',
+      objectId: app.id,
+      metadata: { slug: app.slug, version: input.id },
+    })
+    return { revision }
+  }),
 
   /** Releases, newest first, without definitions. */
   releases: authedProcedure.input(z.object({ appId: Id })).query(async ({ ctx, input }) => {

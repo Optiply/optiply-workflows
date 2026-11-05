@@ -246,6 +246,7 @@ export type EditorPanel =
   | 'Code'
   | 'Search'
   | 'State'
+  | 'History'
   | 'App settings'
 
 /** Shows that panel in the app or module editor (a no-op when it's already showing). */

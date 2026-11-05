@@ -1,3 +1,4 @@
+import type { AppDefinition } from '@ow/app-definition'
 import { equal, SharedDefinition } from '@ow/collab'
 import {
   apps,
@@ -12,6 +13,7 @@ import {
 } from '@ow/db'
 import { asc, eq, inArray, sql } from 'drizzle-orm'
 import * as Y from 'yjs'
+import { recordAppVersion } from '../app-history'
 import type { CollabOwner, CollabTarget } from './target'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -323,8 +325,16 @@ async function writeDraft(
   }
   const values = { draftDefinition: definition as never, draftRevision: revision, updatedBy: userId }
   if ('workflowId' in owner) await tx.update(workflows).set(values).where(eq(workflows.id, owner.workflowId))
-  else if ('appId' in owner) await tx.update(apps).set(values).where(eq(apps.id, owner.appId))
-  else if ('libraryQueryId' in owner) {
+  else if ('appId' in owner) {
+    await tx.update(apps).set(values).where(eq(apps.id, owner.appId))
+    // The editor's History (session 41).
+    await recordAppVersion(tx, {
+      appId: owner.appId,
+      definition: definition as AppDefinition,
+      revision,
+      userId,
+    })
+  } else if ('libraryQueryId' in owner) {
     await tx.update(libraryQueries).set(values).where(eq(libraryQueries.id, owner.libraryQueryId))
   } else if ('componentLibraryId' in owner) {
     await tx.update(componentLibraries).set(values).where(eq(componentLibraries.id, owner.componentLibraryId))

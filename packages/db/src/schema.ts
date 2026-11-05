@@ -1,4 +1,9 @@
-import type { AppDefinition, ComponentLibraryDefinition, LibraryQueryDefinition } from '@ow/app-definition'
+import type {
+  AppChangeSummary,
+  AppDefinition,
+  ComponentLibraryDefinition,
+  LibraryQueryDefinition,
+} from '@ow/app-definition'
 import type { OpenTaskField, PythonLock, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -980,6 +985,33 @@ export const appReleases = pgTable(
     ),
     check('app_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
   ],
+)
+
+/**
+ * An app's draft as it was (session 41, the editor's History, after Retool's save log). Every save of the main draft
+ * records one; a save by the same person within minutes of their last updates that entry instead, so a burst of
+ * edits is one entry. The newest 200 per app are kept. Branch drafts have Git's history instead.
+ */
+export const appDraftVersions = pgTable(
+  'app_draft_versions',
+  {
+    id: id(),
+    appId: uuid()
+      .notNull()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    /** The draft revision this version was saved as (its last save, for an entry several saves updated). */
+    revision: integer().notNull(),
+    definition: jsonb().$type<AppDefinition>().notNull(),
+    /** What changed since the version before (`summarizeAppChange`), for the entry's label. */
+    summary: jsonb().$type<AppChangeSummary>().notNull(),
+    /** Set when this version restored an older one. */
+    restoredFrom: uuid(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    /** When the entry last took a save. */
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('app_draft_versions_app_idx').on(t.appId, t.updatedAt.desc())],
 )
 
 // ── Query Library (M14) ─────────────────────────────────────────────────────

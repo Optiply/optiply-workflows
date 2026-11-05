@@ -2,6 +2,7 @@ import {
   Braces,
   Code2,
   Files,
+  History,
   ListTree,
   Loader2,
   type LucideIcon,
@@ -22,6 +23,7 @@ import { AppSettingsPanel } from './app-settings'
 import { ComponentTree, Palette } from './canvas'
 import { CodeList, ConsoleList, OpenCode, ProblemsList, StatePanel } from './code-panel'
 import { AddCustomComponent } from './custom'
+import { HistoryPanel } from './history'
 import { ModulePanel } from './module-panel'
 import { AddModule } from './modules'
 import { DependencyGraph, SearchPanel } from './navigate'
@@ -50,7 +52,12 @@ function railItems(kind: 'app' | 'module'): RailItem[] {
     { id: 'search', label: 'Search', icon: Search },
     { id: 'state', label: 'State', icon: Braces },
     // A module takes the look of the app it's placed in.
-    ...(kind === 'app' ? [{ id: 'settings' as const, label: 'App settings', icon: Settings }] : []),
+    ...(kind === 'app'
+      ? [
+          { id: 'history' as const, label: 'History', icon: History },
+          { id: 'settings' as const, label: 'App settings', icon: Settings },
+        ]
+      : []),
   ]
 }
 
@@ -98,11 +105,12 @@ export function Rail({ kind }: { kind: 'app' | 'module' }) {
 }
 
 /** The rail's open panel, as wide as it was left. */
-export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
+export function LeftPanelArea({ kind, slug }: { kind: 'app' | 'module'; slug: string }) {
   const panel = useAppEditor((s) => s.leftPanel)
   const readOnly = useAppEditor((s) => s.readOnly)
   // After an undo or redo, panels start again from the definition (some read it once).
   const epoch = useAppEditor((s) => s.epoch)
+  const appId = useAppEditor((s) => s.appId)
   const [width, handle] = useStoredWidth('ow.appEditor.leftWidth', 272, 220, 520)
   if (!panel) return null
   const titled = (title: string, body: ReactNode) => (
@@ -145,6 +153,10 @@ export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
         {panel === 'code' && <CodeList key={epoch} />}
         {panel === 'search' && titled('Search', <SearchPanel />)}
         {panel === 'state' && titled('State', <StatePanel />)}
+        {panel === 'history' &&
+          kind === 'app' &&
+          appId &&
+          titled('History', <HistoryPanel appId={appId} slug={slug} />)}
         {panel === 'settings' && kind === 'app' && titled('App settings', <AppSettingsPanel />)}
       </div>
       {/* What the selection reads and is read by (Retool docks it under these two). */}
