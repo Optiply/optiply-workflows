@@ -119,13 +119,17 @@ export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
             ) : (
               <>
                 <Palette />
-                {/* Modules inside modules too (M21), as deep as the limit allows. */}
-                <div className="mt-1.5">
+                <section aria-label="Reusable" className="mt-3">
+                  <h3 className="mb-1.5 px-0.5 text-[11px] font-medium text-muted">Reusable</h3>
+                  {/* Modules inside modules too (M21), as deep as the limit allows. */}
                   <AddModule />
-                </div>
-                <div className="mt-1.5">
-                  <AddCustomComponent />
-                </div>
+                  <div className="mt-1.5">
+                    <AddCustomComponent />
+                  </div>
+                  <p className="mt-2 px-0.5 text-[11px] text-muted">
+                    Can’t find what you need? Build your own React components in a component library.
+                  </p>
+                </section>
               </>
             ),
           )}
