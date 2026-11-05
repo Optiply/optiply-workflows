@@ -157,7 +157,9 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
 
   // The admin moves the app into the folder and grants the group Use on it.
+  await page.getByTitle(`Move Items ${stamp} to a folder`).click()
   await page.getByLabel(`Folder of Items ${stamp}`).selectOption({ label: folderName })
+  await page.getByTestId('move-confirm').click()
   await expect(folderRow).toContainText('1 app')
   await folderRow.getByRole('link', { name: folderName }).click()
   const folder = page.getByRole('region', { name: `Folder ${folderName}` })

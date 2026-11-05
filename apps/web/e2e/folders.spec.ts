@@ -137,8 +137,10 @@ test('nested folders on the workflows and apps lists', async ({ page }) => {
   await page.goBack()
   const toolsFolder = page.getByRole('region', { name: `Folder ${tools}` })
   await expect(toolsFolder).toContainText(`Foldered app ${stamp}`)
-  // Moved back out from its row.
+  // Moved back out from its row (Move).
+  await page.getByTitle(`Move Foldered app ${stamp} to a folder`).click()
   await page.getByLabel(`Folder of Foldered app ${stamp}`).selectOption({ label: 'Not in a folder' })
+  await page.getByTestId('move-confirm').click()
   await expect(toolsFolder).toContainText('Empty folder.')
 
   // Resource folders stay on their own page.
