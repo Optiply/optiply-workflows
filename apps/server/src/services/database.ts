@@ -158,7 +158,7 @@ export async function provisionDatabases(
         ssl: target.ssl,
         poolSize: 5,
         readOnly: false,
-        maxRows: 10_000,
+        maxRows: 1_000_000,
         statementTimeoutMs: 120_000,
       }
       if (!configRow) {

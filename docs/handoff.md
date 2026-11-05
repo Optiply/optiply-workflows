@@ -1910,6 +1910,7 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 
 ### Resources and connectors
 - **Pool invalidation across processes:** no `NOTIFY resource_changed`; pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load.
+- **Row limit (session 40, the user's word):** SQL resources default to `maxRows` 1,000,000 (was 10,000; migration 0041 raised configs still on 10,000). Rows are collected in the process's memory before the block's 10 MB data cap (`MAX_PAYLOAD_BYTES`) applies, so a large result costs memory and then fails as `too_large` past 10 MB. A resource kept in Git gets its `maxRows` from Git on the next deploy.
 - **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
 - MySQL evaluates `{{ }}` before the server sees the SQL; MySQL's `NOT IN ({{ [] }})` matches nothing; BigQuery sends null as a NULL STRING (a `CAST` is needed against number columns) and objects as JSON text; no `disablePreparedStatements`.
 - The resources playground still uses textareas.
@@ -1931,7 +1932,7 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 
 ### Managed database (M7)
 - No foreign keys or indexes in the schema editor; no promotion of a schema between environments; no read-only tier.
-- The managed tables share the platform's Postgres (statement timeout 120 s, `maxRows` 10k, 50 connections per role).
+- The managed tables share the platform's Postgres (statement timeout 120 s, `maxRows` 1M since session 40, 50 connections per role).
 - A CSV export holds one of `optiply_db`'s 5 pooled connections per process for the whole download, at the client's pace; a separate pool or a cap on concurrent exports would fix it.
 - Plain `SET`s in queries outlast their transaction on pooled connections (every Postgres resource); the Database page pins what it relies on, workflow and playground queries don't.
 - The grid edits one cell at a time (no multi-cell paste or undo); deleting rows uses `confirm()`.

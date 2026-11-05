@@ -26,7 +26,7 @@ const configSchema = z.object({
    */
   readOnly: z.boolean().default(false),
   /** Queries returning more rows than this fail rather than load everything into memory. */
-  maxRows: z.number().int().positive().default(10_000),
+  maxRows: z.number().int().positive().default(1_000_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
   /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
   ssh: sshConfigSchema.optional(),

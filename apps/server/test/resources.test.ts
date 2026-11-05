@@ -137,7 +137,7 @@ describe('resources (admin)', () => {
     expect(data(saved).config).toMatchObject({
       ...pgConfig,
       port: pgConfig.port,
-      maxRows: 10_000,
+      maxRows: 1_000_000,
       readOnly: false,
     })
 

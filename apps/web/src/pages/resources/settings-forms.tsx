@@ -55,7 +55,7 @@ const DEFAULTS: Record<string, Config> = {
     ssl: 'prefer',
     poolSize: 5,
     readOnly: false,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
   },
   mysql: {
@@ -66,12 +66,12 @@ const DEFAULTS: Record<string, Config> = {
     ssl: 'require',
     poolSize: 5,
     readOnly: false,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
   },
   bigquery: {
     maximumBytesBilled: 10 * 1024 ** 3,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
     labels: {},
   },

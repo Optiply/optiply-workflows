@@ -98,7 +98,7 @@ describe.skipIf(!available)('MySQL resources', () => {
     )
     expect(saved.secrets).toEqual({ password: { set: true } })
     // Defaults applied by the connector's schema.
-    expect(saved.config).toMatchObject({ ssl: 'require', maxRows: 10_000, readOnly: false, poolSize: 5 })
+    expect(saved.config).toMatchObject({ ssl: 'require', maxRows: 1_000_000, readOnly: false, poolSize: 5 })
 
     const test = data(await admin.mutate('resources.test', { resourceId, environmentId: prodId }))
     expect(test).toMatchObject({ ok: true, message: expect.stringMatching(/^MySQL 8\.4/) })

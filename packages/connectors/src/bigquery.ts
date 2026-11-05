@@ -37,7 +37,7 @@ const configSchema = z.object({
     .positive()
     .default(10 * 1024 ** 3),
   /** Queries returning more rows than this fail rather than load everything into memory. */
-  maxRows: z.number().int().positive().default(10_000),
+  maxRows: z.number().int().positive().default(1_000_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
   /** Added to every job, for cost attribution (alongside the workflow, run and environment). */
   labels: z.record(labelKey, labelValue).default({}),
