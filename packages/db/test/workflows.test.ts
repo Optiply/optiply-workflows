@@ -170,11 +170,15 @@ describe('runs', () => {
     ).toMatchObject({ constraint_name: 'workflow_runs_trigger_type_ck' })
   })
 
-  it('accepts an idempotency key once per workflow', async () => {
+  it('accepts an idempotency key once per workflow and environment', async () => {
     const a = await workflowWithRelease()
     const b = await workflowWithRelease()
+    const staging = (await db.select().from(environments).where(eq(environments.slug, 'staging')))[0]!.id
     await db.insert(workflowRuns).values(runValues(a.wf.id, a.release.id, { idempotencyKey: 'k1' }))
     await db.insert(workflowRuns).values(runValues(b.wf.id, b.release.id, { idempotencyKey: 'k1' }))
+    await db
+      .insert(workflowRuns)
+      .values({ ...runValues(a.wf.id, a.release.id, { idempotencyKey: 'k1' }), environmentId: staging })
     await db.insert(workflowRuns).values([runValues(a.wf.id, a.release.id), runValues(a.wf.id, a.release.id)])
     expect(
       await pgError(

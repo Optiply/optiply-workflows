@@ -1,0 +1,2 @@
+DROP INDEX "workflow_runs_idempotency_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX "workflow_runs_idempotency_uq" ON "workflow_runs" USING btree ("workflow_id","environment_id","idempotency_key") WHERE "workflow_runs"."idempotency_key" is not null;

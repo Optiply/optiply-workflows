@@ -1877,7 +1877,6 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
 
 ### Fix candidates ★
-- ★ **Idempotency keys are unique per workflow, not per environment** (`workflow_runs_idempotency_uq` on `(workflow_id, idempotency_key)`, migration 0002): a key used in staging replays that run for a production call too. Needs a migration (the index with the environment).
 - ★ **A webhook body schema's `pattern`** runs as a JavaScript regex (Ajv) on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
 - ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
 - ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
@@ -1894,6 +1893,7 @@ Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-action
 - A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails (expected; for ops docs).
 - Workflow code has no `setTimeout` (by design); slow steps use a Wait block.
 - **Scheduler:** fires up to 5 s late; a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
+- **Migration 0040** (session 40: idempotency keys per workflow and environment) drops and recreates `workflow_runs_idempotency_uq` without `CONCURRENTLY`, like 0008: fine at the user's size; a large production table needs it by hand.
 - **Retention:** runs every 24 h from the first check, not at a fixed hour; migration 0008's `CREATE INDEX` isn't concurrent (a large production table needs `CREATE INDEX CONCURRENTLY` by hand).
 - **Metrics:** the database gauges keep their last values if a read fails; no histogram of queue wait per run, no per-connector query metrics.
 - **Audit export** stops at 100,000 rows.

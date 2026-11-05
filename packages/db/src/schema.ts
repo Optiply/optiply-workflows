@@ -772,8 +772,9 @@ export const workflowRuns = pgTable(
       .where(sql`${t.draftSnapshotId} is not null`),
     // Retention finds old finished runs by when they finished.
     index('workflow_runs_finished_idx').on(t.finishedAt).where(sql`${t.finishedAt} is not null`),
+    // Per environment (session 40; per workflow before 0040): a key used in staging doesn't replay in production.
     uniqueIndex('workflow_runs_idempotency_uq')
-      .on(t.workflowId, t.idempotencyKey)
+      .on(t.workflowId, t.environmentId, t.idempotencyKey)
       .where(sql`${t.idempotencyKey} is not null`),
     uniqueIndex('workflow_runs_schedule_uq')
       .on(t.triggerId, t.scheduledFor)

@@ -390,6 +390,23 @@ describe('async webhooks and idempotency', () => {
     expect(other.headers['x-run-id']).not.toBe(first.headers['x-run-id'])
     const run = await runRow(String(first.headers['x-run-id']))
     expect(run.idempotencyKey).toBe('order-1')
+    // Keys are per environment: the same key in staging is a new run there, and replays there.
+    const staging = await call('POST', '/api/v1/workflows/once/webhook?environment=staging', {
+      body: {},
+      headers: { 'idempotency-key': 'order-1' },
+    })
+    expect(staging.headers['x-run-id']).not.toBe(first.headers['x-run-id'])
+    expect(staging.headers['idempotent-replayed']).toBeUndefined()
+    expect(await runRow(String(staging.headers['x-run-id']))).toMatchObject({
+      environmentId: stagingId,
+      idempotencyKey: 'order-1',
+    })
+    const stagingAgain = await call('POST', '/api/v1/workflows/once/webhook?environment=staging', {
+      body: {},
+      headers: { 'idempotency-key': 'order-1' },
+    })
+    expect(stagingAgain.headers['x-run-id']).toBe(staging.headers['x-run-id'])
+    expect(stagingAgain.headers['idempotent-replayed']).toBe('true')
   })
 })
 
