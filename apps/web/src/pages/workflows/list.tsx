@@ -5,8 +5,10 @@ import {
   CalendarClock,
   Copy,
   Folder,
+  FolderInput,
   FolderPlus,
   GitBranch,
+  GripVertical,
   Layers,
   Plus,
   Search,
@@ -41,6 +43,7 @@ import {
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
+import { FolderTree, WORKFLOW_DRAG_TYPE } from './folder-tree'
 import {
   isSortKey,
   matchesSearch,
@@ -96,6 +99,19 @@ export function WorkflowsPage() {
   const searching = query.trim() !== ''
   const found = searching ? sorted.filter((w) => matchesSearch(w, query)) : []
   const hasFolders = !!folders?.folders.length
+  const { id: openId, open } = useOpenFolder('workflow')
+  const queryClient = useQueryClient()
+  // A workflow dropped on the tree.
+  const move = useMutation(
+    trpc.workflows.update.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() }),
+    }),
+  )
+  const dropWorkflow = (workflowId: string, folderId: string | null) => {
+    const workflow = data?.find((w) => w.id === workflowId)
+    if (workflow && workflow.level === 'own' && workflow.folderId !== folderId)
+      move.mutate({ id: workflowId, folderId })
+  }
 
   if (isLoading) return <Spinner />
   if (!data) return <ErrorNote error={error} />
@@ -125,65 +141,83 @@ export function WorkflowsPage() {
           Create one to start building. If you expected to see workflows here, ask an admin for access.
         </EmptyState>
       ) : (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-60 flex-1">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
-              <Input
-                type="search"
-                aria-label="Search workflows"
-                placeholder="Search every folder by name, slug or description"
-                className="pl-9"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
+        <div className={cn(hasFolders && 'grid items-start gap-4 lg:grid-cols-[15rem_minmax(0,1fr)]')}>
+          {hasFolders && (
+            <Card className="p-2 lg:sticky lg:top-4">
+              <FolderTree
+                folders={folders?.folders ?? []}
+                items={data}
+                openId={searching ? undefined : openId}
+                canManage={!!folders?.canManage}
+                onOpen={(id) => {
+                  setQuery('')
+                  open(id)
+                }}
+                onDropWorkflow={dropWorkflow}
               />
-            </div>
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <ArrowUpDown className="size-4" />
-              <span>Sort by</span>
-              <Select
-                aria-label="Sort workflows"
-                className="w-36"
-                value={sort}
-                onChange={(e) => chooseSort(e.target.value as SortKey)}
-              >
-                {SORTS.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </div>
-          {searching ? (
-            <section aria-label="Search results">
-              <p className="mb-2 text-sm text-muted">
-                {found.length === 0
-                  ? `No workflows match “${query.trim()}”.`
-                  : `${found.length} workflow${found.length === 1 ? '' : 's'} in every folder`}
-              </p>
-              {found.length > 0 && (
-                <Card className="divide-y divide-border">
-                  {found.map((w) => (
-                    <WorkflowRow
-                      key={w.id}
-                      workflow={w}
-                      hasFolders={hasFolders}
-                      folder={
-                        hasFolders
-                          ? (folderPath(folders?.folders ?? [], w.folderId) ?? 'Not in a folder')
-                          : null
-                      }
-                    />
-                  ))}
-                </Card>
-              )}
-            </section>
-          ) : (
-            <FolderBrowser type="workflow" items={sorted} listKey={trpc.workflows.list.queryKey()}>
-              {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={hasFolders} />}
-            </FolderBrowser>
+              <ErrorNote error={move.error} />
+            </Card>
           )}
+          <div className="min-w-0 space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative min-w-60 flex-1">
+                <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
+                <Input
+                  type="search"
+                  aria-label="Search workflows"
+                  placeholder="Search every folder by name, slug or description"
+                  className="pl-9"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <ArrowUpDown className="size-4" />
+                <span>Sort by</span>
+                <Select
+                  aria-label="Sort workflows"
+                  className="w-36"
+                  value={sort}
+                  onChange={(e) => chooseSort(e.target.value as SortKey)}
+                >
+                  {SORTS.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            {searching ? (
+              <section aria-label="Search results">
+                <p className="mb-2 text-sm text-muted">
+                  {found.length === 0
+                    ? `No workflows match “${query.trim()}”.`
+                    : `${found.length} workflow${found.length === 1 ? '' : 's'} in every folder`}
+                </p>
+                {found.length > 0 && (
+                  <Card className="divide-y divide-border">
+                    {found.map((w) => (
+                      <WorkflowRow
+                        key={w.id}
+                        workflow={w}
+                        hasFolders={hasFolders}
+                        folder={
+                          hasFolders
+                            ? (folderPath(folders?.folders ?? [], w.folderId) ?? 'Not in a folder')
+                            : null
+                        }
+                      />
+                    ))}
+                  </Card>
+                )}
+              </section>
+            ) : (
+              <FolderBrowser type="workflow" items={sorted} listKey={trpc.workflows.list.queryKey()}>
+                {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={hasFolders} />}
+              </FolderBrowser>
+            )}
+          </div>
         </div>
       )}
     </>
@@ -263,14 +297,33 @@ function WorkflowRow({
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
   const [duplicating, setDuplicating] = useState(false)
+  const [moving, setMoving] = useState(false)
   const refresh = () => queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() })
-  const move = useMutation(trpc.workflows.update.mutationOptions({ onSuccess: refresh }))
   const remove = useMutation(trpc.workflows.delete.mutationOptions({ onSuccess: refresh }))
+  // Owners move workflows between folders (that changes who can reach them): dragged onto the tree, or Move.
+  const movable = hasFolders && workflow.level === 'own'
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: dragging onto the tree is the mouse's shortcut; Move does it by keyboard
     <div
-      className="flex items-center gap-3 px-4 py-3 hover:bg-canvas"
+      className="group flex items-center gap-3 px-4 py-3 hover:bg-canvas"
       data-testid={`workflow-${workflow.slug}`}
+      draggable={movable}
+      onDragStart={
+        movable
+          ? (e) => {
+              e.dataTransfer.setData(WORKFLOW_DRAG_TYPE, workflow.id)
+              e.dataTransfer.setData('text/plain', workflow.name)
+              e.dataTransfer.effectAllowed = 'move'
+            }
+          : undefined
+      }
     >
+      {movable && (
+        <GripVertical
+          className="-mr-2 -ml-2 size-4 shrink-0 cursor-grab text-muted opacity-0 group-hover:opacity-100"
+          aria-hidden
+        />
+      )}
       <Link
         to="/workflows/$workflowId"
         params={{ workflowId: workflow.id }}
@@ -349,17 +402,71 @@ function WorkflowRow({
           <Trash2 className="size-4" />
         </Button>
       )}
-      {hasFolders && workflow.level === 'own' && (
+      {movable && (
+        <Button
+          size="icon"
+          variant="ghost"
+          title={`Move ${workflow.name} to a folder`}
+          data-testid={`move-${workflow.slug}`}
+          onClick={() => setMoving(true)}
+        >
+          <FolderInput className="size-4" />
+        </Button>
+      )}
+      {moving && <MoveDialog workflow={workflow} onClose={() => setMoving(false)} />}
+      <ErrorNote error={remove.error} />
+    </div>
+  )
+}
+
+/** Moves a workflow to another folder: what dragging it onto the folder tree does, without a mouse. */
+function MoveDialog({ workflow, onClose }: { workflow: WorkflowSummary; onClose: () => void }) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const [folderId, setFolderId] = useState<string | null>(workflow.folderId)
+  const move = useMutation(
+    trpc.workflows.update.mutationOptions({
+      onSuccess: async () => {
+        await queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() })
+        onClose()
+      },
+    }),
+  )
+  return (
+    <Dialog
+      title={`Move ${workflow.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            loading={move.isPending}
+            disabled={folderId === workflow.folderId}
+            data-testid="move-confirm"
+            onClick={() => move.mutate({ id: workflow.id, folderId })}
+          >
+            Move
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
         <FolderSelect
           type="workflow"
           label={`Folder of ${workflow.name}`}
-          className="w-40"
-          value={workflow.folderId}
-          onChange={(folderId) => move.mutate({ id: workflow.id, folderId })}
+          value={folderId}
+          onChange={setFolderId}
         />
-      )}
-      <ErrorNote error={move.error ?? remove.error} />
-    </div>
+        <p className="text-sm text-muted">
+          Grants on a folder reach the workflows in it, so moving changes who can see and run it. You can also
+          drag a workflow onto a folder in the tree.
+        </p>
+        <ErrorNote error={move.error} />
+      </div>
+    </Dialog>
   )
 }
 

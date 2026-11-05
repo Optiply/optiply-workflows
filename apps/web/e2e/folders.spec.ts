@@ -32,7 +32,10 @@ test('nested folders on the workflows and apps lists', async ({ page }) => {
   await page.getByRole('button', { name: 'Create', exact: true }).click()
   const flowsRow = page.getByRole('listitem', { name: `Subfolder ${flows}` })
   await expect(flowsRow).toContainText('Empty')
+  // Moved with Move (the keyboard's way; the tree takes a drag too, workflows-list.spec).
+  await page.getByTestId(`move-fold-${stamp}`).click()
   await page.getByLabel(`Folder of Folded ${stamp}`).selectOption({ label: flows })
+  await page.getByTestId('move-confirm').click()
   await expect(flowsRow).toContainText('1 workflow')
   await expect(page.getByTestId(`workflow-fold-${stamp}`)).toHaveCount(0)
 

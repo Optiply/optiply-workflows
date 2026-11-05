@@ -77,3 +77,49 @@ test('search every folder, sort by last run, and see each workflow’s run and t
   await expect(page).toHaveURL(new RegExp(`/workflows/${ran.id}\\?run=${runId}`))
   void idle
 })
+
+test('the folder tree opens folders, counts what they hold, and takes a dragged workflow', async ({
+  page,
+}) => {
+  await signIn(page)
+  const t = Date.now().toString(36)
+  const parent = await trpcMutate<{ id: string }>(page, 'folders.create', {
+    name: `Ops ${t}`,
+    type: 'workflow',
+  })
+  const child = await trpcMutate<{ id: string }>(page, 'folders.create', {
+    name: `Nightly ${t}`,
+    type: 'workflow',
+    parentId: parent.id,
+  })
+  const inChild = await workflow(page, `tree-in-${t}`)
+  await trpcMutate(page, 'workflows.update', { id: inChild.id, folderId: child.id })
+  await workflow(page, `tree-loose-${t}`)
+
+  await page.goto('/workflows')
+  const tree = page.getByRole('navigation', { name: 'Folders' })
+  const opsNode = tree.getByTestId(`tree-folder-Ops ${t}`)
+  // A folder counts what its subfolders hold.
+  await expect(opsNode).toContainText('1')
+  await tree.getByRole('button', { name: `Expand Ops ${t}` }).click()
+  const nightlyNode = tree.getByTestId(`tree-folder-Nightly ${t}`)
+  await expect(nightlyNode).toContainText('1')
+
+  // Dragged from the top level onto a nested folder: it moves there.
+  const loose = page.getByTestId(`workflow-tree-loose-${t}`)
+  await loose.dragTo(nightlyNode)
+  await expect(nightlyNode).toContainText('2')
+  await expect(opsNode).toContainText('2')
+  await expect(loose).toHaveCount(0)
+
+  // Opening the folder from the tree shows it; dropped on "All workflows", it leaves every folder.
+  await nightlyNode.getByRole('button', { name: `Nightly ${t}` }).click()
+  await expect(page).toHaveURL(new RegExp(`folder=${child.id}`))
+  const moved = page
+    .getByRole('region', { name: `Folder Ops ${t}/Nightly ${t}` })
+    .getByTestId(`workflow-tree-loose-${t}`)
+  await expect(moved).toBeVisible()
+  await moved.dragTo(tree.getByTestId('tree-all'))
+  await expect(nightlyNode).toContainText('1')
+  await expect(moved).toHaveCount(0)
+})
