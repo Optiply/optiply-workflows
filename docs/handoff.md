@@ -1874,208 +1874,141 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 
 ## 13. Known gaps and TODOs carried forward
 
-- **isolated-vm patch:** remove `patches/isolated-vm@7.0.1.patch` (and its `patchedDependencies` entry) once a release has laverdet/isolated-vm#574; prebuilds then load again.
-- **Unexplained:** one session-5 run of the crash test hung for 15 minutes; the timer crash kills rather than hangs, so it may be unrelated. Not seen again.
-- **Engine:**
-  - **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.
-  - **Retry backoff sleeps in the worker**, holding a slot. Long backoffs could requeue the run with `availableAt` instead.
-  - **Block data isn't scrubbed of secret config values**, only logs and errors are (same rule as Postgres data in M1).
-  - `pending` block status is never written.
-  - **Paused runs resume on the workers' 5 s poll** (like schedules), so up to 5 s late; children wake their parent at once.
-  - **No per-run cap on in-flight `fetch` requests** (the architecture's 50); the shared agent allows 32 connections per origin.
-  - **A loop's sync workflow runner holds the worker** while its children run (it waits within the iteration timeout, default 10 s: raise it for slow children); a Workflow block pauses instead.
-  - **Renaming a function parameter doesn't rewrite `params.x`** in its blocks (renaming functions and blocks does).
-  - A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails. That's expected; noted for ops docs.
-- **Webhooks:** no `?api_key=` query parameter (signatures cover callers that can't send headers); API keys can read single runs, not list them. M15's gaps are under "From M15".
-- **Scheduler:** fires up to 5 s late (tick interval); a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
-- **Pool invalidation across processes:** there's still no `NOTIFY resource_changed`. Pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load.
-- **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
-- **Connectors (M6):** MySQL evaluates `{{ }}` before the server sees the SQL (Postgres describes first); BigQuery sends null as a NULL STRING (comparing with a number column needs a `CAST`) and objects as JSON text; no multipart REST bodies yet (planned for M6, not built); no `disablePreparedStatements`.
-- **User Tasks:** one `out` port (no per-outcome ports); the sidebar badge refreshes every 30 s; group assignees in the editor are plain inputs (problems shown under them, no `{{ }}` markers); no reminders or reassignment; tasks can't be completed over the REST API with an API key.
-- **Retention:** runs every 24 h from the first check, not at a fixed hour; migration 0008's `CREATE INDEX` isn't concurrent (fine while `workflow_runs` is small; a large production table needs `CREATE INDEX CONCURRENTLY` by hand).
+Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
+
+### Fix candidates ★
+- ★ **isolated-vm patch:** isolated-vm **7.0.2** (2026-10-30) has laverdet/isolated-vm#574 (checked against the v7.0.1…v7.0.2 compare), so `patches/isolated-vm@7.0.1.patch` and its `patchedDependencies` entry can go (prebuilds load again).
+- ★ **Block data isn't scrubbed of secret config values**, only logs and errors are (`packages/engine/src/errors.ts`; same rule as Postgres data in M1).
+- ★ **Idempotency keys are unique per workflow, not per environment** (`workflow_runs_idempotency_uq` on `(workflow_id, idempotency_key)`, migration 0002): a key used in staging replays that run for a production call too. Needs a migration (the index with the environment).
+- ★ **A webhook body schema's `pattern`** runs as a JavaScript regex (Ajv) on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
+- ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
+- ★ **The validator's `function_call` message** says `await name({ ... })` (`packages/definition/src/validate.ts:659`, and the doc comment in `schema.ts:667`); calls are positional (`await name(a, b)`).
+- ★ **The library editor's default query for a non-SQL resource is REST's** (`{ method: 'GET', path: '/' }`, `pages/library/editor.tsx:331`): a library query on a Pub/Sub, broker, service or AI resource starts as REST and needs its JSON changed.
+- ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
+
+### Engine and runs
+- **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.
+- **Retry backoff sleeps in the worker**, holding a slot. Long backoffs could requeue the run with `availableAt` instead.
+- `pending` block status is never written.
+- **Paused runs resume on the workers' 5 s poll** (like schedules), so up to 5 s late; children wake their parent at once.
+- **No per-run cap on in-flight `fetch` requests** (the architecture's 50); the shared agent allows 32 connections per origin.
+- **A loop's sync workflow runner holds the worker** while its children run (within the iteration timeout, default 10 s); a Workflow block pauses instead.
+- **Renaming a function parameter doesn't rewrite `params.x`** in its blocks (renaming functions and blocks does). Functions can't be test-run on their own (their params' `testValue` is stored but unused).
+- A webhook run executing in the API process is resumed by a worker if the API dies (lease); the caller's sync request just fails (expected; for ops docs).
+- Workflow code has no `setTimeout` (by design); slow steps use a Wait block.
+- **Scheduler:** fires up to 5 s late; a skipped fire (overlap `skip`) is only logged, not recorded as a run; the catch-up after very long downtime of a dense cron steps through at most 10k fire times.
+- **Retention:** runs every 24 h from the first check, not at a fixed hour; migration 0008's `CREATE INDEX` isn't concurrent (a large production table needs `CREATE INDEX CONCURRENTLY` by hand).
 - **Metrics:** the database gauges keep their last values if a read fails; no histogram of queue wait per run, no per-connector query metrics.
-- **Audit export** stops at 100,000 rows (narrow the filters for more).
-- **Tests not written yet:** the OIDC callback logic (extract the claim checks into a pure function). The web app has unit tests for its pure modules since M8 (the table and chart models); the rest is covered by the Playwright tests and the (uncommitted) walkthroughs.
-- **Web:**
-  - Apps have notifications (`pages/apps/notifications.tsx`); the rest of the web app still has no toast system, and ~~`confirm()` is still used for destructive actions (the `Dialog` could replace it)~~ (M24: `confirmDialog`).
-  - The main bundle is 488 kB; the editor and Monaco are split out, the other pages aren't.
-  - The label editors' "Add" button takes the whole field label as its accessible name (the M9 e2e relies on it: `/^Headers Sent with every request/`).
-  - The editor has undo/redo and copy/paste since M13; no "create function from selection" yet, and undo doesn't outlive a reload. No release diff view yet (`releases.get` returns the definition for one). Functions can't be test-run on their own yet (their params' `testValue` is stored but unused).
-  - The run panel's logs tab shows the first 500 lines. The resources playground still uses textareas.
-- **Editor completions** cover the latest finished run only; there's no environment choice for them.
-- **Managed database (M7):**
-  - No foreign keys or indexes in the schema editor; no promotion of a schema from staging to production; no read-only tier (Use is everything).
-  - The managed tables share the platform's Postgres: a heavy query competes with the platform (statement timeout 120 s, `maxRows` 10k, connection limit 50 per role).
-  - A CSV export holds one of `optiply_db`'s 5 pooled connections (per process) for the whole download, at the client's pace: a few slow downloads at once make playground and Database page requests wait. (Each cursor fetch has its own statement timeout, so long downloads aren't cut off.) A separate pool, or a cap on concurrent exports, would fix it.
-  - Plain `SET`s in queries outlast their transaction on pooled connections (true of every Postgres resource). The Database page pins what it relies on per transaction (search_path, DateStyle, read write, UTC; from the PR #8 review), but workflow and playground queries see whatever an earlier query left behind.
-  - The grid edits one cell at a time; no multi-cell paste, no undo. Deleting rows uses `confirm()`.
-  - Import problems stop at the first failing batch (≤ 20 problems reported from it), not the whole file.
-  - The CSV preview reads the first 256 kB; a column whose only odd value comes later can be guessed wrong (the import then reports the line).
-  - MySQL's `NOT IN ({{ [] }})` matches nothing (documented in `mysql.ts`; from the PR #7 review).
-  - With `TEST_DATABASE_URL` (a shared server), test databases leave their `owdb_*` roles behind.
-- **Apps (M8, M10):**
-  - The watchdog's 5 s also stops legitimate synchronous work that long (a huge sort in a JS query); Restart starts afresh (typed values and results lost).
-  - No modules, mobile layout, custom components, Query Library, themes or multiplayer editing.
-  - Table: ~~no column filters (one search box), no per-row column templates (`currentRow`), no adding rows inside the table (use a Form), no column resizing~~ (M24: filters, computed columns, new rows, resizing; still no cell colors or per-row editability). Server-side mode needs a second query for `totalRowCount` (or none: Next stays on while a page comes back full). `sql.column` is for SQL resources; REST APIs take the sort as plain values.
-  - Pages: no per-page access (pages are navigation, not security: every page's queries run with Use on the app); ~~page names in code strings (`utils.openPage('…')`) aren't rewritten on rename~~ (M24); no page-scoped variables; ~~Navigation renders buttons, not links~~ (M24: real links) (no middle-click to a new tab); pages reorder with up/down only; deleting a page uses `confirm()`.
-  - Folders: ~~nested folders exist in the API (`parentId`) but the lists show one level and offer no rename~~ (M24: browsed one at a time, renamed and moved); folder names are visible to everyone listing that kind.
-  - Apps and workflows from before M10 with an entity or block named `url` or `sql` must rename it (the validator says so).
-  - Editor: ~~no dragging between containers ("Inside" moves a component), one component selected at a time (copy takes it with what's inside it; M13)~~ (M24), REST queries edited as JSON (SQL resources have the full editor), ~~no release diff~~ (M24: Compare).
-  - Charts: light mode only, ~~no time-scale axes (dates are categories)~~ (M24, line and area charts), no texture fills.
-  - Automatic queries aren't audited (by design); manual ones are, without values.
-  - ~~Rollback asks with `confirm()`, like the workflow editor.~~ (M24: the platform's dialog.)
-- **OAuth and custom auth (M9):**
-  - Disconnecting doesn't revoke the token at the provider.
-  - A custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
-  - No per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows (Test connection signs in).
-  - The process refreshing holds a pooled connection (and the lock) while calling the provider; waiters don't.
-  - Code steps of custom flows run in a sandbox shared by the process (the API's, or the worker's own), not the run's.
-  - The workflow editor's run panel shows `auth_required` as a plain error (no Connect button there yet).
-- **Git sync (M11):**
-  - GitHub only (other hosts work for push and pull without the pull request API: no PR is opened, a compare link is shown).
-  - ~~Resources, folders and config vars aren't in Git; no promotion between instances.~~ (M22: they are; Promote opens the pull request.)
-  - Update from branch replaces the draft: no three-way merge of both sides' edits. A conflict needs updating (dropping local edits) or committing first.
-  - ~~A protected object's name and description can't be changed in the editors yet (the API's `branchDrafts.save` takes them).~~ (M22: the Details dialog in the Git bar.)
-  - ~~On a protected app's main the inspector's inputs aren't disabled (edits are ignored; the banner explains).~~ (M22: the editor is read-only there.)
-  - ~~Deploys aren't retried on their own for problems the instance fixes later (a resource created): Deploy now does it.~~ (M22: they are.)
-  - The GitHub token is one per instance; commits are authored by the person but pushed with that token. No GitHub App.
-  - ~~The branch list shows every branch of the repo; no filtering by object.~~ (M22: the object's branches first, grouped.)
-  - ~~The Git settings page polls deploys every 15 s; there's no notification when a deploy has problems.~~ (M22: the admin banner and a notify workflow.)
-- **Python (M12):**
-  - No network from Python (`fetch`, HTTP libraries can't connect) and no workflow functions: by design (agreed); HTTP stays in REST resource blocks or JavaScript.
-  - ~~The packages are fixed in the image (numpy, pandas, python-dateutil, pytz, tzdata); no per-workflow packages.~~ (M23: each workflow's own, through the builder.)
-  - ~~Each execution starts a fresh interpreter: `import pandas` costs ~210 ms every time.~~ (M23: the warm pool.)
-  - Python's references: a name the code binds anywhere is its own, nested functions and comprehensions included (a block sharing a name with one of their variables isn't read there). A block named like a Python builtin can't be read from Python (warning).
-  - The executor gets the referenced blocks' data as JSON in each request (up to `PYTHON_MAX_REQUEST_MB`, 64): very large results cost a copy per Python block.
-  - ~~Logs come back when the code ends, not as it prints~~ (M23: streamed); output is cut at 1 MB.
-  - The editor's syntax markers need the executor (a second after typing stops); the validator's own problems are instant. The typing helper in e2e compares single-line text, so the specs type Python on one line.
-  - dict methods win over keys in attribute access (`row.items` is the method): use `row["items"]`.
+- **Audit export** stops at 100,000 rows.
+- **Unexplained:** one session-5 run of the crash test hung for 15 minutes; not seen again.
 
-- **From M26:**
-  - Not pushed: `feat/m26-queue-triggers` is local and stacked on `feat/m25-custom-components` (§2).
-  - Left out by design (§2.29): SNS beyond SQS's delivery, Kinesis, RabbitMQ; Kafka transactions and the Schema Registry (Avro/Protobuf arrive as text); SSH tunnels to Kafka; several messages per run.
-  - The produce query answers per partition (the KafkaJS-style send reports no per-message offsets).
-  - A dead letter that can't be sent is retried in the worker's memory; a worker that stops meanwhile leaves the message to the next one, which runs it again (attempt past the maximum) before dead-lettering it.
-  - `pubsub_deliveries` was renamed: anything reading it outside the app (none known) must read `queue_deliveries`; dashboards on `ow_pubsub_*` must use `ow_queue_*{kind="pubsub"}`.
-- **From M25:**
-  - Not pushed: `feat/m25-custom-components` is local and stacked on `feat/m24-app-builder` (§2).
-  - Left out by design (§2.28): a CLI (the upload API is ready for one), private npm registries, npm packages' types in the editor (they're `any`), components that grow with their content (a frame keeps its grid size), custom components as containers, inline components in an app, per-app origins.
-  - The frame's egress: a CSP doesn't cover a frame navigating itself (stopped after the fact) or WebRTC in every browser; allowed origins are a guard (runbook `components.md`).
-  - Builds run in the API process: a burst of builds competes with requests (two at a time per process); no build queue or metrics yet.
-  - The SDK's React declaration in Monaco is a light one (hooks and JSX as `any`); a component typed against React's full types may show fewer checks than in an IDE.
-  - Not checked on the Compose stack yet (an image build and a public npm package: 7b); the user rebuilds when back.
-- **From M24:**
-  - Not pushed: `feat/m24-app-builder` is local and stacked on `feat/m23-python-followups` (§2); reviewed locally (10 fixes, `a49fb53`).
-  - Left out by design (§2.27): a mobile layout, custom components, themes per app, per-page access, column templates other than the value (cell colors, per-row editability), undo that outlives a reload.
-  - Table: one filter per column from its header (code can set more); a computed column can't be filtered under server paging (the query doesn't have it); text filters compare by code point in the browser, where a database's collation may order (`lt`, `between`) differently.
-  - Editor: a component's handle bar sits above it and covers the lower part of a short component just above.
-  - Navigation: one level of groups; icons from a curated set of 38.
-  - Folders: a folder holding folders can't be deleted (move or delete them first); no view of every folder at once.
-  - In the editor, a click on a chart's Table button while the chart isn't selected only selects it (seen in 6a).
-- **From M23:**
-  - Not pushed: `feat/m23-python-followups` is local and stacked on `feat/m22-git-gaps` (§2); reviewed (§9r).
-  - A workflow with packages always runs in a cold jail (a warm one's mounts are fixed): no warm pool per env yet.
-  - A first install can outlast a Python block's timeout (the block logs that it waits; Install now and publishing install ahead).
-  - Packages are wheels from one index (`PYTHON_PACKAGE_INDEX_URL`); no sdists, no private index credentials, no allow or deny list.
-  - A workflow's pins win over the image's packages, so pinning one pandas needs (pytz, numpy) to an incompatible version breaks pandas for that workflow (the runbook says so).
-  - `python_envs` rows aren't cleaned up (one per set of requirements ever resolved); the builder removes unused envs after `PYTHON_ENV_KEEP_DAYS`.
-  - The editor's packages field, like the run timeout, is read when it mounts: someone else's change to it shows after a reload.
-  - Logs stream only from Python; JavaScript's already went through the store as they came.
-- **From M22:**
-  - Not pushed: `feat/m22-git-gaps` is local and stacked on `feat/m21-reuse` (§2); reviewed (§9q).
-  - ~~Clearing Git settings or deleting an object leaves its `git_objects` row~~ (review: migration 0031 and `clearGitSettings`).
-  - An environment's config Git no longer lists is kept (with Git's last settings) when it holds this instance's secrets, overrides or OAuth accounts; an admin removes it by hand if Git really dropped it.
-  - The branch picker reads the remote's branches at most every 15 s per process: a branch pushed from elsewhere (GitHub, another API process) can take that long to show; pushes from this process show at once.
-  - A folder made before the review with a `/` in its name: protecting or committing what's in it is refused until it's renamed.
-  - An environment Git names that the instance lacks is skipped silently (the plan's warning wasn't built).
-  - Deleting objects whose directory left the branch is still by hand (flagged `missing`, as before).
-  - Renames: an item renamed and changed on the same side reads as deleted and added; library queries have no renamer (nothing named inside them to follow); a rename is followed only when all three definitions parse.
-  - Resources have no branch drafts (a commit is the edit, as planned); secrets never come from Git or an outside secret manager.
-- **From M21:**
-  - Not pushed: `feat/m21-reuse` is local and stacked on `feat/m20-merge` (§2); **not reviewed yet**.
-  - Library queries can't be called from Python or JavaScript code (blocks call them; code reads their data). Library queries with JavaScript, version ranges and renaming a slug are still out.
-  - `current_user` in a workflow is only for library queries; the workflow's own scope doesn't have it. Manual runs over the REST API need a signed-in session (that person is `current_user`); API keys only start webhook runs, which have none.
-  - The nesting check loads every module release's components (`loadNesting`), on each `modules.resolve`, module check and publish: fine for tens of modules, unmeasured beyond.
-  - Renaming a module input rewrites property reads only (`inputs.x`, `inputs['x']`); a destructured `const { x } = inputs` isn't rewritten (it shows as a problem), and Python has no property offsets (apps don't run Python).
-  - The library editor's REST JSON field isn't shared as text (a parsed value, as in the app editor): two people typing in it take turns, the last write winning.
-  - The publish warning compares the live release with the main draft; publishing from a Git branch (a merge) doesn't show it.
-  - Library query branch drafts through the shared document are covered by the M14 and M20 specs, not by a server test.
-- **From M20:**
-  - Not pushed: `feat/m20-merge` is local and stacked on `feat/m19-pubsub` (§2); reviewed (§9o).
-  - ~~Renames aren't followed: a block renamed on one side and edited on the other is a deleted-and-changed conflict on the old name plus the new block; the rename's reference rewrites merge as text.~~ (M22: they are, see From M22.)
-  - Diff3, like git, makes changes on adjacent lines one conflict ("Take theirs" takes the whole stretch, their adjacent line included).
-  - Update from main refuses conflicts outside object directories (a README, CI files) and an object deleted on one side and changed on the other: fix those on GitHub.
-  - Update from main's resolutions are per object directory; resolving conflicts in an object not on the instance is for admins only.
-  - The Git bar's `changes` now also fetches the deploy branch (one more fetch per open editor every 30 s; the merge outlook and `mainAhead` are cached by commits).
-  - GitHub works out a pull request's mergeability lazily: after Update from main the PR page can say "Checking for the ability to merge automatically" for a minute.
-  - ~~The library query editor has no multiplayer~~ (M21: it is now).
-- **From M19:**
-  - Not pushed: `feat/m19-pubsub` is local and stacked on `feat/m18-iap` (§2); reviewed (§9n).
-  - One worker takes every free trigger (no spreading between workers); a trigger's messages are pulled by one worker at a time.
-  - Run ends are polled once a second per trigger while it holds messages (not LISTENed); the editor's "in flight" can lag up to 5 s (the lease tick).
-  - The library editor's default query for a non-SQL resource is still REST's (a library query on a Pub/Sub resource starts as REST and needs its JSON changed): `library/editor.tsx` held an uncommitted change then (committed in session 23, `5163f75`), so it wasn't touched.
-  - Workflow code has no `setTimeout` (by design of the sandbox); slow steps use a Wait block.
-  - Not in M19 (§2.22): push subscriptions, SQS and Kafka, exactly-once subscriptions, batching messages into one run.
-- **From M18:**
-  - Not pushed, not reviewed: `feat/m18-iap` is local and stacked on `feat/m17-ssh-tunnels` (§2).
-  - The server's identity on a Mac is a **person's** (`gcloud auth application-default login`): what they may reach, every admin-chosen resource may; it ends when their login expires or they leave. A service account (a key, or the VM's on Google Cloud) is the lasting choice.
-  - The network interface (`nic0`) isn't in the form; IAP destination groups, private IPs and impersonating another service account aren't supported.
-  - The admin rule watches the server-identity hop's target only: an editor may still change the jump hosts and the database host behind an admin-chosen VM (what that VM can reach).
-  - `checkSshIap` builds a token source just to check the settings (no network, but the same code path as connecting); a lighter check could share less.
-- **From M17:**
-  - Not pushed, not reviewed: `feat/m17-ssh-tunnels` is local, stacked on `feat/m16-multiplayer` (§2). Its first CI run will be in November.
-  - No SSH agent, certificates, keyboard-interactive/2FA, proxies, or shared SSH profiles (one resource's settings per environment); no tunnels for BigQuery.
-  - One pinned host key per hop (the one presented, usually ed25519): a server that later prefers another of its host key types shows as changed.
-  - A forward to a host the SSH server can't reach waits for that server's own TCP timeout (no timer of ours): bounded by MySQL's 10 s connect timeout, but for Postgres only by the query's timeout (postgres starts its connect timer after the socket exists).
-  - Reading a PuTTY v3 key runs Argon2 synchronously (bounded to 256 MiB and 256 passes): on save, on Test connection and when a pool client is made; `resources.get` remembers each key's details.
-  - Test connection connects the SSH chain twice (its hop-by-hop probe, then the client's own tunnel).
-  - Tunnels are per process: the API and each worker open their own SSH connection to the same servers.
-  - The OAuth authorization-code flows (the server's) don't go through a REST resource's tunnel; only the connector's own requests (and client-credentials tokens) do.
-  - **M18 step 1:** an SSH host of `localhost`/`127.0.0.1`/`::1` refused (ECONNREFUSED) should hint at `host.docker.internal`: under Compose, `localhost` is the API container itself. The user hit it pointing at a `gcloud compute start-iap-tunnel … --local-host-port=localhost:2222` on the Mac; `host.docker.internal:2222` worked.
-  - A bastion reached through a local `gcloud start-iap-tunnel` only works while that command runs on one person's machine. Optiply's production bastion (`bastion`, GCP project `clear-veld-186016`, europe-west1-c) is only reachable that way today.
-- **From M16:**
-  - Not pushed, not reviewed: `feat/m16-multiplayer` is local and stacked on `feat/m15-webhooks` (§2). Its first CI run will be in November.
-  - Two concurrent adds of one name keep the first in document order: the other person's block or component goes (the next edit on that array deletes it).
-  - Concurrent deletes can empty a branch's conditions or blank a text that must not be blank: the server won't write such a draft and the editor says why ("Not saved"), until someone fixes it.
-  - A REST `saveDraft` wins over at most a second of collaborative edits not yet written.
-  - The parsed app fields (component props, a variable's initial value, a resource query's JSON, library params) merge as values, not as text.
-  - The library query editor and the resource playground stay single-user (as planned); no comments, following someone's view or per-person history.
-  - Undo/redo still remount the side panels (M13's deferred cleanup), so a Monaco field there loses its cursor.
-  - ~~A component dragged down into empty space on the app grid goes back up (the grid compacts upwards; not new, found while writing the done-when).~~ **Done in session 33** (asked for by the user): components stay where they're put; see §14.
-  - Code with CRLF line ends (from Git or a REST save) is stored with `\n` once the draft is opened in an editor, so the next Git commit shows those lines changed.
-  - The library editor's uncommitted `gcTime: 0` fix (not M16's, someone else's): the review suggests removing the deleted query's cache entry in the delete dialog's `onSuccess` instead.
-- **From M15:**
-  - Not pushed, not reviewed: `feat/m15-webhooks` is local (§2). Its first CI run will be in November.
-  - A body schema's `pattern` runs as a JavaScript regex on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
-  - Rate limits are fixed windows (up to twice the limit around a boundary) and per webhook, not per caller IP.
-  - Idempotency keys are unique per workflow, not per environment (since M4): a key used in staging replays that run for a production call too. Fixing it needs the unique index to include the environment (a migration).
-  - Public and signed webhooks are found before anything is checked, so their method and environment errors are visible to anyone (they have no key to check first).
-  - Refused calls that fail before a webhook is found (404, Fastify's body too large) are only counted in the metric, not listed.
-  - Undici's own multipart parser (`Response.formData`) refuses valid bodies whose boundary text appears inside a part; webhooks use busboy, but REST query tests and the e2e read multipart back with undici (safe: fetch picks random boundaries).
-  - Custom auth flow steps don't offer the Multipart body in their editor (the connector accepts it).
-  - No asymmetric signatures (ed25519, JWT-signed webhooks); no per-webhook secret rotation UI beyond one secret per line in the config var.
-- **From M14:**
-  - ~~Renaming a module's input doesn't rewrite `inputs.<old>` in its code~~ (M21: it does) (property reads; the rename tooling handles identifiers): the problems list shows them.
-  - ~~A module instance on a page not shown still starts and runs its on-load queries.~~ (M21: it starts with its page)
-  - ~~An editor without Use on a library query an app uses sees it as an unknown library query~~ (M21: "needs use access", for modules too) (it isn't theirs to see) rather than "needs Use"; Publish is disabled and the server refuses it, but the message could say why.
-  - The Compose check left 6 `git_objects` rows naming deleted check objects (direct SQL was refused by the permission check); harmless, empty them when convenient.
-  - ~~Publishing a library query or module that apps follow on `latest` doesn't yet warn~~ (M21: it does) when it drops a parameter or input those apps pass (the publish dialog only says how many apps use it).
-  - A library query's or module's slug can't change (apps reference it).
-- **From M13:**
-  - The validator's `function_call` message says `await name({ ... })`; calls are positional (`await name(a, b)`, as the README and the typings say). Fix the message.
-  - Undo is per tab and per load: a reload, a branch switch or a conflict's Reload starts a fresh history. (Two people editing one draft no longer conflict: M16.)
-  - Pasting isn't checked against what the person may use: a pasted query names its resource, and running it needs Use there, as for any query.
+### Webhooks (M4, M15)
+- No `?api_key=` query parameter; API keys can read single runs, not list them, and only start webhook runs (which have no `current_user`).
+- Rate limits are fixed windows (up to twice the limit around a boundary) and per webhook, not per caller IP.
+- Public and signed webhooks are found before anything is checked, so their method and environment errors are visible to anyone.
+- Refused calls that fail before a webhook is found (404, body too large) are only counted in the metric, not listed.
+- No asymmetric signatures (ed25519, JWT-signed); secret rotation is one secret per line in the config var.
+- Custom auth flow steps don't offer the Multipart body in their editor (the connector accepts it).
+- Undici's `Response.formData` refuses valid bodies whose boundary text appears inside a part; webhooks use busboy, but REST query tests and the e2e read multipart back with undici (safe: fetch picks random boundaries).
 
-- **From M27:**
-  - More services (Stripe, Jira, Salesforce, Notion, Airtable, S3) and OpenAPI-generated resources; Slack's interactive messages and events; HubSpot's marketing and CMS APIs, SendGrid's contacts, Sheets' formatting: only through each service's "Call any …" action.
-  - Library queries on a service or GraphQL resource are edited as JSON in the library editor (it knows SQL and REST); the app editor edits the built-in REST API's queries as JSON, like REST's.
-  - Slack's `blocks` stay in `workflow.json` in Git (templated JSON isn't valid in a `.json` file); GraphQL queries and email HTML get files of their own.
-  - The GraphQL variables field has no JSON schema (it's templated); a variables check would need a template-aware JSON parser.
-  - HubSpot property names show under the properties field (the playground); no picker for object types or properties in the inspector.
+### Resources and connectors
+- **Pool invalidation across processes:** no `NOTIFY resource_changed`; pooled clients are keyed by the config's `updatedAt`, so changes take effect on the next load.
+- **Postgres `describe()`** leaves one named prepared statement per query on the connection until postgres.js recycles it.
+- MySQL evaluates `{{ }}` before the server sees the SQL; MySQL's `NOT IN ({{ [] }})` matches nothing; BigQuery sends null as a NULL STRING (a `CAST` is needed against number columns) and objects as JSON text; no `disablePreparedStatements`.
+- The resources playground still uses textareas.
+- **Services (M27, M29):** Slack's interactive messages and events, HubSpot's marketing and CMS APIs, SendGrid's contacts, Sheets' formatting only through each service's "Call any …" action; no pickers for HubSpot object types/properties or Airtable/Notion/Salesforce fields; library queries on a service, GraphQL, broker or AI resource are edited as JSON (the library editor knows SQL and REST), and so are the built-in REST API's queries in the app editor; Slack's `blocks` stay in `workflow.json` in Git; the GraphQL variables field has no JSON schema.
+- **OpenAPI resources (M29):** schemas expanded one level below the top; parameters are one JSON field; binary non-multipart bodies refused; the document is fetched on demand, not on Test connection.
+- **S3 (M29)** has no private-network guard of its own (the SDK makes the requests): its endpoint is admin-only, as SQS's.
+- **SSH tunnels (M17, M18):** no SSH agent, certificates, keyboard-interactive/2FA, proxies or shared SSH profiles; no tunnels for BigQuery or the brokers; one pinned host key per hop; a forward to a host the SSH server can't reach waits for that server's TCP timeout (bounded for Postgres only by the query's timeout); PuTTY v3 keys run Argon2 synchronously; Test connection connects the chain twice; tunnels are per process; the server's OAuth authorization-code flows don't use a REST resource's tunnel. A bastion reached through a local `gcloud start-iap-tunnel` only works while that command runs on one person's machine (Optiply's production bastion is only reachable that way today).
+- **IAP (M18):** on a Mac the server's identity is a person's (`gcloud auth application-default login`); a service account is the lasting choice. No `nic0` choice, destination groups, private IPs or impersonation. The admin rule watches the server-identity hop's target only. `checkSshIap` builds a token source just to check settings.
+- **OAuth and custom auth (M9)** (besides ★): no per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows; the process refreshing holds a pooled connection (and the lock) while calling the provider; custom flows' code steps run in a sandbox shared by the process, not the run's.
 
-- **From M28:**
-  - Many blocks with forms make a wide canvas: Fit View zooms far out (the forms get small); Collapse all or Minimize per block helps.
-  - Switch block type covers single block ↔ loop only (where the config carries over); other pairs (filter → code, say) aren't offered.
+### Queues and brokers (M19, M26, M30)
+- One worker takes every free trigger (no spreading); a trigger's messages are pulled by one worker at a time. Run ends are polled once a second per trigger; the editor's "in flight" can lag up to 5 s.
+- Out of scope: Pub/Sub push subscriptions and exactly-once subscriptions, several messages per run, Kafka transactions, Protobuf in the Schema Registry, a dead-letter queue for Kinesis (a failed record is retried, then skipped as `dropped`).
+- Kafka's produce query answers per partition (no per-message offsets).
+- A dead letter that can't be sent is retried in the worker's memory; a worker stopping meanwhile leaves the message to the next one, which runs it again before dead-lettering it.
+- RabbitMQ: no duplicate recognition for messages without a `messageId`.
+- Dashboards on `ow_pubsub_*` must use `ow_queue_*{kind="pubsub"}` (renamed in M26).
+
+### Managed database (M7)
+- No foreign keys or indexes in the schema editor; no promotion of a schema between environments; no read-only tier.
+- The managed tables share the platform's Postgres (statement timeout 120 s, `maxRows` 10k, 50 connections per role).
+- A CSV export holds one of `optiply_db`'s 5 pooled connections per process for the whole download, at the client's pace; a separate pool or a cap on concurrent exports would fix it.
+- Plain `SET`s in queries outlast their transaction on pooled connections (every Postgres resource); the Database page pins what it relies on, workflow and playground queries don't.
+- The grid edits one cell at a time (no multi-cell paste or undo); deleting rows uses `confirm()`.
+- Import problems stop at the first failing batch; the CSV preview reads the first 256 kB.
+- With `TEST_DATABASE_URL` (a shared server), test databases leave their `owdb_*` roles behind.
+
+### Apps (M8, M10, M14, M21, M24)
+- The watchdog's 5 s also stops legitimate synchronous work (a huge sort in a JS query); Restart starts afresh.
+- No themes; no mobile layout (M34 dropped).
+- Table: no cell colors or per-row editability; one filter per column from its header; a computed column can't be filtered under server paging; text filters compare by code point in the browser; server-side mode needs a second query for `totalRowCount` (or none); `sql.column` is for SQL resources only.
+- Pages: no per-page access (navigation, not security); no page-scoped variables; no middle-click to a new tab; pages reorder with up/down only; deleting a page uses `confirm()`.
+- Navigation: one level of groups; icons from a curated set of 38.
+- Folders: names visible to everyone listing that kind; a folder holding folders can't be deleted; no view of every folder at once.
+- Apps and workflows from before M10 with an entity or block named `url` or `sql` must rename it (the validator says so).
+- Editor: REST queries edited as JSON; a component's handle bar covers the lower part of a short component just above; a click on a chart's Table button while the chart isn't selected only selects it.
+- Charts: light mode only, no texture fills.
+- Automatic queries aren't audited (by design); manual ones are, without values.
+- Modules and library queries: a slug can't change; renaming a module input doesn't rewrite a destructured `const { x } = inputs`; the publish warning doesn't show when publishing from a Git branch; the nesting check loads every module release's components (unmeasured beyond tens of modules); library queries can't be called from Python or JavaScript, and have no JavaScript, version ranges or slug renames; `current_user` exists in workflows only for library queries.
+- The library editor's REST JSON field isn't shared as text (last write wins); its `gcTime: 0` could become removing the deleted query's cache entry in the delete dialog's `onSuccess`.
+- Library query branch drafts through the shared document are covered by e2e specs only, not a server test.
+
+### Custom components (M25, M33)
+- npm packages' types are `any` in the editor; the SDK's React declaration is a light one; no custom components as containers, inline components or per-app origins.
+- The frame's egress: a CSP doesn't cover a frame navigating itself (stopped after the fact) or WebRTC in every browser.
+- Builds run in the API process (two at a time per process); no build queue or metrics.
+- Auto height: the editor's canvas keeps the stored height (only the run-time grid follows the content).
+
+### Multiplayer and the editors (M13, M16, M28)
+- Two concurrent adds of one name keep the first in document order; concurrent deletes can leave a draft the server won't write ("Not saved") until fixed; a REST `saveDraft` wins over at most a second of collaborative edits.
+- The parsed app fields (component props, a variable's initial value, a resource query's JSON, library params) merge as values, not as text.
+- The resource playground stays single-user; no comments, following or per-person history.
+- Undo/redo remount the side panels (a Monaco field there loses its cursor); undo is per tab and per load.
+- Pasting isn't checked against what the person may use (running still needs Use).
+- Code with CRLF line ends is stored with `\n` once opened in an editor, so the next Git commit shows those lines changed.
+- No "create function from selection".
+- Many blocks with forms make a wide canvas (Fit View zooms far out); Switch block type covers single block ↔ loop only.
+- Editor completions cover the latest finished run only; no environment choice for them.
+- The run panel's logs tab shows the first 500 lines.
+
+### Web generally
+- No toast system outside apps (`pages/apps/notifications.tsx`).
+- The main bundle was 488 kB at M13 (not re-measured); only the editors and Monaco are split out.
+- The label editors' "Add" button takes the whole field label as its accessible name (the M9 e2e relies on it).
+
+### Git sync (M11, M20, M22, M31)
+- Hosts other than GitHub and GitLab push and pull without a change-request API (a compare link is shown).
+- Commits are authored by the person but pushed with the instance's token or App; the App's key must be RSA.
+- Update from branch replaces the draft (no three-way merge of draft edits); Update from main refuses conflicts outside object directories and delete/change conflicts (fix those on the host); its resolutions are per object directory, and resolving one for an object not on the instance is admin-only.
+- Diff3, like git, makes changes on adjacent lines one conflict.
+- The Git bar's `changes` also fetches the deploy branch (one more fetch per open editor every 30 s); the branch picker reads remote branches at most every 15 s per process.
+- GitHub works out a PR's mergeability lazily ("Checking…" for a minute after Update from main).
+- An environment Git no longer lists is kept when it holds this instance's secrets, overrides or OAuth accounts; an environment Git names that the instance lacks is skipped silently.
+- Deleting objects whose directory left the branch is by hand (flagged `missing`); a folder with `/` in its name (made before M22's review) must be renamed before protecting what's in it.
+- Renames: renamed-and-changed on one side reads as deleted and added; library queries have no renamer; a rename is followed only when all three definitions parse.
+- Resources have no branch drafts; secrets never come from Git or an outside secret manager.
+- The M14 Compose check left 6 `git_objects` rows naming deleted check objects on the user's stack (harmless).
+
+### Python (M12, M23, M32)
+- No network from Python and no workflow functions: by design.
+- Python's references: a name the code binds anywhere is its own; a block named like a Python builtin can't be read from Python (warning). dict methods win over keys in attribute access (`row["items"]`).
+- The executor gets the referenced blocks' data as JSON in each request (up to `PYTHON_MAX_REQUEST_MB`, 64): a copy per Python block.
+- Output is cut at 1 MB; logs stream only from Python (JavaScript's went through the store already).
+- The editor's syntax markers need the executor (a second after typing stops); the e2e typing helper types Python on one line.
+- A first install can outlast a Python block's timeout; no allow or deny list of packages; a workflow's pins win over the image's packages (pinning one pandas needs to an incompatible version breaks pandas for that workflow).
+- `python_envs` rows aren't cleaned up (the builder removes unused envs on disk after `PYTHON_ENV_KEEP_DAYS`).
+- The editor's packages field and the run timeout are read when the editor mounts (someone else's change shows after a reload).
+- An unknown package index isn't a save-time problem (fails installs, runs and publishing as `python_packages`); a root's failed pre-import in a warm env jail isn't logged.
+
+### AI (M35)
+- The run's budget is checked before each call: the call crossing it isn't cut off (the next is refused); a resumed run doesn't count a loop's iterations' earlier AI calls.
+- Agent tools aren't sent `strict`; tools must be written out (no `{{ }}`); library queries on an AI resource have no agent tools.
+- Not checked against the real Anthropic API by hand yet (§12 #44).
+
+### Tests not written
+- The OIDC callback logic (extract the claim checks into a pure function).
 
 ## 14. M35 steps
 
