@@ -13,7 +13,8 @@ export function toJsonData(value: unknown): { data: unknown; sizeBytes: number }
   const sizeBytes = Buffer.byteLength(text)
   if (sizeBytes > MAX_PAYLOAD_BYTES) {
     const mb = (sizeBytes / 1024 / 1024).toFixed(1)
-    throw new BlockFailure('too_large', `The result is ${mb} MB; blocks can return at most 10 MB`)
+    const max = MAX_PAYLOAD_BYTES / 1024 / 1024
+    throw new BlockFailure('too_large', `The result is ${mb} MB; blocks can return at most ${max} MB`)
   }
   return { data: JSON.parse(text), sizeBytes }
 }

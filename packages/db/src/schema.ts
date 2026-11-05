@@ -838,9 +838,10 @@ export const blockRuns = pgTable(
   ],
 )
 
-export const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
+/** A block's data at most (session 40: 50 MB, was 10 MB; the user's word). */
+export const MAX_PAYLOAD_BYTES = 50 * 1024 * 1024
 
-/** A block's output data, kept apart so listing a run's blocks stays cheap. Capped at 10MB. */
+/** A block's output data, kept apart so listing a run's blocks stays cheap. Capped at `MAX_PAYLOAD_BYTES`. */
 export const blockRunPayloads = pgTable(
   'block_run_payloads',
   {
@@ -851,7 +852,7 @@ export const blockRunPayloads = pgTable(
     /** Size of the data as JSON text, checked by the engine before writing. */
     sizeBytes: integer().notNull(),
   },
-  (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 10485760`)],
+  (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 52428800`)],
 )
 
 export const TASK_STATUSES = ['open', 'completed', 'expired', 'cancelled'] as const

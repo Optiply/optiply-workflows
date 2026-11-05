@@ -40,7 +40,7 @@ export class IvmRuntime implements CodeRuntime {
   private readonly memoryLimitMb: number
 
   constructor(opts: IvmRuntimeOptions = {}) {
-    this.memoryLimitMb = opts.memoryLimitMb ?? 128
+    this.memoryLimitMb = opts.memoryLimitMb ?? 512
   }
 
   evalExpression(expression: string, scope: Record<string, unknown>, opts: RunOptions = {}) {

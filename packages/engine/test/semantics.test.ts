@@ -601,12 +601,21 @@ describe('results, logs and validation', () => {
     )
   })
 
-  it('refuses results over 10 MB', async () => {
+  it('refuses results over 50 MB, and takes the ones under', async () => {
     const { outcome } = await run(
       services,
-      wf([code('huge', 'return "x".repeat(11 * 1024 * 1024)')], [['startTrigger', 'huge']]),
+      wf([code('huge', 'return "x".repeat(51 * 1024 * 1024)')], [['startTrigger', 'huge']]),
     )
-    expect(outcome.error).toMatchObject({ code: 'too_large', block: 'huge' })
+    expect(outcome.error).toMatchObject({
+      code: 'too_large',
+      block: 'huge',
+      message: expect.stringMatching(/^The result is 51\.0 MB; blocks can return at most 50 MB/),
+    })
+    const big = await run(
+      services,
+      wf([code('big', 'return "x".repeat(11 * 1024 * 1024)')], [['startTrigger', 'big']]),
+    )
+    expect(big.outcome.status).toBe('succeeded')
   })
 
   it('captures console output per block, with secrets scrubbed', async () => {

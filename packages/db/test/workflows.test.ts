@@ -240,7 +240,7 @@ describe('block runs', () => {
       .values({ runId: r.id, blockKey: 'a', status: 'succeeded', epoch: 1 })
       .returning()
     expect(
-      await pgError(db.insert(blockRunPayloads).values({ blockRunId: b!.id, data: [], sizeBytes: 10485761 })),
+      await pgError(db.insert(blockRunPayloads).values({ blockRunId: b!.id, data: [], sizeBytes: 52428801 })),
     ).toMatchObject({ constraint_name: 'block_run_payloads_size_ck' })
     await db.insert(blockRunPayloads).values({ blockRunId: b!.id, data: [{ id: 1 }], sizeBytes: 10 })
   })
