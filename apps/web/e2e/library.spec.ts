@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { acceptConfirms, editorText, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
@@ -71,6 +71,27 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
 })
 
 /** A library query deleted and created again under its slug opens as the new one, not the deleted one. */
+test('switching the resource starts that kind of resource’s query', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Library' }).click()
+  await page.getByRole('button', { name: 'New query' }).click()
+  await page.getByLabel('Name', { exact: true }).fill(`Switch ${Date.now()}`)
+  await page.getByRole('button', { name: 'Create query' }).click()
+  await expect(page).toHaveURL(/\/library\/switch_\d+$/)
+  const resource = page.getByRole('combobox', { name: 'Resource' })
+  const sqlResource = await resource.inputValue()
+
+  // The built-in REST API (M27) starts as its own query (a URL), not a plain REST resource's path.
+  await resource.selectOption('rest_api')
+  const json = page.getByTestId('code-library:rest_api:json')
+  await expect.poll(() => editorText(json)).toContain('"url": "https://"')
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
+
+  // Back to a SQL resource: SQL again.
+  await resource.selectOption(sqlResource)
+  await expect.poll(() => editorText(page.locator('[data-testid^="code-library:"]'))).toBe('select 1')
+})
+
 test('a library query recreated under a deleted one’s slug opens as itself', async ({ page }) => {
   await signIn(page)
   const name = `Again ${Date.now()}`

@@ -29,7 +29,7 @@ import {
 import { UndoButtons } from '@/components/undo-buttons'
 import type { SaveStatus as SaveStatusName } from '@/lib/collab-session'
 import { useEditorKeys } from '@/lib/editor-keys'
-import { isSqlType } from '@/lib/resource-types'
+import { defaultQuery, isSqlType } from '@/lib/resource-types'
 import { parseTestValue, showTestValue } from '@/lib/test-value'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -327,14 +327,15 @@ function QueryCard({
             onChange={(e) => {
               const slug = e.target.value
               const next = resources.data?.resources.find((r) => r.slug === slug)
-              const query: LibraryQueryDefinition['query'] =
-                next && !isSqlType(next.type) ? { method: 'GET', path: '/' } : { sql: 'select 1' }
+              // Same kind of resource: the query carries over; another kind starts that kind's query (a
+              // service's first action, a broker's messages…), as the workflow and app editors do.
+              const sameKind =
+                next && resource ? next.type === resource.type : sql === isSqlType(next?.type ?? '')
+              const query = sameKind
+                ? definition.query
+                : (defaultQuery(next?.type) as LibraryQueryDefinition['query'])
               setJson(JSON.stringify(query, null, 2))
-              edit((d) => ({
-                ...d,
-                resource: slug,
-                query: sql === isSqlType(next?.type ?? '') ? d.query : query,
-              }))
+              edit((d) => ({ ...d, resource: slug, query: sameKind ? d.query : query }))
             }}
           >
             {!resource && <option value={definition.resource}>{definition.resource}</option>}
@@ -368,7 +369,7 @@ function QueryCard({
       ) : (
         <Field
           label="Request"
-          hint='The connector’s query as JSON, e.g. {"method": "GET", "path": "/orders/{{ customerId }}"}'
+          hint="The resource’s query as JSON, as its Query tab shows it; it starts as that kind of resource’s empty query"
         >
           <CodeField
             path={`library:${definition.resource}:json`}
