@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import {
   type AuthVariables,
+  ConnectorError,
   type CredentialSource,
   type FlowSandbox,
   type RestConfig,
@@ -24,6 +25,52 @@ interface StoredVariables {
 /** Variables this close to their `ttlSeconds` are signed in for again before use. */
 const EXPIRY_MARGIN_MS = 5_000
 const EXPRESSION_TIMEOUT_MS = 5_000
+
+/** After a failed sign-in, the next waits this long, doubling per failure up to the maximum. */
+const BACKOFF_START_MS = 5_000
+const BACKOFF_MAX_MS = 5 * 60_000
+const BACKOFF_KEYS = 1000
+
+/**
+ * Sign-in failures per flow, in this process: until `until`, sign-ins aren't tried again and fail with the last
+ * error, so a wrong password isn't sent on every query (and doesn't lock the account at the provider). Keyed by the
+ * config, the flow and its secrets: a fixed password or a changed flow tries again at once. Test connection
+ * (`store: false`) always tries.
+ */
+const failures = new Map<string, { count: number; until: number; error: ConnectorError }>()
+
+function backoffKey(resourceConfigId: string, flowHash: string, secrets: RestSecrets): string {
+  const secretsHash = createHash('sha256').update(JSON.stringify(secrets)).digest('base64url')
+  return `${resourceConfigId}:${flowHash}:${secretsHash}`
+}
+
+/** Throws the last error while a flow's back-off lasts. */
+function checkBackoff(key: string): void {
+  const failed = failures.get(key)
+  if (!failed || failed.until <= Date.now()) return
+  const seconds = Math.ceil((failed.until - Date.now()) / 1000)
+  throw new ConnectorError(
+    failed.error.code,
+    `${failed.error.message} (failed ${failed.count} time${failed.count === 1 ? '' : 's'} in a row; signing in again in ${seconds} s)`,
+    { ...failed.error.details, retryAt: new Date(failed.until).toISOString() },
+  )
+}
+
+function recordFailure(key: string, err: unknown): void {
+  const previous = failures.get(key)
+  const count = (previous?.count ?? 0) + 1
+  const error =
+    err instanceof ConnectorError
+      ? err
+      : new ConnectorError('auth_required', (err as Error).message ?? String(err))
+  failures.delete(key)
+  if (failures.size >= BACKOFF_KEYS) failures.delete(failures.keys().next().value!)
+  failures.set(key, {
+    count,
+    until: Date.now() + Math.min(BACKOFF_START_MS * 2 ** (count - 1), BACKOFF_MAX_MS),
+    error,
+  })
+}
 
 /**
  * Identifies a custom flow: its steps and the base URL its requests go to. Variables signed in for with another
@@ -49,6 +96,9 @@ export function customFlowHash(config: RestConfig): string {
  * 401 is skipped when the stored variables are no longer the ones this query used (someone refreshed already). The
  * variables are stored encrypted like OAuth tokens. Variables marked `secret: false` aren't scrubbed from results.
  *
+ * A sign-in that fails backs off (`failures`): the next ones fail at once with its error for 5 s, then 10 s, …
+ * up to 5 minutes, until one succeeds or the flow or its secrets change.
+ *
  * `store: false` keeps the variables in this source only (Test connection with unsaved settings).
  */
 export function customAuthCredentials(
@@ -64,6 +114,7 @@ export function customAuthCredentials(
   const { db, keyring, sandbox } = deps
   const auth = target.config.auth as CustomAuth
   const flowHash = customFlowHash(target.config)
+  const backoff = backoffKey(target.resourceConfigId, flowHash, target.secrets)
   const resource = { config: target.config, secrets: target.secrets }
 
   // A variable defined anywhere in the flow as secret stays secret.
@@ -154,7 +205,15 @@ export function customAuthCredentials(
         }
 
         const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
-        const next = await signIn(signal, previous, !!force)
+        checkBackoff(backoff)
+        let next: Record<string, unknown>
+        try {
+          next = await signIn(signal, previous, !!force)
+        } catch (err) {
+          if (!signal.aborted) recordFailure(backoff, err)
+          throw err
+        }
+        failures.delete(backoff)
         const now = new Date()
         const values = {
           expiresAt: expiresAt(),

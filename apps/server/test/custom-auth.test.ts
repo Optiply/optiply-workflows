@@ -21,6 +21,7 @@ const sandbox = new IvmRuntime()
 let api: Server
 let origin: string
 let logins = 0
+let refusedLogins = 0
 let refreshes = 0
 const sessions = new Set<string>()
 const refreshTokens = new Set<string>()
@@ -43,7 +44,10 @@ beforeAll(async () => {
     if (req.url === '/api/login') {
       const { user, password } = JSON.parse(body || '{}')
       await new Promise((r) => setTimeout(r, loginDelayMs))
-      if (user !== 'ada' || password !== 'Pw-S3cret-777') return send(401, { error: 'bad credentials' })
+      if (user !== 'ada' || password !== 'Pw-S3cret-777') {
+        refusedLogins++
+        return send(401, { error: 'bad credentials' })
+      }
       logins++
       const session = `Session-${logins}-${'s'.repeat(10)}`
       sessions.add(session)
@@ -213,7 +217,7 @@ describe('signing in', () => {
     expect(logins).toBe(loginsBefore + 1)
   })
 
-  it('reports a failing sign-in without storing anything, and tries again next time', async () => {
+  it('reports a failing sign-in without storing anything, backs off, and tries again once the secrets change', async () => {
     const { row } = await flowResource('flow_fail')
     const bad = customAuthCredentials(
       { db: env.db, keyring: env.config.keyring, sandbox },
@@ -225,11 +229,22 @@ describe('signing in', () => {
         store: true,
       },
     )
+    const refusedBefore = refusedLogins
     await expect(bad.authVariables!({ signal: AbortSignal.timeout(5000) })).rejects.toMatchObject({
       code: 'auth_required',
       details: { reason: 'flow_failed', step: 'login', status: 401 },
     })
     expect(await stored(row.id)).toEqual([])
+    // The next query doesn't send the wrong password again while the back-off lasts (5 s after one failure).
+    await expect(bad.authVariables!({ signal: AbortSignal.timeout(5000) })).rejects.toMatchObject({
+      code: 'auth_required',
+      message: expect.stringMatching(
+        /^Signing in failed at step "login": .*\(failed 1 time in a row; signing in again in [1-5] s\)$/,
+      ),
+      details: { reason: 'flow_failed', step: 'login', retryAt: expect.any(String) },
+    })
+    expect(refusedLogins).toBe(refusedBefore + 1)
+    // The password fixed (other secrets): signed in at once.
     expect(await session(source(row))).toMatch(/^Session-/)
   })
 

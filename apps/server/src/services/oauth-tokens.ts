@@ -10,6 +10,7 @@ import {
   type RestAuth,
   refreshAccessToken,
   restConnector,
+  revokeToken,
   type TokenSet,
 } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
@@ -167,6 +168,50 @@ export async function deleteTokens(
     )
     .returning({ id: oauthTokens.id })
   return rows.length
+}
+
+/** What Disconnect told the provider: `none` when there was nothing to tell (no URL, no tokens). */
+export type Revocation = { revoked: 'yes' | 'none' } | { revoked: 'failed'; reason: string }
+
+/**
+ * Disconnects one owner's account: revokes it at the provider when the auth settings have a revocation URL and the
+ * tokens were granted under the current consent settings (so they only go back where they came from), then forgets
+ * them here whatever the provider answered.
+ */
+export async function disconnectAccount(
+  db: Db,
+  keyring: Keyring,
+  target: {
+    resourceConfigId: string
+    userId: string | null
+    auth: AuthorizationCodeSettings
+    clientSecret: string | undefined
+    allowPrivateNetwork: boolean
+    consent: string | null
+  },
+): Promise<{ removed: number } & Revocation> {
+  const [row] = await db
+    .select()
+    .from(oauthTokens)
+    .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), ownedBy(target.userId)))
+  let revocation: Revocation = { revoked: 'none' }
+  if (row && target.auth.revokeUrl && row.consentHash === target.consent) {
+    const stored = decryptTokens(keyring, row)
+    const token = stored.refreshToken
+      ? { value: stored.refreshToken, type: 'refresh_token' as const }
+      : { value: stored.accessToken, type: 'access_token' as const }
+    try {
+      await revokeToken(target.auth, target.clientSecret, token, {
+        signal: AbortSignal.timeout(10_000),
+        allowPrivateNetwork: target.allowPrivateNetwork,
+      })
+      revocation = { revoked: 'yes' }
+    } catch (err) {
+      revocation = { revoked: 'failed', reason: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  const removed = await deleteTokens(db, target.resourceConfigId, target.userId)
+  return { removed, ...revocation }
 }
 
 export type ConnectionStatus =

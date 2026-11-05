@@ -1877,7 +1877,6 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
 
 ### Fix candidates ★
-- ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
 - ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
 
 ### Engine and runs
@@ -1918,7 +1917,8 @@ Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-action
 - **S3 (M29)** has no private-network guard of its own (the SDK makes the requests): its endpoint is admin-only, as SQS's.
 - **SSH tunnels (M17, M18):** no SSH agent, certificates, keyboard-interactive/2FA, proxies or shared SSH profiles; no tunnels for BigQuery or the brokers; one pinned host key per hop; a forward to a host the SSH server can't reach waits for that server's TCP timeout (bounded for Postgres only by the query's timeout); PuTTY v3 keys run Argon2 synchronously; Test connection connects the chain twice; tunnels are per process; the server's OAuth authorization-code flows don't use a REST resource's tunnel. A bastion reached through a local `gcloud start-iap-tunnel` only works while that command runs on one person's machine (Optiply's production bastion is only reachable that way today).
 - **IAP (M18):** on a Mac the server's identity is a person's (`gcloud auth application-default login`); a service account is the lasting choice. No `nic0` choice, destination groups, private IPs or impersonation. The admin rule watches the server-identity hop's target only. `checkSshIap` builds a token source just to check settings.
-- **OAuth and custom auth (M9)** (besides ★): no per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows; the process refreshing holds a pooled connection (and the lock) while calling the provider; custom flows' code steps run in a sandbox shared by the process, not the run's.
+- **Revocation and back-off (session 40):** Disconnect revokes at the provider only with a revocation URL (RFC 7009 on the token URL's origin; Google, Slack and Salesforce have one, HubSpot's own `DELETE /oauth/v1/refresh-tokens/:token` and Microsoft aren't supported); accounts dropped because the consent settings changed aren't revoked. A custom flow's sign-in back-off is per process (each API and worker process tries once before backing off) and isn't shown in the resource's page.
+- **OAuth and custom auth (M9):** no per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows; the process refreshing holds a pooled connection (and the lock) while calling the provider; custom flows' code steps run in a sandbox shared by the process, not the run's.
 
 ### Queues and brokers (M19, M26, M30)
 - One worker takes every free trigger (no spreading); a trigger's messages are pulled by one worker at a time. Run ends are polled once a second per trigger; the editor's "in flight" can lag up to 5 s.

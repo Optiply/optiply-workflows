@@ -76,6 +76,7 @@ function httpConfig(config: Config) {
           provider: 'custom',
           authorizeUrl: `${base.url}/services/oauth2/authorize`,
           tokenUrl: `${base.url}/services/oauth2/token`,
+          revokeUrl: `${base.url}/services/oauth2/revoke`,
           clientId: config.auth.clientId,
           scope: config.auth.scope,
           authorizeParams: [],

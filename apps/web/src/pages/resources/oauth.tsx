@@ -62,6 +62,7 @@ export function OAuthCodeFields({
       provider: id,
       authorizeUrl: fillPlaceholders(next.authorizeUrl, values),
       tokenUrl: fillPlaceholders(next.tokenUrl, values),
+      revokeUrl: next.revokeUrl,
       scope: next.scope,
       authorizeParams: next.authorizeParams,
       pkce: next.pkce,
@@ -136,6 +137,21 @@ export function OAuthCodeFields({
             placeholder="https://auth.example.com/oauth/token"
             disabled={disabled}
             onChange={(e) => setAuth({ tokenUrl: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Revocation URL"
+          hint={
+            preset && !preset.revokeUrl
+              ? `${preset.label} has no standard revocation endpoint: Disconnect only forgets the account here.`
+              : 'Optional (RFC 7009), on the same origin as the token endpoint: Disconnect revokes the account there.'
+          }
+        >
+          <Input
+            value={text('revokeUrl')}
+            placeholder="https://auth.example.com/oauth/revoke"
+            disabled={disabled}
+            onChange={(e) => setAuth({ revokeUrl: e.target.value })}
           />
         </Field>
         <Field label="Client ID">
@@ -272,8 +288,15 @@ export function OAuthConnections({
   })
   const disconnect = useMutation(
     trpc.resources.oauthDisconnect.mutationOptions({
-      onSuccess: async () => {
-        setMessage(null)
+      onSuccess: async (result) => {
+        // What the provider was told: the connection is forgotten here either way.
+        if (!('revoked' in result) || result.revoked === 'none') setMessage(null)
+        else if (result.revoked === 'failed') {
+          setMessage({
+            ok: false,
+            text: `Disconnected here, but the provider didn’t revoke the access (${result.reason}). Remove it in the provider’s settings.`,
+          })
+        } else setMessage({ ok: true, text: 'Disconnected, and revoked at the provider.' })
         await refresh()
       },
     }),

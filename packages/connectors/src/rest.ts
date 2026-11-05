@@ -126,6 +126,14 @@ const flowSteps = z.array(flowStep).superRefine((steps, ctx) => {
 })
 
 /** An http(s) URL with every `{placeholder}` of a provider preset filled in. */
+const sameOrigin = (a: string, b: string) => {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 const oauthUrl = z
   .url({ protocol: /^https?$/ })
   .refine((url) => !/\{\w+\}|%7B\w+%7D/i.test(url), { message: 'Fill in the {placeholders} in the URL' })
@@ -149,22 +157,29 @@ const authSchema = z
       /** How the client secret is sent to the token endpoint. */
       clientAuth: z.enum(['body', 'basic']).default('body'),
     }),
-    z.object({
-      type: z.literal('oauth2AuthorizationCode'),
-      /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
-      provider: z.enum(OAUTH_PROVIDERS).default('custom'),
-      authorizeUrl: oauthUrl,
-      tokenUrl: oauthUrl,
-      clientId: z.string().min(1),
-      /** As the provider writes them: space-separated for most, comma-separated for Slack. */
-      scope: z.string().default(''),
-      /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
-      authorizeParams: keyValues,
-      clientAuth: z.enum(['body', 'basic']).default('body'),
-      pkce: z.boolean().default(true),
-      /** One connected account per environment, or each person connects their own. */
-      tokens: z.enum(['shared', 'perUser']).default('shared'),
-    }),
+    z
+      .object({
+        type: z.literal('oauth2AuthorizationCode'),
+        /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
+        provider: z.enum(OAUTH_PROVIDERS).default('custom'),
+        authorizeUrl: oauthUrl,
+        tokenUrl: oauthUrl,
+        /** RFC 7009 revocation for Disconnect (empty: none), on the token URL's origin. */
+        revokeUrl: z.preprocess((v) => (v === '' ? undefined : v), oauthUrl.optional()),
+        clientId: z.string().min(1),
+        /** As the provider writes them: space-separated for most, comma-separated for Slack. */
+        scope: z.string().default(''),
+        /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
+        authorizeParams: keyValues,
+        clientAuth: z.enum(['body', 'basic']).default('body'),
+        pkce: z.boolean().default(true),
+        /** One connected account per environment, or each person connects their own. */
+        tokens: z.enum(['shared', 'perUser']).default('shared'),
+      })
+      .refine((auth) => !auth.revokeUrl || sameOrigin(auth.revokeUrl, auth.tokenUrl), {
+        path: ['revokeUrl'],
+        message: 'Use a revocation URL on the token URL’s origin (it receives the tokens)',
+      }),
     z
       .object({
         type: z.literal('custom'),

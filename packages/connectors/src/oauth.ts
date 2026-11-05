@@ -10,6 +10,8 @@ export interface AuthorizationCodeSettings {
   provider: OAuthProviderId
   authorizeUrl: string
   tokenUrl: string
+  /** RFC 7009 revocation, on the token URL's origin; Disconnect calls it when set. */
+  revokeUrl?: string
   clientId: string
   scope: string
   authorizeParams: { key: string; value: string }[]
@@ -167,12 +169,10 @@ function sharedAgent(allowPrivateNetwork: boolean): Agent {
   return guardedAgent
 }
 
-async function requestToken(
-  tokenUrl: string,
-  form: URLSearchParams,
-  client: { clientId: string; clientSecret: string | undefined; clientAuth: 'body' | 'basic' },
-  opts: TokenRequestOptions,
-): Promise<Record<string, unknown>> {
+type OAuthClient = { clientId: string; clientSecret: string | undefined; clientAuth: 'body' | 'basic' }
+
+/** A form post's headers, with the client's credentials in a Basic header or in the form. */
+function clientRequest(form: URLSearchParams, client: OAuthClient): Headers {
   const headers = new Headers({
     'content-type': 'application/x-www-form-urlencoded',
     accept: 'application/json',
@@ -184,6 +184,66 @@ async function requestToken(
     form.set('client_id', client.clientId)
     if (client.clientSecret !== undefined) form.set('client_secret', client.clientSecret)
   }
+  return headers
+}
+
+/**
+ * Revokes a token at the provider (RFC 7009), for Disconnect: the refresh token when there is one (revoking it ends
+ * the grant), else the access token. Only on the token URL's origin, which already receives the tokens; no
+ * redirects. Throws a `ConnectorError` saying why when the provider refuses or can't be reached.
+ */
+export async function revokeToken(
+  auth: Pick<AuthorizationCodeSettings, 'tokenUrl' | 'revokeUrl' | 'clientId' | 'clientAuth'>,
+  clientSecret: string | undefined,
+  token: { value: string; type: 'refresh_token' | 'access_token' },
+  opts: TokenRequestOptions,
+): Promise<void> {
+  if (!auth.revokeUrl) throw new ConnectorError('invalid_config', 'No revocation URL is set')
+  const url = new URL(auth.revokeUrl)
+  if (url.origin !== new URL(auth.tokenUrl).origin) {
+    throw new ConnectorError('invalid_config', 'The revocation URL must be on the token URL’s origin')
+  }
+  if (!opts.allowPrivateNetwork && isPrivateAddress(url.hostname)) {
+    throw new ConnectorError('blocked', `${url.hostname} is a private address`)
+  }
+  const form = new URLSearchParams({ token: token.value, token_type_hint: token.type })
+  const headers = clientRequest(form, { ...auth, clientSecret })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: form.toString(),
+      signal: opts.signal,
+      redirect: 'manual',
+      dispatcher: opts.dispatcher ?? sharedAgent(opts.allowPrivateNetwork),
+    })
+  } catch (err) {
+    throw networkError(err, url)
+  }
+  const text = await res.text()
+  const body = parseBody(text, res.headers.get('content-type'))
+  // Slack answers 200 with `ok: false`; a token already gone is revoked enough.
+  const error = typeof body?.error === 'string' ? body.error : undefined
+  if (
+    (res.ok && body?.ok !== false) ||
+    (error && ['invalid_token', 'token_revoked', 'invalid_auth'].includes(error))
+  ) {
+    return
+  }
+  throw new ConnectorError('http', `The provider didn't revoke the token: ${error ?? `HTTP ${res.status}`}`, {
+    status: res.status,
+    body: text.slice(0, ERROR_BODY_PREVIEW),
+  })
+}
+
+async function requestToken(
+  tokenUrl: string,
+  form: URLSearchParams,
+  client: OAuthClient,
+  opts: TokenRequestOptions,
+): Promise<Record<string, unknown>> {
+  const headers = clientRequest(form, client)
 
   const url = new URL(tokenUrl)
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {

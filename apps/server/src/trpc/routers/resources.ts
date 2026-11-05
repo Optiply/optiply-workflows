@@ -55,6 +55,7 @@ import {
   connectionStatus,
   credentialsFor,
   deleteTokens,
+  disconnectAccount,
 } from '../../services/oauth-tokens'
 import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
@@ -777,8 +778,9 @@ export const resourcesRouter = router({
   }),
 
   /**
-   * Disconnects the shared account (Edit) or the user's own (Use, or through `appId` like connecting). The provider
-   * isn't told (no revocation).
+   * Disconnects the shared account (Edit) or the user's own (Use, or through `appId` like connecting): revoked at the
+   * provider when the settings have a revocation URL (`revoked`: yes, none, or failed with the reason), and
+   * forgotten here either way.
    */
   oauthDisconnect: authedProcedure
     .input(
@@ -791,17 +793,24 @@ export const resourcesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const target = await oauthTarget(ctx, input)
-      const removed = await deleteTokens(ctx.db, target.config.id, target.userId)
+      const { removed, ...revocation } = await disconnectAccount(ctx.db, ctx.config.keyring, {
+        resourceConfigId: target.config.id,
+        userId: target.userId,
+        auth: target.auth,
+        clientSecret: target.clientSecret,
+        allowPrivateNetwork: target.allowPrivateNetwork,
+        consent: authFingerprint(target.resource.type, effectiveConfig(target.config)),
+      })
       if (removed) {
         await ctx.audit({
           action: 'resource.oauth_disconnected',
           objectType: 'resource',
           objectId: target.resource.id,
           environmentId: input.environmentId,
-          metadata: { account: target.userId === null ? 'shared' : 'user' },
+          metadata: { account: target.userId === null ? 'shared' : 'user', revoked: revocation.revoked },
         })
       }
-      return { disconnected: removed > 0 }
+      return { disconnected: removed > 0, ...(removed > 0 && revocation) }
     }),
 
   /**

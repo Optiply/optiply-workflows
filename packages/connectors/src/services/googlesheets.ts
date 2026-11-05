@@ -82,6 +82,7 @@ function httpConfig(config: Config) {
           provider: 'google',
           authorizeUrl: google.authorizeUrl,
           tokenUrl: google.tokenUrl,
+          revokeUrl: google.revokeUrl,
           clientId: config.auth.clientId,
           scope: config.auth.scope,
           authorizeParams: google.authorizeParams,

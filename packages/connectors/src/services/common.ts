@@ -81,6 +81,8 @@ export function restAuthFor(
     provider: preset.id,
     authorizeUrl: preset.authorizeUrl,
     tokenUrl,
+    // A fake's token URL (tests) is on another origin: no revocation there.
+    ...(preset.revokeUrl && tokenUrl === preset.tokenUrl && { revokeUrl: preset.revokeUrl }),
     clientId: auth.clientId,
     scope: auth.scope,
     authorizeParams: preset.authorizeParams,

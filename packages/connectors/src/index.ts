@@ -131,6 +131,7 @@ export {
   OAuthGrantError,
   parseTokenSet,
   refreshAccessToken,
+  revokeToken,
   type TokenRequestOptions,
   type TokenSet,
 } from './oauth'
