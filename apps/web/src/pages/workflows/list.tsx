@@ -1,9 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Copy, FolderPlus, GitBranch, Plus, Trash2, Workflow } from 'lucide-react'
-import { useState } from 'react'
+import {
+  ArrowUpDown,
+  CalendarClock,
+  Copy,
+  Folder,
+  FolderPlus,
+  GitBranch,
+  Layers,
+  Plus,
+  Search,
+  Trash2,
+  Webhook,
+  Workflow,
+} from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import {
+  FolderBrowser,
+  FolderSelect,
+  folderPath,
+  NewFolderForm,
+  useFolders,
+  useOpenFolder,
+} from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import {
   Badge,
@@ -16,9 +36,20 @@ import {
   Field,
   Input,
   PageHeader,
+  Select,
   Spinner,
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
+import { cn } from '@/lib/utils'
+import {
+  isSortKey,
+  matchesSearch,
+  SORTS,
+  type SortKey,
+  sortWorkflows,
+  timeAgo,
+  triggerLabel,
+} from './list-model'
 
 type WorkflowSummary = RouterOutputs['workflows']['list'][number]
 
@@ -34,11 +65,37 @@ export function workflowSlug(name: string): string {
     .slice(0, 63)
 }
 
+/** The sort chosen last, per browser. */
+const SORT_STORAGE = 'ow.workflows.sort'
+
+function storedSort(): SortKey {
+  try {
+    const value = localStorage.getItem(SORT_STORAGE)
+    return isSortKey(value) ? value : 'name'
+  } catch {
+    return 'name'
+  }
+}
+
 export function WorkflowsPage() {
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.workflows.list.queryOptions())
   const { data: folders } = useFolders('workflow')
   const [panel, setPanel] = useState<'none' | 'workflow' | 'folder'>('none')
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<SortKey>(storedSort)
+  const sorted = useMemo(() => sortWorkflows(data ?? [], sort), [data, sort])
+  const chooseSort = (key: SortKey) => {
+    setSort(key)
+    try {
+      localStorage.setItem(SORT_STORAGE, key)
+    } catch {
+      // Private windows: the choice lasts this visit.
+    }
+  }
+  const searching = query.trim() !== ''
+  const found = searching ? sorted.filter((w) => matchesSearch(w, query)) : []
+  const hasFolders = !!folders?.folders.length
 
   if (isLoading) return <Spinner />
   if (!data) return <ErrorNote error={error} />
@@ -68,16 +125,139 @@ export function WorkflowsPage() {
           Create one to start building. If you expected to see workflows here, ask an admin for access.
         </EmptyState>
       ) : (
-        <FolderBrowser type="workflow" items={data} listKey={trpc.workflows.list.queryKey()}>
-          {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={!!folders?.folders.length} />}
-        </FolderBrowser>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative min-w-60 flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
+              <Input
+                type="search"
+                aria-label="Search workflows"
+                placeholder="Search every folder by name, slug or description"
+                className="pl-9"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <ArrowUpDown className="size-4" />
+              <span>Sort by</span>
+              <Select
+                aria-label="Sort workflows"
+                className="w-36"
+                value={sort}
+                onChange={(e) => chooseSort(e.target.value as SortKey)}
+              >
+                {SORTS.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {searching ? (
+            <section aria-label="Search results">
+              <p className="mb-2 text-sm text-muted">
+                {found.length === 0
+                  ? `No workflows match “${query.trim()}”.`
+                  : `${found.length} workflow${found.length === 1 ? '' : 's'} in every folder`}
+              </p>
+              {found.length > 0 && (
+                <Card className="divide-y divide-border">
+                  {found.map((w) => (
+                    <WorkflowRow
+                      key={w.id}
+                      workflow={w}
+                      hasFolders={hasFolders}
+                      folder={
+                        hasFolders
+                          ? (folderPath(folders?.folders ?? [], w.folderId) ?? 'Not in a folder')
+                          : null
+                      }
+                    />
+                  ))}
+                </Card>
+              )}
+            </section>
+          ) : (
+            <FolderBrowser type="workflow" items={sorted} listKey={trpc.workflows.list.queryKey()}>
+              {(w) => <WorkflowRow key={w.id} workflow={w} hasFolders={hasFolders} />}
+            </FolderBrowser>
+          )}
+        </div>
       )}
     </>
   )
 }
 
+const RUN_DOT: Record<string, string> = {
+  succeeded: 'bg-success',
+  failed: 'bg-danger',
+  errored: 'bg-danger',
+  running: 'bg-accent animate-pulse',
+  queued: 'bg-muted',
+  waiting: 'bg-warning',
+  cancelled: 'bg-muted',
+  interrupted: 'bg-muted',
+}
+
+/** The live release's enabled triggers, one icon per kind with its count. */
+function Triggers({ triggers }: { triggers: WorkflowSummary['triggers'] }) {
+  if (!triggers.length) return null
+  return (
+    <span className="flex items-center gap-2 text-xs text-muted" data-testid="workflow-triggers">
+      {triggers.map((t) => {
+        const Icon = t.kind === 'schedule' ? CalendarClock : t.kind === 'webhook' ? Webhook : Layers
+        const label = triggerLabel(t.kind, t.count)
+        return (
+          <span
+            key={t.kind}
+            role="img"
+            className="flex items-center gap-0.5"
+            title={label}
+            aria-label={label}
+          >
+            <Icon className="size-3.5" />
+            {t.count > 1 && <span>{t.count}</span>}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
+/** The latest run: a status dot, how long ago and where; opens it in the editor. */
+function LastRun({ workflow }: { workflow: WorkflowSummary }) {
+  const run = workflow.lastRun
+  if (!run) return <span className="w-36 text-xs text-muted">Never run</span>
+  return (
+    <Link
+      to="/workflows/$workflowId"
+      params={{ workflowId: workflow.id }}
+      search={{ run: run.id }}
+      className="flex w-36 items-center gap-1.5 text-xs text-muted hover:text-ink"
+      title={`Last run ${run.status}, ${new Date(run.createdAt).toLocaleString()}${run.environment ? ` in ${run.environment}` : ''} (${run.triggerType})`}
+      data-testid="workflow-last-run"
+    >
+      <span className={cn('size-2 shrink-0 rounded-full', RUN_DOT[run.status] ?? 'bg-muted')} />
+      <span className="truncate">
+        {run.status} {timeAgo(run.createdAt)}
+      </span>
+    </Link>
+  )
+}
+
 /** A workflow; owners can move it between folders here (that changes who can reach it). */
-function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasFolders: boolean }) {
+function WorkflowRow({
+  workflow,
+  hasFolders,
+  folder = null,
+}: {
+  workflow: WorkflowSummary
+  hasFolders: boolean
+  /** In search results: the folder it's in. */
+  folder?: string | null
+}) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: git } = useGitInfo()
@@ -100,9 +280,29 @@ function WorkflowRow({ workflow, hasFolders }: { workflow: WorkflowSummary; hasF
           <Workflow className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="font-medium">{workflow.name}</div>
-          <div className="truncate font-mono text-xs text-muted">{workflow.slug}</div>
+          <div className="flex items-center gap-2">
+            <span className="truncate font-medium">{workflow.name}</span>
+            <Triggers triggers={workflow.triggers} />
+          </div>
+          <div className="flex min-w-0 items-center gap-2 text-xs text-muted">
+            <span className="truncate font-mono">{workflow.slug}</span>
+            <span aria-hidden>·</span>
+            <span className="shrink-0" title={new Date(workflow.updatedAt).toLocaleString()}>
+              edited {timeAgo(workflow.updatedAt)}
+              {workflow.updatedByName && ` by ${workflow.updatedByName}`}
+            </span>
+            {folder && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="flex min-w-0 items-center gap-1" data-testid="workflow-folder">
+                  <Folder className="size-3 shrink-0" />
+                  <span className="truncate">{folder}</span>
+                </span>
+              </>
+            )}
+          </div>
         </div>
+        <LastRun workflow={workflow} />
         {workflow.gitProtected && <ProtectedBadge />}
         {workflow.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Draft only</Badge>}
         <Badge tone="accent">{LEVELS[workflow.level]}</Badge>
