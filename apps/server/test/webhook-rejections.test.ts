@@ -118,6 +118,24 @@ describe('body schemas', () => {
       },
     ])
   })
+
+  it('run patterns in linear time (RE2): a catastrophic one answers at once', async () => {
+    await published('codes-hook', {
+      auth: { type: 'public' },
+      bodySchema: { type: 'object', properties: { code: { type: 'string', pattern: '^(a+)+$' } } },
+    })
+    // JavaScript's engine backtracks 2^40 ways on this before failing; RE2 doesn't.
+    const started = Date.now()
+    const bad = await call('/api/v1/workflows/codes-hook/webhook', { body: `{"code":"${'a'.repeat(40)}!"}` })
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(bad).toMatchObject({
+      status: 400,
+      json: { error: { details: { errors: [{ path: '/code', message: 'must match pattern "^(a+)+$"' }] } } },
+    })
+    expect(await call('/api/v1/workflows/codes-hook/webhook', { body: '{"code":"aaa"}' })).toMatchObject({
+      status: 200,
+    })
+  })
 })
 
 describe('rejections', () => {

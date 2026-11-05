@@ -14,6 +14,7 @@ import { configureGoogle } from '../services/google'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
+import { useRe2ForPatterns } from '../services/regexp'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
@@ -42,6 +43,7 @@ export async function startWorker(deps: {
   configureGoogle(config)
   configureAwsServer(config)
   configureConnectors(config)
+  useRe2ForPatterns()
   const dispatcher = new Dispatcher({
     db,
     listener: sql,

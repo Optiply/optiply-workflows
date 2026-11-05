@@ -1877,7 +1877,6 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
 
 ### Fix candidates ★
-- ★ **A webhook body schema's `pattern`** runs as a JavaScript regex (Ajv) on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
 - ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
 - ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
 
@@ -1904,6 +1903,7 @@ Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-action
 - Rate limits are fixed windows (up to twice the limit around a boundary) and per webhook, not per caller IP.
 - Public and signed webhooks are found before anything is checked, so their method and environment errors are visible to anyone.
 - Refused calls that fail before a webhook is found (404, body too large) are only counted in the metric, not listed.
+- **Body schema patterns run on RE2** (session 40; webhooks and AI extract schemas, set by the API and the worker at startup): lookarounds and backreferences are refused everywhere (`patternProblem`); other syntax JavaScript has and RE2 lacks (some `\p{…}` names) compiles in the editor but is refused by the server's check on save. `re2` downloads a prebuilt addon from GitHub on install (compiles with a C++ toolchain otherwise; `RE2_DOWNLOAD_MIRROR`).
 - No asymmetric signatures (ed25519, JWT-signed); secret rotation is one secret per line in the config var.
 - Custom auth flow steps don't offer the Multipart body in their editor (the connector accepts it).
 - Undici's `Response.formData` refuses valid bodies whose boundary text appears inside a part; webhooks use busboy, but REST query tests and the e2e read multipart back with undici (safe: fetch picks random boundaries).

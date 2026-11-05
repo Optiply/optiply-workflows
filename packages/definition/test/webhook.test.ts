@@ -7,7 +7,7 @@ import {
   webhookEnvironments,
   workflowDefinitionSchema,
 } from '../src'
-import { checkBodySchema, compileBodySchema } from '../src/body-schema'
+import { checkBodySchema, compileBodySchema, patternProblem, setBodySchemaRegExp } from '../src/body-schema'
 import { start, wf } from './helpers'
 
 const withWebhook = (webhook: object) =>
@@ -237,6 +237,55 @@ describe('validateDefinition: webhook settings', () => {
     ])
     // Without the checker, a schema that doesn't compile isn't noticed.
     expect(validateDefinition(withWebhook({ bodySchema: { type: 'objekt' } })).diagnostics).toEqual([])
+  })
+
+  it('refuses patterns RE2 can’t run (lookarounds, backreferences), where they are patterns', () => {
+    for (const ok of ['^[a-z]+$', '\\(?=', '[(?=]', '\\\\1', '(?:ab)+', '(?<year>\\d{4})', '[\\1]']) {
+      expect(patternProblem(ok), ok).toBeNull()
+    }
+    expect(patternProblem('^(?=.*\\d)')).toMatch(/^lookahead and lookbehind/)
+    expect(patternProblem('(?<!x)y')).toMatch(/^lookahead and lookbehind/)
+    expect(patternProblem('(a)\\1')).toMatch(/^backreferences/)
+    expect(patternProblem('(?<q>a)\\k<q>')).toMatch(/^backreferences/)
+    expect(
+      diagnostics({ bodySchema: { properties: { id: { type: 'string', pattern: '^(?!0)\\d+$' } } } }),
+    ).toMatchObject([
+      { code: 'invalid_body_schema', message: expect.stringContaining('/properties/id/pattern: lookahead') },
+    ])
+    expect(compileBodySchema({ patternProperties: { '(.)\\1': {} } })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('/patternProperties: "(.)\\1": backreferences'),
+    })
+    // A property called `pattern`, and data that holds one, aren't patterns.
+    const fine = {
+      type: 'object',
+      properties: { pattern: { type: 'string' } },
+      examples: [{ pattern: '(?=x)' }],
+      enum: [{ pattern: '(a)\\1' }],
+    }
+    expect(compileBodySchema(fine).ok).toBe(true)
+  })
+
+  it('runs patterns on the engine the server sets', () => {
+    const seen: string[] = []
+    const engine = Object.assign(
+      (pattern: string, flags: string) => {
+        seen.push(`${pattern}/${flags}`)
+        return new RegExp(pattern, flags)
+      },
+      { code: 'test' },
+    )
+    setBodySchemaRegExp(engine)
+    try {
+      const compiled = compileBodySchema({ type: 'string', pattern: '^ok$' })
+      if (!compiled.ok) throw new Error(compiled.error)
+      expect(compiled.validate('ok')).toBeNull()
+      expect(compiled.validate('no')).toMatchObject([{ message: expect.stringContaining('pattern') }])
+      // The schema's pattern (Ajv's meta-schema patterns go through it too).
+      expect(seen).toContain('^ok$/u')
+    } finally {
+      setBodySchemaRegExp(Object.assign((p: string, f: string) => new RegExp(p, f), { code: 'new RegExp' }))
+    }
   })
 
   it('refuses an idempotency header on a public webhook', () => {
