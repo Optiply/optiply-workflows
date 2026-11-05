@@ -2,32 +2,38 @@ import { ChevronDown, ChevronRight, Folder, FolderOpen, Layers } from 'lucide-re
 import { type DragEvent, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 
-/** What a dragged workflow row carries (its id), so only workflow rows drop on the tree. */
+/** What a dragged row carries (its id), per kind, so only that kind's rows drop on its tree. */
 export const WORKFLOW_DRAG_TYPE = 'application/x-ow-workflow'
+export const APP_DRAG_TYPE = 'application/x-ow-app'
 
 type FolderRow = { id: string; name: string; parentId: string | null }
 
 /**
- * The Workflows page's folder tree (session 40): every folder, nested and expandable, with how many workflows each
- * holds (its subfolders' included); a click opens one, and a dragged workflow row drops on a folder (or on "All
- * workflows": out of any folder) to move there. Folders with nothing visible are hidden from people who can't manage
- * folders, as in the list.
+ * A list page's folder tree (session 40: Workflows, then Apps): every folder, nested and expandable, with how many
+ * items each holds (its subfolders' included); a click opens one, and a dragged row (`dragType`) drops on a folder
+ * (or on "All …": out of any folder) to move there. Folders with nothing visible are hidden from people who can't
+ * manage folders, as in the list.
  */
 export function FolderTree({
+  noun,
+  dragType,
   folders,
   items,
   openId,
   canManage,
   onOpen,
-  onDropWorkflow,
+  onDropItem,
 }: {
+  /** Singular and plural: `['workflow', 'workflows']`. */
+  noun: readonly [string, string]
+  dragType: string
   folders: readonly FolderRow[]
   items: readonly { folderId: string | null }[]
   /** The open folder (null: the top); undefined highlights nothing (search results). */
   openId: string | null | undefined
   canManage: boolean
   onOpen: (id: string | null) => void
-  onDropWorkflow: (workflowId: string, folderId: string | null) => void
+  onDropItem: (itemId: string, folderId: string | null) => void
 }) {
   const { children, counts } = useMemo(() => {
     const known = new Set(folders.map((f) => f.id))
@@ -72,18 +78,18 @@ export function FolderTree({
   const [over, setOver] = useState<string | undefined>(undefined)
   const dropProps = (target: string | null) => ({
     onDragOver: (e: DragEvent) => {
-      if (!e.dataTransfer.types.includes(WORKFLOW_DRAG_TYPE)) return
+      if (!e.dataTransfer.types.includes(dragType)) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       setOver(target ?? '')
     },
     onDragLeave: () => setOver(undefined),
     onDrop: (e: DragEvent) => {
-      const id = e.dataTransfer.getData(WORKFLOW_DRAG_TYPE)
+      const id = e.dataTransfer.getData(dragType)
       setOver(undefined)
       if (!id) return
       e.preventDefault()
-      onDropWorkflow(id, target)
+      onDropItem(id, target)
     },
   })
 
@@ -144,7 +150,7 @@ export function FolderTree({
           over === '' && 'ring-2 ring-accent',
         )}
         data-testid="tree-all"
-        title="Drop a workflow here to take it out of its folder"
+        title={`Drop a ${noun[0]} here to take it out of its folder`}
         {...dropProps(null)}
       >
         <button
@@ -154,7 +160,7 @@ export function FolderTree({
           onClick={() => onOpen(null)}
         >
           <Layers className="size-4 shrink-0" />
-          <span className="truncate">All workflows</span>
+          <span className="truncate">All {noun[1]}</span>
         </button>
         <span className="text-xs tabular-nums text-muted">{items.length}</span>
       </div>

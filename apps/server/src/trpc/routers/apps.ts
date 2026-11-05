@@ -80,10 +80,27 @@ async function liveRelease(ctx: AuthedContext, app: App) {
  * browser.
  */
 export const appsRouter = router({
+  /** The apps the user can see, with who edited each last and its live release's version and time (session 40). */
   list: authedProcedure.query(async ({ ctx }) => {
     const access = await loadAccess(ctx.db, ctx.user)
-    const rows = await ctx.db.select().from(apps).orderBy(asc(apps.name))
-    return rows.filter((a) => access.appLevel(a) !== null).map((a) => summary(a, access))
+    const rows = await ctx.db
+      .select({
+        app: apps,
+        editor: users.name,
+        liveVersion: appReleases.version,
+        publishedAt: appReleases.createdAt,
+      })
+      .from(apps)
+      .leftJoin(users, eq(users.id, apps.updatedBy))
+      .leftJoin(appReleases, eq(appReleases.id, apps.liveReleaseId))
+      .orderBy(asc(apps.name))
+    return rows
+      .filter((r) => access.appLevel(r.app) !== null)
+      .map(({ app, editor, liveVersion, publishedAt }) => ({
+        ...summary(app, access),
+        updatedByName: editor,
+        liveRelease: liveVersion && publishedAt ? { version: liveVersion, publishedAt } : null,
+      }))
   }),
 
   /**

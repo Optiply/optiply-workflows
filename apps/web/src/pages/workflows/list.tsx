@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
+import { FolderTree, WORKFLOW_DRAG_TYPE } from '@/components/folder-tree'
 import {
   FolderBrowser,
   FolderSelect,
@@ -27,6 +28,7 @@ import {
   useOpenFolder,
 } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
+import { ListToolbar, useStoredChoice } from '@/components/list-toolbar'
 import {
   Badge,
   Button,
@@ -43,7 +45,6 @@ import {
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
-import { FolderTree, WORKFLOW_DRAG_TYPE } from './folder-tree'
 import {
   isSortKey,
   matchesSearch,
@@ -68,34 +69,14 @@ export function workflowSlug(name: string): string {
     .slice(0, 63)
 }
 
-/** The sort chosen last, per browser. */
-const SORT_STORAGE = 'ow.workflows.sort'
-
-function storedSort(): SortKey {
-  try {
-    const value = localStorage.getItem(SORT_STORAGE)
-    return isSortKey(value) ? value : 'name'
-  } catch {
-    return 'name'
-  }
-}
-
 export function WorkflowsPage() {
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.workflows.list.queryOptions())
   const { data: folders } = useFolders('workflow')
   const [panel, setPanel] = useState<'none' | 'workflow' | 'folder'>('none')
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<SortKey>(storedSort)
+  const [sort, chooseSort] = useStoredChoice<SortKey>('ow.workflows.sort', isSortKey, 'name')
   const sorted = useMemo(() => sortWorkflows(data ?? [], sort), [data, sort])
-  const chooseSort = (key: SortKey) => {
-    setSort(key)
-    try {
-      localStorage.setItem(SORT_STORAGE, key)
-    } catch {
-      // Private windows: the choice lasts this visit.
-    }
-  }
   const searching = query.trim() !== ''
   const found = searching ? sorted.filter((w) => matchesSearch(w, query)) : []
   const hasFolders = !!folders?.folders.length
@@ -145,6 +126,8 @@ export function WorkflowsPage() {
           {hasFolders && (
             <Card className="p-2 lg:sticky lg:top-4">
               <FolderTree
+                noun={['workflow', 'workflows']}
+                dragType={WORKFLOW_DRAG_TYPE}
                 folders={folders?.folders ?? []}
                 items={data}
                 openId={searching ? undefined : openId}
@@ -153,41 +136,20 @@ export function WorkflowsPage() {
                   setQuery('')
                   open(id)
                 }}
-                onDropWorkflow={dropWorkflow}
+                onDropItem={dropWorkflow}
               />
               <ErrorNote error={move.error} />
             </Card>
           )}
           <div className="min-w-0 space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative min-w-60 flex-1">
-                <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
-                <Input
-                  type="search"
-                  aria-label="Search workflows"
-                  placeholder="Search every folder by name, slug or description"
-                  className="pl-9"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </div>
-              <div className="flex items-center gap-2 text-sm text-muted">
-                <ArrowUpDown className="size-4" />
-                <span>Sort by</span>
-                <Select
-                  aria-label="Sort workflows"
-                  className="w-36"
-                  value={sort}
-                  onChange={(e) => chooseSort(e.target.value as SortKey)}
-                >
-                  {SORTS.map((s) => (
-                    <option key={s.key} value={s.key}>
-                      {s.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            </div>
+            <ListToolbar
+              noun="workflows"
+              query={query}
+              onQuery={setQuery}
+              sort={sort}
+              sorts={SORTS}
+              onSort={chooseSort}
+            />
             {searching ? (
               <section aria-label="Search results">
                 <p className="mb-2 text-sm text-muted">

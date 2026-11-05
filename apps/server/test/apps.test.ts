@@ -343,6 +343,20 @@ describe('apps: running queries', () => {
 })
 
 describe('apps: releases', () => {
+  it('lists each app with its last editor and live release (session 40)', async () => {
+    const app = await appWith('listed-app', crudApp())
+    const draftOnly = await appWith('listed-draft', crudApp())
+    const released = data(
+      await admin.mutate('apps.publish', { appId: app.id, draftRevision: app.revision() }),
+    )
+    const list = data(await admin.query('apps.list'))
+    expect(list.find((a: { id: string }) => a.id === app.id)).toMatchObject({
+      updatedByName: 'admin',
+      liveRelease: { version: released.version ?? '1.0.0', publishedAt: expect.any(String) },
+    })
+    expect(list.find((a: { id: string }) => a.id === draftOnly.id)).toMatchObject({ liveRelease: null })
+  })
+
   it('publishes with the right checks, serves the live release to Use, and refuses stale releases', async () => {
     const app = await appWith('orders', crudApp())
     data(await run(admin, app.id, 'setup'))
