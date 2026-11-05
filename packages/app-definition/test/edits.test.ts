@@ -375,7 +375,17 @@ describe('notes and switching types (session 41)', () => {
   })
 
   it('switches between inputs only', () => {
-    expect(switchableTypes('textInput')).toEqual(['numberInput', 'dateInput', 'select', 'checkbox'])
+    expect(switchableTypes('textInput')).toEqual([
+      'textArea',
+      'numberInput',
+      'dateInput',
+      'select',
+      'radioGroup',
+      'segmentedControl',
+      'checkboxGroup',
+      'checkbox',
+      'switch',
+    ])
     expect(switchableTypes('table')).toEqual([])
     expect(switchableTypes('container')).toEqual([])
   })

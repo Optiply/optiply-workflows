@@ -5,6 +5,15 @@ import { ChartRenderer } from './chart'
 import { ContainerRenderer, FormRenderer, ModalRenderer } from './containers'
 import { CustomRenderer } from './custom'
 import {
+  AlertRenderer,
+  DividerRenderer,
+  ImageRenderer,
+  JsonExplorerRenderer,
+  KeyValueRenderer,
+  ProgressBarRenderer,
+  StatisticRenderer,
+} from './display'
+import {
   CheckboxRenderer,
   DateInputRenderer,
   NumberInputRenderer,
@@ -12,6 +21,15 @@ import {
   TextInputRenderer,
 } from './inputs'
 import { ModuleRenderer } from './module'
+import {
+  CheckboxGroupRenderer,
+  DateRangeRenderer,
+  FileInputRenderer,
+  RadioGroupRenderer,
+  SegmentedControlRenderer,
+  SwitchRenderer,
+  TextAreaRenderer,
+} from './more-inputs'
 import { NavigationRenderer } from './navigation'
 import { TableRenderer } from './table'
 
@@ -32,4 +50,19 @@ export const RENDERERS: Partial<Record<string, ComponentType<RendererProps>>> = 
   navigation: NavigationRenderer,
   module: ModuleRenderer,
   custom: CustomRenderer,
+  // Session 41.
+  textArea: TextAreaRenderer,
+  switch: SwitchRenderer,
+  checkboxGroup: CheckboxGroupRenderer,
+  radioGroup: RadioGroupRenderer,
+  segmentedControl: SegmentedControlRenderer,
+  dateRange: DateRangeRenderer,
+  fileInput: FileInputRenderer,
+  statistic: StatisticRenderer,
+  image: ImageRenderer,
+  divider: DividerRenderer,
+  alert: AlertRenderer,
+  progressBar: ProgressBarRenderer,
+  keyValue: KeyValueRenderer,
+  jsonExplorer: JsonExplorerRenderer,
 }

@@ -18,9 +18,9 @@ describe('the palette', () => {
   })
 
   it('finds by label, type or keyword, every word, any case; empty groups go', () => {
-    expect(types(filterPalette('TEXT', labelOf))).toEqual(['textInput', 'text'])
+    expect(types(filterPalette('TEXT', labelOf))).toEqual(['textInput', 'textArea', 'text'])
     expect(types(filterPalette('dropdown', labelOf))).toEqual(['select'])
-    expect(types(filterPalette('input date', labelOf))).toEqual(['dateInput'])
+    expect(types(filterPalette('input date', labelOf))).toEqual(['dateInput', 'dateRange'])
     expect(filterPalette('dialog', labelOf).map((g) => g.title)).toEqual(['Containers and forms'])
     expect(filterPalette('nothing like it', labelOf)).toEqual([])
   })

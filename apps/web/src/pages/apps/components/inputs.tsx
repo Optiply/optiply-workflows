@@ -4,10 +4,10 @@ import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
 
-const CONTROL = cn('h-8 w-full rounded-md px-2.5', FIELD)
+export const CONTROL = cn('h-8 w-full rounded-md px-2.5', FIELD)
 
 /** What every input shares: its label (with a mark when required) and the control. */
-function Labelled({ name, id, children }: { name: string; id: string; children: ReactNode }) {
+export function Labelled({ name, id, children }: { name: string; id: string; children: ReactNode }) {
   const label = useAppValue<string>(`${name}.label`)
   const required = useAppValue<boolean>(`${name}.required`)
   return (
@@ -28,7 +28,7 @@ function Labelled({ name, id, children }: { name: string; id: string; children: 
 }
 
 /** Sets the input's value and fires `change`, the way every input reports what the user did. */
-function useChange(name: string) {
+export function useChange(name: string) {
   const host = useAppHostContext()
   return (value: unknown) => {
     host.set({ [`${name}.value`]: value })
@@ -36,7 +36,7 @@ function useChange(name: string) {
   }
 }
 
-function useCommon(name: string) {
+export function useCommon(name: string) {
   return {
     disabled: useAppValue<boolean>(`${name}.disabled`),
     required: useAppValue<boolean>(`${name}.required`),
@@ -124,7 +124,7 @@ export function DateInputRenderer({ component }: RendererProps) {
 }
 
 /** Options are plain values or `{ label, value }` objects. */
-function normalizeOptions(options: unknown): { label: string; value: unknown }[] {
+export function normalizeOptions(options: unknown): { label: string; value: unknown }[] {
   if (!Array.isArray(options)) return []
   return options.map((o) =>
     o && typeof o === 'object' && 'value' in o

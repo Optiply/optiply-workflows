@@ -170,7 +170,20 @@ export function setComponentNote(def: AppDefinition, name: string, note: string)
  * input. Empty for the rest (a container's children sit in its views, which a form doesn't have).
  */
 export function switchableTypes(type: string): string[] {
-  const groups = [['textInput', 'numberInput', 'dateInput', 'select', 'checkbox']]
+  const groups = [
+    [
+      'textInput',
+      'textArea',
+      'numberInput',
+      'dateInput',
+      'select',
+      'radioGroup',
+      'segmentedControl',
+      'checkboxGroup',
+      'checkbox',
+      'switch',
+    ],
+  ]
   return groups.find((g) => g.includes(type))?.filter((t) => t !== type) ?? []
 }
 

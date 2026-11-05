@@ -762,8 +762,7 @@ export class AppRuntime {
         }
         if (entity.spec?.input) {
           methods.setValue = (value: unknown) => this.apply({ [key('value')]: value })
-          methods.clearValue = () =>
-            this.apply({ [key('value')]: type === 'textInput' ? '' : type === 'checkbox' ? false : null })
+          methods.clearValue = () => this.apply({ [key('value')]: emptyValue(type) })
         }
         if (type === 'table') {
           methods.selectRow = (index: unknown) => this.selectRow(name, index)
@@ -900,7 +899,11 @@ export class AppRuntime {
   private resetForm(form: string) {
     const updates: Record<string, unknown> = {}
     for (const input of formInputs(this.definition, form)) {
-      updates[`${input}.value`] = this.model.get(`${input}.defaultValue`)
+      // An input without a default (a file input) goes back to empty.
+      const type = this.definition.components.find((c) => c.name === input)?.type ?? ''
+      updates[`${input}.value`] = this.model.graph.nodes.has(`${input}.defaultValue`)
+        ? this.model.get(`${input}.defaultValue`)
+        : emptyValue(type)
     }
     this.apply(updates)
   }
@@ -1010,6 +1013,14 @@ function handlersOf(entity: Entity): EventHandler[] {
 export function truthy(value: unknown): boolean {
   if (value === 'false') return false
   return Boolean(value)
+}
+
+/** What an input holds when cleared: text '', a checkbox or switch false, a list [] (session 41), else null. */
+function emptyValue(type: string): unknown {
+  if (type === 'textInput' || type === 'textArea') return ''
+  if (type === 'checkbox' || type === 'switch') return false
+  if (type === 'checkboxGroup' || type === 'fileInput') return []
+  return null
 }
 
 function isEmpty(value: unknown): boolean {

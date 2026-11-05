@@ -576,6 +576,8 @@ const INTERACTION_PROPS = new Set([
   'closeOnOutsideClick',
   'collapsible',
   'defaultExpanded',
+  'accept',
+  'multiple',
 ])
 /** Props about how a component looks. */
 const APPEARANCE_PROPS = new Set([
@@ -590,6 +592,10 @@ const APPEARANCE_PROPS = new Set([
   'size',
   'stacked',
   'showLegend',
+  'tone',
+  'fit',
+  'showValue',
+  'expandDepth',
 ])
 
 /** The inspector section a built-in component's prop goes in (session 41, after Retool's). */
