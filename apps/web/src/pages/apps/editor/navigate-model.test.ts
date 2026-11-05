@@ -63,6 +63,12 @@ describe('searching the app', () => {
     expect(searchApp(def, graph, searchPattern('trig+er\\(\\)', { regex: true }) as RegExp)).toEqual([
       expect.objectContaining({ owner: 'button1', label: 'Event handler 1' }),
     ])
+    // Every branch of an alternation as a whole word (review).
+    const both = searchPattern('foo|bar', { regex: true, wholeWord: true }) as RegExp
+    expect(['foobar_x', 'xbar', 'foo', 'bar'].filter((t) => new RegExp(both.source, 'i').test(t))).toEqual([
+      'foo',
+      'bar',
+    ])
     expect(searchPattern('(', { regex: true })).toMatch(/./)
     expect(searchPattern('')).toBeNull()
   })

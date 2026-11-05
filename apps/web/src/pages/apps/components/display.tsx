@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
-import { formatStatistic } from './display-model'
+import { formatStatistic, imageSourceProblem } from './display-model'
 
 /*
  * Session 41's presentation components, after Retool's palette: statistic, image, divider, alert, progress bar,
@@ -52,11 +52,14 @@ export function ImageRenderer({ component }: RendererProps) {
   const src = useAppValue<string>(`${name}.src`)
   const alt = useAppValue<string>(`${name}.alt`)
   const fit = useAppValue<keyof typeof FITS>(`${name}.fit`)
-  const safe = typeof src === 'string' && /^(https?:|data:image\/)/i.test(src.trim())
-  if (!safe)
+  // A source computed from the app's data could carry it to another site (the app's code has no network): only a
+  // source typed as it is may be anywhere; a computed one must be a data:image URL or on this site.
+  const computed = String(component.props?.src ?? '').includes('{{')
+  const problem = imageSourceProblem(src, computed, window.location.origin)
+  if (problem)
     return (
-      <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border text-xs text-muted">
-        {src ? 'Only http(s) and data:image sources show' : 'No image source'}
+      <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border px-2 text-center text-xs text-muted">
+        {problem}
       </div>
     )
   return (

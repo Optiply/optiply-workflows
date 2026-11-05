@@ -531,7 +531,8 @@ function WaitFields({
             value={ms ?? ''}
             onChange={(e) => {
               const n = Number(e.target.value)
-              set(mode, e.target.value && n > 0 ? Math.min(60_000, Math.round(n)) : undefined)
+              // Emptied while typing a new number: 0 (no wait), the mode kept (review: the field vanished).
+              set(mode, e.target.value && n > 0 ? Math.min(60_000, Math.round(n)) : 0)
             }}
           />
         </EditorField>

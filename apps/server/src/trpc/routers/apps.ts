@@ -231,23 +231,27 @@ export const appsRouter = router({
       const parsed = appDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('app definition', parsed.error.issues)
       const definition: AppDefinition = parsed.data
-      const [saved] = await ctx.db
-        .update(apps)
-        .set({ draftDefinition: definition, draftRevision: input.revision + 1, updatedBy: ctx.user.id })
-        .where(and(eq(apps.id, input.id), eq(apps.draftRevision, input.revision)))
-        .returning({ revision: apps.draftRevision })
-      if (!saved) {
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: `Someone else saved this app since revision ${input.revision}; reload to get their changes`,
+      // The draft and its history entry together (session 41): one can't be saved without the other, and a collab
+      // save can't come between them.
+      const saved = await ctx.db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(apps)
+          .set({ draftDefinition: definition, draftRevision: input.revision + 1, updatedBy: ctx.user.id })
+          .where(and(eq(apps.id, input.id), eq(apps.draftRevision, input.revision)))
+          .returning({ revision: apps.draftRevision })
+        if (!row) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `Someone else saved this app since revision ${input.revision}; reload to get their changes`,
+          })
+        }
+        await recordAppVersion(tx, {
+          appId: input.id,
+          definition,
+          revision: row.revision,
+          userId: ctx.user.id,
         })
-      }
-      // The editor's History (session 41).
-      await recordAppVersion(ctx.db, {
-        appId: input.id,
-        definition,
-        revision: saved.revision,
-        userId: ctx.user.id,
+        return row
       })
       return {
         revision: saved.revision,

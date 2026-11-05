@@ -46,7 +46,7 @@ import {
 import { cn } from '@/lib/utils'
 import { tableColumns } from '../components/table-model'
 import { useAppError, useAppHostContext, useAppValue } from '../runtime/react'
-import { copyText } from './clipboard'
+import { copyComponentsText } from './clipboard'
 import { ColumnsEditor } from './columns'
 import { CustomInstanceFields } from './custom'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
@@ -674,6 +674,8 @@ function NoteField({ name, note }: { name: string; note: string | undefined }) {
       className="min-h-0 bg-warning-soft/40 text-xs"
       value={note ?? ''}
       onChange={(e) => update((def) => setComponentNote(def, name, e.target.value))}
+      // Open while it has the focus: an emptied note (removed from the definition) mustn't take the field away.
+      onFocus={() => setAdding(true)}
       onBlur={() => setAdding(false)}
     />
   )
@@ -686,8 +688,14 @@ function ComponentMenu({ name, type, onDuplicate }: { name: string; type: string
   const readOnly = useAppEditor((s) => s.readOnly)
   const host = useAppHostContext()
   const switchable = switchableTypes(type)
+  // The inspected component (with the others selected with it), whatever was chosen last: the open code item
+  // mustn't be what's copied while the component is what's cut (review).
+  const targets = () => {
+    const { selection } = useAppEditor.getState()
+    return selection.includes(name) ? selection : [name]
+  }
   const copy = () => {
-    const text = copyText()
+    const text = copyComponentsText(targets())
     if (text) void navigator.clipboard?.writeText(text).catch(() => {})
     return text
   }
@@ -708,9 +716,9 @@ function ComponentMenu({ name, type, onDuplicate }: { name: string; type: string
           <MenuItem
             icon={<Scissors />}
             onClick={() => {
+              const names = targets()
               if (!copy()) return
-              const { selection } = useAppEditor.getState()
-              update((def) => removeComponents(def, selection.length ? selection : [name]))
+              update((def) => removeComponents(def, names))
               select(null)
             }}
           >

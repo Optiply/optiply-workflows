@@ -43,6 +43,10 @@ describe('what changed in a draft (session 41)', () => {
       summarizeAppChange(base, { ...base, layout: { ...base.layout, save: { x: 6, y: 0, w: 2, h: 2 } } })
         .changed,
     ).toEqual(['save'])
+    // A reorder alone is a change (review).
+    expect(summarizeAppChange(base, { ...base, components: [...base.components].reverse() }).parts).toEqual([
+      'order',
+    ])
     // From nothing: everything added.
     expect(summarizeAppChange(null, base).added).toEqual(['title', 'save', 'q1', 'page home'])
   })

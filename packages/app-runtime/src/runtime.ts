@@ -86,6 +86,8 @@ export interface AppRuntimeOptions {
   inputs?: Record<string, unknown>
   /** What the app kept in this browser before (session 41): `localStorage.values` starts as it. */
   storage?: Record<string, unknown>
+  /** In a module instance: its local storage writes go to the app's (which keeps them and passes the values down). */
+  onStorage?: (key: string | null, value: unknown) => void
   /** In a module instance (M14): fires one of the module's events on the instance in the app. */
   onEvent?: (event: string) => Promise<boolean>
 }
@@ -289,8 +291,9 @@ export class AppRuntime {
         ...(this.options.libraries && { libraries: this.options.libraries }),
         autoRunDelayMs: this.autoRunDelayMs,
         inputs,
-        // The app's local storage, as it is now: an instance writes to the same keys.
+        // The app's local storage, as it is now: an instance reads and writes the app's keys, through the app.
         storage: (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {},
+        onStorage: (key, value) => this.setStorage(key, value),
         onEvent: (event) => this.fire(name, event),
       })
       this.instances.set(name, {
@@ -934,6 +937,11 @@ export class AppRuntime {
    * browser. `key` null clears every key; `value` undefined removes the key.
    */
   private setStorage(key: string | null, value: unknown) {
+    // In a module instance: the app keeps it, and passes the values back down (review: they drifted apart).
+    if (this.options.onStorage) {
+      this.options.onStorage(key, value)
+      return
+    }
     const before = (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {}
     let next: Record<string, unknown> = {}
     if (key !== null) {
@@ -941,8 +949,14 @@ export class AppRuntime {
       if (value === undefined) delete next[key]
       else next[key] = value
     }
-    this.apply({ 'localStorage.values': next })
+    this.syncStorage(next)
     this.bridge.effect(value === undefined ? { type: 'storage', key } : { type: 'storage', key, value })
+  }
+
+  /** The app's local storage values, here and in every module instance running (session 41). */
+  private syncStorage(values: Record<string, unknown>) {
+    this.apply({ 'localStorage.values': values })
+    for (const instance of this.instances.values()) instance.runtime.syncStorage(values)
   }
 
   /** What app code sees as `utils`. */

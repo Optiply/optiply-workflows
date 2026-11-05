@@ -41,7 +41,16 @@ input[value^="a"] { background: url(https://x.example/leak?a) }
 /* url(hidden) */ </style><script>alert(1)</script>`,
       root,
     )
-    expect(css).not.toMatch(/url\(|@import|image-set\(|<\/style|x\.example\/(leak|split)|\\/i)
+    expect(css).not.toMatch(/url\(|@import|image-set\(|<\/style|x\.example\/(leak|split)/i)
+    // The only backslashes left are the escaped `<`.
+    expect(css.replaceAll('\\3c ', '')).not.toContain('\\')
     expect(css).toContain('background: none')
+  })
+
+  it('cannot close the root’s block or its style element (review)', () => {
+    const css = scopedCss("} body * { visibility: hidden } .x { content: '}' } .y {", root)
+    // The stray } is dropped, the one in the string kept, the open block closed: everything stays inside the root.
+    expect(css).toBe(`${root} {\n body * { visibility: hidden } .x { content: '}' } .y {}\n}`)
+    expect(scopedCss('.a { content: "</sty</stylele>" }', root)).not.toMatch(/<\/style/i)
   })
 })

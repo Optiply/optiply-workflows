@@ -40,6 +40,16 @@ export function copyText(): string | null {
   return text
 }
 
+/** These components (with what's inside each) as clipboard text, remembered as copied here (the inspector's menu). */
+export function copyComponentsText(names: readonly string[]): string | null {
+  const { definition } = useAppEditor.getState()
+  const known = names.filter((n) => definition.components.some((c) => c.name === n))
+  if (!known.length) return null
+  const text = JSON.stringify(copyComponents(definition, known))
+  rememberCopy(text)
+  return text
+}
+
 /**
  * Pastes clipboard text: components where the palette would add one (into the selected container, else next to the
  * selected component, on the page being edited), code into the code panel. False when the text isn't app content.

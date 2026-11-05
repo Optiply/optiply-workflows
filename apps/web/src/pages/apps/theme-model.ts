@@ -53,7 +53,7 @@ export function themeStyle(theme: AppTheme | undefined): Record<string, string> 
 /**
  * The app's custom CSS, safe to put on the page: inside the app's root only (CSS nesting), with nothing loading from
  * elsewhere (`url(…)`, `@import`, `image-set(…)` dropped; the app's code has no network access, and styles mustn't
- * give it one), and unable to close its `<style>` element.
+ * give it one), unable to close the root's block (braces balanced) or its `<style>` element (`<` escaped).
  */
 export function scopedCss(css: string | undefined, root: string): string {
   if (!css?.trim()) return ''
@@ -63,6 +63,29 @@ export function scopedCss(css: string | undefined, root: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/@import[^;]*;?/gi, '')
     .replace(/(?:url|image-set|image|cross-fade|element)\s*\([^)]*\)?/gi, 'none')
-    .replace(/<\/?style/gi, '')
-  return `${root} {\n${cleaned}\n}`
+  // `<` can't end the <style> element in any spelling once escaped (CSS reads `\3c ` as `<` inside strings).
+  return `${root} {\n${balanced(cleaned).replace(/</g, '\\3c ')}\n}`
+}
+
+/**
+ * The CSS with its braces balanced inside the root: a `}` closing more than was opened (which would end the root's
+ * block, putting what follows on the whole page) is dropped, and blocks left open are closed. Braces in strings
+ * don't count.
+ */
+function balanced(css: string): string {
+  let out = ''
+  let depth = 0
+  let quote: string | null = null
+  for (const ch of css) {
+    if (quote) {
+      if (ch === quote || ch === '\n') quote = null
+    } else if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      if (depth === 0) continue
+      depth--
+    }
+    out += ch
+  }
+  return out + (quote ? quote : '') + '}'.repeat(depth)
 }

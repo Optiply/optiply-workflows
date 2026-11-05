@@ -67,7 +67,8 @@ export interface SearchHit {
 export function searchPattern(query: string, options: SearchOptions = {}): RegExp | string | null {
   if (!query) return null
   let source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  if (options.wholeWord) source = `\\b${source}\\b`
+  // Grouped, so every branch of an alternation is a whole word.
+  if (options.wholeWord) source = `\\b(?:${source})\\b`
   try {
     return new RegExp(source, options.matchCase ? 'g' : 'gi')
   } catch (err) {

@@ -89,7 +89,7 @@ test('duplicate an app from the list into the editor, then delete the copy', asy
   await page.getByTestId('duplicate-confirm').click()
   // The copy opens in the editor, with the original's component.
   await expect(page).toHaveURL(new RegExp(`/apps/board-${t}-copy/edit$`))
-  await expect(page.getByText('Hello').first()).toBeVisible()
+  await expect(page.locator('[data-component="hello"]')).toContainText('Hello')
 
   // In the same folder, not published; then deleted after confirming.
   await page.goto('/apps')

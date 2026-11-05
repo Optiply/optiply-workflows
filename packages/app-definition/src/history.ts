@@ -39,6 +39,18 @@ export function summarizeAppChange(before: AppDefinition | null, after: AppDefin
   const parts: string[] = (['theme', 'css', 'frame', 'module'] as const).filter(
     (part) => canonicalJson(before?.[part] ?? null) !== canonicalJson(after[part] ?? null),
   )
+  // A save that only reorders (components in the tree, queries in their list) is a change too (review: unrecorded,
+  // the newest entry wouldn't be the draft).
+  const order = (d: AppDefinition | null) =>
+    d
+      ? canonicalJson([
+          d.components.map((c) => c.name),
+          d.queries.map((q) => q.name),
+          (d.transformers ?? []).map((t) => t.name),
+          (d.variables ?? []).map((v) => v.name),
+        ])
+      : null
+  if (before && !added.length && !removed.length && order(before) !== order(after)) parts.push('order')
   // The order of pages counts too.
   if (
     before &&
@@ -87,6 +99,7 @@ const PART_LABELS: Record<string, string> = {
   frame: 'the frame',
   module: "the module's interface",
   pages: 'the pages’ order',
+  order: 'the order',
 }
 
 /** A history entry's label: "Added button1, query2 · Changed table1 · Changed the theme". */

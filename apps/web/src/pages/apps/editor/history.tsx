@@ -38,8 +38,12 @@ export function HistoryPanel({ appId, slug }: { appId: string; slug: string }) {
   const [comparing, setComparing] = useState<string | null>(null)
   const [copying, setCopying] = useState<Version | null>(null)
   // The newest page follows the saves (the draft's revision changes with each).
-  // The newest page refreshes while the panel is open (saves come every few seconds while editing).
-  const first = useQuery({ ...trpc.apps.history.queryOptions({ appId }), refetchInterval: 15_000 })
+  // The newest page refreshes while the panel is open (saves come every few seconds while editing), until older
+  // pages are loaded: refreshing then would push entries into a gap between the pages (review).
+  const first = useQuery({
+    ...trpc.apps.history.queryOptions({ appId }),
+    refetchInterval: older.length ? false : 15_000,
+  })
   const versions: Version[] = [...((first.data?.versions as Version[] | undefined) ?? []), ...older]
   const hasMore = more ?? first.data?.more ?? false
   const loadMore = useMutation({
