@@ -236,3 +236,31 @@ export async function acceptConfirms(page: Page): Promise<void> {
   await page.addInitScript(watch)
   await page.evaluate(watch)
 }
+
+/** The app editor's rail panels (session 41): one shows at a time, left of the canvas. */
+export type EditorPanel = 'Add components' | 'Pages' | 'Module' | 'Component tree' | 'Code' | 'State'
+
+/** Shows that panel in the app or module editor (a no-op when it's already showing). */
+export async function openEditorPanel(page: Page, panel: EditorPanel) {
+  const tab = page
+    .getByRole('tablist', { name: 'Editor panels' })
+    .getByRole('tab', { name: panel, exact: true })
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
+}
+
+/** Opens the app editor's debug drawer on Problems or the console, from the status bar. */
+export async function openDebug(page: Page, tab: 'Problems' | 'Console') {
+  const drawer = page.getByRole('tablist', { name: 'Debug' })
+  if (!(await drawer.isVisible()))
+    await page
+      .getByTestId('status-bar')
+      .getByRole('button', { name: tab === 'Problems' ? /problem/i : /^Console/ })
+      .click()
+  await drawer.getByRole('tab', { name: new RegExp(`^${tab}`) }).click()
+}
+
+/** Opens a query, transformer or variable in the app editor's code dock, from the Code panel. */
+export async function openCode(page: Page, name: string) {
+  await openEditorPanel(page, 'Code')
+  await page.getByRole('navigation', { name: 'Code' }).getByRole('button', { name, exact: true }).click()
+}

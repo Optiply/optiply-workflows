@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import { acceptConfirms, openCode, openEditorPanel, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
 
 /**
  * Modules at run time (M14 step 5c): two instances of one module in a published app, each with its own state and
@@ -171,7 +171,7 @@ test('module instances in the app editor', async ({ page }) => {
   await expect(page.locator('[data-component="missing1"]')).toContainText(
     `Module nope_${stamp} (latest) isn't available`,
   )
-  await expect(page.getByRole('tab', { name: 'Problems (1)' })).toBeVisible()
+  await expect(page.getByTestId('status-bar')).toContainText('1 problem')
 })
 
 /** The module editor (M14 step 6a): made from the Modules page, its draft run with test inputs, published. */
@@ -256,6 +256,7 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
     },
   })
   await page.goto(`/modules/${slug}`)
+  await openEditorPanel(page, 'Module')
   await expect(page.getByTestId('module-used-by')).toContainText('Nothing uses it yet')
   // A module has no pages: no Navigation to add.
   await expect(page.getByRole('button', { name: 'Navigation', exact: true })).toHaveCount(0)
@@ -283,7 +284,7 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
   await page.getByLabel('Event name').fill('closed')
   await page.getByLabel('Event name').press('Enter')
   await expect(inspector.getByTestId('handler-click-0')).toContainText('fire closed')
-  await expect(page.getByRole('tab', { name: 'Problems', exact: true })).toBeVisible()
+  await expect(page.getByTestId('status-bar')).toContainText('No problems')
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
   const saved = await trpcQuery<{ draftDefinition: { module: unknown } }>(page, 'modules.get', { slug })
   expect(saved.draftDefinition.module).toEqual({
@@ -307,6 +308,7 @@ test('edit a module’s inputs, outputs and events', async ({ page }) => {
     },
   })
   await page.reload()
+  await openEditorPanel(page, 'Module')
   await expect(page.getByTestId('module-used-by')).toContainText(`Uses ${slug}`)
 })
 
@@ -329,6 +331,7 @@ test('place a module in an app', async ({ page }) => {
   const instance = page.locator(`[data-component="${name}"]`)
   // Its default input: the pro plan.
   await expect(instance.locator('[data-component="first"]')).toHaveText('First: ada@example.com')
+  await openEditorPanel(page, 'Component tree')
   await expect(page.getByRole('button', { name: new RegExp(`^${name}`) })).toContainText(moduleSlug)
 
   // The inspector: the module, its version, its input, its event.
@@ -343,7 +346,7 @@ test('place a module in an app', async ({ page }) => {
   await inspector.getByRole('button', { name: 'Remove handler' }).click()
 
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
-  await expect(page.getByRole('tab', { name: 'Problems', exact: true })).toBeVisible()
+  await expect(page.getByTestId('status-bar')).toContainText('No problems')
   const saved = await trpcQuery<{ draftDefinition: { components: unknown[] } }>(page, 'apps.get', {
     slug: appSlug,
   })
@@ -382,6 +385,7 @@ test('protect a module and edit it on a branch', async ({ page }) => {
   await page.getByRole('textbox', { name: 'New branch name' }).fill(branch)
   await page.getByRole('button', { name: 'Start branch' }).click()
   await expect(page.getByText('New: the first commit makes it')).toBeVisible()
+  await openCode(page, 'find')
   await typeInto(
     page,
     page.locator('[data-testid$="/queries/0/query/sql"]'),

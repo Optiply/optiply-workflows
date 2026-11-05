@@ -6,6 +6,7 @@ import {
   editorText,
   field,
   nameField,
+  openEditorPanel,
   signIn,
   trpcMutate,
   typeInto,
@@ -200,6 +201,7 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
 
   await test.step('eight cycles of six kinds of edit: add, type a prop, rename, move, add a query, type its code', async () => {
     for (let i = 1; i <= CYCLES; i++) {
+      await openEditorPanel(page, 'Add components')
       await page.getByRole('button', { name: 'Text', exact: true }).click()
       await expect(page.getByTestId('inspector-text1')).toBeVisible()
       await typeInto(page, page.locator(`[data-testid$="/components/${i - 1}/props/value"]`), `Line ${i}`)
@@ -213,6 +215,7 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
       await page.mouse.down()
       await page.mouse.move(box.x + 200, box.y + 5, { steps: 10 })
       await page.mouse.up()
+      await openEditorPanel(page, 'Code')
       await page.getByTitle('Add a JS query').click()
       await expect(page.getByTestId(`query-query${i}`)).toBeVisible()
       await typeInto(page, page.locator(`[data-testid$="/queries/${i - 1}/code"]`), `return ${i}`)
@@ -263,6 +266,7 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
       },
     })
     await page.goto(`/apps/${source}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await page
       .locator('aside li button')
       .filter({ has: page.getByText('form1', { exact: true }) })

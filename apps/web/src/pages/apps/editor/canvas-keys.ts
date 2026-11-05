@@ -12,7 +12,7 @@ const ARROWS: Record<string, [number, number]> = {
 }
 
 /**
- * The canvas's keys (M24): Escape clears the selection, ⌘A / Ctrl+A selects the components of the page shown (and
+ * The canvas's keys (M24): ⌘U hides and shows the inspector (session 41), Escape clears the selection, ⌘A / Ctrl+A selects the components of the page shown (and
  * those on every page), Delete or Backspace removes the selection, the arrow keys move it a cell at a time (one undo
  * step each). Text fields, widgets with arrow keys of their own (a table, tabs, a menu) and dialogs keep their keys.
  */
@@ -27,6 +27,12 @@ export function useCanvasKeys(enabled: boolean): void {
         return
       const s = useAppEditor.getState()
       const mod = e.metaKey || e.ctrlKey
+      // ⌘U / Ctrl+U hides and shows the inspector (Retool's key).
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+        e.preventDefault()
+        s.setInspectorOpen(!s.inspectorOpen)
+        return
+      }
       if (e.key === 'Escape' && s.selection.length) {
         s.select(null)
         return

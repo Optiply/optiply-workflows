@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { openDebug, openEditorPanel, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M8's done-when, in the browser: build a CRUD app on a Postgres table with an editable Table and a save query.
@@ -44,6 +44,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a query reading the table', async () => {
+    await openEditorPanel(page, 'Code')
     await page.getByTitle('Add a resource query').click()
     await rename(page, page.getByTestId('query-query1'), 'products')
     await typeInto(
@@ -55,6 +56,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a Table showing it, with stock editable', async () => {
+    await openEditorPanel(page, 'Add components')
     await page.getByRole('button', { name: 'Table', exact: true }).click()
     const inspector = page.getByTestId('inspector-table1')
     await typeInto(
@@ -77,6 +79,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a save query over the changeset, re-reading the table when it succeeds', async () => {
+    await openEditorPanel(page, 'Code')
     await page.getByTitle('Add a resource query').click()
     const query = page.getByTestId('query-query1')
     await rename(page, query, 'save_stock')
@@ -102,7 +105,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('publish', async () => {
-    await page.getByRole('tab', { name: /Problems/ }).click()
+    await openDebug(page, 'Problems')
     await expect(page.getByText('No problems.')).toBeVisible()
     await page.getByRole('button', { name: 'Publish', exact: true }).click()
     await page.getByTestId('publish-confirm').click()

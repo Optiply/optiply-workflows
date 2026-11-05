@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_EMAIL, E2E_GITHUB_TOKEN, E2E_MEMBER_EMAIL, E2E_SECOND_EMAIL } from './global-setup'
-import { editorText, signIn, trpcMutate, trpcQuery } from './helpers'
+import { editorText, openDebug, openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M21's done-when (architecture §2.7, §2.24): library queries in workflows (a pinned block and a library loop runner,
@@ -387,6 +387,7 @@ test('M21 done-when: reuse everywhere', async ({ page, browser }) => {
 
   await test.step('renaming a module input rewrites the module’s reads of it', async () => {
     await page.goto(`/modules/${shellSlug}`)
+    await openEditorPanel(page, 'Module')
     await page
       .getByRole('region', { name: 'Module' })
       .getByRole('button', { name: 'plan', exact: true })
@@ -440,7 +441,7 @@ test('M21 done-when: reuse everywhere', async ({ page, browser }) => {
 
   await test.step('an editor without Use on a module is told they need it', async () => {
     await member.goto(`/apps/${pagedSlug}/edit`)
-    await member.getByRole('tab', { name: /^Problems/ }).click()
+    await openDebug(member, 'Problems')
     await expect(member.getByText(`You need use access to module "${shellSlug}"`)).toBeVisible()
   })
   await memberContext.close()

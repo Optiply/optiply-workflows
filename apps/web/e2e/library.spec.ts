@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { acceptConfirms, editorText, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import {
+  acceptConfirms,
+  editorText,
+  openEditorPanel,
+  signIn,
+  trpcMutate,
+  trpcQuery,
+  typeInto,
+} from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
@@ -143,6 +151,7 @@ test('use a library query in an app', async ({ page }) => {
   })
 
   await page.goto(`/apps/${app.slug}/edit`)
+  await openEditorPanel(page, 'Code')
   await page.getByTitle('Add a query from the library').click()
   await page.getByTestId('library-picker').getByText(`Double ${stamp}`).click()
   const body = page.getByTestId('library-query-query1')

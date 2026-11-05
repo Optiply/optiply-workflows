@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M24's done-when (architecture §2.27): the app builder's gaps. (1) Tables: a computed column and two filters in the
@@ -617,10 +617,11 @@ test('M24 done-when (6): a time axis, a page rename following utils.openPage, a 
 
   await test.step('renaming the page rewrites utils.openPage', async () => {
     await page.goto(`/apps/${slug}/edit`)
+    await openEditorPanel(page, 'Pages')
     const pages = page.getByRole('region', { name: 'Pages' })
     await pages.getByRole('button', { name: 'orders' }).click()
-    await pages.getByLabel('Page name').fill('sales')
-    await pages.getByLabel('Page name').press('Enter')
+    await page.getByTestId('inspector-app').getByLabel('Page name').fill('sales')
+    await page.getByTestId('inspector-app').getByLabel('Page name').press('Enter')
     await expect(page.getByText('Saved', { exact: true })).toBeVisible()
     await expect
       .poll(async () => {

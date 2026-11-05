@@ -6,6 +6,7 @@ import {
   clickEmptyCanvas,
   editorText,
   field,
+  openCode,
   openRail,
   signIn,
   trpcMutate,
@@ -247,6 +248,8 @@ test('two people typing in one app query merge as they type', async ({ page, bro
   const other = await otherContext.newPage()
   await signIn(other)
   await other.goto(`/apps/${slug}/edit`)
+  await openCode(page, 'query1')
+  await openCode(other, 'query1')
   const mine = page.locator('[data-testid$="/queries/0/code"]')
   const theirs = other.locator('[data-testid$="/queries/0/code"]')
   await expect.poll(() => editorText(mine)).toBe('return 1')

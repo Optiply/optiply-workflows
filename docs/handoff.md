@@ -2009,7 +2009,22 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
-## 14. M35 steps
+## 14. Session 41 steps: the app builder, closer to Retool
+
+The user (session 41, 2026-11-05) brought a Retool builder teardown ("Inside the Retool App Builder", Retool 4.90) and picked **all eight steps**, with the editor's layout **close to Retool's**. Branch `feat/m35-ai-actions` (no new branch: one PR at the end). Each step: build → report with before/after shots (`zz-walkthrough.spec.ts`, untracked) → the user's word to commit. Big steps in green a/b halves.
+
+1. **Editor layout:** an icon rail switching one left panel at a time (Components, Pages, Tree, Code, State; later Search, History, Settings); a full-height canvas; the code editor docked beside the panel only while a code item is open; a status bar (environment, branch, running queries, Problems and Console opening a debug drawer). 1a: rail, panels, dock, status bar. 1b: the inspector always there (⌘U toggles), App and Page inspectors when no component is selected (frame and page settings move there).
+2. **Palette:** search, categories, icons, drag onto the canvas.
+3. **Inspector:** sections (Content, Interaction, Appearance, Layout), the evaluated value under the focused field, a ··· menu (copy, cut, duplicate, rename, switch type, reset state, delete), a note per component.
+4. **Getting around:** ⌘K palette (actions, jump to anything), search across every property with jump-to-field, the dependency graph (uses / used by, from `buildAppGraph`).
+5. **Event actions:** go to page, set URL params, copy to clipboard, export data, local storage (+ a `localStorage` global), reset component; throttle beside debounce.
+6. **New components:** text area, switch, multiselect, radio/segmented, date range, key-value, statistic, image, divider, alert, progress, JSON explorer, file input (a first batch).
+7. **App theme and custom CSS** (theme tokens in the definition, a `theme` global).
+8. **Draft history:** a save log with labels from the diff, preview, restore, app from a version (server + migration).
+
+**Progress:** step 1 committed (the editor layout; checks: web unit 137, typecheck, biome ci, the 35 app-editor e2e specs 69/69). New `editor/shell.tsx` (Rail, LeftPanelArea, CodeDock, DebugDrawer, StatusBar, resize handles remembered in localStorage `ow.appEditor.*`); `code-panel.tsx` split into `CodeList` / `OpenCode` / `StatePanel` / `ProblemsList` / `ConsoleList`; the store's `panelTab` became `leftPanel`, `debugTab`, `inspectorOpen` (⌘U in `canvas-keys.ts`); nothing is open in the dock on load, and opening code doesn't switch the left panel; an undone query closes the dock. 1b: `AppInspector` (pages.tsx) with the page's settings and the frame when no component is selected; the Pages panel lists pages only. The canvas keeps 640 px and scrolls sideways. **Found on the way:** the edit grid drew at react-grid-layout's default 1280 px and animated into place on every load (a drag right after loading missed): now `useContainerWidth({ measureBeforeMount: true })`. E2E: helpers `openEditorPanel`, `openDebug`, `openCode`; 25 specs needed them.
+
+## 14b. M35 steps (the record)
 
 M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an AI block with an agent, an AI query in apps) is planned in `architecture.md` §2.38, on `feat/m35-ai-actions`, stacked on `feat/m33-components-followups` (`eb388c1`; M34 dropped). Session 38 (2026-11-04), the user present: step → report → commit on their word.
 

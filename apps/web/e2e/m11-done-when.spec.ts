@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { block, field, openCode, signIn, trpcMutate, typeInto } from './helpers'
 
 const gitEnv = {
   PATH: process.env.PATH ?? '',
@@ -203,6 +203,7 @@ test('M11 done-when: protect, edit on a branch, commit, merge, deploy', async ({
   await expect(page.getByTestId('frame-email')).toContainText('ada@example.com')
   await page.getByRole('combobox', { name: 'Branch' }).selectOption({ label: branch })
   await expect(page.getByTestId('commit-open')).toBeVisible()
+  await openCode(page, 'customer')
   await typeInto(
     page,
     page.locator('[data-testid$="/queries/0/query/sql"]'),

@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { block, signIn, trpcMutate, trpcQuery } from './helpers'
+import { block, openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 // M27 step 5: the new resources' settings and query forms, in the playground, the workflow inspector and the app editor.
 
@@ -190,6 +190,7 @@ test('a HubSpot query in the workflow inspector, and a GraphQL query in the app 
     const slug = `gql-${stamp}`
     await trpcMutate(page, 'apps.create', { slug, name: 'Orders' })
     await page.goto(`/apps/${slug}/edit`)
+    await openEditorPanel(page, 'Code')
     await page.getByTitle('Add a resource query').click()
     const panel = page.getByTestId('query-query1')
     await panel.getByRole('combobox', { name: 'Resource' }).selectOption(`shop_${stamp}`)

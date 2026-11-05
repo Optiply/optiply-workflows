@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { openCode, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * An app's code runs in a sandbox: a Worker started by an iframe with an opaque origin and no network access. It
@@ -212,7 +212,7 @@ test('an edit restarts an app that stopped responding in the editor', async ({ p
   await expect(alert).toBeVisible({ timeout: 10_000 })
   await expect(alert).toContainText('Editing the app restarts it')
 
-  await page.getByRole('button', { name: 'forever' }).click()
+  await openCode(page, 'forever')
   await typeInto(page, page.locator('[data-testid$="/transformers/0/code"]'), 'return 7')
   await expect(alert).toBeHidden()
   await expect(page.getByTestId('frame-label')).toContainText('got 7')

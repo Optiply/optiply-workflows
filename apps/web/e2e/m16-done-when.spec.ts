@@ -7,7 +7,17 @@ import {
   type WebSocketRoute,
 } from '@playwright/test'
 import { E2E_SECOND_EMAIL } from './global-setup'
-import { addBlock, block, editorText, field, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  editorText,
+  field,
+  openCode,
+  signIn,
+  trpcMutate,
+  trpcQuery,
+  typeInto,
+} from './helpers'
 
 /**
  * M16's done-when (architecture.md §2.7): two people (two browsers, two users) in one workflow: one adds and connects
@@ -243,6 +253,8 @@ test('two people edit one app together: moving components and typing in a query'
   })
 
   await test.step("both type in the query at once: merged; undo takes back one's own", async () => {
+    await openCode(page, 'query1')
+    await openCode(second, 'query1')
     const mine = page.locator('[data-testid$="/queries/0/code"]')
     const theirs = second.locator('[data-testid$="/queries/0/code"]')
     await caretAt(page, mine, 'End')
@@ -276,6 +288,7 @@ test('two people edit one app together: moving components and typing in a query'
 
     await page.goto(`/apps/${slug}/edit`)
     await appSaved(page)
+    await openCode(page, 'query1')
     await page.getByTestId('query-query1').click()
     // Run is retried: twice in about 80 runs, a Run right after reopening was lost (result null; handoff §12).
     await expect(async () => {

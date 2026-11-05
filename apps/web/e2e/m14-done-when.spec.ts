@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN, E2E_MEMBER_EMAIL } from './global-setup'
-import { acceptConfirms, signIn, trpcMutate, trpcQuery } from './helpers'
+import { acceptConfirms, openDebug, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * M14's done-when (architecture §2.7):
@@ -167,7 +167,7 @@ test('M14 done-when: library queries, modules, and both in Git', async ({ page, 
     ).revision
     // In the editor they're told they need Use on it (M21; it was "unknown" before): a problem, and Publish waits.
     await viewer.goto(`/apps/${latestSlug}/edit`)
-    await viewer.getByRole('tab', { name: /^Problems/ }).click()
+    await openDebug(viewer, 'Problems')
     await expect(viewer.getByText(`You need use access to library query "${librarySlug}"`)).toBeVisible()
     await expect(viewer.getByRole('button', { name: 'Publish', exact: true })).toBeDisabled()
     // And the server refuses it.

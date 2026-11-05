@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 type Def = {
   components: { name: string; parent?: string }[]
@@ -51,6 +51,7 @@ test('selects several components and moves, deletes, duplicates them together', 
     await page.getByTestId('frame-b').click({ modifiers: ['Shift'] })
     await page.getByTestId('frame-c').click({ modifiers: ['ControlOrMeta'] })
     await expect(page.getByTestId('inspector-selection')).toContainText('3 components selected')
+    await openEditorPanel(page, 'Component tree')
     const tree = page.getByRole('list').filter({ has: page.getByRole('button', { name: /^d\b/ }) })
     await expect(tree.getByRole('button', { pressed: true })).toHaveCount(3)
     // Shift-click in the tree takes one out.
@@ -96,7 +97,8 @@ test('selects several components and moves, deletes, duplicates them together', 
     await expect(page.getByTestId('inspector-selection')).toContainText('5 components selected')
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('inspector-selection')).toHaveCount(0)
-    await expect(page.getByTestId('inspector')).toHaveCount(0)
+    // The inspector shows the page and the app again.
+    await expect(page.getByTestId('inspector-app')).toBeVisible()
   })
 
   await test.step('Duplicate and Move into, from the inspector', async () => {

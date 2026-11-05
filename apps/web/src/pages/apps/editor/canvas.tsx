@@ -80,7 +80,9 @@ export function EditGrid({
   page?: string | null
   slot?: string
 }) {
-  const { width, containerRef, mounted } = useContainerWidth()
+  // Measured before the grid first draws: drawn at the default 1280 px first, its components would shrink into
+  // place on every load (and a drag right after loading would miss its target).
+  const { width, containerRef, mounted } = useContainerWidth({ measureBeforeMount: true })
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const toggleSelect = useAppEditor((s) => s.toggleSelect)

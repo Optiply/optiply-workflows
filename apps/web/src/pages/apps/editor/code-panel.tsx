@@ -38,50 +38,10 @@ import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValueP
 import { HandlersEditor } from './handlers'
 import { PageSelect } from './inspector'
 import { AddLibraryQueryDialog, LibraryQueryBody, LibraryQueryHeader } from './library'
-import { type PanelTab, useAppEditor } from './store'
+import { useAppEditor } from './store'
 
-/** The bottom panel: queries, transformers and variables; the app's state; problems; the console. */
-export function CodePanel() {
-  const tab = useAppEditor((s) => s.panelTab)
-  const setTab = useAppEditor((s) => s.setPanelTab)
-  const problems = useAppEditor((s) => s.diagnostics.filter((d) => d.severity === 'error').length)
-  const logs = useAppHostState((s) => s.logs.length)
-  const tabs: { id: PanelTab; label: string }[] = [
-    { id: 'code', label: 'Code' },
-    { id: 'state', label: 'State' },
-    { id: 'problems', label: problems ? `Problems (${problems})` : 'Problems' },
-    { id: 'console', label: logs ? `Console (${logs})` : 'Console' },
-  ]
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-surface">
-      <div role="tablist" className="flex gap-1 border-b border-border px-2">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              '-mb-px border-b-2 px-3 py-2 text-xs font-medium',
-              tab === t.id ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1">
-        {tab === 'code' && <CodeTab />}
-        {tab === 'state' && <StateTab />}
-        {tab === 'problems' && <ProblemsTab />}
-        {tab === 'console' && <ConsoleTab />}
-      </div>
-    </div>
-  )
-}
-
-function CodeTab() {
+/** The Code panel (left): the queries, transformers and variables; one opens in the dock beside it. */
+export function CodeList() {
   const definition = useAppEditor((s) => s.definition)
   const readOnly = useAppEditor((s) => s.readOnly)
   const open = useAppEditor((s) => s.openCode)
@@ -95,112 +55,116 @@ function CodeTab() {
   // New queries and transformers go on the page being edited.
   const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
   const [picking, setPicking] = useState(false)
-  const query = definition.queries.find((q) => q.name === open)
-  const transformer = definition.transformers?.find((t) => t.name === open)
-  const variable = definition.variables?.find((v) => v.name === open)
 
   return (
-    <div className="flex h-full min-h-0">
-      <nav className="flex w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2 text-sm">
-        <ListSection
-          title="Queries"
-          actions={
-            // A protected app on main (M22): nothing added.
-            !readOnly && (
-              <>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a resource query"
-                  onClick={() => add((d) => addQuery(d, 'resource', { page }))}
-                >
-                  <Database className="size-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a JS query"
-                  onClick={() => add((d) => addQuery(d, 'js', { page }))}
-                >
-                  <Code2 className="size-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a query from the library"
-                  onClick={() => setPicking(true)}
-                >
-                  <Library className="size-3.5" />
-                </Button>
-                {picking && (
-                  <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />
-                )}
-              </>
-            )
-          }
-        >
-          {definition.queries.map((q) => (
-            <ListItem
-              key={q.name}
-              name={q.name}
-              open={open === q.name}
-              onOpen={() => openItem(q.name)}
-              page={q.page}
-              query
-            />
-          ))}
-        </ListSection>
-        <ListSection
-          title="Transformers"
-          actions={
-            !readOnly && (
+    <nav aria-label="Code" className="flex flex-col gap-3 text-sm">
+      <ListSection
+        title="Queries"
+        actions={
+          // A protected app on main (M22): nothing added.
+          !readOnly && (
+            <>
               <Button
                 size="icon"
                 variant="ghost"
-                title="Add a transformer"
-                onClick={() => add((d) => addTransformer(d, { page }))}
+                title="Add a resource query"
+                onClick={() => add((d) => addQuery(d, 'resource', { page }))}
               >
-                <Braces className="size-3.5" />
+                <Database className="size-3.5" />
               </Button>
-            )
-          }
-        >
-          {definition.transformers?.map((t) => (
-            <ListItem
-              key={t.name}
-              name={t.name}
-              open={open === t.name}
-              onOpen={() => openItem(t.name)}
-              page={t.page}
-            />
-          ))}
-        </ListSection>
-        <ListSection
-          title="Variables"
-          actions={
-            !readOnly && (
-              <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
-                <VariableIcon className="size-3.5" />
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a JS query"
+                onClick={() => add((d) => addQuery(d, 'js', { page }))}
+              >
+                <Code2 className="size-3.5" />
               </Button>
-            )
-          }
-        >
-          {definition.variables?.map((v) => (
-            <ListItem key={v.name} name={v.name} open={open === v.name} onOpen={() => openItem(v.name)} />
-          ))}
-        </ListSection>
-      </nav>
-      <div className="min-w-0 flex-1 overflow-y-auto p-3">
-        {query && <QueryEditor query={query} />}
-        {transformer && <TransformerEditor name={transformer.name} />}
-        {variable && <VariableEditor name={variable.name} />}
-        {!query && !transformer && !variable && (
-          <p className="text-sm text-muted">
-            Add a query to read or change data, a transformer to reshape it, or a variable to hold state.
-          </p>
-        )}
-      </div>
-    </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a query from the library"
+                onClick={() => setPicking(true)}
+              >
+                <Library className="size-3.5" />
+              </Button>
+              {picking && <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />}
+            </>
+          )
+        }
+      >
+        {definition.queries.map((q) => (
+          <ListItem
+            key={q.name}
+            name={q.name}
+            open={open === q.name}
+            onOpen={() => openItem(q.name)}
+            page={q.page}
+            query
+          />
+        ))}
+      </ListSection>
+      <ListSection
+        title="Transformers"
+        actions={
+          !readOnly && (
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Add a transformer"
+              onClick={() => add((d) => addTransformer(d, { page }))}
+            >
+              <Braces className="size-3.5" />
+            </Button>
+          )
+        }
+      >
+        {definition.transformers?.map((t) => (
+          <ListItem
+            key={t.name}
+            name={t.name}
+            open={open === t.name}
+            onOpen={() => openItem(t.name)}
+            page={t.page}
+          />
+        ))}
+      </ListSection>
+      <ListSection
+        title="Variables"
+        actions={
+          !readOnly && (
+            <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
+              <VariableIcon className="size-3.5" />
+            </Button>
+          )
+        }
+      >
+        {definition.variables?.map((v) => (
+          <ListItem key={v.name} name={v.name} open={open === v.name} onOpen={() => openItem(v.name)} />
+        ))}
+      </ListSection>
+      {!definition.queries.length && !definition.transformers?.length && !definition.variables?.length && (
+        <p className="px-1 text-xs text-muted">
+          Add a query to read or change data, a transformer to reshape it, or a variable to hold state.
+        </p>
+      )}
+    </nav>
+  )
+}
+
+/** The open query, transformer or variable (the dock beside the left panel). */
+export function OpenCode() {
+  const definition = useAppEditor((s) => s.definition)
+  const open = useAppEditor((s) => s.openCode)
+  const query = definition.queries.find((q) => q.name === open)
+  const transformer = definition.transformers?.find((t) => t.name === open)
+  const variable = definition.variables?.find((v) => v.name === open)
+  return (
+    <>
+      {query && <QueryEditor query={query} />}
+      {transformer && <TransformerEditor name={transformer.name} />}
+      {variable && <VariableEditor name={variable.name} />}
+    </>
   )
 }
 
@@ -799,7 +763,7 @@ function InitialValueField({
 }
 
 /** Every value of the app, by component, query, transformer and variable. */
-function StateTab() {
+export function StatePanel() {
   const values = useAppHostState((s) => s.values)
   const errors = useAppHostState((s) => s.errors)
   const [filter, setFilter] = useState('')
@@ -811,11 +775,11 @@ function StateTab() {
     byEntity.set(entity, { ...byEntity.get(entity), [key.slice(dot + 1)]: value })
   }
   return (
-    <div className="flex h-full flex-col gap-2 overflow-y-auto p-3">
+    <div className="flex flex-col gap-2">
       <Input
         aria-label="Filter state"
         placeholder="Filter by name"
-        className="h-8 w-64"
+        className="h-8 w-full"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
@@ -834,14 +798,14 @@ function StateTab() {
   )
 }
 
-function ProblemsTab() {
+export function ProblemsList() {
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const definition = useAppEditor((s) => s.definition)
   const select = useAppEditor((s) => s.select)
   const openItem = useAppEditor((s) => s.openCodeItem)
   if (!diagnostics.length) return <p className="p-3 text-sm text-muted">No problems.</p>
   return (
-    <ul className="h-full overflow-y-auto p-2 text-xs">
+    <ul className="p-2 text-xs">
       {diagnostics.map((d) => (
         <li key={`${d.path.join('.')}:${d.code}:${d.start ?? ''}:${d.message}`}>
           <button
@@ -868,12 +832,12 @@ function ProblemsTab() {
   )
 }
 
-function ConsoleTab() {
+export function ConsoleList() {
   const logs = useAppHostState((s) => s.logs)
   if (!logs.length)
     return <p className="p-3 text-sm text-muted">Nothing logged yet. console.log in scripts shows here.</p>
   return (
-    <ol className="h-full overflow-y-auto p-2 font-mono text-xs">
+    <ol className="p-2 font-mono text-xs">
       {logs.map((l) => (
         <li
           key={l.id}

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * The app editor: components from the palette, a prop bound to another component with {{ }}, a query on the
@@ -28,6 +28,7 @@ test('build an app in the editor', async ({ page }) => {
   await expect(page.getByTestId('frame-text1')).toContainText('Hello ')
 
   // A query on the managed database, re-run as the input changes.
+  await openEditorPanel(page, 'Code')
   await page.getByTitle('Add a resource query').click()
   await expect(page.getByTestId('query-query1')).toBeVisible()
   await typeInto(

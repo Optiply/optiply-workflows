@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, typeInto } from './helpers'
 
 const appGet = async (page: Page, slug: string) => {
   const res = await page.request.get(
@@ -39,28 +39,34 @@ test('build a multipage app in the editor', async ({ page }) => {
     },
   })
   await page.goto(`/apps/${slug}/edit`)
+  await openEditorPanel(page, 'Pages')
   const pages = page.getByRole('region', { name: 'Pages' })
+  // The page's settings: in the inspector while no component is selected.
+  const pageSettings = page.getByTestId('inspector-app')
   await expect(page.getByTestId('frame-hello')).toBeVisible()
 
   // The first page added: what the app had goes on page1, the new page2 is empty and being edited.
+  await openEditorPanel(page, 'Pages')
   await pages.getByRole('button', { name: 'Add a page' }).click()
   await expect(pages.getByRole('button', { name: 'page2' })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByTestId('frame-hello')).toHaveCount(0)
   await expect(page.getByText('On every page')).toBeVisible()
 
   // Rename and title it.
-  await pages.getByLabel('Page name').fill('detail')
-  await pages.getByLabel('Page name').press('Enter')
+  await pageSettings.getByLabel('Page name').fill('detail')
+  await pageSettings.getByLabel('Page name').press('Enter')
   // Typed key by key, spaces and all.
-  await pages.getByLabel('Page title').pressSequentially('Order details')
-  await expect(pages.getByLabel('Page title')).toHaveValue('Order details')
-  await pages.getByLabel('Page title').fill('Details')
+  await pageSettings.getByLabel('Page title').pressSequentially('Order details')
+  await expect(pageSettings.getByLabel('Page title')).toHaveValue('Order details')
+  await pageSettings.getByLabel('Page title').fill('Details')
+  await openEditorPanel(page, 'Pages')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-current', 'page')
-  await pages.getByLabel('Page name').fill('edit')
-  await expect(pages.getByText(/is the app's editor/)).toBeVisible()
-  await pages.getByLabel('Page name').press('Escape')
+  await pageSettings.getByLabel('Page name').fill('edit')
+  await expect(pageSettings.getByText(/is the app's editor/)).toBeVisible()
+  await pageSettings.getByLabel('Page name').press('Escape')
 
   // A text on this page, reading the page's parameter; a query on it too.
+  await openEditorPanel(page, 'Add components')
   await page.getByRole('button', { name: 'Text', exact: true }).click()
   await expect(page.getByTestId('grid-page').getByTestId('frame-text1')).toBeVisible()
   await typeInto(
@@ -70,15 +76,18 @@ test('build a multipage app in the editor', async ({ page }) => {
   )
   // The draft runs on the page being edited, even one added and renamed a moment ago.
   await expect(page.getByTestId('frame-text1')).toContainText('On detail for')
+  await openEditorPanel(page, 'Code')
   await page.getByTitle('Add a JS query').click()
   await expect(page.getByTestId('query-query1').getByLabel('Page')).toHaveValue('detail')
 
   // A Navigation component, moved onto every page: it shows in the frame.
+  await openEditorPanel(page, 'Add components')
   await page.getByRole('button', { name: 'Navigation', exact: true }).click()
   await page.getByTestId('inspector-navigation1').getByLabel('Page').selectOption('')
   await expect(page.getByTestId('grid-frame').getByTestId('frame-navigation1')).toBeVisible()
 
   // Back on page1: what the app had, and the navigation above it.
+  await openEditorPanel(page, 'Pages')
   await pages.getByRole('button', { name: 'page1' }).click()
   await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
   await expect(page.getByTestId('frame-text1')).toHaveCount(0)
@@ -87,10 +96,12 @@ test('build a multipage app in the editor', async ({ page }) => {
   // A component moved to another page from the inspector: the editor opens that page, the component still selected.
   await page.getByTestId('frame-hello').click()
   await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('detail')
+  await openEditorPanel(page, 'Pages')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
   await expect(page.getByTestId('inspector-hello')).toBeVisible()
   await page.getByTestId('inspector-hello').getByLabel('Page').selectOption('page1')
+  await openEditorPanel(page, 'Pages')
   await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
   await expect(page.getByTestId('grid-page').getByTestId('frame-hello')).toBeVisible()
 
@@ -124,13 +135,15 @@ test('build a multipage app in the editor', async ({ page }) => {
 
   // Deleting a page takes what's on it.
   await page.goto(`/apps/${slug}/edit`)
+  await openEditorPanel(page, 'Pages')
   await pages.getByRole('button', { name: /Details/ }).click()
-  await pages.getByRole('button', { name: 'Delete the page' }).click()
+  await pageSettings.getByRole('button', { name: 'Delete the page' }).click()
   const asked = page.getByRole('dialog', { name: 'Are you sure?' })
   await expect(asked).toContainText(
     'Delete page detail and the 2 components, queries and transformers on it?',
   )
   await asked.getByTestId('confirm-ok').click()
+  await openEditorPanel(page, 'Pages')
   await expect(pages.getByRole('button', { name: 'page1' })).toHaveAttribute('aria-current', 'page')
   await expect(pages.getByRole('button', { name: /Details/ })).toHaveCount(0)
   await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10_000 })

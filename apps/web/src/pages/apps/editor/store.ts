@@ -27,8 +27,10 @@ import type { LibraryRef } from '@/lib/library-refs'
 
 export type { SaveStatus }
 
-/** What the bottom panel shows. */
-export type PanelTab = 'code' | 'state' | 'problems' | 'console'
+/** The panel left of the canvas, picked on the rail (one at a time, or none). */
+export type LeftPanel = 'components' | 'pages' | 'tree' | 'code' | 'state'
+/** What the debug drawer above the status bar shows. */
+export type DebugTab = 'problems' | 'console'
 
 /** What was showing when an edit was made: undoing it shows it again. */
 export interface AppEditorView {
@@ -76,11 +78,16 @@ interface AppEditorState {
   selected: string | null
   /** Every component selected (M24): shift- or cmd-click adds and removes; `selected` is among them. */
   selection: string[]
-  /** The query, transformer or variable open in the bottom panel. */
+  /** The query, transformer or variable open in the dock beside the left panel (none: the dock is closed). */
   openCode: string | null
   /** What was chosen last, for copy and duplicate: the selected component, or the open code item. */
   focus: 'component' | 'code'
-  panelTab: PanelTab
+  /** The rail's panel; null when collapsed. */
+  leftPanel: LeftPanel | null
+  /** The debug drawer's tab; null when closed. */
+  debugTab: DebugTab | null
+  /** The inspector, right of the canvas (⌘U hides and shows it). */
+  inspectorOpen: boolean
   /**
    * Where the draft is: the page being edited (null without pages) and the parameters `utils.openPage` gave it.
    * The running draft follows it; it stays a page the app has (a deleted page gives way to the first).
@@ -143,7 +150,9 @@ interface AppEditorState {
   /** Selects these components (cmd+A, M24); the last is the inspector's. */
   selectMany(names: string[]): void
   openCodeItem(name: string | null): void
-  setPanelTab(tab: PanelTab): void
+  setLeftPanel(panel: LeftPanel | null): void
+  setDebugTab(tab: DebugTab | null): void
+  setInspectorOpen(open: boolean): void
   /** Edits another page (without parameters), or follows `utils.openPage` (with them). */
   setUrl(page: string | null, params?: Record<string, string>): void
   /** Adds what the server said about library queries, and validates again. */
@@ -172,7 +181,9 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   selection: [],
   openCode: null,
   focus: 'component',
-  panelTab: 'code',
+  leftPanel: 'components',
+  debugTab: null,
+  inspectorOpen: true,
   url: { page: null, params: {} },
   history: null,
   canUndo: false,
@@ -203,7 +214,7 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
       }),
       selected: null,
       selection: [],
-      openCode: definition.queries[0]?.name ?? null,
+      openCode: null,
       focus: 'component',
       url: { page: resolvePage(definition, null), params: {} },
       ...newHistory(get().history, null),
@@ -334,9 +345,12 @@ export const useAppEditor = create<AppEditorState>((set, get) => ({
   },
   openCodeItem: (openCode) => {
     get().history?.seal()
-    set({ openCode, panelTab: 'code', focus: 'code' as const })
+    // In the dock; the left panel stays as it was.
+    set({ openCode, focus: 'code' as const })
   },
-  setPanelTab: (panelTab) => set({ panelTab }),
+  setLeftPanel: (leftPanel) => set({ leftPanel }),
+  setDebugTab: (debugTab) => set({ debugTab }),
+  setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
   setUrl: (page, params = {}) => {
     get().history?.seal()
     set((s) => ({ url: { page: resolvePage(s.definition, page), params } }))
@@ -433,11 +447,8 @@ function applied(
       }),
     ...(view && restoredSelection(definition, view)),
     ...(view && {
-      // The code item shown then, or the one open now; one that's gone (an undone query) gives way to the first.
-      openCode:
-        [view.openCode, state.openCode].find((n) => n !== null && names.has(n)) ??
-        definition.queries[0]?.name ??
-        null,
+      // The code item shown then, or the one open now; one that's gone (an undone query) closes the dock.
+      openCode: [view.openCode, state.openCode].find((n) => n !== null && names.has(n)) ?? null,
     }),
   }
 }
