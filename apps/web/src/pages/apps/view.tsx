@@ -122,7 +122,7 @@ function RunningApp({ app, release, modules, libraries, environment, environment
     const { env: _theirs, ...own } = params
     return {
       to: '/apps/$slug/{-$page}' as const,
-      params: { slug: app.slug, page: to },
+      params: { slug: app.slug, page: to || undefined },
       search: { ...own, ...(env && { env }) },
     }
   }

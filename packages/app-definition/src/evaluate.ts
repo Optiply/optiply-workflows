@@ -56,6 +56,8 @@ export interface AppModelOptions {
   methods?: (entity: Entity) => Record<string, unknown> | undefined
   /** What `url` starts as: the page shown (the app's first when missing) and its query parameters. */
   url?: { page?: string | null; params?: Record<string, string> }
+  /** What `localStorage.values` starts as: what the app kept in this browser before (session 41). */
+  storage?: Record<string, unknown>
   /** Module instances' specs from their releases (M14); see `buildAppGraph`. */
   specFor?: SpecFor
   /** In a module (M14): what `inputs.<name>` starts as; an input not given takes its default. */
@@ -391,6 +393,8 @@ export class AppModel {
         return this.values.get(`${entity.name}.$initial`) ?? null
       case 'transformer':
         return null
+      case 'storage':
+        return { ...this.options.storage }
       case 'url':
         return node.property === 'page'
           ? resolvePage(this.definition, this.options.url?.page)

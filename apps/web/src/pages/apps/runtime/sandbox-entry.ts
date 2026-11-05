@@ -164,6 +164,7 @@ function handle(message: HostMessage) {
           modules,
           libraries,
           ...(inputs && { inputs }),
+          ...(message.storage && { storage: message.storage }),
         })
         const loading = runtime.start()
         send({ type: 'started' })

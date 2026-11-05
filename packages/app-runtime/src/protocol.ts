@@ -25,6 +25,11 @@ export type Effect =
   | { type: 'download'; data: string; fileName: string; mimeType: string }
   /** `utils.openPage`: the page changes its URL, then tells the sandbox (`navigate`). */
   | { type: 'openPage'; page: string; params: Record<string, string>; newTab: boolean }
+  /**
+   * Set or clear local storage (session 41): the page keeps it for this app in this browser. `key` null with `value`
+   * undefined clears every key; a key with `value` undefined removes it.
+   */
+  | { type: 'storage'; key: string | null; value?: unknown }
 
 /** What changed in the app's state. */
 export interface StatePatch {
@@ -84,6 +89,8 @@ export type HostMessage =
       libraries?: ComponentLibraryReleases
       /** A module run on its own, in its editor (M14): what `inputs.<name>` are (the inputs' test values). */
       inputs?: Record<string, unknown>
+      /** What the app kept in this browser (session 41), as `localStorage.values`. */
+      storage?: Record<string, unknown>
     }
   /**
    * The editor changed the app: it takes over, keeping what the user did (see `AppRuntime.start`). Without

@@ -25,6 +25,8 @@ declare const current_user: { id: string; email: string; name: string }
 declare const appContext: { appSlug: string; environment: string; version: string | null }
 /** The page shown (null in an app without pages) and the query parameters of its URL. */
 declare const url: { page: string | null; params: Record<string, string> }
+/** What the app keeps in this browser (Set local storage), by key. */
+declare const localStorage: { values: Record<string, any> }
 declare const utils: {
   /** Shows a notification. */
   notify(message: any, tone?: 'info' | 'success' | 'error'): void
@@ -53,6 +55,7 @@ function methodSignatures(entity: Entity): string[] {
       )
     case 'transformer':
     case 'url':
+    case 'storage':
     case 'inputs':
       return []
   }

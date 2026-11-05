@@ -84,6 +84,8 @@ export interface AppRuntimeOptions {
   libraries?: ComponentLibraryReleases
   /** In a module instance (M14): what `inputs.<name>` starts as. */
   inputs?: Record<string, unknown>
+  /** What the app kept in this browser before (session 41): `localStorage.values` starts as it. */
+  storage?: Record<string, unknown>
   /** In a module instance (M14): fires one of the module's events on the instance in the app. */
   onEvent?: (event: string) => Promise<boolean>
 }
@@ -112,6 +114,8 @@ export class AppRuntime {
   private readonly sent = new Map<string, string>()
   private readonly autoTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly debounced = new Map<string, ReturnType<typeof setTimeout>>()
+  /** When each throttled handler last ran (session 41). */
+  private readonly throttled = new Map<string, number>()
   private readonly methodCache = new Map<string, Record<string, unknown>>()
   private readonly notified = new WeakSet<object>()
   private readonly autoRunDelayMs: number
@@ -139,6 +143,7 @@ export class AppRuntime {
       globals: { ...options.globals, utils: this.utils() },
       methods: (entity) => this.methodsFor(entity),
       ...(options.url && { url: options.url }),
+      ...(options.storage && { storage: options.storage }),
       ...(options.inputs && { inputs: options.inputs }),
       specFor: (c) => {
         if (c.type === 'custom') {
@@ -284,6 +289,8 @@ export class AppRuntime {
         ...(this.options.libraries && { libraries: this.options.libraries }),
         autoRunDelayMs: this.autoRunDelayMs,
         inputs,
+        // The app's local storage, as it is now: an instance writes to the same keys.
+        storage: (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {},
         onEvent: (event) => this.fire(name, event),
       })
       this.instances.set(name, {
@@ -458,6 +465,15 @@ export class AppRuntime {
     const handlers = entity ? handlersOf(entity).filter((h) => h.event === event) : []
     const results = await Promise.all(
       handlers.map((h) => {
+        if (h.throttleMs) {
+          // At most once per window; an event within it is dropped.
+          const key = `${owner}:${h.id}`
+          const last = this.throttled.get(key)
+          const now = Date.now()
+          if (last !== undefined && now - last < h.throttleMs) return true
+          this.throttled.set(key, now)
+          return this.runHandler(owner, h, locals)
+        }
         if (!h.debounceMs) return this.runHandler(owner, h, locals)
         const key = `${owner}:${h.id}`
         clearTimeout(this.debounced.get(key))
@@ -652,6 +668,40 @@ export class AppRuntime {
             url: String(this.model.evaluateTemplate(action.url, locals) ?? ''),
             newTab: action.newTab ?? false,
           })
+          break
+        case 'openPage':
+          this.utils().openPage(action.page, {
+            params: this.evaluateParams(action.params, locals),
+            newTab: action.newTab === true,
+          })
+          break
+        case 'setUrlParams': {
+          // The page shown keeps its other parameters; one evaluating to empty is removed.
+          const params: Record<string, string> = {
+            ...(this.model.get('url.params') as Record<string, string>),
+          }
+          for (const [key, value] of Object.entries(this.evaluateParams(action.params, locals))) {
+            if (value === '') delete params[key]
+            else params[key] = value
+          }
+          const page = (this.model.get('url.page') as string | null) ?? ''
+          this.bridge.effect({ type: 'openPage', page, params, newTab: false })
+          break
+        }
+        case 'copyToClipboard':
+          this.utils().copyToClipboard(this.model.evaluateTemplate(action.text, locals))
+          break
+        case 'download':
+          this.utils().downloadFile(
+            this.model.evaluateTemplate(action.data, locals),
+            String(this.model.evaluateTemplate(action.fileName, locals) ?? '') || 'download.txt',
+          )
+          break
+        case 'setLocalStorage':
+          this.setStorage(action.key, this.model.evaluateTemplate(action.value, locals))
+          break
+        case 'clearLocalStorage':
+          this.setStorage(action.key ?? null, undefined)
           break
         case 'moduleEvent':
           // Outside an app (a module run on its own) there's nobody to handle it.
@@ -859,6 +909,37 @@ export class AppRuntime {
     if (this.model.get(`${modal}.isOpen`) === open) return
     this.apply({ [`${modal}.isOpen`]: open })
     return this.fire(modal, open ? 'open' : 'close')
+  }
+
+  /** Query parameters from templates, as strings (objects as JSON); empty for null and undefined. */
+  private evaluateParams(params: Record<string, string> | undefined, locals: Record<string, unknown>) {
+    const out: Record<string, string> = {}
+    for (const [key, template] of Object.entries(params ?? {})) {
+      const value = this.model.evaluateTemplate(template, locals)
+      out[key] =
+        value === null || value === undefined
+          ? ''
+          : typeof value === 'object'
+            ? JSON.stringify(value)
+            : String(value)
+    }
+    return out
+  }
+
+  /**
+   * Local storage (session 41): `localStorage.values` changes here, and the page keeps it for the app in this
+   * browser. `key` null clears every key; `value` undefined removes the key.
+   */
+  private setStorage(key: string | null, value: unknown) {
+    const before = (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {}
+    let next: Record<string, unknown> = {}
+    if (key !== null) {
+      next = { ...before }
+      if (value === undefined) delete next[key]
+      else next[key] = value
+    }
+    this.apply({ 'localStorage.values': next })
+    this.bridge.effect(value === undefined ? { type: 'storage', key } : { type: 'storage', key, value })
   }
 
   /** What app code sees as `utils`. */

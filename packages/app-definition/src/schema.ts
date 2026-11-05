@@ -87,6 +87,40 @@ export const handlerActionSchema = z.discriminatedUnion('type', [
     type: z.literal('moduleEvent'),
     event: appNameSchema,
   }),
+  // Session 41, after Retool's event actions:
+  z.strictObject({
+    /** Opens one of the app's pages (by name; a page rename follows), with query parameters (templates). */
+    type: z.literal('openPage'),
+    page: appNameSchema,
+    params: z.record(z.string().max(64), z.string()).optional(),
+    newTab: z.boolean().optional(),
+  }),
+  z.strictObject({
+    /** Sets query parameters of the page shown (templates; one evaluating to empty is removed), keeping the others. */
+    type: z.literal('setUrlParams'),
+    params: z.record(z.string().max(64), z.string()),
+  }),
+  z.strictObject({
+    type: z.literal('copyToClipboard'),
+    text: z.string(),
+  }),
+  z.strictObject({
+    /** Saves data as a file (`utils.downloadFile`): an array of objects as CSV when the name ends in .csv. */
+    type: z.literal('download'),
+    data: z.string(),
+    fileName: z.string(),
+  }),
+  z.strictObject({
+    /** Keeps a value in this browser for this app, read back as `localStorage.values.<key>`. The key is plain text. */
+    type: z.literal('setLocalStorage'),
+    key: z.string().min(1).max(200),
+    value: z.string(),
+  }),
+  z.strictObject({
+    /** Removes one key the app keeps in this browser, or (without `key`) all of them. */
+    type: z.literal('clearLocalStorage'),
+    key: z.string().min(1).max(200).optional(),
+  }),
 ])
 
 export const eventHandlerSchema = z.strictObject({
@@ -97,6 +131,8 @@ export const eventHandlerSchema = z.strictObject({
   /** A template; the handler runs only when it is truthy. */
   onlyIf: z.string().optional(),
   debounceMs: z.number().int().min(0).max(60_000).optional(),
+  /** Runs at most once in this many milliseconds (session 41); an event within it is dropped. Not with `debounceMs`. */
+  throttleMs: z.number().int().min(0).max(60_000).optional(),
 })
 
 const handlersSchema = z.array(eventHandlerSchema).max(50)

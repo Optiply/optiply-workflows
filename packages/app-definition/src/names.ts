@@ -7,13 +7,14 @@ export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 's
  * Added by the app runtime: `current_user` (`{ id, email, name }`), `utils` (`notify`, `openUrl`, `openPage`,
  * `copyToClipboard`, `downloadFile`), `appContext` (`{ appSlug, environment, version }`) and `url` (`{ page,
  * params }`, the page shown and its URL's query parameters; values in the graph, since they change as people move
- * between pages).
+ * between pages) and `localStorage` (`{ values }`, what the app keeps in this browser; session 41).
  */
 export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set([
   'current_user',
   'utils',
   'appContext',
   'url',
+  'localStorage',
 ])
 
 /** Names an app's code can read without them being one of its components, queries, transformers or variables. */

@@ -105,6 +105,8 @@ const WATCHDOG = { intervalMs: 1000, stallMs: 5000 }
 /** Only these can be opened from an app. */
 const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 const DOWNLOAD_TYPES = new Set(['text/plain', 'text/csv', 'application/json'])
+/** At most this much JSON text of local storage per app (session 41). */
+const STORAGE_LIMIT = 100_000
 
 /** A custom component's frame (M25), as the host reaches it: its methods. */
 export interface ComponentFrameHandle {
@@ -397,6 +399,7 @@ export class AppHost {
           modules: this.modules,
           libraries: this.libraries,
           ...this.testInputs(),
+          storage: this.readStorage(),
         })
         return
       case 'started': {
@@ -511,6 +514,23 @@ export class AppHost {
       case 'openPage':
         this.effect({ type: 'openPage', page: String(util.page), params: util.params ?? {}, newTab: false })
         return
+    }
+  }
+
+  /** Where this app's local storage is kept in the browser (session 41): one key per app (or module). */
+  private get storageKey(): string {
+    return `ow.appStorage.${this.options.appId}`
+  }
+
+  /** What the app kept in this browser; empty when nothing or unreadable. */
+  private readStorage(): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(this.storageKey) ?? '{}') as unknown
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
     }
   }
 
@@ -655,6 +675,26 @@ export class AppHost {
           for (const [key, value] of Object.entries(effect.params)) params[String(key)] = String(value)
         }
         this.openPage(String(effect.page), params, effect.newTab === true)
+        return
+      }
+      case 'storage': {
+        const values = this.readStorage()
+        if (effect.key === null) {
+          for (const key of Object.keys(values)) delete values[key]
+        } else if (effect.value === undefined) delete values[String(effect.key)]
+        else values[String(effect.key)] = effect.value
+        try {
+          const text = JSON.stringify(values)
+          // Within reason: the browser's storage is shared by every app on this site.
+          if (text.length > STORAGE_LIMIT) {
+            this.options.notify('This app keeps too much in local storage; the change was not kept', 'error')
+            return
+          }
+          if (Object.keys(values).length) localStorage.setItem(this.storageKey, text)
+          else localStorage.removeItem(this.storageKey)
+        } catch {
+          // A private window may refuse storage: the app still has the value until it reloads.
+        }
         return
       }
       case 'download': {

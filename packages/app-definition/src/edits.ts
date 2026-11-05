@@ -644,12 +644,24 @@ export function renamePage(def: AppDefinition, from: string, to: string): AppDef
   if (from === to || !def.pages?.some((p) => p.name === from) || pageNameReason(def, to, from)) return def
   const follow = <T extends { page?: string }>(item: T): T =>
     item.page === from ? { ...item, page: to } : item
-  const components = relinkNavigation(def.components.map(follow), from, to)
+  // Go to page actions (session 41) follow too.
+  const retarget = <T extends { events?: EventHandler[] }>(item: T): T =>
+    item.events?.some((h) => h.action.type === 'openPage' && h.action.page === from)
+      ? {
+          ...item,
+          events: item.events.map((h) =>
+            h.action.type === 'openPage' && h.action.page === from
+              ? { ...h, action: { ...h.action, page: to } }
+              : h,
+          ),
+        }
+      : item
+  const components = relinkNavigation(def.components.map(follow).map(retarget), from, to)
   const renamed = {
     ...def,
     pages: def.pages.map((p) => (p.name === from ? { ...p, name: to } : p)),
     components,
-    queries: def.queries.map(follow),
+    queries: def.queries.map(follow).map(retarget),
     ...(def.transformers && { transformers: def.transformers.map(follow) }),
   }
   // `utils.openPage('from', …)` in templates and code follows too (M24); a computed name can't be followed.

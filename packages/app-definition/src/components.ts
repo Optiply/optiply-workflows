@@ -550,6 +550,9 @@ export const VARIABLE_STATE = ['value'] as const
 
 /** `url.page` (the page shown, null in an app without pages) and `url.params` (its query parameters). */
 export const URL_STATE = ['page', 'params'] as const
+
+/** `localStorage.values` (session 41): what the app keeps in this browser, by key (Set local storage). */
+export const STORAGE_STATE = ['values'] as const
 export const VARIABLE_METHODS: Readonly<Record<string, MethodSpec>> = {
   setValue: { params: ['value'] },
   setIn: { params: ['path', 'value'] },

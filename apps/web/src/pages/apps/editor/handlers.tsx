@@ -11,12 +11,24 @@ const ACTIONS: { type: HandlerAction['type']; label: string }[] = [
   { type: 'setVariable', label: 'Set variable' },
   { type: 'runScript', label: 'Run script' },
   { type: 'notify', label: 'Show notification' },
+  { type: 'openPage', label: 'Go to page' },
   { type: 'openUrl', label: 'Open URL' },
+  { type: 'setUrlParams', label: 'Set URL parameters' },
+  { type: 'copyToClipboard', label: 'Copy to clipboard' },
+  { type: 'download', label: 'Export data' },
+  { type: 'setLocalStorage', label: 'Set local storage' },
+  { type: 'clearLocalStorage', label: 'Clear local storage' },
   // In a module only (M14).
   { type: 'moduleEvent', label: 'Fire module event' },
 ]
 
-type Names = { queries: string[]; components: string[]; variables: string[]; events: string[] }
+type Names = {
+  queries: string[]
+  components: string[]
+  variables: string[]
+  events: string[]
+  pages: string[]
+}
 
 const newId = () => Math.random().toString(36).slice(2, 10)
 
@@ -37,6 +49,18 @@ function defaultAction(type: HandlerAction['type'], names: Names) {
       return { type, url: '' } as const
     case 'moduleEvent':
       return { type, event: names.events[0] ?? 'event1' } as const
+    case 'openPage':
+      return { type, page: names.pages[0] ?? 'page1' } as const
+    case 'setUrlParams':
+      return { type, params: {} } as const
+    case 'copyToClipboard':
+      return { type, text: '' } as const
+    case 'download':
+      return { type, data: '', fileName: 'export.csv' } as const
+    case 'setLocalStorage':
+      return { type, key: 'key', value: '' } as const
+    case 'clearLocalStorage':
+      return { type } as const
   }
 }
 
@@ -57,6 +81,18 @@ function describe(h: EventHandler): string {
       return 'open URL'
     case 'moduleEvent':
       return `fire ${a.event}`
+    case 'openPage':
+      return `go to ${a.page}`
+    case 'setUrlParams':
+      return 'set URL parameters'
+    case 'copyToClipboard':
+      return 'copy to clipboard'
+    case 'download':
+      return 'export data'
+    case 'setLocalStorage':
+      return `store ${a.key}`
+    case 'clearLocalStorage':
+      return a.key ? `forget ${a.key}` : 'clear local storage'
   }
 }
 
@@ -83,8 +119,11 @@ export function HandlersEditor({
     components: definition.components.map((c) => c.name),
     variables: (definition.variables ?? []).map((v) => v.name),
     events: (definition.module?.events ?? []).map((e) => e.name),
+    pages: (definition.pages ?? []).map((p) => p.name),
   }
-  const actions = ACTIONS.filter((a) => a.type !== 'moduleEvent' || definition.module)
+  const actions = ACTIONS.filter(
+    (a) => (a.type !== 'moduleEvent' || definition.module) && (a.type !== 'openPage' || names.pages.length),
+  )
   if (!events.length) return <p className="text-xs text-muted">This component has no events.</p>
   const replace = (i: number, next: EventHandler) => onChange(handlers.map((h, j) => (j === i ? next : h)))
 
@@ -168,24 +207,7 @@ export function HandlersEditor({
                     }}
                   />
                 </EditorField>
-                <EditorField label="Debounce (ms)">
-                  <Input
-                    type="number"
-                    min={0}
-                    className="h-8"
-                    value={h.debounceMs ?? ''}
-                    onChange={(e) => {
-                      const { debounceMs: _, ...rest } = h
-                      const n = Number(e.target.value)
-                      replace(
-                        i,
-                        e.target.value && n > 0
-                          ? { ...rest, debounceMs: Math.min(60_000, Math.round(n)) }
-                          : rest,
-                      )
-                    }}
-                  />
-                </EditorField>
+                <WaitFields handler={h} onChange={(next) => replace(i, next)} />
                 <ProblemList path={[...at, 'event']} />
               </div>
             )}
@@ -329,5 +351,191 @@ function ActionFields({
       )
     case 'moduleEvent':
       return pick('Module event', action.event, names.events, (event) => onChange({ ...action, event }))
+    case 'openPage':
+      return (
+        <>
+          {pick('Page', action.page, names.pages, (page) => onChange({ ...action, page }))}
+          <ParamsFields
+            params={action.params ?? {}}
+            at={[...at, 'params']}
+            onChange={(params) => {
+              const { params: _, ...rest } = action
+              onChange(Object.keys(params).length ? { ...rest, params } : rest)
+            }}
+          />
+          <Checkbox
+            label="Open in a new tab"
+            checked={action.newTab ?? false}
+            onChange={(e) => onChange({ ...action, newTab: e.target.checked })}
+          />
+        </>
+      )
+    case 'setUrlParams':
+      return (
+        <ParamsFields
+          params={action.params}
+          at={[...at, 'params']}
+          hint="Other parameters stay; one that evaluates to empty is removed"
+          onChange={(params) => onChange({ ...action, params })}
+        />
+      )
+    case 'copyToClipboard':
+      return template(['text'], 'Text', action.text, (text) => onChange({ ...action, text }))
+    case 'download':
+      return (
+        <>
+          {template(['data'], 'Data', action.data, (data) => onChange({ ...action, data }))}
+          {template(['fileName'], 'File name', action.fileName, (fileName) =>
+            onChange({ ...action, fileName }),
+          )}
+          <p className="text-[11px] text-muted">
+            Rows (an array of objects) save as CSV for a .csv name, JSON otherwise.
+          </p>
+        </>
+      )
+    case 'setLocalStorage':
+      return (
+        <>
+          <EditorField label="Key" hint="Read back as localStorage.values.<key>">
+            <Input
+              aria-label="Key"
+              className="h-8 font-mono"
+              value={action.key}
+              onChange={(e) => onChange({ ...action, key: e.target.value })}
+            />
+          </EditorField>
+          {template(['value'], 'Value', action.value, (value) => onChange({ ...action, value }))}
+        </>
+      )
+    case 'clearLocalStorage':
+      return (
+        <EditorField label="Key" hint="Empty: every key the app keeps">
+          <Input
+            aria-label="Key"
+            className="h-8 font-mono"
+            value={action.key ?? ''}
+            onChange={(e) =>
+              onChange(e.target.value ? { ...action, key: e.target.value } : { type: action.type })
+            }
+          />
+        </EditorField>
+      )
   }
+}
+
+/** Query parameters as name / {{ }} value rows, with a row to add one. */
+function ParamsFields({
+  params,
+  at,
+  hint,
+  onChange,
+}: {
+  params: Record<string, string>
+  at: (string | number)[]
+  hint?: string
+  onChange: (next: Record<string, string>) => void
+}) {
+  const diagnostics = useAppEditor((s) => s.diagnostics)
+  const entries = Object.entries(params)
+  const rename = (from: string, to: string) =>
+    onChange(Object.fromEntries(entries.map(([k, v]) => [k === from ? to : k, v])))
+  return (
+    <EditorField label="URL parameters" hint={hint}>
+      <div className="flex flex-col gap-1.5">
+        {entries.map(([key, value]) => (
+          <div key={key} className="flex items-start gap-1.5">
+            <Input
+              aria-label="Parameter name"
+              className="h-[30px] w-24 shrink-0 font-mono text-xs"
+              defaultValue={key}
+              onBlur={(e) => {
+                const next = e.target.value.trim()
+                if (next && next !== key && !(next in params)) rename(key, next)
+                else e.target.value = key
+              }}
+            />
+            <div className="min-w-0 flex-1">
+              <AppCodeField
+                path={[...at, key]}
+                language="plaintext"
+                singleLine
+                height={30}
+                value={value}
+                problems={problemsAt(diagnostics, [...at, key])}
+                onChange={(v) => onChange({ ...params, [key]: v })}
+              />
+            </div>
+            <Button
+              size="icon"
+              variant="ghost"
+              title={`Remove ${key}`}
+              onClick={() => onChange(Object.fromEntries(entries.filter(([k]) => k !== key)))}
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          </div>
+        ))}
+        <Button
+          size="sm"
+          className="self-start"
+          onClick={() => {
+            let n = entries.length + 1
+            while (`param${n}` in params) n++
+            onChange({ ...params, [`param${n}`]: '' })
+          }}
+        >
+          <Plus className="size-3.5" /> Add parameter
+        </Button>
+      </div>
+    </EditorField>
+  )
+}
+
+/** How a handler waits: not at all, debounced (after the events stop) or throttled (at most once per window). */
+function WaitFields({
+  handler,
+  onChange,
+}: {
+  handler: EventHandler
+  onChange: (next: EventHandler) => void
+}) {
+  const mode =
+    handler.throttleMs !== undefined ? 'throttle' : handler.debounceMs !== undefined ? 'debounce' : 'none'
+  const ms = handler.throttleMs ?? handler.debounceMs
+  const { debounceMs: _d, throttleMs: _t, ...rest } = handler
+  const set = (nextMode: string, nextMs: number | undefined) =>
+    onChange(
+      nextMode === 'none' || nextMs === undefined
+        ? rest
+        : { ...rest, [nextMode === 'throttle' ? 'throttleMs' : 'debounceMs']: nextMs },
+    )
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <EditorField label="Wait">
+        <Select
+          aria-label="Wait"
+          value={mode}
+          onChange={(e) => set(e.target.value, e.target.value === 'none' ? undefined : (ms ?? 300))}
+        >
+          <option value="none">Don't wait</option>
+          <option value="debounce">Debounce</option>
+          <option value="throttle">Throttle</option>
+        </Select>
+      </EditorField>
+      {mode !== 'none' && (
+        <EditorField label={mode === 'debounce' ? 'Debounce (ms)' : 'Throttle (ms)'}>
+          <Input
+            type="number"
+            min={0}
+            className="h-8"
+            value={ms ?? ''}
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              set(mode, e.target.value && n > 0 ? Math.min(60_000, Math.round(n)) : undefined)
+            }}
+          />
+        </EditorField>
+      )}
+    </div>
+  )
 }

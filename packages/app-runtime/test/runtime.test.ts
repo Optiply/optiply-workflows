@@ -33,6 +33,7 @@ function setup(
     confirm?: boolean
     delay?: number
     url?: { page?: string | null; params?: Record<string, string> }
+    storage?: Record<string, unknown>
   } = {},
 ) {
   const calls: { query: string; values: Record<string, unknown> }[] = []
@@ -66,6 +67,7 @@ function setup(
       autoRunDelayMs: opts.delay ?? 0,
       globals: { current_user: { email: 'a@optiply.nl' } },
       ...(opts.url && { url: opts.url }),
+      ...(opts.storage && { storage: opts.storage }),
     },
   )
   return { runtime, calls, effects, patches, confirms, state }
@@ -855,5 +857,94 @@ describe('library queries (M14)', () => {
     t.runtime.set({ 'customer.value': 8 })
     await wait(20)
     expect(t.calls.at(-1)).toEqual({ query: 'orders', values: { ' customer.value ': 8 } })
+  })
+})
+
+describe('event actions of session 41', () => {
+  const button = (events: object[]) => comp('go', 'button', {}, { events })
+  const pages = [{ name: 'list' }, { name: 'detail' }]
+
+  it('goes to a page with parameters, and sets the shown page’s parameters keeping the others', async () => {
+    const t = setup(
+      {
+        pages,
+        components: [
+          comp('id', 'textInput', { defaultValue: '7' }),
+          button([
+            on('click', { type: 'openPage', page: 'detail', params: { id: '{{ id.value }}' }, newTab: true }),
+            on('click', { type: 'setUrlParams', params: { tab: 'notes', q: '{{ null }}' } }),
+          ]),
+        ],
+      },
+      { url: { page: 'list', params: { q: 'old', keep: 'yes' } } },
+    )
+    await t.runtime.start()
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toEqual([
+      { type: 'openPage', page: 'detail', params: { id: '7' }, newTab: true },
+      // An empty value removes the parameter.
+      { type: 'openPage', page: 'list', params: { keep: 'yes', tab: 'notes' }, newTab: false },
+    ])
+  })
+
+  it('copies, downloads, and keeps values in local storage', async () => {
+    const t = setup(
+      {
+        components: [
+          comp('note', 'text', { value: '{{ localStorage.values.theme ?? "none" }}' }),
+          button([
+            on('click', { type: 'copyToClipboard', text: '{{ 1 + 1 }}' }),
+            on('click', { type: 'download', data: '{{ [{ a: 1 }] }}', fileName: 'rows.csv' }),
+            on('click', { type: 'setLocalStorage', key: 'theme', value: '{{ "dark" }}' }),
+          ]),
+          comp(
+            'forget',
+            'button',
+            {},
+            { events: [on('click', { type: 'clearLocalStorage', key: 'theme' })] },
+          ),
+          comp('wipe', 'button', {}, { events: [on('click', { type: 'clearLocalStorage' })] }),
+        ],
+      },
+      { storage: { size: 'big' } },
+    )
+    await t.runtime.start()
+    expect(t.state['note.value']).toBe('none')
+    expect(t.state['localStorage.values']).toEqual({ size: 'big' })
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toEqual([
+      { type: 'copy', text: '2' },
+      { type: 'download', data: 'a\r\n1\r\n', fileName: 'rows.csv', mimeType: 'text/csv' },
+      { type: 'storage', key: 'theme', value: 'dark' },
+    ])
+    expect(t.state['note.value']).toBe('dark')
+    await t.runtime.fire('forget', 'click')
+    expect(t.state['localStorage.values']).toEqual({ size: 'big' })
+    await t.runtime.fire('wipe', 'click')
+    expect(t.state['localStorage.values']).toEqual({})
+    expect(t.effects.slice(-2)).toEqual([
+      { type: 'storage', key: 'theme' },
+      { type: 'storage', key: null },
+    ])
+  })
+
+  it('throttles: one run per window, the events within it dropped', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'go',
+          'button',
+          {},
+          { events: [on('click', { type: 'notify', message: 'hi' }, { throttleMs: 200 })] },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    await t.runtime.fire('go', 'click')
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toHaveLength(1)
+    await wait(220)
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toHaveLength(2)
   })
 })

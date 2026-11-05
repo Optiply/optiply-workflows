@@ -160,8 +160,24 @@ function handlerFields(
       case 'openUrl':
         push(['action', 'url'], 'template', a.url)
         break
+      case 'openPage':
+      case 'setUrlParams':
+        for (const [key, value] of Object.entries(a.params ?? {}))
+          push(['action', 'params', key], 'template', value)
+        break
+      case 'copyToClipboard':
+        push(['action', 'text'], 'template', a.text)
+        break
+      case 'download':
+        push(['action', 'data'], 'template', a.data)
+        push(['action', 'fileName'], 'template', a.fileName)
+        break
+      case 'setLocalStorage':
+        push(['action', 'value'], 'template', a.value)
+        break
       case 'controlQuery':
       case 'moduleEvent':
+      case 'clearLocalStorage':
         break
     }
   })

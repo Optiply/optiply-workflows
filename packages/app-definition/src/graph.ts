@@ -7,6 +7,7 @@ import {
   moduleComponentSpec,
   QUERY_METHODS,
   QUERY_STATE,
+  STORAGE_STATE,
   URL_STATE,
   VARIABLE_METHODS,
   VARIABLE_STATE,
@@ -39,6 +40,8 @@ export type Entity =
   | { kind: 'inputs'; name: 'inputs'; index: -1; names: readonly string[] }
   /** `url`, built in: the page shown and its query parameters. */
   | { kind: 'url'; name: 'url'; index: -1 }
+  /** `localStorage`, built in (session 41): what the app keeps in this browser. */
+  | { kind: 'storage'; name: 'localStorage'; index: -1 }
 
 export type NodeKind =
   /** A component prop: its template, or its default. */
@@ -158,6 +161,8 @@ export function entityProperties(entity: Entity): string[] {
       return [...VARIABLE_STATE]
     case 'url':
       return [...URL_STATE]
+    case 'storage':
+      return [...STORAGE_STATE]
     case 'inputs':
       return [...entity.names]
   }
@@ -175,6 +180,7 @@ export function entityMethods(entity: Entity): string[] {
     case 'variable':
       return Object.keys(VARIABLE_METHODS)
     case 'url':
+    case 'storage':
     case 'inputs':
       return []
   }
@@ -206,6 +212,8 @@ export function buildAppGraph(def: AppDefinition, opts: { specFor?: SpecFor } = 
   const entities = appEntities(def, opts.specFor)
   // Built in; an entity of the app named `url` is invalid (and keeps the name here, for the validator to report).
   if (!entities.has('url')) entities.set('url', { kind: 'url', name: 'url', index: -1 })
+  if (!entities.has('localStorage'))
+    entities.set('localStorage', { kind: 'storage', name: 'localStorage', index: -1 })
   // Likewise `inputs` in a module.
   if (def.module && !entities.has('inputs')) {
     entities.set('inputs', {
@@ -267,6 +275,9 @@ export function buildAppGraph(def: AppDefinition, opts: { specFor?: SpecFor } = 
         break
       case 'url':
         for (const state of URL_STATE) add(name, state, 'source')
+        break
+      case 'storage':
+        for (const state of STORAGE_STATE) add(name, state, 'source')
         break
       case 'inputs':
         for (const input of entity.names) add(name, input, 'source')
@@ -362,6 +373,7 @@ function entityPath(entity: Entity): string {
     transformer: 'transformers',
     variable: 'variables',
     url: 'url',
+    storage: 'localStorage',
     inputs: 'module',
   }
   return `${list[entity.kind]}.${entity.index}`

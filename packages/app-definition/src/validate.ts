@@ -238,6 +238,7 @@ const LIST = {
   transformer: 'transformers',
   variable: 'variables',
   url: 'url',
+  storage: 'localStorage',
   inputs: 'module',
 }
 
@@ -557,6 +558,22 @@ function checkHandlers(
         code: 'other_page',
         message: otherPage(target, targetPage!, owner, reader),
         path: [...path, 'action', a.type === 'controlQuery' ? 'query' : 'component'],
+        ...at,
+      })
+    }
+    if (a.type === 'openPage' && !def.pages?.some((p) => p.name === a.page)) {
+      report({
+        code: 'unknown_page',
+        message: def.pages?.length ? `No page is named "${a.page}"` : 'This app has no pages',
+        path: [...path, 'action', 'page'],
+        ...at,
+      })
+    }
+    if (h.debounceMs !== undefined && h.throttleMs !== undefined) {
+      report({
+        code: 'invalid_args',
+        message: 'A handler waits by debounce or by throttle, not both',
+        path: [...path, 'throttleMs'],
         ...at,
       })
     }
