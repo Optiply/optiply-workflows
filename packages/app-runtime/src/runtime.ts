@@ -224,12 +224,12 @@ export class AppRuntime {
    * (unless the input's default changed), variables (unless their initial value changed) and query results. Only
    * the on-load queries that changed, or whose values changed, run again; `previous` stops.
    */
-  async start(options: { previous?: AppRuntime } = {}): Promise<void> {
+  async start(options: { previous?: AppRuntime; reset?: readonly string[] } = {}): Promise<void> {
     const { previous } = options
     this.model.init()
     if (previous) {
       previous.stop()
-      this.model.set(this.carriedOver(previous))
+      this.model.set(this.carriedOver(previous, new Set(options.reset)))
     }
     const loading = this.startInstances(previous)
     const values: Record<string, unknown> = {}
@@ -244,7 +244,7 @@ export class AppRuntime {
       (q) =>
         (runsAutomatically(q) || q.runOnLoad) &&
         this.active(q.name) &&
-        (!previous || this.mustRerun(q, previous)),
+        (!previous || options.reset?.includes(q.name) || this.mustRerun(q, previous)),
     )
     await Promise.allSettled([...loading, ...onLoad.map((q) => this.runQuiet(q.name))])
   }
@@ -372,11 +372,13 @@ export class AppRuntime {
   }
 
   /** The run-time values of `previous` that still mean the same thing in this definition. */
-  private carriedOver(previous: AppRuntime): Record<string, unknown> {
+  private carriedOver(previous: AppRuntime, reset: ReadonlySet<string> = new Set()): Record<string, unknown> {
     const carried: Record<string, unknown> = {}
     const before = previous.model
     for (const [key, node] of this.model.graph.nodes) {
       if (node.kind !== 'source' && node.kind !== 'state') continue
+      // Reset state (the editor's ··· menu): this entity starts afresh.
+      if (reset.has(node.entity)) continue
       const old = before.graph.nodes.get(key)
       if (!old || old.kind !== node.kind) continue
       // A module's inputs come from the app, as they are now.

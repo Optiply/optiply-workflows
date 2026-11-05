@@ -121,6 +121,8 @@ export const componentSchema = z.strictObject({
   /** Prop values by prop name, sparse: a missing prop takes the registry's default. */
   props: z.record(z.string().max(64), z.json()).optional(),
   events: handlersSchema.optional(),
+  /** A note for the app's editors (session 41, the inspector's "Add a note"); people using the app never see it. */
+  note: z.string().max(2000).optional(),
 })
 
 const queryCommon = {

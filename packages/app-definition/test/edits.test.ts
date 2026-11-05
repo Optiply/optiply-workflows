@@ -16,11 +16,14 @@ import {
   removeComponents,
   removePage,
   renamePage,
+  setComponentNote,
   setEntityPage,
   setHandlers,
   setPageTitle,
   setPositions,
   setProp,
+  switchableTypes,
+  switchComponentType,
   validateApp,
 } from '../src'
 import { app, comp, sqlQuery } from './helpers'
@@ -345,5 +348,47 @@ describe('page edits', () => {
       ['unknown_page', 'components.4.props.items.1.page'],
       ['unknown_identifier', 'components.4.props.items.2.page'],
     ])
+  })
+})
+
+describe('notes and switching types (session 41)', () => {
+  const base = {
+    schemaVersion: 1 as const,
+    components: [
+      {
+        name: 'amount',
+        type: 'textInput',
+        props: { label: 'Amount', placeholder: 'Type it', defaultValue: '3' },
+        events: [
+          { id: 'h1', event: 'change', action: { type: 'notify' as const, message: 'changed' } },
+          { id: 'h2', event: 'submit', action: { type: 'notify' as const, message: 'sent' } },
+        ],
+      },
+    ],
+    queries: [],
+  }
+
+  it('sets a note, and removes an empty one', () => {
+    const noted = setComponentNote(base, 'amount', 'Filled from the order')
+    expect(noted.components[0]!.note).toBe('Filled from the order')
+    expect('note' in setComponentNote(noted, 'amount', '  ').components[0]!).toBe(false)
+  })
+
+  it('switches between inputs only', () => {
+    expect(switchableTypes('textInput')).toEqual(['numberInput', 'dateInput', 'select', 'checkbox'])
+    expect(switchableTypes('table')).toEqual([])
+    expect(switchableTypes('container')).toEqual([])
+  })
+
+  it('keeps the props and handlers the new type has', () => {
+    const switched = switchComponentType(base, 'amount', 'numberInput').components[0]!
+    expect(switched.type).toBe('numberInput')
+    // The text '3' isn't a number: the number input's default goes back to its own.
+    expect(switched.props).toEqual({ label: 'Amount', placeholder: 'Type it' })
+    expect(switched.events?.map((h) => h.event)).toEqual(['change', 'submit'])
+    const checkbox = switchComponentType(base, 'amount', 'checkbox').components[0]!
+    // A checkbox has no placeholder, no submit event, and its default is a boolean: the text '3' goes.
+    expect(checkbox.props).toEqual({ label: 'Amount' })
+    expect(checkbox.events?.map((h) => h.event)).toEqual(['change'])
   })
 })

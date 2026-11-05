@@ -294,6 +294,15 @@ export class AppHost {
   }
 
   /**
+   * Starts these components, queries or variables afresh (the inspector's Reset state): the app runs on, the rest
+   * keeping what the user did.
+   */
+  resetState(names: string[]): void {
+    if (this.store.getState().status !== 'ready') return
+    this.post({ type: 'update', definition: this.definition, reset: names, ...this.testInputs() })
+  }
+
+  /**
    * The editor changed the app: the sandbox switches to it, keeping what the user did. An app that stopped
    * responding starts again with the edit (likely the fix).
    */

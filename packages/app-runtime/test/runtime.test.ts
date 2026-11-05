@@ -669,6 +669,35 @@ describe('AppRuntime', () => {
     expect(state).toMatchObject({ 'search.value': 'b', 'picked.value': 2 })
   })
 
+  it('starts what Reset state names afresh, the rest keeping what the user did', async () => {
+    const calls: string[] = []
+    const state: Record<string, unknown> = {}
+    const bridge = {
+      async runQuery(query: string): Promise<QueryOutcome> {
+        calls.push(query)
+        return { ok: true, data: calls.length }
+      },
+      confirm: async () => true,
+      effect: () => {},
+      publish: (p: StatePatch) => Object.assign(state, p.values),
+      log: () => {},
+    }
+    const def = app({
+      components: [comp('a', 'textInput', { defaultValue: 'x' }), comp('b', 'textInput')],
+      queries: [sql('list', 'select 1')],
+      variables: [{ name: 'v', initialValue: 1 }],
+    })
+    const first = new AppRuntime(def, bridge, { autoRunDelayMs: 0 })
+    await first.start()
+    first.set({ 'a.value': 'typed', 'b.value': 'kept', 'v.value': 5 })
+    await wait()
+    const next = new AppRuntime(def, bridge, { autoRunDelayMs: 0 })
+    await next.start({ previous: first, reset: ['a', 'v', 'list'] })
+    expect(state).toMatchObject({ 'a.value': 'x', 'b.value': 'kept', 'v.value': 1, 'list.data': 2 })
+    // The query reset runs again, as on load.
+    expect(calls).toEqual(['list', 'list'])
+  })
+
   it('sets nested values immutably', () => {
     const before = { a: { b: [1, 2] } }
     expect(setIn(before, 'a.b.1', 9)).toEqual({ a: { b: [1, 9] } })

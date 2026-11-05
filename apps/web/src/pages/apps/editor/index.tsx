@@ -421,7 +421,11 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
                     {selection.length > 1 ? (
                       <SelectionInspector names={selection} onDuplicate={() => duplicateChosen(notify)} />
                     ) : selected ? (
-                      <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                      <ComponentInspector
+                        key={`${epoch}/${selected}`}
+                        name={selected}
+                        onDuplicate={() => duplicateChosen(notify)}
+                      />
                     ) : (
                       <AppInspector key={epoch} kind={app.kind} />
                     )}

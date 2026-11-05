@@ -1,5 +1,5 @@
 import { customComponentSpec } from './component-library'
-import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
+import { componentSpec, type JsonValue, moduleComponentSpec, type PropSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
 import { renameModuleInputReads } from './rename'
@@ -155,6 +155,61 @@ export function updateComponent(
   edit: (component: AppComponent) => AppComponent,
 ): AppDefinition {
   return { ...def, components: def.components.map((c) => (c.name === name ? edit(c) : c)) }
+}
+
+/** Sets a component's note for editors; an empty one is removed. */
+export function setComponentNote(def: AppDefinition, name: string, note: string): AppDefinition {
+  return updateComponent(def, name, (c) => {
+    const { note: _old, ...rest } = c
+    return note.trim() ? { ...rest, note } : rest
+  })
+}
+
+/**
+ * The types a component can switch to keeping what it has (the inspector's "Switch to"): the other inputs for an
+ * input. Empty for the rest (a container's children sit in its views, which a form doesn't have).
+ */
+export function switchableTypes(type: string): string[] {
+  const groups = [['textInput', 'numberInput', 'dateInput', 'select', 'checkbox']]
+  return groups.find((g) => g.includes(type))?.filter((t) => t !== type) ?? []
+}
+
+/**
+ * Switches a component to another type (see `switchableTypes`): the props and event handlers the new type has are
+ * kept (a constant only when it fits the new prop's type; a `{{ }}` template always), the others dropped; its name,
+ * place and size stay.
+ */
+export function switchComponentType(def: AppDefinition, name: string, type: string): AppDefinition {
+  const spec = componentSpec(type)
+  if (!spec) throw new Error(`Unknown component type ${type}`)
+  return updateComponent(def, name, (c) => {
+    const props = Object.fromEntries(
+      Object.entries(c.props ?? {}).filter(([prop, value]) => {
+        const propSpec = spec.props[prop]
+        return propSpec !== undefined && fitsProp(value, propSpec)
+      }),
+    )
+    const events = (c.events ?? []).filter((h) => spec.events.includes(h.event))
+    const { props: _p, events: _e, ...rest } = c
+    return {
+      ...rest,
+      type,
+      ...(Object.keys(props).length && { props }),
+      ...(events.length && { events }),
+    }
+  })
+}
+
+/** Whether a stored prop value suits a prop: a template always, a constant of the prop's type. */
+function fitsProp(value: JsonValue, spec: PropSpec): boolean {
+  if (typeof value === 'string' && value.includes('{{')) return true
+  if (value === null) return spec.nullable === true || spec.type === 'any'
+  const type = spec.type
+  if (typeof type === 'object') return typeof value === 'string' && type.enum.includes(value)
+  if (type === 'any') return true
+  if (type === 'array') return Array.isArray(value)
+  if (type === 'object') return typeof value === 'object' && !Array.isArray(value)
+  return typeof value === type
 }
 
 /** Sets a prop, or with `undefined` goes back to the default. */

@@ -95,6 +95,8 @@ export type HostMessage =
       modules?: ModuleReleases
       libraries?: ComponentLibraryReleases
       inputs?: Record<string, unknown>
+      /** Components, queries and variables that start afresh instead of keeping what the user did (Reset state). */
+      reset?: string[]
     }
   /**
    * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once

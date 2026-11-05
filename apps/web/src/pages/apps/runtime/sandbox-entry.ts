@@ -186,7 +186,7 @@ function handle(message: HostMessage) {
           libraries,
           ...(inputs && { inputs }),
         })
-        void next.start({ previous: runtime })
+        void next.start({ previous: runtime, ...(message.reset && { reset: message.reset }) })
         runtime = next
       } catch (err) {
         log('error', `The edited app could not start: ${err instanceof Error ? err.message : String(err)}`)
