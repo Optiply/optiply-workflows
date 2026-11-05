@@ -1877,7 +1877,6 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
 
 ### Fix candidates ★
-- ★ **Block data isn't scrubbed of secret config values**, only logs and errors are (`packages/engine/src/errors.ts`; same rule as Postgres data in M1).
 - ★ **Idempotency keys are unique per workflow, not per environment** (`workflow_runs_idempotency_uq` on `(workflow_id, idempotency_key)`, migration 0002): a key used in staging replays that run for a production call too. Needs a migration (the index with the environment).
 - ★ **A webhook body schema's `pattern`** runs as a JavaScript regex (Ajv) on callers' input: a catastrophic pattern written by an editor could make a request slow (no RE2).
 - ★ **OAuth (M9):** disconnecting doesn't revoke the token at the provider; a custom flow's sign-in that keeps failing (a wrong password) is tried again on every query: no back-off.
@@ -1887,6 +1886,7 @@ Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-action
 - **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.
 - **Retry backoff sleeps in the worker**, holding a slot. Long backoffs could requeue the run with `availableAt` instead.
 - `pending` block status is never written.
+- **Secret config values in run data** (session 40): the runs API scrubs block data and stored replies with the environment's secret values **as they are now** (`secretConfigValues`), so an old value of a rotated secret shows in older runs; the database keeps the data as the blocks returned it (resumed and parent runs read it back); the reply a webhook caller gets isn't scrubbed (the workflow chose to send it).
 - **Paused runs resume on the workers' 5 s poll** (like schedules), so up to 5 s late; children wake their parent at once.
 - **No per-run cap on in-flight `fetch` requests** (the architecture's 50); the shared agent allows 32 connections per origin.
 - **A loop's sync workflow runner holds the worker** while its children run (within the iteration timeout, default 10 s); a Workflow block pauses instead.

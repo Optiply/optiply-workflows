@@ -1,3 +1,4 @@
+import { type Keyring, scrubSecretsDeep } from '@ow/crypto'
 import {
   type ApiKey,
   blockRunPayloads,
@@ -20,7 +21,7 @@ import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/a
 import { openApiDocument } from '../services/openapi'
 import { type Access, atLeast, loadAccess } from '../services/permissions'
 import type { RunEventHub } from '../services/run-events'
-import { RunRequestError, startBlockRun, startManualRun } from '../services/workflow-runs'
+import { RunRequestError, secretConfigValues, startBlockRun, startManualRun } from '../services/workflow-runs'
 
 /**
  * The runs API: start a manual run, cancel runs, and read runs, their children, block results, loop iterations and
@@ -29,10 +30,42 @@ import { RunRequestError, startBlockRun, startManualRun } from '../services/work
  * allowed, which is how async webhook callers follow the run they started. `GET /openapi.json` (M15) describes the
  * webhooks the caller may call, for a session or an API key. Errors are `{ error: { code, message, details? } }`.
  */
-export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicUrl: string }> = async (
-  app,
-  { db, events, publicUrl },
-) => {
+export const runsApi: FastifyPluginAsync<{
+  db: Db
+  keyring: Keyring
+  events?: RunEventHub
+  publicUrl: string
+}> = async (app, { db, keyring, events, publicUrl }) => {
+  /**
+   * Block data and stored replies leave scrubbed of the environment's secret config values (a code block returning
+   * `config.TOKEN`, an API echoing it), as logs and errors are when written. One per request: each environment's
+   * secrets are read once.
+   */
+  const scrubber = () => {
+    const byEnvironment = new Map<string, Promise<string[]>>()
+    return async <T>(environmentId: string, value: T): Promise<T> => {
+      if (value === null || value === undefined) return value
+      let secrets = byEnvironment.get(environmentId)
+      if (!secrets) {
+        secrets = secretConfigValues(db, keyring, environmentId)
+        byEnvironment.set(environmentId, secrets)
+      }
+      const values = await secrets
+      return values.length ? scrubSecretsDeep(value, values) : value
+    }
+  }
+  type Scrub = ReturnType<typeof scrubber>
+  const runView = async (
+    run: WorkflowRun,
+    workflow: Workflow,
+    environment: string,
+    scrub: Scrub = scrubber(),
+  ) => plainRunView({ ...run, response: await scrub(run.environmentId, run.response) }, workflow, environment)
+  const runViews = (rows: { run: WorkflowRun; workflow: Workflow; environment: string }[]) => {
+    const scrub = scrubber()
+    return Promise.all(rows.map((r) => runView(r.run, r.workflow, r.environment, scrub)))
+  }
+
   app.decorateRequest('user', null)
   app.decorateRequest('apiKey', null)
   app.addHook('preHandler', async (req, reply) => {
@@ -96,7 +129,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
         ...(body.draftId ? { branchDraftId: body.draftId } : {}),
       },
     })
-    return reply.code(202).send({ run: runView(run, workflow, environment.slug) })
+    return reply.code(202).send({ run: await runView(run, workflow, environment.slug) })
   })
 
   /**
@@ -134,7 +167,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
       userAgent: req.headers['user-agent'],
       metadata: { runId: run.id, block },
     })
-    return reply.code(202).send({ run: runView(run, workflow, environment.slug) })
+    return reply.code(202).send({ run: await runView(run, workflow, environment.slug) })
   })
 
   /** Runs of a workflow, newest first. `before` is the last run id of the previous page. */
@@ -161,7 +194,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
       .orderBy(desc(workflowRuns.id))
       .limit(query.limit)
     return {
-      runs: rows.map((r) => runView(r.run, workflow, r.environment)),
+      runs: await runViews(rows.map((r) => ({ ...r, workflow }))),
       next: rows.length === query.limit ? rows.at(-1)!.run.id : null,
     }
   })
@@ -194,7 +227,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
       .orderBy(desc(workflowRuns.id))
       .limit(query.limit)
     return {
-      runs: rows.map((r) => runView(r.run, byId.get(r.run.workflowId)!, r.environment)),
+      runs: await runViews(rows.map((r) => ({ ...r, workflow: byId.get(r.run.workflowId)! }))),
       next: rows.length === query.limit ? rows.at(-1)!.run.id : null,
     }
   })
@@ -215,7 +248,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
 
   app.get('/runs/:id', async (req) => {
     const { run, workflow, environment } = await visibleRun(req)
-    return { run: runView(run, workflow, environment) }
+    return { run: await runView(run, workflow, environment) }
   })
 
   /**
@@ -259,7 +292,7 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
     const [current] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
     return reply
       .code(outcome === 'requested' ? 202 : 200)
-      .send({ run: runView(current!, workflow, environment) })
+      .send({ run: await runView(current!, workflow, environment) })
   })
 
   /** Runs this run started (Workflow blocks, loop workflow runners), oldest first; those of workflows you can't see are left out. */
@@ -275,13 +308,13 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
       .limit(1000)
     const access = req.user ? await loadAccess(db, req.user) : null
     return {
-      runs: rows
-        .filter((r) =>
+      runs: await runViews(
+        rows.filter((r) =>
           access
             ? access.workflowLevel(r.workflow) !== null
             : apiKeyAllows(req.apiKey!, r.workflow.id, r.run.environmentId),
-        )
-        .map((r) => runView(r.run, r.workflow, r.environment)),
+        ),
+      ),
     }
   })
 
@@ -384,7 +417,10 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
 
     try {
       const [current] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
-      send('snapshot', { run: runView(current!, workflow, environment), blocks: await blocksOf(run.id) })
+      send('snapshot', {
+        run: await runView(current!, workflow, environment),
+        blocks: await blocksOf(run.id),
+      })
       if (FINAL_RUN_STATUSES.has(current!.status)) {
         send('end', {})
         return close()
@@ -408,9 +444,8 @@ export const runsApi: FastifyPluginAsync<{ db: Db; events?: RunEventHub; publicU
       .leftJoin(blockRunPayloads, eq(blockRunPayloads.blockRunId, blockRuns.id))
       .where(and(eq(blockRuns.runId, run.id), eq(blockRuns.blockKey, key)))
     if (!row) throw new RunRequestError(404, 'not_found', `Block "${key}" hasn't run`)
-    return {
-      block: { ...blockView(row.block, row.payload?.sizeBytes ?? null), data: row.payload?.data ?? null },
-    }
+    const data = await scrubber()(run.environmentId, row.payload?.data ?? null)
+    return { block: { ...blockView(row.block, row.payload?.sizeBytes ?? null), data } }
   })
 
   /** Logs in order. Poll with `after` set to the last id seen. */
@@ -519,7 +554,7 @@ function sendError(reply: FastifyReply, err: RunRequestError) {
     .send({ error: { code: err.code, message: err.message, ...(err.details && { details: err.details }) } })
 }
 
-function runView(run: WorkflowRun, workflow: Workflow, environment: string) {
+function plainRunView(run: WorkflowRun, workflow: Workflow, environment: string) {
   return {
     id: run.id,
     workflow: { id: workflow.id, slug: workflow.slug, name: workflow.name },

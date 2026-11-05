@@ -318,6 +318,42 @@ describe('rollback', () => {
   })
 })
 
+describe('secret config values in run data', () => {
+  it('leaves the runs API scrubbed from block data and the stored reply, while the run itself reads them', async () => {
+    const secret = 'live-run-secret-7f3a9c'
+    const token = data(await admin.mutate('configVars.create', { name: 'RUN_TOKEN', isSecret: true }))
+    await admin.mutate('configVars.setValue', { configVarId: token.id, environmentId: prodId, value: secret })
+    const wf = await workflowWith(
+      'echo-secret',
+      definition([
+        code('leak', 'return { auth: `Bearer ${configVars.RUN_TOKEN}`, size: configVars.RUN_TOKEN.length }'),
+        reply('{"auth": {{ leak.data.auth }}, "size": {{ leak.data.size }}}'),
+      ]),
+    )
+    data(await publish(wf))
+    const run = await runLive(wf.slug, {})
+    expect(run.status).toBe('succeeded')
+    // The blocks saw the value (its length came through); what leaves the API doesn't show it.
+    expect(run.response.body).toEqual({ auth: 'Bearer [REDACTED]', size: secret.length })
+    const block = (
+      await env.app.inject({
+        method: 'GET',
+        url: `/api/v1/runs/${run.id}/blocks/leak`,
+        headers: { cookie: adminCookie },
+      })
+    ).json().block
+    expect(block.data).toEqual({ auth: 'Bearer [REDACTED]', size: secret.length })
+    const list = (
+      await env.app.inject({
+        method: 'GET',
+        url: `/api/v1/workflows/${wf.slug}/runs`,
+        headers: { cookie: adminCookie },
+      })
+    ).json().runs
+    expect(JSON.stringify(list)).not.toContain(secret)
+  })
+})
+
 describe('trigger projection', () => {
   const yearly = { name: 'new-year', enabled: true, cron: '0 3 1 1 *' }
   const every10 = { name: 'every-10', enabled: true, intervalMs: 600_000, environment: 'staging' }

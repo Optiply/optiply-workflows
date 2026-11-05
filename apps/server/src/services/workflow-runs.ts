@@ -479,3 +479,22 @@ export function dbRunContext(db: Db, keyring: Keyring): RunContextProvider {
     },
   }
 }
+
+/**
+ * The secret config var values of an environment, as they are now. The runs API scrubs block data and stored
+ * replies with them on the way out: the stored data stays as the blocks returned it, because resumed runs and
+ * parent runs read it back.
+ */
+export async function secretConfigValues(db: Db, keyring: Keyring, environmentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ value: configVarValues })
+    .from(configVars)
+    .innerJoin(
+      configVarValues,
+      and(eq(configVarValues.configVarId, configVars.id), eq(configVarValues.environmentId, environmentId)),
+    )
+    .where(eq(configVars.isSecret, true))
+  return rows.map(({ value }) =>
+    decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!),
+  )
+}

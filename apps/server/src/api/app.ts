@@ -116,7 +116,13 @@ export async function buildApp(deps: {
   app.addHook('onClose', async () => {
     await events?.close()
   })
-  await app.register(runsApi, { prefix: '/api/v1', db, events, publicUrl: config.PUBLIC_URL })
+  await app.register(runsApi, {
+    prefix: '/api/v1',
+    db,
+    keyring: config.keyring,
+    events,
+    publicUrl: config.PUBLIC_URL,
+  })
   await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(componentBundlesApi, { db })
   await app.register(cliApi)
