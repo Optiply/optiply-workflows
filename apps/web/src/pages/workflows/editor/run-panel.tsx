@@ -25,6 +25,7 @@ import {
   runsApi,
 } from '@/lib/runs-api'
 import { cn } from '@/lib/utils'
+import { BlockErrorNote } from './block-error'
 import { kindOf } from './catalog'
 import { DataTab, downloadJson, JsonTree } from './result-view'
 import { countKinds, filterLines, type LevelFilter, logLines } from './run-logs'
@@ -353,12 +354,7 @@ function GlobalResult({ run, tab }: { run: RunView; tab: 'inputs' | 'data' | 'js
     )
   return (
     <div className="flex h-full flex-col gap-2 p-2">
-      {run.error && (
-        <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
-          {run.error.block && <span className="font-mono">{run.error.block}: </span>}
-          {run.error.message}
-        </p>
-      )}
+      {run.error && <BlockErrorNote error={run.error} className="text-sm" compact />}
       {!run.response && !run.error && isFinal(run.status) ? (
         <p className="p-2 text-sm text-muted">
           No response: the workflow has no Response block. Pick a block to see its data.
@@ -409,11 +405,7 @@ function BlockResult({
           <span className="text-xs text-muted">result reused from an earlier run</span>
         ) : null}
       </div>
-      {block.error && (
-        <p className="rounded-md bg-danger/10 px-3 py-2 text-danger">
-          <span className="font-mono text-xs">{block.error.code}</span> {block.error.message}
-        </p>
-      )}
+      {block.error && <BlockErrorNote error={block.error} />}
       {block.status === 'waiting' && <WaitingNote metadata={block.metadata} />}
       {childRunOf(block) && (
         <p className="text-xs text-muted">
@@ -860,10 +852,7 @@ function OutputTab({ run }: { run: RunView }) {
       <div data-testid="run-output">
         <h3 className="mb-1 font-medium">{run.error ? 'Error' : 'Response'}</h3>
         {run.error ? (
-          <p className="rounded-md bg-danger/10 px-3 py-2 text-danger">
-            {run.error.block && <span className="font-mono">{run.error.block}: </span>}
-            {run.error.message}
-          </p>
+          <BlockErrorNote error={run.error} />
         ) : run.response ? (
           <>
             <p className="mb-1 text-xs text-muted">HTTP {run.response.status}</p>

@@ -301,6 +301,19 @@ test('an OAuth resource in the playground, a draft and a scheduled run, and an a
   await expect(page.getByText('Disconnected, and revoked at the provider.')).toBeVisible()
   await expect(page.getByText('Not connected')).toBeVisible()
   expect(revokedTokens).toEqual([expect.stringMatching(/^rt-\d+$/)])
+
+  // Run in the editor with no account: the run says so and points at the resource's settings (session 40).
+  await page.goto(`/workflows/${wf.id}`)
+  await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
+  const panel = page.getByTestId('run-panel')
+  await expect(panel.getByTestId('run-status').first()).toHaveText('failed')
+  await panel.getByRole('button', { name: 'output' }).click()
+  const note = panel.getByTestId('run-output').getByRole('alert')
+  await expect(note).toContainText('me: No account is connected to this resource in this environment')
+  await expect(note.getByRole('link', { name: 'Open the resource’s settings' })).toHaveAttribute(
+    'href',
+    `/resources/${crm.id}`,
+  )
 })
 
 test("a per-user resource uses each viewer's own account in an app", async ({ page, browser }) => {

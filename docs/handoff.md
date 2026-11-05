@@ -1877,7 +1877,6 @@ The design is `architecture.md` §2.38 (with "As built"); the step record is §1
 Rewritten in session 40 (2026-11-05) to what's still true on `feat/m35-ai-actions`: entries fixed by later milestones, "not pushed" and "not reviewed" notes are gone (every branch M15–M35 is pushed and was reviewed; M15–M26 are on `main` through PR #22, M27–M35 go in the one PR at the end). **Fix candidates** (small, worth doing first) are marked ★.
 
 ### Fix candidates ★
-- ★ **The workflow editor's run panel shows `auth_required` as a plain error** (no Connect button there).
 
 ### Engine and runs
 - **Sandbox isolation inside a run:** when the watchdog disposes a run's isolate (a code block stuck in an async loop), other code blocks evaluating at that moment in the same run fail with "Sandbox was reset". Retries absorb it.

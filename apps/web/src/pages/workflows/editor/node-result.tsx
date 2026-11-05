@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react'
 import { Menu, MenuItem, MenuSeparator, Spinner } from '@/components/ui'
 import { FINAL_RUN_STATUSES, runsApi } from '@/lib/runs-api'
 import { cn } from '@/lib/utils'
+import { BlockErrorNote } from './block-error'
 import { removeFrom, setEntry } from './canvas'
 import { nextName } from './catalog'
 import { copyText, duplicateChosen } from './clipboard'
@@ -57,7 +58,7 @@ const LABEL: Record<NodeTab, string> = {
 interface BlockResultState {
   status: string
   data: unknown
-  error: { code: string; message: string } | null
+  error: { code: string; message: string; details?: unknown } | null
   loading: boolean
   /** The open run's id, when the result comes from it (not the latest finished run). */
   runId: string | null
@@ -209,9 +210,9 @@ function NodePanel({ block, tab, result }: { block: Block; tab: NodeTab; result:
   if (result.loading) return <Spinner />
   if (result.error) {
     return (
-      <p className="m-2 mr-8 rounded-md bg-danger/10 px-2 py-1.5 text-xs text-danger">
-        <span className="font-mono">{result.error.code}</span> {result.error.message}
-      </p>
+      <div className="m-2 mr-8 text-xs">
+        <BlockErrorNote error={result.error} className="px-2 py-1.5" compact />
+      </div>
     )
   }
   if (result.status !== 'succeeded') return <p className="p-3 pr-8 text-xs text-muted">{result.status}</p>
