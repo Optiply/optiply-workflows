@@ -143,6 +143,7 @@ export const runsApi: FastifyPluginAsync<{
       z.object({
         fromRunId: z.string().uuid().optional(),
         input: z.unknown().optional(),
+        testInput: z.unknown().optional(),
         draftId: z.string().uuid().optional(),
       }),
       req.body ?? {},
@@ -155,6 +156,8 @@ export const runsApi: FastifyPluginAsync<{
       block,
       fromRunId: body.fromRunId,
       input: body.input,
+      // Present (even null): reuse the earlier run only if it ran with this input.
+      ...('testInput' in body && { testInput: { value: body.testInput } }),
       branchDraftId: body.draftId,
     })
     await recordAudit(db, {

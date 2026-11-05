@@ -148,7 +148,7 @@ export const runsApi = {
     block: string,
     environment?: string,
     draftId?: string | null,
-    fresh: { input?: unknown } = {},
+    fresh: { input?: unknown; testInput?: unknown } = {},
   ) =>
     call<{ run: RunView }>(`/workflows/${slug}/blocks/${encodeURIComponent(block)}/runs${env(environment)}`, {
       method: 'POST',

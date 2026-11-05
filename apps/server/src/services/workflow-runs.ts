@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { getConnector } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import {
@@ -100,7 +101,9 @@ export async function startManualRun(
  * The editor's "Run block": runs one block of the draft, reusing its ancestors' results from an earlier run
  * (`fromRunId`, or the latest finished run in that environment) instead of running them again. Ancestors that run
  * has no result for (blocks added since, or that failed) run first. Nothing after the block runs. The same checks as
- * a draft run apply. Passing `input` runs every ancestor fresh with it; otherwise the earlier run's input is reused.
+ * a draft run apply. Passing `input` runs every ancestor fresh with it. Passing `testInput` (the editor's current
+ * test input) reuses the earlier run only if it ran with that input, else runs every ancestor fresh with it, so a
+ * changed test input is never answered from a stale start trigger. With neither, the earlier run's input is reused.
  */
 export async function startBlockRun(
   db: Db,
@@ -112,6 +115,8 @@ export async function startBlockRun(
     block: string
     fromRunId?: string
     input?: unknown
+    /** `{ value }`: the editor's test input (null when empty). */
+    testInput?: { value: unknown }
     branchDraftId?: string
   },
 ): Promise<WorkflowRun> {
@@ -142,9 +147,16 @@ export async function startBlockRun(
   }
 
   // Every block depends on the start trigger, so new input means nothing upstream can be reused.
+  const earlierInput = (earlier?.input as { data?: unknown } | undefined)?.data ?? null
+  const input =
+    opts.input !== undefined
+      ? opts.input
+      : opts.testInput && (!earlier || !isDeepStrictEqual(earlierInput, opts.testInput.value ?? null))
+        ? (opts.testInput.value ?? null)
+        : undefined
   const ancestors = buildGraph(definition).ancestors(opts.block)
   const seed =
-    earlier && opts.input === undefined
+    earlier && input === undefined
       ? (await loadCheckpoints(db, earlier.id))
           .filter((c) => ancestors.has(c.key) && c.status !== 'failed')
           .map((c) => ({
@@ -159,7 +171,7 @@ export async function startBlockRun(
       ...source,
       environmentId: opts.environmentId,
       triggerType: 'manual',
-      input: opts.input !== undefined ? { data: opts.input } : (earlier?.input ?? { data: null }),
+      input: input !== undefined ? { data: input } : (earlier?.input ?? { data: null }),
       createdBy: user.id,
       targetBlocks: [opts.block],
     },

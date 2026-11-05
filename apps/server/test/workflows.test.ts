@@ -438,6 +438,29 @@ describe('run block', () => {
     expect(freshBlocks.every((b: { metadata: object }) => !('cachedFrom' in b.metadata))).toBe(true)
     expect((await rest(adminCookie, 'GET', `/runs/${fresh.id}/blocks/shape`)).body.block.data).toBe('GLOBEX')
 
+    // The editor's test input (session 40): the latest run (id 2) is reused for the same input only.
+    const same = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, { testInput: { id: 2 } })
+    ).body.run
+    await waitForRun(same.id)
+    const sameBlocks = (await rest(adminCookie, 'GET', `/runs/${same.id}/blocks`)).body.blocks
+    expect(sameBlocks.find((b: { key: string }) => b.key === 'order').metadata).toMatchObject({
+      cachedFrom: fresh.id,
+    })
+    const changed = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, { testInput: { id: 1 } })
+    ).body.run
+    expect(changed.input).toEqual({ data: { id: 1 } })
+    await waitForRun(changed.id)
+    const changedBlocks = (await rest(adminCookie, 'GET', `/runs/${changed.id}/blocks`)).body.blocks
+    expect(changedBlocks.every((b: { metadata: object }) => !('cachedFrom' in b.metadata))).toBe(true)
+    expect((await rest(adminCookie, 'GET', `/runs/${changed.id}/blocks/shape`)).body.block.data).toBe('ACME')
+    // An empty test input is an input too: it doesn't reuse a run that had one.
+    const empty = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/startTrigger/runs`, { testInput: null })
+    ).body.run
+    expect(empty.input).toEqual({ data: null })
+
     expect((await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/nope/runs`, {})).status).toBe(404)
     expect(
       (
