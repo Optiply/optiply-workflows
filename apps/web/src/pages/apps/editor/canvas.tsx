@@ -544,7 +544,7 @@ export function ComponentTree() {
   }
   if (!rows.length) return <p className="px-1 text-xs text-muted">No components yet.</p>
   return (
-    <ul className="flex flex-col">
+    <ul className="flex flex-col" data-testid="component-tree">
       {rows.map((r) => (
         <li key={r.name}>
           <button

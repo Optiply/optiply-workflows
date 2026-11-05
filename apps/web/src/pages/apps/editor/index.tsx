@@ -2,7 +2,7 @@ import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
@@ -26,6 +26,7 @@ import { ScopeSync } from './fields'
 import { ComponentInspector, SelectionInspector } from './inspector'
 import { useLibrarySync } from './library'
 import { useModuleSync } from './modules'
+import { type CommandActions, CommandPalette } from './navigate'
 import { AppInspector } from './pages'
 import { usePresence } from './presence'
 import { type EditorApp, ReleaseControls } from './releases'
@@ -298,6 +299,12 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
     openPage: (page, params) => useAppEditor.getState().setUrl(page, params),
   })
 
+  // ⌘K's actions beyond going somewhere.
+  const commandActions = useMemo<CommandActions>(
+    () => ({ preview: () => setPreview(true), restart: () => host?.restart() }),
+    [host],
+  )
+
   // The running draft is on the page being edited.
   useEffect(() => {
     if (!host) return
@@ -442,6 +449,7 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
           <Spinner />
         </Centered>
       )}
+      {!preview && host && <CommandPalette actions={commandActions} />}
       <Notifications notices={notices} dismiss={dismiss} />
       {confirmation}
     </div>

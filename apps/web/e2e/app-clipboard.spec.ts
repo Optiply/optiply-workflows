@@ -27,7 +27,10 @@ async function draftOf(page: Page, slug: string): Promise<Draft> {
 const saved = (page: Page) => expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10000 })
 /** A component in the sidebar's tree. */
 const inTree = (page: Page, name: string) =>
-  page.locator('aside li button').filter({ has: page.getByText(name, { exact: true }) })
+  page
+    .getByTestId('component-tree')
+    .locator('li button')
+    .filter({ has: page.getByText(name, { exact: true }) })
 const at = (x: number, y: number, w = 6, h = 2) => ({ x, y, w, h })
 
 /** M13 step 4: copy components and code between apps, duplicate them, and refuse what wasn't copied here. */

@@ -28,7 +28,7 @@ import type { LibraryRef } from '@/lib/library-refs'
 export type { SaveStatus }
 
 /** The panel left of the canvas, picked on the rail (one at a time, or none). */
-export type LeftPanel = 'components' | 'pages' | 'tree' | 'code' | 'state'
+export type LeftPanel = 'components' | 'pages' | 'tree' | 'code' | 'search' | 'state'
 /** What the debug drawer above the status bar shows. */
 export type DebugTab = 'problems' | 'console'
 

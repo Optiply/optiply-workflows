@@ -10,6 +10,7 @@ import {
   PanelsTopLeft,
   Plus,
   Puzzle,
+  Search,
   X,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useMemo, useRef, useState } from 'react'
@@ -21,6 +22,7 @@ import { CodeList, ConsoleList, OpenCode, ProblemsList, StatePanel } from './cod
 import { AddCustomComponent } from './custom'
 import { ModulePanel } from './module-panel'
 import { AddModule } from './modules'
+import { DependencyGraph, SearchPanel } from './navigate'
 import { PagesPanel } from './pages'
 import { type DebugTab, type LeftPanel, useAppEditor } from './store'
 
@@ -43,6 +45,7 @@ function railItems(kind: 'app' | 'module'): RailItem[] {
       : { id: 'pages', label: 'Pages', icon: Files },
     { id: 'tree', label: 'Component tree', icon: ListTree },
     { id: 'code', label: 'Code', icon: Code2 },
+    { id: 'search', label: 'Search', icon: Search },
     { id: 'state', label: 'State', icon: Braces },
   ]
 }
@@ -136,8 +139,15 @@ export function LeftPanelArea({ kind }: { kind: 'app' | 'module' }) {
         {panel === 'pages' && (kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />)}
         {panel === 'tree' && titled('Component tree', <ComponentTree />)}
         {panel === 'code' && <CodeList key={epoch} />}
+        {panel === 'search' && titled('Search', <SearchPanel />)}
         {panel === 'state' && titled('State', <StatePanel />)}
       </div>
+      {/* What the selection reads and is read by (Retool docks it under these two). */}
+      {(panel === 'tree' || panel === 'code') && (
+        <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border p-3">
+          <DependencyGraph />
+        </div>
+      )}
       <ResizeHandle {...handle} side="right" label="Resize the panel" />
     </aside>
   )

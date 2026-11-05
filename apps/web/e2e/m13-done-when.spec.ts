@@ -268,7 +268,8 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
     await page.goto(`/apps/${source}/edit`)
     await openEditorPanel(page, 'Component tree')
     await page
-      .locator('aside li button')
+      .getByTestId('component-tree')
+      .locator('li button')
       .filter({ has: page.getByText('form1', { exact: true }) })
       .click()
     await page.keyboard.press('ControlOrMeta+C')

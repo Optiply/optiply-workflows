@@ -238,7 +238,14 @@ export async function acceptConfirms(page: Page): Promise<void> {
 }
 
 /** The app editor's rail panels (session 41): one shows at a time, left of the canvas. */
-export type EditorPanel = 'Add components' | 'Pages' | 'Module' | 'Component tree' | 'Code' | 'State'
+export type EditorPanel =
+  | 'Add components'
+  | 'Pages'
+  | 'Module'
+  | 'Component tree'
+  | 'Code'
+  | 'Search'
+  | 'State'
 
 /** Shows that panel in the app or module editor (a no-op when it's already showing). */
 export async function openEditorPanel(page: Page, panel: EditorPanel) {
