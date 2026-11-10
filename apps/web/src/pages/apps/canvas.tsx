@@ -193,7 +193,7 @@ function AppFrame({ definition, children }: { definition: AppDefinition; childre
         <button
           type="button"
           aria-label="Close the menu"
-          className="fixed inset-0 z-30 cursor-default bg-app/60 md:hidden"
+          className="fixed inset-0 z-30 cursor-default bg-overlay md:hidden"
           onClick={() => setMenuOpen(false)}
         />
       )}

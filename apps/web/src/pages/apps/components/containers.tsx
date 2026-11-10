@@ -178,7 +178,7 @@ export function ModalRenderer({ component, definition }: RendererProps) {
   if (editing ? shown.name !== name : !isOpen) return null
   const close = () => (editing ? shown.close() : host.call(name, 'close'))
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center bg-app/80 p-4 pt-[8vh]">
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-overlay p-4 pt-[8vh] backdrop-blur-[2px]">
       <button
         type="button"
         aria-label="Close"
