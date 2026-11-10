@@ -52,7 +52,7 @@ test('browse and edit a managed table in the grid', async ({ page }) => {
   })
 
   await test.step('the table opens in the grid', async () => {
-    await page.getByRole('link', { name: 'Database' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Database' }).click()
     await page.getByRole('navigation', { name: 'Tables' }).getByRole('link', { name: table }).click()
     await expect(page.getByTestId('row-count')).toHaveText('3 rows')
     await expect(cell(page, 0, 'name')).toHaveText('apple')
@@ -333,7 +333,7 @@ test('the built-in resource queries the managed tables', async ({ page }) => {
     values: { body: 'hello from the grid' },
   })
 
-  await page.getByRole('link', { name: 'Resources' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Resources' }).click()
   const row = page.getByRole('link', { name: /Optiply Database/ })
   await expect(row).toContainText('Built-in')
   await row.click()

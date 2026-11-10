@@ -144,11 +144,11 @@ test('a CRUD app: search, edit cells and save, add with a form, delete', async (
   await page.goto(`/apps/${slug}`)
   const grid = page.getByRole('grid', { name: 'people' })
   await expect(grid.getByRole('row')).toHaveCount(4)
-  await page.getByLabel('Search').fill('a')
+  await page.getByRole('textbox', { name: 'Search' }).fill('a')
   await expect(grid.getByRole('row')).toHaveCount(4) // Ada, Grace, Alan all contain an "a"
-  await page.getByLabel('Search').fill('gr')
+  await page.getByRole('textbox', { name: 'Search' }).fill('gr')
   await expect(grid.getByRole('row')).toHaveCount(2)
-  await page.getByLabel('Search').fill('')
+  await page.getByRole('textbox', { name: 'Search' }).fill('')
   await expect(grid.getByRole('row')).toHaveCount(4)
 
   // Edit two cells, then save.

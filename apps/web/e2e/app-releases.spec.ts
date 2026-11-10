@@ -12,7 +12,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: `Viewers ${Date.now()}` })
   void group
 
-  await page.getByRole('link', { name: 'Apps' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps' }).click()
   await page.getByRole('button', { name: 'New app' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
   await page.getByRole('button', { name: 'Create app' }).click()
@@ -90,7 +90,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   await page.getByRole('button', { name: 'App settings' }).click()
   await page.getByRole('dialog').getByLabel('Name').fill(`${name} (renamed)`)
   await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click()
-  await page.getByRole('link', { name: 'Apps' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps' }).click()
   const row = page.getByTestId(`app-${slug}`)
   await expect(row).toContainText(`${name} (renamed)`)
   await expect(row).toContainText('Live')

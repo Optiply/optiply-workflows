@@ -143,6 +143,20 @@
   --overlay: rgb(8 10 14 / 55%);
 }
 
+/*
+ * Buttons and inputs are rounded-md (7px), cards and tables rounded-xl (12px), dialogs rounded-2xl. Not `inline`:
+ * an app's theme (theme-model.ts) sets these variables on its root to round its components its own way.
+ */
+@theme {
+  --radius-sm: 5px;
+  --radius: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-panel: 12px;
+}
+
 /* What the components use: Optiply's tokens by role. `inline`, so dark mode is only the class switch above. */
 @theme inline {
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -208,15 +222,6 @@
   --color-op-purple-2: var(--purple-2);
   --color-op-purple-3: var(--purple-3);
   --color-op-purple-4: var(--purple-4);
-
-  /* Buttons and inputs are rounded-md (7px), cards and tables rounded-xl (12px), dialogs rounded-2xl. */
-  --radius-sm: 5px;
-  --radius: 5px;
-  --radius-md: 7px;
-  --radius-lg: 10px;
-  --radius-xl: 12px;
-  --radius-2xl: 16px;
-  --radius-panel: 12px;
 
   --shadow-card: var(--shadow-1);
   --shadow-menu: var(--shadow-7);

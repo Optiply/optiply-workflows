@@ -20,7 +20,7 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await signIn(page)
   const name = `Plus one ${Date.now()}`
 
-  await page.getByRole('link', { name: 'Library' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
   await expect(page.getByRole('heading', { name: 'Query Library' })).toBeVisible()
   await page.getByRole('button', { name: 'New query' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
@@ -74,14 +74,18 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await expect(page.getByTestId('releases')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('library-used-by')).toContainText('Nothing uses it yet')
-  await page.getByRole('link', { name: 'Library', exact: true }).first().click()
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Library', exact: true })
+    .first()
+    .click()
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
 })
 
 /** A library query deleted and created again under its slug opens as the new one, not the deleted one. */
 test('switching the resource starts that kind of resource’s query', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: 'Library' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
   await page.getByRole('button', { name: 'New query' }).click()
   await page.getByLabel('Name', { exact: true }).fill(`Switch ${Date.now()}`)
   await page.getByRole('button', { name: 'Create query' }).click()
@@ -104,7 +108,7 @@ test('a library query recreated under a deleted one’s slug opens as itself', a
   await signIn(page)
   const name = `Again ${Date.now()}`
   const create = async () => {
-    await page.getByRole('link', { name: 'Library' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
     await page.getByRole('button', { name: 'New query' }).click()
     await page.getByLabel('Name', { exact: true }).fill(name)
     await page.getByRole('button', { name: 'Create query' }).click()

@@ -26,7 +26,7 @@ test('switch to dark mode and back to the system theme', async ({ page }) => {
   // Moving focus out of the menu (Tab, or anything else) closes it.
   await page.getByRole('button', { name: 'Account' }).click()
   await expect(page.getByRole('menu')).toBeVisible()
-  await page.getByRole('link', { name: 'Workflows' }).focus()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Workflows' }).focus()
   await expect(page.getByRole('menu')).toBeHidden()
 
   await choose('System')

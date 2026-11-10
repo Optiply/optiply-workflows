@@ -11,7 +11,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
 
   await test.step('create a table', async () => {
     await signIn(page)
-    await page.getByRole('link', { name: 'Database' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Database' }).click()
     await page.getByRole('button', { name: 'New table' }).click()
     const dialog = page.getByRole('dialog', { name: 'New table' })
     await dialog.getByRole('textbox', { name: /^Name/ }).fill(table)
@@ -41,7 +41,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
   })
 
   await test.step('query it from a workflow', async () => {
-    await page.getByRole('link', { name: 'Workflows' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Workflows' }).click()
     await page.getByRole('button', { name: 'New workflow' }).click()
     await page.getByPlaceholder('Sync orders').fill(`Slow suppliers ${suffix}`)
     await page.getByRole('button', { name: 'Create workflow' }).click()

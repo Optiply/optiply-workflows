@@ -513,6 +513,7 @@ export function Menu({
   label,
   children,
   align = 'end',
+  side = 'bottom',
   className,
 }: {
   trigger: (props: {
@@ -525,6 +526,8 @@ export function Menu({
   label: string
   children: ReactNode
   align?: 'start' | 'end'
+  /** Where it opens: under the trigger, or over it (a trigger at the bottom of the screen). */
+  side?: 'top' | 'bottom'
   className?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -588,8 +591,9 @@ export function Menu({
             if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false)
           }}
           className={cn(
-            'absolute top-full z-50 mt-1.5 min-w-52 motion-safe:animate-pop-in rounded-xl bg-surface p-1.5 text-ink shadow-menu',
-            align === 'end' ? 'right-0 origin-top-right' : 'left-0 origin-top-left',
+            'absolute z-50 min-w-52 rounded-xl bg-surface p-1.5 text-ink shadow-menu motion-safe:animate-pop-in',
+            side === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5',
+            align === 'end' ? 'right-0' : 'left-0',
             className,
           )}
         >

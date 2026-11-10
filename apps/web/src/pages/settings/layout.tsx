@@ -5,7 +5,7 @@ import { EmptyState, PageHeader, tabClass } from '@/components/ui'
 
 const appRoute = getRouteApi('/app')
 
-const TABS = [
+export const SETTINGS_TABS = [
   { to: '/settings/users', label: 'Users', adminOnly: true },
   { to: '/settings/groups', label: 'Groups', adminOnly: true },
   { to: '/settings/environments', label: 'Environments', adminOnly: false },
@@ -24,7 +24,7 @@ export function SettingsLayout() {
     <>
       <PageHeader title="Settings" description="Manage who has access and how the platform is configured." />
       <div className="mb-4 flex flex-wrap gap-2">
-        {TABS.filter((t) => me.isAdmin || !t.adminOnly).map((tab) => (
+        {SETTINGS_TABS.filter((t) => me.isAdmin || !t.adminOnly).map((tab) => (
           <Link
             key={tab.to}
             to={tab.to}

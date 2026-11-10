@@ -179,7 +179,7 @@ test('create, run and publish a module', async ({ page }) => {
   await acceptConfirms(page)
   await signIn(page)
   const name = `Plan badge ${Date.now()}`
-  await page.getByRole('link', { name: 'Modules' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Modules' }).click()
   await expect(page.getByRole('heading', { name: 'Modules', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'New module' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
@@ -224,7 +224,7 @@ test('create, run and publish a module', async ({ page }) => {
   await expect(page.getByRole('dialog')).toContainText('apps get when they follow its latest version')
   await page.getByTestId('publish-confirm').click()
   await expect(page.getByTestId('release-status')).toContainText('Live v1.0.0')
-  await page.getByRole('link', { name: 'Modules' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Modules' }).click()
   await expect(page.getByTestId(`module-${slug}`)).toContainText('Live v1.0.0')
 })
 
