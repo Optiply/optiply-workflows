@@ -130,6 +130,19 @@ export const appsRouter = router({
     }),
 
   /**
+   * The caller's level on an app and whether it's live: what the app's page says when it can't open (editors are
+   * offered the editor, people with Use are told it isn't published, others that it isn't theirs). An app that
+   * doesn't exist and one they can't see answer alike (`level: null`), so nothing about it leaks.
+   */
+  access: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {
+    const access = await loadAccess(ctx.db, ctx.user)
+    const [app] = await ctx.db.select().from(apps).where(eq(apps.slug, input.slug))
+    const level = app ? access.appLevel(app) : null
+    if (!app || level === null) return { level: null, name: null, published: false }
+    return { level, name: app.name, published: app.liveReleaseId !== null }
+  }),
+
+  /**
    * For people using the app: its live release, the module releases its instances run (M14) and the component
    * library releases its custom components run (M25, its modules' too), by `slug@version` (the app's publisher
    * vouched for them; one whose release is gone doesn't run). NOT_FOUND until the first release.

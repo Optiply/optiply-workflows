@@ -155,6 +155,13 @@ const appEditorRoute = createRoute({
   staticData: { fullBleed: true, editor: true },
   /** `branch` edits a protected app's draft on that Git branch (M11). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
+  // People who may only use the app get the app itself, not an editor that would refuse them.
+  beforeLoad: async ({ context, params }) => {
+    const access = await context.queryClient
+      .fetchQuery(context.trpc.apps.access.queryOptions({ slug: params.slug }))
+      .catch(() => null)
+    if (access?.level === 'use') throw redirect({ to: '/apps/$slug/{-$page}', params: { slug: params.slug } })
+  },
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
 })
 /** The Query Library (M14): library queries, and each one's editor in its own chunk (Monaco loads with it). */

@@ -137,3 +137,65 @@ test('the sidebar shows only the sections someone can reach', async ({ page, bro
     )
   }
 })
+
+test('someone with Use on an app gets the app, never the editor', async ({ page, browser }) => {
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const slug = `use-${stamp}`
+  const app = await trpcMutate<{ id: string }>(page, 'apps.create', { slug, name: `Use only ${stamp}` })
+  made.push({ kind: 'apps', id: app.id })
+  await trpcMutate(page, 'apps.saveDraft', {
+    id: app.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      components: [{ name: 'hello', type: 'text', props: { value: `Hello ${stamp}` } }],
+      queries: [],
+      layout: { hello: { x: 0, y: 0, w: 4, h: 2 } },
+    },
+  })
+  const people = await trpcQuery<{ id: string; email: string }[]>(page, 'users.directory', undefined)
+  const member = people.find((p) => p.email === E2E_MEMBER_EMAIL)!
+  const memberPage = await (await browser.newContext()).newPage()
+  await signIn(memberPage, E2E_MEMBER_EMAIL)
+
+  await test.step('without access: told so, no editor offered', async () => {
+    await memberPage.goto(`/apps/${slug}`)
+    await expect(memberPage.getByText("You don't have access to this app")).toBeVisible()
+    await expect(memberPage.getByRole('link', { name: 'Open the editor' })).toHaveCount(0)
+  })
+
+  await trpcMutate(page, 'permissions.set', {
+    objectType: 'app',
+    objectId: app.id,
+    userId: member.id,
+    environmentId: null,
+    level: 'use',
+  })
+  await test.step('with Use, before it’s published: waiting for its owner', async () => {
+    await memberPage.goto(`/apps/${slug}`)
+    await expect(memberPage.getByText('You can use this app once its owner publishes it.')).toBeVisible()
+    await expect(memberPage.getByRole('link', { name: 'Open the editor' })).toHaveCount(0)
+  })
+
+  await trpcMutate(page, 'apps.publish', { appId: app.id, draftRevision: 2 })
+  await test.step('published: the app runs, with no way into the editor', async () => {
+    await memberPage.goto(`/apps/${slug}`)
+    await expect(memberPage.getByText(`Hello ${stamp}`)).toBeVisible()
+    await expect(memberPage.getByRole('link', { name: 'Edit', exact: true })).toHaveCount(0)
+    await memberPage.goto(`/apps/${slug}/edit`)
+    await expect(memberPage).toHaveURL(new RegExp(`/apps/${slug}$`))
+    await expect(memberPage.getByText(`Hello ${stamp}`)).toBeVisible()
+  })
+
+  await test.step('the owner, before publishing, is offered the editor', async () => {
+    const draft = await trpcMutate<{ id: string }>(page, 'apps.create', {
+      slug: `draft-${stamp}`,
+      name: `Draft ${stamp}`,
+    })
+    made.push({ kind: 'apps', id: draft.id })
+    await page.goto(`/apps/draft-${stamp}`)
+    await expect(page.getByText('Not published yet')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Open the editor' })).toBeVisible()
+  })
+})

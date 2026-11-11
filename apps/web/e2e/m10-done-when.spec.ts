@@ -156,7 +156,9 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   ).toHaveCount(0)
   await expect(viewer.getByTestId(`app-${slug}`)).toHaveCount(0)
   await viewer.goto(`/apps/${slug}`)
-  await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
+  // Not theirs: told so, and no editor offered (session 44).
+  await expect(viewer.getByText("You don't have access to this app")).toBeVisible()
+  await expect(viewer.getByRole('link', { name: 'Open the editor' })).toHaveCount(0)
 
   // The admin moves the app into the folder and grants the group Use on it.
   await page.getByTitle(`Actions for Items ${stamp}`).click()

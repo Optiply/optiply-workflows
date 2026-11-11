@@ -40,6 +40,8 @@ function useRecordName(path: string): string | undefined {
     apps: useQuery({ ...trpc.apps.get.queryOptions({ slug: id }), ...cacheOnly }),
     // Someone using the app: its page loads the live release, not the draft.
     appView: useQuery({ ...trpc.apps.open.queryOptions({ slug: id }), ...cacheOnly }),
+    // An app that didn't open: its page asks for the caller's access, which names it when it's theirs.
+    appAccess: useQuery({ ...trpc.apps.access.queryOptions({ slug: id }), ...cacheOnly }),
     resources: useQuery({ ...trpc.resources.get.queryOptions({ id }), ...cacheOnly }),
     library: useQuery({ ...trpc.libraryQueries.get.queryOptions({ slug: id }), ...cacheOnly }),
     modules: useQuery({ ...trpc.modules.get.queryOptions({ slug: id }), ...cacheOnly }),
@@ -59,7 +61,11 @@ function useRecordName(path: string): string | undefined {
   }
   if (!a || !section || !(section in queries)) return undefined
   const record = queries[section as keyof typeof queries]
-  const named = nameOf(record.data) ?? (section === 'apps' ? nameOf(queries.appView.data) : undefined)
+  const named =
+    nameOf(record.data) ??
+    (section === 'apps'
+      ? (nameOf(queries.appView.data) ?? queries.appAccess.data?.name ?? undefined)
+      : undefined)
   // The page couldn't load it (gone, or no access): say so rather than "…" for ever.
   if (!named && (record.isError || (section === 'apps' && queries.appView.isError))) return 'Not available'
   // Slugs read well enough while the page loads; ids don't.

@@ -2,8 +2,9 @@ import type { AppDefinition } from '@ow/app-definition'
 import type { AppUrl, ComponentLibraryReleases, ModuleReleases } from '@ow/app-runtime'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
+import { LayoutGrid, Lock } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
-import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Button, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
@@ -42,18 +43,7 @@ export function AppViewPage() {
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
 
-  if (app.error)
-    return (
-      <Centered>
-        <div className="flex flex-col items-center gap-3">
-          <ErrorNote error={app.error} />
-          {/* Not published yet: whoever can edit it gets there from here (the editor refuses everyone else). */}
-          <Link to="/apps/$slug/edit" params={{ slug }} className="text-sm text-accent hover:underline">
-            Open the editor
-          </Link>
-        </div>
-      </Centered>
-    )
+  if (app.error) return <CannotOpen slug={slug} />
   if (environments.error)
     return (
       <Centered>
@@ -85,6 +75,39 @@ export function AppViewPage() {
       environment={environment}
       environments={environments.data}
     />
+  )
+}
+
+/**
+ * The app didn't open: what to do depends on who's asking. Editors get the editor (it isn't published yet); people
+ * with Use are told it isn't published; anyone else that it isn't theirs (an app that doesn't exist reads the same).
+ */
+function CannotOpen({ slug }: { slug: string }) {
+  const trpc = useTRPC()
+  const access = useQuery(trpc.apps.access.queryOptions({ slug }))
+  if (!access.data)
+    return <Centered>{access.error ? <ErrorNote error={access.error} /> : <Spinner />}</Centered>
+  const { level } = access.data
+  return (
+    <Centered>
+      {level === 'edit' || level === 'own' ? (
+        <EmptyState icon={<LayoutGrid className="size-6" />} title="Not published yet">
+          People can use it once it's published.{' '}
+          <Link to="/apps/$slug/edit" params={{ slug }} className="font-medium text-accent hover:underline">
+            Open the editor
+          </Link>
+        </EmptyState>
+      ) : level === 'use' ? (
+        <EmptyState icon={<LayoutGrid className="size-6" />} title="Not published yet">
+          You can use this app once its owner publishes it.
+        </EmptyState>
+      ) : (
+        <EmptyState icon={<Lock className="size-6" />} title="You don't have access to this app">
+          Ask an admin or the app's owner for access. (If the link is old, the app may also have been
+          removed.)
+        </EmptyState>
+      )}
+    </Centered>
   )
 }
 

@@ -202,3 +202,40 @@ describe('what someone can reach (me.sections, me.canCreate)', () => {
     expect(Object.values(all.canCreate).every(Boolean)).toBe(true)
   })
 })
+
+describe('apps.access', () => {
+  it('says the level and whether it’s live, and the same for a missing app as for one they can’t see', async () => {
+    const app = data(await admin.mutate('apps.create', { slug: 'use-only', name: 'Use only' }))
+    expect(data(await member.query('apps.access', { slug: 'use-only' }))).toEqual({
+      level: null,
+      name: null,
+      published: false,
+    })
+    expect(data(await member.query('apps.access', { slug: 'no-such-app' }))).toEqual({
+      level: null,
+      name: null,
+      published: false,
+    })
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'app',
+        objectId: app.id,
+        userId: memberId,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    expect(data(await member.query('apps.access', { slug: 'use-only' }))).toEqual({
+      level: 'use',
+      name: 'Use only',
+      published: false,
+    })
+    data(await admin.mutate('apps.publish', { appId: app.id, draftRevision: 1 }))
+    expect(data(await member.query('apps.access', { slug: 'use-only' }))).toEqual({
+      level: 'use',
+      name: 'Use only',
+      published: true,
+    })
+    expect(data(await admin.query('apps.access', { slug: 'use-only' }))).toMatchObject({ level: 'own' })
+  })
+})

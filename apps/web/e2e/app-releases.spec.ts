@@ -21,7 +21,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
 
   // Before the first release, the app's address says so and leads its editors to the editor.
   await page.goto(`/apps/${slug}`)
-  await expect(page.getByText("This app hasn't been published yet")).toBeVisible()
+  await expect(page.getByText('Not published yet')).toBeVisible()
   await page.getByRole('link', { name: 'Open the editor' }).click()
   await expect(page).toHaveURL(new RegExp(`/apps/${slug}/edit$`))
 
