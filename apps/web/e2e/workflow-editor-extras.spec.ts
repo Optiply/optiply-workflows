@@ -182,3 +182,52 @@ test("others' carets show in a block's code preview", async ({ page, browser }) 
   await otherContext.close()
   await expect(caret).toHaveCount(0)
 })
+
+test('resizing a block: the block, its handle and the edge follow the pointer, and the width is kept', async ({
+  page,
+}) => {
+  await signIn(page)
+  const id = await workflow(
+    page,
+    'resize',
+    [code('a', 'return 1'), code('b', 'return a.data')],
+    [
+      { from: 'startTrigger', port: 'out', to: 'a' },
+      { from: 'a', port: 'out', to: 'b' },
+    ],
+  )
+  await page.goto(`/workflows/${id}`)
+  await expect(block(page, 'b')).toBeVisible()
+  await canvasSettled(page)
+  const a = block(page, 'a')
+  const out = a.locator('.react-flow__handle-right').first()
+  const edge = page.getByTestId('rf__edge-a|out|b').locator('path.react-flow__edge-path').first()
+  // Where the edge starts, in the canvas's coordinates (its path's first point).
+  const edgeStart = async () => Number((await edge.getAttribute('d'))!.match(/^M\s*([-\d.]+)/)![1])
+  const zoom = Number((await page.getByTestId('zoom-level').textContent())!.replace('%', '')) / 100
+  const startBefore = await edgeStart()
+  const before = (await a.boundingBox())!
+  const control = (await a.locator('.react-flow__resize-control').boundingBox())!
+
+  await page.mouse.move(control.x + control.width / 2, control.y + control.height / 2)
+  await page.mouse.down()
+  for (let dx = 15; dx <= 150; dx += 15) {
+    await page.mouse.move(control.x + control.width / 2 + dx, control.y + control.height / 2)
+  }
+  // Still held: the block is wider already, and the handle and the edge's start went with its right side.
+  await expect.poll(async () => (await a.boundingBox())!.width).toBeGreaterThan(before.width + 100)
+  const during = (await a.boundingBox())!
+  const handle = (await out.boundingBox())!
+  expect(Math.abs(handle.x + handle.width / 2 - (during.x + during.width))).toBeLessThan(8)
+  const grown = during.width - before.width
+  expect(Math.abs((await edgeStart()) - startBefore - grown / zoom)).toBeLessThan(8)
+  await page.mouse.up()
+
+  // Saved: after a reload the block keeps the width.
+  const after = (await a.boundingBox())!.width
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
+  await page.reload()
+  await expect(block(page, 'b')).toBeVisible()
+  await canvasSettled(page)
+  expect(Math.abs((await block(page, 'a').boundingBox())!.width - after)).toBeLessThan(4)
+})

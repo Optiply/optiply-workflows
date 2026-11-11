@@ -156,8 +156,13 @@ export function Canvas() {
   useEffect(
     () =>
       setNodes((current) => {
-        const measured = new Map(current.map((n) => [n.id, n.measured]))
-        return derived.map((n) => (measured.get(n.id) ? { ...n, measured: measured.get(n.id) } : n))
+        const was = new Map(current.map((n) => [n.id, n]))
+        return derived.map((n) => {
+          const old = was.get(n.id)
+          if (!old?.measured) return n
+          // Mid-resize, a rebuild (a peer's edit, a run's progress) keeps the width being dragged.
+          return { ...n, measured: old.measured, ...(old.resizing ? { width: old.width } : {}) }
+        })
       }),
     [derived],
   )
@@ -462,6 +467,9 @@ function toNodes(
     id: block.name,
     type: 'block',
     position: positions[block.name] ?? { x: 0, y: 0 },
+    // React Flow's node has the width, and the block fills it: dragging the resize edge changes this as it goes,
+    // so the block, its handles and the edges follow the pointer (the saved width is written when it's let go).
+    width: blockWidth(block, positions[block.name]),
     data: {
       block,
       problems: problemsOf(diagnostics, block.name, fn),
@@ -543,14 +551,12 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
   const errors = problems.filter((p) => p.severity === 'error').length
   const warnings = problems.length - errors
   const minimized = entry?.minimized ?? false
-  const width = blockWidth(block, entry)
 
   return (
     <div
-      style={{ width }}
       data-testid={`block-${name}`}
       className={cn(
-        'relative flex flex-col rounded-xl border bg-surface shadow-card transition-shadow hover:shadow-raised',
+        'relative flex w-full flex-col rounded-xl border bg-surface shadow-card transition-shadow hover:shadow-raised',
         errors ? 'border-danger/60' : 'border-border/80',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
