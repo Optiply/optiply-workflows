@@ -121,14 +121,24 @@ function subjectWhere(s: { groupId?: string; userId?: string }) {
 }
 
 /** The subject for the audit log: `{ group }` or `{ user }` (an email), checked to exist. */
-async function subjectName(db: Db, s: { groupId?: string; userId?: string }) {
+async function subjectName(db: Db, s: { groupId?: string; userId?: string }, granting: boolean) {
   if (s.groupId) {
     const [group] = await db.select({ name: groups.name }).from(groups).where(eq(groups.id, s.groupId))
     if (!group) throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' })
     return { group: group.name }
   }
-  const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, s.userId!))
+  const [user] = await db
+    .select({ email: users.email, status: users.status, disabledAt: users.disabledAt })
+    .from(users)
+    .where(eq(users.id, s.userId!))
   if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'Person not found' })
+  // Only people who are in: a grant mustn't wait unseen for someone pending, rejected or disabled.
+  if (granting && (user.status !== 'active' || user.disabledAt)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${user.email} can't sign in, so can't be given access`,
+    })
+  }
   return { user: user.email }
 }
 
@@ -250,7 +260,7 @@ export const permissionsRouter = router({
           })
         }
       }
-      const subject = await subjectName(ctx.db, input)
+      const subject = await subjectName(ctx.db, input, input.level !== null)
       await ctx.db.transaction(async (tx) => {
         await tx
           .delete(permissions)

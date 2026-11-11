@@ -49,18 +49,20 @@ export async function capabilities(db: Db, user: { id: string; isAdmin: boolean 
       },
     }
   }
-  const access = await loadAccess(db, user)
-  // Built-in resources (the REST API everyone may call, the database) don't make Resources show.
-  const builtIn = await db
-    .select({ id: resources.id, systemKind: resources.systemKind, folderId: resources.folderId })
-    .from(resources)
-    .where(isNotNull(resources.systemKind))
+  // `me` asks on every navigation now and then: the independent reads go together.
+  const [access, builtIn, envRows, groupIds] = await Promise.all([
+    loadAccess(db, user),
+    // Built-in resources (the REST API everyone may call, the database) don't make Resources show.
+    db
+      .select({ id: resources.id, systemKind: resources.systemKind, folderId: resources.folderId })
+      .from(resources)
+      .where(isNotNull(resources.systemKind)),
+    db.select({ id: environments.id }).from(environments),
+    groupIdsOf(db, user.id),
+  ])
   const database = builtIn.find((r) => r.systemKind === 'database')
-  const envIds = database
-    ? (await db.select({ id: environments.id }).from(environments)).map((e) => e.id)
-    : []
+  const envIds = envRows.map((e) => e.id)
   const workflows = access.reaches('workflow')
-  const groupIds = workflows ? [] : await groupIdsOf(db, user.id)
   const [task] = workflows
     ? []
     : await db

@@ -183,11 +183,20 @@ export class Access {
    */
   reaches(type: ObjectKind | 'resource', ignore: ReadonlySet<string> = new Set()): boolean {
     if (this.isAdmin) return true
-    return this.grants.some(
-      (g) =>
-        (g.objectType === type && (g.objectId === null || !ignore.has(g.objectId))) ||
-        (g.objectType === 'folder' && g.objectId !== null && this.folderTypes.get(g.objectId) === type),
-    )
+    return this.grants.some((g) => {
+      // As `objectLevel`: only grants for every environment count for kinds without environments.
+      if (type !== 'resource' && g.environmentId !== null) return false
+      if (g.objectType === type) return g.objectId === null || !ignore.has(g.objectId)
+      if (g.objectType !== 'folder' || g.objectId === null) return false
+      // As `folderGrant`: a folder of that kind, or one whose kind isn't known.
+      const folderType = this.folderTypes.get(g.objectId)
+      return folderType === undefined || folderType === type
+    })
+  }
+
+  /** Whether they can share anything: admins, and anyone owning something (Own manages access). */
+  get canShare(): boolean {
+    return this.isAdmin || this.grants.some((g) => g.level === 'own')
   }
 
   /** A grant on one of the object's folders, a folder of the object's own type. */

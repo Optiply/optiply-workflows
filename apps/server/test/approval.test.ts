@@ -2,7 +2,7 @@ import { auditEvents, users } from '@ow/db'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { hashPassword } from '../src/auth/password'
-import { provisionUser, signInDecision } from '../src/services/users'
+import { provisionUser, SignInRefused, signInDecision } from '../src/services/users'
 import { createLocalUser, login, PASSWORD, startTestApp, type TestEnv, trpc } from './helpers'
 
 /** New users wait for an admin; outsiders come in by invitation (session 44, step 4). */
@@ -56,26 +56,63 @@ afterAll(async () => {
 })
 
 describe('signInDecision', () => {
-  const decide = (email: string, existing: Parameters<typeof signInDecision>[0]['existing'], hd?: string) =>
-    signInDecision({ email, domain: 'optiply.nl', hd, existing })
+  const decide = (
+    email: string,
+    existing: {
+      status: 'active' | 'pending' | 'invited' | 'rejected'
+      disabled?: boolean
+      oidcSubject?: string
+    } | null,
+    hd?: string,
+  ) =>
+    signInDecision({
+      email,
+      domain: 'optiply.nl',
+      hd,
+      sub: 'google-sub-1',
+      existing: existing
+        ? {
+            status: existing.status,
+            disabled: existing.disabled ?? false,
+            oidcSubject: existing.oidcSubject ?? null,
+          }
+        : null,
+    })
 
-  it('lets in the domain and anyone already known; refuses outsiders, disabled and rejected accounts', () => {
+  it('lets in the domain, invited outsiders and their own Google account; refuses the rest', () => {
     expect(decide('new@optiply.nl', null)).toEqual({ ok: true })
     expect(decide('new@optiply.nl', null, 'other.com')).toMatchObject({ ok: false })
     expect(decide('stranger@gmail.com', null)).toEqual({
       ok: false,
       reason: 'Only @optiply.nl accounts or invited people can sign in',
     })
-    expect(decide('guest@partner.com', { status: 'invited', disabled: false }, 'partner.com')).toEqual({
+    expect(decide('guest@partner.com', { status: 'invited' }, 'partner.com')).toEqual({ ok: true })
+    // An invitation taken up: the same Google account comes back.
+    expect(decide('guest@partner.com', { status: 'active', oidcSubject: 'google-sub-1' })).toEqual({
       ok: true,
     })
-    expect(decide('guest@partner.com', { status: 'active', disabled: false })).toEqual({ ok: true })
-    expect(decide('waiting@optiply.nl', { status: 'pending', disabled: false })).toEqual({ ok: true })
-    expect(decide('no@optiply.nl', { status: 'rejected', disabled: false })).toMatchObject({ ok: false })
+    // A password-only account outside the domain (a break-glass admin) doesn't open to that Google address.
+    expect(decide('admin@elsewhere.com', { status: 'active' })).toMatchObject({ ok: false })
+    expect(decide('guest@partner.com', { status: 'active', oidcSubject: 'someone-else' })).toMatchObject({
+      ok: false,
+    })
+    expect(decide('waiting@optiply.nl', { status: 'pending' })).toEqual({ ok: true })
+    expect(decide('no@optiply.nl', { status: 'rejected' })).toMatchObject({ ok: false })
     expect(decide('off@optiply.nl', { status: 'active', disabled: true })).toEqual({
       ok: false,
       reason: 'Your account has been disabled',
     })
+  })
+
+  it('is asked inside provisioning: a refusal changes nothing', async () => {
+    await expect(
+      provisionUser(
+        env.db,
+        { email: 'refused@gmail.com', name: 'Refused', oidcSubject: 'sub-refused' },
+        { status: 'pending', admit: () => ({ ok: false, reason: 'no' }) },
+      ),
+    ).rejects.toBeInstanceOf(SignInRefused)
+    expect(await env.db.select().from(users).where(eq(users.email, 'refused@gmail.com'))).toEqual([])
   })
 })
 
@@ -152,7 +189,7 @@ describe('invitations', () => {
     })
     expect(listed.groups.map((g: { name: string }) => g.name).sort()).toEqual(['All Users', 'Guests'])
     // Not in the directory (owners share with people who can sign in) until they're in.
-    expect(data(await member.query('users.directory')).some((u: { id: string }) => u.id === id)).toBe(false)
+    expect(data(await admin.query('users.directory')).some((u: { id: string }) => u.id === id)).toBe(false)
 
     const first = await provisionUser(env.db, {
       email: 'guest@partner.com',
@@ -160,7 +197,7 @@ describe('invitations', () => {
       oidcSubject: 'g-1',
     })
     expect(first).toMatchObject({ id, created: false, status: 'active' })
-    expect(data(await member.query('users.directory')).some((u: { id: string }) => u.id === id)).toBe(true)
+    expect(data(await admin.query('users.directory')).some((u: { id: string }) => u.id === id)).toBe(true)
     expect(await actions(id)).toContain('user.invited')
   })
 
@@ -189,5 +226,46 @@ describe('invitations', () => {
     expect(failure(await admin.mutate('users.cancelInvite', { userId: member2.id }))).toMatchObject({
       code: 'BAD_REQUEST',
     })
+  })
+})
+
+describe('the review’s fixes', () => {
+  it('the CLI’s break-glass admin gets in over a waiting request', async () => {
+    await request('breakglass@optiply.nl')
+    expect(await loginStatus('breakglass@optiply.nl')).toBe(401)
+    const made = await createLocalUser(env.db, 'breakglass@optiply.nl', { admin: true })
+    expect(made.status).toBe('active')
+    expect(await loginStatus('breakglass@optiply.nl')).toBe(200)
+  })
+
+  it('an invitation taken up can’t be cancelled any more', async () => {
+    const { id } = data(await admin.mutate('users.invite', { email: 'quick@partner.com' }))
+    await provisionUser(env.db, { email: 'quick@partner.com', name: 'Quick', oidcSubject: 'sub-quick' })
+    expect(failure(await admin.mutate('users.cancelInvite', { userId: id }))).toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    expect(data(await admin.query('users.list')).find((u: { id: string }) => u.id === id).status).toBe(
+      'active',
+    )
+  })
+
+  it('access goes only to people who can sign in (taking it away always works)', async () => {
+    const asked = await request('notyet@optiply.nl')
+    const wf = data(await admin.mutate('workflows.create', { slug: 'for-notyet', name: 'For notyet' }))
+    const set = (level: string | null) =>
+      admin.mutate('permissions.set', {
+        objectType: 'workflow',
+        objectId: wf.id,
+        userId: asked.id,
+        environmentId: null,
+        level,
+      })
+    expect(failure(await set('use'))).toMatchObject({ code: 'BAD_REQUEST' })
+    data(await set(null))
+  })
+
+  it('the directory is for those who can share, not for everyone signed in', async () => {
+    expect(failure(await member.query('users.directory'))).toMatchObject({ code: 'FORBIDDEN' })
+    expect(data(await admin.query('users.directory')).length).toBeGreaterThan(0)
   })
 })

@@ -1,11 +1,11 @@
 import { type Db, users } from '@ow/db'
-import { eq, or } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import * as oidc from 'openid-client'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
 import type { Config } from '../config'
-import { notifyAdminsOfRequest, provisionUser, signInDecision } from '../services/users'
+import { notifyAdminsOfRequest, provisionUser, SignInRefused, signInDecision } from '../services/users'
 import { verifyPassword } from './password'
 import { createSession, deleteSession, SESSION_COOKIE } from './sessions'
 
@@ -105,31 +105,34 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
     const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : undefined
     const domain = config.OIDC_ALLOWED_DOMAIN.toLowerCase()
     if (!claims || !email || claims.email_verified !== true) return fail('Your email address is not verified')
-    // Inside the domain, or invited (any domain), or known already; never disabled or rejected.
-    const [existing] = await db
-      .select({ status: users.status, disabledAt: users.disabledAt })
-      .from(users)
-      .where(or(eq(users.oidcSubject, claims.sub), eq(users.email, email)))
-      .limit(1)
-    const decision = signInDecision({
-      email,
-      domain,
-      hd: typeof claims.hd === 'string' ? claims.hd : undefined,
-      existing: existing ? { status: existing.status, disabled: existing.disabledAt !== null } : null,
-    })
-    if (!decision.ok) return fail(decision.reason)
-
-    // A first sign-in waits for an admin's approval (session 44: everyone new, the domain's people too).
-    const user = await provisionUser(
-      db,
-      {
-        email,
-        name: typeof claims.name === 'string' ? claims.name : email,
-        avatarUrl: typeof claims.picture === 'string' ? claims.picture : null,
-        oidcSubject: claims.sub,
-      },
-      { status: 'pending' },
-    )
+    // A first sign-in waits for an admin's approval (session 44: everyone new, the domain's people too). Who may get
+    // in at all (the domain, or invited) is decided inside provisioning's lock, on the row it uses.
+    let user: Awaited<ReturnType<typeof provisionUser>>
+    try {
+      user = await provisionUser(
+        db,
+        {
+          email,
+          name: typeof claims.name === 'string' ? claims.name : email,
+          avatarUrl: typeof claims.picture === 'string' ? claims.picture : null,
+          oidcSubject: claims.sub,
+        },
+        {
+          status: 'pending',
+          admit: (existing) =>
+            signInDecision({
+              email,
+              domain,
+              hd: typeof claims.hd === 'string' ? claims.hd : undefined,
+              sub: claims.sub,
+              existing,
+            }),
+        },
+      )
+    } catch (err) {
+      if (err instanceof SignInRefused) return fail(err.message)
+      throw err
+    }
     if (user.disabled) return fail('Your account has been disabled')
     if (user.status === 'pending') {
       if (user.created) {

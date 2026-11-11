@@ -2,6 +2,8 @@ import { type Db, groupMembers, groups, sessions, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, inArray, isNull } from 'drizzle-orm'
 import { z } from 'zod'
+import { loadAccess } from '../../services/permissions'
+import { systemGroupId } from '../../services/users'
 import { adminProcedure, authedProcedure, router } from '../init'
 
 const Id = z.string().uuid()
@@ -22,8 +24,7 @@ async function userWithStatus(db: Db, userId: string, allowed: string[]) {
 
 /** All Users always, and the chosen groups (built-in Admins included, when an admin picks it). */
 async function addToGroups(tx: Tx, userId: string, groupIds: string[]) {
-  const [everyone] = await tx.select({ id: groups.id }).from(groups).where(eq(groups.systemKind, 'all_users'))
-  const ids = [...new Set([...(everyone ? [everyone.id] : []), ...groupIds])]
+  const ids = [...new Set([await systemGroupId(tx, 'all_users'), ...groupIds])]
   const known = ids.length
     ? await tx.select({ id: groups.id }).from(groups).where(inArray(groups.id, ids))
     : []
@@ -34,6 +35,10 @@ async function addToGroups(tx: Tx, userId: string, groupIds: string[]) {
     .onConflictDoNothing()
 }
 
+/** The person changed meanwhile (signed in, or another admin decided): nothing done, say so. */
+const stale = (email: string) =>
+  new TRPCError({ code: 'CONFLICT', message: `${email} changed meanwhile: reload and look again` })
+
 async function groupNames(db: Db, ids: string[]) {
   if (!ids.length) return []
   return (await db.select({ name: groups.name }).from(groups).where(inArray(groups.id, ids))).map(
@@ -42,14 +47,23 @@ async function groupNames(db: Db, ids: string[]) {
 }
 
 export const usersRouter = router({
-  /** Everyone who can sign in, by name: whom an owner can give access to (any signed-in person may look). */
-  directory: authedProcedure.query(({ ctx }) =>
-    ctx.db
+  /**
+   * Everyone who can sign in, by name: whom an owner can give access to. Only for those who can share something
+   * (admins and owners): an invited outsider with Use on one app mustn't get the staff list.
+   */
+  directory: authedProcedure.query(async ({ ctx }) => {
+    if (!(await loadAccess(ctx.db, ctx.user)).canShare) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'Only people who own something can see who to share with',
+      })
+    }
+    return ctx.db
       .select({ id: users.id, name: users.name, email: users.email })
       .from(users)
       .where(and(isNull(users.disabledAt), eq(users.status, 'active')))
-      .orderBy(asc(users.name)),
-  ),
+      .orderBy(asc(users.name))
+  }),
 
   list: adminProcedure.query(async ({ ctx }) => {
     const rows = await ctx.db
@@ -96,10 +110,13 @@ export const usersRouter = router({
     .mutation(async ({ ctx, input }) => {
       const user = await userWithStatus(ctx.db, input.userId, ['pending', 'rejected'])
       await ctx.db.transaction(async (tx) => {
-        await tx
+        // The status in the update itself: a reject (or a second approve) meanwhile finds nothing to change.
+        const changed = await tx
           .update(users)
           .set({ status: 'active', decidedAt: new Date(), decidedBy: ctx.user.id })
-          .where(eq(users.id, user.id))
+          .where(and(eq(users.id, user.id), inArray(users.status, ['pending', 'rejected'])))
+          .returning({ id: users.id })
+        if (!changed.length) throw stale(user.email)
         await addToGroups(tx, user.id, input.groupIds)
       })
       await ctx.audit({
@@ -113,10 +130,12 @@ export const usersRouter = router({
   /** Turns a waiting person down: they can't sign in, and signing in again doesn't ask again. Approve undoes it. */
   reject: adminProcedure.input(z.object({ userId: Id })).mutation(async ({ ctx, input }) => {
     const user = await userWithStatus(ctx.db, input.userId, ['pending'])
-    await ctx.db
+    const changed = await ctx.db
       .update(users)
       .set({ status: 'rejected', decidedAt: new Date(), decidedBy: ctx.user.id })
-      .where(eq(users.id, user.id))
+      .where(and(eq(users.id, user.id), eq(users.status, 'pending')))
+      .returning({ id: users.id })
+    if (!changed.length) throw stale(user.email)
     await ctx.audit({
       action: 'user.rejected',
       objectType: 'user',
@@ -176,7 +195,12 @@ export const usersRouter = router({
   /** Withdraws an invitation nobody took up yet (the account never signed in, so it goes entirely). */
   cancelInvite: adminProcedure.input(z.object({ userId: Id })).mutation(async ({ ctx, input }) => {
     const user = await userWithStatus(ctx.db, input.userId, ['invited'])
-    await ctx.db.delete(users).where(eq(users.id, user.id))
+    // Only while still invited: someone signing in meanwhile is active now, and stays.
+    const gone = await ctx.db
+      .delete(users)
+      .where(and(eq(users.id, user.id), eq(users.status, 'invited')))
+      .returning({ id: users.id })
+    if (!gone.length) throw stale(user.email)
     await ctx.audit({
       action: 'user.invite_cancelled',
       objectType: 'user',

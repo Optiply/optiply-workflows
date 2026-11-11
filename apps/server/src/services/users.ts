@@ -30,7 +30,16 @@ export interface ProvisionInput {
 export async function provisionUser(
   db: Db,
   input: ProvisionInput,
-  opts: { makeAdmin?: boolean; status?: 'active' | 'pending' } = {},
+  opts: {
+    makeAdmin?: boolean
+    status?: 'active' | 'pending'
+    /**
+     * Whether this person may get in at all (Google's sign-in: `signInDecision`), asked inside the lock about the very
+     * row about to be used, so an invitation cancelled meanwhile can't turn into a request. Refusing throws
+     * `SignInRefused` and changes nothing.
+     */
+    admit?: (existing: ExistingUser | null) => SignInVerdict
+  } = {},
 ): Promise<{ id: string; created: boolean; disabled: boolean; status: UserStatus }> {
   const email = input.email.trim().toLowerCase()
   return db.transaction(async (tx) => {
@@ -39,7 +48,27 @@ export async function provisionUser(
     const match = input.oidcSubject
       ? or(eq(users.oidcSubject, input.oidcSubject), eq(users.email, email))
       : eq(users.email, email)
-    const [existing] = await tx.select().from(users).where(match).limit(1)
+    // The Google account's own row first, when the subject and the email point at different rows.
+    const [existing] = await tx
+      .select()
+      .from(users)
+      .where(match)
+      .orderBy(
+        input.oidcSubject ? sql`(${users.oidcSubject} = ${input.oidcSubject}) desc nulls last` : users.id,
+      )
+      .limit(1)
+    if (opts.admit) {
+      const verdict = opts.admit(
+        existing
+          ? {
+              status: existing.status,
+              disabled: existing.disabledAt !== null,
+              oidcSubject: existing.oidcSubject,
+            }
+          : null,
+      )
+      if (!verdict.ok) throw new SignInRefused(verdict.reason)
+    }
 
     let id: string
     let created = false
@@ -49,7 +78,8 @@ export async function provisionUser(
       id = existing.id
       disabled = existing.disabledAt !== null
       // An invitation is an admin's yes: the first sign-in takes it up.
-      status = existing.status === 'invited' ? 'active' : existing.status
+      // The CLI's break-glass admin is let in too, even over a request still waiting (or turned down).
+      status = existing.status === 'invited' || opts.makeAdmin ? 'active' : existing.status
       await tx
         .update(users)
         .set({
@@ -59,6 +89,7 @@ export async function provisionUser(
           oidcSubject: input.oidcSubject ?? existing.oidcSubject,
           passwordHash: input.passwordHash ?? existing.passwordHash,
           status,
+          ...(status !== existing.status && existing.status !== 'invited' ? { decidedAt: new Date() } : {}),
         })
         .where(eq(users.id, id))
     } else {
@@ -93,25 +124,42 @@ export async function provisionUser(
   })
 }
 
+export interface ExistingUser {
+  status: UserStatus
+  disabled: boolean
+  oidcSubject: string | null
+}
+export type SignInVerdict = { ok: true } | { ok: false; reason: string }
+
+/** `provisionUser`'s `admit` said no: the reason is for the sign-in page. */
+export class SignInRefused extends Error {}
+
 /**
- * Who may get in through Google: inside the allowed domain (`hd` matching when Google sends it), or someone already
- * known (invited by an admin, or with an account); never a disabled or rejected account. Pending people pass here and
- * are stopped after provisioning (no session, the waiting page).
+ * Who may get in through Google: anyone inside the allowed domain (`hd` matching when Google sends it); outside it,
+ * only someone an admin invited, or who signed in with this same Google account before (an invitation taken up).
+ * Never a disabled or rejected account. A password-only account outside the domain (a break-glass admin) doesn't
+ * open to whoever holds that Google address. Pending people pass here and are stopped after provisioning (no
+ * session, the waiting page).
  */
 export function signInDecision(input: {
   email: string
   domain: string
   hd?: string
-  existing: { status: UserStatus; disabled: boolean } | null
-}): { ok: true } | { ok: false; reason: string } {
-  const { email, domain, hd, existing } = input
+  /** Google's subject for this account. */
+  sub: string
+  existing: ExistingUser | null
+}): SignInVerdict {
+  const { email, domain, hd, sub, existing } = input
   if (existing?.disabled) return { ok: false, reason: 'Your account has been disabled' }
   if (existing?.status === 'rejected') {
     return { ok: false, reason: 'Your request to use Optiply Workflows was not approved' }
   }
   const inDomain = email.endsWith(`@${domain}`) && (hd === undefined || hd === domain)
-  if (!existing && !inDomain)
+  const knownOutsider =
+    existing?.status === 'invited' || (existing?.oidcSubject != null && existing.oidcSubject === sub)
+  if (!inDomain && !knownOutsider) {
     return { ok: false, reason: `Only @${domain} accounts or invited people can sign in` }
+  }
   return { ok: true }
 }
 
