@@ -168,7 +168,7 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   // Open, its Access sits beside its path.
   await page.getByRole('button', { name: 'Access' }).click()
   const access = page.getByRole('dialog', { name: `Access to ${folderName}` })
-  await access.getByLabel('Group').selectOption({ label: groupName })
+  await access.getByLabel('Group or person').selectOption({ label: groupName })
   await expect(access.getByLabel('Environment')).toHaveCount(0)
   await access.getByRole('button', { name: 'Grant' }).click()
   await expect(access).toContainText(groupName)

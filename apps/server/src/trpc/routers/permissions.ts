@@ -10,15 +10,16 @@ import {
   PERMISSION_LEVELS,
   permissions,
   resources,
+  users,
   workflows,
 } from '@ow/db'
 import { KIND_LABELS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { z } from 'zod'
 import { kindTitle } from '../../services/git/kinds'
 import { loadAccess, type ObjectKind, requireLevel } from '../../services/permissions'
-import { authedProcedure, type Context, router } from '../init'
+import { adminProcedure, authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
 
@@ -107,31 +108,127 @@ async function describeTarget(db: Db, target: z.infer<typeof Target>): Promise<s
   return `${target.objectType} ${target.objectId}`
 }
 
+/** Who a grant is for: a group or one person, never both. */
+const SUBJECT_MESSAGE = { message: 'Give access to a group or to a person' }
+const oneSubject = (s: { groupId?: string; userId?: string }) =>
+  (s.groupId === undefined) !== (s.userId === undefined)
+const Subject = z
+  .object({ groupId: Id.optional(), userId: Id.optional() })
+  .refine(oneSubject, SUBJECT_MESSAGE)
+
+function subjectWhere(s: { groupId?: string; userId?: string }) {
+  return s.groupId ? eq(permissions.groupId, s.groupId) : eq(permissions.userId, s.userId!)
+}
+
+/** The subject for the audit log: `{ group }` or `{ user }` (an email), checked to exist. */
+async function subjectName(db: Db, s: { groupId?: string; userId?: string }) {
+  if (s.groupId) {
+    const [group] = await db.select({ name: groups.name }).from(groups).where(eq(groups.id, s.groupId))
+    if (!group) throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' })
+    return { group: group.name }
+  }
+  const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, s.userId!))
+  if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'Person not found' })
+  return { user: user.email }
+}
+
+/** Names (and slugs, for links) of granted objects and folders, by id. */
+async function targetNames(db: Db, targets: { objectType: string; objectId: string }[]) {
+  const out = new Map<string, { name: string | null; slug: string | null; folderType: string | null }>()
+  const ids = (type: string) => targets.filter((t) => t.objectType === type).map((t) => t.objectId)
+  const tables = [
+    ['workflow', workflows],
+    ['app', apps],
+    ['resource', resources],
+    ['library_query', libraryQueries],
+    ['module', modules],
+    ['component_library', componentLibraries],
+  ] as const
+  for (const [type, table] of tables) {
+    const wanted = ids(type)
+    if (!wanted.length) continue
+    const rows = await db
+      .select({ id: table.id, name: table.name, slug: table.slug })
+      .from(table)
+      .where(inArray(table.id, wanted))
+    for (const r of rows) out.set(r.id, { name: r.name, slug: r.slug, folderType: null })
+  }
+  const folderIds = ids('folder')
+  if (folderIds.length) {
+    const rows = await db
+      .select({ id: folders.id, name: folders.name, objectType: folders.objectType })
+      .from(folders)
+      .where(inArray(folders.id, folderIds))
+    for (const r of rows) out.set(r.id, { name: r.name, slug: null, folderType: r.objectType })
+  }
+  return out
+}
+
 export const permissionsRouter = router({
   list: authedProcedure.input(Target).query(async ({ ctx, input }) => {
     await assertCanManage(ctx, input)
-    return ctx.db
+    const rows = await ctx.db
       .select({
         id: permissions.id,
         groupId: permissions.groupId,
         groupName: groups.name,
+        userId: permissions.userId,
+        userName: users.name,
+        userEmail: users.email,
         environmentId: permissions.environmentId,
         level: permissions.level,
       })
       .from(permissions)
-      .innerJoin(groups, eq(groups.id, permissions.groupId))
+      .leftJoin(groups, eq(groups.id, permissions.groupId))
+      .leftJoin(users, eq(users.id, permissions.userId))
       .where(targetWhere(input))
-      .orderBy(asc(groups.name))
+    // Groups first, then people, each by name.
+    return rows
+      .map((r) => ({ ...r, subject: r.groupId ? ('group' as const) : ('user' as const) }))
+      .sort(
+        (a, b) =>
+          (a.subject === 'group' ? 0 : 1) - (b.subject === 'group' ? 0 : 1) ||
+          (a.groupName ?? a.userName ?? '').localeCompare(b.groupName ?? b.userName ?? ''),
+      )
   }),
 
-  /** Sets (or with `level: null`, removes) one group's grant on a target, for one environment or all (`null`). */
+  /**
+   * Everything one group or one person is granted directly (not through their groups), with what each target is:
+   * the Access sections of a group's and a person's settings pages. Admins only.
+   */
+  forSubject: adminProcedure.input(Subject).query(async ({ ctx, input }) => {
+    const rows = await ctx.db
+      .select({
+        id: permissions.id,
+        objectType: permissions.objectType,
+        objectId: permissions.objectId,
+        environmentId: permissions.environmentId,
+        level: permissions.level,
+      })
+      .from(permissions)
+      .where(subjectWhere(input))
+    const names = await targetNames(
+      ctx.db,
+      rows.flatMap((r) => (r.objectId ? [{ objectType: r.objectType, objectId: r.objectId }] : [])),
+    )
+    return rows.map((r) => ({
+      ...r,
+      ...(r.objectId ? (names.get(r.objectId) ?? { name: null, slug: null, folderType: null }) : {}),
+    }))
+  }),
+
+  /**
+   * Sets (or with `level: null`, removes) one group's or one person's grant on a target, for one environment or all
+   * (`null`).
+   */
   set: authedProcedure
     .input(
       Target.extend({
-        groupId: Id,
+        groupId: Id.optional(),
+        userId: Id.optional(),
         environmentId: Id.nullable(),
         level: z.enum(PERMISSION_LEVELS).nullable(),
-      }),
+      }).refine(oneSubject, SUBJECT_MESSAGE),
     )
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
@@ -153,18 +250,14 @@ export const permissionsRouter = router({
           })
         }
       }
-      const [group] = await ctx.db
-        .select({ name: groups.name })
-        .from(groups)
-        .where(eq(groups.id, input.groupId))
-      if (!group) throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' })
+      const subject = await subjectName(ctx.db, input)
       await ctx.db.transaction(async (tx) => {
         await tx
           .delete(permissions)
           .where(
             and(
               targetWhere(input),
-              eq(permissions.groupId, input.groupId),
+              subjectWhere(input),
               input.environmentId === null
                 ? isNull(permissions.environmentId)
                 : eq(permissions.environmentId, input.environmentId),
@@ -172,7 +265,8 @@ export const permissionsRouter = router({
           )
         if (input.level) {
           await tx.insert(permissions).values({
-            groupId: input.groupId,
+            groupId: input.groupId ?? null,
+            userId: input.userId ?? null,
             objectType: input.objectType,
             objectId: input.objectId,
             environmentId: input.environmentId,
@@ -185,7 +279,7 @@ export const permissionsRouter = router({
         objectType: input.objectType,
         objectId: input.objectId ?? undefined,
         environmentId: input.environmentId ?? undefined,
-        metadata: { group: group.name, target: await describeTarget(ctx.db, input), level: input.level },
+        metadata: { ...subject, target: await describeTarget(ctx.db, input), level: input.level },
       })
     }),
 })

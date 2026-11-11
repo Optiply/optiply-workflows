@@ -31,7 +31,8 @@ function UsersTable() {
     <div className="space-y-3">
       <ErrorNote error={error ?? setDisabled.error} />
       <p className="text-sm text-muted">
-        People get an account the first time they sign in with Google. Manage access through{' '}
+        People get an account the first time they sign in with Google. Open someone to see and change their
+        access, or manage it through{' '}
         <Link to="/settings/groups" className="text-accent hover:underline">
           groups
         </Link>
@@ -55,7 +56,13 @@ function UsersTable() {
                   <Avatar name={u.name} src={u.avatarUrl} />
                   <div>
                     <div className="font-medium">
-                      {u.name}{' '}
+                      <Link
+                        to="/settings/users/$userId"
+                        params={{ userId: u.id }}
+                        className="hover:text-accent hover:underline"
+                      >
+                        {u.name}
+                      </Link>{' '}
                       {u.id === me.id && <span className="text-xs font-normal text-muted">(you)</span>}
                     </div>
                     <div className="text-xs text-muted">{u.email}</div>

@@ -1,7 +1,7 @@
 import { type Db, folders, groupMembers, PERMISSION_LEVELS, type PermissionLevel, permissions } from '@ow/db'
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, or } from 'drizzle-orm'
 
 const RANK: Record<PermissionLevel, number> = { use: 1, edit: 2, own: 3 }
 
@@ -198,17 +198,20 @@ export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean })
     .from(groupMembers)
     .where(eq(groupMembers.userId, user.id))
   const groupIds = memberships.map((m) => m.groupId)
-  const grants = groupIds.length
-    ? await db
-        .select({
-          objectType: permissions.objectType,
-          objectId: permissions.objectId,
-          environmentId: permissions.environmentId,
-          level: permissions.level,
-        })
-        .from(permissions)
-        .where(inArray(permissions.groupId, groupIds))
-    : []
+  // Their groups' grants and their own.
+  const grants = await db
+    .select({
+      objectType: permissions.objectType,
+      objectId: permissions.objectId,
+      environmentId: permissions.environmentId,
+      level: permissions.level,
+    })
+    .from(permissions)
+    .where(
+      groupIds.length
+        ? or(inArray(permissions.groupId, groupIds), eq(permissions.userId, user.id))
+        : eq(permissions.userId, user.id),
+    )
   const folderRows = grants.some((g) => g.objectType === 'folder')
     ? await db
         .select({ id: folders.id, parentId: folders.parentId, objectType: folders.objectType })

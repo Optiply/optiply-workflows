@@ -2009,7 +2009,17 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
-## 14. Session 42 steps: a more modern UI (same colours)
+## 14. Session 44 steps: user access, sections and new-user approval
+
+The user (2026-11-11, end of session 43, in plan mode): manage access per person and per group with levels (use vs change/create); access to only parts of the platform, the sidebar showing only what someone can use; a Use-only app opened by its URL, not editable; admins approve every new user; outsiders allowed by admins. Their choices: **everyone new waits for approval** (@optiply.nl too), **outsiders by invitation only**, **in-app notification for now** (email later), **sections follow grants** (no switches). Plan: `~/.claude/plans/pasted-content-id-0e90-i-should-ancient-prism.md`. Branch `feat/m35-ai-actions`. Step → shots → report → the user's word to commit.
+
+1. **Grants to people, and access screens** (built, awaiting the user's word): **migration 0044** (`permissions.user_id` → users, cascade; `group_id` nullable; `permissions_subject_ck` exactly one; unique key with `user_id`; `permissions_user_idx`); `loadAccess` counts a person's own grants with their groups'; `permissions.set` takes `groupId` or `userId` (refined: exactly one), `list` returns both with `subject`, names and email, groups first; new `permissions.forSubject` (admin: a group's or a person's grants with target names, slugs, folder kind); `users.directory` (any signed-in person: id, name, email of enabled users, for owners sharing). Web: `AccessEditor` lists groups and people (icons), its picker "Group or person" (optgroups; values `g:`/`u:`), a `workflow` target; the workflow editor's top bar gets an Access button for owners ("Who can use …"); `components/subject-access.tsx` `SubjectAccess` (per kind: Only what's shared / Use all / Edit all, and create / Own all = the type-wide grants; per-environment resource grants shown as badges; "Shared with …" with links, levels, Remove; Admins: "grants don't apply"), on the group page and on a new person page `/settings/users/$userId` (groups, sign-in, last login; names in the Users list link to it; breadcrumb names them). Tests: `apps/server/test/access.test.ts` (5), `apps/web/e2e/access.spec.ts`; app-releases and m10 use "Group or person". Shots: session 43's scratchpad `access-shots/`.
+2. **Sections follow grants** (next): `me.sections`/`canCreate` from `services/capabilities.ts`; sidebar and ⌘K filtered; `/` to the first section; "No access" on hidden sections; New buttons by `canCreate`.
+3. **Use-only apps**: `apps.access`; the view offers the editor to editors only; `/edit` redirects Use-only people to the view.
+4. **Approval and invitations**: migration 0045 (`users.status` active/pending/invited/rejected …); `signInDecision`; pending page; Settings → Users pending list (approve with groups / reject), invite (any domain); admin badge; `notifyAdminsOfRequest` hook (email later); audit events.
+5. Docs, review, full e2e; the user's stack on their word (dump, migrate, api + worker).
+
+## 14-. Session 42 steps: a more modern UI (same colours)
 
 The user (session 42, 2026-11-10): "give it a more modern UI, keep the colours". They chose a **left sidebar** (over a refined top bar) and a **calm light canvas** (over keeping the blue-grey page). Branch `feat/m35-ai-actions` (one PR at the end). Each step: build → before/after shots (`apps/web/e2e/zz-ui-tour.spec.ts`, untracked, in `.git/info/exclude`; `SHOT_PHASE=… playwright test e2e/zz-ui-tour.spec.ts`, light and dark, into the session's scratchpad `ui-shots/`) → the user's word to commit.
 

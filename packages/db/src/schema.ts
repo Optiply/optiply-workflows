@@ -173,17 +173,16 @@ export const PERMISSION_OBJECT_TYPES = [
 export const PERMISSION_LEVELS = ['use', 'edit', 'own'] as const
 
 /**
- * Grants to groups; a user's effective level is the highest grant across their groups. Admins implicitly own
- * everything. `objectId` null = every object of that type; `environmentId` null = every environment (environments
+ * Grants to a group or to one person (exactly one of `groupId`, `userId`); a user's effective level is the highest
+ * grant across their own and their groups'. Admins implicitly own everything. `objectId` null = every object of that type; `environmentId` null = every environment (environments
  * only matter for resources). `objectId` is polymorphic, so services delete grants when they delete an object.
  */
 export const permissions = pgTable(
   'permissions',
   {
     id: id(),
-    groupId: uuid()
-      .notNull()
-      .references(() => groups.id, { onDelete: 'cascade' }),
+    groupId: uuid().references(() => groups.id, { onDelete: 'cascade' }),
+    userId: uuid().references(() => users.id, { onDelete: 'cascade' }),
     objectType: text({ enum: PERMISSION_OBJECT_TYPES }).notNull(),
     objectId: uuid(),
     environmentId: uuid().references(() => environments.id, { onDelete: 'cascade' }),
@@ -192,9 +191,11 @@ export const permissions = pgTable(
   },
   (t) => [
     unique('permissions_grant_uq')
-      .on(t.groupId, t.objectType, t.objectId, t.environmentId)
+      .on(t.groupId, t.userId, t.objectType, t.objectId, t.environmentId)
       .nullsNotDistinct(),
     index('permissions_object_idx').on(t.objectType, t.objectId),
+    index('permissions_user_idx').on(t.userId),
+    check('permissions_subject_ck', sql`(${t.groupId} is null) <> (${t.userId} is null)`),
     check(
       'permissions_object_type_ck',
       sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'component_library', 'folder')`,

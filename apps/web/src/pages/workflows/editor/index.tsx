@@ -2,19 +2,20 @@ import { usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, History, LayoutGrid, Play, Tag, X } from 'lucide-react'
+import { AlertCircle, History, LayoutGrid, Play, Tag, Users, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
 import { SaveStatusIndicator } from '@/components/save-status'
 import { TopBarPortal } from '@/components/top-bar'
-import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Badge, Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { useLibraryRefs } from '@/lib/library-refs'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
+import { AccessEditor } from '@/pages/resources/shared'
 import { Canvas } from './canvas'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
 import { closeSession, ensureSaved, openSession } from './collab'
@@ -252,9 +253,30 @@ function Header({
       {!canEdit && <Badge>Read only</Badge>}
       {/* A protected workflow is published by merging on Git. */}
       <ReleaseControls workflow={workflow} canEdit={canEdit && !workflow.gitProtected} />
+      {workflow.level === 'own' && <AccessButton workflow={workflow} />}
       <div className="h-6 w-px bg-border" />
       <RunControls canEdit={canEdit} environments={environments} />
     </TopBarPortal>
+  )
+}
+
+/** Owners share the workflow: who can run it (Use), change it (Edit) or own it, as groups or single people. */
+function AccessButton({ workflow }: { workflow: Workflow }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button size="icon" variant="ghost" title="Access" onClick={() => setOpen(true)}>
+        <Users className="size-4" />
+      </Button>
+      {open && (
+        <Dialog title={`Who can use ${workflow.name}`} onClose={() => setOpen(false)} className="max-w-2xl">
+          <AccessEditor
+            target={{ objectType: 'workflow', objectId: workflow.id }}
+            help="Use runs it (live) and sees its runs · Edit also changes and runs the draft · Own also deletes it and manages access. The highest grant wins."
+          />
+        </Dialog>
+      )}
+    </>
   )
 }
 

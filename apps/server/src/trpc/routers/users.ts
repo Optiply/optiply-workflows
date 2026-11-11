@@ -1,10 +1,19 @@
 import { groupMembers, groups, sessions, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { asc, eq } from 'drizzle-orm'
+import { asc, eq, isNull } from 'drizzle-orm'
 import { z } from 'zod'
-import { adminProcedure, router } from '../init'
+import { adminProcedure, authedProcedure, router } from '../init'
 
 export const usersRouter = router({
+  /** Everyone who can sign in, by name: whom an owner can give access to (any signed-in person may look). */
+  directory: authedProcedure.query(({ ctx }) =>
+    ctx.db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(isNull(users.disabledAt))
+      .orderBy(asc(users.name)),
+  ),
+
   list: adminProcedure.query(async ({ ctx }) => {
     const rows = await ctx.db
       .select({

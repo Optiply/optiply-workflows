@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, KeyRound, Plus, Trash2, X } from 'lucide-react'
+import { CircleAlert, KeyRound, Plus, Trash2, UserRound, Users, X } from 'lucide-react'
 import { useState } from 'react'
 import { AuthRequiredNote } from '@/components/auth-required'
 import { Badge, Button, Card, ErrorNote, Input, SecretInput, Select, Spinner } from '@/components/ui'
@@ -246,13 +246,20 @@ function Cell({ value }: { value: unknown }) {
 }
 
 type Target = {
-  objectType: 'resource' | 'folder' | 'app' | 'library_query' | 'module' | 'component_library'
+  objectType: 'resource' | 'folder' | 'workflow' | 'app' | 'library_query' | 'module' | 'component_library'
   objectId: string | null
 }
 
+/** Who a grant is for: `{ groupId }` or `{ userId }`, from a grant row or the picker's `g:<id>` / `u:<id>`. */
+type Subject = { groupId: string } | { userId: string }
+const subjectOf = (g: { groupId: string | null; userId: string | null }): Subject =>
+  g.groupId ? { groupId: g.groupId } : { userId: g.userId! }
+const pickedSubject = (value: string): Subject =>
+  value.startsWith('g:') ? { groupId: value.slice(2) } : { userId: value.slice(2) }
+
 /**
- * Group grants on one target (a resource, a folder, an app, or all of a type), per environment or for all of them.
- * Apps have no per-environment grants: their access applies everywhere.
+ * Grants on one target (a resource, a folder, a workflow, an app, or all of a type) to groups and to single people, per
+ * environment or for all of them. Apps and workflows have no per-environment grants: their access applies everywhere.
  */
 export function AccessEditor({
   target,
@@ -268,8 +275,9 @@ export function AccessEditor({
   const queryClient = useQueryClient()
   const { data: grants, isLoading, error } = useQuery(trpc.permissions.list.queryOptions(target))
   const { data: groups } = useQuery(trpc.groups.list.queryOptions())
+  const { data: people } = useQuery(trpc.users.directory.queryOptions())
   const { data: environments } = useQuery(trpc.environments.list.queryOptions())
-  const [draft, setDraft] = useState({ groupId: '', environmentId: '', level: 'use' as Level })
+  const [draft, setDraft] = useState({ who: '', environmentId: '', level: 'use' as Level })
 
   const set = useMutation(
     trpc.permissions.set.mutationOptions({
@@ -278,6 +286,7 @@ export function AccessEditor({
           queryClient.invalidateQueries({ queryKey: trpc.permissions.list.queryKey(target) }),
           queryClient.invalidateQueries({ queryKey: trpc.resources.list.queryKey() }),
           queryClient.invalidateQueries({ queryKey: trpc.apps.list.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() }),
         ]),
     }),
   )
@@ -293,15 +302,22 @@ export function AccessEditor({
       <Card className="divide-y divide-border">
         {grants?.length === 0 && <p className="px-4 py-6 text-center text-sm text-muted">No grants yet.</p>}
         {grants?.map((g) => (
-          <div key={g.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-            <span className="flex-1 font-medium">{g.groupName}</span>
+          <div key={g.id} className="flex items-center gap-3 px-4 py-2.5 text-sm" data-testid="grant-row">
+            <span className="shrink-0 text-muted" title={g.subject === 'group' ? 'Group' : 'Person'}>
+              {g.subject === 'group' ? <Users className="size-4" /> : <UserRound className="size-4" />}
+            </span>
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium">{g.groupName ?? g.userName}</span>
+              {g.subject === 'user' && <span className="ml-2 text-xs text-muted">{g.userEmail}</span>}
+            </span>
             {perEnvironment && <span className="w-40 text-muted">{envName(g.environmentId)}</span>}
             <Select
+              aria-label={`Level for ${g.groupName ?? g.userName}`}
               value={g.level}
               onChange={(e) =>
                 set.mutate({
                   ...target,
-                  groupId: g.groupId,
+                  ...subjectOf(g),
                   environmentId: g.environmentId,
                   level: e.target.value as Level,
                 })
@@ -316,9 +332,9 @@ export function AccessEditor({
             <Button
               size="icon"
               variant="ghost"
-              title="Remove"
+              title={`Remove ${g.groupName ?? g.userName}`}
               onClick={() =>
-                set.mutate({ ...target, groupId: g.groupId, environmentId: g.environmentId, level: null })
+                set.mutate({ ...target, ...subjectOf(g), environmentId: g.environmentId, level: null })
               }
             >
               <Trash2 className="size-4" />
@@ -328,16 +344,25 @@ export function AccessEditor({
       </Card>
       <div className="flex flex-wrap items-center gap-2">
         <Select
-          aria-label="Group"
-          value={draft.groupId}
-          onChange={(e) => setDraft({ ...draft, groupId: e.target.value })}
+          aria-label="Group or person"
+          value={draft.who}
+          onChange={(e) => setDraft({ ...draft, who: e.target.value })}
         >
-          <option value="">Choose a group…</option>
-          {groups?.map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.name}
-            </option>
-          ))}
+          <option value="">Choose a group or a person…</option>
+          <optgroup label="Groups">
+            {groups?.map((g) => (
+              <option key={g.id} value={`g:${g.id}`}>
+                {g.name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="People">
+            {people?.map((u) => (
+              <option key={u.id} value={`u:${u.id}`}>
+                {u.name} ({u.email})
+              </option>
+            ))}
+          </optgroup>
         </Select>
         {perEnvironment && (
           <Select
@@ -366,17 +391,17 @@ export function AccessEditor({
         </Select>
         <Button
           variant="primary"
-          disabled={!draft.groupId}
+          disabled={!draft.who}
           loading={set.isPending}
           onClick={() =>
             set.mutate(
               {
                 ...target,
-                groupId: draft.groupId,
+                ...pickedSubject(draft.who),
                 environmentId: draft.environmentId || null,
                 level: draft.level,
               },
-              { onSuccess: () => setDraft({ ...draft, groupId: '' }) },
+              { onSuccess: () => setDraft({ ...draft, who: '' }) },
             )
           }
         >

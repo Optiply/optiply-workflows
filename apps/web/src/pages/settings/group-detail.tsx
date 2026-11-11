@@ -3,6 +3,7 @@ import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, X } from 'lucide-react'
 import { useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
+import { SubjectAccess } from '@/components/subject-access'
 import { Avatar, Badge, Button, Card, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AdminOnly } from './layout'
@@ -136,6 +137,14 @@ function GroupDetail() {
           </div>
         ))}
       </Card>
+
+      <div className="pt-4">
+        <SubjectAccess
+          subject={{ groupId: group.id }}
+          name={group.name}
+          everything={group.systemKind === 'admins'}
+        />
+      </div>
     </div>
   )
 }

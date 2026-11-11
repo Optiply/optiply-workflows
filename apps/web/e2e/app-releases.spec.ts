@@ -80,9 +80,9 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   await page.goto(`/apps/${slug}/edit`)
   await page.getByRole('button', { name: 'Access' }).click()
   const access = page.getByRole('dialog')
-  await access
-    .getByLabel('Group')
-    .selectOption({ label: (await access.getByLabel('Group').locator('option').nth(1).textContent())! })
+  await access.getByLabel('Group or person').selectOption({
+    label: (await access.getByLabel('Group or person').locator('option').nth(1).textContent())!,
+  })
   await expect(access.getByLabel('Environment')).toHaveCount(0)
   await access.getByRole('button', { name: 'Grant' }).click()
   await expect(access.getByText('No grants yet.')).toBeHidden()

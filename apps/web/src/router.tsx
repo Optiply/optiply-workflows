@@ -34,6 +34,7 @@ import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
 import { PythonSettingsPage } from './pages/settings/python'
+import { UserDetailPage } from './pages/settings/user-detail'
 import { UsersPage } from './pages/settings/users'
 import { WorkflowsPage } from './pages/workflows/list'
 
@@ -225,6 +226,11 @@ const groupsRoute = createRoute({
   path: '/groups',
   component: GroupsPage,
 })
+export const userDetailRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/users/$userId',
+  component: UserDetailPage,
+})
 export const groupDetailRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/groups/$groupId',
@@ -291,6 +297,7 @@ const routeTree = rootRoute.addChildren([
     settingsRoute.addChildren([
       settingsIndexRoute,
       usersRoute,
+      userDetailRoute,
       groupsRoute,
       groupDetailRoute,
       environmentsRoute,

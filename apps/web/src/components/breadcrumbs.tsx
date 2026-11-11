@@ -49,8 +49,14 @@ function useRecordName(path: string): string | undefined {
     }),
     inbox: useQuery({ ...trpc.tasks.get.queryOptions({ id }), ...cacheOnly }),
     groups: useQuery({ ...trpc.groups.get.queryOptions({ id: b ?? '' }), ...cacheOnly }),
+    // A person's page reads the users list (admins only), so their crumb does too.
+    people: useQuery({ ...trpc.users.list.queryOptions(), ...cacheOnly }),
   }
-  if (section === 'settings') return a === 'groups' && b ? nameOf(queries.groups.data) : undefined
+  if (section === 'settings') {
+    if (a === 'groups' && b) return nameOf(queries.groups.data)
+    if (a === 'users' && b) return queries.people.data?.find((u) => u.id === b)?.name
+    return undefined
+  }
   if (!a || !section || !(section in queries)) return undefined
   const record = queries[section as keyof typeof queries]
   const named = nameOf(record.data) ?? (section === 'apps' ? nameOf(queries.appView.data) : undefined)
@@ -67,6 +73,7 @@ function crumbsFor(path: string, recordName: string | undefined): Crumb[] {
     const tab = SETTINGS_TABS.find((t) => t.to === `/settings/${a}`)
     if (tab) crumbs.push({ label: tab.label, to: tab.to })
     if (a === 'groups' && b) crumbs.push({ label: recordName ?? 'Group' })
+    if (a === 'users' && b) crumbs.push({ label: recordName ?? 'Person' })
     return crumbs
   }
   const known = SECTIONS.find((s) => s.to === `/${section}`)
