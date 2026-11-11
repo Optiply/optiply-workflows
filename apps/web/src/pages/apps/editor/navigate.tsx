@@ -11,6 +11,7 @@ import {
 import { ArrowDown, ArrowUp, CaseSensitive, Regex, Search, WholeWord } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Input, sectionLabelClass } from '@/components/ui'
+import { isPaletteKey } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 import { placement } from './canvas'
 import {
@@ -267,7 +268,8 @@ export function CommandPalette({ actions }: { actions: CommandActions }) {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+      // The global palette, opened from the sidebar, toggles itself closed: don't stack this one on it.
+      if (isPaletteKey(e) && !document.querySelector('[data-global-palette]')) {
         e.preventDefault()
         e.stopPropagation()
         setOpen((o) => !o)

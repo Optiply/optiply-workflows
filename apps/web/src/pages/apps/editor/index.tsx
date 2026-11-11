@@ -1,17 +1,17 @@
 import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { AlertCircle, CheckCircle2, CloudOff, Eye, Loader2, Pencil } from 'lucide-react'
+import { Eye, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
+import { SaveStatusIndicator } from '@/components/save-status'
 import { TopBarPortal } from '@/components/top-bar'
 import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
-import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
 import { AppChromeContext } from '../grid-context'
@@ -481,29 +481,7 @@ function Running({ children }: { children: React.ReactNode }) {
   )
 }
 
-const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {
-  connecting: { text: 'Connecting…', className: 'text-muted' },
-  saved: { text: 'Saved', className: 'text-muted' },
-  saving: { text: 'Saving…', className: 'text-muted' },
-  offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
-  error: { text: 'Not saved', className: 'text-danger' },
-  closed: { text: 'Disconnected: reload', className: 'text-danger' },
-}
-
 function SaveBadge({ status }: { status: SaveStatus }) {
   const saveError = useAppEditor((s) => s.saveError)
-  const label = SAVE_LABELS[status]
-  return (
-    // As the workflow editor's: an icon and a word, quiet while all is saved.
-    <span
-      className={cn('inline-flex items-center gap-1 text-xs whitespace-nowrap', label.className)}
-      title={saveError ?? undefined}
-    >
-      {(status === 'saving' || status === 'connecting') && <Loader2 className="size-3 animate-spin" />}
-      {status === 'saved' && <CheckCircle2 className="size-3 text-success" />}
-      {status === 'offline' && <CloudOff className="size-3" />}
-      {(status === 'error' || status === 'closed') && <AlertCircle className="size-3" />}
-      {label.text}
-    </span>
-  )
+  return <SaveStatusIndicator status={status} error={saveError} />
 }

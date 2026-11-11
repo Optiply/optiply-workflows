@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
-import { Avatar, Badge, Button, ErrorNote, Spinner, Table, Td, Th } from '@/components/ui'
+import { Avatar, Badge, Button, ErrorNote, ListSkeleton, Table, Td, Th } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { timeAgo } from '@/lib/utils'
 import { AdminOnly } from './layout'
@@ -26,7 +26,7 @@ function UsersTable() {
     }),
   )
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton header={false} rows={4} />
   return (
     <div className="space-y-3">
       <ErrorNote error={error ?? setDisabled.error} />

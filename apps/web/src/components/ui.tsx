@@ -240,6 +240,51 @@ export function Spinner() {
   )
 }
 
+/** A grey placeholder bar that pulses while its content loads. */
+export function Skeleton({ className, style }: { className?: string; style?: CSSProperties }) {
+  return (
+    <div
+      aria-hidden
+      className={cn('rounded-md bg-border/55 motion-safe:animate-pulse', className)}
+      style={style}
+    />
+  )
+}
+
+/**
+ * A list page's shape while it loads: the title, the toolbar and a card of rows, so the page doesn't jump when the
+ * data arrives. `header={false}` inside a page that already has its header (Settings' tabs).
+ */
+export function ListSkeleton({ rows = 5, header = true }: { rows?: number; header?: boolean }) {
+  return (
+    <div role="status" aria-label="Loading" className="space-y-4">
+      {header && (
+        <div className="flex items-start justify-between gap-4 pb-2">
+          <div className="space-y-2.5 pt-1">
+            <Skeleton className="h-6 w-40" />
+            <Skeleton className="h-4 w-96 max-w-full" />
+          </div>
+          <Skeleton className="h-8 w-32" />
+        </div>
+      )}
+      {header && <Skeleton className="h-8 w-full" />}
+      <Card className="divide-y divide-border/60">
+        {Array.from({ length: rows }, (_, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: placeholders without identity
+          <div key={i} className="flex items-center gap-3 px-4 py-3.5">
+            <Skeleton className="size-7 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-3.5" style={{ width: `${40 - ((i * 7) % 18)}%` }} />
+              <Skeleton className="h-3 w-1/4" />
+            </div>
+            <Skeleton className="h-5 w-16" />
+          </div>
+        ))}
+      </Card>
+    </div>
+  )
+}
+
 /** Optiply's data grid: 48px rows between lines, a quiet header, and an optional footer (`TableFooter`). */
 export function Table({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
   return (
@@ -437,7 +482,7 @@ export function Dialog({
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : undefined}
         className={cn(
-          'relative w-full max-w-lg motion-safe:animate-pop-in rounded-2xl bg-surface p-6 text-ink shadow-menu',
+          'relative w-full max-w-lg motion-safe:animate-pop-in rounded-2xl bg-surface p-6 text-ink shadow-menu ring-1 ring-border/60',
           className,
         )}
       >
@@ -591,7 +636,7 @@ export function Menu({
             if ((e.target as HTMLElement).closest('[role^="menuitem"]')) setOpen(false)
           }}
           className={cn(
-            'absolute z-50 min-w-52 rounded-xl bg-surface p-1.5 text-ink shadow-menu motion-safe:animate-pop-in',
+            'absolute z-50 min-w-52 rounded-xl bg-surface p-1.5 text-ink shadow-menu ring-1 ring-border/60 motion-safe:animate-pop-in',
             side === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5',
             align === 'end' ? 'right-0' : 'left-0',
             className,

@@ -7,10 +7,10 @@ import {
   ActionBar,
   EmptyState,
   ErrorNote,
+  ListSkeleton,
   LoadMoreFooter,
   linkClass,
   PageHeader,
-  Spinner,
   Table,
   Tabs,
   Td,
@@ -54,7 +54,7 @@ export function RunsPage() {
         )}
       </ActionBar>
       {runs.isLoading ? (
-        <Spinner />
+        <ListSkeleton header={false} rows={6} />
       ) : runs.error ? (
         <ErrorNote error={runs.error} />
       ) : rows.length === 0 ? (

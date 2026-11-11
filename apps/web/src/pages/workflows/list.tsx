@@ -37,12 +37,12 @@ import {
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   MenuItem,
   MenuSeparator,
   PageHeader,
   RowActions,
   RowMenu,
-  Spinner,
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -95,7 +95,7 @@ export function WorkflowsPage() {
       move.mutate({ id: workflowId, folderId })
   }
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (

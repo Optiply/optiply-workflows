@@ -52,3 +52,16 @@ export function dialogOpen(): boolean {
     document.querySelector('[role="dialog"]:not([data-canvas-modal])') !== null
   )
 }
+
+/** ⌘K on a Mac, Ctrl+K elsewhere (a Mac's Ctrl+K stays the text field's kill-line); never mid-composition. */
+export function isPaletteKey(e: ShortcutKeys, mac = IS_MAC): boolean {
+  const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+  return mod && !e.altKey && !e.shiftKey && !e.isComposing && e.key.toLowerCase() === 'k'
+}
+
+/** An open modal dialog other than the global palette (whose ⌘K toggles it closed). */
+export function otherModalOpen(): boolean {
+  return [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].some(
+    (d) => !d.hasAttribute('data-global-palette'),
+  )
+}

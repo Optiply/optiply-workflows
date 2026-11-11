@@ -64,7 +64,9 @@ export function DatabasePage() {
     enabled: usable,
   })
   const table = tables.data?.find((t) => t.name === search.table) ?? tables.data?.[0]
-  const [filter, setFilter] = useState('')
+  const [typed, setFilter] = useState('')
+  // The box shows over 8 tables only: fewer (another environment) and the filter is off, not stuck unseen.
+  const filter = (tables.data?.length ?? 0) > 8 ? typed : ''
   const shownTables = filter.trim()
     ? tables.data?.filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()))
     : tables.data
@@ -124,7 +126,7 @@ export function DatabasePage() {
               aria-label="Find a table"
               placeholder="Find a table"
               className="h-8"
-              value={filter}
+              value={typed}
               onChange={(e) => setFilter(e.target.value)}
             />
           </div>

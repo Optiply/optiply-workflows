@@ -54,6 +54,8 @@ test('deploy problems reach admins, and Promote opens a pull request', async ({ 
     await expect(banner).toHaveCount(0)
     pushFiles(repoDir, 'main', { [`${broken}-2/workflow.json`]: '{ not json either' })
     await deployNow()
+    // The deploy runs after the request returns: wait for its problems before reading the banner afresh.
+    await expect(page.getByTestId(`git-object-workflow-broken-${stamp}-2`)).toContainText('Problems')
     await page.reload()
     await expect(banner).toBeVisible()
     await banner.getByRole('link', { name: 'See deploys' }).click()

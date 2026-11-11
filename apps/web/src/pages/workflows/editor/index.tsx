@@ -2,11 +2,12 @@ import { usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { AlertCircle, CheckCircle2, CloudOff, History, LayoutGrid, Loader2, Play, Tag, X } from 'lucide-react'
+import { AlertCircle, History, LayoutGrid, Play, Tag, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
+import { SaveStatusIndicator } from '@/components/save-status'
 import { TopBarPortal } from '@/components/top-bar'
 import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
@@ -27,7 +28,7 @@ import { Rail, RailPanelView } from './rail'
 import { ReleaseControls } from './releases'
 import { RunPanel } from './run-panel'
 import { runWorkflow, useRun } from './run-state'
-import { graphOf, type SaveStatus, updateGraph, useEditor } from './store'
+import { graphOf, updateGraph, useEditor } from './store'
 
 const route = getRouteApi('/app/workflows/$workflowId')
 
@@ -398,38 +399,10 @@ function RunControls({
   )
 }
 
-const STATUS_TEXT: Record<SaveStatus, string> = {
-  connecting: 'Connecting…',
-  saved: 'Saved',
-  saving: 'Saving…',
-  offline: 'Offline: changes will sync',
-  error: 'Not saved',
-  closed: 'Disconnected: reload',
-}
-
 function SaveIndicator() {
   const status = useEditor((s) => s.status)
   const error = useEditor((s) => s.saveError)
-  return (
-    <span
-      data-testid="save-status"
-      title={error ?? undefined}
-      className={cn(
-        'ml-2 inline-flex items-center gap-1 whitespace-nowrap text-xs',
-        status === 'error' || status === 'closed'
-          ? 'text-danger'
-          : status === 'offline'
-            ? 'text-warning-strong'
-            : 'text-muted',
-      )}
-    >
-      {(status === 'saving' || status === 'connecting') && <Loader2 className="size-3 animate-spin" />}
-      {status === 'saved' && <CheckCircle2 className="size-3 text-success" />}
-      {status === 'offline' && <CloudOff className="size-3" />}
-      {(status === 'error' || status === 'closed') && <AlertCircle className="size-3" />}
-      {STATUS_TEXT[status]}
-    </span>
-  )
+  return <SaveStatusIndicator status={status} error={error} className="ml-2" />
 }
 
 /** Under the editor, as Retool's: the run environment, the live version, and the run history panel's toggle. */

@@ -39,15 +39,20 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex justify-center">
+    // A calm page with a soft glow of the brand's blue behind the card.
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-10">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_30rem_at_50%_-10%,color-mix(in_srgb,var(--color-accent)_14%,transparent),transparent_70%)]"
+      />
+      <div className="relative w-full max-w-sm motion-safe:animate-fade-in">
+        <div className="mb-8 flex justify-center">
           <Wordmark size="lg" />
         </div>
 
-        <Card className="space-y-4 p-6 shadow-card">
-          <div>
-            <h1 className="text-lg font-bold">Sign in</h1>
+        <Card className="space-y-5 rounded-2xl p-8 shadow-menu">
+          <div className="space-y-1">
+            <h1 className="text-xl font-bold tracking-tight">Sign in</h1>
             <p className="text-sm text-muted">to Optiply Workflows</p>
           </div>
           {isLoading && <Spinner />}
@@ -116,7 +121,7 @@ export function LoginPage() {
           )}
         </Card>
         {config?.oidcEnabled && (
-          <p className="mt-4 text-center text-xs text-muted">
+          <p className="mt-5 text-center text-xs text-muted">
             Only @{config.allowedDomain} accounts can sign in.
           </p>
         )}

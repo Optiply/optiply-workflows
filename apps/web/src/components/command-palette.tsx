@@ -19,6 +19,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { isPaletteKey, otherModalOpen } from '@/lib/shortcuts'
 import { setThemePreference } from '@/lib/theme'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -68,9 +69,10 @@ export function useGlobalPaletteShortcut(toggle: () => void) {
   latest.current = toggle
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.shiftKey || e.altKey || !(e.metaKey || e.ctrlKey)) return
-      if (e.key.toLowerCase() !== 'k') return
+      if (e.defaultPrevented || !isPaletteKey(e)) return
       if (e.target instanceof Element && e.target.closest('.monaco-editor')) return
+      // Not over another dialog: its Escape and focus are its own.
+      if (otherModalOpen()) return
       e.preventDefault()
       latest.current()
     }
@@ -92,6 +94,7 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
   const list = useRef<HTMLDivElement>(null)
+  const input = useRef<HTMLInputElement>(null)
 
   const items = useMemo<Item[]>(() => {
     const icon = (Icon: typeof Workflow) => <Icon className="size-4" />
@@ -229,7 +232,10 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
               ? 2
               : hint.includes(q)
                 ? 3
-                : -1
+                : // Every word somewhere, in any order: "orders sync" finds "Sync orders", as the lists do.
+                  q.split(/\s+/).every((w) => label.includes(w) || hint.includes(w))
+                  ? 4
+                  : -1
         return { item, score }
       })
       .filter((x) => x.score >= 0)
@@ -240,6 +246,8 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
     )
   }, [items, query])
   const flat = ordered.flatMap((g) => g.items)
+  // Each option's position, once per render (not an indexOf per option).
+  const indexOf = new Map(flat.map((item, i) => [item, i]))
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the option moved to with the keys scrolls into view
   useEffect(() => {
@@ -260,11 +268,36 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
         role="dialog"
         aria-modal="true"
         aria-label="Go to"
-        className="relative flex max-h-[70vh] w-[min(640px,92vw)] flex-col overflow-hidden rounded-2xl bg-surface shadow-menu motion-safe:animate-pop-in"
+        data-global-palette
+        className="relative flex max-h-[70vh] w-[min(640px,92vw)] flex-col overflow-hidden rounded-2xl bg-surface shadow-menu ring-1 ring-border/60 motion-safe:animate-pop-in"
+        onMouseDown={(e) => {
+          // A click on a heading or the list's padding keeps the focus (and so the keys) in the input.
+          if (e.target !== input.current) e.preventDefault()
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            // Only the palette: a dialog or editor behind it keeps its state.
+            e.stopPropagation()
+            onClose()
+          } else if (e.key === 'Tab') {
+            e.preventDefault()
+            input.current?.focus()
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setActive((a) => Math.min(flat.length - 1, a + 1))
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setActive((a) => Math.max(0, a - 1))
+          } else if (e.key === 'Enter') {
+            e.preventDefault()
+            choose(flat[active])
+          }
+        }}
       >
         <div className="flex items-center gap-2.5 border-b border-border/70 px-4">
           <Search className="size-4 text-muted" />
           <input
+            ref={input}
             // biome-ignore lint/a11y/noAutofocus: the palette opens to be typed in
             autoFocus
             role="combobox"
@@ -278,19 +311,6 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
             onChange={(e) => {
               setQuery(e.target.value)
               setActive(0)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') onClose()
-              else if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                setActive((a) => Math.min(flat.length - 1, a + 1))
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault()
-                setActive((a) => Math.max(0, a - 1))
-              } else if (e.key === 'Enter') {
-                e.preventDefault()
-                choose(flat[active])
-              }
             }}
           />
           <kbd className="rounded-md border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted">
@@ -313,7 +333,7 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
                 {group.title}
               </div>
               {group.items.map((item) => {
-                const index = flat.indexOf(item)
+                const index = indexOf.get(item) ?? -1
                 const selected = index === active
                 return (
                   <div

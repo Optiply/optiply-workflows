@@ -12,9 +12,9 @@ import {
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   PageHeader,
   Select,
-  Spinner,
 } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AccessEditor, LEVEL_LABELS, type ResourceSummary, TypeIcon } from './shared'
@@ -38,7 +38,7 @@ export function ResourcesPage() {
   const { data: environments } = useQuery(trpc.environments.list.queryOptions())
   const [panel, setPanel] = useState<'none' | 'resource' | 'folder' | 'access'>('none')
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (

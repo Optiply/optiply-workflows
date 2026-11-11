@@ -35,12 +35,12 @@ import {
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   MenuItem,
   MenuSeparator,
   PageHeader,
   RowActions,
   RowMenu,
-  Spinner,
 } from '@/components/ui'
 import { matchesSearch, sortListed, timeAgo } from '@/lib/list-model'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -94,7 +94,7 @@ export function AppsPage() {
     if (app && app.level === 'own' && app.folderId !== folderId) move.mutate({ id: appId, folderId })
   }
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (

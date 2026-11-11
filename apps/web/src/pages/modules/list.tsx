@@ -11,8 +11,8 @@ import {
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   PageHeader,
-  Spinner,
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { librarySlug } from '../library/list'
@@ -28,7 +28,7 @@ export function ModulesPage() {
   const { data: folders } = useFolders('module')
   const [panel, setPanel] = useState<'none' | 'module' | 'folder'>('none')
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (

@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Card, ErrorNote, Spinner } from '@/components/ui'
+import { Badge, Card, ErrorNote, ListSkeleton } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 
 export function EnvironmentsPage() {
   const trpc = useTRPC()
   const { data: environments, isLoading, error } = useQuery(trpc.environments.list.queryOptions())
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton header={false} rows={4} />
   return (
     <div className="space-y-3">
       <ErrorNote error={error} />
