@@ -93,7 +93,7 @@ const workflowsRoute = createRoute({
 const workflowEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows/$workflowId',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `run` opens that run in the run panel (links from /runs); `branch` edits a protected workflow's draft there (M11). */
   validateSearch: z.object({ run: z.string().uuid().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/workflows/editor'), 'WorkflowEditorPage'),
@@ -140,7 +140,7 @@ const appViewRoute = createRoute({
 const appEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps/$slug/edit',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `branch` edits a protected app's draft on that Git branch (M11). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
@@ -169,7 +169,7 @@ const modulesRoute = createRoute({
 const moduleEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/modules/$slug',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `branch` edits a protected module's draft on that Git branch (M14). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
@@ -336,5 +336,7 @@ declare module '@tanstack/react-router' {
   interface StaticDataRouteOption {
     /** The page fills the whole content area instead of the centred, padded column. */
     fullBleed?: boolean
+    /** An editor: the sidebar folds to icons by default and the editor's header goes in the top bar. */
+    editor?: boolean
   }
 }

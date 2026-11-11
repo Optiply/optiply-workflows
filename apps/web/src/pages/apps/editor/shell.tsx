@@ -78,7 +78,7 @@ export function Rail({ kind }: { kind: 'app' | 'module' }) {
       role="tablist"
       aria-label="Editor panels"
       aria-orientation="vertical"
-      className="flex w-11 shrink-0 flex-col items-center gap-1 rounded-lg bg-surface py-2"
+      className="flex w-11 shrink-0 flex-col items-center gap-1 rounded-xl border border-border/70 bg-surface shadow-card py-2"
     >
       {railItems(kind).map(({ id, label, icon: Icon }) => (
         <button
@@ -90,8 +90,8 @@ export function Rail({ kind }: { kind: 'app' | 'module' }) {
           title={label}
           onClick={() => setOpen(open === id ? null : id)}
           className={cn(
-            'relative flex size-8 items-center justify-center rounded-md',
-            open === id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-canvas hover:text-ink',
+            'relative flex size-8 items-center justify-center rounded-lg transition-colors',
+            open === id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-hover/60 hover:text-ink',
           )}
         >
           <Icon className="size-4" />
@@ -123,7 +123,7 @@ export function LeftPanelArea({ kind, slug }: { kind: 'app' | 'module'; slug: st
     <aside
       aria-label="Left panel"
       style={{ width }}
-      className="relative flex shrink-0 flex-col overflow-hidden rounded-lg bg-surface"
+      className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card"
     >
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
         {panel === 'components' &&
@@ -181,7 +181,7 @@ export function CodeDock() {
     <section
       aria-label="Code editor"
       style={{ width }}
-      className="relative flex shrink-0 flex-col overflow-hidden rounded-lg bg-surface"
+      className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card"
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-1 pl-3">
         <Code2 className="size-3.5 text-muted" />
@@ -213,7 +213,7 @@ export function DebugDrawer() {
     <section
       aria-label="Debug"
       style={{ height }}
-      className="relative flex shrink-0 flex-col overflow-hidden rounded-lg bg-surface"
+      className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card"
     >
       <ResizeHandle {...handle} side="top" label="Resize the debug drawer" />
       <div className="flex shrink-0 items-center border-b border-border pr-1 pl-2">
@@ -268,7 +268,7 @@ export function StatusBar({ environment, branch }: { environment: string; branch
   return (
     <footer
       data-testid="status-bar"
-      className="flex h-8 shrink-0 items-center gap-4 rounded-lg bg-surface px-3 text-xs text-muted"
+      className="flex h-8 shrink-0 items-center gap-4 rounded-xl border border-border/70 bg-surface shadow-card px-3 text-xs text-muted"
     >
       <span className="flex items-center gap-1.5" title="The environment the draft runs against">
         <PanelsTopLeft className="size-3.5" />

@@ -72,7 +72,7 @@ export function Rail() {
       data-testid={`rail-${id}`}
       onClick={() => useEditor.getState().toggleRail(id)}
       className={cn(
-        'relative flex size-8 cursor-pointer items-center justify-center rounded-md text-muted hover:bg-subtle hover:text-ink',
+        'relative flex size-8 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover/60 hover:text-ink',
         open === id && 'bg-accent-soft text-accent',
       )}
     >
@@ -91,7 +91,7 @@ export function Rail() {
   )
   return (
     <nav
-      className="flex w-11 shrink-0 flex-col items-center gap-1 rounded-lg bg-surface py-2"
+      className="flex w-11 shrink-0 flex-col items-center gap-1 rounded-xl border border-border/70 bg-surface shadow-card py-2"
       aria-label="Workflow panels"
     >
       {PANELS.map((p) => item(p.id, p.label, p.icon))}
@@ -145,7 +145,7 @@ export function RailPanelView({
     <aside
       ref={panel}
       style={{ width }}
-      className="nokey relative flex shrink-0 flex-col rounded-lg bg-surface"
+      className="nokey relative flex shrink-0 flex-col rounded-xl border border-border/70 bg-surface shadow-card"
       data-testid="rail-panel"
     >
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border pr-1 pl-3">

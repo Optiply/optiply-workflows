@@ -63,7 +63,7 @@ test('search, the dependency graph and the command palette', async ({ page }) =>
   })
 
   await test.step('⌘K jumps to anything and runs actions', async () => {
-    await page.locator('header h1').click()
+    await page.getByRole('navigation', { name: 'Breadcrumbs' }).locator('[aria-current=page]').click()
     await page.keyboard.press('ControlOrMeta+k')
     const palette = page.getByRole('dialog', { name: 'Command palette' })
     const input = palette.getByRole('combobox')

@@ -1,12 +1,13 @@
 import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Eye, Pencil } from 'lucide-react'
+import { AlertCircle, CheckCircle2, CloudOff, Eye, Loader2, Pencil } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
-import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { TopBarPortal } from '@/components/top-bar'
+import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
@@ -350,8 +351,8 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
 
   return (
     <div className="flex h-full flex-col gap-2">
-      <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
-        <h1 className="truncate text-lg leading-6 font-bold">{app.name}</h1>
+      {/* In the shell's top bar, beside the breadcrumb that names the app. */}
+      <TopBarPortal>
         <SaveBadge status={status} />
         <PresenceAvatars peers={peers} me={me.id} />
         {!readOnly && !preview && (
@@ -365,11 +366,10 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
           </div>
         )}
         <div className="ml-auto flex items-center gap-2 text-sm">
-          <label htmlFor="editor-env" className="text-muted">
-            Environment
-          </label>
           <Select
             id="editor-env"
+            aria-label="Environment"
+            className="h-8"
             value={environment.slug}
             onChange={(e) =>
               navigate({
@@ -395,7 +395,7 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
           </Button>
           <ReleaseControls app={app} />
         </div>
-      </header>
+      </TopBarPortal>
       {git}
       <div ref={ref} className="hidden" />
       {host ? (
@@ -417,13 +417,16 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
               {!preview && <LeftPanelArea kind={app.kind} slug={app.slug} />}
               {!preview && <CodeDock />}
               {/* On the page background, as people see the app; never squeezed below a usable width by the panels. */}
-              <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-lg border border-divider px-6 py-4">
+              <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-xl border border-border/70 px-6 py-4">
                 <ThemedApp definition={definition} className="min-w-[640px]">
                   <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
                 </ThemedApp>
               </div>
               {!preview && inspectorOpen && (
-                <aside aria-label="Inspector" className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
+                <aside
+                  aria-label="Inspector"
+                  className="w-80 shrink-0 overflow-y-auto rounded-xl border border-border/70 bg-surface shadow-card"
+                >
                   {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
                   <fieldset disabled={readOnly} className="contents" data-testid="inspector">
                     {selection.length > 1 ? (
@@ -491,8 +494,16 @@ function SaveBadge({ status }: { status: SaveStatus }) {
   const saveError = useAppEditor((s) => s.saveError)
   const label = SAVE_LABELS[status]
   return (
-    <Badge className={cn('font-normal', label.className)} title={saveError ?? undefined}>
+    // As the workflow editor's: an icon and a word, quiet while all is saved.
+    <span
+      className={cn('inline-flex items-center gap-1 text-xs whitespace-nowrap', label.className)}
+      title={saveError ?? undefined}
+    >
+      {(status === 'saving' || status === 'connecting') && <Loader2 className="size-3 animate-spin" />}
+      {status === 'saved' && <CheckCircle2 className="size-3 text-success" />}
+      {status === 'offline' && <CloudOff className="size-3" />}
+      {(status === 'error' || status === 'closed') && <AlertCircle className="size-3" />}
       {label.text}
-    </Badge>
+    </span>
   )
 }

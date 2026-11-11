@@ -550,8 +550,8 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       style={{ width }}
       data-testid={`block-${name}`}
       className={cn(
-        'relative flex flex-col rounded-lg border bg-surface shadow-card transition-shadow',
-        errors ? 'border-danger/60' : 'border-border',
+        'relative flex flex-col rounded-xl border bg-surface shadow-card transition-shadow hover:shadow-raised',
+        errors ? 'border-danger/60' : 'border-border/80',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
         first && `ow-peer-selected ow-presence-${first.colour}`,
@@ -587,8 +587,8 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       {!isTrigger(block) && (
         <Handle type="target" position={Position.Left} className="ow-handle" style={{ top: 16 }} />
       )}
-      <div className="flex h-8 shrink-0 items-center gap-1.5 pr-1 pl-2.5">
-        <span className={cn('rounded p-0.5', kind.tone)}>
+      <div className="flex h-9 shrink-0 items-center gap-1.5 pr-1 pl-2">
+        <span className={cn('rounded-md p-1', kind.tone)}>
           <Icon className="size-3.5" />
         </span>
         {renaming ? (

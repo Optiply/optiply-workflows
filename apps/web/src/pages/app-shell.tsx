@@ -16,6 +16,7 @@ import { Breadcrumbs } from '@/components/breadcrumbs'
 import { GlobalPalette, SECTIONS, useGlobalPaletteShortcut } from '@/components/command-palette'
 import { GitHealthBanner, GitProblemsBadge } from '@/components/git-health'
 import { useStoredChoice } from '@/components/list-toolbar'
+import { TopBarSlot } from '@/components/top-bar'
 import { Avatar, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
 import { IS_MAC } from '@/lib/shortcuts'
@@ -56,12 +57,17 @@ export function AppShell() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const fullBleed = useMatches({ select: (matches) => matches.some((m) => m.staticData.fullBleed) })
+  const inEditor = useMatches({ select: (matches) => matches.some((m) => m.staticData.editor) })
   const trpc = useTRPC()
   const openTasks = useQuery({ ...trpc.tasks.openCount.queryOptions(), refetchInterval: 30_000 })
   const { preference } = useTheme()
-  const [state, setState] = useStoredChoice('ow-sidebar', isSidebarState, 'open')
+  // Editors fold the sidebar to icons by default (the canvas wants the width); each choice is remembered apart.
+  const [listState, setListState] = useStoredChoice('ow-sidebar', isSidebarState, 'open')
+  const [editorState, setEditorState] = useStoredChoice('ow-sidebar-editor', isSidebarState, 'collapsed')
+  const [state, setState] = inEditor ? [editorState, setEditorState] : [listState, setListState]
   const narrow = useNarrow()
   const collapsed = narrow || state === 'collapsed'
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
   const [palette, setPalette] = useState(false)
   useGlobalPaletteShortcut(() => setPalette((p) => !p))
 
@@ -227,8 +233,9 @@ export function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center border-b border-border/70 bg-surface px-4">
-          <Breadcrumbs className="flex-1" />
+        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border/70 bg-surface px-4">
+          <Breadcrumbs className={inEditor ? 'min-w-0 shrink' : 'flex-1'} />
+          <div ref={setSlot} className="flex min-w-0 flex-1 items-center gap-2 empty:hidden" />
         </header>
         {me.isAdmin && (
           <div className="px-2 pt-2 empty:hidden">
@@ -238,7 +245,9 @@ export function AppShell() {
         {fullBleed ? (
           <main className="min-h-0 flex-1 p-2">
             <div className="h-full overflow-hidden rounded-lg">
-              <Outlet />
+              <TopBarSlot.Provider value={slot}>
+                <Outlet />
+              </TopBarSlot.Provider>
             </div>
           </main>
         ) : (

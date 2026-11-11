@@ -276,14 +276,15 @@ function RunDetail({ run, tab, setTab }: { run: RunView; tab: DetailTab; setTab:
         </ul>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-8 shrink-0 items-center gap-4 border-b border-border px-3 text-xs">
+        {/* A narrow panel scrolls the row rather than letting the tabs run under the panel's own buttons. */}
+        <div className="flex h-8 shrink-0 items-center gap-4 overflow-x-auto border-b border-border px-3 text-xs [scrollbar-width:none]">
           {DETAIL_TABS.map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
               className={cn(
-                'cursor-pointer border-b-2 py-1.5 capitalize text-muted hover:text-ink',
+                'shrink-0 cursor-pointer border-b-2 py-1.5 capitalize text-muted hover:text-ink',
                 tab === t ? 'border-ink text-ink' : 'border-transparent',
               )}
             >
@@ -291,7 +292,7 @@ function RunDetail({ run, tab, setTab }: { run: RunView; tab: DetailTab; setTab:
             </button>
           ))}
           <div className="flex-1" />
-          <span className="truncate text-muted">
+          <span className="min-w-0 truncate text-muted">
             {run.environment} · {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version}
             {queueMessageLine(run) && (
               <span data-testid={run.triggerType === 'pubsub' ? 'run-pubsub' : 'run-queue'}>

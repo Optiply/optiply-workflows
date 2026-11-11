@@ -1,23 +1,13 @@
 import { usedLibraries, type WorkflowDefinition } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
-import { getRouteApi, Link } from '@tanstack/react-router'
+import { getRouteApi } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import {
-  AlertCircle,
-  ArrowLeft,
-  CheckCircle2,
-  CloudOff,
-  History,
-  LayoutGrid,
-  Loader2,
-  Play,
-  Tag,
-  X,
-} from 'lucide-react'
+import { AlertCircle, CheckCircle2, CloudOff, History, LayoutGrid, Loader2, Play, Tag, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
+import { TopBarPortal } from '@/components/top-bar'
 import { Badge, Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
@@ -218,7 +208,7 @@ function EditorLayout({
         <div className="flex min-h-0 flex-1 gap-2">
           <Rail />
           <RailPanelView workflow={workflow} canEdit={editable} hasEdit={canEdit} />
-          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card">
             <div className="relative min-h-0 flex-1" data-testid="canvas">
               <Canvas />
               {editable && <Toolbar />}
@@ -249,19 +239,12 @@ function Header({
   const { name, slug } = workflow
   const { me } = route.useRouteContext()
   const peers = usePresence((s) => s.peers)
+  // In the shell's top bar, beside the breadcrumb that names the workflow.
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
-      <Link
-        to="/workflows"
-        className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
-        title="Back"
-      >
-        <ArrowLeft className="size-4" />
-      </Link>
-      <div className="min-w-0">
-        <div className="truncate text-lg leading-6 font-bold">{name}</div>
-        <div className="truncate font-mono text-xs text-muted">{slug}</div>
-      </div>
+    <TopBarPortal>
+      <span className="hidden truncate font-mono text-xs text-muted xl:block" title={`${name}: ${slug}`}>
+        {slug}
+      </span>
       <SaveIndicator />
       <div className="flex-1" />
       <PresenceAvatars peers={peers} me={me.id} />
@@ -270,7 +253,7 @@ function Header({
       <ReleaseControls workflow={workflow} canEdit={canEdit && !workflow.gitProtected} />
       <div className="h-6 w-px bg-border" />
       <RunControls canEdit={canEdit} environments={environments} />
-    </header>
+    </TopBarPortal>
   )
 }
 
@@ -278,7 +261,7 @@ function Header({
 function Toolbar() {
   const { getNodes } = useReactFlow()
   return (
-    <div className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm">
+    <div className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-border/70 bg-surface/90 p-1 shadow-raised backdrop-blur-sm">
       <WorkflowUndoButtons />
       <div className="mx-1 h-5 w-px bg-border" />
       <Button
@@ -461,7 +444,10 @@ function StatusBar({
   const panelOpen = useRun((s) => s.panelOpen)
   const name = environments.find((e) => e.slug === environment)?.name ?? environment
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-4 px-2 text-xs text-muted" data-testid="status-bar">
+    <footer
+      className="flex h-8 shrink-0 items-center gap-4 rounded-xl border border-border/70 bg-surface px-3 text-xs text-muted shadow-card"
+      data-testid="status-bar"
+    >
       <span className="flex items-center gap-1.5">
         <span className="size-2 rounded-full bg-accent" />
         {name}
@@ -516,7 +502,7 @@ function SidePanel({ canEdit }: { canEdit: boolean }) {
     // `nokey`: React Flow listens for Space (pan) and Backspace/Delete (delete the selection) on the whole document
     // and doesn't recognise Monaco's input element as a text field; it ignores keys from inside `.nokey`.
     <aside
-      className="nokey flex w-[30rem] shrink-0 flex-col overflow-y-auto rounded-lg bg-surface"
+      className="nokey flex w-[30rem] shrink-0 flex-col overflow-y-auto rounded-xl border border-border/70 bg-surface shadow-card"
       data-testid="side-panel"
     >
       {block ? (

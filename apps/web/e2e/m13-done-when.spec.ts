@@ -226,7 +226,7 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
   const end = await appDraft(page, slug)
 
   await test.step(`undo all ${edits}: the saved draft is the start, layout and hash included`, async () => {
-    await page.locator('header h1').click()
+    await page.getByRole('navigation', { name: 'Breadcrumbs' }).locator('[aria-current=page]').click()
     await press(page, 'ControlOrMeta+Z', edits)
     await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled()
     await saved(page)
@@ -274,7 +274,7 @@ test('the app editor: 48 edits undone to the exact start and redone to the end',
       .click()
     await page.keyboard.press('ControlOrMeta+C')
     await page.goto(`/apps/${slug}/edit`)
-    await page.locator('header h1').click()
+    await page.getByRole('navigation', { name: 'Breadcrumbs' }).locator('[aria-current=page]').click()
     await page.keyboard.press('ControlOrMeta+V')
     await expect(page.getByTestId('frame-email')).toBeVisible()
     await saved(page)

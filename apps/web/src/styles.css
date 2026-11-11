@@ -292,11 +292,14 @@
 }
 .react-flow .react-flow__controls {
   overflow: hidden;
-  border-radius: 6px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  box-shadow: var(--shadow-raised, var(--shadow-1));
 }
 .react-flow .react-flow__minimap {
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   box-shadow: var(--shadow-1);
 }
 .react-flow .ow-handle {
