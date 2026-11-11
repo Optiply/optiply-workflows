@@ -99,7 +99,7 @@ describe('groups and permissions', () => {
     expect(audit.items[0].actor.email).toBe('admin@optiply.nl')
   })
 
-  it('protects built-in groups and the last admin', async () => {
+  it('protects built-in groups and keeps admins from removing themselves', async () => {
     const api = trpc(env.app, adminCookie)
     const [admins] = await env.db.select().from(groups).where(eq(groups.systemKind, 'admins'))
     const [allUsers] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
@@ -112,7 +112,7 @@ describe('groups and permissions', () => {
     const me = (await api.query('me')).body.result?.data
     const res = await api.mutate('groups.removeMember', { groupId: admins!.id, userId: me.id })
     expect(res.status).toBe(400)
-    expect(res.body.error?.message).toContain('last admin')
+    expect(res.body.error?.message).toContain('remove yourself')
   })
 
   it('disabling a user revokes their sessions', async () => {

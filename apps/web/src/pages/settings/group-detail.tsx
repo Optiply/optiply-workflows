@@ -9,6 +9,7 @@ import { useTRPC } from '@/lib/trpc'
 import { AdminOnly } from './layout'
 
 const route = getRouteApi('/app/settings/groups/$groupId')
+const appRoute = getRouteApi('/app')
 
 export function GroupDetailPage() {
   return (
@@ -20,6 +21,7 @@ export function GroupDetailPage() {
 
 function GroupDetail() {
   const { groupId } = route.useParams()
+  const { me } = appRoute.useRouteContext()
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -61,6 +63,21 @@ function GroupDetail() {
       (u) => !memberIds.has(u.id) && !u.disabledAt && (u.status === 'active' || u.status === 'invited'),
     ) ?? []
   const editable = group.systemKind !== 'all_users'
+  const isAdmins = group.systemKind === 'admins'
+  const removeFromGroup = async (m: { id: string; name: string }) => {
+    if (
+      isAdmins &&
+      !(await confirmDialog(
+        `Remove ${m.name} from Admins? They lose access to everything grants don't give them.`,
+        {
+          danger: true,
+          confirm: 'Remove',
+        },
+      ))
+    )
+      return
+    removeMember.mutate({ groupId: group.id, userId: m.id })
+  }
 
   return (
     <div className="space-y-4">
@@ -125,15 +142,20 @@ function GroupDetail() {
           <div key={m.id} className="flex items-center gap-3 px-4 py-2.5">
             <Avatar name={m.name} src={m.avatarUrl} />
             <div className="flex-1">
-              <div className="text-sm font-medium">{m.name}</div>
+              <div className="text-sm font-medium">
+                {m.name} {m.id === me.id && <span className="text-xs font-normal text-muted">(you)</span>}
+              </div>
               <div className="text-xs text-muted">{m.email}</div>
             </div>
-            {editable && (
+            {editable && isAdmins && m.id === me.id && (
+              <span className="text-xs text-muted">Another admin can remove you</span>
+            )}
+            {editable && !(isAdmins && m.id === me.id) && (
               <Button
                 variant="ghost"
                 size="icon"
                 title="Remove from group"
-                onClick={() => removeMember.mutate({ groupId: group.id, userId: m.id })}
+                onClick={() => removeFromGroup(m)}
               >
                 <X className="size-4" />
               </Button>
