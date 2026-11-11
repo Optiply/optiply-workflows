@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Library, Plus } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
@@ -50,18 +50,18 @@ export function LibraryPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'query' ? 'none' : 'query')}>
+            <Button variant="primary" onClick={() => setPanel('query')}>
               <Plus className="size-4" /> New query
             </Button>
           </>
         }
       />
-      {panel === 'query' && <NewLibraryQueryForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="library_query" onDone={() => setPanel('none')} />}
+      {panel === 'query' && <NewLibraryQueryDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="library_query" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Library className="size-6" />} title="No library queries yet">
           Create one to share a query between apps. If you expected to see some here, ask an admin for access.
@@ -129,7 +129,7 @@ function LibraryRow({ query, hasFolders }: { query: LibraryQuerySummary; hasFold
   )
 }
 
-function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
+function NewLibraryQueryDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -147,13 +147,34 @@ function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New library query"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create query
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          if (name && slug) create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -183,16 +204,8 @@ function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
             <FolderSelect type="library_query" value={folderId} onChange={setFolderId} />
           </Field>
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create query
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

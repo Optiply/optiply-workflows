@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Folder, Pencil, Trash2 } from 'lucide-react'
-import { Fragment, type ReactNode, useState } from 'react'
+import { Fragment, type ReactNode, useId, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { Button, Card, Dialog, ErrorNote, Field, Input, Select, sectionLabelClass } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -101,12 +101,14 @@ function useRefresh(also?: readonly unknown[]) {
 }
 
 /** A new folder inside the one open (or at the top). */
-export function NewFolderForm({ type, onDone }: { type: FolderType; onDone: () => void }) {
+/** A new folder in the one open in the list (or at the top). */
+export function NewFolderDialog({ type, onDone }: { type: FolderType; onDone: () => void }) {
   const trpc = useTRPC()
   const refresh = useRefresh()
   const { data } = useFolders(type)
   const { id: parentId } = useOpenFolder(type)
   const [name, setName] = useState('')
+  const formId = useId()
   const create = useMutation(
     trpc.folders.create.mutationOptions({
       onSuccess: async () => {
@@ -117,30 +119,41 @@ export function NewFolderForm({ type, onDone }: { type: FolderType; onDone: () =
   )
   const parent = parentId && folderPath(data?.folders ?? [], parentId)
   return (
-    <Card className="mb-6 space-y-3 p-5">
-      <h2 className="font-semibold">{parent ? `New folder in ${parent}` : 'New folder'}</h2>
-      <div className="flex max-w-md gap-2">
-        <Input
-          autoFocus
-          aria-label="Folder name"
-          value={name}
-          placeholder="Finance"
-          onChange={(e) => setName(e.target.value)}
-        />
-        <Button
-          variant="primary"
-          disabled={!name.trim()}
-          loading={create.isPending}
-          onClick={() => create.mutate({ name, type, parentId })}
-        >
-          Create
-        </Button>
-        <Button variant="ghost" onClick={onDone}>
-          Cancel
-        </Button>
-      </div>
-      <ErrorNote error={create.error} />
-    </Card>
+    <Dialog
+      title={parent ? `New folder in ${parent}` : 'New folder'}
+      onClose={onDone}
+      className="max-w-md"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onDone}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={formId}
+            variant="primary"
+            disabled={!name.trim()}
+            loading={create.isPending}
+          >
+            Create
+          </Button>
+        </>
+      }
+    >
+      <form
+        id={formId}
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (name.trim()) create.mutate({ name, type, parentId })
+        }}
+      >
+        <Field label="Folder name">
+          <Input autoFocus value={name} placeholder="Finance" onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <ErrorNote error={create.error} />
+      </form>
+    </Dialog>
   )
 }
 

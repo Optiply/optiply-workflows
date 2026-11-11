@@ -12,14 +12,14 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { APP_DRAG_TYPE, FolderTree } from '@/components/folder-tree'
 import {
   FolderBrowser,
   FolderSelect,
   folderPath,
-  NewFolderForm,
+  NewFolderDialog,
   useFolders,
   useOpenFolder,
 } from '@/components/folders'
@@ -35,7 +35,11 @@ import {
   ErrorNote,
   Field,
   Input,
+  MenuItem,
+  MenuSeparator,
   PageHeader,
+  RowActions,
+  RowMenu,
   Spinner,
 } from '@/components/ui'
 import { matchesSearch, sortListed, timeAgo } from '@/lib/list-model'
@@ -101,18 +105,18 @@ export function AppsPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'app' ? 'none' : 'app')}>
+            <Button variant="primary" onClick={() => setPanel('app')}>
               <Plus className="size-4" /> New app
             </Button>
           </>
         }
       />
-      {panel === 'app' && <NewAppForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="app" onDone={() => setPanel('none')} />}
+      {panel === 'app' && <NewAppDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="app" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<LayoutGrid className="size-6" />} title="No apps yet">
           Create one to start building. If you expected to see apps here, ask an admin for access.
@@ -221,6 +225,8 @@ function AppRow({
     }),
   )
   const movable = hasFolders && app.level === 'own'
+  const protectable = !!git?.configured && app.level === 'own' && !app.gitProtected
+  const deletable = app.level === 'own' && !app.gitProtected
   const body = (
     <>
       <span className="rounded-md bg-accent-soft p-1.5 text-accent">
@@ -252,7 +258,10 @@ function AppRow({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: dragging onto the tree is the mouse's shortcut; Move does it by keyboard
     <div
-      className="group flex items-center gap-3 px-4 py-3 hover:bg-canvas"
+      className={cn(
+        'group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover/60',
+        remove.isPending && 'opacity-60',
+      )}
       data-testid={`app-${app.slug}`}
       draggable={movable}
       onDragStart={
@@ -293,72 +302,78 @@ function AppRow({
       {app.gitProtected && <ProtectedBadge />}
       {app.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Not published</Badge>}
       <Badge tone="accent">{LEVELS[app.level]}</Badge>
-      {git?.configured && app.level === 'own' && !app.gitProtected && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Protect ${app.name} in Git`}
-          onClick={() => setProtecting(true)}
-        >
-          <GitBranch className="size-4" />
-        </Button>
-      )}
+      <RowActions>
+        {canEdit && (
+          <Link
+            to="/apps/$slug/edit"
+            params={{ slug: app.slug }}
+            title={`Edit ${app.name}`}
+            className="rounded-md p-2 text-muted hover:bg-subtle hover:text-ink"
+          >
+            <Pencil className="size-4" />
+          </Link>
+        )}
+        {canEdit && (
+          <Button
+            size="icon"
+            variant="ghost"
+            title={`Duplicate ${app.name}`}
+            data-testid={`duplicate-${app.slug}`}
+            onClick={() => setDuplicating(true)}
+          >
+            <Copy className="size-4" />
+          </Button>
+        )}
+        {(protectable || movable || deletable) && (
+          <RowMenu label={app.name} testId={`actions-${app.slug}`}>
+            {movable && (
+              <MenuItem
+                icon={<FolderInput />}
+                title={`Move ${app.name} to a folder`}
+                data-testid={`move-${app.slug}`}
+                onClick={() => setMoving(true)}
+              >
+                Move to a folder…
+              </MenuItem>
+            )}
+            {protectable && (
+              <MenuItem
+                icon={<GitBranch />}
+                title={`Protect ${app.name} in Git`}
+                onClick={() => setProtecting(true)}
+              >
+                Protect in Git…
+              </MenuItem>
+            )}
+            {deletable && (
+              <>
+                {(movable || protectable) && <MenuSeparator />}
+                <MenuItem
+                  danger
+                  icon={<Trash2 />}
+                  title={`Delete ${app.name}`}
+                  data-testid={`delete-${app.slug}`}
+                  onClick={async () => {
+                    if (
+                      await confirmDialog(
+                        `Delete ${app.name} with its releases? Everyone using it loses it at once. This can't be undone.`,
+                        { danger: true, confirm: 'Delete' },
+                      )
+                    ) {
+                      remove.mutate({ id: app.id })
+                    }
+                  }}
+                >
+                  Delete…
+                </MenuItem>
+              </>
+            )}
+          </RowMenu>
+        )}
+      </RowActions>
       {protecting && <ProtectDialog kind="app" object={app} onClose={() => setProtecting(false)} />}
-      {canEdit && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Duplicate ${app.name}`}
-          data-testid={`duplicate-${app.slug}`}
-          onClick={() => setDuplicating(true)}
-        >
-          <Copy className="size-4" />
-        </Button>
-      )}
       {duplicating && <DuplicateDialog app={app} onClose={() => setDuplicating(false)} />}
-      {app.level === 'own' && !app.gitProtected && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Delete ${app.name}`}
-          data-testid={`delete-${app.slug}`}
-          loading={remove.isPending}
-          onClick={async () => {
-            if (
-              await confirmDialog(
-                `Delete ${app.name} with its releases? Everyone using it loses it at once. This can't be undone.`,
-                { danger: true, confirm: 'Delete' },
-              )
-            ) {
-              remove.mutate({ id: app.id })
-            }
-          }}
-        >
-          <Trash2 className="size-4" />
-        </Button>
-      )}
-      {movable && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Move ${app.name} to a folder`}
-          data-testid={`move-${app.slug}`}
-          onClick={() => setMoving(true)}
-        >
-          <FolderInput className="size-4" />
-        </Button>
-      )}
       {moving && <MoveDialog app={app} onClose={() => setMoving(false)} />}
-      {canEdit && (
-        <Link
-          to="/apps/$slug/edit"
-          params={{ slug: app.slug }}
-          title={`Edit ${app.name}`}
-          className="rounded-md p-1.5 text-muted hover:bg-subtle hover:text-ink"
-        >
-          <Pencil className="size-4" />
-        </Link>
-      )}
       <ErrorNote error={remove.error} />
     </div>
   )
@@ -464,7 +479,8 @@ function MoveDialog({ app, onClose }: { app: AppSummary; onClose: () => void }) 
   )
 }
 
-function NewAppForm({ onCancel }: { onCancel: () => void }) {
+/** A new app (name, slug, folder, in Git), then opened in the editor. */
+function NewAppDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -484,13 +500,34 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New app"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create app
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
+          if (name && slug) create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
         }}
       >
         <Field label="Name">
@@ -521,24 +558,14 @@ function NewAppForm({ onCancel }: { onCancel: () => void }) {
           </Field>
         )}
         {git?.configured && (
-          <div className="sm:col-span-2">
-            <Checkbox
-              label="Create it in Git: edited on branches and reviewed before it goes live"
-              checked={inGit}
-              onChange={(e) => setInGit(e.target.checked)}
-            />
-          </div>
+          <Checkbox
+            label="Create it in Git: edited on branches and reviewed before it goes live"
+            checked={inGit}
+            onChange={(e) => setInGit(e.target.checked)}
+          />
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create app
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

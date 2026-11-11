@@ -33,6 +33,7 @@ test('nested folders on the workflows and apps lists', async ({ page }) => {
   const flowsRow = page.getByRole('listitem', { name: `Subfolder ${flows}` })
   await expect(flowsRow).toContainText('Empty')
   // Moved with Move (the keyboard's way; the tree takes a drag too, workflows-list.spec).
+  await page.getByTestId(`actions-fold-${stamp}`).click()
   await page.getByTestId(`move-fold-${stamp}`).click()
   await page.getByLabel(`Folder of Folded ${stamp}`).selectOption({ label: flows })
   await page.getByTestId('move-confirm').click()
@@ -138,6 +139,7 @@ test('nested folders on the workflows and apps lists', async ({ page }) => {
   const toolsFolder = page.getByRole('region', { name: `Folder ${tools}` })
   await expect(toolsFolder).toContainText(`Foldered app ${stamp}`)
   // Moved back out from its row (Move).
+  await page.getByTitle(`Actions for Foldered app ${stamp}`).click()
   await page.getByTitle(`Move Foldered app ${stamp} to a folder`).click()
   await page.getByLabel(`Folder of Foldered app ${stamp}`).selectOption({ label: 'Not in a folder' })
   await page.getByTestId('move-confirm').click()

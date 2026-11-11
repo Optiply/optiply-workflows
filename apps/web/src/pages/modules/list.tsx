@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plus, Puzzle } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
@@ -39,18 +39,18 @@ export function ModulesPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'module' ? 'none' : 'module')}>
+            <Button variant="primary" onClick={() => setPanel('module')}>
               <Plus className="size-4" /> New module
             </Button>
           </>
         }
       />
-      {panel === 'module' && <NewModuleForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="module" onDone={() => setPanel('none')} />}
+      {panel === 'module' && <NewModuleDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="module" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Puzzle className="size-6" />} title="No modules yet">
           Create one to share a piece of app between apps. If you expected to see some here, ask an admin for
@@ -119,7 +119,7 @@ function ModuleRow({ module, hasFolders }: { module: ModuleSummary; hasFolders: 
   )
 }
 
-function NewModuleForm({ onCancel }: { onCancel: () => void }) {
+function NewModuleDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -137,13 +137,34 @@ function NewModuleForm({ onCancel }: { onCancel: () => void }) {
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New module"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create module
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          if (name && slug) create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -173,16 +194,8 @@ function NewModuleForm({ onCancel }: { onCancel: () => void }) {
             <FolderSelect type="module" value={folderId} onChange={setFolderId} />
           </Field>
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create module
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
-  ArrowUpDown,
   CalendarClock,
   Copy,
   Folder,
@@ -11,19 +10,18 @@ import {
   GripVertical,
   Layers,
   Plus,
-  Search,
   Trash2,
   Webhook,
   Workflow,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { FolderTree, WORKFLOW_DRAG_TYPE } from '@/components/folder-tree'
 import {
   FolderBrowser,
   FolderSelect,
   folderPath,
-  NewFolderForm,
+  NewFolderDialog,
   useFolders,
   useOpenFolder,
 } from '@/components/folders'
@@ -39,8 +37,11 @@ import {
   ErrorNote,
   Field,
   Input,
+  MenuItem,
+  MenuSeparator,
   PageHeader,
-  Select,
+  RowActions,
+  RowMenu,
   Spinner,
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -105,18 +106,18 @@ export function WorkflowsPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'workflow' ? 'none' : 'workflow')}>
+            <Button variant="primary" onClick={() => setPanel('workflow')}>
               <Plus className="size-4" /> New workflow
             </Button>
           </>
         }
       />
-      {panel === 'workflow' && <NewWorkflowForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="workflow" onDone={() => setPanel('none')} />}
+      {panel === 'workflow' && <NewWorkflowDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="workflow" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Workflow className="size-6" />} title="No workflows yet">
           Create one to start building. If you expected to see workflows here, ask an admin for access.
@@ -264,10 +265,15 @@ function WorkflowRow({
   const remove = useMutation(trpc.workflows.delete.mutationOptions({ onSuccess: refresh }))
   // Owners move workflows between folders (that changes who can reach them): dragged onto the tree, or Move.
   const movable = hasFolders && workflow.level === 'own'
+  const protectable = !!git?.configured && workflow.level === 'own' && !workflow.gitProtected
+  const deletable = workflow.level === 'own' && !workflow.gitProtected
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: dragging onto the tree is the mouse's shortcut; Move does it by keyboard
     <div
-      className="group flex items-center gap-3 px-4 py-3 hover:bg-canvas"
+      className={cn(
+        'group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover/60',
+        remove.isPending && 'opacity-60',
+      )}
       data-testid={`workflow-${workflow.slug}`}
       draggable={movable}
       onDragStart={
@@ -322,59 +328,65 @@ function WorkflowRow({
         {workflow.liveReleaseId ? <Badge tone="success">Live</Badge> : <Badge>Draft only</Badge>}
         <Badge tone="accent">{LEVELS[workflow.level]}</Badge>
       </Link>
-      {git?.configured && workflow.level === 'own' && !workflow.gitProtected && (
+      <RowActions>
         <Button
           size="icon"
           variant="ghost"
-          title={`Protect ${workflow.name} in Git`}
-          onClick={() => setProtecting(true)}
+          title={`Duplicate ${workflow.name}`}
+          data-testid={`duplicate-${workflow.slug}`}
+          onClick={() => setDuplicating(true)}
         >
-          <GitBranch className="size-4" />
+          <Copy className="size-4" />
         </Button>
-      )}
+        {(protectable || movable || deletable) && (
+          <RowMenu label={workflow.name} testId={`actions-${workflow.slug}`}>
+            {movable && (
+              <MenuItem
+                icon={<FolderInput />}
+                title={`Move ${workflow.name} to a folder`}
+                data-testid={`move-${workflow.slug}`}
+                onClick={() => setMoving(true)}
+              >
+                Move to a folder…
+              </MenuItem>
+            )}
+            {protectable && (
+              <MenuItem
+                icon={<GitBranch />}
+                title={`Protect ${workflow.name} in Git`}
+                onClick={() => setProtecting(true)}
+              >
+                Protect in Git…
+              </MenuItem>
+            )}
+            {deletable && (
+              <>
+                {(movable || protectable) && <MenuSeparator />}
+                <MenuItem
+                  danger
+                  icon={<Trash2 />}
+                  title={`Delete ${workflow.name}`}
+                  data-testid={`delete-${workflow.slug}`}
+                  onClick={async () => {
+                    if (
+                      await confirmDialog(
+                        `Delete ${workflow.name} with its releases and runs? Its schedules, webhooks and queue triggers stop at once. This can't be undone.`,
+                        { danger: true, confirm: 'Delete' },
+                      )
+                    ) {
+                      remove.mutate({ id: workflow.id })
+                    }
+                  }}
+                >
+                  Delete…
+                </MenuItem>
+              </>
+            )}
+          </RowMenu>
+        )}
+      </RowActions>
       {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}
-      <Button
-        size="icon"
-        variant="ghost"
-        title={`Duplicate ${workflow.name}`}
-        data-testid={`duplicate-${workflow.slug}`}
-        onClick={() => setDuplicating(true)}
-      >
-        <Copy className="size-4" />
-      </Button>
       {duplicating && <DuplicateDialog workflow={workflow} onClose={() => setDuplicating(false)} />}
-      {workflow.level === 'own' && !workflow.gitProtected && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Delete ${workflow.name}`}
-          data-testid={`delete-${workflow.slug}`}
-          loading={remove.isPending}
-          onClick={async () => {
-            if (
-              await confirmDialog(
-                `Delete ${workflow.name} with its releases and runs? Its schedules, webhooks and queue triggers stop at once. This can't be undone.`,
-                { danger: true, confirm: 'Delete' },
-              )
-            ) {
-              remove.mutate({ id: workflow.id })
-            }
-          }}
-        >
-          <Trash2 className="size-4" />
-        </Button>
-      )}
-      {movable && (
-        <Button
-          size="icon"
-          variant="ghost"
-          title={`Move ${workflow.name} to a folder`}
-          data-testid={`move-${workflow.slug}`}
-          onClick={() => setMoving(true)}
-        >
-          <FolderInput className="size-4" />
-        </Button>
-      )}
       {moving && <MoveDialog workflow={workflow} onClose={() => setMoving(false)} />}
       <ErrorNote error={remove.error} />
     </div>
@@ -489,7 +501,8 @@ function DuplicateDialog({ workflow, onClose }: { workflow: WorkflowSummary; onC
   )
 }
 
-function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
+/** A new workflow (name, slug, folder, in Git), then opened in the editor. */
+function NewWorkflowDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -510,13 +523,34 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
     }),
   )
 
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New workflow"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create workflow
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
+          if (name && slug) create.mutate({ name, slug, folderId, ...(inGit ? { protected: true } : {}) })
         }}
       >
         <Field label="Name">
@@ -547,24 +581,14 @@ function NewWorkflowForm({ onCancel }: { onCancel: () => void }) {
           </Field>
         )}
         {git?.configured && (
-          <div className="sm:col-span-2">
-            <Checkbox
-              label="Create it in Git: edited on branches and reviewed before it goes live"
-              checked={inGit}
-              onChange={(e) => setInGit(e.target.checked)}
-            />
-          </div>
+          <Checkbox
+            label="Create it in Git: edited on branches and reviewed before it goes live"
+            checked={inGit}
+            onChange={(e) => setInGit(e.target.checked)}
+          />
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create workflow
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

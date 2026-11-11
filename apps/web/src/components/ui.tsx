@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, Copy, Loader2, MoreHorizontal, X } from 'lucide-react'
 import {
   type ComponentProps,
   type CSSProperties,
@@ -647,4 +647,45 @@ export function MenuGroup({ label, children }: { label: string; children: ReactN
 
 export function MenuSeparator() {
   return <hr className="-mx-1.5 my-1.5 border-border/70" />
+}
+
+/**
+ * A list row's quick actions: quiet until the row (a `group`) is hovered or has focus, so a long list reads as names
+ * first. Touch screens (no hover) always show them.
+ */
+export function RowActions({ className, ...props }: ComponentProps<'div'>) {
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center gap-0.5 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100 [&:has([aria-expanded=true])]:opacity-100',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+/** A row's ··· menu: the actions that don't earn a button of their own (move, protect, delete). */
+export function RowMenu({
+  label,
+  children,
+  testId,
+}: {
+  /** What the row is: `Sync orders` gives the button "Actions for Sync orders". */
+  label: string
+  children: ReactNode
+  testId?: string
+}) {
+  return (
+    <Menu
+      label={`Actions for ${label}`}
+      trigger={(props) => (
+        <Button size="icon" variant="ghost" title={`Actions for ${label}`} data-testid={testId} {...props}>
+          <MoreHorizontal className="size-4" />
+        </Button>
+      )}
+    >
+      {children}
+    </Menu>
+  )
 }

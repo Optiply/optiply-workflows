@@ -97,6 +97,7 @@ test('duplicate an app from the list into the editor, then delete the copy', asy
   const copy = page.getByTestId(`app-board-${t}-copy`)
   await expect(copy.getByTestId('app-folder')).toHaveText(`Kept ${t}`)
   await expect(copy.getByText('Never published')).toBeVisible()
+  await page.getByTestId(`actions-board-${t}-copy`).click()
   await page.getByTestId(`delete-board-${t}-copy`).click()
   await expect(page.getByRole('dialog')).toContainText(`Delete board-${t} (copy) with its releases?`)
   await page.getByTestId('confirm-ok').click()

@@ -122,10 +122,9 @@ async function protectChangeDeploy(page: Page, host: Host, words: { noun: string
 
   await test.step(`protected from the list: the instance opens its ${words.noun}, merged on the host`, async () => {
     await page.goto('/workflows')
-    await page
-      .getByTestId(`workflow-${slug}`)
-      .getByRole('button', { name: /^Protect .* in Git$/ })
-      .click()
+    const protectRow = page.getByTestId(`workflow-${slug}`)
+    await protectRow.getByRole('button', { name: /^Actions for / }).click()
+    await protectRow.getByRole('menuitem', { name: 'Protect in Git…' }).click()
     await page.getByTestId('protect-confirm').click()
     await expect(page.getByTestId('protect-result')).toContainText(`Review and merge the ${words.noun}`)
     await expect(page.getByTestId('pull-request-link')).toContainText(words.mark)

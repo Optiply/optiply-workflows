@@ -15,7 +15,17 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { Button, buttonVariants, Checkbox, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
+import {
+  Button,
+  buttonVariants,
+  Checkbox,
+  EmptyState,
+  ErrorNote,
+  Input,
+  Select,
+  Spinner,
+  sectionLabelClass,
+} from '@/components/ui'
 import { trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import type { TableInfo } from './cells'
@@ -54,6 +64,10 @@ export function DatabasePage() {
     enabled: usable,
   })
   const table = tables.data?.find((t) => t.name === search.table) ?? tables.data?.[0]
+  const [filter, setFilter] = useState('')
+  const shownTables = filter.trim()
+    ? tables.data?.filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    : tables.data
 
   if (status.isLoading) return <Spinner />
   if (!status.data) return <ErrorNote error={status.error} />
@@ -71,10 +85,13 @@ export function DatabasePage() {
 
   return (
     <div className="flex h-full gap-2">
-      <aside className="flex w-60 shrink-0 flex-col overflow-hidden rounded-lg bg-surface">
-        <div className="space-y-2 border-b border-border p-3">
+      <aside className="flex w-64 shrink-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card">
+        <div className="space-y-2.5 border-b border-border/70 p-3">
           <div className="flex items-center gap-2 font-semibold">
-            <Database className="size-4 text-accent" /> Database
+            <span className="rounded-md bg-accent-soft p-1.5 text-accent">
+              <Database className="size-4" />
+            </span>
+            Database
           </div>
           <Select
             aria-label="Environment"
@@ -90,8 +107,8 @@ export function DatabasePage() {
             ))}
           </Select>
           {usable && (
-            <div className="flex flex-col gap-1.5">
-              <Button size="sm" onClick={() => setDialog('new')}>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button size="sm" variant="primary" onClick={() => setDialog('new')}>
                 <Plus className="size-4" /> New table
               </Button>
               <Button size="sm" onClick={() => setDialog('import')}>
@@ -100,18 +117,40 @@ export function DatabasePage() {
             </div>
           )}
         </div>
+        {(tables.data?.length ?? 0) > 8 && (
+          <div className="border-b border-border/70 p-2">
+            <Input
+              type="search"
+              aria-label="Find a table"
+              placeholder="Find a table"
+              className="h-8"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+        )}
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2" aria-label="Tables">
+          {tables.data && tables.data.length > 0 && (
+            <div className={cn(sectionLabelClass, 'flex justify-between px-2.5 pt-1 pb-1.5')}>
+              <span>Tables</span>
+              <span className="tabular-nums">{tables.data.length}</span>
+            </div>
+          )}
           {tables.isLoading && <Spinner />}
           {tables.data?.length === 0 && <p className="px-2 py-3 text-xs text-muted">No tables yet.</p>}
-          {tables.data?.map((t) => (
+          {filter.trim() !== '' && shownTables?.length === 0 && (
+            <p className="px-2 py-3 text-xs text-muted">No table matches “{filter.trim()}”.</p>
+          )}
+          {shownTables?.map((t) => (
             <Link
               key={t.name}
               to="/database"
               search={{ env: environment!.slug, table: t.name }}
               replace
               className={cn(
-                'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm hover:bg-subtle',
-                t.name === table?.name && 'bg-accent-soft font-medium text-accent hover:bg-accent-soft',
+                'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted transition-colors hover:bg-hover/60 hover:text-ink',
+                t.name === table?.name &&
+                  'bg-accent-soft font-medium text-accent hover:bg-accent-soft hover:text-accent',
               )}
             >
               <Table2 className="size-4 shrink-0" />
@@ -125,7 +164,7 @@ export function DatabasePage() {
           ))}
         </nav>
         {status.data.resourceSlug && status.data.resourceId && (
-          <p className="border-t border-border p-3 text-xs text-muted">
+          <p className="border-t border-border/70 bg-canvas/50 p-3 text-xs text-muted">
             In workflows, query these tables with the{' '}
             <Link
               to="/resources/$resourceId"
@@ -139,7 +178,7 @@ export function DatabasePage() {
         )}
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/70 bg-surface shadow-card">
         {!environment?.ready ? (
           <Notice title="The database isn't set up yet">
             It's created when the server starts. If it stays like this, the server log says why (usually: the

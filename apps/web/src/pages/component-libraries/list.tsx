@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Blocks, FolderPlus, Plus } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
@@ -50,18 +50,18 @@ export function ComponentLibrariesPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'library' ? 'none' : 'library')}>
+            <Button variant="primary" onClick={() => setPanel('library')}>
               <Plus className="size-4" /> New library
             </Button>
           </>
         }
       />
-      {panel === 'library' && <NewLibraryForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="component_library" onDone={() => setPanel('none')} />}
+      {panel === 'library' && <NewLibraryDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="component_library" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Blocks className="size-6" />} title="No component libraries yet">
           Create one to write components of your own for apps. If you expected to see some here, ask an admin
@@ -137,7 +137,7 @@ function LibraryRow({ library: query, hasFolders }: { library: LibrarySummary; h
   )
 }
 
-function NewLibraryForm({ onCancel }: { onCancel: () => void }) {
+function NewLibraryDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -155,13 +155,34 @@ function NewLibraryForm({ onCancel }: { onCancel: () => void }) {
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New component library"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create library
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          if (name && slug) create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -191,16 +212,8 @@ function NewLibraryForm({ onCancel }: { onCancel: () => void }) {
             <FolderSelect type="component_library" value={folderId} onChange={setFolderId} />
           </Field>
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create library
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

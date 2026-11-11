@@ -32,6 +32,7 @@ test('duplicate a workflow from the list, then delete the copy', async ({ page }
   await expect(page.getByTestId('block-hello')).toBeVisible()
 
   await page.goto('/workflows')
+  await page.getByTestId(`actions-${slug}-copy`).click()
   await page.getByTestId(`delete-${slug}-copy`).click()
   await page.getByTestId('confirm-ok').click()
   await expect(page.getByTestId(`workflow-${slug}-copy`)).toHaveCount(0)

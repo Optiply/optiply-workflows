@@ -143,10 +143,9 @@ test('M11 done-when: protect, edit on a branch, commit, merge, deploy', async ({
 
   // Protect both: the workflow from the list, the app from its settings.
   await page.goto('/workflows')
-  await page
-    .getByTestId(`workflow-${flowSlug}`)
-    .getByRole('button', { name: /^Protect .* in Git$/ })
-    .click()
+  const protectRow = page.getByTestId(`workflow-${flowSlug}`)
+  await protectRow.getByRole('button', { name: /^Actions for / }).click()
+  await protectRow.getByRole('menuitem', { name: 'Protect in Git…' }).click()
   await page.getByTestId('protect-confirm').click()
   await expect(page.getByTestId('pull-request-link')).toBeVisible()
   await page.getByRole('button', { name: 'Done' }).click()

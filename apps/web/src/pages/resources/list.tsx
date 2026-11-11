@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plug, Plus, ShieldCheck } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import { ProtectedBadge } from '@/components/git'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
@@ -50,14 +50,14 @@ export function ResourcesPage() {
           data.canCreate && (
             <>
               {me.isAdmin && (
-                <Button onClick={() => setPanel(panel === 'access' ? 'none' : 'access')}>
+                <Button onClick={() => setPanel('access')}>
                   <ShieldCheck className="size-4" /> Access to all resources
                 </Button>
               )}
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
-              <Button variant="primary" onClick={() => setPanel(panel === 'resource' ? 'none' : 'resource')}>
+              <Button variant="primary" onClick={() => setPanel('resource')}>
                 <Plus className="size-4" /> New resource
               </Button>
             </>
@@ -66,16 +66,15 @@ export function ResourcesPage() {
       />
 
       {panel === 'resource' && <NewResourceForm onDone={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="resource" onDone={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="resource" onDone={() => setPanel('none')} />}
       {panel === 'access' && (
-        <Card className="mb-6 p-5">
-          <h2 className="mb-1 font-semibold">Access to all resources</h2>
+        <Dialog title="Access to all resources" className="max-w-2xl" onClose={() => setPanel('none')}>
           <p className="mb-4 text-sm text-muted">
             Grants here apply to every resource, including new ones. Edit on all environments also lets a
             group create resources and folders.
           </p>
           <AccessEditor target={{ objectType: 'resource', objectId: null }} />
-        </Card>
+        </Dialog>
       )}
 
       {data.resources.length === 0 && !(folders?.canManage && folders.folders.length) ? (
@@ -104,7 +103,7 @@ function ResourceRow({
     <Link
       to="/resources/$resourceId"
       params={{ resourceId: resource.id }}
-      className="flex items-center gap-3 px-4 py-3 hover:bg-canvas"
+      className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-hover/60"
     >
       <TypeIcon type={resource.type} />
       <div className="min-w-0 flex-1">
@@ -154,10 +153,40 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
       },
     }),
   )
+  const submit = () =>
+    form.name &&
+    form.slug &&
+    create.mutate({ type: form.type, name: form.name, slug: form.slug, folderId: form.folderId || null })
+  const id = useId()
   return (
-    <Card className="mb-6 space-y-4 p-5">
-      <h2 className="font-semibold">New resource</h2>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <Dialog
+      title="New resource"
+      onClose={onDone}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onDone}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!form.name || !form.slug}
+          >
+            Create
+          </Button>
+        </>
+      }
+    >
+      <form
+        id={id}
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
+      >
         <Field label="Type">
           <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
             {['Databases', 'APIs', 'Storage', 'Messaging', 'Services', 'AI'].map((group) => (
@@ -204,28 +233,8 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
             onChange={(folderId) => setForm({ ...form, folderId: folderId ?? '' })}
           />
         </Field>
-      </div>
-      <ErrorNote error={create.error} />
-      <div className="flex gap-2">
-        <Button
-          variant="primary"
-          loading={create.isPending}
-          disabled={!form.name || !form.slug}
-          onClick={() =>
-            create.mutate({
-              type: form.type,
-              name: form.name,
-              slug: form.slug,
-              folderId: form.folderId || null,
-            })
-          }
-        >
-          Create
-        </Button>
-        <Button variant="ghost" onClick={onDone}>
-          Cancel
-        </Button>
-      </div>
-    </Card>
+        <ErrorNote error={create.error} />
+      </form>
+    </Dialog>
   )
 }
