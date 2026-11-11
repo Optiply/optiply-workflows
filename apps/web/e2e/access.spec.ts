@@ -183,9 +183,21 @@ test('someone with Use on an app gets the app, never the editor', async ({ page,
     await memberPage.goto(`/apps/${slug}`)
     await expect(memberPage.getByText(`Hello ${stamp}`)).toBeVisible()
     await expect(memberPage.getByRole('link', { name: 'Edit', exact: true })).toHaveCount(0)
+    // Just the app: none of the platform's sections around it, but still a way to sign out.
+    await expect(memberPage.getByRole('link', { name: 'Apps', exact: true })).toHaveCount(0)
+    await expect(memberPage.getByRole('button', { name: 'Account' })).toBeVisible()
     await memberPage.goto(`/apps/${slug}/edit`)
     await expect(memberPage).toHaveURL(new RegExp(`/apps/${slug}$`))
     await expect(memberPage.getByText(`Hello ${stamp}`)).toBeVisible()
+  })
+
+  await test.step('the owner sees just the app too, and Edit brings the platform back', async () => {
+    await page.goto(`/apps/${slug}`)
+    await expect(page.getByText(`Hello ${stamp}`)).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Workflows', exact: true })).toHaveCount(0)
+    await page.getByRole('link', { name: 'Edit', exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`/apps/${slug}/edit`))
+    await expect(page.getByRole('link', { name: 'Workflows', exact: true })).toBeVisible()
   })
 
   await test.step('the owner, before publishing, is offered the editor', async () => {

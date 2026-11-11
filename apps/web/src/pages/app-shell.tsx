@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, Outlet, useLocation, useMatches, useNavigate } from '@tanstack/react-router'
 import {
   ChevronsUpDown,
+  LayoutGrid,
   Lock,
   LogOut,
   Monitor,
@@ -61,13 +62,11 @@ function useNarrow() {
 /** The frame: a sidebar with the sections, search (⌘K), Settings and the account; the page or an editor beside it. */
 export function AppShell() {
   const { me } = route.useRouteContext()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const fullBleed = useMatches({ select: (matches) => matches.some((m) => m.staticData.fullBleed) })
   const inEditor = useMatches({ select: (matches) => matches.some((m) => m.staticData.editor) })
+  const bare = useMatches({ select: (matches) => matches.some((m) => m.staticData.bare) })
   const trpc = useTRPC()
   const openTasks = useQuery({ ...trpc.tasks.openCount.queryOptions(), refetchInterval: 30_000 })
-  const { preference } = useTheme()
   // Editors fold the sidebar to icons by default (the canvas wants the width); each choice is remembered apart.
   const [listState, setListState] = useStoredChoice('ow-sidebar', isSidebarState, 'open')
   const [editorState, setEditorState] = useStoredChoice('ow-sidebar-editor', isSidebarState, 'collapsed')
@@ -82,11 +81,16 @@ export function AppShell() {
   const [palette, setPalette] = useState(false)
   useGlobalPaletteShortcut(() => setPalette((p) => !p))
 
-  const logout = useCallback(async () => {
-    await fetch('/api/auth/logout', { method: 'POST' })
-    queryClient.clear()
-    await navigate({ to: '/login' })
-  }, [navigate, queryClient])
+  const logout = useSignOut()
+
+  // A published app at its URL: just the app (it brings its own slim bar); the platform is one Edit away.
+  if (bare)
+    return (
+      <>
+        <Outlet />
+        {palette && <GlobalPalette onClose={() => setPalette(false)} onSignOut={logout} />}
+      </>
+    )
 
   return (
     <div className="flex h-full">
@@ -220,27 +224,7 @@ export function AppShell() {
                 </button>
               )}
             >
-              <div aria-hidden="true" className="px-2 pt-1 pb-2">
-                <div className="truncate text-sm font-semibold">{me.name}</div>
-                <div className="truncate text-xs text-muted">{me.email}</div>
-              </div>
-              <MenuSeparator />
-              <MenuGroup label="Theme">
-                {THEMES.map((t) => (
-                  <MenuItem
-                    key={t.value}
-                    icon={t.icon}
-                    checked={preference === t.value}
-                    onClick={() => setThemePreference(t.value)}
-                  >
-                    {t.label}
-                  </MenuItem>
-                ))}
-              </MenuGroup>
-              <MenuSeparator />
-              <MenuItem icon={<LogOut />} onClick={logout}>
-                Sign out
-              </MenuItem>
+              <AccountMenuItems onSignOut={logout} />
             </Menu>
           </div>
         </div>
@@ -281,6 +265,89 @@ export function AppShell() {
 
       {palette && <GlobalPalette onClose={() => setPalette(false)} onSignOut={logout} />}
     </div>
+  )
+}
+
+/** Signs out: the session ends, cached data goes, back to the sign-in page. */
+function useSignOut() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  return useCallback(async () => {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    queryClient.clear()
+    await navigate({ to: '/login' })
+  }, [navigate, queryClient])
+}
+
+/** The account menu's contents: who's signed in, the theme, and Sign out. */
+function AccountMenuItems({ onSignOut, children }: { onSignOut: () => void; children?: React.ReactNode }) {
+  const { me } = route.useRouteContext()
+  const { preference } = useTheme()
+  return (
+    <>
+      <div aria-hidden="true" className="px-2 pt-1 pb-2">
+        <div className="truncate text-sm font-semibold">{me.name}</div>
+        <div className="truncate text-xs text-muted">{me.email}</div>
+      </div>
+      <MenuSeparator />
+      {children}
+      <MenuGroup label="Theme">
+        {THEMES.map((t) => (
+          <MenuItem
+            key={t.value}
+            icon={t.icon}
+            checked={preference === t.value}
+            onClick={() => setThemePreference(t.value)}
+          >
+            {t.label}
+          </MenuItem>
+        ))}
+      </MenuGroup>
+      <MenuSeparator />
+      <MenuItem icon={<LogOut />} onClick={onSignOut}>
+        Sign out
+      </MenuItem>
+    </>
+  )
+}
+
+/**
+ * The account for a page without the platform around it (a published app): the avatar, opening the same menu, plus
+ * a way into the platform for people who have any of its sections.
+ */
+export function AccountButton() {
+  const { me } = route.useRouteContext()
+  const navigate = useNavigate()
+  const logout = useSignOut()
+  const hasSections = visibleSections(me).length > 0
+  return (
+    <Menu
+      label={`Account: ${me.name}, ${me.email}`}
+      side="bottom"
+      align="end"
+      trigger={(props) => (
+        <button
+          type="button"
+          aria-label="Account"
+          title={me.email}
+          className="flex cursor-pointer items-center rounded-full outline-none focus-visible:shadow-focus"
+          {...props}
+        >
+          <Avatar name={me.name} src={me.avatarUrl} className="size-8" />
+        </button>
+      )}
+    >
+      <AccountMenuItems onSignOut={logout}>
+        {hasSections && (
+          <>
+            <MenuItem icon={<LayoutGrid />} onClick={() => navigate({ to: '/' })}>
+              Open Optiply Workflows
+            </MenuItem>
+            <MenuSeparator />
+          </>
+        )}
+      </AccountMenuItems>
+    </Menu>
   )
 }
 

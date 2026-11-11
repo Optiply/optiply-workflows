@@ -144,7 +144,7 @@ const appSearch = z.looseObject({ env: z.string().optional() })
 const appViewRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps/$slug/{-$page}',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, bare: true },
   validateSearch: appSearch,
   component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
 })
@@ -364,5 +364,7 @@ declare module '@tanstack/react-router' {
     fullBleed?: boolean
     /** An editor: the sidebar folds to icons by default and the editor's header goes in the top bar. */
     editor?: boolean
+    /** Just the page, without the platform around it: a published app at its URL (editors press Edit for more). */
+    bare?: boolean
   }
 }
