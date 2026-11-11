@@ -14,6 +14,7 @@ import {
   ListSkeleton,
   PageHeader,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 
 type LibraryQuerySummary = RouterOutputs['libraryQueries']['list'][number]
@@ -34,6 +35,7 @@ export function librarySlug(name: string): string {
 
 /** The Query Library: queries written once, with parameters, used by many apps. */
 export function LibraryPage() {
+  const canCreate = useCanCreate('library')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.libraryQueries.list.queryOptions())
   const { data: folders } = useFolders('library_query')
@@ -54,9 +56,11 @@ export function LibraryPage() {
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel('query')}>
-              <Plus className="size-4" /> New query
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('query')}>
+                <Plus className="size-4" /> New query
+              </Button>
+            )}
           </>
         }
       />

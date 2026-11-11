@@ -1,5 +1,6 @@
 import { environments } from '@ow/db'
 import { asc, desc } from 'drizzle-orm'
+import { capabilities } from '../services/capabilities'
 import { authedProcedure, publicProcedure, router } from './init'
 import { accessTokensRouter } from './routers/access-tokens'
 import { apiKeysRouter } from './routers/api-keys'
@@ -31,10 +32,11 @@ export const appRouter = router({
     allowedDomain: ctx.config.OIDC_ALLOWED_DOMAIN,
   })),
 
-  me: publicProcedure.query(({ ctx }) => {
+  /** The signed-in person, and what they can reach (the sidebar's sections, where they may create). */
+  me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null
     const { sessionId: _sessionId, ...user } = ctx.user
-    return user
+    return { ...user, ...(await capabilities(ctx.db, ctx.user)) }
   }),
 
   environments: router({

@@ -162,3 +162,43 @@ describe('a subject’s grants', () => {
     })
   })
 })
+
+describe('what someone can reach (me.sections, me.canCreate)', () => {
+  it('follows their grants: nothing, one app, a folder of workflows, Edit on all apps; admins everything', async () => {
+    await createLocalUser(env.db, 'fresh@optiply.nl')
+    const fresh = trpc(env.app, await login(env.app, 'fresh@optiply.nl'))
+    const freshId = data(await admin.query('users.directory')).find(
+      (u: { email: string }) => u.email === 'fresh@optiply.nl',
+    ).id
+    const me = async () => data(await fresh.query('me'))
+    const shown = async () =>
+      Object.entries((await me()).sections)
+        .filter(([, on]) => on)
+        .map(([k]) => k)
+        .sort()
+    const grant = (objectType: string, objectId: string | null, level: string) =>
+      admin.mutate('permissions.set', { objectType, objectId, userId: freshId, environmentId: null, level })
+
+    // The built-in REST API everyone may call doesn't count as Resources.
+    expect(await shown()).toEqual([])
+    expect(Object.values((await me()).canCreate).some(Boolean)).toBe(false)
+
+    const app = data(await admin.mutate('apps.create', { slug: 'reach-app', name: 'Reach' }))
+    data(await grant('app', app.id, 'use'))
+    expect(await shown()).toEqual(['apps'])
+
+    const folder = data(
+      await admin.mutate('folders.create', { name: 'Ops', type: 'workflow', parentId: null }),
+    )
+    data(await grant('folder', folder.id, 'use'))
+    expect(await shown()).toEqual(['apps', 'inbox', 'runs', 'workflows'])
+
+    expect((await me()).canCreate.apps).toBe(false)
+    data(await grant('app', null, 'edit'))
+    expect((await me()).canCreate).toMatchObject({ apps: true, workflows: false })
+
+    const all = data(await admin.query('me'))
+    expect(Object.values(all.sections).every(Boolean)).toBe(true)
+    expect(Object.values(all.canCreate).every(Boolean)).toBe(true)
+  })
+})

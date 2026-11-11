@@ -2,7 +2,16 @@ import { expect, test } from '@playwright/test'
 import { E2E_MEMBER_EMAIL } from './global-setup'
 import { signIn, trpcMutate, trpcQuery } from './helpers'
 
-/** Access (session 44, step 1): sharing with one person, a group's level on all workflows, a person's page. */
+/** Access (session 44): sharing with one person, a group's level on all workflows, a person's page, the sidebar. */
+
+// What a test made, removed after it: the member is shared by every spec, and others expect them to have only Use
+// (collab, workflow-undo) or no apps (m10). Deleting a group, workflow or app drops its grants.
+const made: { kind: 'groups' | 'workflows' | 'apps'; id: string }[] = []
+test.afterEach(async ({ page }) => {
+  for (const { kind, id } of made.splice(0).reverse()) {
+    await trpcMutate(page, `${kind}.delete`, { id }).catch(() => {})
+  }
+})
 
 test('share a workflow with one person, give a group every workflow, and see it on their pages', async ({
   page,
@@ -14,6 +23,7 @@ test('share a workflow with one person, give a group every workflow, and see it 
     slug: `shared-${stamp}`,
     name: `Shared ${stamp}`,
   })
+  made.push({ kind: 'workflows', id: flow.id })
   const people = await trpcQuery<{ id: string; email: string; name: string }[]>(
     page,
     'users.directory',
@@ -40,6 +50,7 @@ test('share a workflow with one person, give a group every workflow, and see it 
 
   await test.step('a group’s Access: Edit on every workflow', async () => {
     const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: `Builders ${stamp}` })
+    made.push({ kind: 'groups', id: group.id })
     await trpcMutate(page, 'groups.addMember', { groupId: group.id, userId: member.id })
     await page.goto(`/settings/groups/${group.id}`)
     const select = page.getByLabel(`Workflows for Builders ${stamp}`)
@@ -49,7 +60,11 @@ test('share a workflow with one person, give a group every workflow, and see it 
     // Through the group the member can now change it, and create workflows.
     await memberPage.reload()
     await expect(memberPage.getByTestId(`workflow-shared-${stamp}`)).toContainText('Can edit')
-    await trpcMutate(memberPage, 'workflows.create', { slug: `mine-${stamp}`, name: `Mine ${stamp}` })
+    const mine = await trpcMutate<{ id: string }>(memberPage, 'workflows.create', {
+      slug: `mine-${stamp}`,
+      name: `Mine ${stamp}`,
+    })
+    made.push({ kind: 'workflows', id: mine.id })
   })
 
   await test.step('the person’s page lists what’s shared with them', async () => {
@@ -62,4 +77,63 @@ test('share a workflow with one person, give a group every workflow, and see it 
     await expect(page.getByRole('navigation', { name: 'Breadcrumbs' })).toContainText(member.name)
   })
   await memberContext.close()
+})
+
+test('the sidebar shows only the sections someone can reach', async ({ page, browser }) => {
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const app = await trpcMutate<{ id: string }>(page, 'apps.create', {
+    slug: `reach-${stamp}`,
+    name: `Reach ${stamp}`,
+  })
+  made.push({ kind: 'apps', id: app.id })
+  const people = await trpcQuery<{ id: string; email: string }[]>(page, 'users.directory', undefined)
+  const member = people.find((p) => p.email === E2E_MEMBER_EMAIL)!
+  await trpcMutate(page, 'permissions.set', {
+    objectType: 'app',
+    objectId: app.id,
+    userId: member.id,
+    environmentId: null,
+    level: 'use',
+  })
+  const memberPage = await (await browser.newContext()).newPage()
+  await signIn(memberPage, E2E_MEMBER_EMAIL)
+  type Me = { sections: Record<string, boolean>; canCreate: Record<string, boolean> }
+  const me = await trpcQuery<Me>(memberPage, 'me', undefined)
+  expect(me.sections.apps).toBe(true)
+
+  // Other specs share things with the member too: the sidebar matches what the server says, section by section.
+  const LABELS: Record<string, [string, string]> = {
+    workflows: ['Workflows', '/workflows'],
+    apps: ['Apps', '/apps'],
+    library: ['Library', '/library'],
+    modules: ['Modules', '/modules'],
+    componentLibraries: ['Components', '/component-libraries'],
+    resources: ['Resources', '/resources'],
+    database: ['Database', '/database'],
+    runs: ['Runs', '/runs'],
+    inbox: ['Inbox', '/inbox'],
+  }
+  const nav = memberPage.getByRole('navigation', { name: 'Main' })
+  for (const [key, [label]] of Object.entries(LABELS)) {
+    await expect(nav.getByRole('link', { name: label, exact: true })).toHaveCount(me.sections[key] ? 1 : 0)
+  }
+  // A section they can't reach, typed in: why, not an empty list.
+  const hidden = Object.entries(LABELS).find(([key]) => !me.sections[key])
+  if (hidden) {
+    await memberPage.goto(hidden[1][1])
+    await expect(memberPage.getByText(`No access to ${hidden[1][0]}`)).toBeVisible()
+  }
+  // New app only for those who may create apps; the app itself is there to use.
+  await memberPage.goto('/apps')
+  await expect(memberPage.getByRole('button', { name: 'New app' })).toHaveCount(me.canCreate.apps ? 1 : 0)
+  await expect(memberPage.getByTestId(`app-reach-${stamp}`)).toBeVisible()
+  // ⌘K's pages are the same sections.
+  await memberPage.keyboard.press('ControlOrMeta+k')
+  const palette = memberPage.getByRole('dialog', { name: 'Go to' })
+  for (const [key, [label]] of Object.entries(LABELS)) {
+    await expect(palette.getByRole('option', { name: label, exact: true })).toHaveCount(
+      me.sections[key] ? 1 : 0,
+    )
+  }
 })

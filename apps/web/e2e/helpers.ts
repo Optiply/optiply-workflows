@@ -6,7 +6,10 @@ export async function signIn(page: Page, email = E2E_EMAIL) {
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password').fill(E2E_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page).toHaveURL(/\/workflows$/)
+  // The first section they can reach (Workflows for admins), or the welcome page with none.
+  await expect(page).toHaveURL(
+    /\/(workflows|apps|library|modules|component-libraries|resources|database|runs|inbox|start)$/,
+  )
 }
 
 /** A tRPC mutation as the signed-in user (the page's cookies), returning its data. */

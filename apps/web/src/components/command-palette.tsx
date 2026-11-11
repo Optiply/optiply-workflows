@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import {
   Blocks,
   CornerDownLeft,
@@ -25,17 +25,32 @@ import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 
 /** The sections of the app, in the sidebar's order (the sidebar and the palette share them). */
+const appRoute = getRouteApi('/app')
+
 export const SECTIONS = [
-  { to: '/workflows', label: 'Workflows', icon: Workflow, group: 'Build' },
-  { to: '/apps', label: 'Apps', icon: LayoutGrid, group: 'Build' },
-  { to: '/library', label: 'Library', icon: Library, group: 'Build' },
-  { to: '/modules', label: 'Modules', icon: Puzzle, group: 'Build' },
-  { to: '/component-libraries', label: 'Components', icon: Blocks, group: 'Build' },
-  { to: '/resources', label: 'Resources', icon: Plug, group: 'Data' },
-  { to: '/database', label: 'Database', icon: Database, group: 'Data' },
-  { to: '/runs', label: 'Runs', icon: History, group: 'Operate' },
-  { to: '/inbox', label: 'Inbox', icon: Inbox, group: 'Operate' },
+  { to: '/workflows', key: 'workflows', label: 'Workflows', icon: Workflow, group: 'Build' },
+  { to: '/apps', key: 'apps', label: 'Apps', icon: LayoutGrid, group: 'Build' },
+  { to: '/library', key: 'library', label: 'Library', icon: Library, group: 'Build' },
+  { to: '/modules', key: 'modules', label: 'Modules', icon: Puzzle, group: 'Build' },
+  {
+    to: '/component-libraries',
+    key: 'componentLibraries',
+    label: 'Components',
+    icon: Blocks,
+    group: 'Build',
+  },
+  { to: '/resources', key: 'resources', label: 'Resources', icon: Plug, group: 'Data' },
+  { to: '/database', key: 'database', label: 'Database', icon: Database, group: 'Data' },
+  { to: '/runs', key: 'runs', label: 'Runs', icon: History, group: 'Operate' },
+  { to: '/inbox', key: 'inbox', label: 'Inbox', icon: Inbox, group: 'Operate' },
 ] as const
+
+type Section = (typeof SECTIONS)[number]
+
+/** The sections a person can reach (from `me.sections`): the sidebar's and ⌘K's pages. */
+export function visibleSections(me: { sections: Record<Section['key'], boolean> }): Section[] {
+  return SECTIONS.filter((s) => me.sections[s.key])
+}
 
 type Group = 'Pages' | 'Workflows' | 'Apps' | 'Resources' | 'Library' | 'Modules' | 'Components' | 'Actions'
 const GROUP_ORDER: Group[] = [
@@ -83,6 +98,7 @@ export function useGlobalPaletteShortcut(toggle: () => void) {
 
 /** Jump to any page, workflow, app, resource, query, module or component library, or run an action. */
 export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onSignOut: () => void }) {
+  const { me } = appRoute.useRouteContext()
   const trpc = useTRPC()
   const navigate = useNavigate()
   const workflows = useQuery(trpc.workflows.list.queryOptions())
@@ -98,7 +114,7 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
 
   const items = useMemo<Item[]>(() => {
     const icon = (Icon: typeof Workflow) => <Icon className="size-4" />
-    const out: Item[] = SECTIONS.map((s) => ({
+    const out: Item[] = visibleSections(me).map((s) => ({
       id: `page:${s.to}`,
       group: 'Pages',
       label: s.label,
@@ -201,6 +217,7 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
     )
     return out
   }, [
+    me,
     navigate,
     onSignOut,
     workflows.data,

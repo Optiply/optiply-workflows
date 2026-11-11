@@ -177,6 +177,19 @@ export class Access {
     return best
   }
 
+  /**
+   * Whether any grant reaches something of a kind: on one of them, on all of them, or on a folder of that kind
+   * (`ignore`: object ids that don't count, like built-in resources everyone may use). What shows a sidebar section.
+   */
+  reaches(type: ObjectKind | 'resource', ignore: ReadonlySet<string> = new Set()): boolean {
+    if (this.isAdmin) return true
+    return this.grants.some(
+      (g) =>
+        (g.objectType === type && (g.objectId === null || !ignore.has(g.objectId))) ||
+        (g.objectType === 'folder' && g.objectId !== null && this.folderTypes.get(g.objectId) === type),
+    )
+  }
+
   /** A grant on one of the object's folders, a folder of the object's own type. */
   private folderGrant(g: Grant, folderIds: Set<string>, type: string): boolean {
     if (g.objectType !== 'folder' || g.objectId === null || !folderIds.has(g.objectId)) return false

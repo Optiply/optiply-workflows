@@ -149,10 +149,12 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   })
   await signIn(viewer, E2E_MEMBER_EMAIL)
   await viewer.goto('/apps')
-  await expect(viewer.getByRole('heading', { name: 'Apps', exact: true })).toBeVisible()
+  // No app reaches them yet: Apps isn't in their sidebar, and its page says why (session 44's sections).
+  await expect(viewer.getByText('No access to Apps')).toBeVisible()
+  await expect(
+    viewer.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps', exact: true }),
+  ).toHaveCount(0)
   await expect(viewer.getByTestId(`app-${slug}`)).toHaveCount(0)
-  // Folders exist, but none they manage and nothing in them for them: the empty state, not a blank page.
-  await expect(viewer.getByText('No apps yet')).toBeVisible()
   await viewer.goto(`/apps/${slug}`)
   await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
 

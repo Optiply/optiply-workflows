@@ -14,6 +14,7 @@ import {
   ListSkeleton,
   PageHeader,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 
 type LibrarySummary = RouterOutputs['componentLibraries']['list'][number]
@@ -34,6 +35,7 @@ export function componentLibrarySlug(name: string): string {
 
 /** Component libraries (M25): React components written here, built on the server, placed in apps and modules. */
 export function ComponentLibrariesPage() {
+  const canCreate = useCanCreate('componentLibraries')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.componentLibraries.list.queryOptions())
   const { data: folders } = useFolders('component_library')
@@ -54,9 +56,11 @@ export function ComponentLibrariesPage() {
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel('library')}>
-              <Plus className="size-4" /> New library
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('library')}>
+                <Plus className="size-4" /> New library
+              </Button>
+            )}
           </>
         }
       />

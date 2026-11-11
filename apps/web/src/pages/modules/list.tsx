@@ -14,6 +14,7 @@ import {
   ListSkeleton,
   PageHeader,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { librarySlug } from '../library/list'
 
@@ -23,6 +24,7 @@ const LEVELS = { use: 'Can use', edit: 'Can edit', own: 'Owner' } as const
 
 /** Modules (M14): pieces of app built once, with inputs, outputs and events, placed in many apps. */
 export function ModulesPage() {
+  const canCreate = useCanCreate('modules')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.modules.list.queryOptions())
   const { data: folders } = useFolders('module')
@@ -43,9 +45,11 @@ export function ModulesPage() {
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel('module')}>
-              <Plus className="size-4" /> New module
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('module')}>
+                <Plus className="size-4" /> New module
+              </Button>
+            )}
           </>
         }
       />

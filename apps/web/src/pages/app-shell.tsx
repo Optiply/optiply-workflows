@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getRouteApi, Link, Outlet, useMatches, useNavigate } from '@tanstack/react-router'
+import { getRouteApi, Link, Outlet, useLocation, useMatches, useNavigate } from '@tanstack/react-router'
 import {
   ChevronsUpDown,
+  Lock,
   LogOut,
   Monitor,
   Moon,
@@ -13,11 +14,16 @@ import {
 } from 'lucide-react'
 import { type ComponentType, useCallback, useEffect, useState } from 'react'
 import { Breadcrumbs } from '@/components/breadcrumbs'
-import { GlobalPalette, SECTIONS, useGlobalPaletteShortcut } from '@/components/command-palette'
+import {
+  GlobalPalette,
+  SECTIONS,
+  useGlobalPaletteShortcut,
+  visibleSections,
+} from '@/components/command-palette'
 import { GitHealthBanner, GitProblemsBadge } from '@/components/git-health'
 import { useStoredChoice } from '@/components/list-toolbar'
 import { TopBarSlot } from '@/components/top-bar'
-import { Avatar, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
+import { Avatar, EmptyState, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
 import { IS_MAC } from '@/lib/shortcuts'
 import { setThemePreference, type ThemePreference, useTheme } from '@/lib/theme'
@@ -68,6 +74,10 @@ export function AppShell() {
   const narrow = useNarrow()
   const collapsed = narrow || state === 'collapsed'
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  // Only the sections they can reach; the URL of another shows that it isn't theirs.
+  const sections = visibleSections(me)
+  const pathname = useLocation({ select: (l) => l.pathname })
+  const blocked = SECTIONS.find((s) => s.to === pathname && !me.sections[s.key])
   const [palette, setPalette] = useState(false)
   useGlobalPaletteShortcut(() => setPalette((p) => !p))
 
@@ -126,7 +136,7 @@ export function AppShell() {
           aria-label="Main"
           className={cn('min-h-0 flex-1 overflow-y-auto', collapsed ? 'px-2.5' : 'px-3')}
         >
-          {GROUPS.map((group) => (
+          {GROUPS.filter((group) => sections.some((s) => s.group === group)).map((group) => (
             <div key={group} className="pt-3">
               {collapsed ? (
                 <div aria-hidden className="mx-2 mb-2 border-t border-border/70" />
@@ -136,16 +146,18 @@ export function AppShell() {
                 </div>
               )}
               <div className="flex flex-col gap-0.5">
-                {SECTIONS.filter((s) => s.group === group).map((s) => (
-                  <NavLink
-                    key={s.to}
-                    to={s.to}
-                    label={s.label}
-                    icon={s.icon}
-                    collapsed={collapsed}
-                    count={s.to === '/inbox' ? openTasks.data : undefined}
-                  />
-                ))}
+                {sections
+                  .filter((s) => s.group === group)
+                  .map((s) => (
+                    <NavLink
+                      key={s.to}
+                      to={s.to}
+                      label={s.label}
+                      icon={s.icon}
+                      collapsed={collapsed}
+                      count={s.to === '/inbox' ? openTasks.data : undefined}
+                    />
+                  ))}
               </div>
             </div>
           ))}
@@ -245,15 +257,21 @@ export function AppShell() {
         {fullBleed ? (
           <main className="min-h-0 flex-1 p-2">
             <div className="h-full overflow-hidden rounded-lg">
-              <TopBarSlot.Provider value={slot}>
-                <Outlet />
-              </TopBarSlot.Provider>
+              {blocked ? (
+                <div className="h-full overflow-y-auto px-4 pt-4">
+                  <NoAccess label={blocked.label} />
+                </div>
+              ) : (
+                <TopBarSlot.Provider value={slot}>
+                  <Outlet />
+                </TopBarSlot.Provider>
+              )}
             </div>
           </main>
         ) : (
           <main className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1600px] px-6 pt-4 pb-8">
-              <Outlet />
+              {blocked ? <NoAccess label={blocked.label} /> : <Outlet />}
             </div>
           </main>
         )}
@@ -261,6 +279,16 @@ export function AppShell() {
 
       {palette && <GlobalPalette onClose={() => setPalette(false)} onSignOut={logout} />}
     </div>
+  )
+}
+
+/** A section's page someone can't reach (typed or an old link): no list of nothing, but why. */
+function NoAccess({ label }: { label: string }) {
+  return (
+    <EmptyState icon={<Lock className="size-6" />} title={`No access to ${label}`}>
+      Nothing in {label} has been shared with you. Ask an admin if you need it; once they give you access it
+      shows up here after a reload.
+    </EmptyState>
   )
 }
 

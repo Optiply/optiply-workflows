@@ -42,6 +42,7 @@ import {
   RowActions,
   RowMenu,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { matchesSearch, sortListed, timeAgo } from '@/lib/list-model'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -71,6 +72,7 @@ export function sortApps<T extends AppSummary>(items: readonly T[], key: SortKey
  * a search across every folder and a remembered sort.
  */
 export function AppsPage() {
+  const canCreate = useCanCreate('apps')
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data, isLoading, error } = useQuery(trpc.apps.list.queryOptions())
@@ -109,9 +111,11 @@ export function AppsPage() {
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel('app')}>
-              <Plus className="size-4" /> New app
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('app')}>
+                <Plus className="size-4" /> New app
+              </Button>
+            )}
           </>
         }
       />

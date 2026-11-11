@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-router'
 import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-react-query'
 import { z } from 'zod'
+import { visibleSections } from './components/command-palette'
 import { ConfirmHost } from './components/confirm'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
@@ -36,6 +37,7 @@ import { SettingsLayout } from './pages/settings/layout'
 import { PythonSettingsPage } from './pages/settings/python'
 import { UserDetailPage } from './pages/settings/user-detail'
 import { UsersPage } from './pages/settings/users'
+import { StartPage } from './pages/start'
 import { WorkflowsPage } from './pages/workflows/list'
 
 export interface RouterContext {
@@ -67,7 +69,12 @@ const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'app',
   beforeLoad: async ({ context }) => {
-    const me = await context.queryClient.ensureQueryData(context.trpc.me.queryOptions())
+    // Refreshed in the background now and then, so changed access shows on a later page without a reload.
+    const me = await context.queryClient.ensureQueryData({
+      ...context.trpc.me.queryOptions(),
+      staleTime: 30_000,
+      revalidateIfStale: true,
+    })
     if (!me) throw redirect({ to: '/login' })
     return { me }
   },
@@ -77,10 +84,14 @@ const appRoute = createRoute({
 const indexRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/',
-  beforeLoad: () => {
-    throw redirect({ to: '/workflows' })
+  // The first section they can reach; with none, the page that says so.
+  beforeLoad: ({ context }) => {
+    const first = visibleSections(context.me)[0]
+    throw redirect({ to: first?.to ?? '/start' })
   },
 })
+
+const startRoute = createRoute({ getParentRoute: () => appRoute, path: '/start', component: StartPage })
 
 /** The lists (workflows, resources, apps, library queries, modules) open one folder at a time: `folder` is its id. */
 const folderSearch = z.object({ folder: z.string().uuid().optional() })
@@ -277,6 +288,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   appRoute.addChildren([
     indexRoute,
+    startRoute,
     workflowsRoute,
     workflowEditorRoute,
     resourcesRoute,

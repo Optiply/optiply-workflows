@@ -44,6 +44,7 @@ import {
   RowActions,
   RowMenu,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import {
@@ -71,6 +72,7 @@ export function workflowSlug(name: string): string {
 }
 
 export function WorkflowsPage() {
+  const canCreate = useCanCreate('workflows')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.workflows.list.queryOptions())
   const { data: folders } = useFolders('workflow')
@@ -110,9 +112,11 @@ export function WorkflowsPage() {
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel('workflow')}>
-              <Plus className="size-4" /> New workflow
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('workflow')}>
+                <Plus className="size-4" /> New workflow
+              </Button>
+            )}
           </>
         }
       />
