@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Hourglass } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { Button, buttonVariants, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
@@ -12,7 +13,7 @@ export function LoginPage() {
   const trpc = useTRPC()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { error: ssoError } = route.useSearch()
+  const { error: ssoError, pending } = route.useSearch()
   const { data: config, isLoading } = useQuery(trpc.authConfig.queryOptions())
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -56,7 +57,24 @@ export function LoginPage() {
             <p className="text-sm text-muted">to Optiply Workflows</p>
           </div>
           {isLoading && <Spinner />}
-          <ErrorNote error={ssoError} />
+          {pending ? (
+            <div
+              role="status"
+              className="flex gap-3 rounded-xl border border-accent/30 bg-accent-soft/60 p-4 text-sm"
+              data-testid="pending-approval"
+            >
+              <Hourglass className="mt-0.5 size-4 shrink-0 text-accent" />
+              <div>
+                <div className="font-medium">Waiting for an admin's approval</div>
+                <p className="mt-0.5 text-muted">
+                  Your request to use Optiply Workflows has reached the admins. Once one of them lets you in,
+                  sign in again here.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <ErrorNote error={ssoError} />
+          )}
 
           {config?.oidcEnabled && (
             <a
@@ -122,7 +140,7 @@ export function LoginPage() {
         </Card>
         {config?.oidcEnabled && (
           <p className="mt-5 text-center text-xs text-muted">
-            Only @{config.allowedDomain} accounts can sign in.
+            @{config.allowedDomain} accounts and invited people can sign in; new accounts wait for an admin.
           </p>
         )}
       </div>

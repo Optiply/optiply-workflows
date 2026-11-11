@@ -38,6 +38,9 @@ function UserDetail() {
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             {user.name} {user.disabledAt && <Badge tone="danger">Disabled</Badge>}
+            {user.status === 'pending' && <Badge tone="warning">Waiting for approval</Badge>}
+            {user.status === 'invited' && <Badge tone="accent">Invited</Badge>}
+            {user.status === 'rejected' && <Badge tone="danger">Not approved</Badge>}
           </h2>
           <p className="text-sm text-muted">
             {user.email} · {user.loginMethods.join(', ') || 'no sign-in yet'} · last login{' '}

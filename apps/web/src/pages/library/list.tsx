@@ -147,6 +147,8 @@ function NewLibraryQueryDialog({ onClose }: { onClose: () => void }) {
     trpc.libraryQueries.create.mutationOptions({
       onSuccess: async (q) => {
         await queryClient.invalidateQueries({ queryKey: trpc.libraryQueries.list.queryKey() })
+        // Closed first: the next page may take a moment (its access check), and going back mustn't find it open.
+        onClose()
         await navigate({ to: '/library/$slug', params: { slug: q.slug } })
       },
     }),

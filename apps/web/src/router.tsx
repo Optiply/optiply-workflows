@@ -60,7 +60,7 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Root 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
-  validateSearch: z.object({ error: z.string().optional() }),
+  validateSearch: z.object({ error: z.string().optional(), pending: z.coerce.number().optional() }),
   component: LoginPage,
 })
 

@@ -14,6 +14,7 @@ import {
   Variable,
 } from 'lucide-react'
 import { GitProblemsBadge } from '@/components/git-health'
+import { PendingUsersBadge } from '@/components/pending-badge'
 import { EmptyState, PageHeader, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
@@ -78,6 +79,7 @@ export function SettingsLayout() {
                     <tab.icon className="size-4 shrink-0" aria-hidden />
                     <span className="flex-1">{tab.label}</span>
                     {tab.to === '/settings/git' && me.isAdmin && <GitProblemsBadge />}
+                    {tab.to === '/settings/users' && me.isAdmin && <PendingUsersBadge />}
                   </Link>
                 ))}
               </div>

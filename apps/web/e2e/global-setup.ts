@@ -52,6 +52,8 @@ const E2E_NPM_PRIVATE_TOKEN = 'npm-token-not-secret'
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 /** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
 export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
+/** Someone who signed in once and waits for an admin's approval (session 44): a password, to sign in once approved. */
+export const E2E_WAITING_EMAIL = 'e2e-waiting@optiply.nl'
 /** The token the fake GitHub takes (M11). */
 export const E2E_GITHUB_TOKEN = 'github_pat_e2e_not_secret'
 /** The VM the fake IAP endpoint reaches (at 127.0.0.1, on the port asked for: specs start the SSH server) (M18). */
@@ -553,6 +555,7 @@ export default async function globalSetup() {
     [E2E_EMAIL, 'E2E'],
     [E2E_SECOND_EMAIL, 'Second'],
     [E2E_MEMBER_EMAIL, 'Member'],
+    [E2E_WAITING_EMAIL, 'Waiting Person'],
   ] as const) {
     await run(['dist/cli/create-admin.js', '--email', email, '--name', name], {
       ...env,
@@ -567,6 +570,16 @@ export default async function globalSetup() {
         and group_id = (select id from groups where system_kind = 'admins')`,
     [E2E_MEMBER_EMAIL],
   )
+  // The waiting person: not an admin, and waiting, as a first Google sign-in leaves them.
+  await members.sql.unsafe(
+    `delete from group_members
+      where user_id = (select id from users where email = $1)
+        and group_id = (select id from groups where system_kind = 'admins')`,
+    [E2E_WAITING_EMAIL],
+  )
+  await members.sql.unsafe(`update users set status = 'pending', requested_at = now() where email = $1`, [
+    E2E_WAITING_EMAIL,
+  ])
   await members.close()
   const server = spawn('node', ['--no-node-snapshot', 'dist/main.js'], {
     cwd: serverDir,

@@ -137,6 +137,8 @@ function NewModuleDialog({ onClose }: { onClose: () => void }) {
     trpc.modules.create.mutationOptions({
       onSuccess: async (q) => {
         await queryClient.invalidateQueries({ queryKey: trpc.modules.list.queryKey() })
+        // Closed first: the next page may take a moment (its access check), and going back mustn't find it open.
+        onClose()
         await navigate({ to: '/modules/$slug', params: { slug: q.slug } })
       },
     }),

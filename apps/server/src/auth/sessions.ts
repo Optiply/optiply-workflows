@@ -68,6 +68,7 @@ export async function lookupSession(db: Db, token: string | undefined): Promise<
         eq(sessions.tokenHash, hashToken(token)),
         gt(sessions.expiresAt, new Date()),
         isNull(users.disabledAt),
+        eq(users.status, 'active'),
       ),
     )
     .limit(1)
@@ -117,6 +118,7 @@ export async function lookupAccessToken(db: Db, token: string): Promise<TokenUse
         isNull(personalAccessTokens.revokedAt),
         or(isNull(personalAccessTokens.expiresAt), gt(personalAccessTokens.expiresAt, new Date())),
         isNull(users.disabledAt),
+        eq(users.status, 'active'),
       ),
     )
     .limit(1)

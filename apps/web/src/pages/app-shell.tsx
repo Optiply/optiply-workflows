@@ -22,6 +22,7 @@ import {
 } from '@/components/command-palette'
 import { GitHealthBanner, GitProblemsBadge } from '@/components/git-health'
 import { useStoredChoice } from '@/components/list-toolbar'
+import { PendingUsersBadge } from '@/components/pending-badge'
 import { TopBarSlot } from '@/components/top-bar'
 import { Avatar, EmptyState, Menu, MenuGroup, MenuItem, MenuSeparator } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
@@ -174,6 +175,7 @@ export function AppShell() {
             <span className="relative">
               <Settings className="size-4" />
               {me.isAdmin && <GitProblemsBadge className="absolute -top-2 -right-2" />}
+              {me.isAdmin && <PendingUsersBadge className="absolute -right-2 -bottom-2" />}
             </span>
             {!collapsed && <span>Settings</span>}
           </Link>

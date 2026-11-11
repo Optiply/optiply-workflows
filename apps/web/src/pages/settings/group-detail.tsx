@@ -55,7 +55,11 @@ function GroupDetail() {
   if (!group) return <ErrorNote error={error} />
 
   const memberIds = new Set(group.members.map((m) => m.id))
-  const candidates = users?.filter((u) => !memberIds.has(u.id) && !u.disabledAt) ?? []
+  // People who are in, or invited (their groups wait for them); not those waiting for approval or turned down.
+  const candidates =
+    users?.filter(
+      (u) => !memberIds.has(u.id) && !u.disabledAt && (u.status === 'active' || u.status === 'invited'),
+    ) ?? []
   const editable = group.systemKind !== 'all_users'
 
   return (

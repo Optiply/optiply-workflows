@@ -522,6 +522,8 @@ function NewWorkflowDialog({ onClose }: { onClose: () => void }) {
     trpc.workflows.create.mutationOptions({
       onSuccess: async (workflow) => {
         await queryClient.invalidateQueries({ queryKey: trpc.workflows.list.queryKey() })
+        // Closed first: the next page may take a moment (its access check), and going back mustn't find it open.
+        onClose()
         await navigate({ to: '/workflows/$workflowId', params: { workflowId: workflow.id } })
       },
     }),

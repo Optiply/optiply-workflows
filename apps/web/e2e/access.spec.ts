@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { E2E_MEMBER_EMAIL } from './global-setup'
+import { E2E_MEMBER_EMAIL, E2E_PASSWORD, E2E_WAITING_EMAIL } from './global-setup'
 import { signIn, trpcMutate, trpcQuery } from './helpers'
 
 /** Access (session 44): sharing with one person, a group's level on all workflows, a person's page, the sidebar. */
@@ -197,5 +197,56 @@ test('someone with Use on an app gets the app, never the editor', async ({ page,
     await page.goto(`/apps/draft-${stamp}`)
     await expect(page.getByText('Not published yet')).toBeVisible()
     await expect(page.getByRole('link', { name: 'Open the editor' })).toBeVisible()
+  })
+})
+
+test('an admin lets a waiting person in, and invites someone from outside', async ({ page, browser }) => {
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: `Newcomers ${stamp}` })
+  made.push({ kind: 'groups', id: group.id })
+
+  await test.step('waiting: the badge, the list, and no way in yet', async () => {
+    await page.goto('/settings/users')
+    await expect(page.getByTestId('pending-users-badge').first()).toBeVisible()
+    await expect(page.getByTestId(`pending-${E2E_WAITING_EMAIL}`)).toContainText('Waiting Person')
+    const res = await page.request.post('/api/auth/local', {
+      data: { email: E2E_WAITING_EMAIL, password: E2E_PASSWORD },
+    })
+    expect(res.status()).toBe(401)
+  })
+
+  await test.step('approved into a group: they can sign in', async () => {
+    await page.getByTestId(`pending-${E2E_WAITING_EMAIL}`).getByRole('button', { name: 'Approve…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Let Waiting Person in' })
+    await dialog.getByLabel(`Newcomers ${stamp}`).check()
+    await dialog.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(page.getByTestId(`pending-${E2E_WAITING_EMAIL}`)).toHaveCount(0)
+    await expect(page.getByRole('row').filter({ hasText: E2E_WAITING_EMAIL })).toContainText(
+      `Newcomers ${stamp}`,
+    )
+    const waiting = await (await browser.newContext()).newPage()
+    await signIn(waiting, E2E_WAITING_EMAIL)
+  })
+
+  await test.step('an invitation for an outside address, and withdrawn', async () => {
+    const email = `guest-${stamp}@partner.example`
+    await page.getByRole('button', { name: 'Invite people' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Invite people' })
+    await dialog.getByLabel('Email').fill(email)
+    await dialog.getByLabel(`Newcomers ${stamp}`).check()
+    await dialog.getByRole('button', { name: 'Invite' }).click()
+    const row = page.getByRole('row').filter({ hasText: email })
+    await expect(row).toContainText('Invited')
+    await expect(row).toContainText(`Newcomers ${stamp}`)
+    await row.getByRole('button', { name: 'Cancel invitation' }).click()
+    await page.getByTestId('confirm-ok').click()
+    await expect(row).toHaveCount(0)
+  })
+
+  await test.step('the sign-in page for someone waiting', async () => {
+    const fresh = await (await browser.newContext()).newPage()
+    await fresh.goto('/login?pending=1')
+    await expect(fresh.getByTestId('pending-approval')).toContainText("Waiting for an admin's approval")
   })
 })

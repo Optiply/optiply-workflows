@@ -47,6 +47,13 @@ const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
+/**
+ * `active` can sign in; `pending` signed in once and waits for an admin; `invited` was invited by an admin (any
+ * domain) and becomes active at their first sign-in; `rejected` was turned down by an admin.
+ */
+export const USER_STATUSES = ['active', 'pending', 'invited', 'rejected'] as const
+export type UserStatus = (typeof USER_STATUSES)[number]
+
 export const users = pgTable(
   'users',
   {
@@ -61,10 +68,23 @@ export const users = pgTable(
     passwordHash: text(),
     disabledAt: timestamp({ withTimezone: true }),
     lastLoginAt: timestamp({ withTimezone: true }),
+    /** Whether they may sign in yet: see `USER_STATUSES`. Accounts from before approval existed are `active`. */
+    status: text({ enum: USER_STATUSES }).notNull().default('active'),
+    /** When a `pending` person first asked to get in. */
+    requestedAt: timestamp({ withTimezone: true }),
+    /** When an admin approved or rejected them, and who. */
+    decidedAt: timestamp({ withTimezone: true }),
+    decidedBy: uuid().references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
+    /** The admin who invited them. */
+    invitedBy: uuid().references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('users_email_uq').on(t.email), uniqueIndex('users_oidc_subject_uq').on(t.oidcSubject)],
+  (t) => [
+    uniqueIndex('users_email_uq').on(t.email),
+    uniqueIndex('users_oidc_subject_uq').on(t.oidcSubject),
+    check('users_status_ck', sql`${t.status} in ('active', 'pending', 'invited', 'rejected')`),
+  ],
 )
 
 export const sessions = pgTable(
