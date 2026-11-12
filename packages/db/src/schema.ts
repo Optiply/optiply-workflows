@@ -700,7 +700,10 @@ export const queueDeliveries = pgTable(
 
 /** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
 export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
-/** `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. */
+/**
+ * `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. `app` (M36): an app's "Run
+ * workflow" query, as the person using the app.
+ */
 export const RUN_TRIGGER_TYPES = [
   'manual',
   'webhook',
@@ -712,6 +715,7 @@ export const RUN_TRIGGER_TYPES = [
   'kafka',
   'rabbitmq',
   'kinesis',
+  'app',
 ] as const
 export const BLOCK_STATUSES = [
   'pending',
@@ -818,7 +822,7 @@ export const workflowRuns = pgTable(
     ),
     check(
       'workflow_runs_trigger_type_ck',
-      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka', 'rabbitmq', 'kinesis')`,
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka', 'rabbitmq', 'kinesis', 'app')`,
     ),
     check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
     check(

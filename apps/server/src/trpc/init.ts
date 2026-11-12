@@ -10,6 +10,7 @@ import type { AuditInput } from '../audit'
 import { recordAudit } from '../audit'
 import { lookupAccessToken, lookupSession, presentedAccessToken, SESSION_COOKIE } from '../auth/sessions'
 import type { Config } from '../config'
+import type { AppWorkflowRuns } from '../services/app-workflow-query'
 import { asksForGitRetry, requestGitRetry } from '../services/git/deploy'
 
 /** Long-lived services shared by all requests. */
@@ -18,6 +19,8 @@ export interface Services {
   pool: PoolManager
   /** Evaluates `{{ }}` in the query playground. */
   sandbox: CodeRuntime
+  /** Runs workflows for apps' workflow queries (M36): the API's inline runner and run events. */
+  runs?: AppWorkflowRuns
 }
 
 export function contextFactory(deps: { db: Db; config: Config; services: Services }) {

@@ -14,7 +14,7 @@ import { type ImportReport, ReportBuilder } from '../report'
 import type { ResourceMapping } from '../workflow/queries'
 import { applyCompat, fixAppNames } from './compat'
 import { convertEvents } from './events'
-import { convertLogic } from './logic'
+import { convertLogic, type WorkflowMapping } from './logic'
 import { containerViews, unknownWidget, WIDGETS, type WidgetContext, type WidgetResult } from './widgets'
 
 /** Retool's grid row is about one line of controls (≈40 px); ours is 16 px. */
@@ -372,6 +372,8 @@ function freshName(base: string, parts: Map<string, Part>): string {
 export interface ConvertAppOptions {
   /** Retool resource (name or uuid) → our resource slug. Unmapped ones get a `retool_…` placeholder. */
   resources?: ResourceMapping
+  /** Retool workflow id → our workflow's slug (M36). Unmapped ones get a `retool-…` placeholder. */
+  workflows?: WorkflowMapping
 }
 
 /** Converts a read Retool app into an app definition, with a report of what became what. */
@@ -381,7 +383,7 @@ export function convertApp(
 ): { definition: AppDefinition; report: ImportReport } {
   const report = new ReportBuilder('app', app.name)
   const converted = convertComponents(app, report)
-  const logic = convertLogic(app, report, opts.resources ?? {})
+  const logic = convertLogic(app, report, opts.resources ?? {}, opts.workflows ?? {})
   let definition: AppDefinition = {
     schemaVersion: APP_SCHEMA_VERSION,
     ...(converted.pages && { pages: converted.pages }),

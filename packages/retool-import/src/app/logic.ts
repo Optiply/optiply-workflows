@@ -17,11 +17,19 @@ export interface AppLogic {
 
 const MAX_APP_QUERY_TIMEOUT = 600_000
 
-export function convertLogic(app: RetoolApp, report: ReportBuilder, resources: ResourceMapping): AppLogic {
+/** Retool workflow id → our workflow's slug, as the person mapped them (M36). */
+export type WorkflowMapping = Record<string, string>
+
+export function convertLogic(
+  app: RetoolApp,
+  report: ReportBuilder,
+  resources: ResourceMapping,
+  workflows: WorkflowMapping = {},
+): AppLogic {
   const queries: AppQuery[] = []
   const variables: Variable[] = []
   const transformers: Transformer[] = []
-  const ctx = { report, resources }
+  const ctx = { report, resources, workflows }
   for (const p of app.plugins) {
     if (p.type === 'datasource') {
       const { query, status, notes } = convertAppQuery(p, ctx)
@@ -70,7 +78,7 @@ function initialValue(raw: unknown): { initialValue?: JsonValue } {
 
 function convertAppQuery(
   p: RetoolPlugin,
-  ctx: { report: ReportBuilder; resources: ResourceMapping },
+  ctx: { report: ReportBuilder; resources: ResourceMapping; workflows: WorkflowMapping },
 ): { query: AppQuery; status: 'converted' | 'approximated' | 'unsupported'; notes: string[] } {
   const t = p.template
   const notes: string[] = []
@@ -126,7 +134,32 @@ function convertAppQuery(
     }
     notes.push(q.reason)
   } else if (p.subtype === 'WorkflowRun') {
-    notes.push("Apps here can't run workflows yet (M36 step 5 adds it): re-import once it can")
+    const id = typeof t.workflowId === 'string' ? t.workflowId : ''
+    const mapped = ctx.workflows[id]
+    const slug =
+      mapped ??
+      `retool-${
+        id
+          .replace(/[^a-z0-9]/gi, '')
+          .toLowerCase()
+          .slice(0, 12) || 'workflow'
+      }`
+    ctx.report.workflow({ key: id, slug, mapped: !!mapped }, p.id)
+    if (!mapped) notes.push(`It runs a Retool workflow (${id || 'unknown'}): pick which workflow here it is`)
+    const input =
+      typeof t.workflowParams === 'string' && t.workflowParams.trim() ? t.workflowParams : undefined
+    return {
+      query: {
+        ...common,
+        kind: 'workflow',
+        workflow: slug,
+        ...(input && { input }),
+        mode: t.workflowRunExecutionType === 'async' ? 'async' : 'sync',
+        run,
+      } as AppQuery,
+      status: notes.length ? 'approximated' : 'converted',
+      notes,
+    }
   } else {
     notes.push(`Retool ${p.subtype} queries aren't supported`)
   }

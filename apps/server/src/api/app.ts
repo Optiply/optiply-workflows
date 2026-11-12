@@ -29,7 +29,7 @@ import { useRe2ForPatterns } from '../services/regexp'
 import { RunEventHub } from '../services/run-events'
 import { configureSnsWebhooks } from '../services/sns-webhook'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
-import { contextFactory } from '../trpc/init'
+import { contextFactory, type Services } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
 import { cliApi } from './cli'
@@ -70,7 +70,7 @@ export async function buildApp(deps: {
     else logger.error({ err }, 'managed database provisioning failed')
   }
 
-  const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
+  const services: Services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   const pythonWarning = pythonConfigWarning(config)
@@ -119,6 +119,8 @@ export async function buildApp(deps: {
   await app.register(authRoutes, { db, config })
   await app.register(oauthApi, { db, config })
   const events = deps.listener ? new RunEventHub(deps.listener) : undefined
+  // Apps' workflow queries (M36) start runs here, as sync webhooks do.
+  services.runs = { runner, ...(events && { events }) }
   app.addHook('onClose', async () => {
     await events?.close()
   })

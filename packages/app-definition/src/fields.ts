@@ -94,6 +94,8 @@ export function appFields(def: AppDefinition): AppField[] {
     }
     if (q.kind === 'resource') {
       templateStrings(q.query, [...base, 'query'], (path, source) => at(path, 'template', source, deps))
+    } else if (q.kind === 'workflow') {
+      if (q.input !== undefined) at([...base, 'input'], 'template', q.input, deps)
     } else if (q.kind === 'library') {
       templateStrings(q.params ?? {}, [...base, 'params'], (path, source) =>
         at(path, 'template', source, deps),

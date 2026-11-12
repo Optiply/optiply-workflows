@@ -70,7 +70,16 @@ function sample(): RetoolApp {
         ].join('\n'),
         runWhenPageLoads: true,
       }),
-      ds('startFlow', 'WorkflowRun', { workflowId: 'wf-uuid' }, ''),
+      ds(
+        'startFlow',
+        'WorkflowRun',
+        {
+          workflowId: 'wf-uuid',
+          workflowParams: '{"order": {{ orders.selectedRow.id }}}',
+          workflowRunExecutionType: 'sync',
+        },
+        'WorkflowRun',
+      ),
       plugin('minTotal', { type: 'state', subtype: 'State', template: { value: '10' } }),
       plugin('filters', {
         type: 'state',
@@ -157,13 +166,26 @@ describe('convertApp: queries, state, functions and Retool names', () => {
     ])
   })
 
-  it("stands in for what can't run here, and renames what's reserved", () => {
-    expect(q('startFlow')).toMatchObject({
-      kind: 'js',
-      disabled: 'true',
-      code: expect.stringContaining('throw new Error'),
+  it("runs Retool workflows as workflow queries, and renames what's reserved", () => {
+    expect(q('startFlow')).toEqual({
+      name: 'startFlow',
+      kind: 'workflow',
+      workflow: 'retool-wfuuid',
+      input: '{"order": {{ orders.selectedRow.id }}}',
+      mode: 'sync',
+      run: 'manual',
     })
-    expect(report.entries.find((e) => e.retool === 'startFlow')).toMatchObject({ status: 'unsupported' })
+    expect(report.workflows).toEqual([
+      { key: 'wf-uuid', slug: 'retool-wfuuid', mapped: false, usedBy: ['startFlow'] },
+    ])
+    expect(report.entries.find((e) => e.retool === 'startFlow')).toMatchObject({ status: 'approximated' })
+    const mapped = convertApp(sample(), { workflows: { 'wf-uuid': 'place-order' } })
+    expect(mapped.definition.queries.find((x) => x.name === 'startFlow')).toMatchObject({
+      workflow: 'place-order',
+    })
+    expect(mapped.report.workflows).toEqual([
+      { key: 'wf-uuid', slug: 'place-order', mapped: true, usedBy: ['startFlow'] },
+    ])
     expect(report.entries.find((e) => e.retool === 'url')).toMatchObject({ name: 'url_' })
   })
 

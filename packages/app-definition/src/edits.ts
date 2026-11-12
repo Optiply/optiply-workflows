@@ -556,6 +556,28 @@ export function addQuery(
 }
 
 /**
+ * Adds a query running a workflow (M36): its live release, waiting for its Response block, only when triggered (most
+ * workflows do something); its input is filled in afterwards.
+ */
+export function addWorkflowQuery(
+  def: AppDefinition,
+  workflow: string,
+  opts: { page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const name = nextName(def, 'runWorkflow')
+  const query: AppQuery = {
+    name,
+    ...(opts.page && { page: opts.page }),
+    kind: 'workflow',
+    workflow,
+    input: '{}',
+    mode: 'sync',
+    run: 'manual',
+  }
+  return { definition: { ...def, queries: [...def.queries, query] }, name }
+}
+
+/**
  * Adds a query from the Query Library (M14), following its latest release and running automatically (most library
  * queries read); its parameters are filled in afterwards.
  */

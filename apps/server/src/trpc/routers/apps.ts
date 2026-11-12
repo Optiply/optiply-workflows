@@ -559,7 +559,13 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input, signal }) => {
       const { access, app } = await visibleApp(ctx, { id: input.appId })
       const { outcome, manual, version, library, module } = await runAppQuery(
-        { db: ctx.db, keyring: ctx.config.keyring, pool: ctx.services.pool, sandbox: ctx.services.sandbox },
+        {
+          db: ctx.db,
+          keyring: ctx.config.keyring,
+          pool: ctx.services.pool,
+          sandbox: ctx.services.sandbox,
+          ...(ctx.services.runs && { runs: ctx.services.runs }),
+        },
         access,
         ctx.user,
         {

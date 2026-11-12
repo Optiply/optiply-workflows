@@ -54,6 +54,8 @@ export type AppDiagnosticCode =
   | 'invalid_layout'
   | 'unknown_event'
   | 'unknown_query'
+  /** A workflow query's workflow doesn't exist or isn't published (M36). */
+  | 'unknown_workflow'
   | 'unknown_component'
   | 'unknown_variable'
   | 'unknown_method'
@@ -128,6 +130,8 @@ export interface AppValidateOptions {
    * components take any props and events (their library isn't known).
    */
   resolveComponentLibrary?: (slug: string) => ComponentLibraryInfo | undefined
+  /** Whether a workflow slug names a workflow, and whether it's published (M36: workflow queries). */
+  resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
 }
 
 /** How deep modules nest below an app (M21): an app holds a module holding a module holding a module, no deeper. */
@@ -191,6 +195,11 @@ export function instanceRelease(
   const version = component.props?.version ?? 'latest'
   if (typeof slug !== 'string' || typeof version !== 'string' || !slug) return null
   return { slug, version, key: `${slug}@${version}` }
+}
+
+/** The workflows an app's workflow queries run, by slug, sorted (M36). */
+export function usedWorkflows(def: AppDefinition): string[] {
+  return [...new Set(def.queries.flatMap((q) => (q.kind === 'workflow' ? [q.workflow] : [])))].sort()
 }
 
 /** The library queries an app's queries use, by slug, sorted (M14; the server and the editor both resolve these). */
@@ -385,6 +394,19 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     }
     if (q.kind === 'library' && options.resolveLibrary) {
       checkLibraryUse(q, ['queries', i], options.resolveLibrary, report)
+    }
+    if (q.kind === 'workflow' && options.resolveWorkflow) {
+      const found = options.resolveWorkflow(q.workflow)
+      if (found !== 'published') {
+        report({
+          code: 'unknown_workflow',
+          message: found
+            ? `Workflow "${q.workflow}" isn't published`
+            : `No workflow has the slug "${q.workflow}"`,
+          path: ['queries', i, 'workflow'],
+          entity: q.name,
+        })
+      }
     }
   })
 

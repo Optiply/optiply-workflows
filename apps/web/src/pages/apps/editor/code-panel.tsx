@@ -11,6 +11,7 @@ import {
   updateQuery,
   updateTransformer,
   updateVariable,
+  type WorkflowAppQuery,
 } from '@ow/app-definition'
 import { isServiceType } from '@ow/connectors/actions'
 import { useQuery } from '@tanstack/react-query'
@@ -23,6 +24,7 @@ import {
   Play,
   Trash2,
   Variable as VariableIcon,
+  Workflow,
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { ActionQueryForm } from '@/components/action-query'
@@ -39,6 +41,7 @@ import { HandlersEditor } from './handlers'
 import { PageSelect } from './inspector'
 import { AddLibraryQueryDialog, LibraryQueryBody, LibraryQueryHeader } from './library'
 import { useAppEditor } from './store'
+import { AddWorkflowQueryDialog, WorkflowQueryBody, WorkflowQueryHeader } from './workflow-query'
 
 /** The Code panel (left): the queries, transformers and variables; one opens in the dock beside it. */
 export function CodeList() {
@@ -55,6 +58,7 @@ export function CodeList() {
   // New queries and transformers go on the page being edited.
   const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
   const [picking, setPicking] = useState(false)
+  const [pickingWorkflow, setPickingWorkflow] = useState(false)
 
   return (
     <nav aria-label="Code" className="flex flex-col gap-3 text-sm">
@@ -88,7 +92,18 @@ export function CodeList() {
               >
                 <Library className="size-3.5" />
               </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a query that runs a workflow"
+                onClick={() => setPickingWorkflow(true)}
+              >
+                <Workflow className="size-3.5" />
+              </Button>
               {picking && <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />}
+              {pickingWorkflow && (
+                <AddWorkflowQueryDialog page={page} onAdd={add} onClose={() => setPickingWorkflow(false)} />
+              )}
             </>
           )
         }
@@ -254,6 +269,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const edit = (change: (q: AppQuery) => AppQuery) => update((def) => updateQuery(def, query.name, change))
   const editLibrary = (change: (q: LibraryAppQuery) => LibraryAppQuery) =>
     edit((q) => (q.kind === 'library' ? change(q) : q))
+  const editWorkflow = (change: (q: WorkflowAppQuery) => WorkflowAppQuery) =>
+    edit((q) => (q.kind === 'workflow' ? change(q) : q))
   const resource =
     query.kind === 'resource' ? resources.data?.resources.find((r) => r.slug === query.resource) : undefined
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
@@ -325,6 +342,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
           </>
         ) : query.kind === 'library' ? (
           <LibraryQueryHeader query={query} edit={editLibrary} />
+        ) : query.kind === 'workflow' ? (
+          <WorkflowQueryHeader query={query} edit={editWorkflow} />
         ) : (
           <span className="self-center text-xs text-muted">JavaScript, run in the browser</span>
         )}
@@ -443,6 +462,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
           problems={problemsAt(diagnostics, [...base, 'code'])}
           onChange={(code) => edit((q) => (q.kind === 'js' ? { ...q, code } : q))}
         />
+      ) : query.kind === 'workflow' ? (
+        <WorkflowQueryBody query={query} base={base} edit={editWorkflow} />
       ) : (
         <LibraryQueryBody query={query} base={base} edit={editLibrary} />
       )}

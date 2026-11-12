@@ -225,10 +225,25 @@ export const libraryAppQuerySchema = z.strictObject({
   run: z.enum(['auto', 'manual']),
 })
 
+/**
+ * Runs a workflow's live release (M36), as the person using the app, in the app's environment: `sync` waits for its
+ * Response block and gives its body as `data` (failing when the run fails); `async` gives `{ runId }` once it's
+ * queued. `input` is a JSON template (like a REST body) for the run's `startTrigger.data`.
+ */
+export const workflowAppQuerySchema = z.strictObject({
+  ...queryCommon,
+  kind: z.literal('workflow'),
+  workflow: workflowSlugSchema,
+  input: z.string().optional(),
+  mode: z.enum(['sync', 'async']).optional(),
+  run: z.enum(['auto', 'manual']),
+})
+
 export const appQuerySchema = z.discriminatedUnion('kind', [
   resourceAppQuerySchema,
   jsAppQuerySchema,
   libraryAppQuerySchema,
+  workflowAppQuerySchema,
 ])
 
 export const transformerSchema = z.strictObject({
@@ -360,8 +375,9 @@ export type AppComponent = z.infer<typeof componentSchema>
 export type ResourceAppQuery = z.infer<typeof resourceAppQuerySchema>
 export type JsAppQuery = z.infer<typeof jsAppQuerySchema>
 export type LibraryAppQuery = z.infer<typeof libraryAppQuerySchema>
+export type WorkflowAppQuery = z.infer<typeof workflowAppQuerySchema>
 /** The queries the server runs: resource and library queries. */
-export type ServerAppQuery = ResourceAppQuery | LibraryAppQuery
+export type ServerAppQuery = ResourceAppQuery | LibraryAppQuery | WorkflowAppQuery
 export type AppQuery = z.infer<typeof appQuerySchema>
 export type Transformer = z.infer<typeof transformerSchema>
 export type Variable = z.infer<typeof variableSchema>
@@ -385,10 +401,16 @@ export const runsAutomatically = (q: AppQuery): boolean => isServerQuery(q) && q
 
 /**
  * The JSON whose templates the browser evaluates before a server query runs: a resource query's connector query,
- * a library query's parameters.
+ * a library query's parameters, a workflow query's input.
  */
 export const queryTemplates = (q: ServerAppQuery): Record<string, unknown> =>
-  q.kind === 'resource' ? q.query : (q.params ?? {})
+  q.kind === 'resource'
+    ? q.query
+    : q.kind === 'workflow'
+      ? q.input
+        ? { input: q.input }
+        : {}
+      : (q.params ?? {})
 
 /** A new, empty app. */
 export function emptyApp(): AppDefinition {

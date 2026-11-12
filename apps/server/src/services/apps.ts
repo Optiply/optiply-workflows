@@ -8,6 +8,7 @@ import {
   usedComponentLibraries,
   usedLibraries,
   usedModules,
+  usedWorkflows,
   validateApp,
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
@@ -25,11 +26,13 @@ import {
   type Module,
   type Resource,
   resources,
+  workflows,
 } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
 import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
+import { type AppWorkflowRuns, runWorkflowQuery } from './app-workflow-query'
 import { componentLibraryInfos } from './component-libraries'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
@@ -63,16 +66,31 @@ export async function checkApp(
   libraries: LibraryQuery[]
   modules: Module[]
   componentLibraries: ComponentLibrary[]
+  /** The workflows its workflow queries run (M36). */
+  workflows: { id: string; slug: string; folderId: string | null }[]
   errors: AppDiagnostic[]
   diagnostics: AppDiagnostic[]
 }> {
   const slugs = queriedResources(definition)
-  const [rows, libraries, placed, components] = await Promise.all([
+  const workflowSlugs = usedWorkflows(definition)
+  const [rows, libraries, placed, components, ran] = await Promise.all([
     slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
     libraryInfos(db, usedLibraries(definition)),
     moduleInfos(db, usedModules(definition)),
     componentLibraryInfos(db, usedComponentLibraries(definition)),
+    workflowSlugs.length
+      ? db
+          .select({
+            id: workflows.id,
+            slug: workflows.slug,
+            folderId: workflows.folderId,
+            liveReleaseId: workflows.liveReleaseId,
+          })
+          .from(workflows)
+          .where(inArray(workflows.slug, workflowSlugs))
+      : [],
   ])
+  const workflowsBySlug = new Map(ran.map((w) => [w.slug, w]))
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const { diagnostics } = validateApp(definition, {
     resolveModule: (slug) => placed.get(slug)?.info,
@@ -82,6 +100,10 @@ export async function checkApp(
     },
     resolveLibrary: (slug) => libraries.get(slug)?.info,
     resolveComponentLibrary: (slug) => components.get(slug)?.info,
+    resolveWorkflow: (slug) => {
+      const workflow = workflowsBySlug.get(slug)
+      return workflow ? (workflow.liveReleaseId ? 'published' : 'unpublished') : undefined
+    },
     ...(self && { self }),
   })
   return {
@@ -89,6 +111,7 @@ export async function checkApp(
     libraries: [...libraries.values()].map((l) => l.query),
     modules: [...placed.values()].map((m) => m.module),
     componentLibraries: [...components.values()].map((c) => c.library),
+    workflows: ran.map(({ id, slug, folderId }) => ({ id, slug, folderId })),
     errors: diagnostics.filter((d) => d.severity === 'error'),
     diagnostics,
   }
@@ -143,6 +166,7 @@ export async function checkVouched(
     libraries,
     modules: placed,
     componentLibraries,
+    workflows: ran,
     errors,
   } = await checkApp(db, definition, self)
   if (errors.length) {
@@ -153,6 +177,14 @@ export async function checkVouched(
     })
   }
   if (!access) return
+  for (const workflow of ran) {
+    if (!atLeast(access.workflowLevel(workflow), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to workflow "${workflow.slug}" to release this ${what}, which runs it`,
+      })
+    }
+  }
   for (const library of libraries) {
     if (!atLeast(access.libraryQueryLevel(library), 'use')) {
       throw new TRPCError({
@@ -347,7 +379,7 @@ export async function setLiveAppRelease(
   return release
 }
 
-export type AppQueryDeps = QueryRunDeps
+export type AppQueryDeps = QueryRunDeps & { runs?: AppWorkflowRuns }
 export type AppQueryOutcome = QueryOutcome
 
 /**
@@ -531,6 +563,16 @@ export async function runDefinitionQuery(
       ...(query.timeoutMs !== undefined && { timeoutMs: query.timeoutMs }),
       ...(opts.signal && { signal: opts.signal }),
       labels,
+    })
+    return { outcome: await scrubbed(outcome), manual: query.run === 'manual', library: null }
+  }
+  if (query.kind === 'workflow') {
+    const outcome = await runWorkflowQuery(deps, access, user, {
+      query,
+      environmentId: opts.environmentId,
+      evaluate,
+      draft: opts.draft,
+      ...(opts.signal && { signal: opts.signal }),
     })
     return { outcome: await scrubbed(outcome), manual: query.run === 'manual', library: null }
   }

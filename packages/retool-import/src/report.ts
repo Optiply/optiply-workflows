@@ -40,6 +40,16 @@ export interface ResourceNeed {
   usedBy: string[]
 }
 
+/** A Retool workflow an app runs (M36): which of ours it is, the person says (exports name workflows by uuid only). */
+export interface WorkflowNeed {
+  /** Retool's workflow id. */
+  key: string
+  /** The slug the import used: the mapped workflow's, or a placeholder (`retool-…`) until one is mapped. */
+  slug: string
+  mapped: boolean
+  usedBy: string[]
+}
+
 /** A secret found written into the export: replaced by a config var, which someone has to set. */
 export interface SecretFound {
   /** Where it was: `<part> header Authorization`. */
@@ -53,6 +63,8 @@ export interface ImportReport {
   name: string
   entries: ReportEntry[]
   resources: ResourceNeed[]
+  /** Workflows the app runs (M36). */
+  workflows: WorkflowNeed[]
   secrets: SecretFound[]
   /** Notes about the whole import (settings, triggers, libraries…). */
   notes: string[]
@@ -66,6 +78,7 @@ export class ReportBuilder {
   readonly entries: ReportEntry[] = []
   readonly notes: string[] = []
   private readonly resources = new Map<string, ResourceNeed>()
+  private readonly workflows = new Map<string, WorkflowNeed>()
   private readonly secrets: SecretFound[] = []
   /** Secrets seen, to their config var: the same value gets the same one. Never part of the report. */
   private readonly secretVars = new Map<string, string>()
@@ -96,6 +109,17 @@ export class ReportBuilder {
     return added
   }
 
+  workflow(need: Omit<WorkflowNeed, 'usedBy'>, usedBy: string): WorkflowNeed {
+    const known = this.workflows.get(need.key)
+    if (known) {
+      if (!known.usedBy.includes(usedBy)) known.usedBy.push(usedBy)
+      return known
+    }
+    const added = { ...need, usedBy: [usedBy] }
+    this.workflows.set(need.key, added)
+    return added
+  }
+
   /** The config var standing in for `value`, a secret found at `where`: a new one, or the one it already got. */
   secret(where: string, value: string): string {
     const configVar = this.secretVars.get(value) ?? `RETOOL_SECRET_${this.secretVars.size + 1}`
@@ -112,6 +136,7 @@ export class ReportBuilder {
       name: this.name,
       entries: this.entries,
       resources: [...this.resources.values()],
+      workflows: [...this.workflows.values()],
       secrets: this.secrets,
       notes: this.notes,
       diagnostics,

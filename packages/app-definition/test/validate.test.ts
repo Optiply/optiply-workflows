@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { type AppDiagnostic, browserExpressions, expressionSide, validateApp } from '../src'
+import {
+  type AppDiagnostic,
+  addWorkflowQuery,
+  browserExpressions,
+  expressionSide,
+  usedWorkflows,
+  validateApp,
+} from '../src'
 import { app, comp, sqlQuery } from './helpers'
 
 const codes = (input: unknown, options = {}) =>
@@ -125,6 +132,38 @@ describe('validateApp', () => {
       ],
     })
     expect(validateApp(def).diagnostics).toEqual([])
+  })
+
+  it('checks workflow queries: their input like a resource query’s, their workflow when known (M36)', () => {
+    const def = app({
+      components: [comp('amount', 'numberInput')],
+      queries: [
+        {
+          name: 'run',
+          kind: 'workflow',
+          workflow: 'doubler',
+          input: '{"n": {{ amount.value }}, "k": {{ configVars.KEY }}}',
+          run: 'manual',
+        },
+        { name: 'other', kind: 'workflow', workflow: 'missing', run: 'manual' },
+        { name: 'bad', kind: 'workflow', workflow: 'doubler', input: '{"n": {{ nope }}}', run: 'manual' },
+      ],
+    })
+    const resolveWorkflow = (slug: string) => (slug === 'doubler' ? ('published' as const) : undefined)
+    expect(codes(def, { resolveWorkflow })).toEqual([
+      ['unknown_workflow', 'queries.1.workflow', 'error'],
+      ['unknown_identifier', 'queries.2.input', 'error'],
+    ])
+    expect(usedWorkflows(def)).toEqual(['doubler', 'missing'])
+    const added = addWorkflowQuery(def, 'doubler', { page: null })
+    expect(added.definition.queries.at(-1)).toEqual({
+      name: added.name,
+      kind: 'workflow',
+      workflow: 'doubler',
+      input: '{}',
+      mode: 'sync',
+      run: 'manual',
+    })
   })
 
   it('lets resource queries read configVars, which the server fills in, and nothing else (M36)', () => {
