@@ -32,10 +32,11 @@ function sample(): RetoolApp {
         subtype: 'TextWidget2',
         template: {
           value:
-            '{{ getOrders.data.id.length }} orders, first {{ getOrders.data.id[0] }}; {{ legacy.selectedRow.data.sku }} in {{ tabs.currentViewKey }} for {{ current_user.fullName }} ({{ url.value }})',
+            '{{ listIds.data.id.length }} orders, first {{ listIds.data.id[0] }}; {{ legacy.selectedRow.data.sku }} in {{ tabs.currentViewKey }} for {{ current_user.fullName }} ({{ url.value }}) {{ getOrders.data.total }}',
         },
         position: at(9),
       }),
+      ds('listIds', 'SqlQueryUnified', { query: 'select id from orders' }),
       ds('getOrders', 'SqlQueryUnified', {
         query: 'select * from orders where shop = {{ shop }}',
         runWhenModelUpdates: true,
@@ -144,9 +145,10 @@ describe('convertApp: queries, state, functions and Retool names', () => {
       ].join('\n'),
     )
     expect(definition.components.find((c) => c.name === 'summary')?.props?.value).toBe(
-      '{{ getOrders.data.map((r) => r.id).length }} orders, first {{ getOrders.data.map((r) => r.id)[0] }}; ' +
+      '{{ listIds.data.map((r) => r.id).length }} orders, first {{ listIds.data.map((r) => r.id)[0] }}; ' +
         '{{ legacy.selectedRow.sku }} in {{ (tabs.views.find((v) => v.name === tabs.currentView)?.label ?? tabs.currentView) }} ' +
-        'for {{ current_user.name }} ({{ url_.value }})',
+        // getOrders has a transform: its data is what the transform returns, left as Retool reads it.
+        'for {{ current_user.name }} ({{ url_.value }}) {{ getOrders.data.total }}',
     )
     expect(definition.components.find((c) => c.name === 'legacy')?.props?.data).toBe(
       '{{ legacyData.value ?? (getOrders.data) }}',

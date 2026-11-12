@@ -115,7 +115,9 @@ export function applyCompat(
   for (const [pattern, replace] of GLOBAL_RENAMES) rules.push({ pattern, replace })
   // Retool's SQL data is by column (`{ id: [1, 2] }`); ours by row. A column read off it is its rows' values.
   const sql = [...kinds].filter(([, kind]) => kind === 'SqlQueryUnified').map(([name]) => name)
-  for (const name of sql) {
+  // A query with a transform gives whatever its transform returns: only its own `data` (in the transform) is rows.
+  const transformed = new Set(def.queries.filter((q) => q.transform).map((q) => q.name))
+  for (const name of sql.filter((n) => !transformed.has(n))) {
     rules.push({
       pattern: new RegExp(
         `(^|[^\\w$.])${name}\\s*\\.\\s*data\\s*\\.\\s*(?!(?:${ARRAY_MEMBERS})(?![\\w$]))([A-Za-z_$][\\w$]*)`,

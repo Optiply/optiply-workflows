@@ -95,7 +95,7 @@ export function CodeList() {
               <Button
                 size="icon"
                 variant="ghost"
-                title="Add a query that runs a workflow"
+                title="Add a workflow query"
                 onClick={() => setPickingWorkflow(true)}
               >
                 <Workflow className="size-3.5" />

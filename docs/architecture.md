@@ -1149,3 +1149,50 @@ The plan is `~/.claude/plans/js-packages.md`.
   bundle route's access rule (above) came from the same review.
 - **The runbook** is `docs/runbooks/js-packages.md`. The e2e tests are `apps/web/e2e/js-packages.spec.ts` and
   `js-packages-done-when.spec.ts`.
+
+## 2.40 Importing from Retool (M36)
+
+People move their Retool apps and workflows here by exporting them from Retool as JSON and importing them, built as
+drafts like the originals. The importer is general: more exports, and new Retool parts, are handled the same way.
+The user's decisions (session 45, with later ones in session 47): re-importing updates (a new draft of the same app
+or workflow; a copy on request); Retool's preloaded libraries are built in for everyone; apps can run workflows;
+config vars work in app queries; a query declares the names its triggers pass in; the import keeps its report, never
+the file (exports can hold secrets).
+
+- **Reading** (`packages/retool-import`, pure, no database): Retool keeps an app in `page.data.appState` and a
+  workflow in `templateData` (plus plain-JSON `blockData`) as **Transit JSON of Immutable.js records**
+  (`transit.ts`: maps, ordered maps, lists, sets, records with `$record`, cache codes, dates). `read.ts` turns an
+  export into a small model (`RetoolApp`: parts with settings and grid positions; `RetoolWorkflow`: blocks with
+  edges, ports and settings, functions, webhooks, setup script, libraries) and says what isn't one.
+- **Converting** (`convertWorkflow`, `convertApp`): a converter per Retool kind in registries (`BLOCKS`, `WIDGETS`,
+  query editors, event names), each giving our entity and report notes; a kind without one becomes a stand-in that
+  says what it was (a failing code block, a warning alert, a disabled JS query), so an import never fails because
+  of one part. Retool-only names are rewritten where code reads them (`app/compat.ts`: tables' `selectedSourceRow`,
+  containers' `currentViewKey`, the legacy table's `setData()`…); **Retool's SQL data is by column**, so a column
+  read off it becomes the rows' values (`q.data.id` → `q.data.map((r) => r.id)`). Names reserved here are renamed
+  with every reference. Blocks nothing leads to in a Retool workflow never ran there and are skipped. Secrets
+  written into an export become `{{ configVars.RETOOL_SECRET_n }}`; the report says where, never the value.
+- **What Retool code needed here, added for everyone:** moment, numbro, Papa and uuid in both sandboxes (and
+  `crypto.getRandomValues` in the workflow isolate); `workflowContext.name` and `.currentRun`; Text's `markdown`;
+  a query's `scope` (names `trigger({ additionalScope })` passes in); navigation action links (`clickedItem` and
+  `click`); containers' `setCurrentView`/`setCurrentViewIndex`; `localStorage.setValue/removeValue/clear`;
+  `utils.showNotification`; `formatDataAsArray`/`formatDataAsObject`; `triggeredById`; the Worker's `setTimeout`,
+  `atob`, `btoa`; `{{ configVars.X }}` in app resource queries, filled in by the server (secret ones for the live
+  release only, scrubbed from results); **"Run workflow" app queries** (the live release on the API's inline
+  runner, `triggerType: 'app'`, migration 0047; sync gives the Response body, async the run id; the publisher
+  vouches with Use on the workflow).
+- **Importing** (router `retoolImport`, migration 0048): `analyze` says what a file would do (new or an update, the
+  report, remembered and suggested mappings); `run` creates the app or workflow, or saves a new draft of the one this
+  Retool app or workflow became before, through the apps' and workflows' own procedures (called in-process, so their
+  checks apply), and records `retool_imports` (an app by its Retool uuid; a workflow by its **name**: its webhook
+  trigger's "uuid" is `startTrigger` in every export) and `retool_mappings` (Retool resources and workflows → ours,
+  only to ones the person can use). Audited as `retool.imported`. `reportFor` gives editors the report.
+- **The screens:** an Import button beside New workflow and New app opens a dialog for that kind: files, a row each
+  with what it becomes and the report's details, resource (and, for apps, workflow) pickers, a folder. Editors show
+  "Imported from Retool" in the status bar, opening the report.
+- **Not imported (noted for later):** Retool modules, Retool's own database's data (map `retool_db` to a resource;
+  moving its tables is a CSV task), Toolscript (`.rsx`) source, mobile layouts, chat and AI components, iframe
+  custom components, table toolbars and row actions, Retool's chart (Plotly) settings.
+- **Runbook:** `docs/runbooks/retool-import.md`. Tests: the package's own (fixtures written with transit-immutable-js,
+  plus a local-only run over real exports with `RETOOL_EXPORTS_DIR`), `apps/server/test/retool-import.test.ts`,
+  `app-workflow-queries.test.ts`, and the e2e `apps/web/e2e/m36-done-when.spec.ts`.

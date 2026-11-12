@@ -54,6 +54,9 @@ interface Imported {
   mode: 'created' | 'updated' | 'copied'
 }
 
+/** As the server's `MAX_EXPORT_CHARS`: an export travels as a string, its quotes escaped again. */
+const MAX_EXPORT_BYTES = 7_000_000
+
 const noun = (kind: Kind) => (kind === 'app' ? 'app' : 'workflow')
 
 export function RetoolImportDialog({ kind, onClose }: { kind: Kind; onClose: () => void }) {
@@ -77,6 +80,13 @@ export function RetoolImportDialog({ kind, onClose }: { kind: Kind; onClose: () 
   const pick = async (list: FileList | null) => {
     for (const file of Array.from(list ?? [])) {
       const id = Date.now() + Math.random()
+      if (file.size > MAX_EXPORT_BYTES) {
+        const error = new Error(
+          `Over ${MAX_EXPORT_BYTES / 1_000_000} MB: the import takes exports up to that size`,
+        )
+        setFiles((all) => [...all, { id, name: file.name, size: file.size, content: '', copy: false, error }])
+        continue
+      }
       const content = await file.text()
       setFiles((all) => [...all, { id, name: file.name, size: file.size, content, copy: false }])
       try {

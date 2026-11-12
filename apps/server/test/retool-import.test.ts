@@ -297,6 +297,17 @@ describe('retool import', () => {
     ])
   })
 
+  it("doesn't tell someone who can't edit it which app or workflow an export became (review)", async () => {
+    const analysis = data(
+      await member.mutate('retoolImport.analyze', {
+        expect: 'workflow',
+        fileName: 'Sync%20orders.json',
+        content: workflowFile(),
+      }),
+    )
+    expect(analysis.update).toBeNull()
+  })
+
   it('needs what creating needs, and mappings only to what the person can use', async () => {
     expect(
       failure(

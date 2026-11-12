@@ -315,7 +315,10 @@ export async function waitForReply(
   runId: string,
   timeoutMs: number,
   signal = new Signal(),
+  /** Stops waiting (null) when it aborts: the caller went away (M36: an app's workflow query). */
+  abort?: AbortSignal,
 ): Promise<WorkflowRun | null> {
+  abort?.addEventListener('abort', signal.fire, { once: true })
   const unsubscribe = events
     ? await events.subscribe(runId, (event: RunEvent) => {
         if (
@@ -331,6 +334,7 @@ export async function waitForReply(
     for (;;) {
       const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId))
       if (!run || run.response || FINAL.has(run.status)) return run ?? null
+      if (abort?.aborted) return null
       // Paused at a Wait (or a child workflow): the caller gets 202 and reads the run later.
       if (run.status === 'waiting') return null
       const left = deadline - Date.now()

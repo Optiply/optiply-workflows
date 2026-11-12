@@ -101,8 +101,10 @@ export async function runWorkflowQuery(
   }
 
   const timeoutMs = query.timeoutMs ?? DEFAULT_WORKFLOW_QUERY_TIMEOUT_MS
-  const done = await waitForReply(deps.db, deps.runs.events, run.id, timeoutMs, signal)
+  const done = await waitForReply(deps.db, deps.runs.events, run.id, timeoutMs, signal, opts.signal)
   const details = { runId: run.id, workflow: query.workflow }
+  if (opts.signal?.aborted)
+    return fail('aborted', 'aborted', 'The app stopped waiting for the workflow', details)
   if (!done) {
     return fail(
       'timeout',
@@ -112,6 +114,14 @@ export async function runWorkflowQuery(
     )
   }
   const response = done.response as { status: number; body: unknown } | null
+  // A workflow answering an error status (a Response block with 4xx or 5xx): the query fails, with its body.
+  if (response && response.status >= 400) {
+    return fail('http', 'error_status', `Workflow "${query.workflow}" answered ${response.status}`, {
+      ...details,
+      status: response.status,
+      body: response.body,
+    })
+  }
   if (response) {
     return {
       ok: true,

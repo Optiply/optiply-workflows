@@ -26,7 +26,7 @@ const data = (res: Res): any => {
 const failure = (res: Res) => res.body.error
 
 /** A published workflow answering `{ doubled: n * 2 }` (or failing when `fail`). */
-async function workflow(slug: string, opts: { fail?: boolean; publish?: boolean } = {}) {
+async function workflow(slug: string, opts: { fail?: boolean; publish?: boolean; status?: string } = {}) {
   const created = data(await admin.mutate('workflows.create', { slug, name: slug }))
   const saved = data(
     await admin.mutate('workflows.saveDraft', {
@@ -43,7 +43,11 @@ async function workflow(slug: string, opts: { fail?: boolean; publish?: boolean 
               code: opts.fail ? 'throw new Error("nope")' : 'return { doubled: startTrigger.data.n * 2 }',
             },
           },
-          { name: 'reply', type: 'response', config: { body: '{{ double.data }}' } },
+          {
+            name: 'reply',
+            type: 'response',
+            config: { body: '{{ double.data }}', ...(opts.status && { status: opts.status }) },
+          },
         ],
         edges: [
           { from: 'startTrigger', port: 'out', to: 'double' },
@@ -88,6 +92,7 @@ beforeAll(async () => {
   await workflow('doubler')
   await workflow('broken', { fail: true })
   await workflow('drafty', { publish: false })
+  await workflow('refuses', { status: '422' })
 })
 
 afterAll(async () => {
@@ -112,6 +117,7 @@ describe('apps: workflow queries', () => {
             wfQuery('double', 'doubler'),
             wfQuery('later', 'doubler', { mode: 'async' }),
             wfQuery('fails', 'broken'),
+            wfQuery('refused', 'refuses'),
           ],
           layout: { amount: { x: 0, y: 0, w: 4, h: 3 } },
         },
@@ -136,6 +142,17 @@ describe('apps: workflow queries', () => {
         code: 'query',
         message: expect.stringContaining('nope'),
         details: { reason: 'workflow_failed' },
+      },
+    })
+
+    // A Response with an error status fails the query, with its body (review).
+    const refused = data(await runQuery(admin, app.id, 'refused', { ' amount.value ': 3 }))
+    expect(refused).toMatchObject({
+      ok: false,
+      error: {
+        code: 'http',
+        message: 'Workflow "refuses" answered 422',
+        details: { status: 422, body: { doubled: 6 } },
       },
     })
 

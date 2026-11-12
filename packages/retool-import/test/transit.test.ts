@@ -64,6 +64,16 @@ describe('decodeTransit', () => {
     expect(decodeTransit('["a", "b"]')).toEqual(['a', 'b'])
   })
 
+  it('keeps a __proto__ key as a property, never as the prototype (review)', () => {
+    const decoded = decodeTransit('["^ ", "__proto__", ["^ ", "polluted", true], "plain", 1]') as Record<
+      string,
+      unknown
+    >
+    expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype)
+    expect((decoded as { polluted?: unknown }).polluted).toBeUndefined()
+    expect(Object.keys(decoded)).toEqual(['__proto__', 'plain'])
+  })
+
   it('fails on text that is not JSON and on an unknown cache code', () => {
     expect(() => decodeTransit('{')).toThrow(TransitError)
     expect(() => decodeTransit('["^ ", "^5", 1]')).toThrow('Unknown cache code ^5')

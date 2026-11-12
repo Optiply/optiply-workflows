@@ -73,7 +73,8 @@ export function appFields(def: AppDefinition): AppField[] {
   def.queries.forEach((q, i) => {
     const base = ['queries', i]
     const deps = runsAutomatically(q) ? nodeKey(q.name, '$deps') : undefined
-    // Names its triggers pass in (`additionalScope`) are known in all of its own fields.
+    // Names its triggers pass in (`additionalScope`) are known in its own fields, but not its transform (which runs
+    // with `data` only).
     const scope = q.scope ?? []
     const at = (
       path: (string | number)[],
@@ -82,7 +83,7 @@ export function appFields(def: AppDefinition): AppField[] {
       node?: string,
       locals: string[] = [],
     ) => {
-      const all = [...locals, ...scope]
+      const all = path.at(-1) === 'transform' ? locals : [...locals, ...scope]
       fields.push({
         path,
         kind,

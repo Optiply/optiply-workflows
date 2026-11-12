@@ -74,7 +74,7 @@ class Reader {
       const out: Record<string, unknown> = {}
       for (let i = 1; i < array.length; i += 2) {
         const key = this.read(array[i], true)
-        out[keyString(key)] = this.read(array[i + 1], false)
+        setKey(out, keyString(key), this.read(array[i + 1], false))
       }
       return out
     }
@@ -93,11 +93,13 @@ class Reader {
       const [rawKey, rawValue] = entries[0]!
       const key = this.resolve(rawKey, true)
       if (key.startsWith('~#')) return tagged(key.slice(2), this.read(rawValue, false))
-      return { [keyString(decodeString(key))]: this.read(rawValue, false) }
+      const single: Record<string, unknown> = {}
+      setKey(single, keyString(decodeString(key)), this.read(rawValue, false))
+      return single
     }
     const out: Record<string, unknown> = {}
     for (const [rawKey, rawValue] of entries) {
-      out[keyString(decodeString(this.resolve(rawKey, true)))] = this.read(rawValue, false)
+      setKey(out, keyString(decodeString(this.resolve(rawKey, true))), this.read(rawValue, false))
     }
     return out
   }
@@ -169,7 +171,9 @@ function tagged(tag: string, value: unknown): unknown {
     case 'iR': {
       const record = value as { n?: unknown; v?: unknown } | null
       const values = record?.v && typeof record.v === 'object' ? (record.v as Record<string, unknown>) : {}
-      return { [RECORD_KEY]: String(record?.n ?? ''), ...values }
+      const out: Record<string, unknown> = { [RECORD_KEY]: String(record?.n ?? '') }
+      for (const [k, v] of Object.entries(values)) setKey(out, k, v)
+      return out
     }
     case 'cmap':
       return Array.isArray(value) ? pairsToObject(value) : value
@@ -180,6 +184,11 @@ function tagged(tag: string, value: unknown): unknown {
 
 function pairsToObject(pairs: unknown[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (let i = 0; i < pairs.length; i += 2) out[keyString(pairs[i])] = pairs[i + 1]
+  for (let i = 0; i < pairs.length; i += 2) setKey(out, keyString(pairs[i]), pairs[i + 1])
   return out
+}
+
+/** Sets an own property, even `__proto__` (a plain assignment would replace the object's prototype). */
+function setKey(target: Record<string, unknown>, key: string, value: unknown) {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true })
 }

@@ -21,6 +21,8 @@ export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set([
   'appContext',
   'url',
   'localStorage',
+  // In a resource query's {{ }}, filled in by the server (M36); reserved so nothing else takes the name.
+  'configVars',
   // Retool's helpers (M36).
   'formatDataAsArray',
   'formatDataAsObject',

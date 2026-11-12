@@ -128,7 +128,7 @@ async function protectChangeDeploy(page: Page, host: Host, words: { noun: string
     await page.getByTestId('protect-confirm').click()
     await expect(page.getByTestId('protect-result')).toContainText(`Review and merge the ${words.noun}`)
     await expect(page.getByTestId('pull-request-link')).toContainText(words.mark)
-    await page.getByRole('button', { name: 'Done' }).click()
+    await page.getByRole('button', { name: 'Done', exact: true }).click()
     const request = (await host.open()).find((r) => r.head === `protect/workflow-${slug}`)!
     const merged = await host.merge(request.id)
     await expect.poll(() => deployedCommit(page), { timeout: 30_000 }).toBe(merged)

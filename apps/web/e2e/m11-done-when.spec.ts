@@ -148,13 +148,13 @@ test('M11 done-when: protect, edit on a branch, commit, merge, deploy', async ({
   await protectRow.getByRole('menuitem', { name: 'Protect in Git…' }).click()
   await page.getByTestId('protect-confirm').click()
   await expect(page.getByTestId('pull-request-link')).toBeVisible()
-  await page.getByRole('button', { name: 'Done' }).click()
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
   await page.goto(`/apps/${appSlug}/edit`)
   await page.getByRole('button', { name: 'App settings' }).click()
   await page.getByRole('button', { name: 'Protect in Git' }).click()
   await page.getByTestId('protect-confirm').click()
   await expect(page.getByTestId('protect-result')).toBeVisible()
-  await page.getByRole('button', { name: 'Done' }).click()
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
   // Their protect pull requests merge (nothing new to deploy: it's what's live).
   const pulls = async () =>
     (await (await fetch(`${github}/_test/pulls`)).json()) as { number: number; head: string; state: string }[]
@@ -193,7 +193,7 @@ test('M11 done-when: protect, edit on a branch, commit, merge, deploy', async ({
   await page.getByRole('textbox', { name: 'Message' }).fill('Upper-case the emails')
   await page.getByTestId('commit-confirm').click()
   await expect(page.getByTestId('commit-result')).toContainText(branch)
-  await page.getByRole('button', { name: 'Done' }).click()
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
 
   // The app: main read-only (no palette), then the same branch; its branch draft runs its queries.
   await page.goto(`/apps/${appSlug}/edit`)
@@ -255,7 +255,7 @@ test('M11 done-when: protect, edit on a branch, commit, merge, deploy', async ({
   // Open the pull request from the editor, then merge it: the webhook deploys within seconds.
   await page.getByTestId('open-pull-request').click()
   await expect(page.getByTestId('commit-result').getByTestId('pull-request-link')).toContainText('Open')
-  await page.getByRole('button', { name: 'Done' }).click()
+  await page.getByRole('button', { name: 'Done', exact: true }).click()
   const pr = (await pulls()).find((p) => p.head === branch && p.state === 'open')!
   const mergedAt = Date.now()
   const merged = await fetch(`${github}/_test/pulls/${pr.number}/merge`, { method: 'POST' })

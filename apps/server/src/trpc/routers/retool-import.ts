@@ -1,3 +1,4 @@
+import { appDefinitionSchema } from '@ow/app-definition'
 import {
   apps,
   environments,
@@ -7,6 +8,7 @@ import {
   retoolMappings,
   workflows,
 } from '@ow/db'
+import { workflowDefinitionSchema } from '@ow/definition'
 import {
   convertApp,
   convertWorkflow,
@@ -32,7 +34,8 @@ import { workflowsRouter } from './workflows'
 
 const Id = z.string().uuid()
 const Kind = z.enum(['app', 'workflow'])
-const MAX_EXPORT_CHARS = 10_000_000
+/** Below the API's 10 MiB body: an export travels as a string, so its own quotes are escaped again. */
+export const MAX_EXPORT_CHARS = 7_000_000
 const fileInput = {
   /** Which list the person imports from: a file of the other kind is refused, saying where it goes. */
   expect: Kind,
@@ -156,7 +159,11 @@ async function suggestions(ctx: Ctx, use: Usage, report: ImportReport) {
   return out
 }
 
-async function existingImport(ctx: Ctx, kind: 'app' | 'workflow', retoolKey: string) {
+/**
+ * What this Retool app or workflow became before, if it still exists. `editable`: the person may save a draft of it
+ * (otherwise they don't learn which it is, and importing makes a new one).
+ */
+async function existingImport(ctx: Ctx, use: Usage, kind: 'app' | 'workflow', retoolKey: string) {
   const [row] = await ctx.db
     .select()
     .from(retoolImports)
@@ -164,12 +171,21 @@ async function existingImport(ctx: Ctx, kind: 'app' | 'workflow', retoolKey: str
   if (!row) return null
   if (kind === 'app') {
     const [app] = await ctx.db.select().from(apps).where(eq(apps.id, row.appId!))
-    return app ? { row, id: app.id, slug: app.slug, name: app.name, revision: app.draftRevision } : null
+    if (!app) return null
+    const editable = atLeast(use.access.appLevel(app), 'edit') && !app.gitProtected
+    return { row, id: app.id, slug: app.slug, name: app.name, revision: app.draftRevision, editable }
   }
   const [workflow] = await ctx.db.select().from(workflows).where(eq(workflows.id, row.workflowId!))
-  return workflow
-    ? { row, id: workflow.id, slug: workflow.slug, name: workflow.name, revision: workflow.draftRevision }
-    : null
+  if (!workflow) return null
+  const editable = atLeast(use.access.workflowLevel(workflow), 'edit') && !workflow.gitProtected
+  return {
+    row,
+    id: workflow.id,
+    slug: workflow.slug,
+    name: workflow.name,
+    revision: workflow.draftRevision,
+    editable,
+  }
 }
 
 /** A free slug from a name: `Order Desk` → `order-desk`, then `order-desk-2`… */
@@ -197,11 +213,11 @@ export const retoolImportRouter = router({
     const retoolKey = retoolKeyOf(read)
     const use = await usage(ctx)
     const { report, remembered } = await convert(ctx, use, read, { resources: {}, workflows: {} })
-    const existing = await existingImport(ctx, read.kind, retoolKey)
+    const existing = await existingImport(ctx, use, read.kind, retoolKey)
     return {
       kind: read.kind,
       name: read.name,
-      update: existing ? { id: existing.id, slug: existing.slug, name: existing.name } : null,
+      update: existing?.editable ? { id: existing.id, slug: existing.slug, name: existing.name } : null,
       report,
       remembered: { resources: remembered.resources, workflows: remembered.workflows },
       suggested: await suggestions(ctx, use, report),
@@ -254,44 +270,51 @@ export const retoolImportRouter = router({
         }
       }
 
-      const existing = input.copy ? null : await existingImport(ctx, read.kind, retoolKey)
+      // Checked before anything is created, so a definition that can't be saved leaves nothing behind.
+      const parsed =
+        read.kind === 'workflow'
+          ? workflowDefinitionSchema.safeParse(definition)
+          : appDefinitionSchema.safeParse(definition)
+      if (!parsed.success) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `The converted ${read.kind} isn't valid (${parsed.error.issues[0]?.message}): please report this export`,
+        })
+      }
+      const earlier = await existingImport(ctx, use, read.kind, retoolKey)
+      // Someone else's import the person can't edit: a new one, leaving that record alone (as a copy does).
+      const existing = input.copy || !earlier?.editable ? null : earlier
+      const caller = read.kind === 'workflow' ? createWorkflowCaller(ctx) : createAppCaller(ctx)
       let target: { id: string; slug: string; name: string }
       let mode: 'created' | 'updated' | 'copied'
-      if (read.kind === 'workflow') {
-        const caller = createWorkflowCaller(ctx)
-        if (existing) {
-          await caller.saveDraft({ id: existing.id, revision: existing.revision, definition })
-          target = existing
-          mode = 'updated'
-        } else {
-          const slug = await freeSlug(ctx, 'workflow', read.name)
-          const created = await caller.create({
-            slug,
-            name: read.name.slice(0, 120),
-            folderId: input.folderId ?? null,
-            ...(read.description && { description: read.description.slice(0, 1000) }),
-          })
-          await caller.saveDraft({ id: created.id, revision: 1, definition })
-          target = { id: created.id, slug, name: created.name }
-          mode = input.copy ? 'copied' : 'created'
-        }
+      if (existing) {
+        await caller.saveDraft({ id: existing.id, revision: existing.revision, definition })
+        target = existing
+        mode = 'updated'
       } else {
-        const caller = createAppCaller(ctx)
-        if (existing) {
-          await caller.saveDraft({ id: existing.id, revision: existing.revision, definition })
-          target = existing
-          mode = 'updated'
-        } else {
-          const slug = await freeSlug(ctx, 'app', read.name)
-          const created = await caller.create({
-            slug,
-            name: read.name.slice(0, 120),
-            folderId: input.folderId ?? null,
-          })
+        const slug = await freeSlug(ctx, read.kind, read.name)
+        const created =
+          read.kind === 'workflow'
+            ? await createWorkflowCaller(ctx).create({
+                slug,
+                name: read.name.slice(0, 120),
+                folderId: input.folderId ?? null,
+                ...(read.description && { description: read.description.slice(0, 1000) }),
+              })
+            : await createAppCaller(ctx).create({
+                slug,
+                name: read.name.slice(0, 120),
+                folderId: input.folderId ?? null,
+              })
+        try {
           await caller.saveDraft({ id: created.id, revision: 1, definition })
-          target = { id: created.id, slug, name: created.name }
-          mode = input.copy ? 'copied' : 'created'
+        } catch (err) {
+          // Not left half-made: an empty app or workflow no import knows about.
+          await caller.delete({ id: created.id }).catch(() => {})
+          throw err
         }
+        target = { id: created.id, slug, name: created.name }
+        mode = earlier ? 'copied' : 'created'
       }
 
       // The import's record (a copy leaves an earlier record pointing at the original) and its mappings.
@@ -304,7 +327,7 @@ export const retoolImportRouter = router({
           ? { appId: target.id, workflowId: null }
           : { workflowId: target.id, appId: null }),
       }
-      if (mode !== 'copied' || !(await existingImport(ctx, read.kind, retoolKey))) {
+      if (mode !== 'copied') {
         await ctx.db
           .insert(retoolImports)
           .values({ kind: read.kind, retoolKey, ...record })

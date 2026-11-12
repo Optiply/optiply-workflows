@@ -180,6 +180,19 @@ describe('validateApp', () => {
     ])
   })
 
+  it("keeps a query's scope names out of its transform, and reserves configVars (M36 review)", () => {
+    const def = app({
+      components: [comp('configVars', 'text')],
+      queries: [
+        sqlQuery('save', 'select {{ row.a }}', 'manual', { scope: ['row'], transform: 'return row' }),
+      ],
+    })
+    expect(codes(def)).toEqual([
+      ['invalid_name', 'components.0.name', 'error'],
+      ['unknown_identifier', 'queries.0.transform', 'error'],
+    ])
+  })
+
   it("knows a query's declared scope names in its own fields only (M36)", () => {
     const def = app({
       components: [comp('t', 'text', { value: '{{ row }}' })],
