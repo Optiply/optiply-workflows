@@ -13,6 +13,7 @@ import type { RetoolApp, RetoolPlugin } from '../model'
 import { type ImportReport, ReportBuilder } from '../report'
 import type { ResourceMapping } from '../workflow/queries'
 import { applyCompat, fixAppNames } from './compat'
+import { convertEvents } from './events'
 import { convertLogic } from './logic'
 import { containerViews, unknownWidget, WIDGETS, type WidgetContext, type WidgetResult } from './widgets'
 
@@ -391,6 +392,7 @@ export function convertApp(
     layout: converted.layout,
     ...(converted.frame && { frame: converted.frame }),
   }
+  attachEvents(app, definition, report)
   definition = applyCompat(definition, new Map(app.plugins.map((p) => [p.id, p.subtype])), report)
   definition = fixAppNames(definition, report)
   if (app.settings.css) report.note("Retool's custom CSS wasn't imported: it styles Retool's own markup")
@@ -398,4 +400,37 @@ export function convertApp(
     .diagnostics.filter((d) => d.severity === 'error')
     .map((d) => ({ code: d.code, message: d.message, where: d.path.join('.') }))
   return { definition, report: report.build(diagnostics) }
+}
+
+/** Event handlers, on the components and queries they belong to (each report entry gets a note for what's left out). */
+function attachEvents(app: RetoolApp, definition: AppDefinition, report: ReportBuilder) {
+  const kinds = new Map(app.plugins.map((p) => [p.id, p.subtype]))
+  const ourTypes = new Map(definition.components.map((c) => [c.name, c.type]))
+  const ctx = { kinds, ourTypes }
+  const byId = new Map(app.plugins.map((p) => [p.id, p]))
+  const entryOf = (id: string) => report.entries.find((e) => e.retool === id)
+  const add = (id: string, existing: AppComponent['events']) => {
+    const plugin = byId.get(id)
+    if (!plugin) return existing
+    const notes: string[] = []
+    const handlers = convertEvents(plugin, ctx, notes)
+    const entry = entryOf(id)
+    if (entry && notes.length) {
+      entry.notes.push(...notes)
+      if (entry.status === 'converted') entry.status = 'approximated'
+    }
+    const all = [
+      ...(existing ?? []),
+      ...handlers.map((h) => (existing?.some((e) => e.id === h.id) ? { ...h, id: `${h.id}r` } : h)),
+    ]
+    return all.length ? all : undefined
+  }
+  for (const c of definition.components) {
+    const events = add(c.name, c.events)
+    if (events) c.events = events
+  }
+  for (const q of definition.queries) {
+    const events = add(q.name, q.events)
+    if (events) q.events = events
+  }
 }

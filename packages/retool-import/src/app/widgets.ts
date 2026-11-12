@@ -439,25 +439,33 @@ function legacyTable(p: RetoolPlugin): WidgetResult {
   ])
 }
 
-/** Retool's navigation: links to screens become links to pages; other items (with click handlers) are dropped. */
+/**
+ * Retool's navigation: links to screens become links to pages; other links (which run handlers in Retool) become our
+ * action links, keyed by Retool's item id, whose handlers are converted with the component's.
+ */
 function navigation(p: RetoolPlugin): WidgetResult {
-  const labels = Array.isArray(t(p, '_labels')) ? (t(p, '_labels') as unknown[]) : []
-  const screens = Array.isArray(t(p, '_screenTargetByIndex'))
-    ? (t(p, '_screenTargetByIndex') as unknown[])
-    : []
-  const items = labels.flatMap((label, i) =>
-    typeof screens[i] === 'string' && screens[i]
-      ? [{ page: screens[i] as string, label: String(label ?? '') }]
-      : [],
-  )
-  const dropped = labels.length - items.length
-  return ok(
-    'navigation',
-    { ...common(p), items, orientation: t(p, 'orientation') === 'vertical' ? 'vertical' : 'horizontal' },
-    dropped
-      ? [`${dropped} of its links ran actions in Retool; they weren't imported: add them as buttons`]
-      : [],
-  )
+  const list = (key: string) => (Array.isArray(t(p, key)) ? (t(p, key) as unknown[]) : [])
+  const labels = list('_labels')
+  const screens = list('_screenTargetByIndex')
+  const ids = list('_ids')
+  const hidden = list('_hiddenByIndex')
+  const items = labels.map((label, i) => {
+    const text = String(label ?? '')
+    const hide =
+      hidden[i] === true || hidden[i] === 'true'
+        ? { hidden: true }
+        : typeof hidden[i] === 'string' && (hidden[i] as string).includes('{{')
+          ? { hidden: hidden[i] as string }
+          : {}
+    return typeof screens[i] === 'string' && screens[i]
+      ? { page: screens[i] as string, label: text, ...hide }
+      : { key: String(ids[i] ?? i), label: text, ...hide }
+  })
+  return ok('navigation', {
+    ...common(p),
+    items,
+    orientation: t(p, 'orientation') === 'vertical' ? 'vertical' : 'horizontal',
+  })
 }
 
 /** A view key as one of our names: `View 1` → `view1`. */

@@ -21,11 +21,32 @@ export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set([
   'appContext',
   'url',
   'localStorage',
+  // Retool's helpers (M36).
+  'formatDataAsArray',
+  'formatDataAsObject',
+])
+
+/** What the app's Worker has besides the language (M36: Retool code uses them). */
+export const APP_WORKER_GLOBALS: ReadonlySet<string> = new Set([
+  'setTimeout',
+  'clearTimeout',
+  'setInterval',
+  'clearInterval',
+  'atob',
+  'btoa',
+  'TextEncoder',
+  'TextDecoder',
+  'structuredClone',
 ])
 
 /** Names an app's code can read without them being one of its components, queries, transformers or variables. */
 export function isAppGlobalName(name: string): boolean {
-  return JS_GLOBALS.has(name) || APP_STDLIB_GLOBALS.has(name) || APP_RUNTIME_GLOBALS.has(name)
+  return (
+    JS_GLOBALS.has(name) ||
+    APP_STDLIB_GLOBALS.has(name) ||
+    APP_RUNTIME_GLOBALS.has(name) ||
+    APP_WORKER_GLOBALS.has(name)
+  )
 }
 
 /** Why `name` can't name something in an app, or null if it can. Assumes the identifier pattern matched. */

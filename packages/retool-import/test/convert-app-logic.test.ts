@@ -173,7 +173,6 @@ describe('convertApp: queries, state, functions and Retool names', () => {
       // In the query's own SQL, `shop` isn't passed by any trigger: Retool would fail on it too.
       '"extra" is not defined',
       '"file" is not defined',
-      '"formatDataAsArray" is not defined',
       '"shop" is not defined',
     ])
   })

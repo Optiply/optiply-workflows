@@ -286,7 +286,11 @@ describe('AppRuntime', () => {
 
   it("gives a query's declared scope names, undefined when a trigger doesn't pass them (M36)", async () => {
     const t = setup(
-      { queries: [sql('get', 'select {{ id ?? 0 }}, {{ note ?? "none" }}', 'manual', { scope: ['id', 'note'] })] },
+      {
+        queries: [
+          sql('get', 'select {{ id ?? 0 }}, {{ note ?? "none" }}', 'manual', { scope: ['id', 'note'] }),
+        ],
+      },
       { respond: (_q, values) => [values] },
     )
     await t.runtime.start()
@@ -615,6 +619,70 @@ describe('AppRuntime', () => {
       { type: 'download', data: 'a,b\r\n1,\'=1+1\r\n"x,y",\r\n', fileName: 'out.csv', mimeType: 'text/csv' },
       { type: 'download', data: '{\n  "a": 1\n}', fileName: 'o.json', mimeType: 'application/json' },
     ])
+  })
+
+  it("runs Retool's APIs: views by key, local storage, notifications, files, column data (M36)", async () => {
+    const t = setup({
+      components: [
+        comp('box', 'container', {
+          views: [
+            { name: 'orders', label: 'Orders' },
+            { name: 'log', label: '7' },
+          ],
+        }),
+        comp('seen', 'text', { value: '{{ box.currentView }} {{ localStorage.values.k ?? "none" }}' }),
+      ],
+      queries: [
+        js(
+          'retool',
+          [
+            'box.setCurrentView(7)',
+            "localStorage.setValue('k', 'v'); localStorage.setValue('gone', 1); localStorage.removeValue('gone')",
+            "utils.showNotification({ title: 'Saved', description: '3 rows', notificationType: 'success' })",
+            "utils.downloadFile('a', 'report', 'txt')",
+            "return [formatDataAsArray({ id: [1, 2], n: ['a', 'b'] }), formatDataAsArray([{ id: 1 }]), formatDataAsObject([{ id: 1 }, { id: 2, x: 3 }])]",
+          ].join('\n'),
+        ),
+        js('first', 'box.setCurrentViewIndex(0); localStorage.clear()'),
+      ],
+    })
+    await t.runtime.start()
+    expect(await t.runtime.trigger('retool')).toEqual([
+      [
+        { id: 1, n: 'a' },
+        { id: 2, n: 'b' },
+      ],
+      [{ id: 1 }],
+      { id: [1, 2], x: [undefined, 3] },
+    ])
+    expect(t.state['seen.value']).toBe('log v')
+    expect(t.effects).toContainEqual({ type: 'notify', message: 'Saved: 3 rows', tone: 'success' })
+    expect(t.effects).toContainEqual({
+      type: 'download',
+      data: 'a',
+      fileName: 'report.txt',
+      mimeType: 'text/plain',
+    })
+    await t.runtime.trigger('first')
+    expect(t.state['seen.value']).toBe('orders none')
+  })
+
+  it("passes a handler's owner to the query it triggers as triggeredById (M36)", async () => {
+    const t = setup({
+      components: [
+        comp(
+          'b',
+          'button',
+          {},
+          { events: [on('click', { type: 'controlQuery', query: 'who', method: 'trigger' })] },
+        ),
+      ],
+      queries: [js('who', 'return triggeredById', { scope: ['triggeredById'] })],
+    })
+    await t.runtime.start()
+    await t.runtime.fire('b', 'click')
+    expect(t.state['who.data']).toBe('b')
+    expect(await t.runtime.trigger('who')).toBeUndefined()
   })
 
   it('takes over after an edit, keeping what the user did and re-running only what changed', async () => {

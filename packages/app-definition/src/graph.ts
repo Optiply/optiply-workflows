@@ -7,6 +7,7 @@ import {
   moduleComponentSpec,
   QUERY_METHODS,
   QUERY_STATE,
+  STORAGE_METHODS,
   STORAGE_STATE,
   URL_STATE,
   VARIABLE_METHODS,
@@ -179,8 +180,9 @@ export function entityMethods(entity: Entity): string[] {
       return []
     case 'variable':
       return Object.keys(VARIABLE_METHODS)
-    case 'url':
     case 'storage':
+      return [...STORAGE_METHODS]
+    case 'url':
     case 'inputs':
       return []
   }

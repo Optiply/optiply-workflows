@@ -43,17 +43,30 @@ declare const appContext: { appSlug: string; environment: string; version: strin
 /** The page shown (null in an app without pages) and the query parameters of its URL. */
 declare const url: { page: string | null; params: Record<string, string> }
 /** What the app keeps in this browser (Set local storage), by key. */
-declare const localStorage: { values: Record<string, any> }
+declare const localStorage: {
+  values: Record<string, any>
+  /** Keeps a value in this browser for this app. */
+  setValue(key: string, value: any): void
+  removeValue(key: string): void
+  /** Removes every value the app keeps. */
+  clear(): void
+}
+/** Rows from Retool's column data, like { id: [1, 2] }; rows stay rows. */
+declare function formatDataAsArray(data: any): any[]
+/** Column data, like { id: [1, 2] }, from rows. */
+declare function formatDataAsObject(data: any): Record<string, any[]>
 declare const utils: {
   /** Shows a notification. */
   notify(message: any, tone?: 'info' | 'success' | 'error'): void
+  /** Retool's notification: title and description, success, error or info. */
+  showNotification(options: { title?: string; description?: string; notificationType?: string }): void
   /** Opens an http(s) or mailto link. */
   openUrl(url: string, options?: { newTab?: boolean }): void
   /** Opens one of the app's pages; params become its URL's query string (read back as url.params, strings). */
   openPage(page: string, options?: { params?: Record<string, any>; newTab?: boolean }): void
   copyToClipboard(text: any): void
   /** Saves data as a file: a string as-is, an array of objects as CSV for a .csv name, JSON otherwise. */
-  downloadFile(data: any, fileName?: string): void
+  downloadFile(data: any, fileName?: string, fileType?: string): void
 }
 /** In a query's transform: the query's result. */
 declare const data: any

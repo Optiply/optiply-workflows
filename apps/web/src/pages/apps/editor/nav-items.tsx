@@ -8,10 +8,17 @@ type Item = { [key: string]: JsonValue }
 
 const asItem = (v: JsonValue): Item | null => (v && typeof v === 'object' && !Array.isArray(v) ? v : null)
 const kindOf = (item: Item) =>
-  Array.isArray(item.items) ? 'group' : typeof item.url === 'string' ? 'url' : 'page'
+  Array.isArray(item.items)
+    ? 'group'
+    : typeof item.url === 'string'
+      ? 'url'
+      : typeof item.page !== 'string' && typeof item.key === 'string'
+        ? 'action'
+        : 'page'
 
 /**
- * A Navigation's links as a list (M24): each a page, an outside link or a group of links, with its label, icon and a
+ * A Navigation's links as a list (M24): each a page, an outside link, an action (M36: a key its click handlers check)
+ * or a group of links, with its label, icon and a
  * condition hiding it; groups hold one level of links. "Edit as JSON" covers the rest (a page's URL params).
  */
 export function NavItemsEditor({ name, items }: { name: string; items: JsonValue[] }) {
@@ -60,7 +67,9 @@ function ItemList({
           const change = (patch: Item, drop: string[] = []) => {
             const next: Item = { ...item, ...patch }
             for (const key of drop) delete next[key]
-            for (const [key, value] of Object.entries(patch)) if (value === '') delete next[key]
+            // An action's key stays while it's being typed (without one it would be a page).
+            for (const [key, value] of Object.entries(patch))
+              if (value === '' && key !== 'key') delete next[key]
             onChange(items.map((v, j) => (j === i ? next : v)))
           }
           const expanded = open === i
@@ -87,15 +96,18 @@ function ItemList({
                   disabled={readOnly}
                   onChange={(e) =>
                     e.target.value === 'group'
-                      ? change({ items: [] }, ['page', 'params', 'url'])
+                      ? change({ items: [] }, ['page', 'params', 'url', 'key'])
                       : e.target.value === 'url'
-                        ? change({ url: 'https://' }, ['page', 'params', 'items'])
-                        : change({ page: firstPage ?? '' }, ['url', 'items'])
+                        ? change({ url: 'https://' }, ['page', 'params', 'items', 'key'])
+                        : e.target.value === 'action'
+                          ? change({ key: `item${i + 1}` }, ['page', 'params', 'url', 'items'])
+                          : change({ page: firstPage ?? '' }, ['url', 'items', 'key'])
                   }
                   className="h-7 w-20 shrink-0 text-xs"
                 >
                   <option value="page">Page</option>
                   <option value="url">Link</option>
+                  <option value="action">Action</option>
                   {depth === 0 && <option value="group">Group</option>}
                 </Select>
                 {kind === 'page' ? (
@@ -112,6 +124,15 @@ function ItemList({
                       </option>
                     ))}
                   </Select>
+                ) : kind === 'action' ? (
+                  <Input
+                    aria-label="Key"
+                    title="Clicking sets clickedItem to this key and fires click"
+                    value={typeof item.key === 'string' ? item.key : ''}
+                    disabled={readOnly}
+                    onChange={(e) => change({ key: e.target.value })}
+                    className="h-7 min-w-0 flex-1 text-xs"
+                  />
                 ) : kind === 'url' ? (
                   <Input
                     aria-label="Address"
@@ -139,7 +160,15 @@ function ItemList({
               <div className="flex gap-1 px-1 pb-1">
                 <Input
                   aria-label="Label"
-                  placeholder={kind === 'page' ? 'The page’s title' : kind === 'url' ? 'The address' : 'Menu'}
+                  placeholder={
+                    kind === 'page'
+                      ? 'The page’s title'
+                      : kind === 'url'
+                        ? 'The address'
+                        : kind === 'action'
+                          ? 'The key'
+                          : 'Menu'
+                  }
                   value={typeof item.label === 'string' ? item.label : ''}
                   disabled={readOnly}
                   onChange={(e) => change({ label: e.target.value })}

@@ -142,7 +142,7 @@ export class AppRuntime {
     this.autoRunDelayMs = options.autoRunDelayMs ?? 100
     this.model = new AppModel(definition, {
       ...(options.runner && { runner: options.runner }),
-      globals: { ...options.globals, utils: this.utils() },
+      globals: { ...options.globals, utils: this.utils(), formatDataAsArray, formatDataAsObject },
       methods: (entity) => this.methodsFor(entity),
       ...(options.url && { url: options.url }),
       ...(options.storage && { storage: options.storage }),
@@ -646,7 +646,9 @@ export class AppRuntime {
       const action = handler.action
       switch (action.type) {
         case 'controlQuery':
-          if (action.method === 'trigger') await this.trigger(action.query)
+          // `triggeredById`: what fired the handler, as Retool gives it (M36); a query reads it once in its scope.
+          if (action.method === 'trigger')
+            await this.trigger(action.query, { additionalScope: { triggeredById: owner } })
           else this.resetQuery(action.query)
           break
         case 'controlComponent': {
@@ -754,6 +756,14 @@ export class AppRuntime {
         break
       case 'transformer':
         break
+      case 'storage':
+        // Retool's (M36), besides the Set and Clear local storage actions.
+        methods = {
+          setValue: (k: unknown, value: unknown) => this.setStorage(String(k), value),
+          removeValue: (k: unknown) => this.setStorage(String(k), undefined),
+          clear: () => this.setStorage(null, undefined),
+        }
+        break
       case 'component': {
         const type = entity.component.type
         methods.setHidden = (hidden: unknown) => this.apply({ [key('hidden')]: truthy(hidden) })
@@ -843,6 +853,23 @@ export class AppRuntime {
           }
           methods.nextView = () => step(1)
           methods.previousView = () => step(-1)
+          // Retool's (M36): a view by its name or its label (Retool's view key, `"Orders"` or `3`), or by index.
+          methods.setCurrentView = (view: unknown) => {
+            const match = containerViews(entity.component).find(
+              (v) => v.name === view || v.label === String(view),
+            )
+            if (!match) {
+              throw new Error(
+                `${name} has no view ${JSON.stringify(view)}: it has ${views().join(', ') || 'none'}`,
+              )
+            }
+            return show(match.name)
+          }
+          methods.setCurrentViewIndex = (index: unknown) => {
+            const view = views()[Number(index)]
+            if (view === undefined) throw new Error(`${name} has no view at ${JSON.stringify(index)}`)
+            return show(view)
+          }
           const fold = (expanded: boolean) => {
             if ((this.model.get(key('expanded')) !== false) === expanded) return true
             this.apply({ [key('expanded')]: expanded })
@@ -993,14 +1020,35 @@ export class AppRuntime {
         }
         this.bridge.effect({ type: 'openPage', page: name, params, newTab: options.newTab === true })
       },
+      /** Retool's `{ title, description, notificationType }` (M36). */
+      showNotification: (options: unknown = {}) => {
+        const o = (options && typeof options === 'object' ? options : { title: options }) as Record<
+          string,
+          unknown
+        >
+        const text = [o.title, o.description]
+          .filter((x) => x !== undefined && x !== null && x !== '')
+          .join(': ')
+        const type = o.notificationType
+        this.bridge.effect({
+          type: 'notify',
+          message: text || 'Done',
+          tone: type === 'success' || type === 'error' ? type : 'info',
+        })
+      },
       copyToClipboard: (text: unknown) =>
         this.bridge.effect({ type: 'copy', text: typeof text === 'string' ? text : JSON.stringify(text) }),
       /**
        * Saves `data` as a file: a string as-is, an array of objects as CSV when the name ends in `.csv`, anything
        * else as JSON.
        */
-      downloadFile: (data: unknown, fileName: unknown = 'download.txt') => {
-        const file = String(fileName)
+      downloadFile: (data: unknown, fileName: unknown = 'download.txt', fileType?: unknown) => {
+        // Retool's third argument is the type: `downloadFile(rows, 'orders', 'csv')`.
+        const base = String(fileName)
+        const file =
+          typeof fileType === 'string' && fileType && !/\.[a-z0-9]+$/i.test(base)
+            ? `${base}.${fileType}`
+            : base
         const csv = file.toLowerCase().endsWith('.csv')
         const text =
           typeof data === 'string'
@@ -1017,6 +1065,33 @@ export class AppRuntime {
       },
     }
   }
+}
+
+/**
+ * Retool's helpers (M36): its SQL data is by column (`{ id: [1, 2] }`) and these convert. Rows come back as they are,
+ * so code written for either shape works here, where SQL data is rows.
+ */
+export function formatDataAsArray(data: unknown): unknown[] {
+  if (Array.isArray(data)) return data
+  if (!data || typeof data !== 'object') return []
+  const columns = Object.entries(data as Record<string, unknown>)
+  const length = Math.max(0, ...columns.map(([, v]) => (Array.isArray(v) ? v.length : 0)))
+  return Array.from({ length }, (_, i) =>
+    Object.fromEntries(columns.map(([k, v]) => [k, Array.isArray(v) ? v[i] : undefined])),
+  )
+}
+
+export function formatDataAsObject(data: unknown): Record<string, unknown[]> {
+  if (!Array.isArray(data)) return data && typeof data === 'object' ? (data as Record<string, unknown[]>) : {}
+  const out: Record<string, unknown[]> = {}
+  data.forEach((row, i) => {
+    for (const [k, v] of Object.entries((row ?? {}) as Record<string, unknown>)) {
+      out[k] ??= Array.from({ length: i }, () => undefined)
+      out[k]!.push(v)
+    }
+    for (const list of Object.values(out)) if (list.length < i + 1) list.push(undefined)
+  })
+  return out
 }
 
 function handlersOf(entity: Entity): EventHandler[] {

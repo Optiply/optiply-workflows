@@ -115,14 +115,15 @@ const specs: ComponentSpec[] = [
        * Per link, in order (M24): `{ page, params?, url?, label?, icon?, hidden?, items? }`: a page of the app (with
        * URL params) or an outside `url` (http, https or mailto; opens in a new tab), an icon from `NAV_ICONS`, `hidden`
        * a template, and `items`: one level of sub-links (a group). Labels, params and `hidden` may be templates. Empty
-       * links every page, by title.
+       * links every page, by title. An item with a `key` and neither page nor url (M36) is an action: clicking it sets
+       * `clickedItem` to its key and fires `click` (handlers check `{{ nav1.clickedItem === 'orders' }}`).
        */
       items: { type: 'array', default: [], label: 'Links' },
       orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
     },
-    state: {},
+    state: { clickedItem: { default: null } },
     methods: {},
-    events: [],
+    events: ['click'],
     defaultSize: { w: 12, h: 3 },
   },
   {
@@ -550,6 +551,10 @@ const specs: ComponentSpec[] = [
       nextView: { params: [] },
       /** The previous view, staying on the first one; fires `viewChange` when it moves. */
       previousView: { params: [] },
+      /** Retool's (M36): the view with that name or label; fires `viewChange`. */
+      setCurrentView: { params: ['view'] },
+      /** Retool's (M36): the view at that index, from 0; fires `viewChange`. */
+      setCurrentViewIndex: { params: ['index'] },
       /** Unfolds it; fires `expand`. */
       expand: { params: [] },
       /** Folds it to its header (a collapsible container); fires `collapse`. */
@@ -762,6 +767,8 @@ export const URL_STATE = ['page', 'params'] as const
 
 /** `localStorage.values` (session 41): what the app keeps in this browser, by key (Set local storage). */
 export const STORAGE_STATE = ['values'] as const
+/** Retool's (M36): `localStorage.setValue(key, value)`, `removeValue(key)`, `clear()`. */
+export const STORAGE_METHODS = ['setValue', 'removeValue', 'clear'] as const
 export const VARIABLE_METHODS: Readonly<Record<string, MethodSpec>> = {
   setValue: { params: ['value'] },
   setIn: { params: ['path', 'value'] },

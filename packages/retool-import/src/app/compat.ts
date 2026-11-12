@@ -3,10 +3,12 @@ import {
   appFields,
   appNameReason,
   appNameSchema,
+  isAppGlobalName,
   renameAppEntity,
   setAt,
   type Variable,
 } from '@ow/app-definition'
+import { fieldRefs } from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { ReportBuilder } from '../report'
 
@@ -205,6 +207,28 @@ export function declareScopes(def: AppDefinition) {
       for (const key of objectKeysAndValues(field.source, open).keys()) {
         if (appNameSchema.safeParse(key).success)
           (names.get(query) ?? names.set(query, new Set()).get(query)!).add(key)
+      }
+    }
+  }
+  // Queries triggered by name (`queries[name].trigger({ additionalScope })`) can't be traced: a name a query reads
+  // that is a key of any additionalScope in the app, and nothing else, is taken as passed in. So is Retool's
+  // `triggeredById` (what fired the handler that triggered it), which our handlers pass too.
+  const passed = new Set<string>(['triggeredById'])
+  for (const field of appFields(def)) {
+    for (const m of field.source.matchAll(/additionalScopes?\s*:\s*\{/g)) {
+      for (const key of objectKeysAndValues(field.source, m.index! + m[0].length - 1).keys()) passed.add(key)
+    }
+  }
+  const entities = new Set(
+    [...def.components, ...def.queries, ...(def.transformers ?? []), ...(def.variables ?? [])].map(
+      (x) => x.name,
+    ),
+  )
+  for (const field of appFields(def)) {
+    if (field.path[0] !== 'queries' || field.path[2] === 'events') continue
+    for (const ref of fieldRefs(field).refs) {
+      if (passed.has(ref.name) && !entities.has(ref.name) && !isAppGlobalName(ref.name)) {
+        ;(names.get(field.owner) ?? names.set(field.owner, new Set()).get(field.owner)!).add(ref.name)
       }
     }
   }

@@ -97,10 +97,45 @@ describe('validateApp', () => {
     ])
   })
 
+  it("knows Retool's APIs: local storage methods, view keys, helpers and the Worker's globals (M36)", () => {
+    const def = app({
+      components: [
+        comp('box', 'container', { views: [{ name: 'a' }, { name: 'b' }] }),
+        comp(
+          'nav',
+          'navigation',
+          { items: [{ key: 'x', label: 'X' }] },
+          {
+            events: [
+              {
+                id: 'h',
+                event: 'click',
+                action: { type: 'runScript', code: 'box.setCurrentView(nav.clickedItem)' },
+              },
+            ],
+          },
+        ),
+      ],
+      queries: [
+        {
+          name: 'q',
+          kind: 'js',
+          code: "localStorage.setValue('k', 1); localStorage.removeValue('k'); localStorage.clear(); box.setCurrentViewIndex(0)\nsetTimeout(() => {}, 1); return formatDataAsArray(btoa('x'))",
+        },
+      ],
+    })
+    expect(validateApp(def).diagnostics).toEqual([])
+  })
+
   it("knows a query's declared scope names in its own fields only (M36)", () => {
     const def = app({
       components: [comp('t', 'text', { value: '{{ row }}' })],
-      queries: [sqlQuery('save', 'update x set a = {{ row.a }}', 'manual', { scope: ['row'], confirm: 'Save {{ row.a }}?' })],
+      queries: [
+        sqlQuery('save', 'update x set a = {{ row.a }}', 'manual', {
+          scope: ['row'],
+          confirm: 'Save {{ row.a }}?',
+        }),
+      ],
     })
     expect(codes(def)).toEqual([['unknown_identifier', 'components.0.props.value', 'error']])
   })
