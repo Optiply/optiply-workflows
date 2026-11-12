@@ -2042,7 +2042,15 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
       - Failures are recorded and built again next time.
     - **Other:** config `JS_BUNDLE_MAX_MB` (default 5); `confineTo` and `Gate` are now exported from `components/build.ts`.
     - **Tests:** `test/js-bundles.test.ts` (9).
-  - **Next:** 2b, the tRPC routes (`jsBundle` state, `installJsBundle`, `checkJs`), the audit, and the `.env.example` entry.
+    - Committed as `4798eda`.
+  - **2b, done, not committed yet:**
+    - A new router `jsPackages` (`trpc/routers/js-packages.ts`) with `state` (a query) and `install` (a mutation), each taking `{target: {kind: 'workflow' | 'app', id}, packages}`. The caller needs edit access; `visibleApp` is now exported.
+    - `install` audits `js.bundle_built` only for a new bundle.
+    - In `js-bundles.ts`: `jsBundleState`, which reads without building and without tokens, and `stateOf`. The states are `none`, `invalid`, `failed` (with kind, error and log) and `ready` (with versions, size and warnings).
+    - `.env.example` has `JS_BUNDLE_MAX_MB`.
+    - Tests: `test/js-packages-router.test.ts` (4).
+    - `checkJs` is moved to step 3, with the import rewrite.
+  - **Next:** step 3, the workflow runtime: the bundle in the isolate, the import rewrite, the engine provider, and the lock on publish, rollback and Git deploy.
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

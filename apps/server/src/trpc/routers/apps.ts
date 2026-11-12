@@ -42,7 +42,7 @@ const QueryName = z.string().max(64)
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /** The app and the caller's access; apps the caller can't see are NOT_FOUND. */
-async function visibleApp(
+export async function visibleApp(
   ctx: AuthedContext,
   where: { id: string } | { slug: string },
 ): Promise<{ access: Access; app: App }> {

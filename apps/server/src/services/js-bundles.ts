@@ -4,7 +4,7 @@ import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import type { Keyring } from '@ow/crypto'
-import { type Db, jsBundles } from '@ow/db'
+import { type Db, jsBundles, npmRegistries } from '@ow/db'
 import { canonicalJson, jsDependencies, jsPackageProblems } from '@ow/definition'
 import { eq, sql } from 'drizzle-orm'
 import { build, type Message, type Plugin } from 'esbuild'
@@ -346,4 +346,78 @@ module.exports = new Proxy(function () {}, {
   construct: fail,
 })
 `
+}
+
+export type JsBundleState =
+  | { state: 'none' }
+  | { state: 'invalid'; error: string }
+  | { state: 'failed'; kind: string; error: string; log: string; at: Date | null }
+  | {
+      state: 'ready'
+      versions: Record<string, string>
+      sizeBytes: number
+      warnings: string[]
+      at: Date | null
+    }
+
+/**
+ * What `buildJsBundle` would find for `packages` now, without building: for the editor. The registries count by
+ * their scope and URL only, so this reads no tokens.
+ */
+export async function jsBundleState(
+  db: Db,
+  config: JsBundleConfig,
+  packages: readonly string[],
+): Promise<JsBundleState> {
+  const problems = jsPackageProblems(packages)
+  if (problems.length) {
+    return { state: 'invalid', error: problems.map((p) => `Line ${p.index + 1}: ${p.message}`).join('\n') }
+  }
+  const dependencies = jsDependencies(packages)
+  if (!Object.keys(dependencies).length) return { state: 'none' }
+  const registries = await db
+    .select({ scope: npmRegistries.scope, url: npmRegistries.url })
+    .from(npmRegistries)
+  const [row] = await db
+    .select()
+    .from(jsBundles)
+    .where(eq(jsBundles.inputHash, jsInputHash(dependencies, registries, config.registry, null)))
+  if (!row) return { state: 'none' }
+  if (row.state === 'failed') {
+    return {
+      state: 'failed',
+      kind: row.error?.kind ?? 'install',
+      error: row.error?.message ?? 'The install failed',
+      log: row.log ?? '',
+      at: row.builtAt,
+    }
+  }
+  return {
+    state: 'ready',
+    versions: row.versions ?? {},
+    sizeBytes: row.sizeBytes ?? 0,
+    warnings: row.warnings ?? [],
+    at: row.builtAt,
+  }
+}
+
+/** A build's outcome as the editor's state: what `jsBundleState` would now say (failures before recording too). */
+export function stateOf(outcome: JsBundleOutcome): JsBundleState {
+  if (outcome.ok) {
+    return {
+      state: 'ready',
+      versions: outcome.versions,
+      sizeBytes: outcome.sizeBytes,
+      warnings: outcome.warnings,
+      at: new Date(),
+    }
+  }
+  if (outcome.kind === 'invalid') return { state: 'invalid', error: outcome.message }
+  return {
+    state: 'failed',
+    kind: outcome.kind,
+    error: outcome.message,
+    log: outcome.log ?? '',
+    at: new Date(),
+  }
 }
