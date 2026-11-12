@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   Copy,
+  FileUp,
   Folder,
   FolderInput,
   FolderPlus,
@@ -25,6 +26,7 @@ import {
 } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import { ListToolbar, useStoredChoice } from '@/components/list-toolbar'
+import { RetoolImportDialog } from '@/components/retool-import'
 import {
   Badge,
   Button,
@@ -77,7 +79,7 @@ export function AppsPage() {
   const queryClient = useQueryClient()
   const { data, isLoading, error } = useQuery(trpc.apps.list.queryOptions())
   const { data: folders } = useFolders('app')
-  const [panel, setPanel] = useState<'none' | 'app' | 'folder'>('none')
+  const [panel, setPanel] = useState<'none' | 'app' | 'folder' | 'import'>('none')
   const [query, setQuery] = useState('')
   const [sort, chooseSort] = useStoredChoice<SortKey>('ow.apps.sort', isSortKey, 'name')
   const sorted = useMemo(() => sortApps(data ?? [], sort), [data, sort])
@@ -112,6 +114,11 @@ export function AppsPage() {
               </Button>
             )}
             {canCreate && (
+              <Button onClick={() => setPanel('import')}>
+                <FileUp className="size-4" /> Import
+              </Button>
+            )}
+            {canCreate && (
               <Button variant="primary" onClick={() => setPanel('app')}>
                 <Plus className="size-4" /> New app
               </Button>
@@ -119,6 +126,7 @@ export function AppsPage() {
           </>
         }
       />
+      {panel === 'import' && <RetoolImportDialog kind="app" onClose={() => setPanel('none')} />}
       {panel === 'app' && <NewAppDialog onClose={() => setPanel('none')} />}
       {panel === 'folder' && <NewFolderDialog type="app" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (

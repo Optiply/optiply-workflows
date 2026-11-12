@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import {
   CalendarClock,
   Copy,
+  FileUp,
   Folder,
   FolderInput,
   FolderPlus,
@@ -27,6 +28,7 @@ import {
 } from '@/components/folders'
 import { ProtectDialog, ProtectedBadge, useGitInfo } from '@/components/git'
 import { ListToolbar, useStoredChoice } from '@/components/list-toolbar'
+import { RetoolImportDialog } from '@/components/retool-import'
 import {
   Badge,
   Button,
@@ -76,7 +78,7 @@ export function WorkflowsPage() {
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.workflows.list.queryOptions())
   const { data: folders } = useFolders('workflow')
-  const [panel, setPanel] = useState<'none' | 'workflow' | 'folder'>('none')
+  const [panel, setPanel] = useState<'none' | 'workflow' | 'folder' | 'import'>('none')
   const [query, setQuery] = useState('')
   const [sort, chooseSort] = useStoredChoice<SortKey>('ow.workflows.sort', isSortKey, 'name')
   const sorted = useMemo(() => sortWorkflows(data ?? [], sort), [data, sort])
@@ -113,6 +115,11 @@ export function WorkflowsPage() {
               </Button>
             )}
             {canCreate && (
+              <Button onClick={() => setPanel('import')}>
+                <FileUp className="size-4" /> Import
+              </Button>
+            )}
+            {canCreate && (
               <Button variant="primary" onClick={() => setPanel('workflow')}>
                 <Plus className="size-4" /> New workflow
               </Button>
@@ -120,6 +127,7 @@ export function WorkflowsPage() {
           </>
         }
       />
+      {panel === 'import' && <RetoolImportDialog kind="workflow" onClose={() => setPanel('none')} />}
       {panel === 'workflow' && <NewWorkflowDialog onClose={() => setPanel('none')} />}
       {panel === 'folder' && <NewFolderDialog type="workflow" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (

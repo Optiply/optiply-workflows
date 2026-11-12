@@ -22,6 +22,7 @@
     "@ow/component-sdk": "workspace:*",
     "@ow/connectors": "workspace:*",
     "@ow/definition": "workspace:*",
+    "@ow/retool-import": "workspace:*",
     "@ow/sandbox": "workspace:*",
     "@tanstack/react-query": "5.104.2",
     "@tanstack/react-router": "1.170.42",

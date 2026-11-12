@@ -193,7 +193,11 @@ describe('retool import', () => {
     expect(JSON.stringify(wf!.draftDefinition)).toContain('"resource":"orders_db"')
     expect(JSON.stringify(wf!.draftDefinition)).not.toContain(TOKEN)
     const [record] = await env.db.select().from(retoolImports).where(eq(retoolImports.workflowId, workflowId))
-    expect(record).toMatchObject({ kind: 'workflow', retoolKey: 'webhook:hook-1', retoolName: 'Sync orders' })
+    expect(record).toMatchObject({
+      kind: 'workflow',
+      retoolKey: 'name:Sync orders',
+      retoolName: 'Sync orders',
+    })
     expect(JSON.stringify(record!.report)).not.toContain(TOKEN)
     expect(await env.db.select().from(retoolMappings)).toEqual([
       expect.objectContaining({ kind: 'resource', retoolKey: 'orders-uuid' }),
@@ -243,8 +247,23 @@ describe('retool import', () => {
     const [record] = await env.db
       .select()
       .from(retoolImports)
-      .where(eq(retoolImports.retoolKey, 'webhook:hook-1'))
+      .where(eq(retoolImports.retoolKey, 'name:Sync orders'))
     expect(record!.workflowId).toBe(workflowId)
+  })
+
+  it('tells workflows apart by name: their webhook "uuid" is startTrigger in every Retool export', async () => {
+    const other = JSON.parse(workflowFile())
+    other.name = 'Another flow'
+    other.triggerWebhooks[0].uuid = 'startTrigger'
+    const result = data(
+      await admin.mutate('retoolImport.run', {
+        expect: 'workflow',
+        fileName: 'another.json',
+        content: JSON.stringify(other),
+      }),
+    )
+    expect(result).toMatchObject({ name: 'Another flow', mode: 'created' })
+    expect(result.id).not.toBe(workflowId)
   })
 
   it('imports an app, its Retool workflow mapped to one of ours', async () => {

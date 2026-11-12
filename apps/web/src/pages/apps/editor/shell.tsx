@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useMemo, useRef, useState } from 'react'
+import { ImportedFromRetool } from '@/components/retool-import'
 import { Button, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useAppHostState } from '../runtime/react'
@@ -263,6 +264,7 @@ export function StatusBar({ environment, branch }: { environment: string; branch
   )
   const tab = useAppEditor((s) => s.debugTab)
   const setTab = useAppEditor((s) => s.setDebugTab)
+  const appId = useAppEditor((s) => s.appId)
   const counts = useDebugCounts()
   const toggle = (to: DebugTab) => setTab(tab === to ? null : to)
   return (
@@ -275,6 +277,7 @@ export function StatusBar({ environment, branch }: { environment: string; branch
         {environment}
       </span>
       {branch && <span className="font-mono">{branch}</span>}
+      {appId && <ImportedFromRetool kind="app" id={appId} />}
       <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5" aria-live="polite">
         {running.length ? (
           <>

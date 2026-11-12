@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
+import { ImportedFromRetool } from '@/components/retool-import'
 import { SaveStatusIndicator } from '@/components/save-status'
 import { TopBarPortal } from '@/components/top-bar'
 import { Badge, Button, Dialog, ErrorNote, Select, Spinner } from '@/components/ui'
@@ -464,6 +465,7 @@ function StatusBar({
       >
         <History className="size-3" /> Run history
       </button>
+      <ImportedFromRetool kind="workflow" id={workflow.id} />
     </footer>
   )
 }

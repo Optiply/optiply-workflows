@@ -67,10 +67,15 @@ function readExport(input: { expect: 'app' | 'workflow'; fileName: string; conte
   return read
 }
 
-/** What identifies a Retool app or workflow across exports: an app's uuid; a workflow's webhook uuid, else its name. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * What identifies a Retool app or workflow across exports: an app's uuid. A workflow export carries none of its own,
+ * and its webhook trigger's "uuid" is `startTrigger` in every workflow: its name, then (a real uuid there).
+ */
 export function retoolKeyOf(read: RetoolExport): string {
   if (read.kind === 'app') return read.uuid || `name:${read.name}`
-  const hook = read.webhooks.find((w) => w.uuid)?.uuid
+  const hook = read.webhooks.find((w) => w.uuid && UUID.test(w.uuid))?.uuid
   return hook ? `webhook:${hook}` : `name:${read.name}`
 }
 

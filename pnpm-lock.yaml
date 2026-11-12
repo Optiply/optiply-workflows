@@ -248,6 +248,9 @@ importers:
       '@ow/definition':
         specifier: workspace:*
         version: link:../../packages/definition
+      '@ow/retool-import':
+        specifier: workspace:*
+        version: link:../../packages/retool-import
       '@ow/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
