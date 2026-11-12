@@ -2250,7 +2250,13 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
   - `feat/js-packages` (`b277b30`)
 
   No local branch is ahead of its remote. All branches go in one PR at the end of the project.
-- **The user's stack** still runs `34dc04a` plus the CSV fix (46 migrations). Moving it to JavaScript packages means **migration 0046** and a new image. That's the user's call: dump the database first, then `docker compose up --no-build --no-deps migrate`.
+- **The user's stack runs JavaScript packages** (on their word, end of session 46):
+  - The database was dumped first to `~/optiply-workflows-backups/ow-2026-11-12-pre-s46.dump` (8.4 MB, data for 53 tables).
+  - The image `optiply-workflows:local` was built from a clean worktree at `15aa12b` with the CSV fix `8426520` cherry-picked. The executor and builder images are unchanged.
+  - `migrate` applied 0046, for 47 migrations. Then api and worker were restarted with `PUBLIC_URL=http://localhost:3000`.
+  - Checks: health 200, no warnings, `/settings/npm` served, and the API container reaches registry.npmjs.org.
+  - **To go back:** tag `:pre-s46` as `local` and recreate api and worker. Migration 0046 only adds a table and four nullable columns, so the old image ignores them.
+  - Old tags `:pre-s45` and `:pre-s45b` were removed and the build cache pruned (114 GB free).
 - **Session 46 did** (§14, session 46):
   - the Monaco-in-`<label>` focus fix
   - JavaScript packages for workflows and apps, steps 1 to 7, with a code review whose nine findings were all fixed
