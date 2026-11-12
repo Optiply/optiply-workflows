@@ -2050,7 +2050,37 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - `.env.example` has `JS_BUNDLE_MAX_MB`.
     - Tests: `test/js-packages-router.test.ts` (4).
     - `checkJs` is moved to step 3, with the import rewrite.
-  - **Next:** step 3, the workflow runtime: the bundle in the isolate, the import rewrite, the engine provider, and the lock on publish, rollback and Git deploy.
+    - Committed as `4471402`.
+  - **3a, done, not committed yet:**
+    - **`packages/expressions/src/imports.ts`:**
+      - `parseImports` reads the import lines at the top of the code, after comments and blank lines. It finds where each line ends with acorn's tokenizer, then parses each line on its own as a module, so the rest of the code doesn't need strict mode.
+      - `rewriteImports` turns them into `const __owImportN = __owImport("x"), d = __owImportN.default, { "a": b } = __owImportN;` on the same line, keeping the following line breaks.
+      - `blankImports` blanks them out with spaces, so other code keeps its offsets.
+      - Also `packageName` and `importedPackages`.
+      - `freeIdentifierRefs` (function bodies) reads the code with the imports blanked out and drops the imported names.
+    - **Sandbox:**
+      - The prelude's `__owImport` handles CommonJS: `default` is the module itself, and its properties work as named imports. ES modules come back as they are.
+      - Clear errors for a package that isn't installed and for a subpath import.
+      - `RunOptions.modules {hash, js}`: `IvmRuntime` compiles the bundle once per isolate (`scripts`) and runs it in each evaluation's context. Its time counts toward the code's limit.
+    - **Validator:**
+      - A new code `unknown_js_import`, for a package that isn't declared or a subpath like `zod/lib/x`.
+      - `importProblems(code, packages, where)` is exported for apps. `checkGraph` takes `jsPackages`.
+    - **Engine:**
+      - `runCode` rewrites import lines. A bad import line becomes `SandboxError('syntax')`.
+      - Only code with imports waits for `services.jsModules`.
+      - `waitForEnv` becomes `waitForInstall(…, 'Python' | 'JavaScript')`, and the log text is unchanged.
+    - **Tests:**
+      - `expressions/test/imports.test.ts` (8)
+      - `sandbox/test/ivm-modules.test.ts` (7)
+      - `definition/test/js-packages.test.ts`, 4 new
+      - `engine/test/js-packages.test.ts` (5)
+    - JavaScript run errors carry no stack, so line numbers are checked in the sandbox (`userStack`).
+    - `checkJs` isn't needed: the validator runs in the editor too.
+  - **Next:** 3b.
+    - The executor gets a `JsModulesProvider` (`shared()` plus prefetch, like `pythonEnvFor`).
+    - The server provider: a draft uses `buildJsBundle(packages)`, a release uses `jsBundleByHash`, rebuilding from `js_lock` if the bundle is gone.
+    - Wire it into `worker/index.ts` and `api/app.ts`.
+    - Publish, rollback and Git deploy save `js_lock` and `js_bundle_hash` (`services/releases.ts`, as Python does).
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

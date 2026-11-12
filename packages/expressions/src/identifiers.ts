@@ -1,6 +1,7 @@
 import { type Node, type Options, parseExpressionAt } from 'acorn'
 import { analyze } from 'eslint-scope'
 import type * as ESTree from 'estree'
+import { blankImports, parseImports } from './imports'
 import { analyzePython } from './python'
 import { TemplateError } from './template'
 
@@ -54,6 +55,14 @@ export function freeIdentifierRefs(
   options: { properties?: boolean } = {},
 ): IdentifierRef[] {
   if (kind === 'python-body') return analyzePython(code, options).refs
+  if (kind !== 'expression') {
+    // Import lines at the top (JS packages) bind names for the whole body: read without them, offsets kept.
+    const imports = parseImports(code)
+    if (imports.length) {
+      const locals = new Set(imports.flatMap((imp) => imp.bindings.map((b) => b.local)))
+      return freeIdentifierRefs(blankImports(code, imports), kind, options).filter((r) => !locals.has(r.name))
+    }
+  }
   const [prefix, suffix] = WRAP[kind]
   const src = prefix + code + suffix
   const offset = prefix.length

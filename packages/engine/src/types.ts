@@ -13,7 +13,7 @@ import type {
   TaskOutcome,
   WorkflowDefinition,
 } from '@ow/definition'
-import type { CodeRuntime, PythonRunner } from '@ow/sandbox'
+import type { CodeRuntime, PythonRunner, SandboxModules } from '@ow/sandbox'
 
 /** Why a block or run failed, as stored and shown. Messages are scrubbed of known secrets. */
 export interface EngineError {
@@ -209,6 +209,11 @@ export interface EngineServices {
    * block first runs (shared by the rest). Absent when the definition declares none.
    */
   pythonEnv?: () => Promise<string>
+  /**
+   * The run's JavaScript packages: their bundle, asked for when JS code with import lines first runs (shared by the
+   * rest). Absent when the definition declares none.
+   */
+  jsModules?: () => Promise<SandboxModules>
   /** Library queries (M21): Library query blocks and runners. Without it they fail with `library`. */
   library?: LibraryQueries
 }

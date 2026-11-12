@@ -9,8 +9,16 @@ import {
   MAX_WAIT_MS,
   taskOutcomes,
 } from '@ow/definition'
-import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
-import type { HostFunction } from '@ow/sandbox'
+import {
+  type Evaluate,
+  parseImports,
+  renderJson,
+  renderTemplate,
+  renderText,
+  rewriteImports,
+  TemplateError,
+} from '@ow/expressions'
+import { type HostFunction, SandboxError, type SandboxModules } from '@ow/sandbox'
 import { aiLogLine } from './ai'
 import { childResult, waitForChild } from './children'
 import { BlockFailure } from './errors'
@@ -425,6 +433,19 @@ export async function runCode(
   language?: 'python',
 ): Promise<unknown> {
   if (language === 'python') return runPython(code, work, ctx)
+  // Import lines (JavaScript packages) become consts reading the bundle, which this code then needs.
+  let imports: ReturnType<typeof parseImports>
+  try {
+    imports = parseImports(code)
+  } catch (err) {
+    if (!(err instanceof TemplateError)) throw err
+    throw new SandboxError('syntax', `SyntaxError: ${err.message}`)
+  }
+  let modules: SandboxModules | undefined
+  if (imports.length) {
+    code = rewriteImports(code, imports)
+    if (ctx.services.jsModules) modules = await waitForInstall(ctx.services.jsModules(), work, 'JavaScript')
+  }
   const done = new AbortController()
   const signal = AbortSignal.any([work.signal, done.signal])
   const fetcher = ctx.services.fetcher
@@ -437,6 +458,7 @@ export async function runCode(
       timeoutMs: work.timeoutMs,
       onLog: (level, args) => work.log(level, formatLogArgs(args)),
       functions,
+      ...(modules && { modules }),
       fetch: async (request) => {
         if (!fetcher) throw new Error("fetch isn't available here")
         try {
@@ -463,7 +485,9 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
   if (!python) {
     throw new BlockFailure('python_unavailable', "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)")
   }
-  const envId = ctx.services.pythonEnv ? await waitForEnv(ctx.services.pythonEnv(), work) : undefined
+  const envId = ctx.services.pythonEnv
+    ? await waitForInstall(ctx.services.pythonEnv(), work, 'Python')
+    : undefined
   // As JSON (the client serializes it once; results already are JSON).
   return python.run(code, work.scope, {
     timeoutMs: work.timeoutMs,
@@ -474,22 +498,23 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
 }
 
 /**
- * The run's Python packages, saying so in the block's log when they take a while (a first install): a block timeout
- * then reads in context (the install goes on, for a retry or the next run). Leaves early when the work stops.
+ * The run's Python or JavaScript packages, saying so in the block's log when they take a while (a first install): a
+ * block timeout then reads in context (the install goes on, for a retry or the next run). Leaves early when the work
+ * stops.
  */
-function waitForEnv(env: Promise<string>, work: Work): Promise<string> {
+function waitForInstall<T>(env: Promise<T>, work: Work, language: 'Python' | 'JavaScript'): Promise<T> {
   if (work.signal.aborted) return Promise.reject(work.signal.reason)
   return new Promise((resolve, reject) => {
     let waiting = false
     const timer = setTimeout(() => {
       waiting = true
-      work.log('info', "Waiting for the workflow's Python packages to install…")
+      work.log('info', `Waiting for the workflow's ${language} packages to install…`)
     }, ENV_WAIT_LOG_MS)
     const stop = () => reject(work.signal.reason)
     work.signal.addEventListener('abort', stop, { once: true })
     env
       .then((id) => {
-        if (waiting) work.log('info', "The workflow's Python packages are installed")
+        if (waiting) work.log('info', `The workflow's ${language} packages are installed`)
         resolve(id)
       }, reject)
       .finally(() => {

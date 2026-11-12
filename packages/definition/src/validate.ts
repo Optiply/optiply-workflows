@@ -1,9 +1,15 @@
-import { analyzePython, PYTHON_KEYWORDS, type TemplateError } from '@ow/expressions'
+import {
+  analyzePython,
+  PYTHON_KEYWORDS,
+  packageName,
+  parseImports,
+  type TemplateError,
+} from '@ow/expressions'
 import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
-import { jsPackageProblems, MAX_JS_PACKAGES } from './js-packages'
+import { jsPackageProblems, MAX_JS_PACKAGES, splitJsPackage } from './js-packages'
 import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
 import { MAX_REQUIREMENTS, PYTHON_INDEX_SLUG, requirementProblems } from './requirements'
@@ -120,6 +126,8 @@ export type DiagnosticCode =
   | 'python_packages_unavailable'
   /** A workflow's or app's JavaScript package: not a plain npm package, a duplicate, or too many. */
   | 'invalid_js_package'
+  /** A JS import line naming a package that isn't one of the JavaScript packages (or a file inside one). */
+  | 'unknown_js_import'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -198,8 +206,11 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   checkFunctions(def, functions, report)
   let start: string | undefined
   const usesPython = pythonFields(def).length > 0
+  const jsPackages = new Set(
+    (def.settings?.javascript?.packages ?? []).map((p) => splitJsPackage(p).name).filter(Boolean),
+  )
   for (const source of blockGraphs(def)) {
-    const found = checkGraph(source, functions, report, usesPython)
+    const found = checkGraph(source, functions, report, usesPython, jsPackages)
     if (!source.function) start = found
   }
   checkRecursion(def, functions, report)
@@ -369,6 +380,8 @@ function checkGraph(
   functions: ReadonlyMap<string, FunctionDefinition>,
   report: Report,
   usesPython = false,
+  /** The workflow's JavaScript packages, by name: what import lines may name. */
+  jsPackages: ReadonlySet<string> = new Set(),
 ): string | undefined {
   const fn = source.function
   const { blocks, edges } = source
@@ -594,6 +607,8 @@ function checkGraph(
           ...(err.hint && { hint: err.hint }),
         })
       }
+      if (field.kind === 'function-body' && !errors.length)
+        checkImports(field.source, jsPackages, path, at, report)
       const python = field.kind === 'python-body'
       if (python) {
         // Assigning a name makes it the code's own in Python: reading the block (or `value`, `params`, …) before
@@ -683,6 +698,53 @@ function checkGraph(
   })
 
   return fn ? undefined : graph.start
+}
+
+/**
+ * A JS code body's import lines: each names one of the workflow's JavaScript packages, itself (not a file inside it,
+ * which the bundle doesn't have). Shared with apps.
+ */
+export function importProblems(
+  code: string,
+  packages: ReadonlySet<string>,
+  where: string,
+): { message: string; hint?: string; start: number; end: number }[] {
+  let imports: ReturnType<typeof parseImports>
+  try {
+    imports = parseImports(code)
+  } catch {
+    return [] // A syntax error, reported as one.
+  }
+  const problems: { message: string; hint?: string; start: number; end: number }[] = []
+  for (const imp of imports) {
+    const name = packageName(imp.source)
+    const span = { start: imp.sourceStart, end: imp.sourceEnd }
+    if (!packages.has(name)) {
+      problems.push({
+        message: `The package "${name}" isn't one of ${where} JavaScript packages`,
+        hint: `Add it to ${where} JavaScript packages (in its settings)`,
+        ...span,
+      })
+    } else if (imp.source !== name) {
+      problems.push({
+        message: `Import "${imp.source}": only a package itself can be imported, from "${name}"`,
+        ...span,
+      })
+    }
+  }
+  return problems
+}
+
+function checkImports(
+  code: string,
+  packages: ReadonlySet<string>,
+  path: (string | number)[],
+  at: { block: string; function?: string },
+  report: Report,
+) {
+  for (const problem of importProblems(code, packages, "the workflow's")) {
+    report({ code: 'unknown_js_import', path, ...at, ...problem })
+  }
 }
 
 /** Why a block can't be part of a function, or null if it can. */

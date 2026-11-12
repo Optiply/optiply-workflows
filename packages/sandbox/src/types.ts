@@ -12,6 +12,16 @@ export interface RunOptions {
   functions?: Record<string, HostFunction>
   /** Backs the global `fetch`. Without it, `fetch` rejects with "fetch isn't available here". */
   fetch?: (request: SandboxFetchRequest) => Promise<SandboxFetchResponse>
+  /**
+   * The workflow's JavaScript packages: a bundle setting `globalThis.__owModules`, run in the context before the
+   * code (`import` lines, rewritten, read it through `__owImport`). `hash` identifies it, so it's compiled once.
+   */
+  modules?: SandboxModules
+}
+
+export interface SandboxModules {
+  hash: string
+  js: string
 }
 
 export type HostFunction = (args: unknown[]) => Promise<unknown>

@@ -88,3 +88,50 @@ describe('JavaScript packages', () => {
     expect(splitJsPackage('Bad')).toEqual({ name: 'Bad', range: '' })
   })
 })
+
+describe('import lines in JavaScript code', () => {
+  const withCode = (code: string, packages?: string[]) =>
+    wf([start, { name: 'code1', type: 'code', config: { code } }], [['startTrigger', 'code1']], {
+      ...(packages && { settings: { javascript: { packages } } }),
+    })
+  const imports = (code: string, packages?: string[]) =>
+    validateDefinition(withCode(code, packages))
+      .diagnostics.filter((d) => d.code !== 'invalid_js_package')
+      .map(({ code: c, message, start: s, end }) => ({ code: c, message, at: [s, end] }))
+
+  it('names the workflow’s packages: their imports bind names for the code', () => {
+    expect(
+      imports("import { z } from 'zod'\nimport fmt from 'date-fns'\nreturn [z, fmt]", ['zod@^3', 'date-fns']),
+    ).toEqual([])
+  })
+
+  it('says when a package isn’t one of them, or a file inside one is imported', () => {
+    const code = "import _ from 'lodash'\nimport chunk from 'zod/lib/x'\nreturn [_, chunk]"
+    expect(imports(code, ['zod'])).toEqual([
+      {
+        code: 'unknown_js_import',
+        message: 'The package "lodash" isn\'t one of the workflow\'s JavaScript packages',
+        at: [15, 21],
+      },
+      {
+        code: 'unknown_js_import',
+        message: 'Import "zod/lib/x": only a package itself can be imported, from "zod"',
+        at: [42, 51],
+      },
+    ])
+    expect(imports("import _ from 'lodash'\nreturn _")[0]?.code).toBe('unknown_js_import')
+  })
+
+  it('a broken import line is a syntax error, and imports after other code too', () => {
+    expect(imports("import { a from 'x'\nreturn a", ['x']).map((d) => d.code)).toEqual(['syntax'])
+    expect(imports("const a = 1\nimport b from 'x'\nreturn b", ['x']).map((d) => d.code)).toContain('syntax')
+  })
+
+  it('leaves Python code alone', () => {
+    const python = wf(
+      [start, { name: 'py', type: 'code', config: { code: 'import json\nreturn 1', language: 'python' } }],
+      [['startTrigger', 'py']],
+    )
+    expect(validateDefinition(python).diagnostics.filter((d) => d.code === 'unknown_js_import')).toEqual([])
+  })
+})

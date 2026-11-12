@@ -53,6 +53,25 @@ const PRELUDE = `
         throw err
       })
   }
+  // JavaScript packages: \`import\` lines become \`__owImport(name)\`, reading the bundle's \`__owModules\` (set per
+  // context when the workflow or app has packages). CommonJS modules get a \`default\` (the module itself) and keep
+  // their properties as named imports; ES modules are as they are.
+  globalThis.__owImport = (name) => {
+    const modules = globalThis.__owModules
+    if (!modules || !Object.prototype.hasOwnProperty.call(modules, name)) {
+      const slash = name.startsWith('@') ? name.indexOf('/', name.indexOf('/') + 1) : name.indexOf('/')
+      if (slash > 0 && modules && Object.prototype.hasOwnProperty.call(modules, name.slice(0, slash))) {
+        throw new Error('Import "' + name + '": only a package itself can be imported, from "' + name.slice(0, slash) + '"')
+      }
+      throw new Error('The package "' + name + '" is not installed: add it to the JavaScript packages')
+    }
+    const m = modules[name]
+    if (m !== null && (typeof m === 'object' || typeof m === 'function')) {
+      if (m.__esModule) return m
+      return new Proxy(m, { get: (target, key) => (key === 'default' ? m : Reflect.get(target, key)) })
+    }
+    return { default: m }
+  }
   globalThis.__owBindFunctions = (names) => {
     for (const name of names) globalThis[name] = (...args) => host('function', name, args)
   }
