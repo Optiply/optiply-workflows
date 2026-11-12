@@ -2010,7 +2010,25 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
-## 14. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
+## 14. Session 46 steps: fixes before M36, then JavaScript packages
+
+Before M36 (the Retool import), the user asked for a fix and a feature.
+
+- **The fix: done.** It is `b0ec354` on `fix/pre-m36-polish`, which is pushed.
+  - **Bug:** Monaco editors inside a `<label>` lost focus on mouse-up. You had to hold the button down to type in Slack's Text and Blocks fields, and in every other connector's long and JSON fields.
+  - **Fix:** `Field as="div"` in action-query, openapi-query and library/editor.
+  - **Test:** a regression e2e in connectors.spec.
+- **The feature: JavaScript packages for workflows and apps.** It is on `feat/js-packages`, cut from the fix branch, and follows the plan in `~/.claude/plans/js-packages.md`.
+  - **Decided:** packages are bundled into the existing sandboxes (isolated-vm for workflows, the browser Worker for apps). Registries are the shared, scope-based `npm_registries`, with no per-workflow picker.
+  - **1a, done, not committed yet:**
+    - `packages/definition/src/js-packages.ts`: `parseJsPackage`, `jsPackageProblems`, `jsDependencies` and `jsPackagesFromDependencies`.
+    - The schema field `settings.javascript.packages`.
+    - The diagnostic `invalid_js_package`, reported through the exported `jsPackageDiagnostics`.
+    - Apps get a top-level `javascript.packages`, which is refused on a module.
+    - Tests: `test/js-packages.test.ts` in both definition packages.
+  - **Next:** 1b, git-format writes `package.json` next to the workflow and app JSON. Then step 2, the build service and migration 0046.
+
+## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 
 The user's look at session 44's access work (2026-11-11). Branch `feat/m35-ai-actions`, not pushed. Step → shots → report → their word to commit.
 

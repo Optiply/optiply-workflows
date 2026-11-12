@@ -396,6 +396,15 @@ export const workflowSettingsSchema = z.strictObject({
       index: z.string().max(100).optional(),
     })
     .optional(),
+  /**
+   * The workflow's JavaScript packages: npm packages (`zod@^3`), bundled for its JavaScript code. Loose here like
+   * `python` (the validator says what's wrong with each, see `jsPackageProblems`).
+   */
+  javascript: z
+    .strictObject({
+      packages: z.array(z.string().max(1000)).max(100),
+    })
+    .optional(),
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const

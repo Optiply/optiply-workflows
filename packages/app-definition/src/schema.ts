@@ -337,6 +337,12 @@ export const appDefinitionSchema = z.strictObject({
    * dropped, so styles can't load anything from elsewhere.
    */
   css: z.string().max(50_000).optional(),
+  /**
+   * The app's JavaScript packages: npm packages (`zod@^3`), bundled for its JavaScript queries, transformers and
+   * scripts. Loose here like a workflow's (the validator says what's wrong with each). Never on a module: a module's
+   * code uses its app's packages.
+   */
+  javascript: z.strictObject({ packages: z.array(z.string().max(1000)).max(100) }).optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>

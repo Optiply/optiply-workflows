@@ -3,6 +3,7 @@ import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
+import { jsPackageProblems, MAX_JS_PACKAGES } from './js-packages'
 import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
 import { MAX_REQUIREMENTS, PYTHON_INDEX_SLUG, requirementProblems } from './requirements'
@@ -117,6 +118,8 @@ export type DiagnosticCode =
   | 'invalid_python_index'
   /** The server's: packages declared, no package builder to install them (M23). */
   | 'python_packages_unavailable'
+  /** A workflow's or app's JavaScript package: not a plain npm package, a duplicate, or too many. */
+  | 'invalid_js_package'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -202,6 +205,7 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report, options)
   checkRequirements(def, report)
+  checkJsPackages(def.settings?.javascript?.packages, ['settings', 'javascript', 'packages'], report)
 
   // User Task assignees written out in full exist.
   if (options.resolveAssignee) {
@@ -883,6 +887,24 @@ function checkRequirements(def: WorkflowDefinition, report: Report) {
   for (const { index, message } of requirementProblems(requirements)) {
     report({ code: 'invalid_requirement', message, path: [...path, index] })
   }
+}
+
+/** The JavaScript packages: each a plain npm package (`jsPackageProblems`), at most MAX_JS_PACKAGES. */
+export function jsPackageDiagnostics(
+  packages: readonly string[] | undefined,
+  path: (string | number)[],
+): { code: 'invalid_js_package'; message: string; path: (string | number)[] }[] {
+  if (!packages) return []
+  const found: { code: 'invalid_js_package'; message: string; path: (string | number)[] }[] = []
+  if (packages.length > MAX_JS_PACKAGES)
+    found.push({ code: 'invalid_js_package', message: `At most ${MAX_JS_PACKAGES} packages`, path })
+  for (const { index, message } of jsPackageProblems(packages))
+    found.push({ code: 'invalid_js_package', message, path: [...path, index] })
+  return found
+}
+
+function checkJsPackages(packages: readonly string[] | undefined, path: (string | number)[], report: Report) {
+  for (const d of jsPackageDiagnostics(packages, path)) report(d)
 }
 
 function checkTriggers(

@@ -1,4 +1,9 @@
-import { checkLibraryReference, type LibraryInfo, type QueryValidator } from '@ow/definition'
+import {
+  checkLibraryReference,
+  jsPackageDiagnostics,
+  type LibraryInfo,
+  type QueryValidator,
+} from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
 import { type ComponentLibraryInfo, customComponentSpec, customInstanceInterface } from './component-library'
@@ -82,6 +87,8 @@ export type AppDiagnosticCode =
   | 'unknown_component_library'
   | 'unpublished_component_library'
   | 'unknown_custom_component'
+  /** A JavaScript package: not a plain npm package, a duplicate, too many, or on a module. */
+  | 'invalid_js_package'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -333,6 +340,16 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
   })
 
   if (def.module) checkModule(def, entities, report)
+
+  if (def.module && def.javascript) {
+    report({
+      code: 'invalid_js_package',
+      message: "A module has no packages of its own: its code uses the app's",
+      path: ['javascript'],
+    })
+  } else {
+    for (const d of jsPackageDiagnostics(def.javascript?.packages, ['javascript', 'packages'])) report(d)
+  }
 
   // Layout entries name components on a grid.
   for (const name of Object.keys(def.layout ?? {})) {
