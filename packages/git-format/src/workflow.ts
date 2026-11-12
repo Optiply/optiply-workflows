@@ -18,6 +18,7 @@ import {
   textFile,
   type Warning,
 } from './files'
+import { PACKAGE_FILE, packageJsonFile, readPackageJson } from './js-packages'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
 import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots, namedRecords } from './slots'
@@ -41,7 +42,9 @@ export interface WorkflowObject extends ObjectMeta {
  * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any;
  * - `requirements.txt`: the Python packages (`settings.python.requirements`), when there are any. Read back, blank
  *   lines and comment lines are left out (people edit it on GitHub too). Its package index (M32,
- *   `settings.python.index`) is its first line, `# index: <slug>` (a comment to pip).
+ *   `settings.python.index`) is its first line, `# index: <slug>` (a comment to pip);
+ * - `package.json`: the JavaScript packages (`settings.javascript.packages`) as npm's `dependencies`, when the
+ *   workflow has the setting.
  *
  * Everything else (conditions, REST queries, templates) stays in the JSON. Empty layouts aren't kept: they read
  * back as none, which is the same canvas.
@@ -55,6 +58,12 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
     blocks: fn.blocks.map((block) => moveOut(block, `functions/${fn.name}/blocks/`, files)),
   }))
   const { layout: _layout, ...logic } = withoutRequirements(def)
+  const warnings: Warning[] = []
+  if (def.settings?.javascript) {
+    const pkg = packageJsonFile(def.settings.javascript.packages)
+    files[PACKAGE_FILE] = pkg.content
+    warnings.push(...pkg.warnings)
+  }
   const requirements = def.settings?.python?.requirements ?? []
   const index = def.settings?.python?.index
   if (requirements.length || index) {
@@ -67,7 +76,7 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
   const layout = layoutFile(def)
   if (layout) files[LAYOUT_FILE] = canonicalJson(layout, { pretty: true })
   const sorted = sortFiles(files)
-  return { files: sorted, warnings: caseCollisions(sorted) }
+  return { files: sorted, warnings: [...warnings, ...caseCollisions(sorted)] }
 }
 
 /** The workflow back from its directory's files, canonical. Problems name the file they're about. */
@@ -86,7 +95,7 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
   }
   const { meta, rest: raw, problems } = splitMeta(WORKFLOW_FILE, parsed.value)
 
-  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE, REQUIREMENTS_FILE])
+  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE, REQUIREMENTS_FILE, PACKAGE_FILE])
   for (const block of namedRecords(raw.blocks)) moveIn(block, 'blocks/', slots)
   for (const fn of namedRecords(raw.functions)) {
     for (const block of namedRecords(fn.blocks)) moveIn(block, `functions/${fn.name}/blocks/`, slots)
@@ -112,6 +121,19 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
         python: { requirements, ...(index && { index }) },
       }
     }
+  }
+
+  if (files[PACKAGE_FILE] !== undefined) {
+    if (isRecord(raw.settings) && isRecord(raw.settings.javascript)) {
+      problems.push(invalid(WORKFLOW_FILE, `settings.javascript: the packages belong in ${PACKAGE_FILE}`))
+    }
+    const read = readPackageJson(files[PACKAGE_FILE])
+    if ('problems' in read) problems.push(...read.problems)
+    else
+      raw.settings = {
+        ...(isRecord(raw.settings) ? raw.settings : {}),
+        javascript: { packages: read.packages },
+      }
   }
 
   const result = workflowDefinitionSchema.safeParse(raw)
@@ -145,10 +167,13 @@ export function workflowForGit(def: WorkflowDefinition): WorkflowDefinition {
   return out
 }
 
-/** The definition without its Python packages (they're `requirements.txt`), and without `settings` left empty. */
+/**
+ * The definition without its packages (Python's are `requirements.txt`, JavaScript's `package.json`), and without
+ * `settings` left empty.
+ */
 function withoutRequirements(def: WorkflowDefinition): WorkflowDefinition {
-  if (!def.settings?.python) return def
-  const { python: _python, ...settings } = def.settings
+  if (!def.settings?.python && !def.settings?.javascript) return def
+  const { python: _python, javascript: _javascript, ...settings } = def.settings
   const { settings: _settings, ...rest } = def
   return Object.keys(settings).length ? { ...rest, settings } : rest
 }

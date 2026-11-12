@@ -2026,7 +2026,13 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - The diagnostic `invalid_js_package`, reported through the exported `jsPackageDiagnostics`.
     - Apps get a top-level `javascript.packages`, which is refused on a module.
     - Tests: `test/js-packages.test.ts` in both definition packages.
-  - **Next:** 1b, git-format writes `package.json` next to the workflow and app JSON. Then step 2, the build service and migration 0046.
+    - Committed as `437acbd`.
+  - **1b, done, not committed yet:**
+    - `packages/git-format/src/js-packages.ts`: `PACKAGE_FILE`, `packageJsonFile` and `readPackageJson`. The file is `{"private": true, "dependencies": {...}}` in the author's order; an empty range means a bare name. Only `dependencies` is read back.
+    - The workflow and app encoders and decoders write and read the file. Packages written in `workflow.json` or `app.json` as well are a problem. A name listed twice gives a warning, and the first one is kept.
+    - In definition, `splitJsPackage` is added and the reverse helper is dropped.
+    - Tests: `test/js-packages.test.ts` (8).
+  - **Next:** step 2, the build service and migration 0046.
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

@@ -28,6 +28,15 @@ export function isJsPackageName(name: string): boolean {
   return PART.test(name)
 }
 
+/** A line's name and range, as written, without checking either: the name ends at the `@` after its scope's. */
+export function splitJsPackage(text: string): JsPackage {
+  const line = text.trim()
+  const at = line.indexOf('@', line.startsWith('@') ? 1 : 0)
+  return at < 0
+    ? { name: line, range: '' }
+    : { name: line.slice(0, at).trim(), range: line.slice(at + 1).trim() }
+}
+
 /** One package, or why it can't be one. */
 export function parseJsPackage(text: string): { package: JsPackage } | { error: string } {
   const line = text.trim()
@@ -36,10 +45,8 @@ export function parseJsPackage(text: string): { package: JsPackage } | { error: 
     return { error: `A package is at most ${MAX_JS_PACKAGE_LENGTH} characters` }
   if (line.startsWith('#') || line.startsWith('//')) return { error: "Comments aren't kept: leave them out" }
   if (line.startsWith('-')) return { error: 'npm options are not allowed' }
-  // The name's own `@` (a scope) comes first; the range follows the next one.
   const at = line.indexOf('@', line.startsWith('@') ? 1 : 0)
-  const name = (at < 0 ? line : line.slice(0, at)).trim()
-  const range = (at < 0 ? '' : line.slice(at + 1)).trim()
+  const { name, range } = splitJsPackage(line)
   if (
     /:\/\/|^(git|github|gitlab|bitbucket|file|link|workspace|npm|http|https):/.test(range) ||
     line.includes('://')
@@ -81,7 +88,7 @@ export function jsPackageProblems(packages: readonly string[]): { index: number;
   return problems
 }
 
-/** The packages that parse, as npm's `dependencies` (`name` → range, `*` for any version). */
+/** The packages that parse, as npm's `dependencies` (`name` → range, `*` for any version): what the server installs. */
 export function jsDependencies(packages: readonly string[]): Record<string, string> {
   const deps: Record<string, string> = {}
   for (const text of packages) {
@@ -90,11 +97,4 @@ export function jsDependencies(packages: readonly string[]): Record<string, stri
       deps[parsed.package.name] = parsed.package.range || '*'
   }
   return deps
-}
-
-/** The package list back from npm's `dependencies` (a Git `package.json`): `*` is written as the bare name. */
-export function jsPackagesFromDependencies(deps: Record<string, string>): string[] {
-  return Object.entries(deps).map(([name, range]) =>
-    range === '*' || range === '' ? name : `${name}@${range}`,
-  )
 }

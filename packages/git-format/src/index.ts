@@ -1,6 +1,7 @@
 export * from './app'
 export * from './component-library'
 export * from './files'
+export * from './js-packages'
 export * from './library'
 export * from './meta'
 export * from './repo'

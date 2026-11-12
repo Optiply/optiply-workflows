@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import {
   definitionHash,
   jsDependencies,
-  jsPackagesFromDependencies,
   MAX_JS_PACKAGES,
   parseJsPackage,
+  splitJsPackage,
   validateDefinition,
   workflowDefinitionSchema,
 } from '../src'
@@ -81,13 +81,10 @@ describe('JavaScript packages', () => {
     expect(() => workflowDefinitionSchema.parse(withPackages([]))).not.toThrow()
   })
 
-  it('turns into npm dependencies and back', () => {
+  it('turns into npm dependencies, the ones that parse', () => {
     const packages = ['zod@^3', 'date-fns', '@acme/utils@1.2.0', 'Bad']
     expect(jsDependencies(packages)).toEqual({ zod: '^3', 'date-fns': '*', '@acme/utils': '1.2.0' })
-    expect(jsPackagesFromDependencies(jsDependencies(packages))).toEqual([
-      'zod@^3',
-      'date-fns',
-      '@acme/utils@1.2.0',
-    ])
+    expect(splitJsPackage(' @acme/utils@ 1.2 ')).toEqual({ name: '@acme/utils', range: '1.2' })
+    expect(splitJsPackage('Bad')).toEqual({ name: 'Bad', range: '' })
   })
 })
