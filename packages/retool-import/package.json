@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ow/app-definition": "workspace:*",
     "@ow/definition": "workspace:*",
     "@ow/expressions": "workspace:*"
   },

@@ -670,6 +670,9 @@ importers:
 
   packages/retool-import:
     dependencies:
+      '@ow/app-definition':
+        specifier: workspace:*
+        version: link:../app-definition
       '@ow/definition':
         specifier: workspace:*
         version: link:../definition

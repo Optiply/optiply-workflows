@@ -3,6 +3,7 @@ import { buttonVariants } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { RendererProps } from '../renderer'
 import { useAppHostContext, useAppValue } from '../runtime/react'
+import { Markdown } from './markdown'
 
 const ALIGN = { left: 'text-left', center: 'text-center', right: 'text-right' } as const
 
@@ -10,14 +11,16 @@ const ALIGN = { left: 'text-left', center: 'text-center', right: 'text-right' } 
 export function TextRenderer({ component }: RendererProps) {
   const value = useAppValue<string>(`${component.name}.value`)
   const align = useAppValue<keyof typeof ALIGN>(`${component.name}.align`)
+  const markdown = useAppValue<boolean>(`${component.name}.markdown`)
   return (
     <div
       className={cn(
-        'h-full overflow-auto py-1 text-sm whitespace-pre-wrap break-words',
+        'h-full overflow-auto py-1 text-sm break-words',
+        !markdown && 'whitespace-pre-wrap',
         ALIGN[align] ?? ALIGN.left,
       )}
     >
-      {value}
+      {markdown ? <Markdown source={value == null ? '' : String(value)} /> : value}
     </div>
   )
 }

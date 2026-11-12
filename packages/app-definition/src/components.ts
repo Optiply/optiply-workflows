@@ -96,7 +96,12 @@ const specs: ComponentSpec[] = [
   {
     type: 'text',
     label: 'Text',
-    props: { value: str('Value'), align: oneOf('Alignment', ['left', 'center', 'right'], 'left') },
+    props: {
+      value: str('Value'),
+      align: oneOf('Alignment', ['left', 'center', 'right'], 'left'),
+      /** Shows the value as Markdown (M36: Retool's Text is Markdown): headings, bold, links, lists… */
+      markdown: bool('Markdown'),
+    },
     state: {},
     methods: {},
     events: [],

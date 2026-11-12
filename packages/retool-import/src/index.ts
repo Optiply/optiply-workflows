@@ -1,3 +1,5 @@
+export { convertApp, convertComponents } from './app/convert'
+export { WIDGETS } from './app/widgets'
 export * from './model'
 export {
   isRecord,
