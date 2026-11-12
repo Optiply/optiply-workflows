@@ -31,6 +31,7 @@ import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
+import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
@@ -85,6 +86,7 @@ export async function publishRelease(
       createdBy: user.id,
       gitCommit: null,
       pythonLock: plan.pythonLock,
+      js: plan.js,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -138,6 +140,7 @@ export async function deployWorkflowFromGit(
       createdBy: null,
       gitCommit: opts.commit,
       pythonLock: plan.pythonLock,
+      js: plan.js,
     })
     if ('unchanged' in release) return null
     await makeLive(tx, locked.id, release, plan, opts.now ?? new Date())
@@ -161,6 +164,7 @@ async function insertRelease(
     createdBy: string | null
     gitCommit: string | null
     pythonLock: PythonLock | null
+    js: ReleaseJsBundle | null
   },
 ): Promise<WorkflowRelease | { unchanged: string }> {
   const existing = await tx
@@ -188,6 +192,8 @@ async function insertRelease(
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
       pythonLock: opts.pythonLock,
+      jsLock: opts.js?.jsLock ?? null,
+      jsBundleHash: opts.js?.jsBundleHash ?? null,
     })
     .returning()
   return release!
@@ -207,12 +213,20 @@ export async function setLiveRelease(
   const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
     actorUserId: opts.actorUserId ?? null,
     lock: release.pythonLock,
+    js: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
   })
   // A release from before its packages had a lock (or before M23) gets one now: live runs install it.
   if (plan.pythonLock && !release.pythonLock) {
     await db
       .update(workflowReleases)
       .set({ pythonLock: plan.pythonLock })
+      .where(eq(workflowReleases.id, release.id))
+  }
+  // Its JavaScript packages' bundle, when it had none or lost it (rebuilt from its lock).
+  if (plan.js && (plan.js.jsBundleHash !== release.jsBundleHash || plan.js.jsLock !== release.jsLock)) {
+    await db
+      .update(workflowReleases)
+      .set({ jsLock: plan.js.jsLock, jsBundleHash: plan.js.jsBundleHash })
       .where(eq(workflowReleases.id, release.id))
   }
   await db.transaction(async (tx) => {
@@ -235,6 +249,8 @@ interface ReleasePlan {
   aliasShape: string | null
   /** The Python packages' lock (M23), installed: null without packages or Python. */
   pythonLock: PythonLock | null
+  /** The JavaScript packages' lock and bundle, built: null without packages. */
+  js: ReleaseJsBundle | null
 }
 
 /**
@@ -250,7 +266,12 @@ async function checkReleasable(
   access: Access | null,
   workflow: Workflow,
   definition: WorkflowDefinition,
-  python: { actorUserId: string | null; lock?: PythonLock | null },
+  python: {
+    actorUserId: string | null
+    lock?: PythonLock | null
+    /** The release's JavaScript bundle and lock, for a rollback. */
+    js?: { jsLock: string | null; jsBundleHash: string | null }
+  },
 ): Promise<ReleasePlan> {
   if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
@@ -403,7 +424,18 @@ async function checkReleasable(
     if (!(err instanceof BlockFailure)) throw err
     throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
   }
-  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock }
+  let js: ReleaseJsBundle | null
+  try {
+    js = await releaseJsBundle(db, definition.settings?.javascript?.packages, python.js ?? null, {
+      objectType: 'workflow',
+      objectId: workflow.id,
+      actorUserId: python.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
+  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock, js }
 }
 
 /**

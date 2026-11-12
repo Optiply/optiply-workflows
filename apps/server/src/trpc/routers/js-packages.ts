@@ -1,7 +1,7 @@
 import { MAX_JS_PACKAGE_LENGTH, MAX_JS_PACKAGES } from '@ow/definition'
 import { z } from 'zod'
-import { recordAudit } from '../../audit'
-import { buildJsBundle, jsBundleConfig, jsBundleState, stateOf } from '../../services/js-bundles'
+import { jsBundleConfig, jsBundleState, stateOf } from '../../services/js-bundles'
+import { buildAudited } from '../../services/js-modules'
 import { requireLevel } from '../../services/permissions'
 import { authedProcedure, type Context, router } from '../init'
 import { visibleApp } from './apps'
@@ -30,11 +30,11 @@ async function editable(ctx: AuthedContext, target: z.infer<typeof targetInput>)
   if (target.kind === 'workflow') {
     const { access, workflow } = await visibleWorkflow(ctx, target.id)
     requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
-    return { objectType: 'workflow', objectId: workflow.id }
+    return { objectType: 'workflow' as const, objectId: workflow.id }
   }
   const { access, app } = await visibleApp(ctx, { id: target.id })
   requireLevel(access.appLevel(app), 'edit', 'this app')
-  return { objectType: 'app', objectId: app.id }
+  return { objectType: 'app' as const, objectId: app.id }
 }
 
 export const jsPackagesRouter = router({
@@ -46,21 +46,7 @@ export const jsPackagesRouter = router({
   /** Installs and bundles the packages now; the answer is the new state. A new bundle is audited. */
   install: authedProcedure.input(input).mutation(async ({ ctx, input }) => {
     const object = await editable(ctx, input.target)
-    const outcome = await buildJsBundle(ctx.db, jsBundleConfig(ctx.config), input.packages)
-    if (outcome.ok && !outcome.cached) {
-      await recordAudit(ctx.db, {
-        actorUserId: ctx.user.id,
-        action: 'js.bundle_built',
-        ...object,
-        metadata: {
-          packages: input.packages,
-          versions: outcome.versions,
-          bundleHash: outcome.bundleHash,
-          sizeBytes: outcome.sizeBytes,
-          ...(outcome.warnings.length && { warnings: outcome.warnings }),
-        },
-      })
-    }
-    return stateOf(outcome)
+    const who = { ...object, actorUserId: ctx.user.id }
+    return stateOf(await buildAudited(ctx.db, input.packages, who, null, jsBundleConfig(ctx.config)))
   }),
 })

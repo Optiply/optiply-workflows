@@ -21,6 +21,7 @@ import { configureConnectors } from '../services/connectors'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
@@ -77,6 +78,7 @@ export async function buildApp(deps: {
   configureAwsServer(config)
   configureConnectors(config)
   configureSnsWebhooks(config.SNS_CERT_HOSTS)
+  configureJsBundles(config)
   const runner = new InlineRunner({
     db,
     pool: services.pool,
@@ -86,6 +88,7 @@ export async function buildApp(deps: {
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     python: configurePython(config) ?? undefined,
     pythonEnvs: pythonEnvProvider(db, config),
+    jsModules: dbJsModules(db),
     library: engineLibrary(db),
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),

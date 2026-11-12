@@ -2076,11 +2076,28 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
       - `engine/test/js-packages.test.ts` (5)
     - JavaScript run errors carry no stack, so line numbers are checked in the sandbox (`userStack`).
     - `checkJs` isn't needed: the validator runs in the editor too.
-  - **Next:** 3b.
-    - The executor gets a `JsModulesProvider` (`shared()` plus prefetch, like `pythonEnvFor`).
-    - The server provider: a draft uses `buildJsBundle(packages)`, a release uses `jsBundleByHash`, rebuilding from `js_lock` if the bundle is gone.
-    - Wire it into `worker/index.ts` and `api/app.ts`.
-    - Publish, rollback and Git deploy save `js_lock` and `js_bundle_hash` (`services/releases.ts`, as Python does).
+    - Committed as `4bcb2d8`.
+  - **3b, done, not committed yet:**
+    - **Engine:**
+      - A `JsModulesProvider` (`modulesFor(run, definition)`) is exported. The executor option is `jsModules`.
+      - `jsModulesFor` uses `shared()` plus prefetch when the definition declares packages, and fails with `js_packages_unavailable` when there's no provider.
+    - **Server (`services/js-modules.ts`):**
+      - `configureJsBundles(config)` is set up at start, in both `api/app.ts` and `worker/index.ts`, next to the other configure calls.
+      - `buildAudited` audits a new bundle as `js.bundle_built`, with `fromLock` when it was built from a lock. The audit moved here from the router, which now uses `buildAudited`.
+      - `bundleFor` throws `BlockFailure('js_packages', …)` with the kind and log.
+      - `releaseJsBundle`: a bundle that's still kept is reused; otherwise it's rebuilt from the release's lock; otherwise the package list's bundle (the draft's) is used.
+      - `dbJsModules(db)`: a release run uses its `js_bundle_hash`, rebuilding from `js_lock` if the bundle is gone; a draft run builds from the package list.
+    - **`services/releases.ts`:**
+      - `ReleasePlan.js` is filled by `checkReleasable` after Python. A failure is a `BAD_REQUEST`.
+      - `insertRelease` saves `js_lock` and `js_bundle_hash`.
+      - `setLiveRelease` passes the release's own values, and updates the row when the plan's differ (a bundle rebuilt or new).
+      - Git deploy is covered too, because it goes through the same plan.
+    - **Tests:** `apps/server/test/js-packages-runs.test.ts` (5, with a real worker and the fake registry).
+  - **Next:** step 4, the workflow UI:
+    - the packages panel in Workflow settings, with status and "Install now"
+    - Monaco accepting import lines in a function body, plus `declare module` for the listed packages
+    - diagnostics on the lines
+    - an e2e test
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

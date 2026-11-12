@@ -11,6 +11,7 @@ import { deleteUnusedBundles } from '../services/component-libraries'
 import { configureConnectors } from '../services/connectors'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
@@ -44,6 +45,7 @@ export async function startWorker(deps: {
   configureAwsServer(config)
   configureConnectors(config)
   useRe2ForPatterns()
+  configureJsBundles(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,
@@ -54,6 +56,7 @@ export async function startWorker(deps: {
     concurrency: config.WORKER_CONCURRENCY,
     python: configurePython(config) ?? undefined,
     pythonEnvs: pythonEnvProvider(db, config),
+    jsModules: dbJsModules(db),
     library: engineLibrary(db),
     log: log.child({ component: 'dispatcher' }),
     observer: metrics.observer,
