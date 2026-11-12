@@ -15,6 +15,7 @@ import {
   useGitInfo,
   useUnprotect,
 } from '@/components/git'
+import { formatBytes, JsPackagesField, useSettled } from '@/components/js-packages'
 import { Button, ErrorNote, Field, Input, Select, Spinner, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
@@ -23,7 +24,7 @@ type Workflow = RouterOutputs['workflows']['get']
 type WorkflowSettings = NonNullable<WorkflowDefinition['settings']>
 
 /**
- * Workflow-wide settings: the run timeout and the Python packages are part of the definition (saved with the
+ * Workflow-wide settings: the run timeout and the Python and JavaScript packages are part of the definition (saved with the
  * draft, live once published); the concurrency limit belongs to the workflow and applies to every run at once.
  */
 export function WorkflowSettingsTab({
@@ -64,6 +65,7 @@ export function WorkflowSettingsTab({
         />
       </Field>
       <PythonPackages workflowId={workflow.id} canEdit={canEdit} hasEdit={hasEdit} />
+      <JavaScriptPackages workflowId={workflow.id} canEdit={canEdit} hasEdit={hasEdit} />
       <ConcurrencyLimit workflow={workflow} canEdit={hasEdit} />
       {workflow.level === 'own' && <GitProtection workflow={workflow} />}
     </div>
@@ -80,6 +82,37 @@ function withSetting<K extends keyof WorkflowSettings>(
   const settings = value === undefined ? others : { ...others, [key]: value }
   const { settings: _settings, ...rest } = def
   return Object.keys(settings).length ? { ...rest, settings } : rest
+}
+
+/** The workflow's JavaScript packages (`settings.javascript.packages`), with their install state. */
+function JavaScriptPackages({
+  workflowId,
+  canEdit,
+  hasEdit,
+}: {
+  workflowId: string
+  canEdit: boolean
+  hasEdit: boolean
+}) {
+  const packages = useEditor((s) => s.definition.settings?.javascript?.packages)
+  // The whole list from the store (a filtered one would be a new array on every read), filtered here.
+  const problems = useEditor((s) => s.diagnostics)
+    .filter((d) => d.code === 'invalid_js_package')
+    .map((d) => ({ ...(typeof d.path[3] === 'number' && { index: d.path[3] }), message: d.message }))
+  return (
+    <JsPackagesField
+      target={{ kind: 'workflow', id: workflowId }}
+      packages={packages}
+      problems={problems}
+      canEdit={canEdit}
+      hasEdit={hasEdit}
+      onChange={(lines) =>
+        useEditor
+          .getState()
+          .update((def) => withSetting(def, 'javascript', lines.length ? { packages: lines } : undefined))
+      }
+    />
+  )
 }
 
 /**
@@ -271,23 +304,6 @@ function requirementLines(text: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-}
-
-/** `value` once it has stayed the same for `ms` (compared as JSON). */
-function useSettled<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value)
-  const key = JSON.stringify(value)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for `value`
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms)
-    return () => clearTimeout(timer)
-  }, [key, ms])
-  return settled
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} kB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** Owners protect the workflow in Git (M11), or unprotect it. */

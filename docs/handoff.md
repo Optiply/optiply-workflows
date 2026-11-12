@@ -2093,11 +2093,22 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
       - `setLiveRelease` passes the release's own values, and updates the row when the plan's differ (a bundle rebuilt or new).
       - Git deploy is covered too, because it goes through the same plan.
     - **Tests:** `apps/server/test/js-packages-runs.test.ts` (5, with a real worker and the fake registry).
-  - **Next:** step 4, the workflow UI:
-    - the packages panel in Workflow settings, with status and "Install now"
-    - Monaco accepting import lines in a function body, plus `declare module` for the listed packages
-    - diagnostics on the lines
-    - an e2e test
+    - Committed as `cc07811`.
+  - **4, done, not committed yet:**
+    - **`apps/web/src/components/js-packages.tsx` (new, shared with apps in step 6):**
+      - `JsPackagesField` is a `Field as="div"` holding a textarea (`aria-label` "JavaScript packages"), the problems by line, and `JsPackagesState`.
+      - `JsPackagesState` uses the `jsPackages.state` and `jsPackages.install` routes. It shows not installed yet with "Install now", invalid, installed (versions, size and Node built-in warnings), or failed with "Try again" and npm's output.
+      - `packageLines`, `useSettled` and `formatBytes` now live here, and Python's panel imports them.
+    - **Workflow settings:** a `JavaScriptPackages` panel under the Python one.
+    - **Monaco:** no change. A body with `import` lines is a module to TypeScript, and 1108, 1375 and 1378 are already ignored. The screenshots show no squiggle once the package is listed.
+    - **e2e:** `e2e/js-packages.spec.ts`:
+      - the problem on the import
+      - the line problems in Settings
+      - Install now giving `tiny-format@1.0.0`
+      - a run replying `#007`
+      - the setting surviving a reload
+    - **Screenshots:** before and after shots are in the session scratchpad.
+  - **Next:** step 5, the registries page. Settings → Components becomes "npm registries", with wording that it serves components, workflows and apps.
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 
