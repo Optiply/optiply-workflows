@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { readRetoolExport } from '../src'
+import { convertWorkflow, readRetoolExport } from '../src'
 
 const dir = process.env.RETOOL_EXPORTS_DIR?.replace(/^~(?=\/)/, process.env.HOME ?? '~')
 
@@ -41,6 +41,19 @@ describe.skipIf(!dir)('real exports (RETOOL_EXPORTS_DIR)', () => {
           `#${i + 1} workflow: ${read.blocks.length} blocks, ${read.functions.length} functions, ` +
             `${blocks.length - withPlugin} blocks without a template, ${read.webhooks.length} webhooks`,
         )
+        const { report } = convertWorkflow(read)
+        const c = report.counts
+        const codes = [...new Set(report.diagnostics.map((d) => d.code))]
+        lines.push(
+          `   converted ${c.converted}, approximated ${c.approximated}, unsupported ${c.unsupported}, skipped ${c.skipped}; ` +
+            `resources ${report.resources.length} (${report.resources.filter((r) => !r.mapped).length} to map); ` +
+            `secrets ${report.secrets.length}; diagnostics ${report.diagnostics.length}${codes.length ? ` (${codes.join(', ')})` : ''}`,
+        )
+        for (const e of report.entries.filter((x) => x.status !== 'converted')) {
+          lines.push(
+            `   - ${e.status} ${e.kind} → ${e.became}: ${e.notes.map((n) => n.replace(/\(.*\)/, '(…)')).join('; ')}`,
+          )
+        }
       }
     })
     const table = [...kinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${String(n).padStart(4)} ${k}`)

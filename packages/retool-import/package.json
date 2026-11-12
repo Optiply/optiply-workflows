@@ -11,6 +11,10 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@ow/definition": "workspace:*",
+    "@ow/expressions": "workspace:*"
+  },
   "devDependencies": {
     "immutable": "3.8.4",
     "transit-immutable-js": "0.8.0",

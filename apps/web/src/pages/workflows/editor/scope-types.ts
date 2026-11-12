@@ -251,7 +251,16 @@ declare const uuid: {
 ${SQL_HELPERS}
 /** Config vars for the run's environment (secret ones only in released runs). */
 declare const configVars: Record<string, string>
-declare const workflowContext: { runId: string; workflowId: string; environment: string; triggerType: string }
+declare const workflowContext: {
+  runId: string
+  workflowId: string
+  /** The workflow's name. */
+  name: string
+  environment: string
+  triggerType: string
+  /** The run (as Retool's workflowContext has it). */
+  currentRun: { id: string; startedAtEpochMs: number }
+}
 /** The caller's Idempotency-Key, or the run id. */
 declare const idempotencyKey: string
 /** In a filter condition or a loop: the current item. */
@@ -414,7 +423,14 @@ export function scopeDeclarations(
     uuid: {},
     sql: {},
     configVars: {},
-    workflowContext: { runId: '', workflowId: '', environment: '', triggerType: '' },
+    workflowContext: {
+      runId: '',
+      workflowId: '',
+      name: '',
+      environment: '',
+      triggerType: '',
+      currentRun: { id: '', startedAtEpochMs: 0 },
+    },
     idempotencyKey: '',
   }
   if (inFunction) {

@@ -6,6 +6,7 @@ import {
   workflowDraftSnapshots,
   workflowReleases,
   workflowRuns,
+  workflows,
 } from '@ow/db'
 import {
   DEFAULT_RUN_TIMEOUT_MS,
@@ -179,6 +180,10 @@ export class RunExecutor {
     }
     const definition = await loadDefinition(db, run)
     const [env] = await db.select().from(environments).where(eq(environments.id, run.environmentId))
+    const [workflow] = await db
+      .select({ name: workflows.name })
+      .from(workflows)
+      .where(eq(workflows.id, run.workflowId))
     const context = (await this.opts.context?.load(run)) ?? { configVars: {}, secrets: [] }
     const deadline = await ensureDeadline(db, claim, definition.settings?.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS)
     if (!deadline) return // Lost the lease already.
@@ -202,8 +207,11 @@ export class RunExecutor {
           workflowContext: {
             runId: run.id,
             workflowId: run.workflowId,
+            // name and currentRun as Retool's workflowContext has them (M36), so imported code reads them as it is.
+            name: workflow?.name,
             environment: env?.slug,
             triggerType: run.triggerType,
+            currentRun: { id: run.id, startedAtEpochMs: (run.startedAt ?? run.createdAt).getTime() },
           },
           idempotencyKey: run.idempotencyKey ?? run.id,
         },
