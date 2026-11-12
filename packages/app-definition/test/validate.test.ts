@@ -97,6 +97,18 @@ describe('validateApp', () => {
     ])
   })
 
+  it("reserves Retool's libraries and lets code read them (M36)", () => {
+    const def = app({
+      components: [
+        comp('moment', 'text'),
+        comp('when', 'text', {
+          value: '{{ moment().format("L") + numbro(1).format() + Papa.unparse([]) + uuid.v4() }}',
+        }),
+      ],
+    })
+    expect(codes(def)).toEqual([['invalid_name', 'components.0.name', 'error']])
+  })
+
   it('reads currentRow and i in a table column’s value, and nowhere else (M24)', () => {
     const def = app({
       components: [

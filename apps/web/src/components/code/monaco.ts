@@ -120,7 +120,7 @@ function templateCompletions(
 }
 
 /** Names the JavaScript sandbox has and Python code doesn't. */
-const JS_ONLY = new Set(['_', 'dayjs', 'sql'])
+const JS_ONLY = new Set(['_', 'dayjs', 'moment', 'numbro', 'Papa', 'uuid', 'sql'])
 
 /** Completes `query1.data[0].|` in Python code from sample values (the line before the cursor). */
 function pythonCompletions(

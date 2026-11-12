@@ -19,8 +19,18 @@ export const JS_GLOBALS: ReadonlySet<string> = new Set(
   ).split(' '),
 )
 
+/** Retool's preloaded libraries, in both sandboxes since M36 so code imported from Retool runs as it is. */
+export const RETOOL_LIBRARY_GLOBALS: readonly string[] = ['moment', 'numbro', 'Papa', 'uuid']
+
 /** Baked into the @ow/sandbox snapshot. */
-export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'sql', 'console', 'fetch'])
+export const SANDBOX_GLOBALS: ReadonlySet<string> = new Set([
+  '_',
+  'dayjs',
+  ...RETOOL_LIBRARY_GLOBALS,
+  'sql',
+  'console',
+  'fetch',
+])
 
 /** Globals that return promises: usable in code (which can `await`), not in `{{ }}` or conditions. */
 export const CODE_ONLY_GLOBALS: ReadonlySet<string> = new Set(['fetch'])

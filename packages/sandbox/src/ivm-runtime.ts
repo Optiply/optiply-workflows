@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import ivm from 'isolated-vm'
 import { stdlibSource } from './stdlib'
 import {
@@ -12,6 +13,10 @@ import {
 const DEFAULT_TIMEOUT_MS = 10_000
 /** Extra wall-clock time after `timeoutMs` before the watchdog disposes the whole isolate. */
 const WATCHDOG_GRACE_MS = 250
+/** Random bytes for the sandbox's crypto.getRandomValues (the prelude caps a call at 64 KiB). */
+const RANDOM = new ivm.Callback((n: number) =>
+  randomBytes(Math.min(Math.max(0, n | 0), 65536)).toString('hex'),
+)
 
 let snapshot: ivm.ExternalCopy<ArrayBuffer> | undefined
 function getSnapshot() {
@@ -102,6 +107,8 @@ export class IvmRuntime implements CodeRuntime {
           throw new SandboxError('serialization', `Scope value "${key}" is not serializable: ${message(err)}`)
         }
       }
+      // crypto.getRandomValues (the prelude's) reads its bytes from here, as hex.
+      global.setSync('__owRandom', RANDOM)
       const onLog = opts.onLog
       if (onLog) {
         global.setSync(

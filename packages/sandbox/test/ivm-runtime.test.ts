@@ -44,6 +44,50 @@ describe('IvmRuntime: expressions and code', () => {
     ).toBe('2026-03-29 01:30')
   })
 
+  it("exposes Retool's libraries: moment, numbro, Papa and uuid (M36)", async () => {
+    runtime = new IvmRuntime()
+    expect(
+      await runtime.evalExpression(
+        'moment.utc("2026-11-12T10:00:00Z").add(1, "day").format("DD-MM-YYYY HH:mm")',
+        {},
+      ),
+    ).toBe('13-11-2026 10:00')
+    expect(await runtime.evalExpression('moment("2026-01-31").isValid()', {})).toBe(true)
+    expect(
+      await runtime.evalExpression('numbro(1234.5).format({ thousandSeparated: true, mantissa: 2 })', {}),
+    ).toBe('1,234.50')
+    expect(await runtime.evalExpression('numbro(0.256).format("0.0%")', {})).toBe('25.6%')
+    expect(await runtime.evalExpression('Papa.parse("a,b\\n1,2", { header: true }).data', {})).toEqual([
+      { a: '1', b: '2' },
+    ])
+    expect(await runtime.evalExpression('Papa.unparse([{ a: 1, b: "x,y" }])', {})).toBe('a,b\r\n1,"x,y"')
+    const ids = (await runtime.runCode('return [uuid.v4(), uuid.v4(), uuid.v7()]', {})) as string[]
+    expect(new Set(ids).size).toBe(3)
+    for (const id of ids) expect(await runtime.evalExpression('uuid.validate(id)', { id })).toBe(true)
+    expect(await runtime.evalExpression('uuid.version(id)', { id: ids[0] })).toBe(4)
+    // A fresh context per evaluation: each starts from the snapshot but gets its own random bytes.
+    const again = await runtime.evalExpression('uuid.v4()', {})
+    expect(ids).not.toContain(again)
+  })
+
+  it("gives code crypto's random part from the host", async () => {
+    runtime = new IvmRuntime()
+    const id = (await runtime.evalExpression('crypto.randomUUID()', {})) as string
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    const bytes = (await runtime.evalExpression(
+      'Array.from(crypto.getRandomValues(new Uint8Array(64)))',
+      {},
+    )) as number[]
+    expect(bytes).toHaveLength(64)
+    expect(new Set(bytes).size).toBeGreaterThan(16)
+    await expect(runtime.evalExpression('crypto.getRandomValues(new Float64Array(2))', {})).rejects.toThrow(
+      'integer typed array',
+    )
+    await expect(runtime.evalExpression('crypto.getRandomValues(new Uint8Array(65537))', {})).rejects.toThrow(
+      'at most 65536',
+    )
+  })
+
   it('exposes the sql helpers for sort columns and directions', async () => {
     runtime = new IvmRuntime()
     const column = "sql.column(sort, ['name', 'p.price'], 'id')"

@@ -4,7 +4,8 @@
  * viewer's session or send data anywhere, and an endless loop in it freezes only the Worker (the host's watchdog
  * notices and stops it). It talks to the page only over the MessagePort the iframe hands it in its first message.
  *
- * Bundled on its own by vite/app-runtime.ts; the stdlib (`_`, `dayjs`, `sql`) is loaded before it.
+ * Bundled on its own by vite/app-runtime.ts; the stdlib (`_`, `dayjs`, `moment`, `numbro`, `Papa`, `uuid`, `sql`)
+ * is loaded before it.
  */
 import {
   AppRuntime,
@@ -34,6 +35,9 @@ let packagesHash: string | null = null
 // Import lines in the app's code (rewritten by its code runner) read the packages through this.
 ;(globalThis as { __owImport?: unknown }).__owImport = owImport
 const pending = new Map<number, (value: never) => void>()
+
+/** The stdlib bundle's globals the app's code reads (APP_STDLIB_GLOBALS but console, which is the app's own). */
+const STDLIB_NAMES = ['_', 'dayjs', 'moment', 'numbro', 'Papa', 'uuid', 'sql']
 
 const UNSAFE_BROWSER = "This browser doesn't keep the app's code off the network, so it can't run"
 
@@ -159,8 +163,9 @@ function handle(message: HostMessage) {
     case 'start': {
       if (runtime) return
       try {
-        const g = globalThis as unknown as { _: unknown; dayjs: unknown; sql: unknown }
-        globals = { ...message.globals, _: g._, dayjs: g.dayjs, sql: g.sql, console: appConsole }
+        const g = globalThis as unknown as Record<string, unknown>
+        const stdlib = Object.fromEntries(STDLIB_NAMES.map((name) => [name, g[name]]))
+        globals = { ...message.globals, ...stdlib, console: appConsole }
         modules = message.modules ?? {}
         libraries = message.libraries ?? {}
         inputs = message.inputs

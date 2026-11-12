@@ -56,7 +56,17 @@ describe('validateDefinition', () => {
   describe('names', () => {
     it('rejects keywords and names that would shadow globals', () => {
       expect(codes(wf([start, code('return')]))).toContain('invalid_name')
-      for (const name of ['_', 'dayjs', 'Math', 'configVars', 'undefined']) {
+      for (const name of [
+        '_',
+        'dayjs',
+        'moment',
+        'numbro',
+        'Papa',
+        'uuid',
+        'Math',
+        'configVars',
+        'undefined',
+      ]) {
         const d = validateDefinition(wf([start, code(name)], [['startTrigger', name]])).diagnostics
         expect(
           d.map((x) => x.code),

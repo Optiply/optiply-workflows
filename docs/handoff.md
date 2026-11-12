@@ -2010,7 +2010,20 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
-## 14. Session 46 steps: fixes before M36, then JavaScript packages
+## 14. Session 47 steps: M36 Import from Retool
+
+Branch `feat/m36-retool-import`, cut from `feat/js-packages`. The plan is `~/.claude/plans/velvety-hatching-mccarthy.md`; its migration is **0047** (0046 is `js_bundles`). Step → report → the user's word to commit.
+
+0. **moment, numbro, Papa and uuid for everyone** ✅ (the user chose built-in over JavaScript packages: packages only reach code bodies through `import` lines, never `{{ }}` templates, and Retool templates use `moment(` 57 times).
+   - Pinned devDependencies of `@ow/sandbox`: moment 2.31.0, numbro 2.5.0, papaparse 5.7.0 (5.7.1 was a day old), uuid 14.0.3. They are globals from `stdlib-entry.js` in the isolate and in the app Worker (`sandbox-entry.ts` `STDLIB_NAMES`).
+   - papaparse's `require('stream')` is `external` in `bundle-stdlib.ts`: only `Papa.NODE_STREAM_INPUT` needs it, and it throws when used.
+   - The isolate had no `crypto` (uuid.v4 needs it): the prelude adds `crypto.getRandomValues` (integer arrays, 64 KiB at most) and `randomUUID`, reading hex bytes from `__owRandom`, a host `ivm.Callback` set on every context. `crypto` isn't a reserved or documented global.
+   - Reserved: `RETOOL_LIBRARY_GLOBALS` in `@ow/definition` names.ts, spread into `SANDBOX_GLOBALS` and `APP_STDLIB_GLOBALS`. The user's stack had no entity with these names (checked read-only).
+   - Editor declarations in `scope-types.ts` and the apps' `scope.ts`; Python's completions leave them out.
+   - Cost: the stdlib went from 95 KB to 237 KB; a fresh evaluation from ≈0.65 ms to ≈0.85 ms (bench).
+   - Tests: sandbox 37 (two new), definition 206, app-definition 150 (one new), engine 219, app-runtime 48, web 155, server 694; e2e `app-sandbox.spec` checks the four in the browser Worker.
+
+## 14----. Session 46 steps: fixes before M36, then JavaScript packages
 
 Before M36 (the Retool import), the user asked for a fix and a feature.
 

@@ -1,5 +1,5 @@
 /**
- * Bundles src/stdlib-entry.js (lodash, dayjs + plugins) into one IIFE and writes it to src/stdlib.generated.ts.
+ * Bundles src/stdlib-entry.js (lodash, dayjs + plugins, moment, numbro, papaparse, uuid) into one IIFE and writes it to src/stdlib.generated.ts.
  * The bundle is committed so the runtime never needs esbuild or a source path (the server is itself bundled).
  *   pnpm --filter @ow/sandbox bundle:stdlib
  * test/stdlib.test.ts fails when the committed file is out of date (e.g. after bumping lodash or dayjs).
@@ -22,6 +22,8 @@ export function renderGeneratedStdlib(): string {
     target: 'es2022',
     minify: true,
     legalComments: 'none',
+    // papaparse requires Node's stream only for Papa.NODE_STREAM_INPUT, which then throws; nothing else needs it.
+    external: ['stream'],
     write: false,
     logLevel: 'silent',
   })

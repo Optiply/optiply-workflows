@@ -19,6 +19,23 @@ const GLOBALS = `
 declare const _: any
 /** Day.js, with the utc, timezone, customParseFormat and relativeTime plugins. */
 declare const dayjs: any
+/** Moment.js (no timezone data: use dayjs.tz for time zones). */
+declare const moment: any
+/** Numbro, number formatting: numbro(1234.5).format({ thousandSeparated: true, mantissa: 2 }). */
+declare const numbro: any
+/** Papa Parse: Papa.parse(csvText, { header: true }).data, Papa.unparse(rows). */
+declare const Papa: any
+/** uuid: uuid.v4(), uuid.v7(), uuid.validate(text). */
+declare const uuid: {
+  v1(): string
+  v4(): string
+  v7(): string
+  validate(text: string): boolean
+  version(text: string): number
+  NIL: string
+  MAX: string
+  [name: string]: any
+}
 ${SQL_HELPERS}
 /** Who is using the app. In a resource query, a {{ }} reading only current_user is filled in by the server. */
 declare const current_user: { id: string; email: string; name: string }

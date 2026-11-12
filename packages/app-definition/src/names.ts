@@ -1,7 +1,13 @@
-import { isReservedWord, JS_GLOBALS } from '@ow/definition'
+import { isReservedWord, JS_GLOBALS, RETOOL_LIBRARY_GLOBALS } from '@ow/definition'
 
 /** The stdlib the app runtime preloads, like the server sandbox's. */
-export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'sql', 'console'])
+export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set([
+  '_',
+  'dayjs',
+  ...RETOOL_LIBRARY_GLOBALS,
+  'sql',
+  'console',
+])
 
 /**
  * Added by the app runtime: `current_user` (`{ id, email, name }`), `utils` (`notify`, `openUrl`, `openPage`,

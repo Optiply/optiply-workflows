@@ -71,6 +71,12 @@ test('app code runs sandboxed, and talks to the page only through the runtime', 
           try { out.parent = typeof g.parent.document } catch (e) { out.parent = 'blocked' }
           try { out.cookie = g.document.cookie } catch (e) { out.cookie = 'blocked' }
           out.stdlib = _.sum([1, 2]) + ' ' + dayjs('2026-10-15').format('DD/MM')
+          out.retool = [
+            moment('2026-10-15').format('DD-MM'),
+            numbro(1234.5).format({ thousandSeparated: true, mantissa: 1 }),
+            Papa.parse('a\\n7').data[1][0],
+            uuid.validate(uuid.v4()),
+          ].join(' ')
           out.user = current_user.email
           results.setValue(out)
           utils.notify('probe done', 'success')
@@ -100,6 +106,7 @@ test('app code runs sandboxed, and talks to the page only through the runtime', 
   expect(answered).toEqual([])
   for (const reason of refused) expect(reason).toBe('csp')
   await expect(probe).toContainText('3 15/10')
+  await expect(probe).toContainText('15-10 1,234.5 7 true')
   await expect(probe).toContainText('e2e@optiply.nl')
 
   // A query asking for confirmation waits for the person.

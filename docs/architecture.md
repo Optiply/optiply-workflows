@@ -184,7 +184,7 @@ Part 1 explains how Retool works. Part 2 is the build plan.
 |---|---|---|
 | Execution engine | **Our own run-level orchestrator on Postgres.** No Temporal, no pg-boss. `workflow_runs` is the queue: claimed with `FOR UPDATE SKIP LOCKED`, workers woken by `LISTEN/NOTIFY`, protected by leases with **fencing epochs**. Each block result is checkpointed to `block_runs`. | Temporal adds a cluster plus replay/versioning costs on every interpreter change. Block-as-job on pg-boss has a join race, two sources of truth, about 0.5s of poll latency per hop, and can't support `await fn()` from JS. Durable timers, retries and leases are about 400 lines of code when the program is data. Hide the engine behind `RunDispatcher`/`RunExecutor` interfaces so it can be swapped. |
 | Sync webhooks | The API runs the run in-process (the same engine, under a semaphore). When the semaphore is full, the run is queued and the API waits on `NOTIFY`. After `syncTimeoutMs`, or if the run suspends, it returns `202 {runId}`. | Target p50 under 50ms. |
-| JS sandbox | **isolated-vm.** One isolate per run lease and a fresh context per evaluation. A snapshotted stdlib (lodash, dayjs, uuid, papaparse, numbro). A watchdog calls `dispose()` at the timeout, and memory is capped (512MB by default since session 40; 128MB before). Host bridges provide `fetch` (SSRF-guarded), `console` (into run_logs, redacted), and `await fn()`. | No Node APIs are exposed, so `process.env` and `ENCRYPTION_KEY` stay out of reach. The `CodeRuntime` interface allows a QuickJS or remote fallback. Python comes later as a separate nsjail executor. |
+| JS sandbox | **isolated-vm.** One isolate per run lease and a fresh context per evaluation. A snapshotted stdlib (lodash, dayjs, and since M36 Retool's moment, numbro, Papa and uuid, also in the app Worker), with `crypto.getRandomValues` and `randomUUID` backed by the host's random bytes. A watchdog calls `dispose()` at the timeout, and memory is capped (512MB by default since session 40; 128MB before). Host bridges provide `fetch` (SSRF-guarded), `console` (into run_logs, redacted), and `await fn()`. | No Node APIs are exposed, so `process.env` and `ENCRYPTION_KEY` stay out of reach. The `CodeRuntime` interface allows a QuickJS or remote fallback. Python comes later as a separate nsjail executor. |
 | Backend | Fastify v5 + **tRPC v11** for UI↔API calls, plus REST + zod with OpenAPI for public routes (webhooks, runs API). | End-to-end types, and clean public contracts. |
 | DB | Postgres 18 (native `uuidv7()`), Drizzle ORM with committed SQL migrations, postgres.js driver. | |
 | Frontend | Vite, React 19, TanStack Router + Query, **@xyflow/react** canvas + dagre autolayout (`@dagrejs/dagre`, MIT; elkjs was dropped in M3 because it's EPL-2.0), **Monaco** (bundled locally), Tailwind v4 on Optiply's design tokens with hand-written shadcn-style primitives (§2.16), zustand for editor state. | |
@@ -439,7 +439,7 @@ packages/
    - Run `drizzle-kit generate` to produce `migrations/0000_*.sql`.
 2. **`packages/sandbox`, the isolated-vm spike:**
    - `CodeRuntime` interface and `IvmRuntime` providing `evalExpression` and `runCode`.
-   - The stdlib (lodash, dayjs) is bundled with esbuild and loaded into the isolate.
+   - The stdlib (lodash, dayjs; moment, numbro, Papa and uuid since M36) is bundled with esbuild and loaded into the isolate.
    - Memory limit, a watchdog that calls `dispose()`, and a fresh context for every evaluation.
    - Vitest tests:
      - a fresh context starts in under 10ms

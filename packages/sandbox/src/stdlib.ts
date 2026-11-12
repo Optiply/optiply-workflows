@@ -72,6 +72,30 @@ const PRELUDE = `
     }
     return { default: m }
   }
+  // Web Crypto's random part (uuid.v4 needs it): bytes from the host's crypto through \`__owRandom\`, a Callback set
+  // per context (a snapshot can't hold a source of randomness).
+  const fillRandom = (array) => {
+    if (!ArrayBuffer.isView(array) || array instanceof DataView || array instanceof Float32Array || array instanceof Float64Array) {
+      throw new TypeError('getRandomValues takes an integer typed array')
+    }
+    if (array.byteLength > 65536) throw new RangeError('getRandomValues fills at most 65536 bytes at a time')
+    const random = globalThis.__owRandom
+    if (typeof random !== 'function') throw new Error("crypto isn't available here")
+    const hex = random(array.byteLength)
+    const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    return array
+  }
+  globalThis.crypto = Object.freeze({
+    getRandomValues: fillRandom,
+    randomUUID() {
+      const b = fillRandom(new Uint8Array(16))
+      b[6] = (b[6] & 0x0f) | 0x40
+      b[8] = (b[8] & 0x3f) | 0x80
+      const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+      return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20)
+    },
+  })
   globalThis.__owBindFunctions = (names) => {
     for (const name of names) globalThis[name] = (...args) => host('function', name, args)
   }
@@ -135,7 +159,10 @@ const PRELUDE = `
 })();
 `
 
-/** The full source baked into the isolate snapshot: lodash (`_`), dayjs (+utc/timezone/…), console shim. */
+/**
+ * The full source baked into the isolate snapshot: lodash (`_`), dayjs (+utc/timezone/…), moment, numbro, Papa,
+ * uuid, sql, the console shim, crypto's random part and fetch.
+ */
 export function stdlibSource(): string {
   return STDLIB_BUNDLE + PRELUDE
 }
