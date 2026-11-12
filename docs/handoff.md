@@ -2233,6 +2233,36 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
+**Start session 47 with (end of session 46, 2026-11-12):** **M36, Import from Retool**, the plan the user accepted (`~/.claude/plans/velvety-hatching-mccarthy.md`; summary and decisions in §14---, session 45, step 3). Begin with **step 0**, then step 1 (the reader). Each step: report, then wait for the user's word to commit.
+
+- **The branch:** make **`feat/m36-retool-import` from `feat/js-packages`**, which now holds everything: `feat/m35-ai-actions` → `fix/pre-m36-polish` → `feat/js-packages`.
+- **Two changes to the M36 plan since it was written:**
+  - Its server migration is **0047**, not 0046: `0046_js_bundles` is taken.
+  - Step 0 (moment, numbro, Papa and uuid for everyone) could now be JavaScript packages instead. The user had chosen "add them for everyone" before packages existed, so ask once.
+- **The decoder:** session 45's lived in that session's scratchpad (gone). Rewrite it in `packages/retool-import` from the plan:
+  - `~#iR` is a record `{n, v}`, and `~#iL` is a list.
+  - `["^ ", k, v…]` is a map.
+  - `^0…` are cache codes: base 44, starting from char 48. Keys and `~#` tags longer than 3 characters are cached.
+- **The real exports** are at `~/Desktop/retool_exports/`. They're sensitive: never copy them into the repo or the docs.
+- **State:** everything is **pushed** (2026-11-12):
+  - `feat/m35-ai-actions` (`ac7cbc7`)
+  - `fix/pre-m36-polish` (`b0ec354`)
+  - `feat/js-packages` (`b277b30`)
+
+  No local branch is ahead of its remote. All branches go in one PR at the end of the project.
+- **The user's stack** still runs `34dc04a` plus the CSV fix (46 migrations). Moving it to JavaScript packages means **migration 0046** and a new image. That's the user's call: dump the database first, then `docker compose up --no-build --no-deps migrate`.
+- **Session 46 did** (§14, session 46):
+  - the Monaco-in-`<label>` focus fix
+  - JavaScript packages for workflows and apps, steps 1 to 7, with a code review whose nine findings were all fixed
+  - bundle download access per app, on the user's word
+  - `docs/runbooks/js-packages.md`
+- **Still open from before:**
+  - email to admins for access requests (`notifyAdminsOfRequest`)
+  - crumbs per route
+  - fold the CSV fix `8426520` into the branch before the PR
+- **Lint check:** `corepack pnpm biome ci --colors=off .` and grep for `^Found [0-9]+ error`. Its last line is the info count, so `tail -1` hides errors.
+- **Before e2e or screenshots:** build web (and server); the e2e serves `dist`. The untracked tours are in `.git/info/exclude` and must never be committed.
+
 **Start session 46 with (end of session 45, 2026-11-11):** **M36 Import from Retool**, the plan the user accepted (`~/.claude/plans/velvety-hatching-mccarthy.md`; summary, findings and their decisions in §14 session 45, step 3). Begin with **step 0** (moment, numbro, Papa, uuid in the workflow stdlib and the app sandbox), then step 1 (the reader), each step → report → their word to commit. Make the branch **`feat/m36-retool-import`** from `feat/m35-ai-actions` (one PR for all branches at the end). The decoder written in session 45 lived in that session's scratchpad (gone): rewrite it in `packages/retool-import` from the plan (Transit: `~#iR` records `{n, v}`, `~#iL` lists, `["^ ", k, v…]` maps, `^0…` cache codes base 44 from char 48, keys and `~#` tags over 3 chars cached). Real exports at `~/Desktop/retool_exports/` (sensitive). **State:** everything on `feat/m35-ai-actions`, not pushed; the user's stack runs `34dc04a` + the CSV fix (46 migrations, rollback `:pre-s45b`; `:pre-s45` held by the exited migrate container). Session 45 also did the admin guard (`89aac62`) and just-the-app at an app's URL (`34dc04a`). Follow-ups still open: email to admins for access requests (`notifyAdminsOfRequest`), crumbs per route, fold the CSV fix `8426520` into the branch before the PR. Untracked tours (in `.git/info/exclude`, never commit): `apps/web/e2e/zz-ui-tour.spec.ts`, `zz-access-tour.spec.ts`, `zz-walkthrough.spec.ts`, `zz-admin-guard-tour.spec.ts`, `zz-app-view-tour.spec.ts`. Before e2e or shots: build web (and server): the e2e serves `dist`.
 
 **Start session 45 with (end of session 44, 2026-11-11):** the user's look at the access work on their stack, and corrections (step → shots → report → their word to commit). **State:** everything on `feat/m35-ai-actions`, **not pushed** (one PR for all branches at the end); the user's stack runs `1b57f55` + the CSV fix (46 migrations, rollback image `:pre-s44`). Session 43 did the modern UI's steps 3–5 (`df2a4d9`, `acff8ec`, `d0cf0db`) and the block-resize fix (`2ddd647`); session 44 the access plan (§14: person grants `291e500`, sections `64bb60e`, use-only apps `fdcd641`, approval and invitations `da04b7c`, the review's fixes and `docs/runbooks/access.md` `1b57f55`). **Follow-ups noted:** email to admins for access requests (plug in at `notifyAdminsOfRequest`; SMTP or a notify workflow like Git's), crumbs declared per route instead of `breadcrumbs.tsx`'s path parsing, the CSV fix `8426520` folded into the branch before the PR (it lives only on `fix/csv-field-limit`; every deploy cherry-picks it). **Before e2e or shots: `pnpm --filter @ow/web build` (and the server's after server changes): the e2e serves `dist` as built.** Known flake: `webhook-settings` (passes alone). Untracked tours (never commit; in `.git/info/exclude`): `apps/web/e2e/zz-ui-tour.spec.ts`, `zz-access-tour.spec.ts`, `zz-walkthrough.spec.ts`.
