@@ -80,7 +80,9 @@ async function runAndExpect(page: Page, text: string) {
   await expect(panel.getByTestId('run-output')).toContainText(text)
 }
 
-test('the npm registries page serves components, workflows and apps; its old address leads there', async ({ page }) => {
+test('the npm registries page serves components, workflows and apps; its old address leads there', async ({
+  page,
+}) => {
   await signIn(page)
   await page.goto('/settings/components')
   await expect(page).toHaveURL(/\/settings\/npm$/)
