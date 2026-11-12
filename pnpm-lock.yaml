@@ -668,6 +668,21 @@ importers:
         specifier: 5.0.4
         version: 5.0.4(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/retool-import:
+    devDependencies:
+      immutable:
+        specifier: 3.8.4
+        version: 3.8.4
+      transit-immutable-js:
+        specifier: 0.8.0
+        version: 0.8.0(immutable@3.8.4)(transit-js@0.8.874)
+      transit-js:
+        specifier: 0.8.874
+        version: 0.8.874
+      vitest:
+        specifier: 5.0.4
+        version: 5.0.4(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/sandbox:
     dependencies:
       isolated-vm:
@@ -2392,6 +2407,10 @@ packages:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
     engines: {node: '>=0.10.0'}
 
+  immutable@3.8.4:
+    resolution: {integrity: sha512-ZQv17KolYrYmsDoDB8N67zhIKsNi9mGYlk96y/yuxyAqJB2hLzSGSM7k/sB0/ZvO4kx27U9+fBeD/XlLGh/uXQ==}
+    engines: {node: '>=0.10.0'}
+
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
@@ -3084,6 +3103,16 @@ packages:
 
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
+
+  transit-immutable-js@0.8.0:
+    resolution: {integrity: sha512-ONMckwIaS/t06yfdgui91zbVzyu/8iM+q+apbevO1SCs1NfX1C8KAczeP/XcSue095UG5oC3UWSIySHIT7jTzA==}
+    peerDependencies:
+      immutable: '>= 3'
+      transit-js: '>= 0.8'
+
+  transit-js@0.8.874:
+    resolution: {integrity: sha512-IDJJGKRzUbJHmN0P15HBBa05nbKor3r2MmG6aSt0UxXIlJZZKcddTk67/U7WyAeW9Hv/VYI02IqLzolsC4sbPA==}
+    engines: {node: '>= 0.10.0'}
 
   ts-algebra@2.0.0:
     resolution: {integrity: sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==}
@@ -4898,6 +4927,8 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  immutable@3.8.4: {}
+
   inherits@2.0.4: {}
 
   install-artifact-from-github@1.8.1: {}
@@ -5499,6 +5530,13 @@ snapshots:
   toidentifier@1.0.1: {}
 
   tr46@0.0.3: {}
+
+  transit-immutable-js@0.8.0(immutable@3.8.4)(transit-js@0.8.874):
+    dependencies:
+      immutable: 3.8.4
+      transit-js: 0.8.874
+
+  transit-js@0.8.874: {}
 
   ts-algebra@2.0.0: {}
 

@@ -2022,6 +2022,12 @@ Branch `feat/m36-retool-import`, cut from `feat/js-packages`. The plan is `~/.cl
    - Editor declarations in `scope-types.ts` and the apps' `scope.ts`; Python's completions leave them out.
    - Cost: the stdlib went from 95 KB to 237 KB; a fresh evaluation from ≈0.65 ms to ≈0.85 ms (bench).
    - Tests: sandbox 37 (two new), definition 206, app-definition 150 (one new), engine 219, app-runtime 48, web 155, server 694; e2e `app-sandbox.spec` checks the four in the browser Worker.
+1. **The reader** ✅ `packages/retool-import` (pure, no DB):
+   - `transit.ts` `decodeTransit`: Transit JSON → plain JSON (`iM`/`iOM` → objects, `iL`/`iS` → arrays, `iR` → values + `$record`; cache codes one or two characters, wrapping after 1,936; `~m` → ISO; unknown tags kept as `{ $tag, value }`). Only real transit maps (`^ `, records' values, plain objects) cache their keys; Immutable maps are tagged lists.
+   - `read.ts` `readRetoolExport(text|json, { fileName })` → `RetoolApp | RetoolWorkflow` (`model.ts`); errors `not_json`, `not_retool`, `unreadable`. App exports carry no name: from the file name (URL-decoded), then the page title. Parts nest through `position2.container` (the plugin's own `container` is always empty). Workflow blocks join their template plugin by `pluginId`; functions are `subflows` (no names inside; step 2 names them from their callers); conditionals' ports in `outgoingPorts`/`incomingPorts`.
+   - Record names seen: `appTemplate`, `pluginTemplate`, `position2`.
+   - **Workflow exports have no uuid of their own** (the webhook trigger has one): step 6 matches re-imports on the trigger's uuid, then the name. Retool workflows load `moment-timezone` as `moment`; no export calls `moment.tz`.
+   - Tests: fixtures written with immutable 3.8.4 + transit-js + transit-immutable-js (devDependencies, test only), 10 tests; `test/local-exports.test.ts` runs only with `RETOOL_EXPORTS_DIR` and prints counts only (`--silent=false` to see them). On the five exports: everything read; 38 and 1,185 parts (986 on the grid); 46/12/34 blocks, 3/0/1 functions, every block with its template.
 
 ## 14----. Session 46 steps: fixes before M36, then JavaScript packages
 
