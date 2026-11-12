@@ -35,8 +35,9 @@ In an editor, **Imported from Retool** in the status bar opens the import's repo
   values from Retool. The same secret in several places shares one.
 - **Problems.** Validator errors left after the import are in the report and the editor's Problems panel. They are
   usually things missing in Retool too (a component or query that was deleted, code that never worked).
-- **Skipped blocks.** Workflow blocks nothing leads to never ran in Retool, so they aren't imported. If one should
-  run, add it in the editor.
+- **Skipped blocks.** Workflow blocks nothing leads to never ran in Retool, so they aren't imported. One exception: a
+  loop or filter nothing leads to runs in Retool after the block it goes through, so it's connected after that block
+  here (and noted). If a skipped block should run, add it in the editor.
 - **Approximated parts.** Some Retool parts have a close equivalent, not the same thing: an editable text is a text
   input, a link is a secondary button, a chart keeps its type and data but not its Plotly settings, a table's
   toolbar buttons and row actions aren't imported. The report lists each one with what to check.

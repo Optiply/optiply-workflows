@@ -1170,7 +1170,9 @@ the file (exports can hold secrets).
   of one part. Retool-only names are rewritten where code reads them (`app/compat.ts`: tables' `selectedSourceRow`,
   containers' `currentViewKey`, the legacy table's `setData()`…); **Retool's SQL data is by column**, so a column
   read off it becomes the rows' values (`q.data.id` → `q.data.map((r) => r.id)`). Names reserved here are renamed
-  with every reference. Blocks nothing leads to in a Retool workflow never ran there and are skipped. Secrets
+  with every reference. Blocks nothing leads to in a Retool workflow never ran there and are skipped, except a loop or
+  filter, which Retool runs after the block it goes through (the user confirmed one such chain ran): it's connected
+  after that block, noted. Secrets
   written into an export become `{{ configVars.RETOOL_SECRET_n }}`; the report says where, never the value.
 - **What Retool code needed here, added for everyone:** moment, numbro, Papa and uuid in both sandboxes (and
   `crypto.getRandomValues` in the workflow isolate); `workflowContext.name` and `.currentRun`; Text's `markdown`;

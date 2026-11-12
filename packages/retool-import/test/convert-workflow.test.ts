@@ -126,6 +126,17 @@ function sample(): RetoolWorkflow {
       left: 0,
       incomingOnSuccessEdges: [],
     },
+    // A filter nothing leads to: Retool runs it after the block it goes through.
+    {
+      uuid: 'u-big',
+      pluginId: 'bigOnes',
+      blockType: 'filter',
+      editorType: 'JavascriptQuery',
+      top: 300,
+      left: 800,
+      options: { blockToIterate: 'u-orders', filterStatement: 'value.total > 100' },
+      incomingOnSuccessEdges: [],
+    },
     // Function definitions: one a subflow, one a single REST query.
     {
       uuid: 'u-fn-notify',
@@ -289,6 +300,7 @@ describe('convertWorkflow', () => {
       ['postSummary', 'resourceQuery'],
       ['response1', 'response'],
       ['pause1', 'code'],
+      ['bigOnes', 'filter'],
     ])
     expect(block('getOrders')).toEqual({
       name: 'getOrders',
@@ -335,8 +347,13 @@ describe('convertWorkflow', () => {
         { from: 'branch1', port: 'cond:c1', to: 'openOnly' },
         { from: 'branch1', port: 'else', to: 'pause1' },
         { from: 'postSummary', port: 'out', to: 'response1' },
+        { from: 'getOrders', port: 'out', to: 'bigOnes' },
       ]),
     )
+    expect(report.entries.find((e) => e.retool === 'bigOnes')).toMatchObject({
+      status: 'approximated',
+      notes: [expect.stringContaining('Retool ran it after getOrders')],
+    })
     expect(definition.layout?.blocks?.getOrders).toEqual({ x: 400, y: 0, w: 500 })
   })
 
@@ -428,7 +445,7 @@ describe('convertWorkflow', () => {
       status: 'unsupported',
       kind: 'wait',
     })
-    expect(report.counts).toEqual({ converted: 12, approximated: 1, unsupported: 1, skipped: 1 })
+    expect(report.counts).toEqual({ converted: 12, approximated: 2, unsupported: 1, skipped: 1 })
   })
 
   it('lists the resources to map, with placeholders for unmapped ones', () => {

@@ -252,9 +252,17 @@ function convertGraph(
   const blocks: Block[] = []
   const layout: Record<string, { x: number; y: number; w?: number }> = {}
   let returns: string | undefined
-  const reachable = reachableFromStart([...ctx.byUuid.values()])
+  // A loop or filter nothing leads to runs after the block it goes through (Retool ran such a chain, M36 session
+  // 47): that edge is added here, and noted.
+  const implied = impliedEdges([...ctx.byUuid.values()])
+  const withImplied = (b: RetoolBlock): RetoolBlock => {
+    const from = implied.get(b.uuid)
+    return from ? { ...b, incoming: [from] } : b
+  }
+  const reachable = reachableFromStart([...ctx.byUuid.values()].map(withImplied))
   const kept: RetoolBlock[] = []
-  for (const b of retoolBlocks) {
+  for (const original of retoolBlocks) {
+    const b = withImplied(original)
     if (reachable && !reachable.has(b.uuid)) {
       ctx.report.add({
         retool: b.name,
@@ -284,6 +292,14 @@ function convertGraph(
         ? convert(b, ctx)
         : placeholder(b, `Retool ${b.blockType} blocks aren't supported yet`)
     }
+    const from = implied.get(b.uuid)
+    if (from) {
+      const source = ctx.byUuid.get(from)!.name
+      converted.notes.push(
+        `No edge led to it in the export; Retool ran it after ${source}, the block it goes through: connected after it here`,
+      )
+      if (converted.status === 'converted') converted.status = 'approximated'
+    }
     const block = withCommon(converted.block, b, converted.notes)
     blocks.push(block)
     ctx.report.add({
@@ -303,6 +319,22 @@ function convertGraph(
   const edges = convertEdges(kept, ctx)
   if (inFunction && !returns) returns = returnBlock(kept, edges)
   return { blocks, edges, layout, ...(returns && { returns }) }
+}
+
+/**
+ * Loops and filters that nothing leads to, by the block they go through (`iterable`, `blockToIterate`): Retool runs
+ * them after it.
+ */
+function impliedEdges(all: RetoolBlock[]): Map<string, string> {
+  const uuids = new Set(all.map((b) => b.uuid))
+  const out = new Map<string, string>()
+  for (const b of all) {
+    if (b.blockType !== 'loop' && b.blockType !== 'filter') continue
+    if (b.incoming.length || b.incomingPorts.length) continue
+    const target = b.blockType === 'loop' ? b.options.iterable : b.options.blockToIterate
+    if (typeof target === 'string' && uuids.has(target) && target !== b.uuid) out.set(b.uuid, target)
+  }
+  return out
 }
 
 /**
