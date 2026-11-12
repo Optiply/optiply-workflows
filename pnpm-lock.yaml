@@ -94,6 +94,9 @@ importers:
       '@ow/git-format':
         specifier: workspace:*
         version: link:../../packages/git-format
+      '@ow/retool-import':
+        specifier: workspace:*
+        version: link:../../packages/retool-import
       '@ow/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox

@@ -1,3 +1,4 @@
+/// <reference path="./transit-immutable-js.d.ts" />
 /**
  * Synthetic Retool exports, written with the libraries Retool itself uses (Immutable records through
  * transit-immutable-js), so the reader is tested against the real encoder, cache codes included. No real data.

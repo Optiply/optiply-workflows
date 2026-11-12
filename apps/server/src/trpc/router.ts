@@ -21,6 +21,7 @@ import { permissionsRouter } from './routers/permissions'
 import { pythonIndexesRouter } from './routers/python-indexes'
 import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
+import { retoolImportRouter } from './routers/retool-import'
 import { tasksRouter } from './routers/tasks'
 import { usersRouter } from './routers/users'
 import { workflowsRouter } from './routers/workflows'
@@ -58,6 +59,7 @@ export const appRouter = router({
   tasks: tasksRouter,
   configVars: configVarsRouter,
   workflows: workflowsRouter,
+  retoolImport: retoolImportRouter,
   releases: releasesRouter,
   accessTokens: accessTokensRouter,
   apiKeys: apiKeysRouter,

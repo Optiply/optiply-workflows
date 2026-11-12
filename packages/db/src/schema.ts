@@ -1367,6 +1367,62 @@ export const npmRegistries = pgTable(
 )
 
 export type NpmRegistry = typeof npmRegistries.$inferSelect
+
+/**
+ * Apps and workflows imported from Retool (M36): which Retool app or workflow each came from (`retool_key`: an app's
+ * uuid; a workflow's webhook trigger uuid, else its name, as workflow exports carry no uuid), so importing it again
+ * saves a new draft of the same one. Keeps the import's report, never the export.
+ */
+export const retoolImports = pgTable(
+  'retool_imports',
+  {
+    id: id(),
+    kind: text({ enum: ['app', 'workflow'] }).notNull(),
+    retoolKey: text().notNull(),
+    retoolName: text().notNull(),
+    appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    report: jsonb().notNull(),
+    importedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('retool_imports_key_uq').on(t.kind, t.retoolKey),
+    check(
+      'retool_imports_target_ck',
+      sql`(${t.kind} = 'app' and ${t.appId} is not null and ${t.workflowId} is null) or (${t.kind} = 'workflow' and ${t.workflowId} is not null and ${t.appId} is null)`,
+    ),
+  ],
+)
+
+/**
+ * What a Retool resource or workflow is here (M36), remembered from the last import that mapped it: a Retool resource
+ * (by name or uuid) → a resource; a Retool workflow (by uuid) → a workflow.
+ */
+export const retoolMappings = pgTable(
+  'retool_mappings',
+  {
+    id: id(),
+    kind: text({ enum: ['resource', 'workflow'] }).notNull(),
+    retoolKey: text().notNull(),
+    resourceId: uuid().references(() => resources.id, { onDelete: 'cascade' }),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('retool_mappings_key_uq').on(t.kind, t.retoolKey),
+    check(
+      'retool_mappings_target_ck',
+      sql`(${t.kind} = 'resource' and ${t.resourceId} is not null and ${t.workflowId} is null) or (${t.kind} = 'workflow' and ${t.workflowId} is not null and ${t.resourceId} is null)`,
+    ),
+  ],
+)
+
+export type RetoolImport = typeof retoolImports.$inferSelect
+export type RetoolMapping = typeof retoolMappings.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect

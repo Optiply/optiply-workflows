@@ -60,6 +60,8 @@ export type Context = Awaited<ReturnType<ReturnType<typeof contextFactory>>>
 const t = initTRPC.context<Context>().create({ transformer: superjson })
 
 export const router = t.router
+/** Calls a router's procedures in-process with a request's context (M36: the Retool import reuses create and save). */
+export const createCallerFactory = t.createCallerFactory
 export const publicProcedure = t.procedure
 
 /**
