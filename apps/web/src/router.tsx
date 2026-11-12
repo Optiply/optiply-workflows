@@ -285,10 +285,18 @@ const pythonRoute = createRoute({
   path: '/python',
   component: PythonSettingsPage,
 })
+const npmSettingsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/npm',
+  component: ComponentsSettingsPage,
+})
+/** The npm registries' page was Settings → Components (M33) before workflows and apps used it too. */
 const componentsSettingsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/components',
-  component: ComponentsSettingsPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/settings/npm' })
+  },
 })
 
 const routeTree = rootRoute.addChildren([
@@ -325,6 +333,7 @@ const routeTree = rootRoute.addChildren([
       accessTokensRoute,
       gitRoute,
       pythonRoute,
+      npmSettingsRoute,
       componentsSettingsRoute,
       auditRoute,
     ]),

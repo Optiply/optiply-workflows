@@ -79,3 +79,11 @@ async function runAndExpect(page: Page, text: string) {
   await panel.getByRole('button', { name: 'output' }).click()
   await expect(panel.getByTestId('run-output')).toContainText(text)
 }
+
+test('the npm registries page serves components, workflows and apps; its old address leads there', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/settings/components')
+  await expect(page).toHaveURL(/\/settings\/npm$/)
+  await expect(page.getByRole('link', { name: 'npm registries' })).toBeVisible()
+  await expect(page.getByText('workflows’ and apps’ JavaScript packages install from')).toBeVisible()
+})

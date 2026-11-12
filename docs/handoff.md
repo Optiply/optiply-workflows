@@ -2108,7 +2108,18 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
       - a run replying `#007`
       - the setting surviving a reload
     - **Screenshots:** before and after shots are in the session scratchpad.
-  - **Next:** step 5, the registries page. Settings → Components becomes "npm registries", with wording that it serves components, workflows and apps.
+    - Committed as `ede0267`.
+  - **5, done, not committed yet:**
+    - Settings → Components is now **npm registries** at `/settings/npm`, using the same `ComponentsSettingsPage`. `/settings/components` redirects there through a `beforeLoad` redirect.
+    - The page says the registries serve component libraries and workflows' and apps' JavaScript packages, and that changing a registry reinstalls packages on their next use (the registries' scope and URL are part of `jsInputHash`).
+    - Updated: `docs/runbooks/components.md`, `.env.example` and the m33 spec's path.
+    - e2e: the redirect test in `js-packages.spec.ts`.
+  - **Next:** step 6, apps:
+    - packages in app settings (`JsPackagesField` with target kind `app`)
+    - the bundle in the app Worker (`host.ts` bootstrap)
+    - the import rewrite in app-definition's `evaluate.ts`, with `importProblems` in app validate
+    - app releases keeping `js_lock` and `js_bundle_hash`
+    - an e2e test
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

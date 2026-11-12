@@ -22,7 +22,8 @@ type NpmRegistry = RouterOutputs['npmRegistries']['list'][number]
 type TestAnswer = RouterOutputs['npmRegistries']['test']
 
 /**
- * npm registries for component libraries' builds (M33, docs/architecture.md §2.36): one per scope (`@acme`), or one
+ * npm registries for everything installed from npm (M33, docs/architecture.md §2.36): component libraries' builds and
+ * workflows' and apps' JavaScript packages. One per scope (`@acme`), or one
  * for every other package instead of the server's default. The token is a secret config var, read in the default
  * environment; it reaches only npm, in the build's own `.npmrc`.
  */
@@ -49,10 +50,11 @@ function Registries() {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <p className="max-w-2xl text-sm text-muted">
-          npm registries component libraries install their packages from. A registry for a scope serves that
-          scope’s packages (<code className="font-mono">@acme/…</code>); one without a scope serves every
-          other package instead of the default. Libraries need nothing: their{' '}
-          <code className="font-mono">package.json</code> names the packages.
+          npm registries that component libraries and workflows’ and apps’ JavaScript packages install from. A
+          registry for a scope serves that scope’s packages (<code className="font-mono">@acme/…</code>); one
+          without a scope serves every other package instead of the default. Nothing else to set: a library’s{' '}
+          <code className="font-mono">package.json</code> or a workflow’s or app’s JavaScript packages name
+          the packages. Changing a registry installs packages again on their next use.
         </p>
         <Button variant="primary" onClick={() => setEditing(editing === 'new' ? null : 'new')}>
           <Plus className="size-4" /> New registry

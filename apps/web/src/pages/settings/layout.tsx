@@ -37,7 +37,7 @@ export const SETTINGS_TABS: readonly {
   { to: '/settings/config-vars', label: 'Config vars', adminOnly: false, group: 'Platform', icon: Variable },
   { to: '/settings/git', label: 'Git', adminOnly: true, group: 'Platform', icon: GitBranch },
   { to: '/settings/python', label: 'Python', adminOnly: true, group: 'Platform', icon: FileCode2 },
-  { to: '/settings/components', label: 'Components', adminOnly: true, group: 'Platform', icon: Boxes },
+  { to: '/settings/npm', label: 'npm registries', adminOnly: true, group: 'Platform', icon: Boxes },
   { to: '/settings/audit', label: 'Audit log', adminOnly: true, group: 'Monitoring', icon: ScrollText },
 ]
 

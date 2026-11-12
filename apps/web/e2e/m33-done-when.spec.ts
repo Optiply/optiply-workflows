@@ -95,7 +95,7 @@ test("M33's done-when", async ({ page, baseURL }) => {
     })
     // A run before this one (the spec repeated) made it already: edited then.
     const registries = await trpcQuery<{ scope: string | null }[]>(page, 'npmRegistries.list', undefined)
-    await page.goto('/settings/components')
+    await page.goto('/settings/npm')
     const existing = page.getByTestId('npm-registry-@acme')
     if (registries.some((r) => r.scope === '@acme'))
       await existing.getByRole('button', { name: 'Edit' }).click()

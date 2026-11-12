@@ -29,7 +29,7 @@ app page ◀──GET /api/component-bundles/<hash>.js|css (signed in)──┘
 
 | Variable | Default | What |
 |---|---|---|
-| `NPM_REGISTRY_URL` | `https://registry.npmjs.org/` | The registry dependencies come from, unless an admin's registry without a scope replaces it (M33, Settings → Components). |
+| `NPM_REGISTRY_URL` | `https://registry.npmjs.org/` | The registry dependencies come from, unless an admin's registry without a scope replaces it (M33, Settings → npm registries). |
 | `NPM_ALLOW_INSECURE_REGISTRIES` | off | M33: admin-defined registries over `http` (a local mirror, tests). |
 | `COMPONENT_BUILD_DIR` | `<tmp>/ow-component-builds` | Builds' working directories and npm's download cache (`npm-cache/`). Disposable; a volume only keeps the cache across restarts. |
 
@@ -67,7 +67,7 @@ node ow-components.mjs push --prebuilt dist/ --slug price-widgets --version 2.0.
 
 ## Private npm registries (M33)
 
-Admins add registries in **Settings → Components**: one per **scope** (`@acme` → its registry), or one without a
+Admins add registries in **Settings → npm registries**: one per **scope** (`@acme` → its registry), or one without a
 scope that replaces `NPM_REGISTRY_URL` for every other package. The token is a **secret config var**, its value in
 the **default environment**; a build writes it to its own temporary `.npmrc` (`//host/path/:_authToken=…`, mode
 600), which only npm reads (install scripts never run, so no package code sees it), and npm's log is scrubbed of it.
@@ -113,7 +113,7 @@ its frame (`height: 100%`) reports the frame's own height: on Auto it stays as i
   registry doesn't have); "npm's output" under it has the rest. Behind a proxy, set `NPM_REGISTRY_URL` to a mirror the
   server can reach.
 - **`spawn npm ENOENT`**: the server's image or host has no `npm` on `PATH`.
-- **A private package answers 401 or 404**: its scope has no registry in Settings → Components, or the token's
+- **A private package answers 401 or 404**: its scope has no registry in Settings → npm registries, or the token's
   config var has no value in the default environment (the build says which), or the token can't read that package.
 - **The CLI says "The draft changed"**: someone edited the draft in the browser since the folder last synced: pull
   (after keeping your changes elsewhere) or `push --force`. **401**: the token is revoked, expired or its user
