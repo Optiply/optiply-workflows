@@ -1,11 +1,13 @@
 import { type AppTheme, setCustomCss, setTheme } from '@ow/app-definition'
 import { RotateCcw } from 'lucide-react'
+import { JsPackagesField } from '@/components/js-packages'
 import { Button, Input, Select, sectionLabelClass } from '@/components/ui'
 import { AppCodeField, EditorField, problemsAt } from './fields'
 import { useAppEditor } from './store'
 
 /*
- * The Settings panel (session 41, after Retool's App settings): the app's theme and its custom CSS. Both apply inside
+ * The Settings panel (session 41, after Retool's App settings): the app's theme, its custom CSS and its JavaScript
+ * packages (which its JS queries, transformers and scripts import). Both apply inside
  * the app only (see `ThemedApp`), in the editor and where the app is used.
  */
 
@@ -26,6 +28,9 @@ export function AppSettingsPanel() {
   const readOnly = useAppEditor((s) => s.readOnly)
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const update = useAppEditor((s) => s.update)
+  const kind = useAppEditor((s) => s.kind)
+  const appId = useAppEditor((s) => s.appId)
+  const packages = useAppEditor((s) => s.definition.javascript?.packages)
   const set = (part: Partial<AppTheme>) => update((def) => setTheme(def, { ...def.theme, ...part }))
   return (
     <fieldset disabled={readOnly} className="flex min-w-0 flex-col gap-5" data-testid="app-settings">
@@ -91,6 +96,26 @@ export function AppSettingsPanel() {
           onChange={(next) => update((def) => setCustomCss(def, next))}
         />
       </section>
+      {kind === 'app' && appId && (
+        <JsPackagesField
+          target={{ kind: 'app', id: appId }}
+          packages={packages}
+          problems={diagnostics
+            .filter((d) => d.code === 'invalid_js_package')
+            .map((d) => ({
+              ...(typeof d.path[2] === 'number' && { index: d.path[2] }),
+              message: d.message,
+            }))}
+          canEdit={!readOnly}
+          hasEdit
+          onChange={(lines) =>
+            update((def) => {
+              const { javascript: _old, ...rest } = def
+              return lines.length ? { ...rest, javascript: { packages: lines } } : rest
+            })
+          }
+        />
+      )}
     </fieldset>
   )
 }

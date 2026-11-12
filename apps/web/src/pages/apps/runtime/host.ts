@@ -14,6 +14,7 @@ import {
   type SandboxMessage,
 } from '@ow/app-runtime'
 import type { FrameUtil } from '@ow/component-sdk/protocol'
+import { jsPackageProblems } from '@ow/definition'
 import { STDLIB_BUNDLE } from '@ow/sandbox/stdlib'
 import { TRPCClientError } from '@trpc/client'
 import { createStore, type StoreApi } from 'zustand/vanilla'
@@ -73,6 +74,11 @@ export interface AppHostOptions {
   appId: string
   /** The release being shown, or null for the draft (the editor). */
   releaseId: string | null
+  /**
+   * The release's JavaScript packages' bundle (`apps.open`): null without packages. The draft's comes from its
+   * package list (`jsPackages.bundle`).
+   */
+  jsBundleHash?: string | null
   /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
   branchDraftId?: string | null
   environmentId: string
@@ -112,6 +118,11 @@ const STORAGE_LIMIT = 100_000
 export interface ComponentFrameHandle {
   call(method: string, args: unknown[]): Promise<unknown>
 }
+
+type SandboxPackages = { hash: string; js: string }
+
+/** A draft's package list unchanged this long is built (see `loadPackages`). */
+const PACKAGES_SETTLE_MS = 800
 
 function inlineScript(code: string): string {
   // `</script` would end the element early; `<\/script` means the same in JavaScript.
@@ -186,6 +197,10 @@ export class AppHost {
   } | null = null
   /** Where the app is: sent with `start` (a restart opens the same page), then as `navigate`. */
   private url: AppUrl
+  /** What the JavaScript packages' bundle is for (the release's hash, or the draft's list), and its loading. */
+  private packagesKey: string | null = null
+  private packages: Promise<SandboxPackages | null> = Promise.resolve(null)
+  private packagesWait: { cancel(): void } | null = null
 
   /** The app's id; undefined for a module. */
   get appId(): string | undefined {
@@ -197,6 +212,7 @@ export class AppHost {
     this.modules = options.modules ?? {}
     this.libraries = options.libraries ?? {}
     this.url = options.url ?? { page: null, params: {} }
+    this.loadPackages()
     this.store = createStore<AppHostState>(() => ({
       status: 'loading',
       values: {},
@@ -240,6 +256,7 @@ export class AppHost {
 
   destroy(): void {
     this.destroyed = true
+    this.packagesWait?.cancel()
     this.removeSandbox()
   }
 
@@ -319,6 +336,7 @@ export class AppHost {
     this.definition = definition
     this.modules = modules
     this.libraries = libraries
+    if (this.loadPackages()) void this.sendPackages()
     if (modulesChanged || librariesChanged) this.store.setState({ modules, libraries })
     const { status } = this.store.getState()
     if (status === 'stopped') this.restart()
@@ -389,7 +407,11 @@ export class AppHost {
   private async handle(message: SandboxMessage, port: MessagePort) {
     if (this.destroyed || port !== this.port) return
     switch (message.type) {
-      case 'ready':
+      case 'ready': {
+        // The packages first: the app's code may import them as it starts.
+        const packages = await this.packages
+        if (this.destroyed || port !== this.port) return
+        if (packages) this.post({ type: 'packages', packages })
         this.startedWith = { definition: this.definition, modules: this.modules, libraries: this.libraries }
         this.post({
           type: 'start',
@@ -402,8 +424,11 @@ export class AppHost {
           storage: this.readStorage(),
         })
         return
+      }
       case 'started': {
         this.store.setState({ status: 'ready' })
+        // Packages changed while it was starting (the sandbox skips a bundle it has).
+        void this.sendPackages()
         const started = this.startedWith
         if (
           this.definition !== started?.definition ||
@@ -540,6 +565,76 @@ export class AppHost {
   }
 
   /** A module's draft in its editor: its inputs' test values, as `inputs.<name>`. */
+  /**
+   * Starts getting the JavaScript packages' bundle when what it's for changed (true then): the release's, or the
+   * draft's package list's (built when needed). A failure is in the app's console; its imports then say the package
+   * isn't installed. A module running on its own has none (its code uses its app's).
+   */
+  private loadPackages(): boolean {
+    const list = this.options.kind === 'module' ? [] : (this.definition.javascript?.packages ?? [])
+    const key = this.options.releaseId
+      ? `release:${this.options.jsBundleHash ?? ''}`
+      : `draft:${JSON.stringify(list)}`
+    if (key === this.packagesKey) return false
+    const first = this.packagesKey === null
+    this.packagesKey = key
+    const load = () =>
+      this.fetchPackages(list).catch((err: unknown) => {
+        this.log(
+          'error',
+          `The app's JavaScript packages couldn't be loaded: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        return null
+      })
+    // A draft's list being typed: built once it rests (not `z`, `zo` on the way to `zod`). One waiting is answered
+    // with none when replaced, so whatever waits for it goes on (the newest follows once the sandbox started).
+    this.packagesWait?.cancel()
+    if (first || this.options.releaseId) {
+      this.packages = load()
+    } else {
+      this.packages = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(load()), PACKAGES_SETTLE_MS)
+        this.packagesWait = {
+          cancel: () => {
+            clearTimeout(timer)
+            resolve(null)
+          },
+        }
+      })
+    }
+    return true
+  }
+
+  private async fetchPackages(list: readonly string[]): Promise<SandboxPackages | null> {
+    let hash = this.options.jsBundleHash ?? null
+    if (!this.options.releaseId) {
+      // A list with problems is the editor's to show (under the field), not a build's.
+      if (!list.length || jsPackageProblems(list).length) return null
+      const state = await trpcClient.jsPackages.bundle.query({
+        target: { kind: 'app', id: this.options.appId },
+        packages: [...list],
+      })
+      if (state.state === 'none') return null
+      if (state.state !== 'ready') throw new Error(state.error)
+      hash = state.bundleHash
+    }
+    if (!hash) return null
+    const res = await fetch(`/api/js-bundles/${hash}.js`, { credentials: 'same-origin' })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null
+      throw new Error(body?.error ?? `the server answered ${res.status}`)
+    }
+    return { hash, js: await res.text() }
+  }
+
+  /** The changed packages to the running sandbox, once loaded (a sandbox still starting gets them with `start`). */
+  private async sendPackages() {
+    const port = this.port
+    const packages = await this.packages
+    if (this.destroyed || !port || port !== this.port || this.store.getState().status !== 'ready') return
+    this.post({ type: 'packages', packages })
+  }
+
   private testInputs(): { inputs?: Record<string, unknown> } {
     if (this.options.kind !== 'module') return {}
     const inputs = this.definition.module?.inputs ?? []

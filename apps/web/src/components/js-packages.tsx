@@ -90,11 +90,21 @@ function JsPackagesState({ target, packages }: { target: JsPackagesTarget; packa
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const settled = useSettled([...packages], 600)
-  const state = useQuery(trpc.jsPackages.state.queryOptions({ target, packages: settled }))
+  // An app's preview builds its packages anyway (see AppHost): its state is that build's (the two are one build).
+  const input = { target, packages: settled }
+  const state = useQuery(
+    target.kind === 'app'
+      ? trpc.jsPackages.bundle.queryOptions(input)
+      : trpc.jsPackages.state.queryOptions(input),
+  )
   const install = useMutation(
     trpc.jsPackages.install.mutationOptions({
       // Under the packages it installed: the field may have changed since.
-      onSuccess: (data, sent) => queryClient.setQueryData(trpc.jsPackages.state.queryKey(sent), data),
+      onSuccess: (data, sent) =>
+        queryClient.setQueryData(
+          (sent.target.kind === 'app' ? trpc.jsPackages.bundle : trpc.jsPackages.state).queryKey(sent),
+          data,
+        ),
     }),
   )
   const data = state.data

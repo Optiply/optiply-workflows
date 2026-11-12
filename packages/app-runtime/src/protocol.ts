@@ -106,6 +106,11 @@ export type HostMessage =
       reset?: string[]
     }
   /**
+   * The app's JavaScript packages: their bundle (sent before `start`, and again when they change), or none. The
+   * sandbox loads it; import lines read it.
+   */
+  | { type: 'packages'; packages: { hash: string; js: string } | null }
+  /**
    * Values the user changed: typing, picking, selecting, editing a cell. With `seq`, the sandbox answers `ack` once
    * it has them, so the page can ignore older values for those keys still on their way (no cursor jumps).
    */

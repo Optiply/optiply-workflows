@@ -70,6 +70,7 @@ export function AppViewPage() {
         id: app.data.release.id,
         version: app.data.release.version,
         definition: app.data.release.definition,
+        jsBundleHash: app.data.release.jsBundleHash,
       }}
       modules={app.data.modules}
       libraries={app.data.libraries}
@@ -123,7 +124,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 interface RunningAppProps {
   app: { id: string; slug: string; name: string; canEdit: boolean }
-  release: { id: string; version: string; definition: AppDefinition }
+  release: { id: string; version: string; definition: AppDefinition; jsBundleHash: string | null }
   /** The module releases its instances run (M14). */
   modules: ModuleReleases
   /** The component library releases its custom components run (M25). */
@@ -164,6 +165,7 @@ function RunningApp({ app, release, modules, libraries, environment, environment
     libraries,
     appId: app.id,
     releaseId: release.id,
+    jsBundleHash: release.jsBundleHash,
     environmentId: environment.id,
     globals: {
       current_user: { id: me.id, email: me.email, name: me.name },

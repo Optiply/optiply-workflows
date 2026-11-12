@@ -2128,12 +2128,29 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - **`api/js-bundles.ts`:** `GET /api/js-bundles/<sha256>.js` for anyone signed in. A missing bundle that an app or workflow release names is rebuilt from that release's lock, and a failed rebuild is a 502.
     - **`jsPackages.bundle`** (a query, editors only): it builds when needed and answers the state. A `ready` state now carries `bundleHash`.
     - **Tests:** `test/js-packages-apps.test.ts` (6).
-  - **Next:** 6b, the web side:
-    - `JsPackagesField` in app settings
-    - the app editor preview: `jsPackages.bundle`, then fetch `/api/js-bundles/<hash>.js`
-    - the viewer: `open.release.jsBundleHash`, then fetch
-    - a `packages` field on HostMessage `start`/`update`; the Worker defines `__owImport` and evaluates the bundle
-    - an e2e test
+    - Committed as `1e5aebc`. The format fix for step 5's spec is `0c8710a`.
+  - **6b, done, not committed yet:**
+    - **app-runtime:**
+      - `src/packages.ts`: `owImport` (the same interop as the workflow sandbox) and `loadPackages` (`new Function(js)()`; `eval` is a biome error).
+      - The protocol has a HostMessage `{type: 'packages', packages: {hash, js} | null}`.
+      - Tests: `test/packages.test.ts` (2).
+    - **`sandbox-entry.ts`:** sets `globalThis.__owImport = owImport`. On `packages`, it loads the bundle unless it already has that hash, and logs a failure to the console.
+    - **`host.ts`:**
+      - A `jsBundleHash` option for a release. `loadPackages()` runs in the constructor and in `update`, keyed by the release hash or the draft's list.
+      - For a draft, it waits 800 ms (`PACKAGES_SETTLE_MS`) and skips lists with problems. A replaced wait resolves to null.
+      - `fetchPackages` calls `jsPackages.bundle` (draft), then fetches `/api/js-bundles/<hash>.js`.
+      - `ready` waits for the packages and sends them before `start`. `started` always calls `sendPackages()`, which covers changes made while starting. `destroy` cancels the wait.
+    - **`view.tsx`:** passes `release.jsBundleHash`.
+    - **`app-settings.tsx`:** `JsPackagesField` (kind `app`, not on modules).
+    - **`JsPackagesState`:** for apps it uses `jsPackages.bundle` instead of `state`, because the preview builds the bundle anyway and a `state` call would stay at "none".
+    - **Behaviour:** a query that ran on load before its package was listed doesn't run again. A reload or a manual run picks the package up.
+    - **e2e:** `js-packages.spec.ts` covers the app: add the package in App settings, see Installed, reload, the preview shows "Order #007", publish, and the live app shows "Order #007".
+    - **Regression:** the app e2e specs passed 9/9 twice. One run before that had a single failure that didn't recur, and I didn't capture which test it was.
+  - **Next:** step 7:
+    - an architecture section and a runbook (`docs/runbooks/js-packages.md`)
+    - a done-when e2e
+    - a code review and its fixes
+    - the handoff
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

@@ -14,7 +14,9 @@ import {
   type HostBridge,
   type HostMessage,
   type LogLevel,
+  loadPackages,
   type ModuleReleases,
+  owImport,
   type QueryOutcome,
   type SandboxMessage,
   type StatePatch,
@@ -27,6 +29,10 @@ let modules: ModuleReleases = {}
 let libraries: ComponentLibraryReleases = {}
 let inputs: Record<string, unknown> | undefined
 let nextId = 1
+/** The JavaScript packages' bundle loaded (its hash), if any. */
+let packagesHash: string | null = null
+// Import lines in the app's code (rewritten by its code runner) read the packages through this.
+;(globalThis as { __owImport?: unknown }).__owImport = owImport
 const pending = new Map<number, (value: never) => void>()
 
 const UNSAFE_BROWSER = "This browser doesn't keep the app's code off the network, so it can't run"
@@ -227,6 +233,19 @@ function handle(message: HostMessage) {
       return
     case 'navigate':
       void runtime?.navigate(message.url.page, message.url.params)
+      return
+    case 'packages':
+      if (message.packages?.hash === packagesHash) return
+      try {
+        loadPackages(message.packages)
+        packagesHash = message.packages?.hash ?? null
+      } catch (err) {
+        packagesHash = null
+        log(
+          'error',
+          `The app's JavaScript packages couldn't be loaded: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
       return
   }
 }
