@@ -515,6 +515,13 @@ export const workflowReleases = pgTable(
      * runs install exactly these.
      */
     pythonLock: jsonb().$type<PythonLock>(),
+    /**
+     * The JavaScript packages' npm lock (`package-lock.json`) and bundle, when the definition declares packages:
+     * built when it was published, so live runs load exactly this bundle (`js_bundles.bundle_hash`), rebuilt from
+     * the lock if it's gone.
+     */
+    jsLock: text(),
+    jsBundleHash: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -994,6 +1001,9 @@ export const appReleases = pgTable(
     notes: text(),
     /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
     gitCommit: text(),
+    /** The JavaScript packages' npm lock and bundle, as on `workflow_releases`. */
+    jsLock: text(),
+    jsBundleHash: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -1687,3 +1697,43 @@ export const pythonEnvs = pgTable('python_envs', {
 })
 
 export type PythonEnv = typeof pythonEnvs.$inferSelect
+
+/**
+ * Bundles of JavaScript packages for workflows' and apps' code: their npm dependencies installed (no install scripts)
+ * and bundled by esbuild into one script setting `globalThis.__owModules`, which the sandboxes load before the code.
+ * Kept by what went in (`inputHash`: the dependencies, the registries they resolve from, and the lock a release
+ * builds from, if any), found by what came out (`bundleHash`, what a release names). A failure is kept too (the
+ * editor shows it); the next build tries again.
+ */
+export const jsBundles = pgTable(
+  'js_bundles',
+  {
+    inputHash: text().primaryKey(),
+    /** npm's `dependencies`: name → range (`*` for any). */
+    dependencies: jsonb().$type<Record<string, string>>().notNull(),
+    /** `ready` (the bundle below) or `failed` (the error and log). */
+    state: text().$type<'ready' | 'failed'>().notNull(),
+    /** SHA-256 of `js`. */
+    bundleHash: text(),
+    js: text(),
+    /** `package-lock.json` as the install ended with it. */
+    lock: text(),
+    /** The installed version of each dependency, for the editor. */
+    versions: jsonb().$type<Record<string, string>>(),
+    sizeBytes: integer(),
+    /** Node built-ins some package reaches for: they throw when used. */
+    warnings: jsonb().$type<string[]>(),
+    error: jsonb().$type<{ kind: string; message: string }>(),
+    /** npm's output from the last install (its end). */
+    log: text(),
+    builtAt: timestamp({ withTimezone: true }),
+    lastUsedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('js_bundles_bundle_hash_ix').on(t.bundleHash),
+    check('js_bundles_state_ck', sql`${t.state} in ('ready', 'failed')`),
+  ],
+)
+
+export type JsBundle = typeof jsBundles.$inferSelect

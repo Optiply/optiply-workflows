@@ -2032,7 +2032,17 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - The workflow and app encoders and decoders write and read the file. Packages written in `workflow.json` or `app.json` as well are a problem. A name listed twice gives a warning, and the first one is kept.
     - In definition, `splitJsPackage` is added and the reverse helper is dropped.
     - Tests: `test/js-packages.test.ts` (8).
-  - **Next:** step 2, the build service and migration 0046.
+    - Committed as `b8a41e1`.
+  - **2a, done, not committed yet:**
+    - **Migration `0046_js_bundles`:** the `js_bundles` table, with primary key `input_hash`. The hash covers the dependencies, the registries' scope and URL (not their tokens), and the starting lock. The table also holds `bundle_hash` (indexed), `js`, `lock`, `versions`, `warnings`, `error` and `log`. Releases get `js_lock` and `js_bundle_hash` on `workflow_releases` and `app_releases`.
+    - **`apps/server/src/services/js-bundles.ts`:** `buildJsBundle(db, config, packages, {lock?})` and `jsBundleByHash`.
+      - It installs with `components/install.ts` (new option: `name`), then esbuild builds an IIFE for the browser that sets `globalThis.__owModules`, with a lazy getter per package.
+      - A Node built-in with no npm package of that name becomes a Proxy stub that throws "X needs Node's fs" when used; the build adds a warning.
+      - Builds run through `Gate(2)`, and identical builds running at the same time share one.
+      - Failures are recorded and built again next time.
+    - **Other:** config `JS_BUNDLE_MAX_MB` (default 5); `confineTo` and `Gate` are now exported from `components/build.ts`.
+    - **Tests:** `test/js-bundles.test.ts` (9).
+  - **Next:** 2b, the tRPC routes (`jsBundle` state, `installJsBundle`, `checkJs`), the audit, and the `.env.example` entry.
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

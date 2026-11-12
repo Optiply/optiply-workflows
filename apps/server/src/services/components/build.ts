@@ -75,7 +75,7 @@ export const bundleHashOf = (js: string, css: string) =>
   createHash('sha256').update(js).update('\0').update(css).digest('hex')
 
 /** A few builds at a time per process: each installs packages and bundles. */
-class Gate {
+export class Gate {
   private running = 0
   private waiting: (() => void)[] = []
   constructor(private readonly limit: number) {}
@@ -299,7 +299,7 @@ function frameModules(): Plugin {
 }
 
 /** Refuses loading any file outside the build directory (the server's own files, through `../` or an absolute path). */
-function confineTo(dir: string): Plugin {
+export function confineTo(dir: string): Plugin {
   const root = dir.endsWith(sep) ? dir : dir + sep
   return {
     name: 'ow-confine',

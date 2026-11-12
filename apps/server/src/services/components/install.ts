@@ -38,13 +38,15 @@ export async function installDependencies(
     registries?: NpmRegistryAccess[]
     /** npm's download cache, shared by builds. */
     cacheDir: string
+    /** The `name` in the package.json written (default `ow-component-library`). */
+    name?: string
     limits?: InstallLimits
   },
 ): Promise<InstallResult> {
   const limits = opts.limits ?? DEFAULT_INSTALL_LIMITS
   await writeFile(
     join(dir, 'package.json'),
-    `${JSON.stringify({ name: 'ow-component-library', private: true, dependencies: opts.dependencies }, null, 2)}\n`,
+    `${JSON.stringify({ name: opts.name ?? 'ow-component-library', private: true, dependencies: opts.dependencies }, null, 2)}\n`,
   )
   if (Object.keys(opts.dependencies).length === 0) return { ok: true, lock: null, log: '' }
   if (opts.lock) await writeFile(join(dir, 'package-lock.json'), opts.lock)

@@ -100,6 +100,11 @@ const ConfigSchema = z
     /** Where component library builds and npm's download cache go; default a directory under the system's tmp. */
     COMPONENT_BUILD_DIR: z.string().min(1).optional(),
     /**
+     * The largest bundle of a workflow's or app's JavaScript packages, in MB: the sandboxes load all of it before
+     * the code runs (apps in every viewer's browser).
+     */
+    JS_BUNDLE_MAX_MB: z.coerce.number().int().min(1).max(50).default(5),
+    /**
      * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
      * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
      * file, or the metadata server). Off by default; only admins can choose it for a resource.

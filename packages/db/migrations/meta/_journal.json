@@ -323,6 +323,13 @@
       "when": 1794402647844,
       "tag": "0045_user_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794471921940,
+      "tag": "0046_js_bundles",
+      "breakpoints": true
     }
   ]
 }
