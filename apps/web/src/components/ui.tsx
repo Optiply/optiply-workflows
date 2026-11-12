@@ -389,25 +389,37 @@ export function Select({ className, ...props }: ComponentProps<'select'>) {
   )
 }
 
-/** A labelled form control with an optional hint underneath. */
+/**
+ * A labelled form control with an optional hint underneath. `as="div"` is for controls that aren't native form
+ * controls (Monaco): inside a `<label>`, the click on mouseup moves focus to the label's first control (Monaco's
+ * hidden textarea), so typing stops reaching the editor.
+ */
 export function Field({
   label,
   hint,
   className,
   children,
+  as = 'label',
 }: {
   label: ReactNode
   hint?: ReactNode
   className?: string
   children: ReactNode
+  as?: 'label' | 'div'
 }) {
-  return (
-    // biome-ignore lint/a11y/noLabelWithoutControl: the control is passed as children
-    <label className={cn('flex flex-col gap-1.5', className)}>
+  const body = (
+    <>
       <span className="text-sm font-medium text-ink">{label}</span>
       {children}
       {hint && <span className="text-xs text-muted">{hint}</span>}
-    </label>
+    </>
+  )
+  const classes = cn('flex flex-col gap-1.5', className)
+  return as === 'div' ? (
+    <div className={classes}>{body}</div>
+  ) : (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the control is passed as children
+    <label className={classes}>{body}</label>
   )
 }
 

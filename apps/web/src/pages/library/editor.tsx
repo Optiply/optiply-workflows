@@ -368,6 +368,7 @@ function QueryCard({
         />
       ) : (
         <Field
+          as="div"
           label="Request"
           hint="The resource’s query as JSON, as its Query tab shows it; it starts as that kind of resource’s empty query"
         >

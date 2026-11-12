@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { block, openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
+import { block, field, openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 // M27 step 5: the new resources' settings and query forms, in the playground, the workflow inspector and the app editor.
 
@@ -112,6 +112,79 @@ test('the built-in REST API resource: no settings, a full URL and its own auth',
     calls: { path: string; authorization: string | null }[]
   }
   expect(state.calls.findLast((c) => c.path === '/_fake/echo/orders/7')?.authorization).toBe('Bearer tok-7')
+})
+
+test('a Slack query in the workflow inspector: one click into Text or Blocks, then typing reaches the editor', async ({
+  page,
+}) => {
+  // Regression: Monaco inside a `<label>` lost focus on mouseup (the label's click moved it to Monaco's hidden
+  // textarea), so typing only worked while the mouse button was held down.
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const prod = await production(page)
+  const chat = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type: 'slack',
+    name: 'Test chat',
+    slug: `chat_${stamp}`,
+  })
+  await trpcMutate(page, 'resources.saveConfig', {
+    resourceId: chat.id,
+    environmentId: prod,
+    config: { auth: { type: 'token' } },
+    secrets: { token: tokens.slack },
+  })
+  const flow = await trpcMutate<{ id: string }>(page, 'workflows.create', {
+    slug: `chat-${stamp}`,
+    name: 'Chat',
+  })
+  await trpcMutate(page, 'workflows.saveDraft', {
+    id: flow.id,
+    revision: 1,
+    definition: {
+      schemaVersion: 1,
+      blocks: [
+        { name: 'startTrigger', type: 'startTrigger' },
+        {
+          name: 'post',
+          type: 'resourceQuery',
+          config: { resource: `chat_${stamp}`, query: { action: 'postMessage', channel: '#general' } },
+        },
+      ],
+      edges: [{ from: 'startTrigger', port: 'out', to: 'post' }],
+    },
+  })
+  await page.goto(`/workflows/${flow.id}`)
+  await block(page, 'post').click()
+  // A plain click (down and up) into each editor, then keys: they must land in the editor.
+  for (const [file, keys] of [
+    ['query.text', 'Hello team'],
+    ['query.blocks', '[]'],
+  ] as const) {
+    const editor = field(page, 'post', file)
+    // On the canvas a code field is a preview until clicked (M28): that click only turns it into the editor.
+    if ((await editor.first().getAttribute('data-testid'))?.startsWith('code-preview-'))
+      await editor.first().click()
+    const monaco = page.locator(
+      `[data-testid="code-${(await editor.first().getAttribute('data-testid'))?.replace(/^code-(preview-)?/, '')}"] .monaco-editor`,
+    )
+    await expect(monaco).toBeVisible()
+    const box = await monaco.boundingBox()
+    await monaco.click({ position: { x: (box?.width ?? 40) / 2, y: Math.min(10, (box?.height ?? 20) / 2) } })
+    await page.keyboard.type(keys)
+    await expect(monaco).toHaveClass(/focused/)
+    await expect(monaco.locator('.view-lines')).toContainText(keys)
+  }
+
+  await expect
+    .poll(async () => {
+      const wf = await trpcQuery<{ draftDefinition: { blocks: { name: string; config: unknown }[] } }>(
+        page,
+        'workflows.get',
+        { id: flow.id },
+      )
+      return wf.draftDefinition.blocks.find((b) => b.name === 'post')?.config
+    })
+    .toMatchObject({ query: { text: 'Hello team', blocks: expect.stringContaining('[') } })
 })
 
 test('a HubSpot query in the workflow inspector, and a GraphQL query in the app editor', async ({ page }) => {

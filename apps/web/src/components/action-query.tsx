@@ -78,7 +78,7 @@ export function ActionQueryForm({
         const label = field.required ? `${field.label} *` : field.label
         if (field.kind === 'long' || field.kind === 'json') {
           return (
-            <Field key={field.key} label={label} {...(field.hint && { hint: field.hint })}>
+            <Field as="div" key={field.key} label={label} {...(field.hint && { hint: field.hint })}>
               {code({
                 field,
                 value,

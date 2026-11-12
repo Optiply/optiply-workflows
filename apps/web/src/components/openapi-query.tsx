@@ -149,6 +149,7 @@ export function OpenApiQueryForm({
             </table>
           )}
           <Field
+            as="div"
             label="Parameters"
             hint="Values by name as JSON; {{ }} anywhere. Path values are sent as one encoded segment."
           >
@@ -195,6 +196,7 @@ export function OpenApiQueryForm({
                 </Field>
               )}
               <Field
+                as="div"
                 label={`Body${op.body.required ? ' (required)' : ''}`}
                 hint="JSON with {{ }}, or a lone {{ }} for any value (file objects for uploads)."
               >
