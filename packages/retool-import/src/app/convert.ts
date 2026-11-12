@@ -6,10 +6,14 @@ import {
   GRID_COLUMNS,
   type JsonValue,
   type Position,
+  validateApp,
 } from '@ow/app-definition'
 import { parseTemplate } from '@ow/expressions'
 import type { RetoolApp, RetoolPlugin } from '../model'
-import { ReportBuilder } from '../report'
+import { type ImportReport, ReportBuilder } from '../report'
+import type { ResourceMapping } from '../workflow/queries'
+import { applyCompat, fixAppNames } from './compat'
+import { convertLogic } from './logic'
 import { containerViews, unknownWidget, WIDGETS, type WidgetContext, type WidgetResult } from './widgets'
 
 /** Retool's grid row is about one line of controls (≈40 px); ours is 16 px. */
@@ -364,21 +368,34 @@ function freshName(base: string, parts: Map<string, Part>): string {
   return name
 }
 
-/** Converts a read Retool app: for now its components and layout (queries and events: step 4). */
-export function convertApp(app: RetoolApp): {
-  definition: AppDefinition
-  report: ReturnType<ReportBuilder['build']>
-} {
+export interface ConvertAppOptions {
+  /** Retool resource (name or uuid) → our resource slug. Unmapped ones get a `retool_…` placeholder. */
+  resources?: ResourceMapping
+}
+
+/** Converts a read Retool app into an app definition, with a report of what became what. */
+export function convertApp(
+  app: RetoolApp,
+  opts: ConvertAppOptions = {},
+): { definition: AppDefinition; report: ImportReport } {
   const report = new ReportBuilder('app', app.name)
   const converted = convertComponents(app, report)
-  const definition: AppDefinition = {
+  const logic = convertLogic(app, report, opts.resources ?? {})
+  let definition: AppDefinition = {
     schemaVersion: APP_SCHEMA_VERSION,
     ...(converted.pages && { pages: converted.pages }),
     components: converted.components,
-    queries: [],
+    queries: logic.queries,
+    ...(logic.transformers.length && { transformers: logic.transformers }),
+    ...(logic.variables.length && { variables: logic.variables }),
     layout: converted.layout,
     ...(converted.frame && { frame: converted.frame }),
   }
+  definition = applyCompat(definition, new Map(app.plugins.map((p) => [p.id, p.subtype])), report)
+  definition = fixAppNames(definition, report)
   if (app.settings.css) report.note("Retool's custom CSS wasn't imported: it styles Retool's own markup")
-  return { definition, report: report.build() }
+  const diagnostics = validateApp(definition)
+    .diagnostics.filter((d) => d.severity === 'error')
+    .map((d) => ({ code: d.code, message: d.message, where: d.path.join('.') }))
+  return { definition, report: report.build(diagnostics) }
 }

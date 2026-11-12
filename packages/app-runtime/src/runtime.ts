@@ -513,7 +513,9 @@ export class AppRuntime {
     if (runtime !== this) return runtime.trigger(inner, options)
     const query = this.queries.get(name)
     if (!query) throw new Error(`No query is named ${name}`)
-    const locals = options.additionalScope ?? {}
+    // Its declared scope names exist even when this trigger doesn't pass them (as in Retool: undefined).
+    const declared = Object.fromEntries((query.scope ?? []).map((n) => [n, undefined]))
+    const locals = { ...declared, ...(options.additionalScope ?? {}) }
     if (query.disabled !== undefined && truthy(this.model.evaluateTemplate(query.disabled, locals)))
       return undefined
     if (query.confirm !== undefined) {

@@ -73,14 +73,24 @@ export function appFields(def: AppDefinition): AppField[] {
   def.queries.forEach((q, i) => {
     const base = ['queries', i]
     const deps = runsAutomatically(q) ? nodeKey(q.name, '$deps') : undefined
+    // Names its triggers pass in (`additionalScope`) are known in all of its own fields.
+    const scope = q.scope ?? []
     const at = (
       path: (string | number)[],
       kind: FieldKind,
       source: string,
       node?: string,
-      locals?: string[],
+      locals: string[] = [],
     ) => {
-      fields.push({ path, kind, source, owner: q.name, ...(node && { node }), ...(locals && { locals }) })
+      const all = [...locals, ...scope]
+      fields.push({
+        path,
+        kind,
+        source,
+        owner: q.name,
+        ...(node && { node }),
+        ...(all.length && { locals: all }),
+      })
     }
     if (q.kind === 'resource') {
       templateStrings(q.query, [...base, 'query'], (path, source) => at(path, 'template', source, deps))

@@ -296,11 +296,9 @@ describe('convertApp: components and layout', () => {
     expect(l.details!.h).toBeGreaterThanOrEqual(23)
   })
 
-  it('gives a definition whose only problems are the queries step 4 adds', () => {
+  it("gives a definition whose only problems are what the export doesn't have", () => {
     const problems = validateApp(definition).diagnostics.filter((d) => d.severity === 'error')
-    expect([...new Set(problems.map((d) => d.code))]).toEqual(['unknown_identifier'])
     expect([...new Set(problems.map((d) => d.message))].sort()).toEqual([
-      '"getOrders" is not defined',
       '"showCustomer" is not defined',
       '"statuses" is not defined',
     ])

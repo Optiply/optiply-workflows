@@ -97,6 +97,14 @@ describe('validateApp', () => {
     ])
   })
 
+  it("knows a query's declared scope names in its own fields only (M36)", () => {
+    const def = app({
+      components: [comp('t', 'text', { value: '{{ row }}' })],
+      queries: [sqlQuery('save', 'update x set a = {{ row.a }}', 'manual', { scope: ['row'], confirm: 'Save {{ row.a }}?' })],
+    })
+    expect(codes(def)).toEqual([['unknown_identifier', 'components.0.props.value', 'error']])
+  })
+
   it("reserves Retool's libraries and lets code read them (M36)", () => {
     const def = app({
       components: [

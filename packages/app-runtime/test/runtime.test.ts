@@ -284,6 +284,17 @@ describe('AppRuntime', () => {
     expect(t.effects).toEqual([{ type: 'notify', message: 'done', tone: 'success' }])
   })
 
+  it("gives a query's declared scope names, undefined when a trigger doesn't pass them (M36)", async () => {
+    const t = setup(
+      { queries: [sql('get', 'select {{ id ?? 0 }}, {{ note ?? "none" }}', 'manual', { scope: ['id', 'note'] })] },
+      { respond: (_q, values) => [values] },
+    )
+    await t.runtime.start()
+    expect(await t.runtime.trigger('get', { additionalScope: { id: 7 } })).toEqual([
+      { ' id ?? 0 ': 7, ' note ?? "none" ': 'none' },
+    ])
+  })
+
   it('reports a failing script handler once', async () => {
     const t = setup({
       components: [

@@ -180,6 +180,11 @@ const queryCommon = {
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
   /** Handlers for `success` and `failure`. */
   events: handlersSchema.optional(),
+  /**
+   * Names the code that triggers it passes in (`query1.trigger({ additionalScope: { row } })`, M36): known in this
+   * query's templates and code, `undefined` when a trigger doesn't pass them.
+   */
+  scope: z.array(appNameSchema).max(50).optional(),
 }
 
 export const resourceAppQuerySchema = z.strictObject({

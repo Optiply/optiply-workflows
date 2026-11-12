@@ -502,6 +502,26 @@ function QueryEditor({ query }: { query: AppQuery }) {
               removeEmpty
             />
           </EditorField>
+          <EditorField
+            label="Additional scope"
+            hint="Names the code triggering it passes in: trigger({ additionalScope: { row } }), comma-separated"
+          >
+            <Input
+              // Kept as typed; the names are saved when the field is left.
+              key={`${query.name}:${(query.scope ?? []).join(',')}`}
+              disabled={readOnly}
+              className="h-8"
+              defaultValue={(query.scope ?? []).join(', ')}
+              placeholder="row, newValues"
+              onBlur={(e) =>
+                edit((q) => {
+                  const { scope: _, ...rest } = q
+                  const names = [...new Set(e.target.value.split(/[\s,]+/).filter(Boolean))].slice(0, 50)
+                  return (names.length ? { ...rest, scope: names } : rest) as AppQuery
+                })
+              }
+            />
+          </EditorField>
           <EditorField label="Timeout (ms)">
             <Input
               type="number"

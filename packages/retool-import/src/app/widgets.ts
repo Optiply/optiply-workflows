@@ -382,7 +382,10 @@ function table2(p: RetoolPlugin): WidgetResult {
       column.width = Math.round(sizes[id] as number)
     if (override) {
       // Retool's row in a column's value is `currentSourceRow` (or `currentRow`); ours is `currentRow`.
-      column.value = override.replace(/\bcurrentSourceRow\b/g, 'currentRow')
+      // `item` is the cell's own value.
+      column.value = override
+        .replace(/\bcurrentSourceRow\b/g, 'currentRow')
+        .replace(/(^|[^\w$.])item(?![\w$])/g, `$1currentRow[${JSON.stringify(String(rawKey))}]`)
       delete column.editable
       computed++
     }
