@@ -127,6 +127,20 @@ describe('validateApp', () => {
     expect(validateApp(def).diagnostics).toEqual([])
   })
 
+  it('lets resource queries read configVars, which the server fills in, and nothing else (M36)', () => {
+    const def = app({
+      components: [comp('t', 'text', { value: '{{ configVars.REGION }}' })],
+      queries: [
+        sqlQuery('q', 'select {{ configVars.REGION }}, {{ current_user.email }}'),
+        sqlQuery('mixed', 'select {{ configVars.REGION + t.value }}'),
+      ],
+    })
+    expect(codes(def)).toEqual([
+      ['unknown_identifier', 'components.0.props.value', 'error'],
+      ['mixed_current_user', 'queries.1.query.sql', 'error'],
+    ])
+  })
+
   it("knows a query's declared scope names in its own fields only (M36)", () => {
     const def = app({
       components: [comp('t', 'text', { value: '{{ row }}' })],

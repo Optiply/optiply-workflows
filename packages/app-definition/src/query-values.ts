@@ -16,13 +16,22 @@ import { APP_STDLIB_GLOBALS } from './names'
 export type ExpressionSide =
   /** Reads the app's state: the browser sends its value. */
   | 'browser'
-  /** Reads `current_user` and only globals: the server evaluates it. */
+  /** Reads `current_user` or `configVars` and only globals: the server evaluates it. */
   | 'server'
-  /** Reads `current_user` and app state: refused. */
+  /** Reads `current_user` or `configVars` and app state: refused. */
   | 'mixed'
 
-/** The server-side globals; `current_user` is `{ id, email, name }` of the signed-in user. */
-export const SERVER_QUERY_GLOBALS: ReadonlySet<string> = new Set(['current_user'])
+/**
+ * The server-side globals: `current_user` is `{ id, email, name }` of the signed-in user; `configVars` (M36) the
+ * environment's config vars, secret ones only for the live release (as in workflows: a draft's editor could show one).
+ * They never reach the browser.
+ */
+export const SERVER_QUERY_GLOBALS: ReadonlySet<string> = new Set(['current_user', 'configVars'])
+
+/** Fields of a query whose `{{ }}` values go to the server (a resource query's query, a library query's params). */
+export function isServerQueryField(path: readonly (string | number)[]): boolean {
+  return path[0] === 'queries' && (path[2] === 'query' || path[2] === 'params' || path[2] === 'input')
+}
 
 /** Who evaluates one `{{ }}` of a resource query. Throws `TemplateError` on a syntax error. */
 export function expressionSide(code: string): ExpressionSide {

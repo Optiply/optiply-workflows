@@ -42,6 +42,8 @@ declare const current_user: { id: string; email: string; name: string }
 declare const appContext: { appSlug: string; environment: string; version: string | null }
 /** The page shown (null in an app without pages) and the query parameters of its URL. */
 declare const url: { page: string | null; params: Record<string, string> }
+/** Config vars of the environment: in a resource query's {{ }} only, filled in by the server (secret ones once published). */
+declare const configVars: Record<string, string>
 /** What the app keeps in this browser (Set local storage), by key. */
 declare const localStorage: {
   values: Record<string, any>

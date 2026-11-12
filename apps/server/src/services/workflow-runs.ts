@@ -465,31 +465,39 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
  */
 export function dbRunContext(db: Db, keyring: Keyring): RunContextProvider {
   return {
-    async load(run) {
-      const rows = await db
-        .select({ name: configVars.name, isSecret: configVars.isSecret, value: configVarValues })
-        .from(configVars)
-        .innerJoin(
-          configVarValues,
-          and(
-            eq(configVarValues.configVarId, configVars.id),
-            eq(configVarValues.environmentId, run.environmentId),
-          ),
-        )
-      const vars: Record<string, unknown> = {}
-      const secrets: string[] = []
-      for (const { name, isSecret, value } of rows) {
-        if (!isSecret) {
-          vars[name] = value.value
-          continue
-        }
-        const plain = decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!)
-        secrets.push(plain)
-        if (run.releaseId) vars[name] = plain
-      }
-      return { configVars: vars, secrets }
-    },
+    load: (run) => loadConfigVars(db, keyring, run.environmentId, { withSecrets: !!run.releaseId }),
   }
+}
+
+/**
+ * An environment's config vars by name (secret ones only `withSecrets`), plus every secret value (to scrub from what
+ * leaves the server). Used by runs and, since M36, by app resource queries (`{{ configVars.X }}`).
+ */
+export async function loadConfigVars(
+  db: Db,
+  keyring: Keyring,
+  environmentId: string,
+  opts: { withSecrets: boolean },
+): Promise<{ configVars: Record<string, unknown>; secrets: string[] }> {
+  const rows = await db
+    .select({ name: configVars.name, isSecret: configVars.isSecret, value: configVarValues })
+    .from(configVars)
+    .innerJoin(
+      configVarValues,
+      and(eq(configVarValues.configVarId, configVars.id), eq(configVarValues.environmentId, environmentId)),
+    )
+  const vars: Record<string, unknown> = {}
+  const secrets: string[] = []
+  for (const { name, isSecret, value } of rows) {
+    if (!isSecret) {
+      vars[name] = value.value
+      continue
+    }
+    const plain = decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!)
+    secrets.push(plain)
+    if (opts.withSecrets) vars[name] = plain
+  }
+  return { configVars: vars, secrets }
 }
 
 /**

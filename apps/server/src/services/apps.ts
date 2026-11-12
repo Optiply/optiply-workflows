@@ -11,6 +11,7 @@ import {
   validateApp,
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
+import { scrubSecretsDeep } from '@ow/crypto'
 import {
   type App,
   type AppRelease,
@@ -36,6 +37,7 @@ import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
+import { loadConfigVars } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -493,16 +495,23 @@ export async function runDefinitionQuery(
     })
   }
   const currentUser = { id: user.id, email: user.email, name: user.name }
-  const evaluate = (code: string): unknown => {
+  // Config vars (M36), loaded once the first {{ }} reads them: secret ones for a release, not for a draft (whoever
+  // edits a draft could show one). Their secret values are scrubbed from what goes back to the browser.
+  let config: Promise<{ configVars: Record<string, unknown>; secrets: string[] }> | undefined
+  const configOf = () =>
+    (config ??= loadConfigVars(deps.db, deps.keyring, opts.environmentId, { withSecrets: !opts.draft }))
+  /** The outcome without secret config values, when the query read config vars. */
+  const scrubbed = async (outcome: AppQueryOutcome): Promise<AppQueryOutcome> =>
+    config ? scrubSecretsDeep(outcome, (await config).secrets) : outcome
+  const evaluate = async (code: string): Promise<unknown> => {
     switch (expressionSide(code)) {
-      case 'server':
-        return deps.sandbox.evalExpression(
-          code,
-          { current_user: currentUser },
-          { timeoutMs: EXPRESSION_TIMEOUT_MS },
-        )
+      case 'server': {
+        const scope: Record<string, unknown> = { current_user: currentUser }
+        if (/\bconfigVars\b/.test(code)) scope.configVars = (await configOf()).configVars
+        return deps.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS })
+      }
       case 'mixed':
-        throw new Error('current_user must be in a {{ }} of its own')
+        throw new Error('current_user and configVars must be in a {{ }} of their own')
       case 'browser':
         if (!Object.hasOwn(opts.values, code)) {
           throw new Error('The browser sent no value for it; reload the app')
@@ -523,7 +532,7 @@ export async function runDefinitionQuery(
       ...(opts.signal && { signal: opts.signal }),
       labels,
     })
-    return { outcome, manual: query.run === 'manual', library: null }
+    return { outcome: await scrubbed(outcome), manual: query.run === 'manual', library: null }
   }
 
   // A library query (M14): the release's resource and query run, vouched for by whoever published it. The app's
@@ -557,7 +566,7 @@ export async function runDefinitionQuery(
     labels: { ...labels, ow_library: libraryQuery.slug },
   })
   return {
-    outcome,
+    outcome: await scrubbed(outcome),
     manual: query.run === 'manual',
     library: { slug: libraryQuery.slug, version: release.version },
   }

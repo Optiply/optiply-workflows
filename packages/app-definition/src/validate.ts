@@ -29,7 +29,7 @@ import {
 } from './graph'
 import { appNameReason, isAppGlobalName } from './names'
 import { entityPages, pageVisible, RESERVED_PAGES } from './pages'
-import { expressionSide } from './query-values'
+import { expressionSide, isServerQueryField } from './query-values'
 import {
   type AppComponent,
   type AppDefinition,
@@ -421,7 +421,15 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
       const where = { ...at, start: ref.start, end: ref.end }
       const entity = entities.get(ref.name)
       if (!entity) {
-        if (!isAppGlobalName(ref.name)) {
+        // configVars (M36): only where the server fills it in.
+        if (ref.name === 'configVars' && isServerQueryField(field.path)) continue
+        if (ref.name === 'configVars') {
+          report({
+            code: 'unknown_identifier',
+            message: "configVars can only be read in a resource query's {{ }}, where the server fills it in",
+            ...where,
+          })
+        } else if (!isAppGlobalName(ref.name)) {
           report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }
         continue
@@ -458,15 +466,14 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     }
   }
 
-  // Resource query values come from the browser, except those reading only current_user.
+  // Resource query values come from the browser, except those reading only current_user or configVars.
   for (const field of graph.fields) {
-    const sent = field.path[2] === 'query' || field.path[2] === 'params'
-    if (field.path[0] !== 'queries' || !sent || field.errors.length) continue
+    if (!isServerQueryField(field.path) || field.errors.length) continue
     for (const part of parseTemplate(field.source)) {
       if (part.type !== 'expression' || expressionSide(part.code) !== 'mixed') continue
       report({
         code: 'mixed_current_user',
-        message: 'current_user is checked on the server only in a {{ }} of its own',
+        message: 'current_user and configVars are read on the server only in a {{ }} of their own',
         hint: 'Split it out, e.g. owner = {{ current_user.email }} and status = {{ select1.value }}',
         path: field.path,
         entity: field.owner,
