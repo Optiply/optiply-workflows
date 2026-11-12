@@ -2114,11 +2114,25 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - The page says the registries serve component libraries and workflows' and apps' JavaScript packages, and that changing a registry reinstalls packages on their next use (the registries' scope and URL are part of `jsInputHash`).
     - Updated: `docs/runbooks/components.md`, `.env.example` and the m33 spec's path.
     - e2e: the redirect test in `js-packages.spec.ts`.
-  - **Next:** step 6, apps:
-    - packages in app settings (`JsPackagesField` with target kind `app`)
-    - the bundle in the app Worker (`host.ts` bootstrap)
-    - the import rewrite in app-definition's `evaluate.ts`, with `importProblems` in app validate
-    - app releases keeping `js_lock` and `js_bundle_hash`
+    - Committed as `0157c92`.
+  - **6a, done, not committed yet** (the split changed: 6a is the logic and the server, 6b the web side):
+    - **app-definition:**
+      - `functionRunner` rewrites import lines for body kinds (`rewriteImports`; `__owImport` is the sandbox's global).
+      - `validateApp` reports `unknown_js_import` (through `importProblems`) on function-body and sync-function-body fields, but not on modules.
+      - Tests: 4 new in `test/js-packages.test.ts`.
+    - **Server, `services/apps.ts`:**
+      - `checkReleasable` returns `ReleaseJsBundle` (`releaseJsBundle`, objectType `app`). A failure is a `BAD_REQUEST`.
+      - Publish and Git deploy store `js_lock` and `js_bundle_hash`.
+      - `setLiveAppRelease` takes `actorUserId` and stores a rebuilt bundle.
+    - **`apps.open`:** `release.jsBundleHash`.
+    - **`api/js-bundles.ts`:** `GET /api/js-bundles/<sha256>.js` for anyone signed in. A missing bundle that an app or workflow release names is rebuilt from that release's lock, and a failed rebuild is a 502.
+    - **`jsPackages.bundle`** (a query, editors only): it builds when needed and answers the state. A `ready` state now carries `bundleHash`.
+    - **Tests:** `test/js-packages-apps.test.ts` (6).
+  - **Next:** 6b, the web side:
+    - `JsPackagesField` in app settings
+    - the app editor preview: `jsPackages.bundle`, then fetch `/api/js-bundles/<hash>.js`
+    - the viewer: `open.release.jsBundleHash`, then fetch
+    - a `packages` field on HostMessage `start`/`update`; the Worker defines `__owImport` and evaluates the bundle
     - an e2e test
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan

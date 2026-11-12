@@ -37,6 +37,7 @@ import { collabApi, MAX_COLLAB_MESSAGE_BYTES } from './collab'
 import { componentBundlesApi } from './component-bundles'
 import { databaseApi } from './database'
 import { gitWebhookApi } from './git-webhook'
+import { jsBundlesApi } from './js-bundles'
 import { oauthApi } from './oauth'
 import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
@@ -130,6 +131,7 @@ export async function buildApp(deps: {
   })
   await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(componentBundlesApi, { db })
+  await app.register(jsBundlesApi, { db })
   await app.register(cliApi)
   await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
   await app.register(webhooksApi, {

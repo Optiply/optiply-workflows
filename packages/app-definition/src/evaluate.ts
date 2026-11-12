@@ -1,6 +1,7 @@
 import { fieldRefs } from '@ow/definition'
 import {
   parseTemplate,
+  rewriteImports,
   singleExpression,
   stringifyValue,
   TemplateError,
@@ -27,7 +28,10 @@ export type RunKind = 'expression' | 'sync-function-body' | 'function-body'
  */
 export type CodeRunner = (kind: RunKind, code: string, scope: Record<string, unknown>) => unknown
 
-/** A runner compiling code with `new Function`, cached per code and scope names. */
+/**
+ * A runner compiling code with `new Function`, cached per code and scope names. Import lines in bodies become
+ * `__owImport` calls: the sandbox defines it (the app's packages' bundle); without it, code importing fails.
+ */
 export function functionRunner(): CodeRunner {
   const cache = new Map<string, (...args: unknown[]) => unknown>()
   return (kind, code, scope) => {
@@ -35,6 +39,8 @@ export function functionRunner(): CodeRunner {
     const id = `${kind}\u0000${names.join(',')}\u0000${code}`
     let fn = cache.get(id)
     if (!fn) {
+      // Import lines (the app's JavaScript packages) read `__owImport`, the sandbox's, on the same lines.
+      if (kind !== 'expression') code = rewriteImports(code)
       const body =
         kind === 'expression'
           ? `"use strict";\nreturn (\n${code}\n);`

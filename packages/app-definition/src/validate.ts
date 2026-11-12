@@ -1,8 +1,10 @@
 import {
   checkLibraryReference,
+  importProblems,
   jsPackageDiagnostics,
   type LibraryInfo,
   type QueryValidator,
+  splitJsPackage,
 } from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
@@ -89,6 +91,8 @@ export type AppDiagnosticCode =
   | 'unknown_custom_component'
   /** A JavaScript package: not a plain npm package, a duplicate, too many, or on a module. */
   | 'invalid_js_package'
+  /** A JS import line naming a package that isn't one of the app's JavaScript packages (or a file inside one). */
+  | 'unknown_js_import'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -384,6 +388,11 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     }
   })
 
+  // Import lines name the app's JavaScript packages (a module's code uses its app's: not checked here).
+  const jsPackages = new Set(
+    (def.javascript?.packages ?? []).map((p) => splitJsPackage(p).name).filter(Boolean),
+  )
+
   // Code: syntax, names, properties.
   for (const field of graph.fields) {
     const at = { path: field.path, entity: field.owner }
@@ -396,6 +405,15 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         end: err.end,
         ...(err.hint && { hint: err.hint }),
       })
+    }
+    if (
+      !def.module &&
+      !field.errors.length &&
+      (field.kind === 'function-body' || field.kind === 'sync-function-body')
+    ) {
+      for (const problem of importProblems(field.source, jsPackages, "the app's")) {
+        report({ code: 'unknown_js_import', ...at, ...problem })
+      }
     }
     const locals = new Set(field.locals)
     for (const ref of field.refs) {

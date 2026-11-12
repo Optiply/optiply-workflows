@@ -354,6 +354,8 @@ export type JsBundleState =
   | { state: 'failed'; kind: string; error: string; log: string; at: Date | null }
   | {
       state: 'ready'
+      /** The bundle, at `/api/js-bundles/<hash>.js`. */
+      bundleHash: string
       versions: Record<string, string>
       sizeBytes: number
       warnings: string[]
@@ -394,6 +396,7 @@ export async function jsBundleState(
   }
   return {
     state: 'ready',
+    bundleHash: row.bundleHash ?? '',
     versions: row.versions ?? {},
     sizeBytes: row.sizeBytes ?? 0,
     warnings: row.warnings ?? [],
@@ -406,6 +409,7 @@ export function stateOf(outcome: JsBundleOutcome): JsBundleState {
   if (outcome.ok) {
     return {
       state: 'ready',
+      bundleHash: outcome.bundleHash,
       versions: outcome.versions,
       sizeBytes: outcome.sizeBytes,
       warnings: outcome.warnings,

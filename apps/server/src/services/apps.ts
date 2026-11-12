@@ -26,9 +26,11 @@ import {
   resources,
 } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
+import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
 import { componentLibraryInfos } from './component-libraries'
+import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
 import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
@@ -101,11 +103,24 @@ async function checkReleasable(
   access: Access | null,
   app: App,
   definition: AppDefinition,
-): Promise<void> {
+  /** Whose release it is, and (a rollback) the release's own JavaScript bundle and lock. */
+  js: { actorUserId: string | null; existing?: { jsLock: string | null; jsBundleHash: string | null } },
+): Promise<ReleaseJsBundle | null> {
   if (access && !atLeast(access.appLevel(app), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to release it' })
   }
   await checkVouched(db, access, definition, 'app')
+  // Last, as it may take a while (a first install): every cheaper reason to refuse comes first.
+  try {
+    return await releaseJsBundle(db, definition.javascript?.packages, js.existing ?? null, {
+      objectType: 'app',
+      objectId: app.id,
+      actorUserId: js.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
 }
 
 /**
@@ -192,7 +207,7 @@ export async function publishAppRelease(
   if (app.draftRevision !== opts.draftRevision) throw changedSince(opts.draftRevision)
   const definition = canonicalizeApp(app.draftDefinition)
   const hash = await appDefinitionHash(definition)
-  await checkReleasable(db, access, app, definition)
+  const js = await checkReleasable(db, access, app, definition, { actorUserId: user.id })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one app.
@@ -204,6 +219,7 @@ export async function publishAppRelease(
       notes: opts.notes,
       createdBy: user.id,
       gitCommit: null,
+      js,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -235,7 +251,7 @@ export async function deployAppFromGit(
 ): Promise<AppRelease | null> {
   const definition = canonicalizeApp(opts.definition)
   const hash = await appDefinitionHash(definition)
-  await checkReleasable(db, null, opts.app, definition)
+  const js = await checkReleasable(db, null, opts.app, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(apps).where(eq(apps.id, opts.app.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The app was deleted meanwhile' })
@@ -255,6 +271,7 @@ export async function deployAppFromGit(
       notes: opts.notes,
       createdBy: null,
       gitCommit: opts.commit,
+      js,
     })
     if ('unchanged' in release) return null
     await tx.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, locked.id))
@@ -274,6 +291,7 @@ async function insertAppRelease(
     notes?: string | null
     createdBy: string | null
     gitCommit: string | null
+    js: ReleaseJsBundle | null
   },
 ): Promise<AppRelease | { unchanged: string }> {
   const existing = await tx
@@ -296,6 +314,8 @@ async function insertAppRelease(
       notes: opts.notes?.trim() || null,
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
+      jsLock: opts.js?.jsLock ?? null,
+      jsBundleHash: opts.js?.jsBundleHash ?? null,
     })
     .returning()
   return release!
@@ -305,14 +325,22 @@ async function insertAppRelease(
 export async function setLiveAppRelease(
   db: Db,
   access: Access,
-  opts: { app: App; releaseId: string },
+  opts: { app: App; releaseId: string; actorUserId?: string | null },
 ): Promise<AppRelease> {
   const [release] = await db
     .select()
     .from(appReleases)
     .where(and(eq(appReleases.id, opts.releaseId), eq(appReleases.appId, opts.app.id)))
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
-  await checkReleasable(db, access, opts.app, release.definition)
+  const js = await checkReleasable(db, access, opts.app, release.definition, {
+    actorUserId: opts.actorUserId ?? null,
+    existing: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
+  })
+  // Its JavaScript packages' bundle, when it had none or lost it (rebuilt from its lock).
+  if (js && (js.jsBundleHash !== release.jsBundleHash || js.jsLock !== release.jsLock)) {
+    await db.update(appReleases).set(js).where(eq(appReleases.id, release.id))
+    Object.assign(release, js)
+  }
   await db.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, opts.app.id))
   return release
 }

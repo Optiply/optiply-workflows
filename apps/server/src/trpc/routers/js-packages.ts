@@ -43,6 +43,16 @@ export const jsPackagesRouter = router({
     return jsBundleState(ctx.db, jsBundleConfig(ctx.config), input.packages)
   }),
 
+  /**
+   * The bundle for these packages, built now when needed (a new one audited): for the app editor's preview, which
+   * then loads `/api/js-bundles/<bundleHash>.js` into its sandbox. The answer is the state, as `install`'s.
+   */
+  bundle: authedProcedure.input(input).query(async ({ ctx, input }) => {
+    const object = await editable(ctx, input.target)
+    const who = { ...object, actorUserId: ctx.user.id }
+    return stateOf(await buildAudited(ctx.db, input.packages, who, null, jsBundleConfig(ctx.config)))
+  }),
+
   /** Installs and bundles the packages now; the answer is the new state. A new bundle is audited. */
   install: authedProcedure.input(input).mutation(async ({ ctx, input }) => {
     const object = await editable(ctx, input.target)

@@ -1,6 +1,6 @@
 /** An app's JavaScript packages: `javascript.packages`. */
 import { describe, expect, it } from 'vitest'
-import { appDefinitionSchema, canonicalizeApp, validateApp } from '../src'
+import { appDefinitionSchema, canonicalizeApp, functionRunner, validateApp } from '../src'
 import { app } from './helpers'
 
 const problems = (def: unknown) =>
@@ -33,5 +33,53 @@ describe('app JavaScript packages', () => {
     expect(canonicalizeApp(app({ javascript: { packages: ['zod'] } })).javascript).toEqual({
       packages: ['zod'],
     })
+  })
+})
+
+describe('import lines in app code', () => {
+  const jsQuery = (name: string, code: string) => ({ name, kind: 'js' as const, code })
+  const imports = (def: unknown) =>
+    validateApp(def)
+      .diagnostics.filter((d) => d.code === 'unknown_js_import' || d.code === 'unknown_identifier')
+      .map(({ code, message }) => ({ code, message }))
+
+  it('names the app’s packages, in JS queries and transformers', () => {
+    const ok = app({
+      javascript: { packages: ['tiny-format@^1'] },
+      queries: [jsQuery('q1', "import fmt from 'tiny-format'\nreturn fmt(1)")],
+      transformers: [{ name: 't1', code: "import { a } from 'tiny-format'\nreturn a" }],
+    })
+    expect(imports(ok)).toEqual([])
+  })
+
+  it('says when one isn’t listed', () => {
+    const def = app({ queries: [jsQuery('q1', "import fmt from 'tiny-format'\nreturn fmt(1)")] })
+    expect(imports(def)).toEqual([
+      {
+        code: 'unknown_js_import',
+        message: 'The package "tiny-format" isn\'t one of the app\'s JavaScript packages',
+      },
+    ])
+  })
+
+  it('leaves a module’s imports to the app it is placed in', () => {
+    const def = app({
+      module: { inputs: [], outputs: [], events: [] },
+      queries: [jsQuery('q1', "import fmt from 'tiny-format'\nreturn fmt(1)")],
+    })
+    expect(imports(def)).toEqual([])
+  })
+
+  it('runs: the runner rewrites import lines to read __owImport', async () => {
+    const g = globalThis as { __owImport?: (name: string) => unknown }
+    g.__owImport = (name) => ({ default: (n: number) => `${name}:${n}` })
+    try {
+      const run = functionRunner()
+      expect(await run('function-body', "import fmt from 'x'\nreturn fmt(2)", {})).toBe('x:2')
+      expect(run('sync-function-body', "import fmt from 'y'\nreturn fmt(3)", {})).toBe('y:3')
+      expect(run('expression', '1 + 1', {})).toBe(2)
+    } finally {
+      delete g.__owImport
+    }
   })
 })

@@ -155,7 +155,14 @@ export const appsRouter = router({
     }
     return {
       ...summary(app, access),
-      release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
+      release: {
+        id: live.id,
+        version: live.version,
+        definition: live.definition,
+        createdAt: live.createdAt,
+        /** Its JavaScript packages' bundle, at `/api/js-bundles/<hash>.js`; null without packages. */
+        jsBundleHash: live.jsBundleHash,
+      },
       ...(await placedReleases(ctx.db, live.definition)),
     }
   }),
@@ -508,7 +515,11 @@ export const appsRouter = router({
   setLive: authedProcedure.input(z.object({ appId: Id, releaseId: Id })).mutation(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, { id: input.appId })
     requireRollbackAllowed(app, 'app', ctx.user)
-    const release = await setLiveAppRelease(ctx.db, access, { app, releaseId: input.releaseId })
+    const release = await setLiveAppRelease(ctx.db, access, {
+      app,
+      releaseId: input.releaseId,
+      actorUserId: ctx.user.id,
+    })
     await ctx.audit({
       action: 'app.release_live',
       objectType: 'app',
