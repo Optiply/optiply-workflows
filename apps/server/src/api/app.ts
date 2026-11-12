@@ -43,6 +43,9 @@ import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
 
 /** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
+/** The longest URL path segment taken: a tRPC batch of a few hundred calls' names. */
+export const MAX_TRPC_BATCH_PATH = 8000
+
 export async function buildApp(deps: {
   db: Db
   config: Config
@@ -55,7 +58,14 @@ export async function buildApp(deps: {
   const { db, config } = deps
   useRe2ForPatterns()
   const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
-  const app = Fastify({ loggerInstance: logger, trustProxy: config.TRUST_PROXY, bodyLimit: 10 * 1024 * 1024 })
+  const app = Fastify({
+    loggerInstance: logger,
+    trustProxy: config.TRUST_PROXY,
+    bodyLimit: 10 * 1024 * 1024,
+    // tRPC batches calls into one path (`/api/trpc/apps.runQuery,apps.runQuery,…`): Fastify's default of 100
+    // characters refused (414) an app running more than seven queries at once.
+    routerOptions: { maxParamLength: MAX_TRPC_BATCH_PATH },
+  })
 
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
   const metrics = deps.metrics ?? new Metrics(db)
