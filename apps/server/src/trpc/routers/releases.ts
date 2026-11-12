@@ -45,7 +45,9 @@ export const releasesRouter = router({
       .from(workflowReleases)
       .where(and(eq(workflowReleases.id, input.id), eq(workflowReleases.workflowId, workflow.id)))
     if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
-    return { ...release, live: release.id === workflow.liveReleaseId }
+    // The npm lock stays on the server: it's long, and a private registry's tarball URLs are in it.
+    const { jsLock: _lock, ...shown } = release
+    return { ...shown, live: release.id === workflow.liveReleaseId }
   }),
 
   /**

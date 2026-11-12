@@ -67,6 +67,8 @@ node ow-components.mjs push --prebuilt dist/ --slug price-widgets --version 2.0.
 
 ## Private npm registries (M33)
 
+These registries serve workflows' and apps' JavaScript packages too: see `docs/runbooks/js-packages.md`.
+
 Admins add registries in **Settings → npm registries**: one per **scope** (`@acme` → its registry), or one without a
 scope that replaces `NPM_REGISTRY_URL` for every other package. The token is a **secret config var**, its value in
 the **default environment**; a build writes it to its own temporary `.npmrc` (`//host/path/:_authToken=…`, mode

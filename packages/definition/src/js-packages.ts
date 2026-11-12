@@ -65,6 +65,9 @@ export function parseJsPackage(text: string): { package: JsPackage } | { error: 
     return { error: `"${name || line}" isn't an npm package name (lowercase, like date-fns or @acme/utils)` }
   if (at >= 0 && !range)
     return { error: `Nothing after "${name}@": a version (like ^1.2) or leave the @ out` }
+  // npm reads a spec starting with `.` (`..`, `.`, `./x`) as a directory: never a range.
+  if (range.startsWith('.'))
+    return { error: 'Only packages from the npm registries: no URLs, git, paths or aliases' }
   if (range && (!RANGE.test(range) || range.includes('/') || range.includes(':')))
     return { error: `"${range}" isn't a version range (like ^1.2, ~2.0.1 or latest)` }
   return { package: { name, range: range.replace(/\s+/g, ' ') } }

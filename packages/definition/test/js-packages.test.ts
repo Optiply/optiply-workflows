@@ -46,6 +46,9 @@ describe('JavaScript packages', () => {
     expect(error('.hidden')).toMatch(/no paths/)
     expect(error('@scope')).toMatch(/isn't an npm package name/)
     expect(error('zod@')).toMatch(/Nothing after "zod@"/)
+    // npm reads these as directories (review fix): never ranges.
+    for (const dir of ['foo@..', 'foo@.', 'foo@.1', 'a@...'])
+      expect(error(dir)).toMatch(/no URLs, git, paths/)
     expect(error('zod@^3; rm -rf')).toMatch(/isn't a version range/)
     expect(error('# a comment')).toMatch(/Comments/)
     expect(error('--save-dev')).toMatch(/options/)

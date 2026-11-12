@@ -2146,11 +2146,30 @@ Before M36 (the Retool import), the user asked for a fix and a feature.
     - **Behaviour:** a query that ran on load before its package was listed doesn't run again. A reload or a manual run picks the package up.
     - **e2e:** `js-packages.spec.ts` covers the app: add the package in App settings, see Installed, reload, the preview shows "Order #007", publish, and the live app shows "Order #007".
     - **Regression:** the app e2e specs passed 9/9 twice. One run before that had a single failure that didn't recur, and I didn't capture which test it was.
-  - **Next:** step 7:
-    - an architecture section and a runbook (`docs/runbooks/js-packages.md`)
-    - a done-when e2e
-    - a code review and its fixes
-    - the handoff
+    - Committed as `aa9b9e6`.
+  - **7, done, not committed yet:**
+    - **Docs:** architecture §2.39 and `docs/runbooks/js-packages.md` (new; linked from `components.md`).
+    - **Done-when:** `apps/web/e2e/js-packages-done-when.spec.ts`, with `tiny-format` and the private `@acme/greeting` behind a token:
+      - a workflow: Settings, Install now, a draft run, then published and a live run through the REST API
+      - an app: published, then opened
+    - **Code review** (a separate agent, on `fix/pre-m36-polish..feat/js-packages`). Its findings and fixes:
+      1. A range starting with `.` (`foo@..`) was a directory to npm. Such ranges are now refused.
+      2. `js_bundles` had no retention. `deleteUnusedJsBundles` now runs in the worker's retention: rows unused for 30 days that no release names, and failed rows after a day.
+      3. A failure from another process could replace a ready row. `recordBundle` now uses `setWhere state <> 'ready'`.
+      4. The app host could send a stale or empty bundle. `sendPackages` now posts only if its promise is still the current one.
+      5. `jsPackages.bundle` was a GET that installs (CSRF). It's removed; the host and the app field use `jsPackages.install` with `retry: false`.
+      6. Runs fetched bundles even without imports, and failures retried every run. Now `importsJsPackages(def)` (definition `walk.ts`) gates the prefetch, and a failure is reused for 60 s (`retryFailedAfterMs`; Install now and Try again pass 0).
+      7. A bundle rebuilt under a different hash: `renameReleaseBundle` updates the releases, and the route answers with `no-store` then.
+      8. `releases.get` sent `jsLock`. It now leaves it out.
+      9. The parser: a `'use strict'` before the imports, `assert {…}`, and a `with (…)` statement after an import are now handled.
+    - **The bundle route's access (the user chose it):** `/api/js-bundles/<hash>.js?app=<id>[&branchDraft=<id>]` is served only for an app the caller can see.
+      - That app's releases' bundles go to anyone with Use (rebuilt from the lock when gone).
+      - The bundle of the app's draft or branch draft goes to people with Edit only, checked through `jsBundleState` against the draft's list.
+      - Workflows' bundles are never served. Anything else is a 404.
+      - The host sends `app` and `branchDraft`. `bundleConfig` is now exported from js-modules.
+      - Tests: the access test in `js-packages-apps.test.ts` (7 tests in all).
+    - **Tests added:** definition (dot ranges), expressions (directive, `with`, `assert`), server `js-bundles` (fresh failure, ready kept, retention), and the runs test (no imports means no bundle; `releases.get` has no `jsLock`).
+  - **Next:** the user's call: start M36 (the Retool import, plan `~/.claude/plans/velvety-hatching-mccarthy.md`; its migration becomes 0047), or more fixes first. `feat/js-packages` isn't pushed yet.
 
 ## 14---. Session 45 steps: admin guard, just the app at its URL, the Retool import plan
 

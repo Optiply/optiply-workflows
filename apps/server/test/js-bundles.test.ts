@@ -2,16 +2,18 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
-import { jsBundles, npmRegistries } from '@ow/db'
-import { eq } from 'drizzle-orm'
+import { appReleases, apps, jsBundles, npmRegistries } from '@ow/db'
+import { eq, sql } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   buildJsBundle,
   bundleEntry,
+  deleteUnusedJsBundles,
   type JsBundleConfig,
   jsBundleByHash,
   jsInputHash,
   packageOf,
+  recordBundle,
 } from '../src/services/js-bundles'
 import { startTestApp, type TestEnv } from './helpers'
 import { startTestRegistry, type TestRegistry } from './npm-registry'
@@ -188,6 +190,55 @@ describe('JavaScript package bundles', () => {
     } finally {
       await env.db.delete(npmRegistries)
     }
+  })
+
+  it('answers a failure from a moment ago again, unless asked to try again (review fix)', async () => {
+    const asked = () => registry.requests.filter((r) => r.includes('never-there')).length
+    expect(await buildJsBundle(env.db, config, ['never-there'])).toMatchObject({ ok: false, kind: 'install' })
+    const after = asked()
+    expect(after).toBeGreaterThan(0)
+    expect(await buildJsBundle(env.db, config, ['never-there'])).toMatchObject({ ok: false, kind: 'install' })
+    expect(asked()).toBe(after) // not asked again
+    await buildJsBundle(env.db, config, ['never-there'], { retryFailedAfterMs: 0 })
+    expect(asked()).toBeGreaterThan(after)
+  })
+
+  it('never replaces a ready bundle with a failure for the same inputs (review fix)', async () => {
+    const ready = await buildJsBundle(env.db, config, ['pad@1.0.0'])
+    if (!ready.ok) throw new Error(ready.message)
+    const inputHash = jsInputHash({ pad: '1.0.0' }, [], registry.url, null)
+    await recordBundle(env.db, inputHash, { pad: '1.0.0' }, { ok: false, kind: 'timeout', message: 'slow' })
+    const [row] = await env.db.select().from(jsBundles).where(eq(jsBundles.inputHash, inputHash))
+    expect(row).toMatchObject({ state: 'ready', bundleHash: ready.bundleHash })
+  })
+
+  it('retention: bundles unused for long that no release names, and old failures (review fix)', async () => {
+    await env.db.delete(jsBundles)
+    const old = sql`now() - interval '40 days'`
+    const keep = await buildJsBundle(env.db, config, ['pad@1.0.0'])
+    const drop = await buildJsBundle(env.db, config, ['pad@1.1.0'])
+    await buildJsBundle(env.db, config, ['never-there'], { retryFailedAfterMs: 0 })
+    if (!keep.ok || !drop.ok) throw new Error('build failed')
+    await env.db.update(jsBundles).set({ lastUsedAt: old })
+    // An app release names `keep`'s bundle.
+    const [app] = await env.db
+      .insert(apps)
+      .values({
+        slug: `keep-${Date.now()}`,
+        name: 'keep',
+        draftDefinition: { schemaVersion: 1, components: [], queries: [] },
+      })
+      .returning()
+    await env.db.insert(appReleases).values({
+      appId: app!.id,
+      version: '1.0.0',
+      definition: { schemaVersion: 1, components: [], queries: [] },
+      definitionHash: 'a'.repeat(64),
+      jsBundleHash: keep.bundleHash,
+    })
+    expect(await deleteUnusedJsBundles(env.db)).toBe(2)
+    const left = await env.db.select({ bundleHash: jsBundles.bundleHash }).from(jsBundles)
+    expect(left).toEqual([{ bundleHash: keep.bundleHash }])
   })
 
   it('names packages and writes the entry', () => {

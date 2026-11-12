@@ -76,7 +76,7 @@ export interface AppHostOptions {
   releaseId: string | null
   /**
    * The release's JavaScript packages' bundle (`apps.open`): null without packages. The draft's comes from its
-   * package list (`jsPackages.bundle`).
+   * package list (`jsPackages.install`, `retry: false`).
    */
   jsBundleHash?: string | null
   /** With `releaseId` null: a Git branch draft (M11) instead of the main draft. */
@@ -610,16 +610,22 @@ export class AppHost {
     if (!this.options.releaseId) {
       // A list with problems is the editor's to show (under the field), not a build's.
       if (!list.length || jsPackageProblems(list).length) return null
-      const state = await trpcClient.jsPackages.bundle.query({
+      // A mutation (it may run npm); a failure from a moment ago answers again rather than installing again.
+      const state = await trpcClient.jsPackages.install.mutate({
         target: { kind: 'app', id: this.options.appId },
         packages: [...list],
+        retry: false,
       })
       if (state.state === 'none') return null
       if (state.state !== 'ready') throw new Error(state.error)
       hash = state.bundleHash
     }
     if (!hash) return null
-    const res = await fetch(`/api/js-bundles/${hash}.js`, { credentials: 'same-origin' })
+    // Served for this app only: its releases' bundles, or (editors) its draft's or this branch draft's.
+    const query = new URLSearchParams({ app: this.options.appId })
+    if (!this.options.releaseId && this.options.branchDraftId)
+      query.set('branchDraft', this.options.branchDraftId)
+    const res = await fetch(`/api/js-bundles/${hash}.js?${query}`, { credentials: 'same-origin' })
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null
       throw new Error(body?.error ?? `the server answered ${res.status}`)
@@ -630,7 +636,10 @@ export class AppHost {
   /** The changed packages to the running sandbox, once loaded (a sandbox still starting gets them with `start`). */
   private async sendPackages() {
     const port = this.port
-    const packages = await this.packages
+    const loading = this.packages
+    const packages = await loading
+    // Only the newest list's: an older one (or a wait cancelled by more typing) would replace it.
+    if (loading !== this.packages) return
     if (this.destroyed || !port || port !== this.port || this.store.getState().status !== 'ready') return
     this.post({ type: 'packages', packages })
   }

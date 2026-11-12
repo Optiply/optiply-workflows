@@ -35,6 +35,9 @@ export function parseImports(code: string): JsImport[] {
   if (!code.includes('import')) return []
   const imports: JsImport[] = []
   let pos = skipBlank(code, 0)
+  // A directive first (`'use strict'`): imports may follow it.
+  const directive = /^(['"])use strict\1\s*;?/.exec(code.slice(pos))
+  if (directive) pos = skipBlank(code, pos + directive[0].length)
   while (IMPORT_AT.test(code.slice(pos, pos + 80))) {
     const end = importEnd(code, pos)
     let declaration: ESTree.ImportDeclaration
@@ -135,34 +138,42 @@ function importStatement(imp: JsImport, i: number): string {
 /** Where the import line starting at `pos` ends: after its package's string (and `with {…}`, and a `;`). */
 function importEnd(code: string, pos: number): number {
   let end = code.length
-  let afterSource = false
-  let depth = 0
   try {
-    for (const token of tokenizer(code.slice(pos), { ecmaVersion: 'latest', sourceType: 'module' })) {
-      if (!afterSource) {
-        if (token.type === tokTypes.braceL) depth++
-        else if (token.type === tokTypes.braceR) depth--
-        else if (token.type === tokTypes.string && depth === 0) {
-          end = pos + token.end
-          afterSource = true
-        }
-        continue
-      }
-      // Import attributes: `with { type: 'json' }`.
-      if (token.type === tokTypes._with) {
-        depth = -1
-        continue
-      }
-      if (depth === -1) {
-        if (token.type === tokTypes.braceR) {
-          end = pos + token.end
-          depth = 0
-        }
-        continue
-      }
-      if (token.type === tokTypes.semi) end = pos + token.end
-      break
+    const tokens = tokenizer(code.slice(pos), { ecmaVersion: 'latest', sourceType: 'module' })[
+      Symbol.iterator
+    ]()
+    const next = () => {
+      const r = tokens.next()
+      return r.done ? null : r.value
     }
+    // Up to the package's string, outside braces (`{ "a-b" as c }` names are strings too).
+    let depth = 0
+    for (let token = next(); token; token = next()) {
+      if (token.type === tokTypes.braceL) depth++
+      else if (token.type === tokTypes.braceR) depth--
+      else if (token.type === tokTypes.string && depth === 0) {
+        end = pos + token.end
+        break
+      }
+    }
+    // Import attributes: `with { type: 'json' }` (or the older `assert { … }`), only followed by a brace: a `with (…)`
+    // statement on the next line isn't one.
+    let token = next()
+    if (
+      token &&
+      (token.type === tokTypes._with ||
+        (token.type === tokTypes.name && (token as { value?: unknown }).value === 'assert'))
+    ) {
+      const brace = next()
+      if (brace?.type !== tokTypes.braceL) return end
+      let level = 1
+      for (token = next(); token && level > 0; token = next()) {
+        if (token.type === tokTypes.braceL) level++
+        else if (token.type === tokTypes.braceR && --level === 0) end = pos + token.end
+      }
+      if (level > 0) return end
+    }
+    if (token?.type === tokTypes.semi) end = pos + token.end
   } catch {
     // Past the source a bad token is the next statement's problem; before it, the parse says what's wrong.
   }

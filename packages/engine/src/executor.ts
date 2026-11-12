@@ -7,7 +7,12 @@ import {
   workflowReleases,
   workflowRuns,
 } from '@ow/db'
-import { DEFAULT_RUN_TIMEOUT_MS, pythonFields, type WorkflowDefinition } from '@ow/definition'
+import {
+  DEFAULT_RUN_TIMEOUT_MS,
+  importsJsPackages,
+  pythonFields,
+  type WorkflowDefinition,
+} from '@ow/definition'
 import { type CodeRuntime, IvmRuntime, type PythonRunner, type SandboxModules } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
 import { PgChildRuns } from './children'
@@ -280,7 +285,8 @@ export class RunExecutor {
     run: WorkflowRun,
     definition: WorkflowDefinition,
   ): (() => Promise<SandboxModules>) | undefined {
-    if (!definition.settings?.javascript?.packages.length) return undefined
+    // Only code that imports them needs them (a list nothing imports yet costs nothing).
+    if (!definition.settings?.javascript?.packages.length || !importsJsPackages(definition)) return undefined
     const provider = this.opts.jsModules
     if (!provider) {
       return () =>

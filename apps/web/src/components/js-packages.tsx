@@ -2,7 +2,7 @@ import { MAX_JS_PACKAGES } from '@ow/definition'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Button, ErrorNote, Field, Spinner, Textarea } from '@/components/ui'
-import { useTRPC } from '@/lib/trpc'
+import { type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 
 /**
  * A workflow's or app's JavaScript packages: npm packages, one a line (`zod@^3`, `date-fns`), bundled for its
@@ -10,6 +10,8 @@ import { useTRPC } from '@/lib/trpc'
  * validator's problems show under the field, by line; for people with Edit, whether they're installed and Install
  * now. The registries are the admins' (Settings → npm registries).
  */
+
+type JsBundleState = RouterOutputs['jsPackages']['state']
 
 export interface JsPackagesTarget {
   kind: 'workflow' | 'app'
@@ -90,21 +92,26 @@ function JsPackagesState({ target, packages }: { target: JsPackagesTarget; packa
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const settled = useSettled([...packages], 600)
-  // An app's preview builds its packages anyway (see AppHost): its state is that build's (the two are one build).
+  // An app's preview builds its packages anyway (see AppHost): its state is that build's (the two are one build),
+  // asked for with the install mutation (it may run npm: never a GET), not trying again a failure from a moment ago.
   const input = { target, packages: settled }
-  const state = useQuery(
-    target.kind === 'app'
-      ? trpc.jsPackages.bundle.queryOptions(input)
-      : trpc.jsPackages.state.queryOptions(input),
-  )
+  const appBuild = (key: typeof input) => ['jsPackagesBuild', key.target, key.packages]
+  const isApp = target.kind === 'app'
+  const workflowState = useQuery({ ...trpc.jsPackages.state.queryOptions(input), enabled: !isApp })
+  const appState = useQuery<JsBundleState>({
+    queryKey: appBuild(input),
+    queryFn: () => trpcClient.jsPackages.install.mutate({ ...input, retry: false }),
+    enabled: isApp,
+  })
+  const state = isApp ? appState : workflowState
   const install = useMutation(
     trpc.jsPackages.install.mutationOptions({
       // Under the packages it installed: the field may have changed since.
-      onSuccess: (data, sent) =>
-        queryClient.setQueryData(
-          (sent.target.kind === 'app' ? trpc.jsPackages.bundle : trpc.jsPackages.state).queryKey(sent),
-          data,
-        ),
+      onSuccess: (data, sent) => {
+        const key = { target: sent.target, packages: sent.packages }
+        if (sent.target.kind === 'app') queryClient.setQueryData(appBuild(key), data)
+        else queryClient.setQueryData(trpc.jsPackages.state.queryKey(key), data)
+      },
     }),
   )
   const data = state.data
@@ -113,7 +120,7 @@ function JsPackagesState({ target, packages }: { target: JsPackagesTarget; packa
     <Button
       size="sm"
       loading={install.isPending}
-      onClick={() => install.mutate({ target, packages: [...packages] })}
+      onClick={() => install.mutate({ target, packages: [...packages], retry: true })}
     >
       {label}
     </Button>

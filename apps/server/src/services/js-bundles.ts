@@ -6,7 +6,7 @@ import { join, sep } from 'node:path'
 import type { Keyring } from '@ow/crypto'
 import { type Db, jsBundles, npmRegistries } from '@ow/db'
 import { canonicalJson, jsDependencies, jsPackageProblems } from '@ow/definition'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { build, type Message, type Plugin } from 'esbuild'
 import { confineTo, Gate } from './components/build'
 import { DEFAULT_INSTALL_LIMITS, type InstallLimits, installDependencies } from './components/install'
@@ -101,6 +101,8 @@ export function bundleEntry(names: readonly string[]): string {
 }
 
 const gate = new Gate(2)
+/** How long a recorded failure answers again before the next build tries (see `buildJsBundle`). */
+const FAILED_REUSE_MS = 60_000
 /** Builds of the same inputs in this process share one. */
 const running = new Map<string, Promise<JsBundleOutcome>>()
 
@@ -112,7 +114,11 @@ export async function buildJsBundle(
   db: Db,
   config: JsBundleConfig,
   packages: readonly string[],
-  opts: { lock?: string | null } = {},
+  opts: {
+    lock?: string | null
+    /** A failure recorded less than this long ago answers again instead of building (default a minute). */
+    retryFailedAfterMs?: number
+  } = {},
 ): Promise<JsBundleOutcome> {
   const problems = jsPackageProblems(packages)
   if (problems.length) {
@@ -145,6 +151,16 @@ export async function buildJsBundle(
       sizeBytes: row.sizeBytes ?? row.js.length,
       warnings: row.warnings ?? [],
       cached: true,
+    }
+  }
+  // A failure a moment ago answers again (a schedule doesn't run npm every minute), unless it's to try again.
+  const retryAfterMs = opts.retryFailedAfterMs ?? FAILED_REUSE_MS
+  if (row?.state === 'failed' && row.builtAt && Date.now() - row.builtAt.getTime() < retryAfterMs) {
+    return {
+      ok: false,
+      kind: (row.error?.kind ?? 'install') as JsBundleErrorKind,
+      message: row.error?.message ?? 'The install failed',
+      ...(row.log && { log: row.log }),
     }
   }
 
@@ -183,6 +199,20 @@ async function buildAndRecord(
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+  await recordBundle(db, inputHash, dependencies, outcome)
+  return outcome
+}
+
+/**
+ * A build's outcome kept under its inputs. A failure never replaces a ready bundle another process made for the same
+ * inputs meanwhile (npm's network failing here, a timeout).
+ */
+export async function recordBundle(
+  db: Db,
+  inputHash: string,
+  dependencies: Record<string, string>,
+  outcome: JsBundleOutcome,
+): Promise<void> {
   const recorded = outcome.ok
     ? {
         state: 'ready' as const,
@@ -207,8 +237,11 @@ async function buildAndRecord(
   await db
     .insert(jsBundles)
     .values({ inputHash, dependencies, ...recorded })
-    .onConflictDoUpdate({ target: jsBundles.inputHash, set: { ...recorded, lastUsedAt: sql`now()` } })
-  return outcome
+    .onConflictDoUpdate({
+      target: jsBundles.inputHash,
+      set: { ...recorded, lastUsedAt: sql`now()` },
+      ...(!outcome.ok && { setWhere: ne(jsBundles.state, 'ready') }),
+    })
 }
 
 async function buildIn(
@@ -424,4 +457,26 @@ export function stateOf(outcome: JsBundleOutcome): JsBundleState {
     log: outcome.log ?? '',
     at: new Date(),
   }
+}
+
+/**
+ * Retention: bundles unused for `keepDays` that no release names (a release's would only be rebuilt from its lock),
+ * and failures older than a day. Returns how many went.
+ */
+export async function deleteUnusedJsBundles(db: Db, keepDays = 30): Promise<number> {
+  const named = sql`(select js_bundle_hash from workflow_releases where js_bundle_hash is not null
+    union select js_bundle_hash from app_releases where js_bundle_hash is not null)`
+  const deleted = await db
+    .delete(jsBundles)
+    .where(
+      or(
+        and(eq(jsBundles.state, 'failed'), lt(jsBundles.lastUsedAt, sql`now() - interval '1 day'`)),
+        and(
+          lt(jsBundles.lastUsedAt, sql`now() - make_interval(days => ${keepDays})`),
+          or(isNull(jsBundles.bundleHash), sql`${jsBundles.bundleHash} not in ${named}`),
+        ),
+      ),
+    )
+    .returning({ inputHash: jsBundles.inputHash })
+  return deleted.length
 }

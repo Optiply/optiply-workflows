@@ -41,8 +41,12 @@ async function appWith(slug: string, packages: string[]) {
 }
 const publish = (app: { id: string; draftRevision: number }) =>
   admin.mutate('apps.publish', { appId: app.id, draftRevision: app.draftRevision })
-const fetchBundle = (hash: string, withCookie = true) =>
-  env.app.inject({ method: 'GET', url: `/api/js-bundles/${hash}`, headers: withCookie ? { cookie } : {} })
+const fetchBundle = (file: string, appId: string | null, as: string | null = cookie, extra = '') =>
+  env.app.inject({
+    method: 'GET',
+    url: `/api/js-bundles/${file}${appId ? `?app=${appId}${extra}` : ''}`,
+    headers: as ? { cookie: as } : {},
+  })
 const modulesOf = (js: string) => {
   const context: Record<string, any> = {}
   runInNewContext(js, context)
@@ -53,6 +57,7 @@ beforeAll(async () => {
   registry = await startTestRegistry([
     { name: 'pad', version: '1.0.0', files: { 'index.js': 'module.exports = (s) => `[${s}]`' } },
     { name: 'pad', version: '1.1.0', files: { 'index.js': 'module.exports = (s) => `<${s}>`' } },
+    { name: 'only-workflows', version: '1.0.0', files: { 'index.js': 'module.exports = 1' } },
   ])
   work = await mkdtemp(join(tmpdir(), 'ow-js-apps-test-'))
   env = await startTestApp({ NPM_REGISTRY_URL: registry.url, COMPONENT_BUILD_DIR: work })
@@ -76,13 +81,13 @@ describe("an app's JavaScript packages", () => {
     const open = data(await admin.query('apps.open', { slug: 'js-app' }))
     expect(open.release.jsBundleHash).toBe(row!.jsBundleHash)
 
-    const res = await fetchBundle(`${row!.jsBundleHash}.js`)
+    const res = await fetchBundle(`${row!.jsBundleHash}.js`, app.id)
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toContain('text/javascript')
     expect(modulesOf(res.body).pad('x')).toBe('<x>')
-    expect((await fetchBundle(`${row!.jsBundleHash}.js`, false)).statusCode).toBe(401)
-    expect((await fetchBundle('nope.js')).statusCode).toBe(404)
-    expect((await fetchBundle(`${'f'.repeat(64)}.js`)).statusCode).toBe(404)
+    expect((await fetchBundle(`${row!.jsBundleHash}.js`, app.id, null)).statusCode).toBe(401)
+    expect((await fetchBundle('nope.js', app.id)).statusCode).toBe(404)
+    expect((await fetchBundle(`${'f'.repeat(64)}.js`, app.id)).statusCode).toBe(404)
   })
 
   it('builds a bundle a release names again from its lock when it is gone', async () => {
@@ -92,7 +97,7 @@ describe("an app's JavaScript packages", () => {
       .innerJoin(apps, eq(apps.id, appReleases.appId))
       .where(eq(apps.slug, 'js-app'))
     await env.db.delete(jsBundles)
-    const res = await fetchBundle(`${row!.app_releases.jsBundleHash}.js`)
+    const res = await fetchBundle(`${row!.app_releases.jsBundleHash}.js`, row!.apps.id)
     expect(res.statusCode).toBe(200)
     expect(modulesOf(res.body).pad('y')).toBe('<y>')
     const audits = await env.db
@@ -131,20 +136,81 @@ describe("an app's JavaScript packages", () => {
     await env.db.delete(jsBundles)
     data(await admin.mutate('apps.setLive', { appId: app.id, releaseId: first.id }))
     const open = data(await admin.query('apps.open', { slug: 'js-app-rollback' }))
-    const res = await fetchBundle(`${open.release.jsBundleHash}.js`)
+    const res = await fetchBundle(`${open.release.jsBundleHash}.js`, app.id)
     expect(modulesOf(res.body).pad('z')).toBe('[z]')
   })
 
   it("gives the editor's preview the draft's bundle", async () => {
     const app = await appWith('js-app-draft', ['pad@1.0.0'])
     const state = data(
-      await admin.query('jsPackages.bundle', {
+      await admin.mutate('jsPackages.install', {
         target: { kind: 'app', id: app.id },
         packages: ['pad@1.0.0'],
       }),
     )
     expect(state).toMatchObject({ state: 'ready', versions: { pad: '1.0.0' } })
-    expect(modulesOf((await fetchBundle(`${state.bundleHash}.js`)).body).pad('d')).toBe('[d]')
+    expect(modulesOf((await fetchBundle(`${state.bundleHash}.js`, app.id)).body).pad('d')).toBe('[d]')
+  })
+
+  it("serves a bundle only for an app the caller can see: its releases', or (editors) its draft's", async () => {
+    const memberUser = await createLocalUser(env.db, 'viewer@optiply.nl')
+    const viewer = await login(env.app, 'viewer@optiply.nl')
+    const released = await appWith('js-access', ['pad@1.0.0'])
+    data(await publish(released))
+    const live = data(await admin.query('apps.open', { slug: 'js-access' })).release.jsBundleHash as string
+    // A draft list differing from the release's: its bundle is a draft's only.
+    const draftState = data(
+      await admin.mutate('jsPackages.install', {
+        target: { kind: 'app', id: released.id },
+        packages: ['pad@1.1.0'],
+      }),
+    )
+    data(
+      await admin.mutate('apps.saveDraft', {
+        id: released.id,
+        revision: released.draftRevision,
+        definition: definition(['pad@1.1.0']),
+      }),
+    )
+    const other = await appWith('js-access-other', [])
+    const hashOf = (h: string) => `${h}.js`
+
+    // Nobody without access to the app; no app named: nothing.
+    expect((await fetchBundle(hashOf(live), released.id, viewer)).statusCode).toBe(404)
+    expect((await fetchBundle(hashOf(live), null)).statusCode).toBe(404)
+    // With Use: the release's bundle, not the draft's.
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'app',
+        objectId: released.id,
+        userId: memberUser.id,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    expect((await fetchBundle(hashOf(live), released.id, viewer)).statusCode).toBe(200)
+    expect((await fetchBundle(hashOf(draftState.bundleHash), released.id, viewer)).statusCode).toBe(404)
+    // An editor: the draft's too; but not under another app, nor a bundle neither names.
+    expect((await fetchBundle(hashOf(draftState.bundleHash), released.id)).statusCode).toBe(200)
+    expect((await fetchBundle(hashOf(live), other.id)).statusCode).toBe(404)
+    expect((await fetchBundle(hashOf(draftState.bundleHash), other.id)).statusCode).toBe(404)
+    // A branch draft that isn't this app's: nothing.
+    expect(
+      (await fetchBundle(hashOf(draftState.bundleHash), released.id, cookie, `&branchDraft=${other.id}`))
+        .statusCode,
+    ).toBe(404)
+    // A bundle only a workflow uses (the same content as an app's would be that app's): never served.
+    const wf = data(
+      await admin.mutate('jsPackages.install', {
+        target: {
+          kind: 'workflow',
+          id: data(await admin.mutate('workflows.create', { slug: 'js-wf', name: 'wf' })).id,
+        },
+        packages: ['only-workflows'],
+      }),
+    )
+    expect(wf.state).toBe('ready')
+    expect((await fetchBundle(hashOf(wf.bundleHash), released.id)).statusCode).toBe(404)
   })
 
   it('needs no bundle for an app without packages', async () => {

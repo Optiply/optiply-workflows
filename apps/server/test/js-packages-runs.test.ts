@@ -133,6 +133,10 @@ describe("a workflow's JavaScript packages on the server", { timeout: 120_000 },
     expect(bundle).toMatchObject({ state: 'ready', versions: { pad: '1.1.0' } })
     expect(stored!.jsLock).toBe(bundle!.lock)
     expect(stored!.jsLock).toContain('"node_modules/pad"')
+    // The lock stays on the server (review fix): a release's details leave it out.
+    const shown = data(await admin.query('releases.get', { workflowId: flow.id, id: release.id }))
+    expect(shown).not.toHaveProperty('jsLock')
+    expect(shown.jsBundleHash).toBe(stored!.jsBundleHash)
 
     expect(await run('js-live', 'live')).toMatchObject({ status: 'succeeded', response: { body: '<x>' } })
     await env.db.delete(jsBundles)
@@ -187,6 +191,10 @@ describe("a workflow's JavaScript packages on the server", { timeout: 120_000 },
     await workflowWith('js-none', [], 'return 1 + 1')
     const before = (await env.db.select().from(jsBundles)).length
     expect(await run('js-none')).toMatchObject({ status: 'succeeded', response: { body: 2 } })
+    expect(await env.db.select().from(jsBundles)).toHaveLength(before)
+    // Packages listed, but no code imports them: nothing is built (review fix).
+    await workflowWith('js-unused', ['pad@1.0.0-nothing-has-this'], 'return 3')
+    expect(await run('js-unused')).toMatchObject({ status: 'succeeded', response: { body: 3 } })
     expect(await env.db.select().from(jsBundles)).toHaveLength(before)
   })
 })

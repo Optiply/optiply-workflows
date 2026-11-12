@@ -11,6 +11,7 @@ import { deleteUnusedBundles } from '../services/component-libraries'
 import { configureConnectors } from '../services/connectors'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { deleteUnusedJsBundles } from '../services/js-bundles'
 import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
@@ -72,7 +73,10 @@ export async function startWorker(deps: {
     db,
     days: config.RUN_RETENTION_DAYS,
     log: log.child({ component: 'retention' }),
-    also: async () => ({ componentBundles: await deleteUnusedBundles(db) }),
+    also: async () => ({
+      componentBundles: await deleteUnusedBundles(db),
+      jsBundles: await deleteUnusedJsBundles(db),
+    }),
   })
   retention.start()
   const git = new GitDeployer({

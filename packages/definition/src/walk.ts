@@ -1,3 +1,4 @@
+import { parseImports } from '@ow/expressions'
 import { codeFields, fieldRefs } from './fields'
 import type { LibraryReference } from './library'
 import type { Block, Edge, FunctionDefinition, WorkflowDefinition } from './schema'
@@ -176,6 +177,25 @@ export function pythonFields(def: WorkflowDefinition): PythonField[] {
             source: field.source,
           }
         }),
+    ),
+  )
+}
+
+/**
+ * Whether any of a workflow's JavaScript code (its functions' included) has import lines: only then does a run need
+ * its JavaScript packages' bundle.
+ */
+export function importsJsPackages(def: WorkflowDefinition): boolean {
+  return blockGraphs(def).some((graph) =>
+    graph.blocks.some((block) =>
+      codeFields(block).some((field) => {
+        if (field.kind !== 'function-body') return false
+        try {
+          return parseImports(field.source).length > 0
+        } catch {
+          return true // A broken import line: the code fails saying so; the bundle is no worse for being there.
+        }
+      }),
     ),
   )
 }

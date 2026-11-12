@@ -1,5 +1,5 @@
 import type { Keyring } from '@ow/crypto'
-import { type Db, type WorkflowRun, workflowReleases } from '@ow/db'
+import { appReleases, type Db, type WorkflowRun, workflowReleases } from '@ow/db'
 import type { WorkflowDefinition } from '@ow/definition'
 import { BlockFailure, type JsModulesProvider } from '@ow/engine'
 import type { SandboxModules } from '@ow/sandbox'
@@ -32,7 +32,7 @@ export function configureJsBundles(config: {
   return configured
 }
 
-function bundleConfig(): JsBundleConfig {
+export function bundleConfig(): JsBundleConfig {
   if (!configured) throw new Error('JavaScript packages are not configured (configureJsBundles)')
   return configured
 }
@@ -51,8 +51,10 @@ export async function buildAudited(
   who: JsBundleOwner,
   lock: string | null = null,
   config: JsBundleConfig = bundleConfig(),
+  /** Build again even when it failed a moment ago (Install now, Try again). */
+  retry = false,
 ): Promise<JsBundleOutcome> {
-  const outcome = await buildJsBundle(db, config, packages, { lock })
+  const outcome = await buildJsBundle(db, config, packages, { lock, ...(retry && { retryFailedAfterMs: 0 }) })
   if (outcome.ok && !outcome.cached) {
     await recordAudit(db, {
       actorUserId: who.actorUserId,
@@ -136,7 +138,19 @@ async function releaseModules(
   }
   if (!release.jsLock) return null
   const built = await bundleFor(db, packages, who, release.jsLock)
+  if (release.jsBundleHash !== built.bundleHash)
+    await renameReleaseBundle(db, release.jsBundleHash, built.bundleHash)
   return { hash: built.bundleHash, js: built.js }
+}
+
+/**
+ * A release's bundle rebuilt from its lock came out under another hash (a newer esbuild): the releases naming the
+ * old one name the new one, so they find it next time.
+ */
+export async function renameReleaseBundle(db: Db, from: string | null, to: string): Promise<void> {
+  if (!from || from === to) return
+  await db.update(workflowReleases).set({ jsBundleHash: to }).where(eq(workflowReleases.jsBundleHash, from))
+  await db.update(appReleases).set({ jsBundleHash: to }).where(eq(appReleases.jsBundleHash, from))
 }
 
 /** The engine's `JsModulesProvider`: a release's bundle when it has one, else the definition's package list's. */

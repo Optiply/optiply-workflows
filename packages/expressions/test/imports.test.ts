@@ -63,6 +63,23 @@ describe('import lines', () => {
     expect(code.slice(imports[1]!.start, imports[1]!.end)).toBe("import data from 'y' with { type: 'json' }")
   })
 
+  it('reads them after a directive; a with statement after them is not an attribute (review fixes)', () => {
+    expect(parseImports("'use strict'\nimport x from 'x'\nreturn x").map((i) => i.source)).toEqual(['x'])
+    const code = "import x from 'x'\nwith (obj) { y }"
+    const [imp] = parseImports(code)
+    expect(code.slice(imp!.start, imp!.end)).toBe("import x from 'x'")
+    expect(rewriteImports(code).split('\n')[1]).toBe('with (obj) { y }')
+    // The older `assert { … }`: the whole line, or a clear syntax error; never half of it left behind.
+    const old = "import data from 'y' assert { type: 'json' }\nreturn data"
+    let left: string | null = null
+    try {
+      left = rewriteImports(old).split('\n')[0]!
+    } catch (err) {
+      expect(err).toBeInstanceOf(TemplateError)
+    }
+    if (left !== null) expect(left).not.toContain('assert')
+  })
+
   it('stops at the first other statement; import(…), import.meta and names starting with import are not lines', () => {
     expect(parseImports("const a = 1\nimport x from 'x'")).toEqual([])
     expect(parseImports("const m = await import('x')\nreturn m")).toEqual([])

@@ -22,6 +22,7 @@ const input = z.object({
   target: targetInput,
   packages: z.array(z.string().max(MAX_JS_PACKAGE_LENGTH)).max(MAX_JS_PACKAGES),
 })
+const installInput = input.extend({ retry: z.boolean().optional() })
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -44,19 +45,14 @@ export const jsPackagesRouter = router({
   }),
 
   /**
-   * The bundle for these packages, built now when needed (a new one audited): for the app editor's preview, which
-   * then loads `/api/js-bundles/<bundleHash>.js` into its sandbox. The answer is the state, as `install`'s.
+   * Installs and bundles the packages now; the answer is the new state (`bundleHash` when ready: the app editor's
+   * preview loads `/api/js-bundles/<hash>.js`). A new bundle is audited. A mutation, as it may run npm: `retry: false`
+   * (the app editor asking on its own) answers a failure from a moment ago instead of trying again.
    */
-  bundle: authedProcedure.input(input).query(async ({ ctx, input }) => {
+  install: authedProcedure.input(installInput).mutation(async ({ ctx, input }) => {
     const object = await editable(ctx, input.target)
     const who = { ...object, actorUserId: ctx.user.id }
-    return stateOf(await buildAudited(ctx.db, input.packages, who, null, jsBundleConfig(ctx.config)))
-  }),
-
-  /** Installs and bundles the packages now; the answer is the new state. A new bundle is audited. */
-  install: authedProcedure.input(input).mutation(async ({ ctx, input }) => {
-    const object = await editable(ctx, input.target)
-    const who = { ...object, actorUserId: ctx.user.id }
-    return stateOf(await buildAudited(ctx.db, input.packages, who, null, jsBundleConfig(ctx.config)))
+    const retry = input.retry ?? true
+    return stateOf(await buildAudited(ctx.db, input.packages, who, null, jsBundleConfig(ctx.config), retry))
   }),
 })

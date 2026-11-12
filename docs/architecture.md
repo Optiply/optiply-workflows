@@ -1051,3 +1051,101 @@ Workflows and apps can call a language model: generate text, extract JSON to a s
 - **Tests:** a **fake Messages API** (`apps/server/test/fake-anthropic.ts`: messages with text, structured output, tool_use turns, refusal, usage, 429 then success) and a **fake OpenAI-compatible server** (chat completions with `response_format`, `tool_calls`); connectors tests (requests built, usage and cost, retries, errors); engine/server tests per action, the budget across blocks, the agent (tool runs as child runs, a failing tool, `maxSteps`, concurrent calls), prompts hidden, metrics; the app query. Done when, in Playwright: an Anthropic resource (the fake) made and tested; a workflow extracting an order from an email, classifying it and summarizing it, its data typed in the editor and the run log showing tokens and cost; an agent that calls a "look up customer" workflow and answers with what it returned (the child run shown); the run's budget stopping a second call; an OpenAI-compatible resource doing the same extract; an app's AI query. By hand: the user's Anthropic key on their stack.
 - **Not in M35:** streaming answers into the run view or apps; images and PDFs as input; the agent in apps; per-user rate limits; fine-tuning, embeddings and vector search; other providers' own APIs (Gemini, Bedrock, Vertex: through OpenAI-compatible gateways only).
 - **As built** (sessions 38–39, 2026-11-04, the user away for steps 2–7; handoff §9ac): as designed above, with these differences. **No `type: 'ai'` block:** the AI resources are M27's **service connectors** (`anthropic`, `openai_compatible`; their actions in `services/actions.ts` `AI_ACTIONS`), so the AI block is the **resource query block** on an AI resource, the app's AI query the app's resource query, and the playground the resource's Query tab; the data and metadata are as designed. **The budget:** the engine keeps one per execution (`RunAiBudget`, `packages/engine/src/ai.ts`), shared with function calls, given to queries as `QueryContext.ai.budget`; it's checked **before each call** (the call crossing it isn't cut off; the next is refused), against the run's tokens across all its AI resources; a resumed run starts from its checkpoints' AI calls (a loop's iterations keep only their data, so not theirs). **The run log line** is one line per call (`AI call: <provider> <model>, N input + M output tokens, $cost, s[, prompts hidden]`, a warning for a call that answered then failed); the prompts are in the block's **metadata** (`request`), shown under "Prompts sent" in the run view, not in the log. **Metrics** are counted in the connectors (`aiStats`), so the playground and apps count too. **The agent:** `ai/agent.ts`; tools are described by the engine's tool host (`ChildRuns.describe`: the slug, the workflow's description or "Runs the workflow …", the live release's **webhook** body schema, else any object); each call a child run keyed `child:<run>:<block>:<attempt>:tool:<call id>`; tools aren't sent `strict` (body schemas rarely meet strict mode's rules); `maxSteps` counts tool-calling turns; an agent's tools count as **called workflows** (`agentTools`, `calledWorkflows` in `@ow/definition`), so drafts check Use on them, releases Use everywhere, and the validator reports unknown or unpublished ones at `config.query.tools`; tools must be written out (no `{{ }}`). The editor: the AI types in an **AI** group, their settings forms, the published workflows to add under an agent's tools, completions typed from the action (`aiDataType`), the run view's AI section (model, tokens, cost, time, prompts, the agent's tool calls linked to their child runs). Library queries on an AI resource work (no agent tools). **The review** (the `code-review` skill, high; 10 found, 10 fixed): OpenAI's own API and Azure's get `max_completion_tokens` (their reasoning models refuse `max_tokens`); both connectors **never follow redirects** (a 3xx to a private address written out would have passed the guard, which only sees names); OpenAI's structured output is `strict` only for schemas strict mode takes (`strictCompatible`), else non-strict and checked here; an agent's child runs are keyed by the turn, the call's place in it and the provider's id, and an OpenAI-compatible server's missing or repeated ids are replaced (a repeated id would have reused one child run for two calls); other early stops fail (`model_context_window_exceeded` as `ai_max_tokens`, anything else `ai_invalid_output`) instead of returning a cut-off answer; metrics' model labels are capped at 100 per process (`other`); the validator reports `{{ }}` tools; the settings forms keep a typed `1.` in prices and let the model box be emptied; `AI_RESOURCE_TYPES` and `tokensOf` shared instead of copied. The done-when is `apps/web/e2e/m35-done-when.spec.ts` against the fakes (`E2E_AI`); by hand against Anthropic: still to do (the user's key on their stack). Runbook: `docs/runbooks/ai.md`.
+
+## 2.39 JavaScript packages (session 46, before M36)
+
+Workflows and apps can use npm packages in their JavaScript code, the way they use Python packages (M23, §2.26).
+The user asked for it in session 46 (2026-11-12) and decided two things:
+
+- **Bundle into the sandbox**, rather than run Node in nsjail like Python. This keeps one mechanism for workflows
+  and apps, keeps `fetch` and workflow-function calls working, and keeps runs fast. The cost is that only packages
+  that work without Node's built-ins can run.
+- **One shared, scope-based list of registries**: M33's `npm_registries`, now **Settings → npm registries**
+  (`/settings/npm`, with `/settings/components` redirecting there). There is no per-workflow index picker.
+
+The plan is `~/.claude/plans/js-packages.md`.
+
+- **The definition:**
+  - Workflows have `settings.javascript.packages`. Apps have a top-level `javascript.packages`, which is refused on
+    a module because a module's code uses its app's packages.
+  - Each line is `name` or `name@range` (a semver range or a dist-tag), checked by `parseJsPackage`
+    (`packages/definition/src/js-packages.ts`). URLs, `git:`, `github:`, `file:`, `link:`, `workspace:` and `npm:`
+    aliases, paths, `user/repo` and names npm refuses are all refused.
+  - The list holds at most 30 packages. A bad line is `invalid_js_package` on that line.
+  - In Git it's `package.json` next to `workflow.json` and `app.json`: `{"private": true, "dependencies": {…}}` in
+    the author's order. An empty range means a bare name. Only `dependencies` is read back.
+- **Import lines** (`packages/expressions/src/imports.ts`):
+  - JS code bodies (code blocks, loop runners, an app's JS queries, transformers and scripts) may start with
+    `import` lines, after comments.
+  - `parseImports` finds where each line ends with acorn's tokenizer, then parses each line on its own as a module,
+    so the body doesn't have to be strict-mode code.
+  - `rewriteImports` turns them into `const __owImportN = __owImport("x"), d = __owImportN.default, { "a": b } =
+    __owImportN;` on the same line, keeping the line breaks after it, so error lines stay right.
+  - Analysis (`freeIdentifierRefs`) reads the body with the imports blanked out, so other offsets don't move, and
+    leaves the imported names out.
+  - An import of a package that isn't listed, or of a file inside one (`zod/lib/x`), is `unknown_js_import` on the
+    package's name. Workflows check this with `importProblems`, and apps do too, except on modules.
+- **Bundles** (`apps/server/src/services/js-bundles.ts`):
+  - **Install:** `installDependencies` from M25/M33 runs npm with no install scripts, the admins' registries and
+    tokens in a temporary `.npmrc`, 120 s and 200 MB.
+  - **Bundle:** esbuild builds one IIFE (browser platform, ES2022, minified) from a generated entry that sets
+    `globalThis.__owModules`: one getter per package that `require`s it on first use. A package failing to load
+    doesn't take the others with it.
+  - **Node built-ins:** a built-in with no npm package of that name installed becomes a Proxy stub that throws
+    "X needs Node's fs" when used, and the build lists it as a warning. `confineTo` keeps esbuild inside the build
+    directory.
+  - **Size:** `JS_BUNDLE_MAX_MB` (default 5).
+  - **Cache:** bundles are kept in `js_bundles` (migration 0046), keyed by `input_hash`: SHA-256 of the sorted
+    dependencies, every registry's scope and URL (not the token) and the starting lock. They're found again by
+    `bundle_hash`.
+  - **Failures** are recorded too and answer again for a minute (`retryFailedAfterMs`; Install now and Try again pass
+    0). A failure never replaces another process's ready row for the same inputs (`setWhere state <> 'ready'`).
+  - **Retention:** `deleteUnusedJsBundles` runs in the worker's retention job. It deletes rows unused for 30 days
+    that no release names, and failures after a day.
+  - **Ranges** starting with `.` are refused, because npm reads them as directories.
+  - **Concurrency:** builds run in the process that asks, two at a time, and the same input building at the same
+    moment shares one build.
+- **Runs:**
+  - The engine's `JsModulesProvider` is asked as the run starts (`shared()` plus prefetch, like Python's
+    environment) when the definition declares packages and some code imports one (`importsJsPackages`). Code with import lines waits for it, logging "Waiting for
+    the workflow's JavaScript packages to install…".
+  - The server's provider (`services/js-modules.ts`, `dbJsModules`) gives a release run its `js_bundle_hash`,
+    rebuilt from `js_lock` when the bundle is gone. A draft run gets the package list's bundle.
+  - `IvmRuntime` compiles a bundle once per isolate (`RunOptions.modules {hash, js}`) and runs it in each
+    evaluation's context before the code. Its time counts toward the code's limit.
+  - The stdlib prelude's `__owImport` does the CommonJS interop: `default` is the module itself, and its
+    properties are named imports. ES modules come back as they are.
+  - A failure is a `js_packages` block failure with npm's log.
+- **Releases:**
+  - `workflow_releases` and `app_releases` get `js_lock` and `js_bundle_hash`.
+  - Publish and Git deploy keep the package list's bundle, which is the one draft runs used. A failure refuses the
+    publish with npm's reason.
+  - A rollback keeps the release's bundle, or rebuilds it from its lock and stores the new hash.
+  - A bundle rebuilt from a lock under another hash, say after an esbuild upgrade, is renamed in every release that
+    named the old one (`renameReleaseBundle`). `releases.get` leaves `jsLock` out.
+- **Apps:**
+  - `apps.open` returns the live release's `jsBundleHash`. The editor's preview asks `jsPackages.install` (`retry: false`) for the
+    draft's list, waiting until the list has been still for 800 ms and skipping lists with problems.
+  - The page fetches `GET /api/js-bundles/<sha256>.js?app=<id>` (with `&branchDraft=<id>` for a Git branch draft
+    in the editor). It's served only for an app the caller can see. A bundle one of that app's releases names goes
+    to anyone with Use, rebuilt from the release's lock when it's gone. The bundle of the app's draft list (or the
+    branch draft's) goes only to people with Edit. Workflows' bundles never leave the server. Anything else is a
+    404, as for an app the caller can't see. The user chose this in session 46, because a bundle can hold private
+    registries' packages; component bundles are still open to anyone signed in.
+  - The page sends the bundle to the sandbox as a `packages` message, before `start` and again on changes. The
+    Worker, which still can't make requests, runs it as a function body. `owImport` (app-runtime) uses the same
+    interop as workflows, and `functionRunner` rewrites import lines.
+  - A query that ran on load before its package was listed doesn't run again by itself.
+- **The editor:**
+  - Workflow settings and App settings have a JavaScript packages field (`components/js-packages.tsx`). It shows
+    problems by line and, for people with Edit, the install state: not yet with **Install now**; installed with
+    versions, size and Node warnings; or failed with npm's output and **Try again**.
+  - The routes are `jsPackages.state` (a workflow's state, without building) and `jsPackages.install`, a mutation
+    because it may run npm, so it's never a GET. **Install now** and **Try again** build again. The app editor's
+    field and preview pass `retry: false`, which answers a failure from the last minute instead of building again.
+  - Monaco needed no change: a body with `import` lines is a module to TypeScript.
+- **Audit:** `js.bundle_built` for each new bundle, with `fromLock` when it was rebuilt from a release's lock.
+- **Reviewed** after step 6 by a separate agent. Its findings were fixed in step 7, and handoff §14 lists them. The
+  bundle route's access rule (above) came from the same review.
+- **The runbook** is `docs/runbooks/js-packages.md`. The e2e tests are `apps/web/e2e/js-packages.spec.ts` and
+  `js-packages-done-when.spec.ts`.
