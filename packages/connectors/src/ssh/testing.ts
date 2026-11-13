@@ -29,6 +29,17 @@ export interface TestSshServer {
 }
 
 /**
+ * A fresh ed25519 host key. ssh2 1.17's own parser rejects about 1 in 250 of the keys its generator makes
+ * ("Malformed OpenSSH private key"), which failed a test suite now and then: generate again until it parses.
+ */
+function generateHostKey(): string {
+  for (let i = 0; ; i++) {
+    const key = ssh2.utils.generateKeyPairSync('ed25519').private
+    if (!(ssh2.utils.parseKey(key) instanceof Error) || i >= 20) return key
+  }
+}
+
+/**
  * An in-process SSH server for tests (M17): password and key accounts, its own host key, and `direct-tcpip`
  * forwarding to whatever `allowForward` lets through (by default only loopback, where the tests' databases and HTTP
  * servers listen). Restartable on the same port, to test a tunnel reopening.
@@ -41,7 +52,7 @@ export async function startTestSshServer(options: {
   /** A fixed host key (OpenSSH form), e.g. to restart "as another server"; generated otherwise. */
   hostKey?: string
 }): Promise<TestSshServer> {
-  const hostKey = options.hostKey ?? ssh2.utils.generateKeyPairSync('ed25519').private
+  const hostKey = options.hostKey ?? generateHostKey()
   const parsedHostKey = ssh2.utils.parseKey(hostKey)
   if (parsedHostKey instanceof Error) throw parsedHostKey
   const blob = parsedHostKey.getPublicSSH()
