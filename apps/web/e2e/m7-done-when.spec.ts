@@ -19,7 +19,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await dialog.getByRole('checkbox', { name: 'Required' }).check()
     await dialog.getByRole('button', { name: 'Add column' }).click()
     await dialog.getByLabel('Column name').nth(1).fill('lead_days')
-    await dialog.getByLabel('Column type').nth(1).selectOption('integer')
+    await dialog.getByLabel('Preset').nth(1).selectOption('integer')
     await dialog.getByRole('button', { name: 'Create table' }).click()
     await expect(page.getByRole('heading', { name: table })).toBeVisible()
     await expect(page.getByText('No rows yet.')).toBeVisible()

@@ -123,7 +123,10 @@ wheels**, then runs `pip wheel --no-index` on it **in nsjail** (`sdist-jail.cfg`
 `/envs`, no `/proc`, a 1 GB tmpfs, `/out` the only thing written; as the builder's own user in a user namespace,
 with rlimits (address space `PYTHON_SDIST_MEMORY_MB`, CPU and time `PYTHON_SDIST_TIMEOUT_SECONDS`, processes, file
 size) and the container's `mem_limit` (2g). Hence the builder needs the executor's flags (`SYS_ADMIN`, the seccomp
-profile, AppArmor unconfined). The wheel is kept in `/envs/.wheels/<sdist sha256>/` and reused; resolving then goes
+profile, AppArmor unconfined). **On Ubuntu 23.10 and later** (24.04 included) AppArmor also lets unprivileged user
+namespaces make no mounts, so every sdist build fails with nsjail's `mount('/', MS_REC|MS_PRIVATE): Permission
+denied`: set `kernel.apparmor_restrict_unprivileged_userns=0` on the host (`sysctl -w`, and in `/etc/sysctl.d/` to
+keep it; CI does so). Docker Desktop's VM doesn't restrict them. The wheel is kept in `/envs/.wheels/<sdist sha256>/` and reused; resolving then goes
 on with it, so the sdist's own dependencies resolve too (up to `PYTHON_MAX_SDISTS` sdists per build). The lock keeps
 the sdist's hash with `"source": "sdist"`; an install builds it again if its kept wheel is gone. The image has a C
 toolchain (`build-essential`) and Python's headers; a package needing other system libraries fails, and its build's
@@ -226,6 +229,7 @@ What the code printed is in the run's logs in the app, not here.
 | The executor exits at start: `PYTHON_EXECUTOR_TOKEN must be set` | No token (or under 16 characters) in its environment. |
 | `memory` errors for reasonable data | Raise `PYTHON_MEMORY_MB` (and `mem_limit` with it); pandas copies data freely. |
 | A Python block fails `python_packages: … couldn't be installed: …` | pip's reason is in the message, its whole output in the error's details (`log`): a package or version that doesn't exist, no wheel for this platform (only sdists), the index unreachable (`docker compose logs python-builder`), the env over `PYTHON_ENV_MAX_MB`. |
+| A package without a wheel fails to build with `mount('/', MS_REC\|MS_PRIVATE): Permission denied` in its log | The host restricts unprivileged user namespaces (Ubuntu 23.10+): `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (see sdists above). |
 | `python_packages_unavailable` | The app has no `PYTHON_BUILDER_URL`/`PYTHON_BUILDER_TOKEN`. (A builder that's down shows as `python_packages: … The package builder isn't reachable`.) |
 | An import fails although the package installed (`ImportError` from pandas, say) | A workflow's packages win over the image's: pinning one pandas depends on (pytz, numpy, python-dateutil) to an incompatible version breaks pandas for that workflow. |
 | Python blocks slower than usual, `/health`'s `cold` climbing | The pool empties faster than it refills (see The warm pool), or `warm_jail_failed` in the log. |
