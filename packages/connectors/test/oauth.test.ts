@@ -13,6 +13,7 @@ import {
   oauthPresets,
   refreshAccessToken,
   restConnector,
+  revokeToken,
 } from '../src'
 
 interface TokenRequest {
@@ -377,6 +378,42 @@ describe('Slack', () => {
   })
 })
 
+describe('revoking (Disconnect)', () => {
+  const token = { value: 'rt-1', type: 'refresh_token' as const }
+  const revoking = (overrides: Partial<AuthorizationCodeSettings> = {}) =>
+    settings({ revokeUrl: `${origin}/revoke`, clientAuth: 'basic', ...overrides })
+
+  it('posts the token with its hint and the client’s credentials (RFC 7009)', async () => {
+    answer = (_req, res) => json(res, 200, {})
+    await revokeToken(revoking(), 'shh', token, opts())
+    expect(requests).toHaveLength(1)
+    expect(Object.fromEntries(requests[0]!.form)).toEqual({ token: 'rt-1', token_type_hint: 'refresh_token' })
+    expect(requests[0]!.headers.authorization).toBe(
+      `Basic ${Buffer.from('client%20id:shh').toString('base64')}`,
+    )
+  })
+
+  it('takes a token already gone as revoked, and reports Slack’s ok: false and HTTP errors', async () => {
+    answer = (_req, res) => json(res, 400, { error: 'invalid_token' })
+    await revokeToken(revoking(), 'shh', token, opts())
+    answer = (_req, res) => json(res, 200, { ok: false, error: 'not_allowed_token_type' })
+    expect((await failure(revokeToken(revoking(), 'shh', token, opts()))).message).toBe(
+      "The provider didn't revoke the token: not_allowed_token_type",
+    )
+    answer = (_req, res) => json(res, 500, {})
+    expect((await failure(revokeToken(revoking(), 'shh', token, opts()))).message).toBe(
+      "The provider didn't revoke the token: HTTP 500",
+    )
+  })
+
+  it('sends nothing off the token URL’s origin, or without a URL', async () => {
+    const far = revoking({ revokeUrl: `http://localhost:${new URL(origin).port}/revoke` })
+    expect((await failure(revokeToken(far, 'shh', token, opts()))).message).toMatch(/token URL’s origin/)
+    expect((await failure(revokeToken(settings(), 'shh', token, opts()))).code).toBe('invalid_config')
+    expect(requests).toEqual([])
+  })
+})
+
 describe('presets', () => {
   it('each make a valid authorization-code resource once their placeholders are filled', () => {
     for (const preset of Object.values(oauthPresets)) {
@@ -389,6 +426,7 @@ describe('presets', () => {
           provider: preset.id,
           authorizeUrl: fillPlaceholders(preset.authorizeUrl, values),
           tokenUrl: fillPlaceholders(preset.tokenUrl, values),
+          revokeUrl: preset.revokeUrl,
           clientId: 'id',
           scope: preset.scope,
           authorizeParams: preset.authorizeParams,

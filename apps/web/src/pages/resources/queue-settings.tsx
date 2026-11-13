@@ -156,6 +156,149 @@ export function SqsFields(props: FieldsProps) {
   )
 }
 
+/** A Kinesis resource's settings (M30): the AWS identity; streams are named in queries and triggers. */
+export function KinesisFields(props: FieldsProps) {
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the streams" />
+      <p className="text-xs text-muted">
+        Putting records needs kinesis:PutRecords; triggers need kinesis:ListShards, kinesis:GetShardIterator
+        and kinesis:GetRecords on the stream.
+      </p>
+    </>
+  )
+}
+
+/** An SNS resource's settings (M30): the AWS identity; topics are named in each query. */
+export function SnsFields(props: FieldsProps) {
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the topics" />
+      <p className="text-xs text-muted">
+        Publishing needs sns:Publish on the topics. To receive a topic's messages, subscribe a workflow's
+        webhook (the Amazon SNS signature preset) to it.
+      </p>
+    </>
+  )
+}
+
+/**
+ * A RabbitMQ resource's settings (M30): the broker's host, port and vhost, the user and password, TLS with an optional
+ * CA, and whether a private address may be reached.
+ */
+export function RabbitFields(props: FieldsProps) {
+  const { config, set, secrets, edits, setEdit, disabled } = props
+  const text = (key: string, numeric = false) => ({
+    value: String(config[key] ?? ''),
+    disabled,
+    onChange: (e: { target: { value: string } }) => {
+      const v = e.target.value.trim()
+      set(key, v === '' ? undefined : numeric ? Number(v) : v)
+    },
+  })
+  return (
+    <>
+      <Grid>
+        <Field label="Host">
+          <Input {...text('host')} placeholder="rabbitmq.internal" data-testid="rabbit-host" />
+        </Field>
+        <Field label="Port" hint="Empty: 5672, or 5671 with TLS.">
+          <Input {...text('port', true)} placeholder="5672" data-testid="rabbit-port" />
+        </Field>
+        <Field label="Virtual host">
+          <Input {...text('vhost')} placeholder="/" />
+        </Field>
+        <Field label="Username">
+          <Input {...text('username')} data-testid="rabbit-username" />
+        </Field>
+      </Grid>
+      <Field label="Password">
+        <SecretField
+          isSet={isSet(secrets, 'password')}
+          edit={edits.password as SecretEdit}
+          onChange={(e) => setEdit('password', e)}
+          disabled={disabled}
+        />
+      </Field>
+      <Checkbox
+        label="TLS (amqps)"
+        hint="Encrypt the connection; a CA below for brokers with their own."
+        checked={config.tls === true}
+        disabled={disabled}
+        onChange={(v) => set('tls', v)}
+      />
+      {config.tls === true && (
+        <Field label="CA certificate" hint="PEM; empty: the system's.">
+          <Textarea
+            rows={4}
+            className="font-mono text-xs"
+            value={String(config.caCertificate ?? '')}
+            disabled={disabled}
+            onChange={(e) => set('caCertificate', e.target.value.trim() || undefined)}
+          />
+        </Field>
+      )}
+      <Checkbox
+        label="Allow a private network address"
+        hint="For a broker inside Optiply's network."
+        checked={config.allowPrivateNetwork === true}
+        disabled={disabled}
+        onChange={(v) => set('allowPrivateNetwork', v)}
+      />
+    </>
+  )
+}
+
+/**
+ * An S3 resource's settings (M29): the AWS identity, a default bucket, and (admins only) another endpoint for
+ * S3-compatible stores (MinIO, Cloudflare R2, Google Cloud Storage's interoperability) with path-style addressing.
+ */
+export function S3Fields(props: FieldsProps) {
+  const { me } = appRoute.useRouteContext()
+  const { config, set, disabled } = props
+  return (
+    <>
+      <AwsIdentityFields {...props} uses="the buckets" />
+      <p className="text-xs text-muted">
+        Listing needs s3:ListBucket; reading s3:GetObject; writing s3:PutObject; deleting s3:DeleteObject.
+        Presigned URLs act with the identity's rights.
+      </p>
+      <Field label="Default bucket" hint="Optional: queries that name no bucket use this one.">
+        <Input
+          value={String(config.bucket ?? '')}
+          disabled={disabled}
+          placeholder="optiply-exports"
+          data-testid="s3-bucket"
+          onChange={(e) => set('bucket', e.target.value.trim() || undefined)}
+        />
+      </Field>
+      <Field
+        label="Endpoint"
+        hint={
+          me.isAdmin
+            ? 'Optional: an S3-compatible store (MinIO, Cloudflare R2, Google Cloud Storage). Only admins set it.'
+            : 'Another endpoint can only be set by an admin.'
+        }
+      >
+        <Input
+          value={String(config.endpoint ?? '')}
+          disabled={disabled || !me.isAdmin}
+          placeholder="https://s3.eu-west-1.amazonaws.com"
+          data-testid="s3-endpoint"
+          onChange={(e) => set('endpoint', e.target.value.trim() || undefined)}
+        />
+      </Field>
+      <Checkbox
+        label="Path-style URLs"
+        hint="endpoint/bucket/key instead of bucket.endpoint/key, as most S3-compatible stores need."
+        checked={config.forcePathStyle === true}
+        disabled={disabled}
+        onChange={(v) => set('forcePathStyle', v)}
+      />
+    </>
+  )
+}
+
 const KAFKA_AUTH: { value: string; label: string }[] = [
   { value: 'none', label: 'No sign-in' },
   { value: 'plain', label: 'SASL PLAIN (username and password)' },
@@ -287,6 +430,66 @@ export function KafkaFields(props: FieldsProps) {
         </Field>
       )}
       {auth === 'aws-msk-iam' && <AwsIdentityFields {...props} uses="the MSK cluster" />}
+      <SchemaRegistryFields {...props} />
+    </>
+  )
+}
+
+/**
+ * Kafka's optional Schema Registry (M30): Confluent's API (Redpanda's and Karapace's too). Triggers decode values in
+ * its wire format (Avro, JSON Schema); a produce message naming a `subject` is encoded by its latest schema.
+ */
+function SchemaRegistryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const registry = config.schemaRegistry as
+    | { url?: string; username?: string; allowPrivateNetwork?: boolean }
+    | undefined
+  const update = (patch: Record<string, unknown>) => {
+    const next = { ...registry, ...patch }
+    set('schemaRegistry', next.url ? next : undefined)
+  }
+  return (
+    <>
+      <Field
+        label="Schema Registry"
+        hint="Optional. Triggers decode Avro and JSON Schema values; produce messages with a subject are encoded."
+      >
+        <Input
+          value={registry?.url ?? ''}
+          disabled={disabled}
+          placeholder="https://schema-registry.example.com"
+          data-testid="kafka-registry-url"
+          onChange={(e) => update({ url: e.target.value.trim() || undefined })}
+        />
+      </Field>
+      {registry?.url && (
+        <>
+          <Grid>
+            <Field label="Registry username" hint="Empty: no sign-in.">
+              <Input
+                value={registry.username ?? ''}
+                disabled={disabled}
+                data-testid="kafka-registry-username"
+                onChange={(e) => update({ username: e.target.value.trim() || undefined })}
+              />
+            </Field>
+            <Field label="Registry password" hint="Stored encrypted; never shown again.">
+              <SecretField
+                isSet={isSet(secrets, 'schemaRegistryPassword')}
+                edit={edits.schemaRegistryPassword as SecretEdit}
+                onChange={(e) => setEdit('schemaRegistryPassword', e)}
+                disabled={disabled}
+              />
+            </Field>
+          </Grid>
+          <Checkbox
+            label="Allow a private network address"
+            hint="For a registry inside Optiply's network."
+            checked={registry.allowPrivateNetwork === true}
+            disabled={disabled}
+            onChange={(v) => update({ allowPrivateNetwork: v })}
+          />
+        </>
+      )}
     </>
   )
 }

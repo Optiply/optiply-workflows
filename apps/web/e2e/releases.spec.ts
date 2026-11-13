@@ -1,5 +1,5 @@
 import { type APIRequestContext, expect, type Page, test } from '@playwright/test'
-import { acceptConfirms, block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, block, field, openRail, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M4 end to end: turn on a workflow's webhook in the editor, publish v1.0.0, create an API key in Settings and call
@@ -44,7 +44,7 @@ test('publish, call the webhook with an API key, and roll back', async ({ page, 
   })
 
   await test.step('turn on the webhook with an alias, and publish v1.0.0', async () => {
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     const webhook = page.getByTestId('webhook-trigger')
     await webhook.getByLabel('Enabled').check()
     await webhook.getByPlaceholder('orders/:orderId').fill(`greet-${suffix}/:lang`)

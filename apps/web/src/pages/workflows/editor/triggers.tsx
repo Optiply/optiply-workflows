@@ -4,8 +4,11 @@ import {
   type Diagnostic,
   isValidTimeZone,
   type KafkaTrigger,
+  type KinesisTrigger,
   type PubSubTrigger,
   parseCron,
+  type QueueTriggerKind,
+  type RabbitmqTrigger,
   resolveWebhookSettings,
   type ScheduleTrigger,
   type SqsTrigger,
@@ -32,13 +35,15 @@ type Triggers = NonNullable<WorkflowDefinition['triggers']>
 function updateTriggers(edit: (triggers: Triggers) => Triggers) {
   useEditor.getState().update((def) => {
     const next = edit(def.triggers ?? {})
-    const { webhook, schedules, pubsub, sqs, kafka } = next
+    const { webhook, schedules, pubsub, sqs, kafka, rabbitmq, kinesis } = next
     const sparse: Triggers = {
       ...(webhook && { webhook }),
       ...(schedules?.length && { schedules }),
       ...(pubsub?.length && { pubsub }),
       ...(sqs?.length && { sqs }),
       ...(kafka?.length && { kafka }),
+      ...(rabbitmq?.length && { rabbitmq }),
+      ...(kinesis?.length && { kinesis }),
     }
     const { triggers: _, ...rest } = def
     return Object.keys(sparse).length ? { ...rest, triggers: sparse } : rest
@@ -79,6 +84,8 @@ export function TriggersForm({ testInput }: { testInput: unknown }) {
       <QueueSection kind="pubsub" triggers={triggers?.pubsub ?? []} />
       <QueueSection kind="sqs" triggers={triggers?.sqs ?? []} />
       <QueueSection kind="kafka" triggers={triggers?.kafka ?? []} />
+      <QueueSection kind="rabbitmq" triggers={triggers?.rabbitmq ?? []} />
+      <QueueSection kind="kinesis" triggers={triggers?.kinesis ?? []} />
     </div>
   )
 }
@@ -189,7 +196,10 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
               value={Math.round((webhook?.syncTimeoutMs ?? DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS) / 1000)}
               onChange={(e) => {
                 const seconds = Math.min(300, Math.max(0, Number(e.target.value) || 0))
-                set({ syncTimeoutMs: seconds === 30 ? undefined : seconds * 1000 })
+                set({
+                  syncTimeoutMs:
+                    seconds * 1000 === DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS ? undefined : seconds * 1000,
+                })
               }}
             />
           </Field>
@@ -429,8 +439,8 @@ function ScheduleCard({ index, schedule }: { index: number; schedule: ScheduleTr
   )
 }
 
-type QueueKind = 'pubsub' | 'sqs' | 'kafka'
-type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger
+type QueueKind = QueueTriggerKind
+type QueueTrigger = PubSubTrigger | SqsTrigger | KafkaTrigger | RabbitmqTrigger | KinesisTrigger
 
 /** What differs between the queue triggers' sections (Pub/Sub M19, SQS and Kafka M26). */
 const QUEUES: Record<
@@ -496,6 +506,40 @@ const QUEUES: Record<
     ),
     receiving: 'consuming',
   },
+  rabbitmq: {
+    title: 'RabbitMQ',
+    noun: 'queue trigger',
+    resourceKind: 'RabbitMQ',
+    maxHoldMinutes: 24 * 60,
+    fresh: (name, resource) => ({ name, enabled: true, resource, queue: '' }),
+    empty: 'run this workflow for each message in a queue',
+    explain: (
+      <>
+        Each message runs the workflow: <code>startTrigger.data</code> is its body (JSON or text),{' '}
+        <code>startTrigger.message</code> its exchange, routing key, headers and properties. It's acked when
+        the run succeeds and rejected without requeueing when it fails, so the queue's dead-letter exchange
+        takes it (without one, RabbitMQ drops it). Give messages a message id so a redelivery is recognised.
+      </>
+    ),
+    receiving: 'consuming',
+  },
+  kinesis: {
+    title: 'Kinesis',
+    noun: 'stream trigger',
+    resourceKind: 'Amazon Kinesis',
+    maxHoldMinutes: 24 * 60,
+    fresh: (name, resource) => ({ name, enabled: true, resource, stream: '' }),
+    empty: 'run this workflow for each record in a stream',
+    explain: (
+      <>
+        Each record runs the workflow: <code>startTrigger.data</code> is its data (JSON or text),{' '}
+        <code>startTrigger.message</code> its shard, sequence number, partition key and attempt. A shard's
+        records run one at a time, in order; where each shard has got to is kept, so a restart carries on
+        there. A run that fails is retried; after the last attempt the record is skipped.
+      </>
+    ),
+    receiving: 'reading',
+  },
 }
 
 /** Queue triggers that start this workflow, a run per message: Pub/Sub (M19), SQS and Kafka (M26). */
@@ -504,7 +548,14 @@ function QueueSection({ kind, triggers }: { kind: QueueKind; triggers: QueueTrig
   const { data } = useQuery(trpc.resources.list.queryOptions())
   const resources = (data?.resources ?? []).filter((r) => r.type === kind)
   const q = QUEUES[kind]
-  const prefix = kind === 'pubsub' ? 'subscription' : kind === 'sqs' ? 'queue' : 'topic'
+  const prefix =
+    kind === 'pubsub'
+      ? 'subscription'
+      : kind === 'sqs' || kind === 'rabbitmq'
+        ? 'queue'
+        : kind === 'kinesis'
+          ? 'stream'
+          : 'topic'
   const add = () =>
     updateTriggers((t) => {
       const list = (t[kind] ?? []) as QueueTrigger[]
@@ -667,6 +718,49 @@ function QueueCard({
           "Its name in the resource's region and account (name.fifo for FIFO), or its URL.",
           'orders',
         )
+      ) : kind === 'rabbitmq' ? (
+        text(
+          'queue',
+          'Queue',
+          'The queue to consume (it must exist; declare it with its dead-letter exchange).',
+          'orders',
+        )
+      ) : kind === 'kinesis' ? (
+        <>
+          {text('stream', 'Stream', 'Its name in the resource’s region and account, or its ARN.', 'orders')}
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="A new shard starts at" hint="Until it has a checkpoint.">
+              <Select
+                value={(trigger as KinesisTrigger).startAt ?? 'latest'}
+                onChange={(e) => patch({ startAt: e.target.value })}
+              >
+                <option value="latest">New records only</option>
+                <option value="trimHorizon">The oldest kept</option>
+              </Select>
+            </Field>
+            <Field label="Attempts" hint="Runs per record.">
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                placeholder="3"
+                data-testid="kinesis-maxAttempts"
+                value={(trigger as KinesisTrigger).maxAttempts ?? ''}
+                onChange={(e) => patch({ maxAttempts: number(e.target.value, 20) })}
+              />
+            </Field>
+            <Field label="Retry after (s)" hint="Doubling, at most 15 min.">
+              <Input
+                type="number"
+                min={1}
+                max={900}
+                placeholder="10"
+                value={(trigger as KinesisTrigger).retryBackoffSeconds ?? ''}
+                onChange={(e) => patch({ retryBackoffSeconds: number(e.target.value, 900) })}
+              />
+            </Field>
+          </div>
+        </>
       ) : (
         <KafkaFields trigger={trigger as KafkaTrigger} patch={patch} at={at} number={number} />
       )}
@@ -683,11 +777,18 @@ function QueueCard({
           />
           <Problems problems={at('maxInFlight')} />
         </Field>
-        <Field label="Hold up to (minutes)" hint="Longer runs: the message is let go and the run goes on.">
+        <Field
+          label="Hold up to (minutes)"
+          hint={
+            kind === 'rabbitmq'
+              ? "Longer runs: the message is acked and the run goes on. Keep it below the broker's consumer_timeout (30 min by default)."
+              : 'Longer runs: the message is let go and the run goes on.'
+          }
+        >
           <Input
             type="number"
             min={1}
-            placeholder="60"
+            placeholder={kind === 'rabbitmq' ? '25' : '60'}
             value={trigger.maxHoldMinutes ?? ''}
             onChange={(e) => patch({ maxHoldMinutes: number(e.target.value, q.maxHoldMinutes) })}
           />

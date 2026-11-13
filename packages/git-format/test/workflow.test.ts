@@ -267,6 +267,23 @@ describe('Python packages', () => {
     expect(none).not.toHaveProperty(REQUIREMENTS_FILE)
   })
 
+  it('keeps the package index as the first line, and reads it back (M32)', () => {
+    const workflow = withPackages({ python: { requirements: ['owtest-private'], index: 'private' } })
+    const { files } = encodeWorkflow(workflow)
+    expect(files[REQUIREMENTS_FILE]).toBe('# index: private\nowtest-private\n')
+    expect(files[WORKFLOW_FILE]).not.toContain('private')
+    const decoded = decodeWorkflow(files)
+    expect(decoded.ok && decoded.value.definition.settings).toEqual({
+      python: { requirements: ['owtest-private'], index: 'private' },
+    })
+    // Edited by hand: anywhere, with spaces; other comments stay comments.
+    const edited = decodeWorkflow({ ...files, [REQUIREMENTS_FILE]: '# data\npolars\n#index:   mirror  \n' })
+    expect(edited.ok && edited.value.definition.settings?.python).toEqual({
+      requirements: ['polars'],
+      index: 'mirror',
+    })
+  })
+
   it('reads a file edited by hand: blank lines and comments left out, the rest for the validator', () => {
     const { files } = encodeWorkflow(withPackages({}))
     const decoded = decodeWorkflow({
@@ -336,5 +353,54 @@ describe('Python code', () => {
       ['blocks/shape.py', 'missing_file'],
       ['blocks/shape.js', 'unexpected_file'],
     ])
+  })
+})
+
+describe('GraphQL queries and email HTML (M27)', () => {
+  const definition = workflowDefinitionSchema.parse({
+    schemaVersion: 1,
+    blocks: [
+      { name: 'startTrigger', type: 'startTrigger' },
+      {
+        name: 'orders',
+        type: 'resourceQuery',
+        config: {
+          resource: 'shop_gql',
+          query: { query: 'query($id: ID!) {\n  order(id: $id) { id }\n}', variables: '{"id": 1}' },
+        },
+      },
+      {
+        name: 'mail',
+        type: 'resourceQuery',
+        config: {
+          resource: 'sendgrid',
+          query: { action: 'send', to: 'a@example.com', html: '<p>Hi {{ name }}</p>\n' },
+        },
+      },
+      {
+        name: 'find',
+        type: 'resourceQuery',
+        config: { resource: 'crm', query: { action: 'search', objectType: 'contacts', query: 'acme' } },
+      },
+    ],
+    edges: [],
+  })
+  const object = { name: 'Mixed', description: null, definition }
+
+  it('go into .graphql and .html files; a service query’s own `query` stays in the JSON', () => {
+    const { files } = encodeWorkflow(object)
+    expect(files['blocks/orders.graphql']).toBe('query($id: ID!) {\n  order(id: $id) { id }\n}\n')
+    // Text files end in one newline more than the value: reading strips it.
+    expect(files['blocks/mail.html']).toBe('<p>Hi {{ name }}</p>\n\n')
+    expect(Object.keys(files).filter((f) => f.startsWith('blocks/find'))).toEqual([])
+    expect(files['workflow.json']).toContain('"query": "acme"')
+    expect(files['workflow.json']).not.toContain('order(id')
+  })
+
+  it('read back into the same workflow', () => {
+    expect(decodeWorkflow(encodeWorkflow(object).files)).toEqual({
+      ok: true,
+      value: { name: 'Mixed', description: null, definition: workflowForGit(definition) },
+    })
   })
 })

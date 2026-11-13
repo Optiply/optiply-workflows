@@ -1,6 +1,6 @@
 import { type Db, groupMembers, groups, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, count, eq } from 'drizzle-orm'
+import { and, asc, count, eq, inArray, isNull } from 'drizzle-orm'
 import { z } from 'zod'
 import { adminProcedure, authedProcedure, router } from '../init'
 
@@ -121,14 +121,29 @@ export const groupsRouter = router({
       if (group.systemKind === 'all_users') assertNotSystem(group, 'edited — every user is a member')
       await ctx.db.transaction(async (tx) => {
         if (group.systemKind === 'admins') {
-          // Lock the admins' membership rows so two concurrent removals can't both pass the check.
+          // Taking yourself out would lock you out with nobody guaranteed to let you back in.
+          if (input.userId === ctx.user.id) {
+            throw new TRPCError({
+              code: 'BAD_REQUEST',
+              message: 'You cannot remove yourself from Admins; ask another admin',
+            })
+          }
+          // Lock the admins' membership rows so two admins removing each other at once can't both pass.
           const admins = await tx
             .select({ userId: groupMembers.userId })
             .from(groupMembers)
             .where(eq(groupMembers.groupId, group.id))
             .for('update')
-          if (admins.length <= 1 && admins.some((a) => a.userId === input.userId)) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot remove the last admin' })
+          const others = admins.map((a) => a.userId).filter((id) => id !== input.userId)
+          // Only someone who can sign in counts: a disabled, waiting or turned-down admin can't let anyone back in.
+          const [left] = others.length
+            ? await tx
+                .select({ n: count() })
+                .from(users)
+                .where(and(inArray(users.id, others), eq(users.status, 'active'), isNull(users.disabledAt)))
+            : [{ n: 0 }]
+          if (admins.some((a) => a.userId === input.userId) && !left?.n) {
+            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot remove the last active admin' })
           }
         }
         await tx

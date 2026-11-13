@@ -1,5 +1,7 @@
 import type { Evaluate, TemplateError } from '@ow/expressions'
 import type { z } from 'zod'
+import type { AiRunContext } from './ai/core'
+import type { RestConfig } from './rest'
 
 /** One resource's settings in one environment, with secrets already decrypted (server-side only). */
 export interface ResolvedResource<Config = unknown, Secrets = unknown> {
@@ -20,6 +22,11 @@ export interface QueryContext {
   signal: AbortSignal
   /** Time budget for this execution. */
   timeoutMs: number
+  /**
+   * `timeoutMs` was set on the block or query itself (not a default), so it overrides the resource's statement
+   * timeout: a block given 10 minutes gets 10 minutes, even on a resource whose statement timeout is 2.
+   */
+  ownTimeout?: boolean
   /** Who is running the query (workflow, run, user), for connectors that can tag their work: BigQuery job labels. */
   labels?: Record<string, string>
   /**
@@ -29,6 +36,19 @@ export interface QueryContext {
   untrustedValues?: boolean
   /** Access tokens for resources whose credentials live outside their settings (OAuth authorization code). */
   credentials?: CredentialSource
+  /** AI resources (M35): the run's token budget so far and, in workflows, the workflows an agent may call. */
+  ai?: AiRunContext
+}
+
+/**
+ * How long a SQL statement may run: the block's or query's own timeout when it set one, otherwise the shorter of
+ * the default budget and the resource's statement timeout.
+ */
+export function statementTimeoutMs(
+  ctx: Pick<QueryContext, 'timeoutMs' | 'ownTimeout'>,
+  resourceMs: number,
+): number {
+  return ctx.ownTimeout ? ctx.timeoutMs : Math.min(ctx.timeoutMs, resourceMs)
 }
 
 /**
@@ -88,6 +108,11 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },
   ): Promise<TestResult>
+  /**
+   * The REST-shaped settings an HTTP connector connects with (M27): its base URL, auth, allowed hosts and network.
+   * The server's OAuth sign-in (M9) and custom auth flows work from these, for any type that has them.
+   */
+  httpConfig?(config: Config): RestConfig
   /** Static checks that need no evaluation (e.g. `{{ }}` inside a SQL string literal). */
   validateQuery(query: Query): TemplateError[]
   execute(client: Client, query: Query, ctx: QueryContext): Promise<QueryResult>
@@ -109,6 +134,13 @@ export type ConnectorErrorCode =
   | 'too_large'
   /** An account has to be connected (or reconnected) before the resource can be used. */
   | 'auth_required'
+  /** AI (M35): the model declined (its category in the message), the answer was cut off, the run's AI budget is
+   * spent, the answer isn't what was asked for (JSON, the schema, a label), an agent ran out of steps. */
+  | 'ai_refused'
+  | 'ai_max_tokens'
+  | 'ai_budget'
+  | 'ai_invalid_output'
+  | 'ai_max_steps'
 
 /** Every failure surfaced to users. Messages and details are scrubbed of the resource's secrets. */
 export class ConnectorError extends Error {

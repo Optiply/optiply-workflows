@@ -74,9 +74,27 @@ describe('git settings', () => {
     const audits = await env.db.select().from(auditEvents)
     const gitAudits = audits.filter((a) => a.action === 'git.settings_updated')
     expect(gitAudits.map((a) => a.metadata)).toEqual([
-      { repoUrl: 'https://github.com/optiply/flows.git', branch: 'main', changed: ['token', 'webhook'] },
-      { repoUrl: 'https://github.com/optiply/other.git', branch: 'production', changed: [] },
-      { repoUrl: 'https://github.com/optiply/other.git', branch: 'main', changed: ['webhook'] },
+      {
+        repoUrl: 'https://github.com/optiply/flows.git',
+        branch: 'main',
+        host: 'github',
+        githubAuth: 'token',
+        changed: ['token', 'webhook'],
+      },
+      {
+        repoUrl: 'https://github.com/optiply/other.git',
+        branch: 'production',
+        host: 'github',
+        githubAuth: 'token',
+        changed: [],
+      },
+      {
+        repoUrl: 'https://github.com/optiply/other.git',
+        branch: 'main',
+        host: 'github',
+        githubAuth: 'token',
+        changed: ['webhook'],
+      },
     ])
     const stored = JSON.stringify(audits)
     expect(stored).not.toContain(TOKEN)

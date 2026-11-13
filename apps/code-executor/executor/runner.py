@@ -198,7 +198,8 @@ def check(fields):
 
 
 def warm_up(ready_fd):
-    """A warm jail: the usual packages imported ahead (quietly: their output isn't the code's), then ready."""
+    """A warm jail: the usual packages imported ahead (quietly: their output isn't the code's), then ready. In an env's
+    warm jail (M32) OW_PREIMPORT also names the env's roots."""
     names = [name for name in os.environ.pop("OW_PREIMPORT", "").split(",") if name.strip()]
     out, err = sys.stdout, sys.stderr
     with open(os.devnull, "w") as quiet:
@@ -207,8 +208,8 @@ def warm_up(ready_fd):
             for name in names:
                 try:
                     importlib.import_module(name.strip())
-                except Exception:
-                    pass  # a missing package: the code's own import says so
+                except (Exception, SystemExit):
+                    pass  # a missing or broken package (an env's root, M32): the code's own import says so
         finally:
             sys.stdout, sys.stderr = out, err
     os.write(ready_fd, b"\x06")

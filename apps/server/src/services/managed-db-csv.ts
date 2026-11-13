@@ -121,6 +121,7 @@ export async function importCsv(
   if (spec.mode === 'create') {
     await createTable(
       tx,
+      schemaName,
       spec.table,
       spec.columns
         .filter((c) => c.name !== ID_COLUMN)

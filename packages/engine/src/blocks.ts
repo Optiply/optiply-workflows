@@ -1,4 +1,4 @@
-import { runQuery } from '@ow/connectors'
+import { type AiRunContext, type AiToolHost, ConnectorError, runQuery } from '@ow/connectors'
 import type { LogLevel } from '@ow/db'
 import {
   type Block,
@@ -9,8 +9,17 @@ import {
   MAX_WAIT_MS,
   taskOutcomes,
 } from '@ow/definition'
-import { type Evaluate, renderJson, renderTemplate, renderText } from '@ow/expressions'
-import type { HostFunction } from '@ow/sandbox'
+import {
+  type Evaluate,
+  parseImports,
+  renderJson,
+  renderTemplate,
+  renderText,
+  rewriteImports,
+  TemplateError,
+} from '@ow/expressions'
+import { type HostFunction, SandboxError, type SandboxModules } from '@ow/sandbox'
+import { aiLogLine } from './ai'
 import { childResult, waitForChild } from './children'
 import { BlockFailure } from './errors'
 import { runLoop } from './loop'
@@ -37,6 +46,8 @@ export interface BlockContext {
   /** Aborted on timeout, run failure or interruption. */
   signal: AbortSignal
   timeoutMs: number
+  /** See `Work.ownTimeout`. */
+  ownTimeout?: boolean
   log: (level: LogLevel, message: string) => void
   /** The run, and this attempt of the block (child runs are keyed by them). */
   runId: string
@@ -57,6 +68,8 @@ export interface BlockContext {
   callFunction(name: string, args: Record<string, unknown> | unknown[], signal: AbortSignal): Promise<unknown>
   /** A loop's iterations: those committed by an earlier lease, and where to record new ones. */
   iterations?: LoopIterations
+  /** What AI queries get from the run (M35): its token budget. */
+  ai?: AiRunContext
 }
 
 /** One piece of work: a block attempt, or a loop iteration (whose scope adds `value` and `index`). */
@@ -64,6 +77,11 @@ export interface Work {
   scope: Record<string, unknown>
   signal: AbortSignal
   timeoutMs: number
+  /**
+   * `timeoutMs` is the block's (or iteration's) own setting, not a default: a query then gets all of it, past the
+   * resource's statement timeout.
+   */
+  ownTimeout?: boolean
   log: (level: LogLevel, message: string) => void
 }
 
@@ -111,7 +129,9 @@ const executors: { [T in Block['type']]: Executor<T> } = {
   },
 
   async resourceQuery(block, ctx) {
-    const { data, metadata } = await runResourceQuery(block.config.resource, block.config.query, ctx, ctx)
+    const { data, metadata } = await runResourceQuery(block.config.resource, block.config.query, ctx, ctx, {
+      key: `${block.name}:${ctx.attempt}`,
+    })
     return { data, metadata }
   },
 
@@ -420,6 +440,19 @@ export async function runCode(
   language?: 'python',
 ): Promise<unknown> {
   if (language === 'python') return runPython(code, work, ctx)
+  // Import lines (JavaScript packages) become consts reading the bundle, which this code then needs.
+  let imports: ReturnType<typeof parseImports>
+  try {
+    imports = parseImports(code)
+  } catch (err) {
+    if (!(err instanceof TemplateError)) throw err
+    throw new SandboxError('syntax', `SyntaxError: ${err.message}`)
+  }
+  let modules: SandboxModules | undefined
+  if (imports.length) {
+    code = rewriteImports(code, imports)
+    if (ctx.services.jsModules) modules = await waitForInstall(ctx.services.jsModules(), work, 'JavaScript')
+  }
   const done = new AbortController()
   const signal = AbortSignal.any([work.signal, done.signal])
   const fetcher = ctx.services.fetcher
@@ -432,6 +465,7 @@ export async function runCode(
       timeoutMs: work.timeoutMs,
       onLog: (level, args) => work.log(level, formatLogArgs(args)),
       functions,
+      ...(modules && { modules }),
       fetch: async (request) => {
         if (!fetcher) throw new Error("fetch isn't available here")
         try {
@@ -458,7 +492,9 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
   if (!python) {
     throw new BlockFailure('python_unavailable', "Python isn't set up on this instance (PYTHON_EXECUTOR_URL)")
   }
-  const envId = ctx.services.pythonEnv ? await waitForEnv(ctx.services.pythonEnv(), work) : undefined
+  const envId = ctx.services.pythonEnv
+    ? await waitForInstall(ctx.services.pythonEnv(), work, 'Python')
+    : undefined
   // As JSON (the client serializes it once; results already are JSON).
   return python.run(code, work.scope, {
     timeoutMs: work.timeoutMs,
@@ -469,22 +505,23 @@ async function runPython(code: string, work: Work, ctx: BlockContext): Promise<u
 }
 
 /**
- * The run's Python packages, saying so in the block's log when they take a while (a first install): a block timeout
- * then reads in context (the install goes on, for a retry or the next run). Leaves early when the work stops.
+ * The run's Python or JavaScript packages, saying so in the block's log when they take a while (a first install): a
+ * block timeout then reads in context (the install goes on, for a retry or the next run). Leaves early when the work
+ * stops.
  */
-function waitForEnv(env: Promise<string>, work: Work): Promise<string> {
+function waitForInstall<T>(env: Promise<T>, work: Work, language: 'Python' | 'JavaScript'): Promise<T> {
   if (work.signal.aborted) return Promise.reject(work.signal.reason)
   return new Promise((resolve, reject) => {
     let waiting = false
     const timer = setTimeout(() => {
       waiting = true
-      work.log('info', "Waiting for the workflow's Python packages to install…")
+      work.log('info', `Waiting for the workflow's ${language} packages to install…`)
     }, ENV_WAIT_LOG_MS)
     const stop = () => reject(work.signal.reason)
     work.signal.addEventListener('abort', stop, { once: true })
     env
       .then((id) => {
-        if (waiting) work.log('info', "The workflow's Python packages are installed")
+        if (waiting) work.log('info', `The workflow's ${language} packages are installed`)
         resolve(id)
       }, reject)
       .finally(() => {
@@ -503,7 +540,15 @@ export async function runResourceQuery(
   query: Record<string, unknown>,
   work: Work,
   ctx: BlockContext,
-  opts: { evaluate?: Evaluate; timeoutMs?: number; labels?: Record<string, string> } = {},
+  opts: {
+    evaluate?: Evaluate
+    timeoutMs?: number
+    /** Whether `timeoutMs` is the query's own (see `Work.ownTimeout`); default: the work's. */
+    ownTimeout?: boolean
+    labels?: Record<string, string>
+    /** Keys an AI agent's child runs (M35): the block attempt or loop iteration. None: no agent tools. */
+    key?: string
+  } = {},
 ): Promise<{ data: unknown; metadata: Record<string, unknown> }> {
   let target: Awaited<ReturnType<EngineServices['resources']['resolve']>>
   try {
@@ -515,21 +560,85 @@ export async function runResourceQuery(
   const workflow = ctx.scope.workflowContext as
     | { workflowId?: string; environment?: string; triggerType?: string }
     | undefined
-  const result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
-    evaluate: opts.evaluate ?? evaluatorFor(work, ctx),
-    signal: work.signal,
-    timeoutMs: opts.timeoutMs ?? work.timeoutMs,
-    ...(target.credentials && { credentials: target.credentials }),
-    labels: {
-      ow_source: 'workflow',
-      ow_run: ctx.runId,
-      ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
-      ...(workflow?.environment && { ow_environment: workflow.environment }),
-      ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
-      ...opts.labels,
-    },
-  })
+  let result: Awaited<ReturnType<typeof runQuery>>
+  try {
+    result = await runQuery(ctx.services.pool, target.connector, target.resource, query, {
+      evaluate: opts.evaluate ?? evaluatorFor(work, ctx),
+      signal: work.signal,
+      timeoutMs: opts.timeoutMs ?? work.timeoutMs,
+      ownTimeout: opts.ownTimeout ?? work.ownTimeout ?? false,
+      ...(target.credentials && { credentials: target.credentials }),
+      ...(ctx.ai && {
+        ai: {
+          ...ctx.ai,
+          ...(opts.key && ctx.services.children && { tools: aiToolHost(work, ctx, opts.key) }),
+        },
+      }),
+      labels: {
+        ow_source: 'workflow',
+        ow_run: ctx.runId,
+        ...(workflow?.workflowId && { ow_workflow: workflow.workflowId }),
+        ...(workflow?.environment && { ow_environment: workflow.environment }),
+        ...(workflow?.triggerType && { ow_trigger: workflow.triggerType }),
+        ...opts.labels,
+      },
+    })
+  } catch (err) {
+    // An AI call that answered and then failed (refused, cut off, not matching the schema) still gets its line.
+    const line = err instanceof ConnectorError ? aiLogLine(err.details) : null
+    if (line) work.log('warn', line)
+    throw err
+  }
+  const line = aiLogLine(result.metadata)
+  if (line) work.log('info', line)
   return { data: result.data, metadata: { ...result.metadata, resource: slug } }
+}
+
+/**
+ * An AI agent's tools (M35): the workflows it names, each call a child run of this run (keyed by the work and the
+ * model's call id), waited for within the work's signal. A failed or cancelled child is a failed tool call, not a
+ * failed block: the model reads the error and carries on.
+ */
+function aiToolHost(work: Work, ctx: BlockContext, key: string): AiToolHost {
+  const children = requireChildren(ctx)
+  return {
+    async describe(slugs) {
+      const found = children.describe
+        ? await children.describe(slugs)
+        : slugs.map((slug) => ({ slug, name: slug, description: null, bodySchema: null }))
+      return found.map((w) => ({
+        name: w.slug,
+        description:
+          w.description?.trim() || `Runs the workflow "${w.name}". Its result is the workflow's response.`,
+        inputSchema:
+          w.bodySchema?.type === 'object' ? w.bodySchema : { type: 'object', additionalProperties: true },
+      }))
+    },
+    async run(slug, input, signal, callId) {
+      const runId = await children.start({
+        workflow: slug,
+        input: input ?? null,
+        key: `child:${ctx.runId}:${key}:tool:${callId}`,
+        parentRunId: ctx.runId,
+        environmentId: ctx.environmentId,
+      })
+      work.log('info', `Agent: calling workflow "${slug}" (run ${runId})`)
+      let state: Awaited<ReturnType<typeof waitForChild>>
+      try {
+        state = await waitForChild(children, runId, Number.POSITIVE_INFINITY, signal)
+      } catch (err) {
+        if (signal.aborted) await children.cancel(runId).catch(() => {})
+        throw err
+      }
+      if (state?.status === 'succeeded') return { ok: true, data: state.response?.body ?? null, runId }
+      work.log('warn', `Agent: workflow "${slug}" (run ${runId}) ${state?.status ?? 'failed'}`)
+      return {
+        ok: false,
+        data: { error: state?.error?.message ?? `The workflow run was ${state?.status ?? 'lost'}` },
+        runId,
+      }
+    },
+  }
 }
 
 /** What a block attempt looked up for its library queries (M21): releases and the user, by key. */
@@ -586,6 +695,7 @@ export async function runLibraryQuery(
   const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
     evaluate: evaluateLibrary,
     timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
+    ownTimeout: work.ownTimeout === true || definition.timeoutMs !== undefined,
     labels: { ow_library: ref.library },
   })
   return { data, metadata: { ...metadata, library: { slug: ref.library, version } } }

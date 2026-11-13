@@ -371,6 +371,99 @@ describe('over HTTP with a token', () => {
     expect(await repo.push(commit!, 'feature')).toBe('ok')
   })
 
+  it('says what to change when GitLab or GitHub refuses a push to a protected branch (M31)', async () => {
+    const repo = await open(TOKEN, 'protected-hosts')
+    const tip = await repo.fetchBranch('main')
+    const commit = await repo.commit({ parent: tip, files: { 'y.txt': 'y' }, message: 'm', author })
+    await protectBranch(
+      remotePath,
+      'main',
+      'GitLab: You are not allowed to push code to protected branches on this project.',
+    )
+    await expect(repo.push(commit!, 'main')).rejects.toMatchObject({
+      kind: 'refused',
+      message: expect.stringContaining('protected on GitLab'),
+    })
+    await protectBranch(
+      remotePath,
+      'main',
+      'error: GH006: Protected branch update failed for refs/heads/main.',
+    )
+    await expect(repo.push(commit!, 'main')).rejects.toMatchObject({
+      message: expect.stringContaining('protected on GitHub'),
+    })
+  })
+
+  it('signs in with credentials asked per command: the host’s username, a fresh token (M31)', async () => {
+    const gitlab = await gitHttpServer(join(root, 'served'), TOKEN, '127.0.0.1', 'oauth2')
+    try {
+      let asked = 0
+      const repo = await GitRepo.open(
+        join(root, 'http-cache-credentials'),
+        {
+          url: `${gitlab.url}/flows.git`,
+          token: null,
+          credentials: async () => {
+            asked++
+            return { username: 'oauth2', token: TOKEN }
+          },
+        },
+        insecure,
+      )
+      await repo.listBranches()
+      await repo.listBranches()
+      expect(asked).toBe(2)
+      expect(gitlab.requests.authorized).toBeGreaterThan(0)
+      // GitHub's username isn't taken there.
+      const github = await GitRepo.open(
+        join(root, 'http-cache-credentials-gh'),
+        { url: `${gitlab.url}/flows.git`, token: TOKEN },
+        insecure,
+      )
+      await expect(github.listBranches()).rejects.toMatchObject({ kind: 'auth' })
+    } finally {
+      await gitlab.close()
+    }
+  })
+
+  it('asks for a fresh token once when a refreshable one is refused (a revoked App token; review fix)', async () => {
+    const asked: boolean[] = []
+    const repo = await GitRepo.open(
+      join(root, 'http-cache-refresh'),
+      {
+        url: `${http.url}/flows.git`,
+        token: null,
+        credentials: async (opts) => {
+          asked.push(opts?.refresh ?? false)
+          return {
+            username: 'x-access-token',
+            token: opts?.refresh ? TOKEN : 'ghs_revoked',
+            refreshable: true,
+          }
+        },
+      },
+      insecure,
+    )
+    await repo.listBranches()
+    expect(asked).toEqual([false, true])
+    // A token that can't be minted again isn't retried.
+    let plain = 0
+    const fixed = await GitRepo.open(
+      join(root, 'http-cache-refresh-plain'),
+      {
+        url: `${http.url}/flows.git`,
+        token: null,
+        credentials: async () => {
+          plain++
+          return { username: 'x-access-token', token: 'ghp_wrong' }
+        },
+      },
+      insecure,
+    )
+    await expect(fixed.listBranches()).rejects.toMatchObject({ kind: 'auth' })
+    expect(plain).toBe(1)
+  })
+
   it('reports a repo that is not there', async () => {
     const repo = await GitRepo.open(
       join(root, 'http-cache-404'),

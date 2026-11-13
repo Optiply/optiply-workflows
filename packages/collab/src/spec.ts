@@ -70,7 +70,30 @@ const blockPatterns = (patterns: readonly string[]) =>
   patterns.flatMap((p) => [`blocks.*.${p}`, `functions.*.blocks.*.${p}`])
 
 /** The connector query fields shown in Monaco: SQL, a REST call's JSON body, a Pub/Sub publish's messages. */
-const queryText = ['query.sql', 'query.body.json', 'query.messages']
+/**
+ * A query's strings that merge as people type: SQL, a REST JSON body, messages, and (M27) GraphQL's query and
+ * variables and the services' long and JSON fields. Only strings become text, so a key that's an object elsewhere
+ * (REST's `body`) is safe to list.
+ */
+const QUERY_TEXT_KEYS = [
+  'sql',
+  'body.json',
+  'messages',
+  'query',
+  'variables',
+  'text',
+  'blocks',
+  'comment',
+  'html',
+  'filters',
+  'sorts',
+  'args',
+  'body',
+  'properties',
+  'templateData',
+  'customArgs',
+]
+const queryText = QUERY_TEXT_KEYS.map((k) => `query.${k}`)
 
 /**
  * Workflows: blocks and functions by name, edges by their ends, conditions and task outcomes by id. Text is every
@@ -89,6 +112,8 @@ export const workflowSpec: CollabSpec = defineSpec({
     ['triggers.pubsub', byName],
     ['triggers.sqs', byName],
     ['triggers.kafka', byName],
+    ['triggers.rabbitmq', byName],
+    ['triggers.kinesis', byName],
     ...blockPatterns(['config.conditions']).map((p) => [p, byId] as const),
     ...blockPatterns(['config.fields']).map((p) => [p, byName] as const),
     ...blockPatterns(['config.outcomes']).map((p) => [p, byId] as const),
@@ -141,7 +166,7 @@ export const appSpec: CollabSpec = defineSpec({
     'queries.*.confirm',
     'queries.*.disabled',
     'queries.*.transform',
-    'queries.*.query.sql',
+    ...queryText.map((q) => `queries.*.${q}`),
     'queries.*.params.*',
     'transformers.*.code',
     'variables.*.initialValue',

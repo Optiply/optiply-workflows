@@ -104,8 +104,8 @@ describe('undo and redo in the app editor', () => {
     editor().undo() // the text
     editor().undo() // the component
     expect(editor().selected).toBeNull()
-    editor().undo() // the query
-    expect(editor().openCode).toBe('orders')
+    editor().undo() // the query: the dock closes
+    expect(editor().openCode).toBeNull()
   })
 
   it('copies what was chosen last: a component, or a code item', () => {

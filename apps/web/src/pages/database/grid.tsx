@@ -17,12 +17,12 @@ import { cn } from '@/lib/utils'
 import {
   CellView,
   cellText,
+  columnLabel,
   defaultWidth,
   editable,
   parseCell,
   type Row,
   type TableInfo,
-  TYPE_LABELS,
   ValueInput,
 } from './cells'
 import { activeFilters, type Selection } from './filters'
@@ -327,7 +327,7 @@ export function Grid({
                   >
                     <span className="truncate text-xs font-semibold text-ink">{column.name}</span>
                     <span className="shrink-0 text-[10px] uppercase tracking-[1.8px] text-muted">
-                      {column.primaryKey ? 'key' : TYPE_LABELS[column.type]}
+                      {columnLabel(column)}
                     </span>
                     {sort && (sort.desc ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
                   </button>

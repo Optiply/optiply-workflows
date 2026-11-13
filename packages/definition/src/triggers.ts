@@ -149,6 +149,12 @@ export const WEBHOOK_PRESETS: Record<Exclude<WebhookSignaturePreset, 'custom'>, 
     timestamped: false,
     idempotencyHeader: 'x-shopify-webhook-id',
   },
+  sns: {
+    label: 'Amazon SNS',
+    header: 'x-amz-sns-message-type',
+    timestamped: false,
+    idempotencyHeader: 'x-amz-sns-message-id',
+  },
 }
 
 export const DEFAULT_WEBHOOK_METHODS: readonly (typeof WEBHOOK_METHODS)[number][] = ['POST']

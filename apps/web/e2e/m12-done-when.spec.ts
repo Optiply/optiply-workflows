@@ -1,5 +1,16 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, trpcMutate, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  clickEmptyCanvas,
+  editorText,
+  field,
+  nameField,
+  openRail,
+  signIn,
+  trpcMutate,
+  typeInto,
+} from './helpers'
 
 /**
  * M12's done-when (docs/architecture.md §2.7): a workflow whose Python block uses pandas to aggregate a query's rows
@@ -28,6 +39,7 @@ test("M12's done-when", async ({ page }) => {
 
     await block(page, 'startTrigger').click()
     await addBlock(page, 'resource query')
+    await block(page, 'query1').getByRole('button', { name: 'Open in the side panel' }).click()
     await page
       .getByTestId('side-panel')
       .getByRole('combobox', { name: /^Resource/ })
@@ -45,7 +57,7 @@ test("M12's done-when", async ({ page }) => {
     await typeInto(page, field(page, 'response1', 'body.txt'), '{{ python1.data }}')
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
 
     const panel = await run(page)
     await panel.getByRole('button', { name: 'output' }).click()
@@ -60,8 +72,7 @@ test("M12's done-when", async ({ page }) => {
   })
 
   await test.step('renaming the query rewrites the Python', async () => {
-    await block(page, 'query1').click()
-    const name = page.getByTestId('block-name')
+    const name = await nameField(page, 'query1')
     await name.fill('customers')
     await name.press('Enter')
     await expect(block(page, 'customers')).toBeVisible()
@@ -147,12 +158,12 @@ test("M12's done-when", async ({ page }) => {
 
 /** Runs the open workflow and waits for this run (not an earlier one) to succeed; returns the run panel. */
 async function run(page: Page) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
-  await expect(picker).not.toHaveValue('')
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
+  await expect(picker).not.toHaveAttribute('data-run-id', '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded')
   return panel
 }

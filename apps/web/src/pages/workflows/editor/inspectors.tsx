@@ -1,13 +1,16 @@
+import { isServiceType } from '@ow/connectors/actions'
 import {
   type Block,
   type BlockOf,
   type BlockSettings,
+  blockingErrors,
   DEFAULT_BLOCK_SETTINGS,
   DEFAULT_LOOP_BATCH_SIZE,
   DEFAULT_LOOP_CONCURRENCY,
   type Diagnostic,
   isTrigger,
   MAX_LOOP_CONCURRENCY,
+  QUEUE_TRIGGER_KINDS,
   renameBlock,
   resolveBlockSettings,
   TASK_DUE_UNITS,
@@ -16,15 +19,20 @@ import {
 } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X } from 'lucide-react'
-import { lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
+import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X, Zap } from 'lucide-react'
+import { createContext, lazy, type ReactNode, Suspense, useContext, useEffect, useState } from 'react'
+import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
+import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
+import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useOpenApiOperations } from '@/lib/openapi-operations'
 import {
   defaultQuery,
   isMessageKind,
   MESSAGE_QUERIES,
   type MessageKind,
+  type QueryKind,
   queryKind,
 } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -32,6 +40,7 @@ import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
 import { kindOf } from './catalog'
 import type { FieldProblem, WorkflowCodeFieldProps } from './code-field'
+import { useRemoteCarets, withCarets } from './preview-cursors'
 import { usePythonCheck } from './python-check'
 import { runBlock, useRun } from './run-state'
 import { graphOf, problemsOf, updateBlock, updateGraph, useEditor } from './store'
@@ -40,7 +49,17 @@ import { TriggersForm } from './triggers'
 // Monaco is big: it loads the first time a code field is shown.
 const LazyCodeField = lazy(() => import('./code-field'))
 
+/** In a node, whether its code fields are editors yet; the side panel's always are. */
+const CodeInNode = createContext<{ active: boolean; onActivate: () => void } | null>(null)
+
+/** A code field's height in a node: shorter than in the side panel. */
+const NODE_CODE_HEIGHT = 140
+
 function Code(props: WorkflowCodeFieldProps) {
+  const node = useContext(CodeInNode)
+  const height = node ? Math.min(props.height, NODE_CODE_HEIGHT) : props.height
+  if (node && !node.active) return <CodePreview {...props} height={height} onActivate={node.onActivate} />
+  props = { ...props, height }
   return (
     <Suspense
       fallback={
@@ -55,22 +74,41 @@ function Code(props: WorkflowCodeFieldProps) {
   )
 }
 
+/** A code field in a node until the block is inspected: its text, with others' carets in it (M16). */
+function CodePreview(props: WorkflowCodeFieldProps & { onActivate: () => void }) {
+  const carets = useRemoteCarets(props.text)
+  return (
+    <button
+      type="button"
+      style={{ height: props.height }}
+      onClick={props.onActivate}
+      title="Click to edit"
+      data-testid={`code-preview-${props.path}`}
+      className="flex w-full cursor-text items-start justify-start overflow-hidden rounded-md border border-border bg-field px-2 py-1 text-left font-mono text-xs whitespace-pre text-ink"
+    >
+      <span>{withCarets(props.value, carets)}</span>
+    </button>
+  )
+}
+
 /**
  * Like `Field`, but a `div`: Monaco must not sit inside a `<label>`, which redirects clicks to the label's control
  * and breaks Monaco's focus handling.
  */
 function EditorField({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+  // Nodes stay compact: hints show in the side panel only.
+  const inNode = useContext(CodeInNode) !== null
   return (
     <div className="flex flex-col gap-1.5">
       <span className="text-sm font-medium text-ink">{label}</span>
       {children}
-      {hint && <span className="text-xs text-muted">{hint}</span>}
+      {hint && !inNode && <span className="text-xs text-muted">{hint}</span>}
     </div>
   )
 }
 
-/** Everything about one block: name, its type's settings, retries and timeouts, and its problems. */
-export function Inspector({ name }: { name: string }) {
+/** A block of the open graph and what its form needs: where its fields sit, their problems and models. */
+function useBlockForm(name: string) {
   const definition = useEditor((s) => s.definition)
   const allDiagnostics = useEditor((s) => s.diagnostics)
   const workflowId = useEditor((s) => s.workflowId)
@@ -94,6 +132,37 @@ export function Inspector({ name }: { name: string }) {
   // Block names repeat across functions, so the function is part of each field's model.
   const modelPath = (field: string) => `file:///${workflowId}/${fn ?? '_'}/${name}/${field}`
   const ctx: FormContext = { problemsAt, modelPath, text: (...path) => [...base, ...path] }
+  return { block, ctx, diagnostics, fn }
+}
+
+/**
+ * A block's own form, in its node on the canvas (M28). Code fields there show their text until the block is
+ * selected, then become editors: a canvas of many blocks keeps one or two Monaco editors.
+ */
+export function BlockBody({ name, active }: { name: string; active: boolean }) {
+  const form = useBlockForm(name)
+  if (!form) return null
+  return (
+    <CodeInNode.Provider value={{ active, onActivate: () => useEditor.getState().inspect(name) }}>
+      <div className="flex flex-col gap-3 text-sm">
+        <TypeForm block={form.block} ctx={form.ctx} />
+      </div>
+    </CodeInNode.Provider>
+  )
+}
+
+/** A block's timeout, retries and what happens when it fails, for its node's Settings tab. */
+export function BlockSettingsForm({ name, open }: { name: string; open?: boolean }) {
+  const form = useBlockForm(name)
+  if (!form || isTrigger(form.block)) return null
+  return <SettingsForm block={form.block} open={open} />
+}
+
+/** Everything about one block: name, its type's settings, retries and timeouts, and its problems. */
+export function Inspector({ name }: { name: string }) {
+  const form = useBlockForm(name)
+  if (!form) return null
+  const { block, ctx, diagnostics, fn } = form
   const kind = kindOf(block)
   const Icon = kind.icon
 
@@ -146,7 +215,7 @@ function startsWith(path: (string | number)[], prefix: (string | number)[]) {
 }
 
 /** The block name, renamed with every reference to it when the field is committed (Enter or blur). */
-function NameField({ name }: { name: string }) {
+export function NameField({ name, onDone }: { name: string; onDone?: () => void }) {
   const [draft, setDraft] = useState(name)
   const [error, setError] = useState<string | null>(null)
   const [skipped, setSkipped] = useState<string[]>([])
@@ -156,14 +225,19 @@ function NameField({ name }: { name: string }) {
   }, [name])
 
   const commit = () => {
-    if (draft === name) return setError(null)
-    const { definition, graph } = useEditor.getState()
+    if (draft === name) {
+      setError(null)
+      return onDone?.()
+    }
+    const { definition, graph, panelBlock } = useEditor.getState()
     const result = renameBlock(definition, name, draft, graph === null ? {} : { function: graph })
     if (!result.ok) return setError(result.error)
     setError(null)
     setSkipped(result.skipped.map((s) => s.block))
     useEditor.getState().update(() => result.definition)
     useEditor.getState().select(draft)
+    if (panelBlock === name) useEditor.getState().openInPanel(draft)
+    onDone?.()
   }
 
   return (
@@ -179,9 +253,11 @@ function NameField({ name }: { name: string }) {
           if (e.key === 'Escape') {
             setDraft(name)
             setError(null)
+            onDone?.()
           }
         }}
-        className="h-8 font-mono font-medium"
+        autoFocus={onDone !== undefined}
+        className={cn('font-mono font-medium', onDone ? 'h-6 px-1.5 text-sm' : 'h-8')}
       />
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       {skipped.length > 0 && (
@@ -194,19 +270,25 @@ function NameField({ name }: { name: string }) {
 }
 
 /** Runs just this block, reusing the results of the blocks before it from the latest run. */
-function RunBlockButton({ name }: { name: string }) {
+export function RunBlockButton({ name, compact }: { name: string; compact?: boolean }) {
   const starting = useRun((s) => s.starting)
-  const errors = useEditor((s) => s.diagnostics.some((d) => d.severity === 'error'))
+  // Only problems in this block, the blocks before it and what they call stop it (M28).
+  const errors = useEditor((s) => blockingErrors(s.definition, s.diagnostics, [name]).length > 0)
   return (
     <Button
       size="icon"
       variant="ghost"
+      className={compact ? 'size-6 text-accent [&_svg]:size-3.5' : undefined}
       loading={starting}
       disabled={errors}
-      title={errors ? 'Fix the problems first' : 'Run this block (earlier results are reused)'}
+      title={
+        errors
+          ? 'Fix the problems in this block or the blocks before it first'
+          : 'Run this block (earlier results are reused)'
+      }
       onClick={() => runBlock(name)}
     >
-      {!starting && <Play className="size-4" />}
+      {!starting && <Play className={compact ? 'fill-current' : 'size-4'} />}
     </Button>
   )
 }
@@ -295,10 +377,42 @@ function StartTriggerForm({ block, ctx }: { block: BlockOf<'startTrigger'>; ctx:
           }}
         />
       </EditorField>
-      <TriggersForm testInput={stored} />
+      {useContext(CodeInNode) ? <EnabledTriggers name={block.name} /> : <TriggersForm testInput={stored} />}
     </div>
   )
 }
+
+/** In the start trigger's node: which triggers are on, and a way to their settings (the side panel). */
+function EnabledTriggers({ name }: { name: string }) {
+  const triggers = useEditor((s) => s.definition.triggers)
+  const on = [
+    triggers?.webhook?.enabled ? 'Webhook' : null,
+    ...(['schedules', ...QUEUE_TRIGGER_KINDS] as const).map((kind) => {
+      const n = (triggers?.[kind] ?? []).filter((t) => t.enabled).length
+      return n ? `${TRIGGER_LABELS[kind]}${n > 1 ? ` (${n})` : ''}` : null
+    }),
+  ].filter(Boolean)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-ink">Enabled triggers</span>
+      <div className="rounded-md border border-border px-2 py-1.5 text-center text-xs text-muted">
+        {on.length ? on.join(' · ') : 'No triggers enabled'}
+      </div>
+      <Button size="sm" variant="ghost" onClick={() => useEditor.getState().openInPanel(name)}>
+        <Zap className="size-3.5" /> Edit triggers
+      </Button>
+    </div>
+  )
+}
+
+const TRIGGER_LABELS = {
+  schedules: 'Schedule',
+  pubsub: 'Pub/Sub',
+  sqs: 'SQS',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
+} as const
 
 function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) {
   return (
@@ -435,13 +549,24 @@ function QueryEditor({
   const resources = data?.resources ?? []
   const current = resources.find((r) => r.slug === resource)
   // Without the resource (deleted, or not visible): guessed from the query's own fields.
-  const guessed =
-    typeof query.messages === 'string' ? (typeof query.queue === 'string' ? 'sqs' : 'pubsub') : null
-  const messageKind = current
-    ? isMessageKind(queryKind(current.type))
-      ? (queryKind(current.type) as MessageKind)
-      : null
-    : guessed
+  const kind: QueryKind | null = current
+    ? queryKind(current.type)
+    : typeof query.sql === 'string'
+      ? 'sql'
+      : typeof query.messages === 'string'
+        ? typeof query.queue === 'string'
+          ? 'sqs'
+          : 'pubsub'
+        : typeof query.action === 'string'
+          ? null
+          : typeof query.operationId === 'string'
+            ? 'openapi'
+            : typeof query.url === 'string'
+              ? 'restapi'
+              : typeof query.query === 'string'
+                ? 'graphql'
+                : 'rest'
+  const messageKind = kind !== null && isMessageKind(kind) ? kind : null
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
@@ -473,7 +598,7 @@ function QueryEditor({
           ))}
         </Select>
       </Field>
-      {(current ? queryKind(current.type) === 'sql' : typeof query.sql === 'string') ? (
+      {kind === 'sql' ? (
         <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
           <Code
             path={ctx.modelPath(`${models}query.sql`)}
@@ -494,8 +619,56 @@ function QueryEditor({
           at={at}
           models={models}
         />
+      ) : kind === 'service' && current && isServiceType(current.type) ? (
+        <ActionQueryForm
+          type={current.type}
+          query={query}
+          onChange={(patch, replace) =>
+            onChange({ resource, query: replace ? patch : { ...query, ...patch } })
+          }
+          code={({ field, value, onChange: set, language, height }) => (
+            <Code
+              path={ctx.modelPath(`${models}query.${field.key}`)}
+              language={language}
+              height={height}
+              value={value}
+              problems={ctx.problemsAt(...at, 'query', field.key)}
+              text={ctx.text(...at, 'query', field.key)}
+              onChange={set}
+            />
+          )}
+        />
+      ) : kind === null ? (
+        <p className="text-sm text-muted">
+          This query's resource isn't there: its query is kept as it is until you choose another resource.
+        </p>
+      ) : kind === 'openapi' ? (
+        <OpenApiInspector
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          resource={current}
+        />
+      ) : kind === 'graphql' ? (
+        <GraphqlQueryForm
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          resource={current}
+        />
       ) : (
-        <RestQueryForm query={query} setQuery={setQuery} ctx={ctx} at={at} models={models} />
+        <RestQueryForm
+          query={query}
+          setQuery={setQuery}
+          ctx={ctx}
+          at={at}
+          models={models}
+          builtIn={kind === 'restapi'}
+        />
       )}
     </div>
   )
@@ -547,19 +720,122 @@ function MessageQueryForm({
   )
 }
 
-function RestQueryForm({
+/** An OpenAPI resource's operation (M29): the shared form, with this editor's code fields. */
+function OpenApiInspector({
   query,
   setQuery,
   ctx,
   at,
   models,
+  resource,
 }: {
   query: Record<string, unknown>
   setQuery: (patch: Record<string, unknown>) => void
   ctx: FormContext
   at: (string | number)[]
   models: string
+  resource: Parameters<typeof useOpenApiOperations>[0]
 }) {
+  const { operations, message } = useOpenApiOperations(resource)
+  return (
+    <OpenApiQueryForm
+      query={query}
+      operations={operations}
+      message={message}
+      onChange={setQuery}
+      code={({ field, value, onChange, height }) => (
+        <Code
+          path={ctx.modelPath(`${models}query.${field}`)}
+          language="json"
+          height={height}
+          value={value}
+          problems={ctx.problemsAt(...at, 'query', field)}
+          text={ctx.text(...at, 'query', field)}
+          onChange={onChange}
+        />
+      )}
+    />
+  )
+}
+
+/**
+ * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
+ * the operation to run when there are several, and headers.
+ */
+function GraphqlQueryForm({
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+  resource,
+}: {
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+  resource: Parameters<typeof useGraphqlSchema>[0]
+}) {
+  const schema = useGraphqlSchema(resource)
+  return (
+    <div className="flex flex-col gap-4">
+      <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
+        <Code
+          path={ctx.modelPath(`${models}query.query`)}
+          language="graphql"
+          height={200}
+          graphqlSchema={schema}
+          value={String(query.query ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'query')}
+          text={ctx.text(...at, 'query', 'query')}
+          onChange={(text) => setQuery({ query: text })}
+        />
+      </EditorField>
+      <EditorField label="Variables" hint='JSON with {{ }}, e.g. {"id": {{ startTrigger.data.id }}}'>
+        <Code
+          path={ctx.modelPath(`${models}query.variables`)}
+          language="plaintext"
+          height={100}
+          value={String(query.variables ?? '')}
+          problems={ctx.problemsAt(...at, 'query', 'variables')}
+          text={ctx.text(...at, 'query', 'variables')}
+          onChange={(variables) => setQuery({ variables })}
+        />
+      </EditorField>
+      <Field label="Operation name" hint="Only when the query has several operations.">
+        <Input
+          className="font-mono"
+          value={String(query.operationName ?? '')}
+          onChange={(e) => setQuery({ operationName: e.target.value })}
+        />
+      </Field>
+      <KeyValues
+        label="Headers"
+        rows={(query.headers as KeyValue[]) ?? []}
+        onChange={(headers) => setQuery({ headers })}
+      />
+    </div>
+  )
+}
+
+/** A REST query; the built-in REST API's (M27) has a full URL instead of a path, and its own sign-in. */
+function RestQueryForm({
+  query,
+  setQuery,
+  ctx,
+  at,
+  models,
+  builtIn = false,
+}: {
+  query: Record<string, unknown>
+  setQuery: (patch: Record<string, unknown>) => void
+  ctx: FormContext
+  at: (string | number)[]
+  models: string
+  builtIn?: boolean
+}) {
+  const urlKey = builtIn ? 'url' : 'path'
   const body = (query.body ?? { type: 'none' }) as {
     type: string
     json?: string
@@ -576,13 +852,24 @@ function RestQueryForm({
           ))}
         </Select>
         <Input
-          aria-label="Path"
+          aria-label={builtIn ? 'URL' : 'Path'}
           className="font-mono"
-          placeholder="/orders/{{ startTrigger.data.id }}"
-          value={String(query.path ?? '')}
-          onChange={(e) => setQuery({ path: e.target.value })}
+          placeholder={
+            builtIn
+              ? 'https://api.example.com/orders/{{ startTrigger.data.id }}'
+              : '/orders/{{ startTrigger.data.id }}'
+          }
+          value={String(query[urlKey] ?? '')}
+          onChange={(e) => setQuery({ [urlKey]: e.target.value })}
         />
       </div>
+      {builtIn && (
+        <RequestAuthFields
+          auth={query.auth as Parameters<typeof RequestAuthFields>[0]['auth']}
+          onChange={(auth) => setQuery({ auth })}
+          secretsHint="Read secrets from secret config vars, e.g. {{ configVars.API_TOKEN }}: they reach live runs only, and are kept out of logs."
+        />
+      )}
       <KeyValues
         label="Query parameters"
         rows={(query.params as KeyValue[]) ?? []}
@@ -1814,7 +2101,7 @@ type ExecutableBlock = Exclude<Block, BlockOf<'startTrigger' | 'errorTrigger'>>
  * Timeout, retries and what happens on failure. Unset values show their defaults as placeholders. A loop retries
  * per item (in its own form) and a wait only has "on failure".
  */
-function SettingsForm({ block }: { block: ExecutableBlock }) {
+function SettingsForm({ block, open }: { block: ExecutableBlock; open?: boolean }) {
   const settings: BlockSettings = block.settings ?? {}
   const retry = settings.retry ?? {}
   const defaults = resolveBlockSettings({ ...block, settings: undefined } as Block)
@@ -1834,7 +2121,7 @@ function SettingsForm({ block }: { block: ExecutableBlock }) {
   const num = (value: string) => (value === '' ? undefined : Math.max(0, Math.round(Number(value))))
 
   return (
-    <details className="group rounded-md border border-border">
+    <details className="group rounded-md border border-border" open={open}>
       <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
         {hasRetries ? 'Timeout, retries and failure' : hasTimeout ? 'Timeout and failure' : 'Failure'}
       </summary>

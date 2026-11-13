@@ -2,7 +2,7 @@ import type { Db } from '@ow/db'
 import { KIND_ROOTS, SETTINGS_ROOTS } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import type { Config } from '../../config'
-import type { PullRequestView } from './github'
+import type { PullRequestView } from './hosts'
 import { gitTrpcError, openPullRequestFor, requireGitRepo } from './protection'
 
 type PromoteConfig = Pick<

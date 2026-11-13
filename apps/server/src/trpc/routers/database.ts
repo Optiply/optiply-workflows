@@ -138,7 +138,7 @@ export const databaseRouter = router({
     .mutation(async ({ ctx, input }) => {
       const target = await open(ctx, input.environmentId)
       const table = await inDb(ctx, target, async (tx) => {
-        await createTable(tx, input.name, input.columns)
+        await createTable(tx, target.schemaName, input.name, input.columns)
         return getTable(tx, target.schemaName, input.name)
       })
       await audit(ctx, target, 'table_created', input.name, {
@@ -168,7 +168,7 @@ export const databaseRouter = router({
     .mutation(async ({ ctx, input }) => {
       const target = await open(ctx, input.environmentId)
       const table = await inDb(ctx, target, async (tx) => {
-        await addColumn(tx, input.table, input.column)
+        await addColumn(tx, target.schemaName, input.table, input.column)
         return getTable(tx, target.schemaName, input.table)
       })
       await audit(ctx, target, 'column_added', input.table, {

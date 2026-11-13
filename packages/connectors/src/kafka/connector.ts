@@ -116,8 +116,27 @@ async function produce(client: KafkaResourceClient, query: Query, ctx: QueryCont
       'invalid_query',
       `At most ${MAX_MESSAGES} messages per produce (got ${items.length})`,
     )
-  const messages = items.map((item, i) => toMessage(item, i))
   const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(ctx.timeoutMs)])
+  const messages = await Promise.all(
+    items.map(async (item, i) => {
+      const message = toMessage(item, i)
+      // M30: a message naming a subject is encoded by that subject's latest schema (the Confluent wire format).
+      const subject = (item as { subject?: unknown }).subject
+      if (subject === undefined) return message
+      if (typeof subject !== 'string' || !subject)
+        throw new ConnectorError(
+          'invalid_query',
+          `Message ${i + 1}: the subject is a registry subject's name`,
+        )
+      if (!client.registry)
+        throw new ConnectorError(
+          'invalid_query',
+          `Message ${i + 1} names a subject, but the resource has no schema registry`,
+        )
+      const value = (item as { value: unknown }).value
+      return { ...message, value: await client.registry.encode(subject, value, signal) }
+    }),
+  )
   const partitions = await produceTo(client, topic, messages, signal)
   return { data: partitions, metadata: { topic, produced: messages.length } }
 }
@@ -146,7 +165,7 @@ function toMessage(item: unknown, index: number): OutgoingKafkaMessage {
   const where = `Message ${index + 1}`
   if (!item || typeof item !== 'object' || Array.isArray(item) || !('value' in item))
     throw new ConnectorError('invalid_query', `${where}: write it as {"key": …, "value": …, "headers": {…}}`)
-  const { key, value, headers, partition } = item as Record<string, unknown>
+  const { key, value, headers, partition, subject: _subject } = item as Record<string, unknown>
   if (key !== undefined && key !== null && typeof key !== 'string' && typeof key !== 'number')
     throw new ConnectorError('invalid_query', `${where}: the key is a string`)
   if (headers !== undefined && (typeof headers !== 'object' || headers === null || Array.isArray(headers)))

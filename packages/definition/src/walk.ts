@@ -1,3 +1,4 @@
+import { parseImports } from '@ow/expressions'
 import { codeFields, fieldRefs } from './fields'
 import type { LibraryReference } from './library'
 import type { Block, Edge, FunctionDefinition, WorkflowDefinition } from './schema'
@@ -40,21 +41,50 @@ export function queriedResources(def: WorkflowDefinition): string[] {
   return [...slugs]
 }
 
-/** Slugs of the resources the definition's triggers use (Pub/Sub, SQS and Kafka triggers receive through one). */
+/** Slugs of the resources the definition's triggers use (Pub/Sub, SQS, Kafka and RabbitMQ triggers receive through one). */
 export function triggerResources(def: WorkflowDefinition): string[] {
   const t = def.triggers
-  return [...new Set([...(t?.pubsub ?? []), ...(t?.sqs ?? []), ...(t?.kafka ?? [])].map((q) => q.resource))]
+  return [
+    ...new Set(
+      [
+        ...(t?.pubsub ?? []),
+        ...(t?.sqs ?? []),
+        ...(t?.kafka ?? []),
+        ...(t?.rabbitmq ?? []),
+        ...(t?.kinesis ?? []),
+      ].map((q) => q.resource),
+    ),
+  ]
 }
 
-/** Slugs of every workflow the definition calls: Workflow blocks and loop workflow runners, functions included. */
+/**
+ * Slugs of every workflow the definition calls: Workflow blocks, loop workflow runners and AI agents' tools (M35:
+ * queries with `action: 'agent'`), functions included.
+ */
 export function calledWorkflows(def: WorkflowDefinition): string[] {
   const slugs = new Set<string>()
   for (const block of allBlocks(def)) {
     if (block.type === 'workflow') slugs.add(block.config.workflow)
     if (block.type === 'loop' && block.config.runner.kind === 'workflow')
       slugs.add(block.config.runner.workflow)
+    const query =
+      block.type === 'resourceQuery'
+        ? block.config.query
+        : block.type === 'loop' && block.config.runner.kind === 'query'
+          ? block.config.runner.query
+          : undefined
+    for (const slug of agentTools(query)) slugs.add(slug)
   }
   return [...slugs]
+}
+
+/** The workflows an AI agent query (M35) names as its tools: a list, or a comma-separated text. Empty for others. */
+export function agentTools(query: unknown): string[] {
+  if (!query || typeof query !== 'object') return []
+  const { action, tools } = query as { action?: unknown; tools?: unknown }
+  if (action !== 'agent') return []
+  const list = Array.isArray(tools) ? tools : typeof tools === 'string' ? tools.split(',') : []
+  return [...new Set(list.map((t) => String(t).trim()).filter(Boolean))]
 }
 
 /** The library query a block uses (M21): a Library query block's or a library loop runner's, with its path. */
@@ -147,6 +177,25 @@ export function pythonFields(def: WorkflowDefinition): PythonField[] {
             source: field.source,
           }
         }),
+    ),
+  )
+}
+
+/**
+ * Whether any of a workflow's JavaScript code (its functions' included) has import lines: only then does a run need
+ * its JavaScript packages' bundle.
+ */
+export function importsJsPackages(def: WorkflowDefinition): boolean {
+  return blockGraphs(def).some((graph) =>
+    graph.blocks.some((block) =>
+      codeFields(block).some((field) => {
+        if (field.kind !== 'function-body') return false
+        try {
+          return parseImports(field.source).length > 0
+        } catch {
+          return true // A broken import line: the code fails saying so; the bundle is no worse for being there.
+        }
+      }),
     ),
   )
 }

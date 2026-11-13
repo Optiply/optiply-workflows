@@ -2,6 +2,7 @@ import { X509Certificate } from 'node:crypto'
 import Confluent from '@confluentinc/kafka-javascript'
 import { ConnectorError } from '../types'
 import { type KafkaConfig, type KafkaSecrets, kafkaSettingsProblem, rdkafkaSettings } from './config'
+import { type SchemaRegistry, schemaRegistry } from './registry'
 
 type KafkaJs = InstanceType<typeof Confluent.KafkaJS.Kafka>
 export type KafkaAdmin = ReturnType<KafkaJs['admin']>
@@ -30,6 +31,8 @@ export interface KafkaResourceClient {
   logger: object
   /** The latest error lines logged since `since` (ms), most telling first: SASL, TLS, certificates. */
   explain(since: number): string | null
+  /** The Schema Registry, when the settings name one (M30). */
+  registry?: SchemaRegistry
   close(): Promise<void>
 }
 
@@ -64,6 +67,9 @@ export function kafkaClient(
   }
   const kafka = new Confluent.KafkaJS.Kafka({ ...settings, kafkaJS: { logger } } as never)
   let admin: Promise<KafkaAdmin> | undefined
+  const registry = config.schemaRegistry
+    ? schemaRegistry(config.schemaRegistry, secrets.schemaRegistryPassword)
+    : undefined
   let producer: Promise<KafkaProducer> | undefined
   const connect = <T extends { connect(): Promise<void>; disconnect(): Promise<void> }>(
     made: T,
@@ -77,6 +83,7 @@ export function kafkaClient(
     )
 
   return {
+    ...(registry && { registry }),
     settings,
     logger,
     who: async (signal) => extras.who?.(signal) ?? describeSignIn(config),
@@ -112,6 +119,7 @@ export function kafkaClient(
       admin = undefined
       producer = undefined
       await Promise.all(open.map((p) => p?.then((c) => c.disconnect()).catch(() => {})))
+      await registry?.close()
     },
   }
 }

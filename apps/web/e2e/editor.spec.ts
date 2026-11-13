@@ -1,5 +1,16 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, drag, editorText, field, signIn, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  clickEmptyCanvas,
+  drag,
+  editorText,
+  field,
+  nameField,
+  openRail,
+  signIn,
+  typeInto,
+} from './helpers'
 
 /**
  * M3's done-when: build "query → branch → code → response" in the editor, run it, rename a block, and see its
@@ -55,7 +66,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
 
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
   })
 
   await test.step('run it', async () => {
@@ -66,8 +77,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
   })
 
   await test.step('rename query1 → customer: every reference follows', async () => {
-    await block(page, 'query1').click()
-    const name = page.getByTestId('block-name')
+    const name = await nameField(page, 'query1')
     await name.fill('customer')
     await name.press('Enter')
     await expect(block(page, 'customer')).toBeVisible()
@@ -82,7 +92,7 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
       .poll(() => editorText(field(page, 'code1', 'code.js')))
       .toBe('return customer.data[0].email.toUpperCase()')
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
   })
 
   await test.step('the renamed workflow still runs', async () => {
@@ -93,12 +103,12 @@ test('build, run and refactor a workflow in the editor', async ({ page }) => {
 
 /** Runs the workflow and waits for this run (not an earlier one still on screen) to reply with Ada's email. */
 async function runAndExpectEmail(page: Page) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
-  await expect(picker).not.toHaveValue('')
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
+  await expect(picker).not.toHaveAttribute('data-run-id', '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded')
   await panel.getByRole('button', { name: 'output' }).click()
   await expect(panel.getByTestId('run-output')).toContainText('ADA@EXAMPLE.COM')

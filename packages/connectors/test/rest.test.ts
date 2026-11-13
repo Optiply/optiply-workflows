@@ -505,3 +505,19 @@ describe('testResource', () => {
     expect(blocked).toMatchObject({ ok: false, error: { code: 'blocked' } })
   })
 })
+
+describe('HEAD queries (M27: kept on the HTTP core)', () => {
+  it('answer any status, a 404 included, without failing', async () => {
+    const res = resource({ baseUrl: `${origin}/api`, allowPrivateNetwork: true }, {}, 'head')
+    const out = await runQuery(
+      pool,
+      restConnector,
+      res,
+      { method: 'HEAD', path: '/missing' },
+      {
+        evaluate: scopeEvaluator({}),
+      },
+    )
+    expect(out).toMatchObject({ data: null, metadata: { status: 404 } })
+  })
+})

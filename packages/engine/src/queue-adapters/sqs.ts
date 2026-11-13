@@ -8,7 +8,7 @@ import {
 import type { SqsTrigger } from '@ow/definition'
 import type { AdapterContext, QueueAdapter, QueueMessage } from '../queue-consumer'
 import type { SqsRunMessage } from '../types'
-import { textOrJson } from './pubsub'
+import { bodyData } from './pubsub'
 
 /**
  * SQS (M26): long-polls the queue; a held message's visibility is extended while its run lasts; deleted when it
@@ -102,6 +102,6 @@ function toMessage(m: SqsReceived, queue: string): QueueMessage {
   return {
     id: m.messageId,
     handle: m.receiptHandle,
-    input: { data: textOrJson(m.body), message: runMessage },
+    input: { data: bodyData(Buffer.from(m.body, 'utf8')).data, message: runMessage },
   }
 }

@@ -2,35 +2,57 @@ import { type Block, blockPorts, type Diagnostic, isTrigger } from '@ow/definiti
 import {
   applyNodeChanges,
   Background,
+  BaseEdge,
   type Connection,
+  ConnectionLineType,
   ControlButton,
   Controls,
+  EdgeLabelRenderer,
+  type EdgeProps,
+  type FinalConnectionState,
   type Edge as FlowEdge,
+  getBezierPath,
   Handle,
   MiniMap,
   type Node,
   type NodeChange,
   type NodeProps,
+  NodeResizeControl,
   Position,
   ReactFlow,
+  useNodesInitialized,
   useReactFlow,
+  useStore,
   ViewportPortal,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, Map as MapIcon } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  AlertCircle,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Map as MapIcon,
+  Minus,
+  PanelRight,
+  Plus,
+  X,
+} from 'lucide-react'
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
-import { kindOf, summary } from './catalog'
-import { NODE_WIDTH, positionsFor } from './layout'
+import { kindOf } from './catalog'
+import { BlockBody, NameField, RunBlockButton } from './inspectors'
+import { blockWidth, type LayoutEntry, positionsFor, setMeasuredSizes } from './layout'
+import { BlockMenu, NodeFooter } from './node-result'
 import { sharePointer, usePresence } from './presence'
+import { BLOCK_DRAG_TYPE, useAddBlock, usePendingAdd } from './rail'
 import { type LiveBlock, useRun } from './run-state'
 import { type GraphPart, graphOf, problemsOf, updateGraph, useEditor } from './store'
 
-type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock }
+type BlockNodeData = { block: Block; problems: Diagnostic[]; live?: LiveBlock; entry?: LayoutEntry }
 type BlockNode = Node<BlockNodeData, 'block'>
 
 const nodeTypes = { block: memo(BlockNodeView) }
+const edgeTypes = { workflow: WorkflowEdge }
 
 const NO_LIVE: Record<string, LiveBlock> = {}
 
@@ -81,14 +103,69 @@ export function Canvas() {
   const { screenToFlowPosition } = useReactFlow()
   const runBlocks = useRun((s) => s.blocks)
   const live = fn === null ? runBlocks : NO_LIVE
+  // Blocks without a saved position are placed by dagre: again with their measured sizes once React Flow has them,
+  // so their forms don't overlap (display only, like the first placement).
+  const [sizes, setSizes] = useState<Record<string, { width: number; height: number }>>()
+  const initialized = useNodesInitialized()
+  // A function's graph (or the workflow's again) is measured afresh.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `fn` is the graph shown
+  useEffect(() => setSizes(undefined), [fn])
+  const { getNodes } = useReactFlow()
+  const unplaced = graph.blocks.some((b) => !graph.layout?.blocks?.[b.name])
+  useEffect(() => {
+    if (!initialized || !unplaced || sizes) return
+    setSizes(
+      Object.fromEntries(
+        getNodes().flatMap((n) =>
+          n.measured?.width && n.measured.height
+            ? [[n.id, { width: n.measured.width, height: n.measured.height }]]
+            : [],
+        ),
+      ),
+    )
+  }, [initialized, unplaced, sizes, getNodes])
+  // A block asked for from a panel (a problem, a search hit): shown from its header down, once it's on the canvas.
+  const focus = useEditor((s) => s.focus)
+  const { setCenter, getZoom, getNode } = useReactFlow()
+  useEffect(() => {
+    if (!focus || !initialized) return
+    const node = getNode(focus)
+    if (node) {
+      const w = node.measured?.width ?? 300
+      const h = node.measured?.height ?? 100
+      void setCenter(node.position.x + w / 2, node.position.y + Math.min(h / 2, 160), {
+        zoom: Math.max(getZoom(), 0.8),
+        duration: 250,
+      })
+    }
+    useEditor.setState({ focus: null })
+  }, [focus, initialized, getNode, setCenter, getZoom])
+  useEffect(() => {
+    setMeasuredSizes(sizes)
+    return () => setMeasuredSizes(undefined)
+  }, [sizes])
   const derived = useMemo(
-    () => toNodes(graph, diagnostics, selection, live, fn),
-    [graph, diagnostics, selection, live, fn],
+    () => toNodes(graph, diagnostics, selection, live, fn, sizes),
+    [graph, diagnostics, selection, live, fn, sizes],
   )
   // React Flow owns node state while dragging; it's rebuilt whenever the definition changes. What's selected comes
   // from the store alone (see onNodesChange), so the two never disagree about it.
   const [nodes, setNodes] = useState<BlockNode[]>(derived)
-  useEffect(() => setNodes(derived), [derived])
+  // Rebuilt nodes keep their measured size: React Flow hides a node it has to measure again, and a hidden node loses
+  // the focus of the code field being typed in (M28's forms live in the nodes).
+  useEffect(
+    () =>
+      setNodes((current) => {
+        const was = new Map(current.map((n) => [n.id, n]))
+        return derived.map((n) => {
+          const old = was.get(n.id)
+          if (!old?.measured) return n
+          // Mid-resize, a rebuild (a peer's edit, a run's progress) keeps the width being dragged.
+          return { ...n, measured: old.measured, ...(old.resizing ? { width: old.width } : {}) }
+        })
+      }),
+    [derived],
+  )
   const edges = useMemo(() => toEdges(graph, diagnostics, live, fn), [graph, diagnostics, live, fn])
 
   // Clicks, ⌘/Ctrl-clicks and box selection arrive as `select` changes: they go to the store's selection (in the
@@ -119,10 +196,61 @@ export function Canvas() {
     )
   }, [])
 
+  // Dragging an edge's end onto another block or port moves it there (M28).
+  const onReconnect = useCallback((old: FlowEdge, next: Connection) => {
+    if (!next.source || !next.target || next.source === next.target) return
+    const moved = { from: next.source, port: next.sourceHandle ?? 'out', to: next.target }
+    updateGraph((g) => {
+      const edges = g.edges.filter((e) => edgeId(e) !== old.id)
+      return edges.some((e) => edgeId(e) === edgeId(moved))
+        ? { ...g, edges }
+        : { ...g, edges: [...edges, moved] }
+    })
+  }, [])
+  const hover = useEdgeHover()
+  const { add } = useAddBlock()
+  // A palette block dropped on the canvas is added there (M28).
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      const raw = e.dataTransfer.getData(BLOCK_DRAG_TYPE)
+      if (!raw || !editable) return
+      e.preventDefault()
+      const { type, python } = JSON.parse(raw) as { type: Parameters<typeof add>[0]; python: boolean }
+      add(type, python, screenToFlowPosition({ x: e.clientX, y: e.clientY }))
+    },
+    [add, editable, screenToFlowPosition],
+  )
+  // A connection dropped on empty canvas: the Blocks panel opens to add a block there, connected from that port.
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      // Only from an output: a block added from a dragged input would be connected the wrong way round.
+      if (
+        !editable ||
+        state.isValid ||
+        state.toNode ||
+        !state.fromNode ||
+        state.fromHandle?.type !== 'source'
+      )
+        return
+      const point = 'changedTouches' in event ? event.changedTouches[0]! : event
+      usePendingAdd.setState({
+        pending: {
+          from: state.fromNode.id,
+          port: state.fromHandle?.id ?? 'out',
+          at: screenToFlowPosition({ x: point.clientX, y: point.clientY }),
+        },
+      })
+      useEditor.getState().showTab('blocks')
+    },
+    [editable, screenToFlowPosition],
+  )
+
   const onNodeDragStop = useCallback((_: unknown, _node: BlockNode, dragged: BlockNode[]) => {
     updateGraph((g) => {
       const blocks = { ...positionsFor(g) }
-      for (const n of dragged) blocks[n.id] = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
+      for (const n of dragged) {
+        blocks[n.id] = { ...blocks[n.id], x: Math.round(n.position.x), y: Math.round(n.position.y) }
+      }
       return { ...g, layout: { ...g.layout, blocks } }
     })
   }, [])
@@ -139,54 +267,168 @@ export function Canvas() {
   )
 
   return (
-    <ReactFlow<BlockNode, FlowEdge>
-      // A fresh view per graph, fitted to its blocks.
-      key={fn ?? ''}
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      onNodesChange={onNodesChange}
-      onConnect={onConnect}
-      onNodeDragStop={onNodeDragStop}
-      onDelete={onDelete}
-      // A click shows the block; React Flow keeps the selection (several with ⌘/Ctrl-click or a box), for copying.
-      onNodeClick={(_, node) => useEditor.getState().inspect(node.id)}
-      onPaneClick={() => select(null)}
-      nodesDraggable={editable}
-      nodesConnectable={editable}
-      deleteKeyCode={editable ? ['Backspace', 'Delete'] : null}
-      fitView
-      fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
-      minZoom={0.2}
-      proOptions={{ hideAttribution: true }}
-      // Where this editor's pointer is, for everyone else (M16): in flow coordinates.
-      onMouseMove={(e) => sharePointer(screenToFlowPosition({ x: e.clientX, y: e.clientY }))}
-      onMouseLeave={() => sharePointer(null)}
-    >
-      <Background gap={20} size={1} />
-      <ViewportPortal>
-        <Pointers graph={fn} />
-      </ViewportPortal>
-      <Controls showInteractive={false}>
-        <ControlButton
-          onClick={toggleMinimap}
-          title={minimap ? 'Hide the minimap' : 'Show the minimap'}
-          aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
-          aria-pressed={minimap}
-        >
-          <MapIcon />
-        </ControlButton>
-      </Controls>
-      {minimap && (
-        <MiniMap
-          pannable
-          zoomable
-          className="!bg-surface"
-          style={{ width: 140, height: 96 }}
-          nodeStrokeWidth={3}
-        />
+    <EdgeHover.Provider value={hover}>
+      <ReactFlow<BlockNode, FlowEdge>
+        // A fresh view per graph, fitted to its blocks.
+        key={fn ?? ''}
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
+        onConnect={onConnect}
+        onReconnect={onReconnect}
+        onConnectEnd={onConnectEnd}
+        onDrop={onDrop}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(BLOCK_DRAG_TYPE)) {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+          }
+        }}
+        edgesReconnectable={editable}
+        connectionLineType={ConnectionLineType.Bezier}
+        onEdgeMouseEnter={(_, edge) => hover.enter(edge.id)}
+        onEdgeMouseLeave={() => hover.leave()}
+        onNodeDragStop={onNodeDragStop}
+        onDelete={onDelete}
+        // A click shows the block; React Flow keeps the selection (several with ⌘/Ctrl-click or a box), for copying.
+        onNodeClick={(_, node) => useEditor.getState().inspect(node.id)}
+        onPaneClick={() => select(null)}
+        nodesDraggable={editable}
+        nodesConnectable={editable}
+        deleteKeyCode={editable ? ['Backspace', 'Delete'] : null}
+        fitView
+        fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
+        minZoom={0.2}
+        proOptions={{ hideAttribution: true }}
+        // Where this editor's pointer is, for everyone else (M16): in flow coordinates.
+        onMouseMove={(e) => sharePointer(screenToFlowPosition({ x: e.clientX, y: e.clientY }))}
+        onMouseLeave={() => sharePointer(null)}
+      >
+        <Background gap={20} size={1} />
+        <ViewportPortal>
+          <Pointers graph={fn} />
+        </ViewportPortal>
+        <Controls showInteractive={false} orientation="horizontal">
+          <ZoomLevel />
+          {editable && (
+            <>
+              <ControlButton
+                onClick={() => setAllMinimized(true)}
+                title="Collapse all blocks"
+                aria-label="Collapse all blocks"
+              >
+                <ChevronsDownUp />
+              </ControlButton>
+              <ControlButton
+                onClick={() => setAllMinimized(false)}
+                title="Expand all blocks"
+                aria-label="Expand all blocks"
+              >
+                <ChevronsUpDown />
+              </ControlButton>
+            </>
+          )}
+          <ControlButton
+            onClick={toggleMinimap}
+            title={minimap ? 'Hide the minimap' : 'Show the minimap'}
+            aria-label={minimap ? 'Hide the minimap' : 'Show the minimap'}
+            aria-pressed={minimap}
+          >
+            <MapIcon />
+          </ControlButton>
+        </Controls>
+        {minimap && (
+          <MiniMap
+            pannable
+            zoomable
+            className="!bg-surface"
+            style={{ width: 140, height: 96 }}
+            nodeStrokeWidth={3}
+          />
+        )}
+      </ReactFlow>
+    </EdgeHover.Provider>
+  )
+}
+
+/** Which edge the pointer is on; leaving waits a moment so the pointer can reach the edge's × button. */
+interface EdgeHoverState {
+  hovered: string | null
+  enter(id: string): void
+  leave(): void
+}
+
+const EdgeHover = createContext<EdgeHoverState>({ hovered: null, enter: () => {}, leave: () => {} })
+
+function useEdgeHover(): EdgeHoverState {
+  const [hovered, setHovered] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  return useMemo(
+    () => ({
+      hovered,
+      enter: (id: string) => {
+        clearTimeout(timer.current)
+        setHovered(id)
+      },
+      leave: () => {
+        clearTimeout(timer.current)
+        timer.current = setTimeout(() => setHovered(null), 150)
+      },
+    }),
+    [hovered],
+  )
+}
+
+/**
+ * A connection as Retool draws it: a bezier curve, easy to hit, and on hover a × at its middle that removes it
+ * with one click (undoable like any edit). Read-only drafts show no ×.
+ */
+function WorkflowEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style,
+  markerEnd,
+  selected,
+}: EdgeProps<FlowEdge>) {
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  })
+  const { hovered, enter, leave } = useContext(EdgeHover)
+  const editable = !useEditor((s) => s.readOnly)
+  const shown = editable && (hovered === id || selected)
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={22} />
+      {shown && (
+        <EdgeLabelRenderer>
+          <button
+            type="button"
+            className="nodrag nopan pointer-events-auto absolute flex size-5 cursor-pointer items-center justify-center rounded-full border-2 border-surface bg-danger text-white shadow-sm hover:brightness-110"
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+            title="Remove this connection"
+            aria-label="Remove this connection"
+            data-testid={`edge-remove-${id}`}
+            onMouseEnter={() => enter(id)}
+            onMouseLeave={leave}
+            onClick={() => updateGraph((g) => removeFrom(g, new Set(), new Set([id])))}
+          >
+            <X className="size-3" strokeWidth={3} />
+          </button>
+        </EdgeLabelRenderer>
       )}
-    </ReactFlow>
+    </>
   )
 }
 
@@ -217,14 +459,23 @@ function toNodes(
   selection: string[],
   live: Record<string, LiveBlock>,
   fn: string | null,
+  sizes?: Record<string, { width: number; height: number }>,
 ): BlockNode[] {
   const chosen = new Set(selection)
-  const positions = positionsFor(def)
+  const positions = positionsFor(def, sizes)
   return def.blocks.map((block) => ({
     id: block.name,
     type: 'block',
     position: positions[block.name] ?? { x: 0, y: 0 },
-    data: { block, problems: problemsOf(diagnostics, block.name, fn), live: live[block.name] },
+    // React Flow's node has the width, and the block fills it: dragging the resize edge changes this as it goes,
+    // so the block, its handles and the edges follow the pointer (the saved width is written when it's let go).
+    width: blockWidth(block, positions[block.name]),
+    data: {
+      block,
+      problems: problemsOf(diagnostics, block.name, fn),
+      live: live[block.name],
+      entry: positions[block.name],
+    },
     selected: chosen.has(block.name),
     deletable: block.type !== 'startTrigger',
   }))
@@ -248,7 +499,7 @@ function toEdges(
     source: e.from,
     sourceHandle: e.port,
     target: e.to,
-    type: 'smoothstep',
+    type: 'workflow',
     // The connections the open run took (their source finished on that port).
     animated: live[e.to]?.status === 'running' && live[e.from]?.port === e.port,
     className: cn(
@@ -282,37 +533,50 @@ function Pointers({ graph }: { graph: string | null }) {
 }
 
 function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
-  const { block, problems, live } = data
+  const { block, problems, live, entry } = data
+  const name = block.name
   // Who else has this block selected (M16): an outline in the first one's colour, and their names.
   const fn = useEditor((s) => s.graph)
+  const inspected = useEditor((s) => s.selected === name)
+  const inPanel = useEditor((s) => s.panelBlock === name)
+  const editable = !useEditor((s) => s.readOnly)
   const watchers = usePresence(
-    useShallow((s) => s.peers.filter((p) => p.area === fn && p.selection.includes(block.name))),
+    useShallow((s) => s.peers.filter((p) => p.area === fn && p.selection.includes(name))),
   )
+  const [renaming, setRenaming] = useState(false)
   const first = watchers[0]
   const kind = kindOf(block)
   const Icon = kind.icon
   const ports = blockPorts(block)
   const errors = problems.filter((p) => p.severity === 'error').length
   const warnings = problems.length - errors
+  const minimized = entry?.minimized ?? false
 
   return (
     <div
-      style={{ width: NODE_WIDTH }}
-      data-testid={`block-${block.name}`}
+      data-testid={`block-${name}`}
       className={cn(
-        'relative rounded-lg border bg-surface shadow-card transition-shadow',
-        errors ? 'border-danger/60' : 'border-border',
+        'relative flex w-full flex-col rounded-xl border bg-surface shadow-card transition-shadow hover:shadow-raised',
+        errors ? 'border-danger/60' : 'border-border/80',
         live && RUN_RING[live.status],
         selected && 'ring-2 ring-accent',
         first && `ow-peer-selected ow-presence-${first.colour}`,
       )}
       data-status={live?.status}
+      data-inspected={inspected || undefined}
     >
+      {editable && !minimized && (
+        <NodeResizeControl
+          position="right"
+          minWidth={200}
+          maxWidth={1200}
+          className="!h-full !w-2 !translate-x-1 !border-0 !bg-transparent hover:!bg-accent/30"
+          resizeDirection="horizontal"
+          onResizeEnd={(_, { width: w }) => setEntry(name, { w: Math.round(w) })}
+        />
+      )}
       {watchers.length > 0 && (
-        <div
-          className="pointer-events-none absolute -top-6 left-0 flex gap-1"
-          data-testid={`peers-${block.name}`}
-        >
+        <div className="pointer-events-none absolute -top-6 left-0 flex gap-1" data-testid={`peers-${name}`}>
           {watchers.map((p) => (
             <span
               key={p.clientId}
@@ -326,12 +590,28 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
           ))}
         </div>
       )}
-      {!isTrigger(block) && <Handle type="target" position={Position.Left} className="ow-handle" />}
-      <div className="flex items-center gap-2 px-3 pt-2.5">
+      {!isTrigger(block) && (
+        <Handle type="target" position={Position.Left} className="ow-handle" style={{ top: 16 }} />
+      )}
+      <div className="flex h-9 shrink-0 items-center gap-1.5 pr-1 pl-2">
         <span className={cn('rounded-md p-1', kind.tone)}>
           <Icon className="size-3.5" />
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{block.name}</span>
+        {renaming ? (
+          <div className="nodrag min-w-0 flex-1">
+            <NameField name={name} onDone={() => setRenaming(false)} />
+          </div>
+        ) : (
+          // biome-ignore lint/a11y/noStaticElementInteractions: double-click renames, as on Retool's canvas; the side panel has the field too
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-sm font-semibold"
+            title={editable ? 'Double-click to rename' : undefined}
+            data-testid={`block-title-${name}`}
+            onDoubleClick={() => editable && setRenaming(true)}
+          >
+            {name}
+          </span>
+        )}
         {live && <RunStatusDot status={live.status} />}
         {(errors > 0 || warnings > 0) && (
           <span
@@ -345,13 +625,45 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
             {errors || warnings}
           </span>
         )}
+        <div className="nodrag flex items-center">
+          {editable && (
+            <HeaderButton
+              label={minimized ? 'Expand block' : 'Minimize block'}
+              onClick={() => setEntry(name, { minimized: !minimized })}
+            >
+              {minimized ? <Plus /> : <Minus />}
+            </HeaderButton>
+          )}
+          <HeaderButton
+            label={inPanel ? 'Close the side panel' : 'Open in the side panel'}
+            pressed={inPanel}
+            onClick={() => useEditor.getState().openInPanel(inPanel ? null : name)}
+          >
+            <PanelRight />
+          </HeaderButton>
+          {fn === null && !isTrigger(block) && <RunBlockButton name={name} compact />}
+          <BlockMenu block={block} onRename={() => setRenaming(true)} />
+        </div>
+        {ports.length === 1 && (
+          <Handle
+            type="source"
+            position={Position.Right}
+            id={ports[0]}
+            className="ow-handle"
+            style={{ top: 16 }}
+          />
+        )}
       </div>
-      <div className="truncate px-3 pb-2.5 pt-1 font-mono text-xs text-muted">
-        {summary(block) || kind.label}
-      </div>
-      {ports.length === 1 ? (
-        <Handle type="source" position={Position.Right} id={ports[0]} className="ow-handle" />
-      ) : (
+      {!minimized && (
+        <div className="nodrag nowheel nokey cursor-auto border-t border-border px-2.5 py-2">
+          {inPanel ? (
+            <p className="text-xs text-muted">Editing in the side panel.</p>
+          ) : (
+            <BlockBody name={name} active={inspected} />
+          )}
+        </div>
+      )}
+      {ports.length > 1 && (
         <div className="border-t border-border py-1">
           {ports.map((port) => (
             <div
@@ -369,8 +681,78 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
           ))}
         </div>
       )}
+      {!minimized && <NodeFooter block={block} />}
     </div>
   )
+}
+
+function HeaderButton({
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  label: string
+  pressed?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(
+        'flex size-6 cursor-pointer items-center justify-center rounded text-muted hover:bg-subtle hover:text-ink [&_svg]:size-3.5',
+        pressed && 'bg-accent-soft text-accent',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** The zoom as a percentage; a click goes back to 100 %. */
+function ZoomLevel() {
+  const zoom = useStore((s) => s.transform[2])
+  const { zoomTo } = useReactFlow()
+  return (
+    <ControlButton
+      onClick={() => void zoomTo(1, { duration: 200 })}
+      title="Zoom to 100%"
+      aria-label="Zoom to 100%"
+      className="!w-11 font-mono text-[11px] tabular-nums"
+      data-testid="zoom-level"
+    >
+      {Math.round(zoom * 100)}%
+    </ControlButton>
+  )
+}
+
+/** Minimizes every block of the open graph, or shows them all again (one undoable edit). */
+function setAllMinimized(minimized: boolean) {
+  updateGraph((g) => {
+    const blocks = { ...positionsFor(g) }
+    for (const [name, { minimized: _was, ...at }] of Object.entries(blocks)) {
+      blocks[name] = minimized ? { ...at, minimized } : at
+    }
+    return { ...g, layout: { ...g.layout, blocks } }
+  })
+}
+
+/** Changes a block's layout entry (width, minimized, result height), keeping every block's position. */
+export function setEntry(name: string, change: Partial<LayoutEntry>) {
+  updateGraph((g) => {
+    const blocks = { ...positionsFor(g) }
+    const at = blocks[name]
+    if (!at) return g
+    const next = { ...at, ...change }
+    if (next.minimized === false) delete next.minimized
+    blocks[name] = next
+    return { ...g, layout: { ...g.layout, blocks } }
+  })
 }
 
 /** How the open run left each block: a coloured outline. */

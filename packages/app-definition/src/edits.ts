@@ -1,5 +1,5 @@
 import { customComponentSpec } from './component-library'
-import { componentSpec, type JsonValue, moduleComponentSpec } from './components'
+import { componentSpec, type JsonValue, moduleComponentSpec, type PropSpec } from './components'
 import { appNameReason } from './names'
 import { RESERVED_PAGES } from './pages'
 import { renameModuleInputReads } from './rename'
@@ -8,6 +8,7 @@ import {
   type AppDefinition,
   type AppFrame,
   type AppQuery,
+  type AppTheme,
   appNameSchema,
   type EventHandler,
   GRID_COLUMNS,
@@ -155,6 +156,89 @@ export function updateComponent(
   edit: (component: AppComponent) => AppComponent,
 ): AppDefinition {
   return { ...def, components: def.components.map((c) => (c.name === name ? edit(c) : c)) }
+}
+
+/** Sets the app's theme (session 41); an empty one is removed. */
+export function setTheme(def: AppDefinition, theme: AppTheme): AppDefinition {
+  const kept = Object.fromEntries(
+    Object.entries(theme).filter(([, v]) => v !== undefined && v !== ''),
+  ) as AppTheme
+  const { theme: _old, ...rest } = def
+  return Object.keys(kept).length ? { ...rest, theme: kept } : rest
+}
+
+/** Sets the app's custom CSS (session 41); empty removes it. */
+export function setCustomCss(def: AppDefinition, css: string): AppDefinition {
+  const { css: _old, ...rest } = def
+  return css.trim() ? { ...rest, css } : rest
+}
+
+/** Sets a component's note for editors; an empty one is removed. */
+export function setComponentNote(def: AppDefinition, name: string, note: string): AppDefinition {
+  return updateComponent(def, name, (c) => {
+    const { note: _old, ...rest } = c
+    return note.trim() ? { ...rest, note } : rest
+  })
+}
+
+/**
+ * The types a component can switch to keeping what it has (the inspector's "Switch to"): the other inputs for an
+ * input. Empty for the rest (a container's children sit in its views, which a form doesn't have).
+ */
+export function switchableTypes(type: string): string[] {
+  const groups = [
+    [
+      'textInput',
+      'textArea',
+      'numberInput',
+      'dateInput',
+      'select',
+      'radioGroup',
+      'segmentedControl',
+      'checkboxGroup',
+      'checkbox',
+      'switch',
+    ],
+  ]
+  return groups.find((g) => g.includes(type))?.filter((t) => t !== type) ?? []
+}
+
+/**
+ * Switches a component to another type (see `switchableTypes`): the props and event handlers the new type has are
+ * kept (a constant only when it fits the new prop's type; a `{{ }}` template always), the others dropped; its name,
+ * place and size stay.
+ */
+export function switchComponentType(def: AppDefinition, name: string, type: string): AppDefinition {
+  const spec = componentSpec(type)
+  if (!spec) throw new Error(`Unknown component type ${type}`)
+  return updateComponent(def, name, (c) => {
+    const props = Object.fromEntries(
+      Object.entries(c.props ?? {}).filter(([prop, value]) => {
+        const propSpec = spec.props[prop]
+        return propSpec !== undefined && fitsProp(value, propSpec)
+      }),
+    )
+    const events = (c.events ?? []).filter((h) => spec.events.includes(h.event))
+    const { props: _p, events: _e, ...rest } = c
+    return {
+      ...rest,
+      type,
+      ...(Object.keys(props).length && { props }),
+      ...(events.length && { events }),
+    }
+  })
+}
+
+/** Whether a stored prop value suits a prop: a template always, a constant of the prop's type. */
+function fitsProp(value: JsonValue, spec: PropSpec): boolean {
+  if (typeof value === 'string' && value.includes('{{')) return true
+  if (value === null) return spec.nullable === true || spec.type === 'any'
+  const type = spec.type
+  if (typeof type === 'object') return typeof value === 'string' && type.enum.includes(value)
+  if (type === 'any') return true
+  if (type === 'array') return Array.isArray(value)
+  if (type === 'object') return typeof value === 'object' && !Array.isArray(value)
+  return typeof value === type
 }
 
 /** Sets a prop, or with `undefined` goes back to the default. */
@@ -472,6 +556,28 @@ export function addQuery(
 }
 
 /**
+ * Adds a query running a workflow (M36): its live release, waiting for its Response block, only when triggered (most
+ * workflows do something); its input is filled in afterwards.
+ */
+export function addWorkflowQuery(
+  def: AppDefinition,
+  workflow: string,
+  opts: { page?: string | null } = {},
+): { definition: AppDefinition; name: string } {
+  const name = nextName(def, 'runWorkflow')
+  const query: AppQuery = {
+    name,
+    ...(opts.page && { page: opts.page }),
+    kind: 'workflow',
+    workflow,
+    input: '{}',
+    mode: 'sync',
+    run: 'manual',
+  }
+  return { definition: { ...def, queries: [...def.queries, query] }, name }
+}
+
+/**
  * Adds a query from the Query Library (M14), following its latest release and running automatically (most library
  * queries read); its parameters are filled in afterwards.
  */
@@ -589,12 +695,24 @@ export function renamePage(def: AppDefinition, from: string, to: string): AppDef
   if (from === to || !def.pages?.some((p) => p.name === from) || pageNameReason(def, to, from)) return def
   const follow = <T extends { page?: string }>(item: T): T =>
     item.page === from ? { ...item, page: to } : item
-  const components = relinkNavigation(def.components.map(follow), from, to)
+  // Go to page actions (session 41) follow too.
+  const retarget = <T extends { events?: EventHandler[] }>(item: T): T =>
+    item.events?.some((h) => h.action.type === 'openPage' && h.action.page === from)
+      ? {
+          ...item,
+          events: item.events.map((h) =>
+            h.action.type === 'openPage' && h.action.page === from
+              ? { ...h, action: { ...h.action, page: to } }
+              : h,
+          ),
+        }
+      : item
+  const components = relinkNavigation(def.components.map(follow).map(retarget), from, to)
   const renamed = {
     ...def,
     pages: def.pages.map((p) => (p.name === from ? { ...p, name: to } : p)),
     components,
-    queries: def.queries.map(follow),
+    queries: def.queries.map(follow).map(retarget),
     ...(def.transformers && { transformers: def.transformers.map(follow) }),
   }
   // `utils.openPage('from', …)` in templates and code follows too (M24); a computed name can't be followed.

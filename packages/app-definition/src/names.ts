@@ -1,24 +1,54 @@
-import { isReservedWord, JS_GLOBALS } from '@ow/definition'
+import { isReservedWord, JS_GLOBALS, RETOOL_LIBRARY_GLOBALS } from '@ow/definition'
 
 /** The stdlib the app runtime preloads, like the server sandbox's. */
-export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set(['_', 'dayjs', 'sql', 'console'])
+export const APP_STDLIB_GLOBALS: ReadonlySet<string> = new Set([
+  '_',
+  'dayjs',
+  ...RETOOL_LIBRARY_GLOBALS,
+  'sql',
+  'console',
+])
 
 /**
  * Added by the app runtime: `current_user` (`{ id, email, name }`), `utils` (`notify`, `openUrl`, `openPage`,
  * `copyToClipboard`, `downloadFile`), `appContext` (`{ appSlug, environment, version }`) and `url` (`{ page,
  * params }`, the page shown and its URL's query parameters; values in the graph, since they change as people move
- * between pages).
+ * between pages) and `localStorage` (`{ values }`, what the app keeps in this browser; session 41).
  */
 export const APP_RUNTIME_GLOBALS: ReadonlySet<string> = new Set([
   'current_user',
   'utils',
   'appContext',
   'url',
+  'localStorage',
+  // In a resource query's {{ }}, filled in by the server (M36); reserved so nothing else takes the name.
+  'configVars',
+  // Retool's helpers (M36).
+  'formatDataAsArray',
+  'formatDataAsObject',
+])
+
+/** What the app's Worker has besides the language (M36: Retool code uses them). */
+export const APP_WORKER_GLOBALS: ReadonlySet<string> = new Set([
+  'setTimeout',
+  'clearTimeout',
+  'setInterval',
+  'clearInterval',
+  'atob',
+  'btoa',
+  'TextEncoder',
+  'TextDecoder',
+  'structuredClone',
 ])
 
 /** Names an app's code can read without them being one of its components, queries, transformers or variables. */
 export function isAppGlobalName(name: string): boolean {
-  return JS_GLOBALS.has(name) || APP_STDLIB_GLOBALS.has(name) || APP_RUNTIME_GLOBALS.has(name)
+  return (
+    JS_GLOBALS.has(name) ||
+    APP_STDLIB_GLOBALS.has(name) ||
+    APP_RUNTIME_GLOBALS.has(name) ||
+    APP_WORKER_GLOBALS.has(name)
+  )
 }
 
 /** Why `name` can't name something in an app, or null if it can. Assumes the identifier pattern matched. */

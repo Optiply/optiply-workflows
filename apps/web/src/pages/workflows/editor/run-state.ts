@@ -110,11 +110,18 @@ export async function runWorkflow() {
   await start(() => runsApi.start(slug, input ?? null, environment ?? undefined, draftId))
 }
 
-/** Saves the draft, then runs one block, reusing its ancestors' results from the latest run. */
-export async function runBlock(name: string) {
+/**
+ * Saves the draft, then runs one block, reusing its ancestors' results from the latest run when it ran with the
+ * current test input (otherwise they run again with it); `fresh` runs them again first in any case (Retool's "Run
+ * with previous blocks").
+ */
+export async function runBlock(name: string, opts: { fresh?: boolean } = {}) {
   const { slug, environment } = useRun.getState()
   const draftId = useEditor.getState().branchDraftId
-  await start(() => runsApi.startBlock(slug, name, environment ?? undefined, draftId))
+  const trigger = useEditor.getState().definition.blocks.find((b) => b.type === 'startTrigger')
+  const testInput = (trigger?.type === 'startTrigger' ? trigger.config?.testInput : undefined) ?? null
+  const input = opts.fresh ? { input: testInput } : { testInput }
+  await start(() => runsApi.startBlock(slug, name, environment ?? undefined, draftId, input))
 }
 
 async function start(launch: () => Promise<RunView>) {

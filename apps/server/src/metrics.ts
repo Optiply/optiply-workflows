@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
-import { sshTunnelStats } from '@ow/connectors'
+import { aiStats, queryStats, sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
 import { QUEUE_KINDS, QUEUE_OUTCOMES, queueStats, type RunObserver, type ScheduleFire } from '@ow/engine'
 import { pythonStats } from '@ow/sandbox'
@@ -106,6 +106,62 @@ export class Metrics {
       collect() {
         this.reset()
         this.inc(sshTunnelStats.iapResumes)
+      },
+    })
+
+    // Resource queries (M27), as this process's connectors count them.
+    new client.Counter({
+      name: 'ow_connector_queries_total',
+      help: 'Resource queries this process ran, by connector type, action (service queries) and outcome (ok or the error code)',
+      labelNames: ['type', 'action', 'outcome'],
+      registers,
+      collect() {
+        this.reset()
+        for (const [key, n] of queryStats) {
+          const [type = '', action = '', outcome = ''] = key.split('\t')
+          this.inc({ type, action, outcome }, n)
+        }
+      },
+    })
+
+    // AI calls (M35), as this process's AI resources count them (workflows, apps and the playground alike).
+    new client.Counter({
+      name: 'ow_ai_calls_total',
+      help: "AI calls this process made, by provider, model and outcome (ok or the error's code)",
+      labelNames: ['provider', 'model', 'outcome'],
+      registers,
+      collect() {
+        this.reset()
+        for (const [key, n] of aiStats.calls) {
+          const [provider = '', model = '', outcome = ''] = key.split('\t')
+          this.inc({ provider, model, outcome }, n)
+        }
+      },
+    })
+    new client.Counter({
+      name: 'ow_ai_tokens_total',
+      help: "Tokens this process's AI calls used, by provider, model and kind (input, output, cache_read, cache_write)",
+      labelNames: ['provider', 'model', 'kind'],
+      registers,
+      collect() {
+        this.reset()
+        for (const [key, n] of aiStats.tokens) {
+          const [provider = '', model = '', kind = ''] = key.split('\t')
+          this.inc({ provider, model, kind }, n)
+        }
+      },
+    })
+    new client.Counter({
+      name: 'ow_ai_cost_usd_total',
+      help: "What this process's AI calls cost in US dollars, by provider and model (from the price table; calls without a price add nothing)",
+      labelNames: ['provider', 'model'],
+      registers,
+      collect() {
+        this.reset()
+        for (const [key, n] of aiStats.costUsd) {
+          const [provider = '', model = ''] = key.split('\t')
+          this.inc({ provider, model }, n)
+        }
       },
     })
 

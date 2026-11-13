@@ -14,6 +14,9 @@ export interface AwsDefaults {
   /** STS's and SQS's endpoints for every region, for tests (a resource's own `endpoint` wins for SQS). */
   stsEndpoint?: string
   sqsEndpoint?: string
+  /** SNS's and Kinesis's (M30), the same way. */
+  snsEndpoint?: string
+  kinesisEndpoint?: string
 }
 
 let defaults: AwsDefaults = {}

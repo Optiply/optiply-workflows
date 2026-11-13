@@ -30,6 +30,8 @@ const grants: string[] = []
 const legacySessions = new Set<string>()
 const legacyCalls: string[] = []
 let issued = 0
+/** Tokens revoked through /revoke (RFC 7009), by Disconnect. */
+const revokedTokens: string[] = []
 
 test.beforeAll(async () => {
   server = createServer(async (req, res) => {
@@ -81,6 +83,13 @@ test.beforeAll(async () => {
           expires_in: 3600,
           id_token: idToken,
         })
+      }
+      case '/revoke': {
+        const form = new URLSearchParams(body)
+        if (form.get('client_secret') !== 'crm-secret') return send(401, { error: 'invalid_client' })
+        revokedTokens.push(form.get('token')!)
+        refreshTokens.delete(form.get('token')!)
+        return send(200, {})
       }
       case '/api/me': {
         const who = accessTokens.get((req.headers.authorization ?? '').replace('Bearer ', ''))
@@ -188,6 +197,7 @@ test('an OAuth resource in the playground, a draft and a scheduled run, and an a
   await page.getByRole('combobox', { name: 'Authentication' }).selectOption('oauth2AuthorizationCode')
   await page.getByRole('textbox', { name: 'Authorization URL' }).fill(`${origin}/authorize`)
   await page.getByRole('textbox', { name: 'Token URL' }).fill(`${origin}/token`)
+  await page.getByRole('textbox', { name: 'Revocation URL' }).fill(`${origin}/revoke`)
   await page.getByRole('textbox', { name: 'Client ID' }).fill('crm-client')
   await page.getByLabel('Client secret', { exact: true }).fill('crm-secret')
   await page.getByRole('textbox', { name: /Scopes/ }).fill('contacts')
@@ -283,6 +293,27 @@ test('an OAuth resource in the playground, a draft and a scheduled run, and an a
   await expect(page.getByText('Connected', { exact: true })).toBeVisible()
   await runPlayground(page, 'me')
   await expect(page.getByText('"ada"')).toBeVisible()
+
+  // Disconnect revokes the refresh token at the provider (session 40), then forgets the account.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue' }).click()
+  await expect(page.getByText('Disconnected, and revoked at the provider.')).toBeVisible()
+  await expect(page.getByText('Not connected')).toBeVisible()
+  expect(revokedTokens).toEqual([expect.stringMatching(/^rt-\d+$/)])
+
+  // Run in the editor with no account: the run says so and points at the resource's settings (session 40).
+  await page.goto(`/workflows/${wf.id}`)
+  await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
+  const panel = page.getByTestId('run-panel')
+  await expect(panel.getByTestId('run-status').first()).toHaveText('failed')
+  await panel.getByRole('button', { name: 'output' }).click()
+  const note = panel.getByTestId('run-output').getByRole('alert')
+  await expect(note).toContainText('me: No account is connected to this resource in this environment')
+  await expect(note.getByRole('link', { name: 'Open the resource’s settings' })).toHaveAttribute(
+    'href',
+    `/resources/${crm.id}`,
+  )
 })
 
 test("a per-user resource uses each viewer's own account in an app", async ({ page, browser }) => {

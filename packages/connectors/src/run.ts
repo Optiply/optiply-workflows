@@ -1,5 +1,6 @@
 import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import { type Evaluate, TemplateError } from '@ow/expressions'
+import type { AiRunContext } from './ai/core'
 import { type PoolManager, parseResource } from './pool'
 import { tunnelFor } from './ssh/client'
 import type { SshConfig, SshSecrets } from './ssh/settings'
@@ -18,12 +19,19 @@ export interface RunOptions {
   signal?: AbortSignal
   /** Default 120s, Retool's default query timeout. */
   timeoutMs?: number
+  /**
+   * See `QueryContext.ownTimeout`. Defaults to whether `timeoutMs` was given; pass false when it is only a default
+   * (a workflow block that set no timeout).
+   */
+  ownTimeout?: boolean
   /** See `QueryContext.labels`. */
   labels?: Record<string, string>
   /** See `QueryContext.untrustedValues`. */
   untrustedValues?: boolean
   /** See `QueryContext.credentials`. */
   credentials?: CredentialSource
+  /** See `QueryContext.ai` (M35). */
+  ai?: AiRunContext
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -32,6 +40,19 @@ const DEFAULT_TIMEOUT_MS = 120_000
  * Runs one query against a resource through the pool. Every failure becomes a `ConnectorError`, and secret values
  * are scrubbed from errors and metadata (and from data, for connectors that opt in).
  */
+/**
+ * Queries this process ran, by connector type, action (service queries, M27; empty otherwise) and outcome (`ok` or the
+ * error's code), keyed `type\taction\toutcome`, for `ow_connector_queries_total`.
+ */
+export const queryStats = new Map<string, number>()
+
+/** Counted by the parsed query's action (a service's are an enum), so a query that doesn't parse adds no labels. */
+function countQuery(type: string, query: unknown, outcome: string): void {
+  const action = (query as { action?: unknown } | null | undefined)?.action
+  const key = `${type}\t${typeof action === 'string' ? action : ''}\t${outcome}`
+  queryStats.set(key, (queryStats.get(key) ?? 0) + 1)
+}
+
 export async function runQuery(
   pool: PoolManager,
   connector: AnyConnector,
@@ -44,24 +65,59 @@ export async function runQuery(
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
 
+  let query: unknown
   try {
-    const query = parseQuery(connector, rawQuery)
+    query = parseQuery(connector, rawQuery)
     const result = await pool.withClient(connector, resource, (client) =>
       connector.execute(client, query, {
         evaluate: wrapEvaluate(opts.evaluate),
         signal,
         timeoutMs,
+        ownTimeout: opts.ownTimeout ?? opts.timeoutMs !== undefined,
         ...(opts.labels && { labels: opts.labels }),
         ...(opts.untrustedValues && { untrustedValues: true }),
         ...(credentials && { credentials }),
+        ...(opts.ai && { ai: opts.ai }),
       }),
     )
+    countQuery(connector.type, query, 'ok')
     return {
       data: connector.scrubResultData ? scrubSecretsDeep(result.data, secrets) : result.data,
       metadata: scrubSecretsDeep(result.metadata, secrets),
     }
   } catch (err) {
-    throw toConnectorError(err, { timedOut: timeout.aborted, timeoutMs, aborted: signal.aborted, secrets })
+    const error = toConnectorError(err, {
+      timedOut: timeout.aborted,
+      timeoutMs,
+      aborted: signal.aborted,
+      secrets,
+    })
+    countQuery(connector.type, query, error instanceof ConnectorError ? error.code : 'error')
+    throw error
+  }
+}
+
+/**
+ * Runs something other than a query against a resource's pooled client (M27: a GraphQL schema, HubSpot's properties),
+ * time-limited, with its credentials, and scrubbed of secrets and tokens like a query's results and errors.
+ */
+export async function runOperation<T>(
+  pool: PoolManager,
+  connector: AnyConnector,
+  resource: ResolvedResource,
+  operation: (client: unknown, ctx: { signal: AbortSignal; credentials?: CredentialSource }) => Promise<T>,
+  opts: { timeoutMs?: number; credentials?: CredentialSource } = {},
+): Promise<T> {
+  const { credentials, secrets } = scrubbing(resource, opts.credentials)
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const signal = AbortSignal.timeout(timeoutMs)
+  try {
+    const result = await pool.withClient(connector, resource, (client) =>
+      operation(client, { signal, ...(credentials && { credentials }) }),
+    )
+    return scrubSecretsDeep(result, secrets) as T
+  } catch (err) {
+    throw toConnectorError(err, { timedOut: signal.aborted, timeoutMs, aborted: signal.aborted, secrets })
   }
 }
 

@@ -1,0 +1,25 @@
+{
+  "name": "@ow/retool-import",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ow/app-definition": "workspace:*",
+    "@ow/definition": "workspace:*",
+    "@ow/expressions": "workspace:*"
+  },
+  "devDependencies": {
+    "immutable": "3.8.4",
+    "transit-immutable-js": "0.8.0",
+    "transit-js": "0.8.874",
+    "vitest": "5.0.4"
+  }
+}

@@ -5,7 +5,10 @@ import type { Config } from '../../config'
 import { draftColumn, type GitObjectRow } from './kinds'
 import { gitTrpcError, requireGitRepo } from './protection'
 
-type GitConfig = Pick<Config, 'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS'>
+type GitConfig = Pick<
+  Config,
+  'keyring' | 'GIT_CACHE_DIR' | 'GIT_ALLOW_INSECURE_URLS' | 'GITHUB_API_URL' | 'GITLAB_API_URL'
+>
 
 /** Branches compared with the deploy branch for one object; more are listed without it. */
 const COMPARED = 100

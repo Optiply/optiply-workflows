@@ -12,8 +12,8 @@ import {
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   linkClass,
-  Spinner,
   Table,
   Td,
   Th,
@@ -43,7 +43,7 @@ function ApiKeys() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: trpc.apiKeys.list.queryKey() })
   const revoke = useMutation(trpc.apiKeys.revoke.mutationOptions({ onSuccess: refresh }))
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton header={false} rows={4} />
   if (!keys) return <ErrorNote error={error} />
 
   const workflowName = (id: string) => workflows?.find((w) => w.id === id)?.name ?? 'deleted workflow'

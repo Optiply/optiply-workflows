@@ -24,7 +24,7 @@ export interface CodeFetchResponse {
 export interface CodeFetcherOptions {
   /** Allow loopback, private and link-local addresses (development and tests). Off by default. */
   allowPrivateNetwork?: boolean
-  /** Default 10 MB, like a block result. */
+  /** Default 10 MB. */
   maxResponseBytes?: number
 }
 

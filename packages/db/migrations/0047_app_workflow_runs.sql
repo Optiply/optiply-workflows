@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_runs" DROP CONSTRAINT "workflow_runs_trigger_type_ck";--> statement-breakpoint
+ALTER TABLE "workflow_runs" ADD CONSTRAINT "workflow_runs_trigger_type_ck" CHECK ("workflow_runs"."trigger_type" in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka', 'rabbitmq', 'kinesis', 'app'));

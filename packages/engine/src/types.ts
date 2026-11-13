@@ -13,7 +13,7 @@ import type {
   TaskOutcome,
   WorkflowDefinition,
 } from '@ow/definition'
-import type { CodeRuntime, PythonRunner } from '@ow/sandbox'
+import type { CodeRuntime, PythonRunner, SandboxModules } from '@ow/sandbox'
 
 /** Why a block or run failed, as stored and shown. Messages are scrubbed of known secrets. */
 export interface EngineError {
@@ -60,7 +60,7 @@ export interface RunInput {
    * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
    * (`startTrigger.message`).
    */
-  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage
+  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage | RabbitRunMessage | KinesisRunMessage
 }
 
 /** What an SQS-triggered run sees of its message, besides its body (M26). */
@@ -91,6 +91,42 @@ export interface KafkaRunMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+  /** M30: the Schema Registry's schema the value was decoded with. */
+  schemaId?: number
+  /** M30: why a wire-format value couldn't be decoded (it runs as it came). */
+  schemaError?: string
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
+}
+
+/** What a Kinesis-triggered run sees of its record, besides its data (M30). */
+export interface KinesisRunMessage {
+  stream: string
+  shardId: string
+  sequenceNumber: string
+  partitionKey: string
+  arrivedAt: string
+  /** This run's attempt at the record, counting from 1. */
+  attempt: number
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
+}
+
+/** What a RabbitMQ-triggered run sees of its message, besides its body (M30). */
+export interface RabbitRunMessage {
+  queue: string
+  /** The exchange it was published to (empty: the default exchange) and its routing key. */
+  exchange: string
+  routingKey: string
+  /** Delivered before and not acked (a lost channel, another worker). */
+  redelivered: boolean
+  headers: Record<string, unknown>
+  messageId?: string
+  contentType?: string
+  correlationId?: string
+  timestamp?: string
+  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /** What a Pub/Sub-triggered run sees of its message, besides its data. */
@@ -104,6 +140,8 @@ export interface PubSubRunMessage {
   subscription: string
   /** The data's bytes, for binary payloads `data` can only show as text. */
   dataBase64: string
+  /** M30: `data` is `dataBase64` too (the bytes weren't text: not UTF-8, or holding a NUL). */
+  encoding?: 'base64'
 }
 
 /**
@@ -171,6 +209,11 @@ export interface EngineServices {
    * block first runs (shared by the rest). Absent when the definition declares none.
    */
   pythonEnv?: () => Promise<string>
+  /**
+   * The run's JavaScript packages: their bundle, asked for when JS code with import lines first runs (shared by the
+   * rest). Absent when the definition declares none.
+   */
+  jsModules?: () => Promise<SandboxModules>
   /** Library queries (M21): Library query blocks and runners. Without it they fail with `library`. */
   library?: LibraryQueries
 }
@@ -244,6 +287,18 @@ export interface ChildRuns {
   }): Promise<string>
   get(runId: string): Promise<ChildRunState | null>
   cancel(runId: string): Promise<void>
+  /**
+   * The workflows an AI agent may call as tools (M35): their names, descriptions and Start triggers' body schemas,
+   * from their live releases. Throws a BlockFailure for one that's unknown or not published.
+   */
+  describe?(slugs: string[]): Promise<ChildWorkflowInfo[]>
+}
+
+export interface ChildWorkflowInfo {
+  slug: string
+  name: string
+  description: string | null
+  bodySchema: Record<string, unknown> | null
 }
 
 export interface ExecuteRunOptions {
@@ -291,6 +346,11 @@ export interface ExecuteRunOptions {
   handlerTimeoutMs?: number
   /** Values scrubbed from logs and errors (secret config var values). */
   secrets?: readonly string[]
+  /**
+   * The tokens the run's AI calls have used (M35), shared with its function calls. Omit: counted from the
+   * checkpoints.
+   */
+  aiBudget?: { spent(): number; add(tokens: number): void }
 }
 
 export interface RunOutcome {

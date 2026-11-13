@@ -12,7 +12,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   const group = await trpcMutate<{ id: string }>(page, 'groups.create', { name: `Viewers ${Date.now()}` })
   void group
 
-  await page.getByRole('link', { name: 'Apps' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps' }).click()
   await page.getByRole('button', { name: 'New app' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
   await page.getByRole('button', { name: 'Create app' }).click()
@@ -21,7 +21,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
 
   // Before the first release, the app's address says so and leads its editors to the editor.
   await page.goto(`/apps/${slug}`)
-  await expect(page.getByText("This app hasn't been published yet")).toBeVisible()
+  await expect(page.getByText('Not published yet')).toBeVisible()
   await page.getByRole('link', { name: 'Open the editor' }).click()
   await expect(page).toHaveURL(new RegExp(`/apps/${slug}/edit$`))
 
@@ -80,9 +80,9 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   await page.goto(`/apps/${slug}/edit`)
   await page.getByRole('button', { name: 'Access' }).click()
   const access = page.getByRole('dialog')
-  await access
-    .getByLabel('Group')
-    .selectOption({ label: (await access.getByLabel('Group').locator('option').nth(1).textContent())! })
+  await access.getByLabel('Group or person').selectOption({
+    label: (await access.getByLabel('Group or person').locator('option').nth(1).textContent())!,
+  })
   await expect(access.getByLabel('Environment')).toHaveCount(0)
   await access.getByRole('button', { name: 'Grant' }).click()
   await expect(access.getByText('No grants yet.')).toBeHidden()
@@ -90,7 +90,7 @@ test('create, publish, roll back and share an app', async ({ page }) => {
   await page.getByRole('button', { name: 'App settings' }).click()
   await page.getByRole('dialog').getByLabel('Name').fill(`${name} (renamed)`)
   await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click()
-  await page.getByRole('link', { name: 'Apps' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps' }).click()
   const row = page.getByTestId(`app-${slug}`)
   await expect(row).toContainText(`${name} (renamed)`)
   await expect(row).toContainText('Live')

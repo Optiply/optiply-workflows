@@ -85,11 +85,34 @@ function toMessage(received: ReceivedMessage, subscription: string): QueueMessag
     subscription,
     dataBase64: message.data.toString('base64'),
   }
+  const body = bodyData(message.data)
+  if (body.binary) runMessage.encoding = 'base64'
   return {
     id: message.messageId,
     handle: received.ackId,
-    input: { data: textOrJson(message.data.toString('utf8')), message: runMessage },
+    input: { data: body.data, message: runMessage },
   }
+}
+
+const utf8 = new TextDecoder('utf-8', { fatal: true })
+
+/**
+ * A broker message's bytes as `startTrigger.data` (M30): parsed when they're JSON, else their text. Bytes that aren't
+ * text (not UTF-8, or holding a NUL, which Postgres's jsonb can't store, so the run could never start) are base64,
+ * with `binary` saying so; the run's message then has `encoding: 'base64'`.
+ */
+export function bodyData(body: Buffer): { data: unknown; binary: boolean } {
+  let text: string | undefined
+  if (!body.includes(0))
+    try {
+      text = utf8.decode(body)
+    } catch {}
+  if (text === undefined) return { data: body.toString('base64'), binary: true }
+  const data = textOrJson(text)
+  // JSON's own `\u0000` escapes parse to a NUL as well: such JSON is kept as its text.
+  if (typeof data !== 'string' && JSON.stringify(data).includes('\\u0000'))
+    return { data: text, binary: false }
+  return { data, binary: false }
 }
 
 /** A message's body as `startTrigger.data`: parsed when it's JSON, else its text. */

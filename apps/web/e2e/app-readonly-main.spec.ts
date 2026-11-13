@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { e2eRepo, ensureBranch, useE2eRepo } from './git-helpers'
-import { signIn, trpcMutate } from './helpers'
+import { openCode, openEditorPanel, signIn, trpcMutate } from './helpers'
 
 /**
  * M22: a protected app's editor on main shows what's deployed without letting it be edited (the inspector, code
@@ -41,8 +41,9 @@ test('a protected app is read-only on main and editable on a branch', async ({ p
   await page.goto(`/apps/${slug}/edit`)
   await expect(page.getByTestId('read-only-banner')).toBeVisible()
   // The code panel: nothing to add or delete, settings disabled, the SQL read-only; Run still works.
+  await openEditorPanel(page, 'Code')
   await expect(page.getByTitle('Add a resource query')).toHaveCount(0)
-  await page.getByRole('button', { name: 'customer', exact: true }).click()
+  await openCode(page, 'customer')
   const query = page.getByTestId('query-customer')
   await expect(query.getByLabel('Resource')).toBeDisabled()
   await expect(query.getByTitle('Delete query')).toBeHidden()
@@ -55,6 +56,7 @@ test('a protected app is read-only on main and editable on a branch', async ({ p
   await expect(sql).toHaveText(before)
   await expect(query.getByRole('button', { name: 'Run' })).toBeEnabled()
   // The inspector: disabled.
+  await openEditorPanel(page, 'Component tree')
   await page.getByRole('button', { name: 'email Text', exact: true }).click()
   await expect(page.getByTestId('inspector')).toHaveAttribute('disabled', '')
   await expect(page.getByTestId('inspector').getByRole('textbox', { name: 'Name' })).toBeDisabled()
@@ -62,9 +64,11 @@ test('a protected app is read-only on main and editable on a branch', async ({ p
   // On a branch: editable.
   await page.goto(`/apps/${slug}/edit?branch=${encodeURIComponent(`edit/${stamp}`)}`)
   await expect(page.getByTestId('branch-details-open')).toBeVisible()
+  await openEditorPanel(page, 'Code')
   await expect(page.getByTitle('Add a resource query')).toBeVisible()
-  await page.getByRole('button', { name: 'customer', exact: true }).click()
+  await openCode(page, 'customer')
   await expect(page.getByTestId('query-customer').getByLabel('Resource')).toBeEnabled()
+  await openEditorPanel(page, 'Component tree')
   await page.getByRole('button', { name: 'email Text', exact: true }).click()
   await expect(page.getByTestId('inspector')).not.toHaveAttribute('disabled')
   await expect(page.getByTestId('inspector').getByRole('textbox', { name: 'Name' })).toBeEnabled()

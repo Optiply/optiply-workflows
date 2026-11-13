@@ -39,6 +39,14 @@ export interface RunQueueMessage {
   offset?: string
   key?: string | null
   attempt?: number
+  /** Kafka (M30): the Schema Registry schema its value was decoded with. */
+  schemaId?: number
+  /** RabbitMQ (M30). */
+  redelivered?: boolean
+  /** Kinesis (M30). */
+  stream?: string
+  shardId?: string
+  sequenceNumber?: string
 }
 
 /** A run's Pub/Sub message, when a Pub/Sub trigger started it. */
@@ -55,7 +63,11 @@ export function queueMessageLine(run: Pick<RunView, 'triggerType' | 'input'>): s
   if (run.triggerType === 'sqs')
     return `SQS message ${m.messageId} · ${m.queue?.split('/').pop()}${m.receiveCount && m.receiveCount > 1 ? ` · receive ${m.receiveCount}` : ''}`
   if (run.triggerType === 'kafka')
-    return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+    return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.schemaId ? ` · schema ${m.schemaId}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+  if (run.triggerType === 'kinesis')
+    return `Kinesis ${m.stream}/${m.shardId}@${m.sequenceNumber}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
+  if (run.triggerType === 'rabbitmq')
+    return `RabbitMQ message${m.messageId ? ` ${m.messageId}` : ''} · ${m.queue}${m.redelivered ? ' · redelivered' : ''}`
   return undefined
 }
 
@@ -130,10 +142,17 @@ export const runsApi = {
       method: 'POST',
       body: { input, ...(draftId ? { draftId } : {}) },
     }).then((r) => r.run),
-  startBlock: (slug: string, block: string, environment?: string, draftId?: string | null) =>
+  /** `input`: run every ancestor again with it, instead of reusing the latest run's results. */
+  startBlock: (
+    slug: string,
+    block: string,
+    environment?: string,
+    draftId?: string | null,
+    fresh: { input?: unknown; testInput?: unknown } = {},
+  ) =>
     call<{ run: RunView }>(`/workflows/${slug}/blocks/${encodeURIComponent(block)}/runs${env(environment)}`, {
       method: 'POST',
-      body: draftId ? { draftId } : {},
+      body: { ...(draftId ? { draftId } : {}), ...fresh },
     }).then((r) => r.run),
   get: (id: string) => call<{ run: RunView }>(`/runs/${id}`).then((r) => r.run),
   list: (params: { status?: string; before?: string; limit?: number } = {}) => {

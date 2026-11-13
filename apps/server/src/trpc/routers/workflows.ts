@@ -2,7 +2,9 @@ import {
   environments,
   permissions,
   pythonEnvs,
+  pythonIndexes,
   queueDeliveries,
+  users,
   type Workflow,
   webhookRejections,
   workflowReleases,
@@ -13,6 +15,7 @@ import {
   definitionHash,
   MAX_REQUIREMENT_LENGTH,
   MAX_REQUIREMENTS,
+  PYTHON_INDEX_SLUG,
   requirementProblems,
   validateDefinition,
   type WorkflowDefinition,
@@ -24,6 +27,7 @@ import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { dependents, inUseMessage } from '../../services/dependents'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
 import {
   type Access,
@@ -40,6 +44,8 @@ import { authedProcedure, type Context, router } from '../init'
 const Id = z.string().uuid()
 /** A workflow's Python packages (M23), as the editor's field holds them. */
 const requirementsInput = z.array(z.string().max(MAX_REQUIREMENT_LENGTH)).min(1).max(MAX_REQUIREMENTS)
+/** A package index's slug (M32), as `settings.python.index`. */
+const indexInput = z.string().regex(PYTHON_INDEX_SLUG).optional()
 const NO_BUILDER =
   "This instance can't install Python packages: it has no package builder (PYTHON_BUILDER_URL)"
 /** Appears in webhook URLs (M4), so it's a stable identifier. */
@@ -87,11 +93,83 @@ const summary = (w: Workflow, access: Access) => ({
   level: access.workflowLevel(w)!,
 })
 
+/** A workflow's latest run in any environment, as the list shows it. */
+interface LastRun {
+  id: string
+  status: string
+  triggerType: string
+  environment: string | null
+  createdAt: Date
+  finishedAt: Date | null
+}
+
 export const workflowsRouter = router({
+  /**
+   * The workflows the user can see, with what the list shows about each (session 40): who edited it last, its live
+   * triggers (enabled, by kind) and its latest run.
+   */
   list: authedProcedure.query(async ({ ctx }) => {
     const access = await loadAccess(ctx.db, ctx.user)
-    const rows = await ctx.db.select().from(workflows).orderBy(asc(workflows.name))
-    return rows.filter((w) => access.workflowLevel(w) !== null).map((w) => summary(w, access))
+    const rows = await ctx.db
+      .select({ workflow: workflows, editor: users.name })
+      .from(workflows)
+      .leftJoin(users, eq(users.id, workflows.updatedBy))
+      .orderBy(asc(workflows.name))
+    const visible = rows.filter((r) => access.workflowLevel(r.workflow) !== null)
+    if (!visible.length) return []
+    const ids = visible.map((r) => r.workflow.id)
+    const [triggers, lastRuns] = await Promise.all([
+      ctx.db
+        .select({
+          workflowId: workflowTriggers.workflowId,
+          kind: workflowTriggers.kind,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(workflowTriggers)
+        .where(and(inArray(workflowTriggers.workflowId, ids), eq(workflowTriggers.enabled, true)))
+        .groupBy(workflowTriggers.workflowId, workflowTriggers.kind)
+        .orderBy(asc(workflowTriggers.kind)),
+      // One index probe per workflow (workflow_runs_workflow_idx), not a scan of every run.
+      ctx.db.execute<{
+        workflow_id: string
+        id: string
+        status: string
+        trigger_type: string
+        environment: string | null
+        created_at: string
+        finished_at: string | null
+      }>(sql`
+        select w.id as workflow_id, r.id, r.status, r.trigger_type, e.slug as environment, r.created_at, r.finished_at
+        from workflows w
+        cross join lateral (
+          select id, status, trigger_type, environment_id, created_at, finished_at from workflow_runs
+          where workflow_id = w.id order by created_at desc limit 1
+        ) r
+        left join environments e on e.id = r.environment_id`),
+    ])
+    const triggersOf = new Map<string, { kind: string; count: number }[]>()
+    for (const t of triggers) {
+      triggersOf.set(t.workflowId, [...(triggersOf.get(t.workflowId) ?? []), { kind: t.kind, count: t.n }])
+    }
+    const lastRunOf = new Map<string, LastRun>(
+      [...lastRuns].map((r) => [
+        r.workflow_id,
+        {
+          id: r.id,
+          status: r.status,
+          triggerType: r.trigger_type,
+          environment: r.environment,
+          createdAt: new Date(r.created_at),
+          finishedAt: r.finished_at ? new Date(r.finished_at) : null,
+        },
+      ]),
+    )
+    return visible.map(({ workflow, editor }) => ({
+      ...summary(workflow, access),
+      updatedByName: editor,
+      triggers: triggersOf.get(workflow.id) ?? [],
+      lastRun: lastRunOf.get(workflow.id) ?? null,
+    }))
   }),
 
   /**
@@ -131,7 +209,8 @@ export const workflowsRouter = router({
       .where(eq(workflowTriggers.workflowId, workflow.id))
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
     // Queue triggers (Pub/Sub M19, SQS and Kafka M26): their last day's messages, from what the consumer recorded.
-    const isQueue = (kind: string) => kind === 'pubsub' || kind === 'sqs' || kind === 'kafka'
+    const isQueue = (kind: string) =>
+      kind === 'pubsub' || kind === 'sqs' || kind === 'kafka' || kind === 'rabbitmq' || kind === 'kinesis'
     const queueIds = rows.filter((r) => isQueue(r.trigger.kind)).map((r) => r.trigger.id)
     const counts = new Map(
       (queueIds.length
@@ -354,16 +433,16 @@ export const workflowsRouter = router({
    * (pip's reason and output) or not yet. The editor sends what its field holds, saved or not.
    */
   pythonEnv: authedProcedure
-    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .input(z.object({ workflowId: Id, requirements: requirementsInput, index: indexInput }))
     .query(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
-      return pythonEnvState(ctx.db, input.requirements)
+      return pythonEnvState(ctx.db, input.requirements, input.index)
     }),
 
   /** Installs a set of Python packages now (M23), so the next run doesn't wait; the answer is the new state. */
   installPythonEnv: authedProcedure
-    .input(z.object({ workflowId: Id, requirements: requirementsInput }))
+    .input(z.object({ workflowId: Id, requirements: requirementsInput, index: indexInput }))
     .mutation(async ({ ctx, input }) => {
       const { access, workflow } = await visibleWorkflow(ctx, input.workflowId)
       requireLevel(access.workflowLevel(workflow), 'edit', 'this workflow')
@@ -377,21 +456,51 @@ export const workflowsRouter = router({
       const client = pythonBuilder()
       if (!client) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: NO_BUILDER })
       try {
-        await envForRequirements(ctx.db, client, input.requirements, {
-          workflowId: workflow.id,
-          actorUserId: ctx.user.id,
-        })
+        await envForRequirements(
+          ctx.db,
+          client,
+          input.requirements,
+          { workflowId: workflow.id, actorUserId: ctx.user.id },
+          input.index,
+        )
       } catch (err) {
         if (!(err instanceof BlockFailure)) throw err
-        // Recorded as failed: the state says why.
+        // A failed build is recorded (the state says why); a failure before it (the index, its password) or an
+        // install of a recorded lock isn't, so the state would still say what it said before: this failure instead.
+        const state = await pythonEnvState(ctx.db, input.requirements, input.index)
+        if (state.available && state.state !== 'failed') {
+          const log = typeof err.details?.log === 'string' ? err.details.log : ''
+          return {
+            available: true as const,
+            state: 'failed' as const,
+            error: err.message,
+            log,
+            at: new Date(),
+          }
+        }
+        return state
       }
-      return pythonEnvState(ctx.db, input.requirements)
+      return pythonEnvState(ctx.db, input.requirements, input.index)
     }),
 
   /** Deletes the workflow with its releases and run history. */
+  /**
+   * Deletes the workflow with its releases, runs and grants. Refused while it's kept in Git (unprotect it first) or
+   * another workflow calls it (a Workflow block or loop, in its draft, live release or a Git branch draft).
+   */
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, workflow } = await visibleWorkflow(ctx, input.id)
     requireLevel(access.workflowLevel(workflow), 'own', 'this workflow')
+    if (workflow.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This workflow is kept in Git: unprotect it before deleting it',
+      })
+    }
+    const callers = (await workflowCallers(ctx.db, workflow.slug)).filter((d) => d.object.id !== workflow.id)
+    if (callers.length) {
+      throw new TRPCError({ code: 'CONFLICT', message: inUseMessage(access, callers, 'workflow') })
+    }
     await ctx.db.transaction(async (tx) => {
       await tx.delete(workflows).where(eq(workflows.id, input.id))
       // Grants reference objects polymorphically, so they're removed here rather than by a foreign key.
@@ -407,15 +516,97 @@ export const workflowsRouter = router({
     })
     return { ok: true }
   }),
+
+  /**
+   * A copy of a workflow's draft under a new slug and name: no releases, not in Git, and **every trigger turned off**,
+   * so the copy doesn't fire schedules or webhooks, or share a queue subscription with the original, until someone
+   * turns them on. Needs Use on the original (whoever can open it can copy it) and the right to create workflows.
+   */
+  duplicate: authedProcedure
+    .input(z.object({ id: Id, slug: Slug, name: Name, folderId: Id.nullish() }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, workflow } = await visibleWorkflow(ctx, input.id)
+      requireLevel(access.workflowLevel(workflow), 'use', 'this workflow')
+      if (!access.canCreateWorkflows) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You need edit access to all workflows to create one',
+        })
+      }
+      const folderId = input.folderId === undefined ? workflow.folderId : input.folderId
+      await checkFolderType(ctx.db, 'workflow', folderId)
+      const [copy] = await uniqueOr('A workflow with that slug already exists', () =>
+        ctx.db
+          .insert(workflows)
+          .values({
+            slug: input.slug,
+            name: input.name,
+            description: workflow.description,
+            folderId,
+            draftDefinition: withTriggersOff(workflow.draftDefinition),
+            maxConcurrentRuns: workflow.maxConcurrentRuns,
+            createdBy: ctx.user.id,
+            updatedBy: ctx.user.id,
+          })
+          .returning(),
+      )
+      await ctx.audit({
+        action: 'workflow.created',
+        objectType: 'workflow',
+        objectId: copy!.id,
+        metadata: { slug: input.slug, duplicateOf: { id: workflow.id, slug: workflow.slug } },
+      })
+      return summary(copy!, access)
+    }),
 })
 
-/** `python_envs`' row for these requirements, as the editor shows it. */
-async function pythonEnvState(db: Context['db'], requirements: string[]) {
+/** The definition with every trigger (schedules, webhooks, Pub/Sub, SQS, Kafka) turned off. */
+function withTriggersOff(definition: WorkflowDefinition): WorkflowDefinition {
+  if (!definition.triggers) return definition
+  const off = (t: unknown) =>
+    t && typeof t === 'object' && 'enabled' in t ? { ...(t as Record<string, unknown>), enabled: false } : t
+  const triggers = Object.fromEntries(
+    Object.entries(definition.triggers).map(([kind, value]) => [
+      kind,
+      Array.isArray(value) ? value.map(off) : off(value),
+    ]),
+  )
+  return { ...definition, triggers } as WorkflowDefinition
+}
+
+/** The workflows calling one by its slug: a Workflow block or a loop's workflow runner (both name it `workflow`). */
+const workflowCallers = (db: Context['db'], slug: string) =>
+  dependents(
+    db,
+    (column) =>
+      sql`jsonb_path_exists(${column}, '$.** ? (@.workflow == $slug)', jsonb_build_object('slug', ${slug}::text))`,
+    { modules: false, workflows: true },
+  ).then((found) => found.filter((d) => d.kind === 'workflow'))
+
+/** `python_envs`' row for these requirements (from this package index, M32), as the editor shows it. */
+async function pythonEnvState(db: Context['db'], requirements: string[], index?: string) {
   if (!pythonBuilder()) return { available: false as const, message: NO_BUILDER }
+  let indexId: string | null = null
+  if (index) {
+    const [found] = await db
+      .select({ id: pythonIndexes.id })
+      .from(pythonIndexes)
+      .where(eq(pythonIndexes.slug, index))
+    if (!found) {
+      return {
+        available: true as const,
+        state: 'failed' as const,
+        error: `The package index "${index}" doesn't exist on this instance (Settings → Python)`,
+        log: '',
+        at: null,
+      }
+    }
+    indexId = found.id
+  }
   const [row] = await db
     .select()
     .from(pythonEnvs)
-    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements)))
+    .where(eq(pythonEnvs.requirementsHash, requirementsHash(requirements, indexId)))
   if (!row) return { available: true as const, state: 'none' as const }
   if (row.state === 'failed') {
     return {
@@ -430,6 +621,11 @@ async function pythonEnvState(db: Context['db'], requirements: string[]) {
     available: true as const,
     state: 'ready' as const,
     packages: (row.lock?.packages ?? []).map((p) => `${p.name}==${p.version}`),
+    /** Each package's index and whether it was built from its sdist (M32), by position. */
+    details: (row.lock?.packages ?? []).map((p) => ({
+      ...(p.index && { index: p.index }),
+      ...(p.source && { source: p.source }),
+    })),
     sizeBytes: row.sizeBytes ?? 0,
     at: row.builtAt,
   }

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Hourglass } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { Button, buttonVariants, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
@@ -12,7 +13,7 @@ export function LoginPage() {
   const trpc = useTRPC()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { error: ssoError } = route.useSearch()
+  const { error: ssoError, pending } = route.useSearch()
   const { data: config, isLoading } = useQuery(trpc.authConfig.queryOptions())
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -39,19 +40,41 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex justify-center">
+    // A calm page with a soft glow of the brand's blue behind the card.
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-10">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_30rem_at_50%_-10%,color-mix(in_srgb,var(--color-accent)_14%,transparent),transparent_70%)]"
+      />
+      <div className="relative w-full max-w-sm motion-safe:animate-fade-in">
+        <div className="mb-8 flex justify-center">
           <Wordmark size="lg" />
         </div>
 
-        <Card className="space-y-4 p-6 shadow-card">
-          <div>
-            <h1 className="text-lg font-bold">Sign in</h1>
+        <Card className="space-y-5 rounded-2xl p-8 shadow-menu">
+          <div className="space-y-1">
+            <h1 className="text-xl font-bold tracking-tight">Sign in</h1>
             <p className="text-sm text-muted">to Optiply Workflows</p>
           </div>
           {isLoading && <Spinner />}
-          <ErrorNote error={ssoError} />
+          {pending ? (
+            <div
+              role="status"
+              className="flex gap-3 rounded-xl border border-accent/30 bg-accent-soft/60 p-4 text-sm"
+              data-testid="pending-approval"
+            >
+              <Hourglass className="mt-0.5 size-4 shrink-0 text-accent" />
+              <div>
+                <div className="font-medium">Waiting for an admin's approval</div>
+                <p className="mt-0.5 text-muted">
+                  Your request to use Optiply Workflows has reached the admins. Once one of them lets you in,
+                  sign in again here.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <ErrorNote error={ssoError} />
+          )}
 
           {config?.oidcEnabled && (
             <a
@@ -116,8 +139,8 @@ export function LoginPage() {
           )}
         </Card>
         {config?.oidcEnabled && (
-          <p className="mt-4 text-center text-xs text-muted">
-            Only @{config.allowedDomain} accounts can sign in.
+          <p className="mt-5 text-center text-xs text-muted">
+            @{config.allowedDomain} accounts and invited people can sign in; new accounts wait for an admin.
           </p>
         )}
       </div>

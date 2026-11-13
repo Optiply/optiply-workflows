@@ -80,7 +80,11 @@ afterAll(async () => {
 
 describe.skipIf(!available)('MySQL resources', () => {
   it('is offered as a type, saves settings with a write-only password and tests the connection', async () => {
-    expect(data(await admin.query('resources.types'))).toContainEqual({ type: 'mysql', label: 'MySQL' })
+    expect(data(await admin.query('resources.types'))).toContainEqual({
+      type: 'mysql',
+      label: 'MySQL',
+      group: 'Databases',
+    })
     resourceId = data(
       await admin.mutate('resources.create', { type: 'mysql', name: 'Shop', slug: 'shop' }),
     ).id
@@ -94,7 +98,7 @@ describe.skipIf(!available)('MySQL resources', () => {
     )
     expect(saved.secrets).toEqual({ password: { set: true } })
     // Defaults applied by the connector's schema.
-    expect(saved.config).toMatchObject({ ssl: 'require', maxRows: 10_000, readOnly: false, poolSize: 5 })
+    expect(saved.config).toMatchObject({ ssl: 'require', maxRows: 1_000_000, readOnly: false, poolSize: 5 })
 
     const test = data(await admin.mutate('resources.test', { resourceId, environmentId: prodId }))
     expect(test).toMatchObject({ ok: true, message: expect.stringMatching(/^MySQL 8\.4/) })

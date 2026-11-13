@@ -62,6 +62,7 @@ export function OAuthCodeFields({
       provider: id,
       authorizeUrl: fillPlaceholders(next.authorizeUrl, values),
       tokenUrl: fillPlaceholders(next.tokenUrl, values),
+      revokeUrl: next.revokeUrl,
       scope: next.scope,
       authorizeParams: next.authorizeParams,
       pkce: next.pkce,
@@ -138,6 +139,21 @@ export function OAuthCodeFields({
             onChange={(e) => setAuth({ tokenUrl: e.target.value })}
           />
         </Field>
+        <Field
+          label="Revocation URL"
+          hint={
+            preset && !preset.revokeUrl
+              ? `${preset.label} has no standard revocation endpoint: Disconnect only forgets the account here.`
+              : 'Optional (RFC 7009), on the same origin as the token endpoint: Disconnect revokes the account there.'
+          }
+        >
+          <Input
+            value={text('revokeUrl')}
+            placeholder="https://auth.example.com/oauth/revoke"
+            disabled={disabled}
+            onChange={(e) => setAuth({ revokeUrl: e.target.value })}
+          />
+        </Field>
         <Field label="Client ID">
           <Input
             value={text('clientId')}
@@ -189,34 +205,49 @@ export function OAuthCodeFields({
           label="Use PKCE"
         />
       </div>
-      <div className="space-y-1.5">
-        <p className="text-sm font-medium">Redirect URI</p>
-        <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface px-3 py-2 text-xs">
-            {data?.redirectUri ?? '…'}
-          </code>
-          {data && <CopyButton text={data.redirectUri} label="Copy the redirect URI" />}
-        </div>
-        <p className="text-xs text-muted">
-          Register it with the provider’s OAuth app
-          {preset && (
-            <>
-              {' '}
-              (
-              <a
-                href={preset.consoleUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-0.5 text-accent hover:underline"
-              >
-                {preset.label} <ExternalLink className="size-3" />
-              </a>
-              )
-            </>
-          )}
-          . It’s the same for every resource.
-        </p>
+      <RedirectUri resourceId={resourceId} preset={preset} />
+    </div>
+  )
+}
+
+/** Where the provider sends people back after consent, to register with the OAuth app (M9; M27's services too). */
+export function RedirectUri({
+  resourceId,
+  preset,
+}: {
+  resourceId: string
+  preset?: { label: string; consoleUrl: string } | undefined
+}) {
+  const trpc = useTRPC()
+  const { data } = useQuery(trpc.resources.oauthConnections.queryOptions({ resourceId }))
+  return (
+    <div className="space-y-1.5">
+      <p className="text-sm font-medium">Redirect URI</p>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-surface px-3 py-2 text-xs">
+          {data?.redirectUri ?? '…'}
+        </code>
+        {data && <CopyButton text={data.redirectUri} label="Copy the redirect URI" />}
       </div>
+      <p className="text-xs text-muted">
+        Register it with the provider’s OAuth app
+        {preset && (
+          <>
+            {' '}
+            (
+            <a
+              href={preset.consoleUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-0.5 text-accent hover:underline"
+            >
+              {preset.label} <ExternalLink className="size-3" />
+            </a>
+            )
+          </>
+        )}
+        . It’s the same for every resource.
+      </p>
     </div>
   )
 }
@@ -257,8 +288,15 @@ export function OAuthConnections({
   })
   const disconnect = useMutation(
     trpc.resources.oauthDisconnect.mutationOptions({
-      onSuccess: async () => {
-        setMessage(null)
+      onSuccess: async (result) => {
+        // What the provider was told: the connection is forgotten here either way.
+        if (!('revoked' in result) || result.revoked === 'none') setMessage(null)
+        else if (result.revoked === 'failed') {
+          setMessage({
+            ok: false,
+            text: `Disconnected here, but the provider didn’t revoke the access (${result.reason}). Remove it in the provider’s settings.`,
+          })
+        } else setMessage({ ok: true, text: 'Disconnected, and revoked at the provider.' })
         await refresh()
       },
     }),

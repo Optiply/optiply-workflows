@@ -2,35 +2,37 @@ import type { AppDefinition } from '@ow/app-definition'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Eye, Pencil } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
-import { Badge, Button, ErrorNote, Select, Spinner, sectionLabelClass } from '@/components/ui'
+import { SaveStatusIndicator } from '@/components/save-status'
+import { TopBarPortal } from '@/components/top-bar'
+import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
 import { UndoButtons } from '@/components/undo-buttons'
 import { useEditorKeys } from '@/lib/editor-keys'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
-import { cn } from '@/lib/utils'
 import { AppCanvas } from '../canvas'
 import { NeededConnections } from '../connections'
 import { AppChromeContext } from '../grid-context'
 import { Notifications, useConfirmations, useNotifications } from '../notifications'
 import { AppHostProvider, useAppHost, useAppHostState } from '../runtime/react'
 import { AppStopped } from '../stopped'
-import { ComponentTree, EditCanvas, Palette } from './canvas'
+import { ThemedApp } from '../themed'
+import { EditCanvas } from './canvas'
 import { useCanvasKeys } from './canvas-keys'
 import { copyText, duplicateChosen, pasteText } from './clipboard'
-import { CodePanel } from './code-panel'
 import { closeSession, ensureSaved, openSession } from './collab'
-import { AddCustomComponent, useComponentLibrarySync } from './custom'
+import { useComponentLibrarySync } from './custom'
 import { ScopeSync } from './fields'
 import { ComponentInspector, SelectionInspector } from './inspector'
 import { useLibrarySync } from './library'
-import { ModulePanel } from './module-panel'
-import { AddModule, useModuleSync } from './modules'
-import { PagesPanel } from './pages'
+import { useModuleSync } from './modules'
+import { type CommandActions, CommandPalette } from './navigate'
+import { AppInspector } from './pages'
 import { usePresence } from './presence'
 import { type EditorApp, ReleaseControls } from './releases'
+import { CodeDock, DebugDrawer, LeftPanelArea, Rail, StatusBar } from './shell'
 import { type SaveStatus, useAppEditor } from './store'
 
 type BranchDraft = RouterOutputs['branchDrafts']['get']
@@ -207,6 +209,7 @@ export function DraftLoader({
       environment={environment}
       environments={environments.data}
       branchDraftId={branchDraft?.id ?? null}
+      branch={branch}
       git={
         gitProtected ? (
           <GitBar
@@ -242,11 +245,13 @@ interface EditorProps {
   environments: { id: string; slug: string; name: string }[]
   /** The Git branch draft being edited (M11), or null for the main draft. */
   branchDraftId: string | null
+  /** That draft's branch. */
+  branch?: string | null
   /** A protected app's Git bar. */
   git: React.ReactNode
 }
 
-export function Editor({ app, environment, environments, branchDraftId, git }: EditorProps) {
+export function Editor({ app, environment, environments, branchDraftId, branch = null, git }: EditorProps) {
   const { me } = appRoute.useRouteContext()
   const navigate = useNavigate()
   const { notices, notify, dismiss } = useNotifications()
@@ -257,6 +262,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
   const selected = useAppEditor((s) => s.selected)
   const selection = useAppEditor((s) => s.selection)
   const definition = useAppEditor((s) => s.definition)
+  const inspectorOpen = useAppEditor((s) => s.inspectorOpen)
 
   const readOnly = useAppEditor((s) => s.readOnly)
   const epoch = useAppEditor((s) => s.epoch)
@@ -294,6 +300,12 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
     // `utils.openPage` and Navigation links move the editor to that page.
     openPage: (page, params) => useAppEditor.getState().setUrl(page, params),
   })
+
+  // ⌘K's actions beyond going somewhere.
+  const commandActions = useMemo<CommandActions>(
+    () => ({ preview: () => setPreview(true), restart: () => host?.restart() }),
+    [host],
+  )
 
   // The running draft is on the page being edited.
   useEffect(() => {
@@ -339,8 +351,8 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
 
   return (
     <div className="flex h-full flex-col gap-2">
-      <header className="flex h-14 shrink-0 items-center gap-3 rounded-lg bg-surface px-4">
-        <h1 className="truncate text-lg leading-6 font-bold">{app.name}</h1>
+      {/* In the shell's top bar, beside the breadcrumb that names the app. */}
+      <TopBarPortal>
         <SaveBadge status={status} />
         <PresenceAvatars peers={peers} me={me.id} />
         {!readOnly && !preview && (
@@ -354,11 +366,10 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
           </div>
         )}
         <div className="ml-auto flex items-center gap-2 text-sm">
-          <label htmlFor="editor-env" className="text-muted">
-            Environment
-          </label>
           <Select
             id="editor-env"
+            aria-label="Environment"
+            className="h-8"
             value={environment.slug}
             onChange={(e) =>
               navigate({
@@ -384,7 +395,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
           </Button>
           <ReleaseControls app={app} />
         </div>
-      </header>
+      </TopBarPortal>
       {git}
       <div ref={ref} className="hidden" />
       {host ? (
@@ -402,53 +413,39 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
           >
             <ScopeSync />
             <div className="flex min-h-0 flex-1 gap-2">
-              {!preview && (
-                <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto rounded-lg bg-surface p-3">
-                  {/* `epoch`: after an undo or redo, panels start again from the definition (some read it once). */}
-                  {app.kind === 'app' ? <PagesPanel key={epoch} /> : <ModulePanel key={epoch} />}
-                  {!readOnly && (
-                    <section>
-                      <h2 className={cn('mb-2', sectionLabelClass)}>Add</h2>
-                      <Palette />
-                      {/* Modules inside modules too (M21), as deep as the limit allows. */}
-                      <div className="mt-1.5">
-                        <AddModule />
-                      </div>
-                      <div className="mt-1.5">
-                        <AddCustomComponent />
-                      </div>
-                    </section>
-                  )}
-                  <section>
-                    <h2 className={cn('mb-2', sectionLabelClass)}>Components</h2>
-                    <ComponentTree />
-                  </section>
-                </aside>
-              )}
-              <div className="flex min-w-0 flex-1 flex-col gap-2">
-                {/* On the page background, as people see the app. */}
-                <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-divider px-6 py-4">
+              {!preview && <Rail kind={app.kind} />}
+              {!preview && <LeftPanelArea kind={app.kind} slug={app.slug} />}
+              {!preview && <CodeDock />}
+              {/* On the page background, as people see the app; never squeezed below a usable width by the panels. */}
+              <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-xl border border-border/70 px-6 py-4">
+                <ThemedApp definition={definition} className="min-w-[640px]">
                   <Running>{preview ? <PreviewCanvas definition={definition} /> : <EditCanvas />}</Running>
-                </div>
-                {!preview && (
-                  <div className="h-[38%] min-h-48 shrink-0 overflow-hidden rounded-lg bg-surface">
-                    <CodePanel key={epoch} />
-                  </div>
-                )}
+                </ThemedApp>
               </div>
-              {!preview && selected && (
-                <aside className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
+              {!preview && inspectorOpen && (
+                <aside
+                  aria-label="Inspector"
+                  className="w-80 shrink-0 overflow-y-auto rounded-xl border border-border/70 bg-surface shadow-card"
+                >
                   {/* A protected app on main (M22): its inspector shows what's deployed, disabled. */}
                   <fieldset disabled={readOnly} className="contents" data-testid="inspector">
                     {selection.length > 1 ? (
                       <SelectionInspector names={selection} onDuplicate={() => duplicateChosen(notify)} />
+                    ) : selected ? (
+                      <ComponentInspector
+                        key={`${epoch}/${selected}`}
+                        name={selected}
+                        onDuplicate={() => duplicateChosen(notify)}
+                      />
                     ) : (
-                      <ComponentInspector key={`${epoch}/${selected}`} name={selected} />
+                      <AppInspector key={epoch} kind={app.kind} />
                     )}
                   </fieldset>
                 </aside>
               )}
             </div>
+            {!preview && <DebugDrawer />}
+            {!preview && <StatusBar environment={environment.name} branch={branch} />}
           </AppChromeContext.Provider>
         </AppHostProvider>
       ) : (
@@ -456,6 +453,7 @@ export function Editor({ app, environment, environments, branchDraftId, git }: E
           <Spinner />
         </Centered>
       )}
+      {!preview && host && <CommandPalette actions={commandActions} />}
       <Notifications notices={notices} dismiss={dismiss} />
       {confirmation}
     </div>
@@ -483,21 +481,7 @@ function Running({ children }: { children: React.ReactNode }) {
   )
 }
 
-const SAVE_LABELS: Record<SaveStatus, { text: string; className: string }> = {
-  connecting: { text: 'Connecting…', className: 'text-muted' },
-  saved: { text: 'Saved', className: 'text-muted' },
-  saving: { text: 'Saving…', className: 'text-muted' },
-  offline: { text: 'Offline: changes will sync', className: 'text-warning-strong' },
-  error: { text: 'Not saved', className: 'text-danger' },
-  closed: { text: 'Disconnected: reload', className: 'text-danger' },
-}
-
 function SaveBadge({ status }: { status: SaveStatus }) {
   const saveError = useAppEditor((s) => s.saveError)
-  const label = SAVE_LABELS[status]
-  return (
-    <Badge className={cn('font-normal', label.className)} title={saveError ?? undefined}>
-      {label.text}
-    </Badge>
-  )
+  return <SaveStatusIndicator status={status} error={saveError} />
 }

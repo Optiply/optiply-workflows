@@ -370,3 +370,88 @@ describe('SQS and Kafka triggers (M26)', () => {
     ])
   })
 })
+
+describe('RabbitMQ triggers (M30)', () => {
+  const resources: Record<string, { type: string }> = { broker: { type: 'rabbitmq' }, queue: { type: 'sqs' } }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts any queue name a consumer may read (spaces and dots too)', () => {
+    expect(
+      check({
+        rabbitmq: [{ name: 'a', enabled: true, resource: 'broker', queue: 'orders.v2 eu', maxInFlight: 10 }],
+      }),
+    ).toEqual([])
+  })
+
+  it('refuses a duplicate name, a resource of another kind, and the broker’s own amq. queues', () => {
+    expect(
+      check({
+        rabbitmq: [
+          { name: 'a', enabled: true, resource: 'broker', queue: 'ok' },
+          { name: 'a', enabled: true, resource: 'queue', queue: 'amq.direct' },
+        ],
+      }),
+    ).toEqual([
+      {
+        code: 'duplicate_rabbitmq',
+        message: 'Another RabbitMQ trigger is already named "a"',
+        path: ['triggers', 'rabbitmq', 1, 'name'],
+      },
+      {
+        code: 'invalid_rabbitmq',
+        message: 'RabbitMQ trigger "a": "queue" isn\'t a RabbitMQ resource',
+        path: ['triggers', 'rabbitmq', 1, 'resource'],
+      },
+      {
+        code: 'invalid_rabbitmq',
+        message: 'RabbitMQ trigger "a": "amq.direct" can\'t be consumed (amq. names are the broker\'s own)',
+        path: ['triggers', 'rabbitmq', 1, 'queue'],
+      },
+    ])
+  })
+})
+
+describe('Kinesis triggers (M30)', () => {
+  const resources: Record<string, { type: string }> = { streams: { type: 'kinesis' } }
+  const check = (triggers: object) =>
+    validateDefinition(wf([start], [], { triggers }), {
+      resolveResource: (slug: string) =>
+        resources[slug] && { ...resources[slug], querySchema: z.any(), validateQuery: () => [] },
+    }).diagnostics.map(({ code, message, path }) => ({ code, message, path }))
+
+  it('accepts a stream by name or ARN, and refuses anything else', () => {
+    expect(
+      check({
+        kinesis: [
+          {
+            name: 'a',
+            enabled: true,
+            resource: 'streams',
+            stream: 'orders.v2',
+            startAt: 'trimHorizon',
+            maxAttempts: 5,
+          },
+          {
+            name: 'b',
+            enabled: true,
+            resource: 'streams',
+            stream: 'arn:aws:kinesis:eu-west-1:123456789012:stream/orders',
+          },
+        ],
+      }),
+    ).toEqual([])
+    expect(
+      check({ kinesis: [{ name: 'a', enabled: true, resource: 'streams', stream: 'has space' }] }),
+    ).toEqual([
+      {
+        code: 'invalid_kinesis',
+        message: 'Kinesis trigger "a": "has space" isn\'t a stream name or ARN',
+        path: ['triggers', 'kinesis', 0, 'stream'],
+      },
+    ])
+  })
+})

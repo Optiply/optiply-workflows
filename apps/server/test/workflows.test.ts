@@ -170,6 +170,47 @@ describe('workflows API', () => {
     expect((await admin.mutate('workflows.create', { slug: 'Not A Slug', name: 'X' })).status).toBe(400)
   })
 
+  it('lists each workflow with its last editor, live triggers and latest run (session 40)', async () => {
+    const wf = await workflowWith('listed', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const definition = data(await admin.query('workflows.get', { id: wf.id })).draftDefinition
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: wf.id,
+        revision: wf.revision,
+        definition: {
+          ...definition,
+          triggers: {
+            schedules: [
+              { name: 'nightly', cron: '0 3 * * *', enabled: true },
+              { name: 'hourly', intervalMs: 3_600_000, enabled: true },
+              { name: 'off', intervalMs: 60_000, enabled: false },
+            ],
+            webhook: { enabled: true },
+          },
+        },
+      }),
+    )
+    data(await admin.mutate('releases.publish', { workflowId: wf.id, draftRevision: saved.revision }))
+    const quiet = await workflowWith('listed-quiet', [code('a', 'return 1')], [['startTrigger', 'a']])
+    const started = (await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, { input: {} })).body.run
+    await waitForRun(started.id)
+
+    const list = data(await admin.query('workflows.list'))
+    const listed = list.find((w: { id: string }) => w.id === wf.id)
+    expect(listed).toMatchObject({
+      updatedByName: expect.any(String),
+      triggers: [
+        { kind: 'schedule', count: 2 },
+        { kind: 'webhook', count: 1 },
+      ],
+      lastRun: { id: started.id, status: 'succeeded', triggerType: 'manual', environment: 'production' },
+    })
+    expect(new Date(listed.lastRun.createdAt).getTime()).toBeGreaterThan(0)
+    expect(list.find((w: { id: string }) => w.id === quiet.id)).toMatchObject({ triggers: [], lastRun: null })
+    // Others' workflows aren't there, nor their runs.
+    expect(data(await member.query('workflows.list')).some((w: { id: string }) => w.id === wf.id)).toBe(false)
+  })
+
   it('needs edit access to all workflows to create one', async () => {
     expect((await member.mutate('workflows.create', { slug: 'nope', name: 'Nope' })).status).toBe(403)
   })
@@ -438,6 +479,29 @@ describe('run block', () => {
     expect(freshBlocks.every((b: { metadata: object }) => !('cachedFrom' in b.metadata))).toBe(true)
     expect((await rest(adminCookie, 'GET', `/runs/${fresh.id}/blocks/shape`)).body.block.data).toBe('GLOBEX')
 
+    // The editor's test input (session 40): the latest run (id 2) is reused for the same input only.
+    const same = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, { testInput: { id: 2 } })
+    ).body.run
+    await waitForRun(same.id)
+    const sameBlocks = (await rest(adminCookie, 'GET', `/runs/${same.id}/blocks`)).body.blocks
+    expect(sameBlocks.find((b: { key: string }) => b.key === 'order').metadata).toMatchObject({
+      cachedFrom: fresh.id,
+    })
+    const changed = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/shape/runs`, { testInput: { id: 1 } })
+    ).body.run
+    expect(changed.input).toEqual({ data: { id: 1 } })
+    await waitForRun(changed.id)
+    const changedBlocks = (await rest(adminCookie, 'GET', `/runs/${changed.id}/blocks`)).body.blocks
+    expect(changedBlocks.every((b: { metadata: object }) => !('cachedFrom' in b.metadata))).toBe(true)
+    expect((await rest(adminCookie, 'GET', `/runs/${changed.id}/blocks/shape`)).body.block.data).toBe('ACME')
+    // An empty test input is an input too: it doesn't reuse a run that had one.
+    const empty = (
+      await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/startTrigger/runs`, { testInput: null })
+    ).body.run
+    expect(empty.input).toEqual({ data: null })
+
     expect((await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/nope/runs`, {})).status).toBe(404)
     expect(
       (
@@ -446,6 +510,36 @@ describe('run block', () => {
         })
       ).status,
     ).toBe(404)
+  })
+})
+
+describe('run block with problems elsewhere (M28)', () => {
+  it('runs a block while a sibling is broken, and a block nothing connects to; not a broken one', async () => {
+    const wf = await workflowWith(
+      'block-runs-scoped',
+      [code('good', 'return 1 + 1'), code('broken', 'return ('), code('loose', 'return "alone"')],
+      [
+        ['startTrigger', 'good'],
+        ['startTrigger', 'broken'],
+      ],
+    )
+    // The whole workflow can't run.
+    expect((await rest(adminCookie, 'POST', `/workflows/${wf.slug}/runs`, {})).status).toBe(400)
+
+    const good = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/good/runs`, {})
+    expect(good.status).toBe(202)
+    expect((await waitForRun(good.body.run.id)).status).toBe('succeeded')
+    expect((await rest(adminCookie, 'GET', `/runs/${good.body.run.id}/blocks/good`)).body.block.data).toBe(2)
+
+    const loose = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/loose/runs`, {})
+    expect(loose.status).toBe(202)
+    expect((await waitForRun(loose.body.run.id)).status).toBe('succeeded')
+    expect((await rest(adminCookie, 'GET', `/runs/${loose.body.run.id}/blocks/loose`)).body.block.data).toBe(
+      'alone',
+    )
+
+    const broken = await rest(adminCookie, 'POST', `/workflows/${wf.slug}/blocks/broken/runs`, {})
+    expect(broken.status).toBe(400)
   })
 })
 
@@ -636,7 +730,9 @@ describe('M5: cancel, child workflows and loop iterations', () => {
 
     const cancelled = await rest(adminCookie, 'POST', `/runs/${runId}/cancel`)
     expect(cancelled.status).toBe(202)
-    expect(cancelled.body.run).toMatchObject({ id: runId, status: 'running' })
+    // The reply reads the run back: still running, or (a busy machine) already cancelled by its worker.
+    expect(cancelled.body.run).toMatchObject({ id: runId })
+    expect(['running', 'cancelled']).toContain(cancelled.body.run.status)
     const run = await waitForRun(runId)
     expect(run).toMatchObject({ status: 'cancelled', error: { code: 'cancelled' } })
     const blocks = (await rest(adminCookie, 'GET', `/runs/${runId}/blocks`)).body.blocks

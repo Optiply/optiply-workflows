@@ -1,4 +1,5 @@
 import { type Db, type QueueTriggerState, queueDeliveries, workflowRuns, workflowTriggers } from '@ow/db'
+import { QUEUE_TRIGGER_KINDS, type QueueTriggerKind } from '@ow/definition'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { startRun } from './queue'
 import { createAdapter } from './queue-adapters'
@@ -35,8 +36,13 @@ export interface QueueConsumerOptions {
   backoffSecondMs?: number
 }
 
-export const QUEUE_KINDS = ['pubsub', 'sqs', 'kafka'] as const
-export type QueueKind = (typeof QUEUE_KINDS)[number]
+export const QUEUE_KINDS = QUEUE_TRIGGER_KINDS
+export type QueueKind = QueueTriggerKind
+/** `kind in (…)` for the queue kinds, in raw SQL. */
+const queueKindList = sql.join(
+  QUEUE_KINDS.map((k) => sql`${k}`),
+  sql`, `,
+)
 
 /** What a held message's end became, as counted in `ow_queue_messages_total{outcome}`. */
 export type QueueOutcome =
@@ -70,6 +76,8 @@ export const queueStats: Record<QueueKind, ReturnType<typeof emptyStats>> = {
   pubsub: emptyStats(),
   sqs: emptyStats(),
   kafka: emptyStats(),
+  rabbitmq: emptyStats(),
+  kinesis: emptyStats(),
 }
 
 export interface QueueLogger {
@@ -171,7 +179,7 @@ export class QueueConsumer {
     this.subscribers.clear()
     await this.opts.db.execute(sql`
       update workflow_triggers set lease_owner = null, lease_expires_at = null
-      where kind in ('pubsub', 'sqs', 'kafka') and lease_owner = ${this.opts.workerId}`)
+      where kind in (${queueKindList}) and lease_owner = ${this.opts.workerId}`)
   }
 
   /** Triggers this process receives for now, and the messages held for each. */
@@ -198,7 +206,7 @@ export class QueueConsumer {
     const held = await db.execute<QueueTriggerRow>(sql`
       update workflow_triggers
       set lease_owner = ${workerId}, lease_expires_at = now() + make_interval(secs => ${leaseSecs})
-      where kind in ('pubsub', 'sqs', 'kafka') and enabled
+      where kind in (${queueKindList}) and enabled
         and (lease_owner = ${workerId} or lease_owner is null or lease_expires_at < now())
       returning id, workflow_id, release_id, environment_id, kind, name, config`)
     const ids = new Set(held.map((t) => t.id))
@@ -247,6 +255,18 @@ export class QueueConsumer {
 /** Other settings or another environment start the trigger's receiver afresh (a new release alone doesn't). */
 function settingsKey(t: QueueTriggerRow): string {
   return JSON.stringify([t.kind, t.environment_id, t.config])
+}
+
+/**
+ * The run's input as Postgres's jsonb takes it: it can't hold a NUL (`\u0000`), so one in a header or attribute (bodies
+ * are base64 then: `bodyData`) becomes U+FFFD; otherwise the run could never start and the message would come back
+ * for good.
+ */
+export function storable<T>(value: T): T {
+  const text = JSON.stringify(value)
+  if (!text?.includes('\\u0000')) return value
+  // An escaped backslash before `u0000` is text, not a NUL: only an odd run of backslashes escapes it.
+  return JSON.parse(text.replace(/(?<!\\)((?:\\\\)*)\\u0000/g, '$1\\ufffd')) as T
 }
 
 /** One trigger's receiver: its adapter, its held messages, its errors. */
@@ -602,7 +622,7 @@ export async function startDelivery(
       triggerType: trigger.kind,
       triggerId: trigger.id,
       idempotencyKey: `${trigger.kind}:${trigger.id}:${message.id}:${n}`,
-      input: typeof message.input === 'function' ? message.input(n) : message.input,
+      input: storable(typeof message.input === 'function' ? message.input(n) : message.input),
     })
     await tx
       .update(queueDeliveries)

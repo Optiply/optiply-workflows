@@ -15,6 +15,8 @@ import { cn } from '@/lib/utils'
 import { RENDERERS } from './components'
 import { foldedLayout } from './folded'
 import { placedChildren } from './placed'
+import { resizedLayout } from './resized'
+import { contentHeight, useContentHeights } from './runtime/content-heights'
 
 export { placedChildren }
 
@@ -64,7 +66,28 @@ export function AppGrid({
       .map((name) => `${name}:${String(s.values[`${scope}${name}.padding`] ?? 'medium')}`)
       .join(','),
   )
-  const children = foldedLayout(placed, foldedKey)
+  // Custom components on Auto height (M33): the rows their content needs, as `name:rows`, one string.
+  const sizedKey = useContentHeights((s) =>
+    placed
+      .flatMap(({ component: c }) => {
+        const px = c.type === 'custom' ? contentHeight(s.px, `${scope}${c.name}`) : undefined
+        return px === undefined ? [] : [`${c.name}:${Math.max(1, Math.ceil(px / ROW_HEIGHT))}`]
+      })
+      .join(','),
+  )
+  const sized = useMemo(
+    () =>
+      new Map(
+        sizedKey
+          ? sizedKey.split(',').map((entry) => {
+              const at = entry.lastIndexOf(':')
+              return [entry.slice(0, at), Number(entry.slice(at + 1))] as const
+            })
+          : [],
+      ),
+    [sizedKey],
+  )
+  const children = resizedLayout(foldedLayout(placed, foldedKey), sized)
   return (
     <div
       className="grid gap-x-3"
@@ -170,7 +193,7 @@ function AppFrame({ definition, children }: { definition: AppDefinition; childre
         <button
           type="button"
           aria-label="Close the menu"
-          className="fixed inset-0 z-30 cursor-default bg-app/60 md:hidden"
+          className="fixed inset-0 z-30 cursor-default bg-overlay md:hidden"
           onClick={() => setMenuOpen(false)}
         />
       )}

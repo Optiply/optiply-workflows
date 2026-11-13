@@ -1,10 +1,10 @@
-import { environments, GIT_OBJECT_KINDS, GIT_SETTINGS_KINDS } from '@ow/db'
+import { environments, GIT_HOSTS, GIT_OBJECT_KINDS, GIT_SETTINGS_KINDS } from '@ow/db'
 import { folderPathSchema } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import { gitDeployStatus, requestGitDeploy } from '../../services/git/deploy'
-import { GitHubError, openGitHub } from '../../services/git/github'
 import { gitHealth } from '../../services/git/health'
+import { GitHostError, openGitHost } from '../../services/git/hosts'
 import { gitObjectLevel, kindTitle, loadGitObject } from '../../services/git/kinds'
 import { objectBranches } from '../../services/git/object-branches'
 import { openPromotion } from '../../services/git/promotion'
@@ -99,12 +99,20 @@ async function gitObject(
 const Secret = z.string().trim().min(1).max(1000).nullish()
 
 export const gitRouter = router({
-  /** For everyone: whether Git sync is set up, its deploy branch, and the repo's web address for links. */
+  /**
+   * For everyone: whether Git sync is set up, its deploy branch, the repo's web address for links, and its host (M31:
+   * the UI says "merge request" for GitLab).
+   */
   info: authedProcedure.query(async ({ ctx }) => {
     const loaded = await loadGitSettings(ctx.db, ctx.config.keyring)
     return loaded
-      ? { configured: true, branch: loaded.row.branch, webUrl: repoWebUrl(loaded.row.repoUrl) }
-      : { configured: false, branch: null, webUrl: null }
+      ? {
+          configured: true,
+          branch: loaded.row.branch,
+          webUrl: repoWebUrl(loaded.row.repoUrl),
+          host: loaded.row.host,
+        }
+      : { configured: false, branch: null, webUrl: null, host: 'github' as const }
   }),
 
   /** The repo settings; the token and webhook secret only as `{ set }`. */
@@ -115,6 +123,12 @@ export const gitRouter = router({
       z.object({
         repoUrl: z.string().trim().min(1).max(500),
         branch: branchNameSchema.default('main'),
+        /** M31: undefined detects it from the URL. */
+        host: z.enum(GIT_HOSTS).optional(),
+        apiUrl: z.string().trim().max(500).nullish(),
+        githubAuth: z.enum(['token', 'app']).optional(),
+        githubAppId: z.string().trim().max(20).nullish(),
+        appPrivateKey: z.string().max(10_000).nullish(),
         token: Secret,
         webhookSecret: Secret,
       }),
@@ -123,6 +137,11 @@ export const gitRouter = router({
       const changed = await saveGitSettings(ctx.db, ctx.config, ctx.user, {
         repoUrl: input.repoUrl,
         branch: input.branch,
+        host: input.host,
+        apiUrl: input.apiUrl,
+        githubAuth: input.githubAuth,
+        githubAppId: input.githubAppId,
+        appPrivateKey: input.appPrivateKey,
         // `nullish` gives undefined (keep) or null (clear); zod keeps the difference.
         token: input.token,
         webhookSecret: input.webhookSecret,
@@ -135,9 +154,12 @@ export const gitRouter = router({
         metadata: {
           repoUrl: view.repoUrl,
           branch: view.branch,
+          host: view.host,
+          githubAuth: view.githubAuth,
           changed: [
             ...(changed.tokenChanged ? ['token'] : []),
             ...(changed.webhookSecretChanged ? ['webhook'] : []),
+            ...(changed.appKeyChanged ? ['app key'] : []),
           ],
         },
       })
@@ -324,12 +346,12 @@ export const gitRouter = router({
 
   /** The branch's pull request into the deploy branch (open ones first), or null. */
   pullRequest: authedProcedure.input(z.object({ branch: branchNameSchema })).query(async ({ ctx, input }) => {
-    const opened = await openGitHub(ctx.db, ctx.config)
+    const opened = await openGitHost(ctx.db, ctx.config)
     if ('error' in opened) return { pullRequest: null, error: opened.error }
     try {
-      return { pullRequest: await opened.github.findPullRequest(input.branch, opened.branch), error: null }
+      return { pullRequest: await opened.host.findChangeRequest(input.branch, opened.branch), error: null }
     } catch (err) {
-      if (err instanceof GitHubError) return { pullRequest: null, error: err.message }
+      if (err instanceof GitHostError) return { pullRequest: null, error: err.message }
       throw err
     }
   }),

@@ -6,6 +6,7 @@ import {
   detectDelimiter,
   fromDecimalComma,
   guessCsv,
+  MAX_FIELD_CHARS,
   MAX_FIELDS,
   parseCsv,
 } from '../src/services/csv'
@@ -48,6 +49,42 @@ describe('the CSV parser', () => {
 
   it('reports a quote that never closes, with the line it opened on', () => {
     expect(() => parseCsv('a\n"open\nstill open')).toThrow(new CsvError('a quoted field is never closed', 2))
+  })
+
+  it('reads a field of more than a million characters spanning many lines, in chunks', () => {
+    // As in a real export (2026-11-03): a pretty-printed workflow definition of 1.1 million characters.
+    const json = JSON.stringify(
+      { blocks: Array.from({ length: 6000 }, (_, i) => ({ name: `code${i}`, code: 'x'.repeat(150) })) },
+      null,
+      2,
+    )
+    expect(json.length).toBeGreaterThan(1_100_000)
+    const text = `id,workflow_json,name\n1,"${json.replaceAll('"', '""')}",big\n2,"{}",small\n`
+    const parser = new CsvParser(',')
+    const records = []
+    for (let at = 0; at < text.length; at += 65_536) records.push(...parser.push(text.slice(at, at + 65_536)))
+    records.push(...parser.end())
+    expect(records.map((r) => [r.line, r.fields.length])).toEqual([
+      [1, 3],
+      [2, 3],
+      [2 + json.split('\n').length, 3],
+    ])
+    expect(records[1]!.fields[1]).toBe(json)
+  })
+
+  it('refuses a field longer than the limit, naming the line it starts on', () => {
+    let error: unknown
+    try {
+      parseCsv(`a\n"x\n${'y'.repeat(MAX_FIELD_CHARS)}"\n`)
+    } catch (err) {
+      error = err
+    }
+    expect(error).toBeInstanceOf(CsvError)
+    expect(error).toMatchObject({
+      line: 2,
+      reason: 'a field is longer than 16,000,000 characters',
+      message: 'Line 2: a field is longer than 16,000,000 characters',
+    })
   })
 
   it('refuses records with too many fields', () => {

@@ -18,8 +18,8 @@ import { EditorField } from './fields'
 import { useAppEditor } from './store'
 
 /**
- * The app's pages: pick the one to edit, add one (an app without pages gets two, what it had moving onto the
- * first), and rename, retitle, reorder or delete the one being edited.
+ * The app's pages (the Pages panel): pick the one to edit, or add one (an app without pages gets two, what it had
+ * moving onto the first). The page's settings are in the inspector while no component is selected.
  */
 export function PagesPanel() {
   const definition = useAppEditor((s) => s.definition)
@@ -27,11 +27,17 @@ export function PagesPanel() {
   const current = useAppEditor((s) => s.url.page)
   const readOnly = useAppEditor((s) => s.readOnly)
   const setUrl = useAppEditor((s) => s.setUrl)
+  const select = useAppEditor((s) => s.select)
   const pages = definition.pages ?? []
+  // The page shows in the inspector: nothing on it stays selected.
+  const open = (page: string) => {
+    setUrl(page)
+    select(null)
+  }
   const add = () => {
     const made = addPage(useAppEditor.getState().definition)
     update(() => made.definition)
-    setUrl(made.name)
+    open(made.name)
   }
   return (
     <section aria-label="Pages">
@@ -54,7 +60,7 @@ export function PagesPanel() {
               <button
                 type="button"
                 aria-current={p.name === current ? 'page' : undefined}
-                onClick={() => setUrl(p.name)}
+                onClick={() => open(p.name)}
                 className={cn(
                   'flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs',
                   p.name === current
@@ -69,8 +75,6 @@ export function PagesPanel() {
           ))}
         </ul>
       )}
-      {current && pages.length > 0 && <PageSettings key={current} page={current} />}
-      <FrameSettings />
     </section>
   )
 }
@@ -79,13 +83,13 @@ export function PagesPanel() {
  * The app frame (M24): a header bar and/or a sidebar around every page, holding the components on every page (in
  * the header, or the sidebar picked in their Area), with the app's name and the signed-in person if wanted.
  */
-function FrameSettings() {
+export function FrameSettings() {
   const frame = useAppEditor((s) => s.definition.frame) ?? {}
   const update = useAppEditor((s) => s.update)
   const readOnly = useAppEditor((s) => s.readOnly)
   const set = (part: Partial<AppFrame>) => update((def) => setFrame(def, { ...def.frame, ...part }))
   return (
-    <fieldset disabled={readOnly} className="mt-4 flex flex-col gap-2" aria-label="Frame">
+    <fieldset disabled={readOnly} className="flex flex-col gap-2" aria-label="Frame">
       <h2 className={sectionLabelClass}>Frame</h2>
       <Checkbox
         label="Header bar"
@@ -125,7 +129,7 @@ function FrameSettings() {
 }
 
 /** The page being edited: its name (in the URL and in code), title, place in the order, or deletion. */
-function PageSettings({ page }: { page: string }) {
+export function PageSettings({ page }: { page: string }) {
   const definition = useAppEditor((s) => s.definition)
   const readOnly = useAppEditor((s) => s.readOnly)
   const update = useAppEditor((s) => s.update)
@@ -156,7 +160,8 @@ function PageSettings({ page }: { page: string }) {
   if (index === -1) return null
   return (
     // A protected app on main (M22): shown, not edited.
-    <fieldset disabled={readOnly} className="mt-2 flex flex-col gap-2 rounded-md border border-border p-2">
+    <fieldset disabled={readOnly} className="flex flex-col gap-2" aria-label="Page">
+      <h2 className={sectionLabelClass}>Page</h2>
       <EditorField label="Page name">
         <Input
           aria-label="Page name"
@@ -211,5 +216,30 @@ function PageSettings({ page }: { page: string }) {
         </Button>
       </div>
     </fieldset>
+  )
+}
+
+/**
+ * The inspector while no component is selected (session 41, Retool's App and Page inspectors): the page being
+ * edited and the app's frame. A module has neither: its inputs, outputs and events are in its panel.
+ */
+export function AppInspector({ kind }: { kind: 'app' | 'module' }) {
+  const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
+  const title = useAppEditor((s) => s.definition.pages?.find((p) => p.name === page)?.title)
+  return (
+    <div className="flex flex-col gap-5 p-4" data-testid="inspector-app">
+      <div>
+        <p className="text-sm font-semibold">
+          {kind === 'module' ? 'Module' : page ? `Page ${title || page}` : 'App'}
+        </p>
+        <p className="mt-0.5 text-xs text-muted">
+          {kind === 'module'
+            ? 'Select a component to edit it. Inputs, outputs and events are in the Module panel.'
+            : 'Select a component to edit it.'}
+        </p>
+      </div>
+      {page && <PageSettings key={page} page={page} />}
+      {kind === 'app' && <FrameSettings />}
+    </div>
   )
 }

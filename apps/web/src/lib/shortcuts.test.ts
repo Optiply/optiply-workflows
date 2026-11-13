@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTextTarget, type ShortcutKeys, shortcutFor, shortcutLabel } from './shortcuts'
+import { isPaletteKey, isTextTarget, type ShortcutKeys, shortcutFor, shortcutLabel } from './shortcuts'
 
 const press = (key: string, mods: Partial<ShortcutKeys> = {}): ShortcutKeys => ({
   key,
@@ -53,5 +53,22 @@ describe('isTextTarget', () => {
     expect(isTextTarget(inside('.monaco-editor') as unknown as EventTarget)).toBe(true)
     expect(isTextTarget(inside() as unknown as EventTarget)).toBe(false)
     expect(isTextTarget(null)).toBe(false)
+  })
+})
+
+describe('isPaletteKey', () => {
+  it('is ⌘K on a Mac, leaving Ctrl+K to text fields', () => {
+    expect(isPaletteKey(press('k', { metaKey: true }), true)).toBe(true)
+    expect(isPaletteKey(press('K', { metaKey: true }), true)).toBe(true)
+    expect(isPaletteKey(press('k', { ctrlKey: true }), true)).toBe(false)
+  })
+  it('is Ctrl+K elsewhere', () => {
+    expect(isPaletteKey(press('k', { ctrlKey: true }), false)).toBe(true)
+    expect(isPaletteKey(press('k', { metaKey: true }), false)).toBe(false)
+  })
+  it('ignores Shift, Alt and a composition in progress', () => {
+    expect(isPaletteKey(press('k', { metaKey: true, shiftKey: true }), true)).toBe(false)
+    expect(isPaletteKey(press('k', { metaKey: true, altKey: true }), true)).toBe(false)
+    expect(isPaletteKey(press('k', { metaKey: true, isComposing: true }), true)).toBe(false)
   })
 })

@@ -25,8 +25,20 @@ describe('parseTemplate', () => {
     ['{{ a /* }} */ }}', ' a /* }} */ '],
     ['{{ "\\"}}" }}', ' "\\"}}" '],
     ['{{ x.map(i => ({ id: i })) }}', ' x.map(i => ({ id: i })) '],
+    // Regex literals (M36: Retool SQL escapes quotes this way), and division, which isn't one.
+    [`{{ s.replace(/'/g, "''") }}`, ` s.replace(/'/g, "''") `],
+    ['{{ a ? s.replace(/[}"]/g, "") : b }}', ' a ? s.replace(/[}"]/g, "") : b '],
+    ['{{ /\\/}}/.test(s) }}', ' /\\/}}/.test(s) '],
+    ['{{ (a) / 2 + b / c }}', ' (a) / 2 + b / c '],
+    ["{{ x[0] / y['}}'] }}", " x[0] / y['}}'] "],
+    ['{{ typeof /x/ }}', ' typeof /x/ '],
+    ['{{ `${a}` / 2 }}', ' `${a}` / 2 '],
   ])('finds the right closing braces in %s', (src, code) => {
     expect(exprs(src)).toEqual([code])
+  })
+
+  it("doesn't take a regex's quote for a string that swallows the next expression", () => {
+    expect(exprs(`'{{ s.replace(/'/g, "''") }}', '{{ t }}'`)).toEqual([` s.replace(/'/g, "''") `, ' t '])
   })
 
   it('reports unterminated and empty expressions with positions', () => {

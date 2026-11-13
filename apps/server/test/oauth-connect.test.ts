@@ -27,6 +27,9 @@ let issued = 0
 let lastTokenForm: URLSearchParams | undefined
 /** Set to make the next code exchange fail with this answer. */
 let failExchange: { status: number; body: unknown } | undefined
+/** The forms posted to the fake's /revoke, and its answer to the next one. */
+const revoked: URLSearchParams[] = []
+let failRevoke: { status: number; body: unknown } | undefined
 
 beforeAll(async () => {
   env = await startTestApp()
@@ -47,6 +50,10 @@ beforeAll(async () => {
     const send = (status: number, value: unknown) => {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(value))
+    }
+    if (req.url === '/revoke') {
+      revoked.push(form)
+      return failRevoke ? send(failRevoke.status, failRevoke.body) : send(200, {})
     }
     if (failExchange) return send(failExchange.status, failExchange.body)
     const code = form.get('code') ?? ''
@@ -83,6 +90,8 @@ afterAll(async () => {
 })
 beforeEach(() => {
   failExchange = undefined
+  failRevoke = undefined
+  revoked.length = 0
 })
 
 // biome-ignore lint/suspicious/noExplicitAny: test JSON
@@ -373,13 +382,65 @@ describe('connecting the shared account', () => {
           account: 'shared',
         }),
       ),
-    ).toEqual({ disconnected: true })
+    ).toEqual({ disconnected: true, revoked: 'none' })
     expect(await tokensOf(crm)).toEqual([])
     const audit = await env.db
       .select()
       .from(auditEvents)
       .where(and(eq(auditEvents.objectId, crm), eq(auditEvents.action, 'resource.oauth_disconnected')))
     expect(audit).toHaveLength(1)
+  })
+})
+
+describe('revoking on disconnect', () => {
+  const revokeUrl = () => tokenUrl.replace(/\/token$/, '/revoke')
+  const disconnect = (id: string) =>
+    admin.mutate('resources.oauthDisconnect', { resourceId: id, environmentId: prodId, account: 'shared' })
+
+  it('revokes the refresh token at the provider (RFC 7009), then forgets the tokens', async () => {
+    const id = await restResource('crm_revoke', oauthAuth({ revokeUrl: revokeUrl() }))
+    await connect(adminCookie, id)
+    expect(data(await disconnect(id))).toEqual({ disconnected: true, revoked: 'yes' })
+    expect(revoked).toHaveLength(1)
+    expect(revoked[0]!.get('token')).toMatch(/^Refresh-Tok3n-/)
+    expect(revoked[0]!.get('token_type_hint')).toBe('refresh_token')
+    expect(revoked[0]!.get('client_secret')).toBe(CLIENT_SECRET)
+    expect(await tokensOf(id)).toEqual([])
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.objectId, id), eq(auditEvents.action, 'resource.oauth_disconnected')))
+    expect(audit!.metadata).toMatchObject({ account: 'shared', revoked: 'yes' })
+  })
+
+  it('still disconnects when the provider refuses, saying why', async () => {
+    const id = await restResource('crm_revoke_refused', oauthAuth({ revokeUrl: revokeUrl() }))
+    await connect(adminCookie, id)
+    failRevoke = { status: 503, body: { error: 'temporarily_unavailable' } }
+    expect(data(await disconnect(id))).toEqual({
+      disconnected: true,
+      revoked: 'failed',
+      reason: "The provider didn't revoke the token: temporarily_unavailable",
+    })
+    expect(await tokensOf(id)).toEqual([])
+  })
+
+  it('refuses a revocation URL off the token URL’s origin', async () => {
+    const id = data(
+      await admin.mutate('resources.create', { type: 'rest', name: 'x', slug: 'crm_revoke_far' }),
+    ).id
+    const saved = await admin.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config: {
+        baseUrl: 'https://api.example.com',
+        auth: oauthAuth({ revokeUrl: 'https://elsewhere.example.com/revoke' }),
+        allowPrivateNetwork: true,
+      },
+      secrets: { clientSecret: CLIENT_SECRET },
+    })
+    expect(saved.status).toBe(400)
+    expect(JSON.stringify(saved.body)).toContain('revocation URL on the token URL’s origin')
   })
 })
 
@@ -535,7 +596,7 @@ describe('connecting through an app', () => {
         ...(appId && { appId }),
       })
     expect((await disconnect()).status).toBe(404)
-    expect(data(await disconnect(app.id))).toEqual({ disconnected: true })
+    expect(data(await disconnect(app.id))).toEqual({ disconnected: true, revoked: 'none' })
   })
 })
 
@@ -579,7 +640,7 @@ describe('per-user accounts', () => {
           account: 'mine',
         }),
       ),
-    ).toEqual({ disconnected: true })
+    ).toEqual({ disconnected: true, revoked: 'none' })
     expect(await tokensOf(mail)).toEqual([])
   })
 })

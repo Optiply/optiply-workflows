@@ -1,4 +1,9 @@
-import type { AppDefinition, ComponentLibraryDefinition, LibraryQueryDefinition } from '@ow/app-definition'
+import type {
+  AppChangeSummary,
+  AppDefinition,
+  ComponentLibraryDefinition,
+  LibraryQueryDefinition,
+} from '@ow/app-definition'
 import type { OpenTaskField, PythonLock, TaskOutcome, WorkflowDefinition } from '@ow/definition'
 import { sql } from 'drizzle-orm'
 import {
@@ -42,6 +47,13 @@ const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
+/**
+ * `active` can sign in; `pending` signed in once and waits for an admin; `invited` was invited by an admin (any
+ * domain) and becomes active at their first sign-in; `rejected` was turned down by an admin.
+ */
+export const USER_STATUSES = ['active', 'pending', 'invited', 'rejected'] as const
+export type UserStatus = (typeof USER_STATUSES)[number]
+
 export const users = pgTable(
   'users',
   {
@@ -56,10 +68,23 @@ export const users = pgTable(
     passwordHash: text(),
     disabledAt: timestamp({ withTimezone: true }),
     lastLoginAt: timestamp({ withTimezone: true }),
+    /** Whether they may sign in yet: see `USER_STATUSES`. Accounts from before approval existed are `active`. */
+    status: text({ enum: USER_STATUSES }).notNull().default('active'),
+    /** When a `pending` person first asked to get in. */
+    requestedAt: timestamp({ withTimezone: true }),
+    /** When an admin approved or rejected them, and who. */
+    decidedAt: timestamp({ withTimezone: true }),
+    decidedBy: uuid().references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
+    /** The admin who invited them. */
+    invitedBy: uuid().references((): AnyPgColumn => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('users_email_uq').on(t.email), uniqueIndex('users_oidc_subject_uq').on(t.oidcSubject)],
+  (t) => [
+    uniqueIndex('users_email_uq').on(t.email),
+    uniqueIndex('users_oidc_subject_uq').on(t.oidcSubject),
+    check('users_status_ck', sql`${t.status} in ('active', 'pending', 'invited', 'rejected')`),
+  ],
 )
 
 export const sessions = pgTable(
@@ -168,17 +193,16 @@ export const PERMISSION_OBJECT_TYPES = [
 export const PERMISSION_LEVELS = ['use', 'edit', 'own'] as const
 
 /**
- * Grants to groups; a user's effective level is the highest grant across their groups. Admins implicitly own
- * everything. `objectId` null = every object of that type; `environmentId` null = every environment (environments
+ * Grants to a group or to one person (exactly one of `groupId`, `userId`); a user's effective level is the highest
+ * grant across their own and their groups'. Admins implicitly own everything. `objectId` null = every object of that type; `environmentId` null = every environment (environments
  * only matter for resources). `objectId` is polymorphic, so services delete grants when they delete an object.
  */
 export const permissions = pgTable(
   'permissions',
   {
     id: id(),
-    groupId: uuid()
-      .notNull()
-      .references(() => groups.id, { onDelete: 'cascade' }),
+    groupId: uuid().references(() => groups.id, { onDelete: 'cascade' }),
+    userId: uuid().references(() => users.id, { onDelete: 'cascade' }),
     objectType: text({ enum: PERMISSION_OBJECT_TYPES }).notNull(),
     objectId: uuid(),
     environmentId: uuid().references(() => environments.id, { onDelete: 'cascade' }),
@@ -187,9 +211,11 @@ export const permissions = pgTable(
   },
   (t) => [
     unique('permissions_grant_uq')
-      .on(t.groupId, t.objectType, t.objectId, t.environmentId)
+      .on(t.groupId, t.userId, t.objectType, t.objectId, t.environmentId)
       .nullsNotDistinct(),
     index('permissions_object_idx').on(t.objectType, t.objectId),
+    index('permissions_user_idx').on(t.userId),
+    check('permissions_subject_ck', sql`(${t.groupId} is null) <> (${t.userId} is null)`),
     check(
       'permissions_object_type_ck',
       sql`${t.objectType} in ('resource', 'workflow', 'app', 'library_query', 'module', 'component_library', 'folder')`,
@@ -212,7 +238,7 @@ export const resources = pgTable(
     description: text(),
     folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
     /** Built-in resources the platform provisions and keeps up to date; their settings can't be edited. */
-    systemKind: text({ enum: ['database'] }),
+    systemKind: text({ enum: ['database', 'rest'] }),
     /** Kept in the Git repo (M22): its settings change through Git, its secrets and overrides here. */
     gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
@@ -489,6 +515,13 @@ export const workflowReleases = pgTable(
      * runs install exactly these.
      */
     pythonLock: jsonb().$type<PythonLock>(),
+    /**
+     * The JavaScript packages' npm lock (`package-lock.json`) and bundle, when the definition declares packages:
+     * built when it was published, so live runs load exactly this bundle (`js_bundles.bundle_hash`), rebuilt from
+     * the lock if it's gone.
+     */
+    jsLock: text(),
+    jsBundleHash: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -503,7 +536,7 @@ export const workflowReleases = pgTable(
   ],
 )
 
-export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka'] as const
+export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
 
 /** A queue trigger's runtime state (Pub/Sub, SQS, Kafka), as its consumer reports it (`workflow_triggers.state`). */
 export interface QueueTriggerState {
@@ -560,7 +593,10 @@ export const workflowTriggers = pgTable(
     uniqueIndex('workflow_triggers_name_uq').on(t.workflowId, t.kind, t.name),
     uniqueIndex('workflow_triggers_alias_uq').on(t.aliasShape).where(sql`${t.aliasShape} is not null`),
     index('workflow_triggers_due_idx').on(t.nextFireAt).where(sql`${t.kind} = 'schedule' and ${t.enabled}`),
-    check('workflow_triggers_kind_ck', sql`${t.kind} in ('webhook', 'schedule', 'pubsub', 'sqs', 'kafka')`),
+    check(
+      'workflow_triggers_kind_ck',
+      sql`${t.kind} in ('webhook', 'schedule', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis')`,
+    ),
   ],
 )
 
@@ -614,6 +650,25 @@ export const webhookRejections = pgTable(
  * redelivery of a message whose run succeeded is answered without a run; one whose run is still going is held, not run
  * again. The message id is Pub/Sub's or SQS's, or Kafka's `<topic>/<partition>/<offset>@<timestamp>`. Retention prunes old ones.
  */
+/**
+ * Where a Kinesis trigger (M30) has got to in each shard: the sequence number of the last record whose run ended
+ * (succeeded, or given up on after its attempts). A shard without a row starts where the trigger says (latest or
+ * trim horizon); a closed shard whose last record is done is `finished`, and its children start then.
+ */
+export const kinesisCheckpoints = pgTable(
+  'kinesis_checkpoints',
+  {
+    triggerId: uuid()
+      .notNull()
+      .references(() => workflowTriggers.id, { onDelete: 'cascade' }),
+    shardId: text().notNull(),
+    sequenceNumber: text(),
+    finished: boolean().notNull().default(false),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.triggerId, t.shardId] })],
+)
+
 export const queueDeliveries = pgTable(
   'queue_deliveries',
   {
@@ -645,7 +700,10 @@ export const queueDeliveries = pgTable(
 
 /** `queued` and `waiting` runs are claimable once `availableAt` passes; the last three are final. */
 export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
-/** `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. */
+/**
+ * `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. `app` (M36): an app's "Run
+ * workflow" query, as the person using the app.
+ */
 export const RUN_TRIGGER_TYPES = [
   'manual',
   'webhook',
@@ -655,6 +713,9 @@ export const RUN_TRIGGER_TYPES = [
   'git',
   'sqs',
   'kafka',
+  'rabbitmq',
+  'kinesis',
+  'app',
 ] as const
 export const BLOCK_STATUSES = [
   'pending',
@@ -748,8 +809,9 @@ export const workflowRuns = pgTable(
       .where(sql`${t.draftSnapshotId} is not null`),
     // Retention finds old finished runs by when they finished.
     index('workflow_runs_finished_idx').on(t.finishedAt).where(sql`${t.finishedAt} is not null`),
+    // Per environment (session 40; per workflow before 0040): a key used in staging doesn't replay in production.
     uniqueIndex('workflow_runs_idempotency_uq')
-      .on(t.workflowId, t.idempotencyKey)
+      .on(t.workflowId, t.environmentId, t.idempotencyKey)
       .where(sql`${t.idempotencyKey} is not null`),
     uniqueIndex('workflow_runs_schedule_uq')
       .on(t.triggerId, t.scheduledFor)
@@ -760,7 +822,7 @@ export const workflowRuns = pgTable(
     ),
     check(
       'workflow_runs_trigger_type_ck',
-      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka')`,
+      sql`${t.triggerType} in ('manual', 'webhook', 'schedule', 'workflow', 'pubsub', 'git', 'sqs', 'kafka', 'rabbitmq', 'kinesis', 'app')`,
     ),
     check('workflow_runs_source_ck', sql`num_nonnulls(${t.releaseId}, ${t.draftSnapshotId}) = 1`),
     check(
@@ -813,9 +875,10 @@ export const blockRuns = pgTable(
   ],
 )
 
-export const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
+/** A block's data at most (session 40: 50 MB, was 10 MB; the user's word). */
+export const MAX_PAYLOAD_BYTES = 50 * 1024 * 1024
 
-/** A block's output data, kept apart so listing a run's blocks stays cheap. Capped at 10MB. */
+/** A block's output data, kept apart so listing a run's blocks stays cheap. Capped at `MAX_PAYLOAD_BYTES`. */
 export const blockRunPayloads = pgTable(
   'block_run_payloads',
   {
@@ -826,7 +889,7 @@ export const blockRunPayloads = pgTable(
     /** Size of the data as JSON text, checked by the engine before writing. */
     sizeBytes: integer().notNull(),
   },
-  (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 10485760`)],
+  (t) => [check('block_run_payloads_size_ck', sql`${t.sizeBytes} between 0 and 52428800`)],
 )
 
 export const TASK_STATUSES = ['open', 'completed', 'expired', 'cancelled'] as const
@@ -942,6 +1005,9 @@ export const appReleases = pgTable(
     notes: text(),
     /** The commit a release deployed from Git came from (M11); null for releases published on the instance. */
     gitCommit: text(),
+    /** The JavaScript packages' npm lock and bundle, as on `workflow_releases`. */
+    jsLock: text(),
+    jsBundleHash: text(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
@@ -954,6 +1020,33 @@ export const appReleases = pgTable(
     ),
     check('app_releases_hash_ck', sql`${t.definitionHash} ~ '^[0-9a-f]{64}$'`),
   ],
+)
+
+/**
+ * An app's draft as it was (session 41, the editor's History, after Retool's save log). Every save of the main draft
+ * records one; a save by the same person within minutes of their last updates that entry instead, so a burst of
+ * edits is one entry. The newest 200 per app are kept. Branch drafts have Git's history instead.
+ */
+export const appDraftVersions = pgTable(
+  'app_draft_versions',
+  {
+    id: id(),
+    appId: uuid()
+      .notNull()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    /** The draft revision this version was saved as (its last save, for an entry several saves updated). */
+    revision: integer().notNull(),
+    definition: jsonb().$type<AppDefinition>().notNull(),
+    /** What changed since the version before (`summarizeAppChange`), for the entry's label. */
+    summary: jsonb().$type<AppChangeSummary>().notNull(),
+    /** Set when this version restored an older one. */
+    restoredFrom: uuid(),
+    createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    /** When the entry last took a save. */
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('app_draft_versions_app_idx').on(t.appId, t.updatedAt.desc())],
 )
 
 // ── Query Library (M14) ─────────────────────────────────────────────────────
@@ -1217,6 +1310,119 @@ export type WorkflowTrigger = typeof workflowTriggers.$inferSelect
 export type WebhookRejection = typeof webhookRejections.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type ApiKey = typeof apiKeys.$inferSelect
+
+/** What a personal access token may do (M33): one scope for now. */
+export const ACCESS_TOKEN_SCOPES = ['component-libraries'] as const
+export type AccessTokenScope = (typeof ACCESS_TOKEN_SCOPES)[number]
+
+/**
+ * Personal access tokens (M33, docs/architecture.md §2.36): a user's own, acting as them within their scopes
+ * (`Authorization: Bearer owpat_…` on tRPC). Only the sha256 is kept.
+ */
+export const personalAccessTokens = pgTable(
+  'personal_access_tokens',
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text().notNull(),
+    /** `owpat_` plus the token's first 8 characters. */
+    prefix: text().notNull(),
+    /** sha256 hex of the token. */
+    hash: text().notNull(),
+    scopes: text().array().$type<AccessTokenScope[]>().notNull(),
+    expiresAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    /** Updated at most once a minute. */
+    lastUsedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('personal_access_tokens_hash_uq').on(t.hash),
+    index('personal_access_tokens_user_idx').on(t.userId),
+    check('personal_access_tokens_hash_ck', sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect
+
+/**
+ * npm registries an admin defines for component libraries' builds (M33, docs/architecture.md §2.36): one per scope
+ * (`@acme`), or one without a scope replacing NPM_REGISTRY_URL. The token is a secret config var's name, read in the
+ * default environment by the build. Not in Git.
+ */
+export const npmRegistries = pgTable(
+  'npm_registries',
+  {
+    id: id(),
+    /** `@acme`, or null for every package without a registry of its own. */
+    scope: text(),
+    url: text().notNull(),
+    tokenConfigVar: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique('npm_registries_scope_uq').on(t.scope).nullsNotDistinct()],
+)
+
+export type NpmRegistry = typeof npmRegistries.$inferSelect
+
+/**
+ * Apps and workflows imported from Retool (M36): which Retool app or workflow each came from (`retool_key`: an app's
+ * uuid; a workflow's webhook trigger uuid, else its name, as workflow exports carry no uuid), so importing it again
+ * saves a new draft of the same one. Keeps the import's report, never the export.
+ */
+export const retoolImports = pgTable(
+  'retool_imports',
+  {
+    id: id(),
+    kind: text({ enum: ['app', 'workflow'] }).notNull(),
+    retoolKey: text().notNull(),
+    retoolName: text().notNull(),
+    appId: uuid().references(() => apps.id, { onDelete: 'cascade' }),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    report: jsonb().notNull(),
+    importedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('retool_imports_key_uq').on(t.kind, t.retoolKey),
+    check(
+      'retool_imports_target_ck',
+      sql`(${t.kind} = 'app' and ${t.appId} is not null and ${t.workflowId} is null) or (${t.kind} = 'workflow' and ${t.workflowId} is not null and ${t.appId} is null)`,
+    ),
+  ],
+)
+
+/**
+ * What a Retool resource or workflow is here (M36), remembered from the last import that mapped it: a Retool resource
+ * (by name or uuid) → a resource; a Retool workflow (by uuid) → a workflow.
+ */
+export const retoolMappings = pgTable(
+  'retool_mappings',
+  {
+    id: id(),
+    kind: text({ enum: ['resource', 'workflow'] }).notNull(),
+    retoolKey: text().notNull(),
+    resourceId: uuid().references(() => resources.id, { onDelete: 'cascade' }),
+    workflowId: uuid().references(() => workflows.id, { onDelete: 'cascade' }),
+    updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique('retool_mappings_key_uq').on(t.kind, t.retoolKey),
+    check(
+      'retool_mappings_target_ck',
+      sql`(${t.kind} = 'resource' and ${t.resourceId} is not null and ${t.workflowId} is null) or (${t.kind} = 'workflow' and ${t.workflowId} is not null and ${t.resourceId} is null)`,
+    ),
+  ],
+)
+
+export type RetoolImport = typeof retoolImports.$inferSelect
+export type RetoolMapping = typeof retoolMappings.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export type RunTriggerType = (typeof RUN_TRIGGER_TYPES)[number]
 export type BlockRun = typeof blockRuns.$inferSelect
@@ -1244,6 +1450,10 @@ export const maintenanceJobs = pgTable('maintenance_jobs', {
  * The instance's Git repo (M11): one row at most. The token and webhook secret are one encrypted JSON value
  * (`git_settings:<id>:-`), never returned to the browser.
  */
+/** The Git hosts sync works with (M31). */
+export const GIT_HOSTS = ['github', 'gitlab'] as const
+export type GitHostKind = (typeof GIT_HOSTS)[number]
+
 export const gitSettings = pgTable(
   'git_settings',
   {
@@ -1254,7 +1464,16 @@ export const gitSettings = pgTable(
     repoUrl: text().notNull(),
     /** The branch deploys come from. */
     branch: text().notNull().default('main'),
-    /** Encrypted JSON `{ token?, webhookSecret? }` (`@ow/crypto` token). */
+    /** Where the repo is hosted (M31): its pull or merge requests, webhook and sign-in. */
+    host: text({ enum: GIT_HOSTS }).notNull().default('github'),
+    /** GitHub's sign-in (M31): a token, or a GitHub App (its id here, its private key a secret). */
+    githubAuth: text({ enum: ['token', 'app'] })
+      .notNull()
+      .default('token'),
+    githubAppId: text(),
+    /** GitLab's API for an instance under a path (M31); null: `<origin>/api/v4`. */
+    apiUrl: text(),
+    /** Encrypted JSON `{ token?, webhookSecret?, appPrivateKey? }` (`@ow/crypto` token). */
     secrets: text(),
     /** The branch commit the last deploy went through (null: never, or the repo or branch changed since). */
     deployedCommit: text(),
@@ -1282,6 +1501,8 @@ export const gitSettings = pgTable(
   (t) => [
     unique('git_settings_singleton_uq').on(t.singleton),
     check('git_settings_singleton_ck', sql`${t.singleton}`),
+    check('git_settings_host_ck', sql`${t.host} in ('github', 'gitlab')`),
+    check('git_settings_github_auth_ck', sql`${t.githubAuth} in ('token', 'app')`),
   ],
 )
 
@@ -1484,10 +1705,44 @@ export type CollabDocument = typeof collabDocuments.$inferSelect
  * lock and env. Draft runs reuse the lock while the requirements stay the same; releases keep theirs in
  * `workflow_releases.python_lock`.
  */
+/**
+ * Package indexes an admin defines (M32, docs/architecture.md §2.35), picked by a workflow's
+ * `settings.python.index` (its slug). Not in Git: the instance's own settings, like Git's.
+ */
+export const pythonIndexes = pgTable(
+  'python_indexes',
+  {
+    id: id(),
+    /** What workflows name it by (`settings.python.index`, the lock's packages). */
+    slug: text().notNull(),
+    name: text().notNull(),
+    /** The simple index's URL (PEP 503), without credentials. */
+    url: text().notNull(),
+    username: text(),
+    /** A secret config var's name holding the password, read in the default environment when a build needs it. */
+    passwordConfigVar: text(),
+    /** `primary` replaces the builder's default index; `extra` is searched with it. */
+    mode: text().$type<'primary' | 'extra'>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('python_indexes_slug_uq').on(t.slug),
+    check('python_indexes_mode_ck', sql`${t.mode} in ('primary', 'extra')`),
+  ],
+)
+
+export type PythonIndex = typeof pythonIndexes.$inferSelect
+
 export const pythonEnvs = pgTable('python_envs', {
-  /** `requirementsHash`: the requirements' SHA-256, sorted. */
+  /**
+   * `requirementsHash`: the requirements' SHA-256, sorted; with a package index (M32), of the requirements and
+   * the index's id.
+   */
   requirementsHash: text().primaryKey(),
   requirements: jsonb().$type<string[]>().notNull(),
+  /** The package index the requirements resolve from (M32); null for the builder's default. */
+  indexId: uuid().references(() => pythonIndexes.id, { onDelete: 'cascade' }),
   /** `ready` (the lock and env below) or `failed` (the error and log; the next run tries again). */
   state: text().$type<'ready' | 'failed'>().notNull(),
   lock: jsonb().$type<PythonLock>(),
@@ -1502,3 +1757,43 @@ export const pythonEnvs = pgTable('python_envs', {
 })
 
 export type PythonEnv = typeof pythonEnvs.$inferSelect
+
+/**
+ * Bundles of JavaScript packages for workflows' and apps' code: their npm dependencies installed (no install scripts)
+ * and bundled by esbuild into one script setting `globalThis.__owModules`, which the sandboxes load before the code.
+ * Kept by what went in (`inputHash`: the dependencies, the registries they resolve from, and the lock a release
+ * builds from, if any), found by what came out (`bundleHash`, what a release names). A failure is kept too (the
+ * editor shows it); the next build tries again.
+ */
+export const jsBundles = pgTable(
+  'js_bundles',
+  {
+    inputHash: text().primaryKey(),
+    /** npm's `dependencies`: name → range (`*` for any). */
+    dependencies: jsonb().$type<Record<string, string>>().notNull(),
+    /** `ready` (the bundle below) or `failed` (the error and log). */
+    state: text().$type<'ready' | 'failed'>().notNull(),
+    /** SHA-256 of `js`. */
+    bundleHash: text(),
+    js: text(),
+    /** `package-lock.json` as the install ended with it. */
+    lock: text(),
+    /** The installed version of each dependency, for the editor. */
+    versions: jsonb().$type<Record<string, string>>(),
+    sizeBytes: integer(),
+    /** Node built-ins some package reaches for: they throw when used. */
+    warnings: jsonb().$type<string[]>(),
+    error: jsonb().$type<{ kind: string; message: string }>(),
+    /** npm's output from the last install (its end). */
+    log: text(),
+    builtAt: timestamp({ withTimezone: true }),
+    lastUsedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('js_bundles_bundle_hash_ix').on(t.bundleHash),
+    check('js_bundles_state_ck', sql`${t.state} in ('ready', 'failed')`),
+  ],
+)
+
+export type JsBundle = typeof jsBundles.$inferSelect

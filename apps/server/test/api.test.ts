@@ -53,6 +53,18 @@ describe('health and auth', () => {
     expect(member).toMatchObject({ email: 'member@optiply.nl', isAdmin: false })
   })
 
+  it('serves a batch of many tRPC calls in one request (an app running many queries at once)', async () => {
+    const calls = Array.from({ length: 40 }, () => 'me')
+    const input = encodeURIComponent(JSON.stringify(Object.fromEntries(calls.map((_, i) => [i, {}]))))
+    const res = await env.app.inject({
+      method: 'GET',
+      url: `/api/trpc/${calls.join(',')}?batch=1&input=${input}`,
+      headers: { cookie: adminCookie },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toHaveLength(40)
+  })
+
   it('logs out by deleting the session', async () => {
     const cookie = await login(env.app, 'member@optiply.nl')
     await env.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie } })
@@ -99,7 +111,7 @@ describe('groups and permissions', () => {
     expect(audit.items[0].actor.email).toBe('admin@optiply.nl')
   })
 
-  it('protects built-in groups and the last admin', async () => {
+  it('protects built-in groups and keeps admins from removing themselves', async () => {
     const api = trpc(env.app, adminCookie)
     const [admins] = await env.db.select().from(groups).where(eq(groups.systemKind, 'admins'))
     const [allUsers] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
@@ -112,7 +124,7 @@ describe('groups and permissions', () => {
     const me = (await api.query('me')).body.result?.data
     const res = await api.mutate('groups.removeMember', { groupId: admins!.id, userId: me.id })
     expect(res.status).toBe(400)
-    expect(res.body.error?.message).toContain('last admin')
+    expect(res.body.error?.message).toContain('remove yourself')
   })
 
   it('disabling a user revokes their sessions', async () => {

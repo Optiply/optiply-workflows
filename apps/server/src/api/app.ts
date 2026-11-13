@@ -17,26 +17,35 @@ import { Metrics, metricsAllowed } from '../metrics'
 import { configureAwsServer } from '../services/aws'
 import { CollabHub } from '../services/collab/rooms'
 import { CollabStore } from '../services/collab/store'
+import { configureConnectors } from '../services/connectors'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
+import { useRe2ForPatterns } from '../services/regexp'
 import { RunEventHub } from '../services/run-events'
+import { configureSnsWebhooks } from '../services/sns-webhook'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
-import { contextFactory } from '../trpc/init'
+import { contextFactory, type Services } from '../trpc/init'
 import { type AppRouter, appRouter } from '../trpc/router'
 import { auditApi } from './audit'
+import { cliApi } from './cli'
 import { collabApi, MAX_COLLAB_MESSAGE_BYTES } from './collab'
 import { componentBundlesApi } from './component-bundles'
 import { databaseApi } from './database'
 import { gitWebhookApi } from './git-webhook'
+import { jsBundlesApi } from './js-bundles'
 import { oauthApi } from './oauth'
 import { runsApi } from './runs'
 import { webhooksApi } from './webhooks'
 
 /** `logger`: a shared pino instance (production), or `false` to silence logs (tests). */
+/** The longest URL path segment taken: a tRPC batch of a few hundred calls' names. */
+export const MAX_TRPC_BATCH_PATH = 8000
+
 export async function buildApp(deps: {
   db: Db
   config: Config
@@ -47,8 +56,16 @@ export async function buildApp(deps: {
   metrics?: Metrics
 }) {
   const { db, config } = deps
+  useRe2ForPatterns()
   const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
-  const app = Fastify({ loggerInstance: logger, trustProxy: config.TRUST_PROXY, bodyLimit: 10 * 1024 * 1024 })
+  const app = Fastify({
+    loggerInstance: logger,
+    trustProxy: config.TRUST_PROXY,
+    bodyLimit: 10 * 1024 * 1024,
+    // tRPC batches calls into one path (`/api/trpc/apps.runQuery,apps.runQuery,…`): Fastify's default of 100
+    // characters refused (414) an app running more than seven queries at once.
+    routerOptions: { maxParamLength: MAX_TRPC_BATCH_PATH },
+  })
 
   await app.register(fastifyCookie, { secret: config.SESSION_SECRET })
   const metrics = deps.metrics ?? new Metrics(db)
@@ -63,13 +80,16 @@ export async function buildApp(deps: {
     else logger.error({ err }, 'managed database provisioning failed')
   }
 
-  const services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
+  const services: Services = { pool: new PoolManager(), sandbox: new IvmRuntime() }
   // Sync webhooks execute here when a slot is free (see webhooks.ts); on shutdown their runs go back to the queue.
   const fetcher = new CodeFetcher({ allowPrivateNetwork: config.CODE_FETCH_ALLOW_PRIVATE_NETWORK })
   const pythonWarning = pythonConfigWarning(config)
   if (pythonWarning) app.log.warn(pythonWarning)
   configureGoogle(config)
   configureAwsServer(config)
+  configureConnectors(config)
+  configureSnsWebhooks(config.SNS_CERT_HOSTS)
+  configureJsBundles(config)
   const runner = new InlineRunner({
     db,
     pool: services.pool,
@@ -79,6 +99,7 @@ export async function buildApp(deps: {
     concurrency: config.WEBHOOK_INLINE_CONCURRENCY,
     python: configurePython(config) ?? undefined,
     pythonEnvs: pythonEnvProvider(db, config),
+    jsModules: dbJsModules(db),
     library: engineLibrary(db),
     listener: deps.listener,
     log: app.log.child({ component: 'inline-runner' }),
@@ -108,12 +129,22 @@ export async function buildApp(deps: {
   await app.register(authRoutes, { db, config })
   await app.register(oauthApi, { db, config })
   const events = deps.listener ? new RunEventHub(deps.listener) : undefined
+  // Apps' workflow queries (M36) start runs here, as sync webhooks do.
+  services.runs = { runner, ...(events && { events }) }
   app.addHook('onClose', async () => {
     await events?.close()
   })
-  await app.register(runsApi, { prefix: '/api/v1', db, events, publicUrl: config.PUBLIC_URL })
+  await app.register(runsApi, {
+    prefix: '/api/v1',
+    db,
+    keyring: config.keyring,
+    events,
+    publicUrl: config.PUBLIC_URL,
+  })
   await app.register(auditApi, { prefix: '/api/v1', db })
   await app.register(componentBundlesApi, { db })
+  await app.register(jsBundlesApi, { db })
+  await app.register(cliApi)
   await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
   await app.register(webhooksApi, {
     prefix: '/api/v1',

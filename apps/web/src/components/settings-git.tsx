@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitPullRequest } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { CommitLink, GIT_ALL_LABELS, PullRequestLink, type SettingsKind, useGitInfo } from '@/components/git'
+import {
+  CommitLink,
+  GIT_ALL_LABELS,
+  PullRequestLink,
+  type SettingsKind,
+  useChangeRequest,
+  useGitInfo,
+} from '@/components/git'
 import { FileDiff } from '@/components/git-bar'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { type RouterInputs, useTRPC } from '@/lib/trpc'
@@ -24,6 +31,7 @@ export function SaveToBranchDialog({
   edit: SettingsEdit
   onClose: () => void
 }) {
+  const cr = useChangeRequest()
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const { data: git } = useGitInfo()
@@ -85,11 +93,11 @@ export function SaveToBranchDialog({
           </p>
           {pullRequest?.state === 'open' ? (
             <div>
-              It’s in the pull request: <PullRequestLink pullRequest={pullRequest} />
+              It’s in the {cr.noun}: <PullRequestLink pullRequest={pullRequest} />
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              <p className="text-muted">Open a pull request to have it reviewed; merging it deploys it.</p>
+              <p className="text-muted">Open a {cr.noun} to have it reviewed; merging it deploys it.</p>
               <Button
                 className="self-start"
                 variant="primary"
@@ -99,7 +107,7 @@ export function SaveToBranchDialog({
                 }
                 data-testid="open-pull-request"
               >
-                <GitPullRequest className="size-4" /> Open pull request
+                <GitPullRequest className="size-4" /> Open {cr.noun}
               </Button>
               {openPr.data?.pullRequestError && (
                 <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">

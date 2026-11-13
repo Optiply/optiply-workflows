@@ -149,15 +149,22 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   })
   await signIn(viewer, E2E_MEMBER_EMAIL)
   await viewer.goto('/apps')
-  await expect(viewer.getByRole('heading', { name: 'Apps', exact: true })).toBeVisible()
+  // No app reaches them yet: Apps isn't in their sidebar, and its page says why (session 44's sections).
+  await expect(viewer.getByText('No access to Apps')).toBeVisible()
+  await expect(
+    viewer.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps', exact: true }),
+  ).toHaveCount(0)
   await expect(viewer.getByTestId(`app-${slug}`)).toHaveCount(0)
-  // Folders exist, but none they manage and nothing in them for them: the empty state, not a blank page.
-  await expect(viewer.getByText('No apps yet')).toBeVisible()
   await viewer.goto(`/apps/${slug}`)
-  await expect(viewer.getByRole('link', { name: 'Open the editor' })).toBeVisible()
+  // Not theirs: told so, and no editor offered (session 44).
+  await expect(viewer.getByText("You don't have access to this app")).toBeVisible()
+  await expect(viewer.getByRole('link', { name: 'Open the editor' })).toHaveCount(0)
 
   // The admin moves the app into the folder and grants the group Use on it.
+  await page.getByTitle(`Actions for Items ${stamp}`).click()
+  await page.getByTitle(`Move Items ${stamp} to a folder`).click()
   await page.getByLabel(`Folder of Items ${stamp}`).selectOption({ label: folderName })
+  await page.getByTestId('move-confirm').click()
   await expect(folderRow).toContainText('1 app')
   await folderRow.getByRole('link', { name: folderName }).click()
   const folder = page.getByRole('region', { name: `Folder ${folderName}` })
@@ -165,7 +172,7 @@ test('M10 done-when: a two-page app over 100k rows, shared through a folder, sur
   // Open, its Access sits beside its path.
   await page.getByRole('button', { name: 'Access' }).click()
   const access = page.getByRole('dialog', { name: `Access to ${folderName}` })
-  await access.getByLabel('Group').selectOption({ label: groupName })
+  await access.getByLabel('Group or person').selectOption({ label: groupName })
   await expect(access.getByLabel('Environment')).toHaveCount(0)
   await access.getByRole('button', { name: 'Grant' }).click()
   await expect(access).toContainText(groupName)

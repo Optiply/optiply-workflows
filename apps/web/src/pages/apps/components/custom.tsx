@@ -2,9 +2,10 @@ import { type CustomComponentInterface, customInstanceRelease } from '@ow/app-de
 import type { ComponentLibraryRelease } from '@ow/app-runtime'
 import type { FrameTheme, FromFrame } from '@ow/component-sdk/protocol'
 import { Blocks, RotateCcw } from 'lucide-react'
-import { useContext, useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useId, useRef, useState } from 'react'
 import { EditingContext } from '../grid-context'
 import type { RendererProps } from '../renderer'
+import { reportedHeight, useContentHeights } from '../runtime/content-heights'
 import { fetchBundle, type MountedFrame, mountComponentFrame } from '../runtime/frame-mount'
 import { useAppHostContext, useAppHostState, useAppScope } from '../runtime/react'
 
@@ -132,6 +133,23 @@ function CustomFrame({
   // component be used until the pointer leaves it.
   const editing = useContext(EditingContext)
   const [using, setUsing] = useState(false)
+  // Auto height (M33): the content's height, as the frame reports it, goes to the grid while Height is Auto.
+  // A library from before M33 may declare its own `heightMode`: it keeps it, and follows the component's default.
+  const ownHeightMode = Object.hasOwn(iface.props, 'heightMode')
+  const heightMode = useAppHostState((s) =>
+    ownHeightMode ? undefined : s.values[`${scope}${name}.heightMode`],
+  )
+  const auto = (heightMode ?? (iface.autoHeight ? 'auto' : 'fixed')) === 'auto'
+  const autoRef = useRef(auto)
+  autoRef.current = auto
+  const lastPx = useRef<number | null>(null)
+  const setContentHeight = useContentHeights((s) => s.set)
+  const heightKey = `${scope}${name}`
+  const frameId = useId()
+  useEffect(() => {
+    setContentHeight(heightKey, frameId, auto ? lastPx.current : null)
+  }, [auto, heightKey, frameId, setContentHeight])
+  useEffect(() => () => setContentHeight(heightKey, frameId, null), [heightKey, frameId, setContentHeight])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the frame is made once per release and component (its key); props follow below.
   useEffect(() => {
@@ -162,6 +180,14 @@ function CustomFrame({
         case 'ready':
           setStatus({ kind: 'ready' })
           return
+        case 'height': {
+          // The frame's word (its code may send anything): only a finite height, within bounds.
+          const px = reportedHeight(message.px)
+          if (px === null) return
+          lastPx.current = px
+          if (autoRef.current) setContentHeight(heightKey, frameId, px)
+          return
+        }
         case 'pong':
           lastPong = performance.now()
           return

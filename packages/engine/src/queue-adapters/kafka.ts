@@ -8,11 +8,12 @@ import {
   kafkaResourceClient,
   parseResource,
   produceTo,
+  wireSchemaId,
 } from '@ow/connectors'
 import type { KafkaTrigger } from '@ow/definition'
 import type { AdapterContext, HeldMessage, QueueAdapter, QueueMessage } from '../queue-consumer'
 import type { KafkaRunMessage } from '../types'
-import { textOrJson } from './pubsub'
+import { bodyData } from './pubsub'
 
 type Config = KafkaTrigger &
   Required<Pick<KafkaTrigger, 'groupId' | 'startAt' | 'maxAttempts' | 'retryBackoffSeconds' | 'maxInFlight'>>
@@ -23,6 +24,8 @@ interface Entry {
   received: KafkaReceived
   /** Messages with a key run one at a time, in order: its partition and key. */
   keyId: string | null
+  /** M30: a wire-format value decoded by the Schema Registry, or why it couldn't be. */
+  decoded?: { value: unknown; schemaId: number } | { error: string }
 }
 
 /** A partition's offsets: those fetched and not yet settled, in order, and the next one to commit. */
@@ -253,6 +256,27 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
     return out
   }
 
+  /**
+   * Values in the Schema Registry's wire format, decoded when the resource has a registry (M30). A value that can't
+   * be (its schema gone, the registry down) runs as it came, with `schemaError` saying why.
+   */
+  async function decode(entries: Entry[], signal: AbortSignal) {
+    // Decoded once; a failure (the registry away, the pull aborted) is tried again on the message's next attempt.
+    const framed = entries.filter(
+      (e) => (!e.decoded || 'error' in e.decoded) && wireSchemaId(e.received.value) !== undefined,
+    )
+    if (!framed.length) return
+    const registry = (await resourceClient()).registry
+    if (!registry) return
+    for (const e of framed) {
+      try {
+        e.decoded = (await registry.decode(e.received.value!, signal))!
+      } catch (err) {
+        e.decoded = { error: (err as Error).message }
+      }
+    }
+  }
+
   function toMessage(entry: Entry): QueueMessage {
     const r = entry.received
     return {
@@ -269,7 +293,13 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
           attempt,
           groupId: config.groupId,
         }
-        return { data: r.value === null ? null : textOrJson(r.value.toString('utf8')), message }
+        const d = entry.decoded
+        if (d && 'schemaId' in d) return { data: d.value, message: { ...message, schemaId: d.schemaId } }
+        if (d) message.schemaError = d.error
+        if (r.value === null) return { data: null, message }
+        const body = bodyData(r.value)
+        if (body.binary) message.encoding = 'base64'
+        return { data: body.data, message }
       },
     }
   }
@@ -327,7 +357,10 @@ export function kafkaAdapter(ctx: AdapterContext): QueueAdapter {
           throw err
         }
         const ready = take(max)
-        if (ready.length) return ready.map(toMessage)
+        if (ready.length) {
+          await decode(ready, signal)
+          return ready.map(toMessage)
+        }
         if (signal.aborted || Date.now() >= deadline) return []
         // Woken by a fetch, a settled message, or the next retry coming due.
         const nextDue = Math.min(...retries.values(), deadline)

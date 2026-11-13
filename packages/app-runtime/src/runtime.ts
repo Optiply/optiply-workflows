@@ -84,6 +84,10 @@ export interface AppRuntimeOptions {
   libraries?: ComponentLibraryReleases
   /** In a module instance (M14): what `inputs.<name>` starts as. */
   inputs?: Record<string, unknown>
+  /** What the app kept in this browser before (session 41): `localStorage.values` starts as it. */
+  storage?: Record<string, unknown>
+  /** In a module instance: its local storage writes go to the app's (which keeps them and passes the values down). */
+  onStorage?: (key: string | null, value: unknown) => void
   /** In a module instance (M14): fires one of the module's events on the instance in the app. */
   onEvent?: (event: string) => Promise<boolean>
 }
@@ -112,6 +116,8 @@ export class AppRuntime {
   private readonly sent = new Map<string, string>()
   private readonly autoTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly debounced = new Map<string, ReturnType<typeof setTimeout>>()
+  /** When each throttled handler last ran (session 41). */
+  private readonly throttled = new Map<string, number>()
   private readonly methodCache = new Map<string, Record<string, unknown>>()
   private readonly notified = new WeakSet<object>()
   private readonly autoRunDelayMs: number
@@ -136,9 +142,10 @@ export class AppRuntime {
     this.autoRunDelayMs = options.autoRunDelayMs ?? 100
     this.model = new AppModel(definition, {
       ...(options.runner && { runner: options.runner }),
-      globals: { ...options.globals, utils: this.utils() },
+      globals: { ...options.globals, utils: this.utils(), formatDataAsArray, formatDataAsObject },
       methods: (entity) => this.methodsFor(entity),
       ...(options.url && { url: options.url }),
+      ...(options.storage && { storage: options.storage }),
       ...(options.inputs && { inputs: options.inputs }),
       specFor: (c) => {
         if (c.type === 'custom') {
@@ -224,12 +231,12 @@ export class AppRuntime {
    * (unless the input's default changed), variables (unless their initial value changed) and query results. Only
    * the on-load queries that changed, or whose values changed, run again; `previous` stops.
    */
-  async start(options: { previous?: AppRuntime } = {}): Promise<void> {
+  async start(options: { previous?: AppRuntime; reset?: readonly string[] } = {}): Promise<void> {
     const { previous } = options
     this.model.init()
     if (previous) {
       previous.stop()
-      this.model.set(this.carriedOver(previous))
+      this.model.set(this.carriedOver(previous, new Set(options.reset)))
     }
     const loading = this.startInstances(previous)
     const values: Record<string, unknown> = {}
@@ -244,7 +251,7 @@ export class AppRuntime {
       (q) =>
         (runsAutomatically(q) || q.runOnLoad) &&
         this.active(q.name) &&
-        (!previous || this.mustRerun(q, previous)),
+        (!previous || options.reset?.includes(q.name) || this.mustRerun(q, previous)),
     )
     await Promise.allSettled([...loading, ...onLoad.map((q) => this.runQuiet(q.name))])
   }
@@ -284,6 +291,9 @@ export class AppRuntime {
         ...(this.options.libraries && { libraries: this.options.libraries }),
         autoRunDelayMs: this.autoRunDelayMs,
         inputs,
+        // The app's local storage, as it is now: an instance reads and writes the app's keys, through the app.
+        storage: (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {},
+        onStorage: (key, value) => this.setStorage(key, value),
         onEvent: (event) => this.fire(name, event),
       })
       this.instances.set(name, {
@@ -372,11 +382,13 @@ export class AppRuntime {
   }
 
   /** The run-time values of `previous` that still mean the same thing in this definition. */
-  private carriedOver(previous: AppRuntime): Record<string, unknown> {
+  private carriedOver(previous: AppRuntime, reset: ReadonlySet<string> = new Set()): Record<string, unknown> {
     const carried: Record<string, unknown> = {}
     const before = previous.model
     for (const [key, node] of this.model.graph.nodes) {
       if (node.kind !== 'source' && node.kind !== 'state') continue
+      // Reset state (the editor's ··· menu): this entity starts afresh.
+      if (reset.has(node.entity)) continue
       const old = before.graph.nodes.get(key)
       if (!old || old.kind !== node.kind) continue
       // A module's inputs come from the app, as they are now.
@@ -456,6 +468,15 @@ export class AppRuntime {
     const handlers = entity ? handlersOf(entity).filter((h) => h.event === event) : []
     const results = await Promise.all(
       handlers.map((h) => {
+        if (h.throttleMs) {
+          // At most once per window; an event within it is dropped.
+          const key = `${owner}:${h.id}`
+          const last = this.throttled.get(key)
+          const now = Date.now()
+          if (last !== undefined && now - last < h.throttleMs) return true
+          this.throttled.set(key, now)
+          return this.runHandler(owner, h, locals)
+        }
         if (!h.debounceMs) return this.runHandler(owner, h, locals)
         const key = `${owner}:${h.id}`
         clearTimeout(this.debounced.get(key))
@@ -492,7 +513,9 @@ export class AppRuntime {
     if (runtime !== this) return runtime.trigger(inner, options)
     const query = this.queries.get(name)
     if (!query) throw new Error(`No query is named ${name}`)
-    const locals = options.additionalScope ?? {}
+    // Its declared scope names exist even when this trigger doesn't pass them (as in Retool: undefined).
+    const declared = Object.fromEntries((query.scope ?? []).map((n) => [n, undefined]))
+    const locals = { ...declared, ...(options.additionalScope ?? {}) }
     if (query.disabled !== undefined && truthy(this.model.evaluateTemplate(query.disabled, locals)))
       return undefined
     if (query.confirm !== undefined) {
@@ -623,7 +646,9 @@ export class AppRuntime {
       const action = handler.action
       switch (action.type) {
         case 'controlQuery':
-          if (action.method === 'trigger') await this.trigger(action.query)
+          // `triggeredById`: what fired the handler, as Retool gives it (M36); a query reads it once in its scope.
+          if (action.method === 'trigger')
+            await this.trigger(action.query, { additionalScope: { triggeredById: owner } })
           else this.resetQuery(action.query)
           break
         case 'controlComponent': {
@@ -650,6 +675,40 @@ export class AppRuntime {
             url: String(this.model.evaluateTemplate(action.url, locals) ?? ''),
             newTab: action.newTab ?? false,
           })
+          break
+        case 'openPage':
+          this.utils().openPage(action.page, {
+            params: this.evaluateParams(action.params, locals),
+            newTab: action.newTab === true,
+          })
+          break
+        case 'setUrlParams': {
+          // The page shown keeps its other parameters; one evaluating to empty is removed.
+          const params: Record<string, string> = {
+            ...(this.model.get('url.params') as Record<string, string>),
+          }
+          for (const [key, value] of Object.entries(this.evaluateParams(action.params, locals))) {
+            if (value === '') delete params[key]
+            else params[key] = value
+          }
+          const page = (this.model.get('url.page') as string | null) ?? ''
+          this.bridge.effect({ type: 'openPage', page, params, newTab: false })
+          break
+        }
+        case 'copyToClipboard':
+          this.utils().copyToClipboard(this.model.evaluateTemplate(action.text, locals))
+          break
+        case 'download':
+          this.utils().downloadFile(
+            this.model.evaluateTemplate(action.data, locals),
+            String(this.model.evaluateTemplate(action.fileName, locals) ?? '') || 'download.txt',
+          )
+          break
+        case 'setLocalStorage':
+          this.setStorage(action.key, this.model.evaluateTemplate(action.value, locals))
+          break
+        case 'clearLocalStorage':
+          this.setStorage(action.key ?? null, undefined)
           break
         case 'moduleEvent':
           // Outside an app (a module run on its own) there's nobody to handle it.
@@ -697,6 +756,14 @@ export class AppRuntime {
         break
       case 'transformer':
         break
+      case 'storage':
+        // Retool's (M36), besides the Set and Clear local storage actions.
+        methods = {
+          setValue: (k: unknown, value: unknown) => this.setStorage(String(k), value),
+          removeValue: (k: unknown) => this.setStorage(String(k), undefined),
+          clear: () => this.setStorage(null, undefined),
+        }
+        break
       case 'component': {
         const type = entity.component.type
         methods.setHidden = (hidden: unknown) => this.apply({ [key('hidden')]: truthy(hidden) })
@@ -710,8 +777,7 @@ export class AppRuntime {
         }
         if (entity.spec?.input) {
           methods.setValue = (value: unknown) => this.apply({ [key('value')]: value })
-          methods.clearValue = () =>
-            this.apply({ [key('value')]: type === 'textInput' ? '' : type === 'checkbox' ? false : null })
+          methods.clearValue = () => this.apply({ [key('value')]: emptyValue(type) })
         }
         if (type === 'table') {
           methods.selectRow = (index: unknown) => this.selectRow(name, index)
@@ -787,6 +853,23 @@ export class AppRuntime {
           }
           methods.nextView = () => step(1)
           methods.previousView = () => step(-1)
+          // Retool's (M36): a view by its name or its label (Retool's view key, `"Orders"` or `3`), or by index.
+          methods.setCurrentView = (view: unknown) => {
+            const match = containerViews(entity.component).find(
+              (v) => v.name === view || v.label === String(view),
+            )
+            if (!match) {
+              throw new Error(
+                `${name} has no view ${JSON.stringify(view)}: it has ${views().join(', ') || 'none'}`,
+              )
+            }
+            return show(match.name)
+          }
+          methods.setCurrentViewIndex = (index: unknown) => {
+            const view = views()[Number(index)]
+            if (view === undefined) throw new Error(`${name} has no view at ${JSON.stringify(index)}`)
+            return show(view)
+          }
           const fold = (expanded: boolean) => {
             if ((this.model.get(key('expanded')) !== false) === expanded) return true
             this.apply({ [key('expanded')]: expanded })
@@ -848,7 +931,11 @@ export class AppRuntime {
   private resetForm(form: string) {
     const updates: Record<string, unknown> = {}
     for (const input of formInputs(this.definition, form)) {
-      updates[`${input}.value`] = this.model.get(`${input}.defaultValue`)
+      // An input without a default (a file input) goes back to empty.
+      const type = this.definition.components.find((c) => c.name === input)?.type ?? ''
+      updates[`${input}.value`] = this.model.graph.nodes.has(`${input}.defaultValue`)
+        ? this.model.get(`${input}.defaultValue`)
+        : emptyValue(type)
     }
     this.apply(updates)
   }
@@ -857,6 +944,48 @@ export class AppRuntime {
     if (this.model.get(`${modal}.isOpen`) === open) return
     this.apply({ [`${modal}.isOpen`]: open })
     return this.fire(modal, open ? 'open' : 'close')
+  }
+
+  /** Query parameters from templates, as strings (objects as JSON); empty for null and undefined. */
+  private evaluateParams(params: Record<string, string> | undefined, locals: Record<string, unknown>) {
+    const out: Record<string, string> = {}
+    for (const [key, template] of Object.entries(params ?? {})) {
+      const value = this.model.evaluateTemplate(template, locals)
+      out[key] =
+        value === null || value === undefined
+          ? ''
+          : typeof value === 'object'
+            ? JSON.stringify(value)
+            : String(value)
+    }
+    return out
+  }
+
+  /**
+   * Local storage (session 41): `localStorage.values` changes here, and the page keeps it for the app in this
+   * browser. `key` null clears every key; `value` undefined removes the key.
+   */
+  private setStorage(key: string | null, value: unknown) {
+    // In a module instance: the app keeps it, and passes the values back down (review: they drifted apart).
+    if (this.options.onStorage) {
+      this.options.onStorage(key, value)
+      return
+    }
+    const before = (this.model.get('localStorage.values') as Record<string, unknown> | null) ?? {}
+    let next: Record<string, unknown> = {}
+    if (key !== null) {
+      next = { ...before }
+      if (value === undefined) delete next[key]
+      else next[key] = value
+    }
+    this.syncStorage(next)
+    this.bridge.effect(value === undefined ? { type: 'storage', key } : { type: 'storage', key, value })
+  }
+
+  /** The app's local storage values, here and in every module instance running (session 41). */
+  private syncStorage(values: Record<string, unknown>) {
+    this.apply({ 'localStorage.values': values })
+    for (const instance of this.instances.values()) instance.runtime.syncStorage(values)
   }
 
   /** What app code sees as `utils`. */
@@ -891,14 +1020,35 @@ export class AppRuntime {
         }
         this.bridge.effect({ type: 'openPage', page: name, params, newTab: options.newTab === true })
       },
+      /** Retool's `{ title, description, notificationType }` (M36). */
+      showNotification: (options: unknown = {}) => {
+        const o = (options && typeof options === 'object' ? options : { title: options }) as Record<
+          string,
+          unknown
+        >
+        const text = [o.title, o.description]
+          .filter((x) => x !== undefined && x !== null && x !== '')
+          .join(': ')
+        const type = o.notificationType
+        this.bridge.effect({
+          type: 'notify',
+          message: text || 'Done',
+          tone: type === 'success' || type === 'error' ? type : 'info',
+        })
+      },
       copyToClipboard: (text: unknown) =>
         this.bridge.effect({ type: 'copy', text: typeof text === 'string' ? text : JSON.stringify(text) }),
       /**
        * Saves `data` as a file: a string as-is, an array of objects as CSV when the name ends in `.csv`, anything
        * else as JSON.
        */
-      downloadFile: (data: unknown, fileName: unknown = 'download.txt') => {
-        const file = String(fileName)
+      downloadFile: (data: unknown, fileName: unknown = 'download.txt', fileType?: unknown) => {
+        // Retool's third argument is the type: `downloadFile(rows, 'orders', 'csv')`.
+        const base = String(fileName)
+        const file =
+          typeof fileType === 'string' && fileType && !/\.[a-z0-9]+$/i.test(base)
+            ? `${base}.${fileType}`
+            : base
         const csv = file.toLowerCase().endsWith('.csv')
         const text =
           typeof data === 'string'
@@ -917,6 +1067,33 @@ export class AppRuntime {
   }
 }
 
+/**
+ * Retool's helpers (M36): its SQL data is by column (`{ id: [1, 2] }`) and these convert. Rows come back as they are,
+ * so code written for either shape works here, where SQL data is rows.
+ */
+export function formatDataAsArray(data: unknown): unknown[] {
+  if (Array.isArray(data)) return data
+  if (!data || typeof data !== 'object') return []
+  const columns = Object.entries(data as Record<string, unknown>)
+  const length = Math.max(0, ...columns.map(([, v]) => (Array.isArray(v) ? v.length : 0)))
+  return Array.from({ length }, (_, i) =>
+    Object.fromEntries(columns.map(([k, v]) => [k, Array.isArray(v) ? v[i] : undefined])),
+  )
+}
+
+export function formatDataAsObject(data: unknown): Record<string, unknown[]> {
+  if (!Array.isArray(data)) return data && typeof data === 'object' ? (data as Record<string, unknown[]>) : {}
+  const out: Record<string, unknown[]> = {}
+  data.forEach((row, i) => {
+    for (const [k, v] of Object.entries((row ?? {}) as Record<string, unknown>)) {
+      out[k] ??= Array.from({ length: i }, () => undefined)
+      out[k]!.push(v)
+    }
+    for (const list of Object.values(out)) if (list.length < i + 1) list.push(undefined)
+  })
+  return out
+}
+
 function handlersOf(entity: Entity): EventHandler[] {
   if (entity.kind === 'component') return entity.component.events ?? []
   if (entity.kind === 'query') return entity.query.events ?? []
@@ -927,6 +1104,14 @@ function handlersOf(entity: Entity): EventHandler[] {
 export function truthy(value: unknown): boolean {
   if (value === 'false') return false
   return Boolean(value)
+}
+
+/** What an input holds when cleared: text '', a checkbox or switch false, a list [] (session 41), else null. */
+function emptyValue(type: string): unknown {
+  if (type === 'textInput' || type === 'textArea') return ''
+  if (type === 'checkbox' || type === 'switch') return false
+  if (type === 'checkboxGroup' || type === 'fileInput') return []
+  return null
 }
 
 function isEmpty(value: unknown): boolean {

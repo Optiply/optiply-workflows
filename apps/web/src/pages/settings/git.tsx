@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { CheckCircle2, GitBranch, GitPullRequest, Plug, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { CommitLink, GIT_ALL_ROOTS, PullRequestLink } from '@/components/git'
+import { CommitLink, GIT_ALL_ROOTS, PullRequestLink, useChangeRequest } from '@/components/git'
 import {
   Badge,
   Button,
@@ -17,6 +17,7 @@ import {
   Spinner,
   Table,
   Td,
+  Textarea,
   Th,
 } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
@@ -43,14 +44,14 @@ function GitSettings() {
   return (
     <div className="flex flex-col gap-6">
       <p className="max-w-3xl text-sm text-muted">
-        Protected workflows, apps, library queries, modules, resources and config vars live in a GitHub repo:
-        they’re changed on branches, reviewed in pull requests, and deployed here when a pull request merges
-        into the deploy branch.
+        Protected workflows, apps, library queries, modules, resources and config vars live in a Git repo on
+        GitHub or GitLab: they’re changed on branches, reviewed in pull (or merge) requests, and deployed here
+        when one merges into the deploy branch.
       </p>
       <RepoForm settings={settings} />
       {settings.configured && (
         <>
-          <WebhookHelp hasSecret={settings.webhookSecret.set} />
+          <WebhookHelp hasSecret={settings.webhookSecret.set} host={settings.host} branch={settings.branch} />
           <DeployPanel />
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <NotifyCard settings={settings} />
@@ -62,11 +63,39 @@ function GitSettings() {
   )
 }
 
+type Host = Settings['host']
+
+/** The host a repo URL names (github.com, gitlab.com, gitlab.…); null for another host, where the admin picks (M31). */
+function detectHost(repoUrl: string): Host | null {
+  try {
+    const host = new URL(repoUrl.trim()).hostname.toLowerCase()
+    if (host === 'github.com' || host.endsWith('.github.com')) return 'github'
+    if (host === 'gitlab.com' || host.startsWith('gitlab.')) return 'gitlab'
+  } catch {}
+  return null
+}
+
+const HOST_LABELS: Record<Host, string> = { github: 'GitHub', gitlab: 'GitLab' }
+
+/** Whether two repo URLs are on the same server (a stored token stays with its server). */
+function sameOrigin(a: string, b: string | null): boolean {
+  try {
+    return !!b && new URL(a.trim()).origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 function RepoForm({ settings }: { settings: Settings }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const [repoUrl, setRepoUrl] = useState(settings.repoUrl ?? '')
   const [branch, setBranch] = useState(settings.branch)
+  const [host, setHost] = useState<Host>(settings.host)
+  const [apiUrl, setApiUrl] = useState(settings.apiUrl ?? '')
+  const [signIn, setSignIn] = useState(settings.githubAuth)
+  const [appId, setAppId] = useState(settings.githubAppId ?? '')
+  const [appKey, setAppKey] = useState('')
   const [token, setToken] = useState('')
   const [secret, setSecret] = useState<string | null>(null)
   const [test, setTest] = useState<TestResult | null>(null)
@@ -79,11 +108,20 @@ function RepoForm({ settings }: { settings: Settings }) {
   const save = useMutation(trpc.git.saveSettings.mutationOptions({ onSuccess: refresh }))
   const clear = useMutation(trpc.git.clearSettings.mutationOptions({ onSuccess: refresh }))
   const testConnection = useMutation(trpc.git.testConnection.mutationOptions({ onSuccess: setTest }))
+  const detected = detectHost(repoUrl)
+  const app = host === 'github' && signIn === 'app'
   const changed =
     repoUrl.trim() !== (settings.repoUrl ?? '') ||
     branch.trim() !== settings.branch ||
+    host !== settings.host ||
+    (host === 'gitlab' && apiUrl.trim() !== (settings.apiUrl ?? '')) ||
+    (host === 'github' && signIn !== settings.githubAuth) ||
+    (app && (appId.trim() !== (settings.githubAppId ?? '') || appKey !== '')) ||
     token !== '' ||
     secret !== null
+  const keep = { repoUrl: settings.repoUrl!, branch: settings.branch }
+  // Another host (or server) needs the token again: a stored one is never sent somewhere new.
+  const tokenKept = settings.token.set && host === settings.host && sameOrigin(repoUrl, settings.repoUrl)
 
   return (
     <Card className="p-5">
@@ -96,12 +134,16 @@ function RepoForm({ settings }: { settings: Settings }) {
             {
               repoUrl: repoUrl.trim(),
               branch: branch.trim(),
+              host,
+              ...(host === 'gitlab' ? { apiUrl: apiUrl.trim() || null } : { githubAuth: signIn }),
+              ...(app ? { githubAppId: appId.trim(), ...(appKey ? { appPrivateKey: appKey } : {}) } : {}),
               ...(token ? { token } : {}),
               ...(secret ? { webhookSecret: secret } : {}),
             },
             {
               onSuccess: () => {
                 setToken('')
+                setAppKey('')
                 // It was copied before saving (the hint says so); from now on it's only "Set".
                 setSecret(null)
                 setTest(null)
@@ -112,12 +154,17 @@ function RepoForm({ settings }: { settings: Settings }) {
       >
         <Field
           label="Repository"
-          hint="The https URL of the GitHub repo, e.g. https://github.com/optiply/workflows.git"
+          hint="The https URL of the repo on GitHub or GitLab, e.g. https://github.com/optiply/workflows.git"
         >
           <Input
             className="font-mono"
+            data-testid="git-repo-url"
             value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
+            onChange={(e) => {
+              setRepoUrl(e.target.value)
+              const found = detectHost(e.target.value)
+              if (found) setHost(found)
+            }}
             placeholder="https://github.com/optiply/workflows.git"
           />
         </Field>
@@ -125,28 +172,118 @@ function RepoForm({ settings }: { settings: Settings }) {
           <Input className="font-mono" value={branch} onChange={(e) => setBranch(e.target.value)} />
         </Field>
         <Field
-          label="GitHub token"
-          hint="A fine-grained token for this one repo, with Contents and Pull requests (read and write)."
+          label="Host"
+          hint={
+            detected
+              ? 'From the repo’s address.'
+              : 'Another server: GitHub Enterprise Server or a self-managed GitLab.'
+          }
         >
-          <div className="flex items-center gap-2">
-            <SecretInput
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder={settings.token.set ? 'Set: leave empty to keep it' : 'github_pat_…'}
-            />
-            {settings.token.set && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() =>
-                  save.mutate({ repoUrl: settings.repoUrl!, branch: settings.branch, token: null })
-                }
-              >
-                Remove
-              </Button>
-            )}
-          </div>
+          <Select
+            data-testid="git-host"
+            value={host}
+            disabled={!!detected}
+            onChange={(e) => setHost(e.target.value as Host)}
+          >
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+          </Select>
         </Field>
+        {host === 'github' ? (
+          <Field
+            label="Sign in with"
+            hint={
+              signIn === 'app'
+                ? 'A GitHub App installed on the repo: short-lived tokens, not tied to a person.'
+                : 'A token of a person or machine user.'
+            }
+          >
+            <Select
+              data-testid="git-signin"
+              value={signIn}
+              onChange={(e) => setSignIn(e.target.value as 'token' | 'app')}
+            >
+              <option value="token">A token</option>
+              <option value="app">A GitHub App</option>
+            </Select>
+          </Field>
+        ) : (
+          <Field
+            label="API URL"
+            hint="Only for GitLab served under a path, e.g. https://code.example.com/gitlab/api/v4. Empty: <server>/api/v4."
+          >
+            <Input
+              className="font-mono"
+              data-testid="git-api-url"
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="https://gitlab.com/api/v4"
+            />
+          </Field>
+        )}
+        {app ? (
+          <>
+            <Field label="App id" hint="On the App’s settings page (About: App ID).">
+              <Input
+                className="font-mono"
+                data-testid="git-app-id"
+                inputMode="numeric"
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                placeholder="123456"
+              />
+            </Field>
+            <Field
+              label="Private key"
+              hint="A private key made on the App’s settings page (a .pem file): paste its contents. Kept encrypted, never shown again."
+            >
+              <Textarea
+                className="font-mono text-xs"
+                data-testid="git-app-key"
+                rows={3}
+                spellCheck={false}
+                value={appKey}
+                onChange={(e) => setAppKey(e.target.value)}
+                placeholder={
+                  settings.appPrivateKey.set &&
+                  settings.githubAuth === 'app' &&
+                  sameOrigin(repoUrl, settings.repoUrl)
+                    ? 'Set: leave empty to keep it'
+                    : '-----BEGIN RSA PRIVATE KEY-----'
+                }
+              />
+            </Field>
+            <p className="text-xs text-muted md:col-span-2">
+              The App needs <b>Contents</b> and <b>Pull requests</b> (read and write) and <b>Metadata</b>{' '}
+              (read), installed on this repo; subscribe it to the <b>push</b> event for the webhook below.
+            </p>
+          </>
+        ) : (
+          <Field
+            label={host === 'gitlab' ? 'GitLab access token' : 'GitHub token'}
+            hint={
+              host === 'gitlab'
+                ? 'A project (or group) access token with the api and write_repository scopes and the Developer role (Maintainer to push to protected branches).'
+                : 'A fine-grained token for this one repo, with Contents and Pull requests (read and write).'
+            }
+          >
+            <div className="flex items-center gap-2">
+              <SecretInput
+                value={token}
+                data-testid="git-token"
+                onChange={(e) => setToken(e.target.value)}
+                placeholder={
+                  tokenKept ? 'Set: leave empty to keep it' : host === 'gitlab' ? 'glpat-…' : 'github_pat_…'
+                }
+              />
+              {tokenKept && !changed && (
+                <Button size="sm" variant="ghost" onClick={() => save.mutate({ ...keep, token: null })}>
+                  Remove
+                </Button>
+              )}
+            </div>
+          </Field>
+        )}
         <fieldset className="flex flex-col gap-1.5">
           <legend className="mb-1.5 text-sm font-medium text-ink">Webhook secret</legend>
           {secret ? (
@@ -166,9 +303,7 @@ function RepoForm({ settings }: { settings: Settings }) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() =>
-                    save.mutate({ repoUrl: settings.repoUrl!, branch: settings.branch, webhookSecret: null })
-                  }
+                  onClick={() => save.mutate({ ...keep, webhookSecret: null })}
                 >
                   Remove
                 </Button>
@@ -177,10 +312,14 @@ function RepoForm({ settings }: { settings: Settings }) {
           )}
           {secret && (
             <span className="text-xs text-warning-strong">
-              Copy it into GitHub’s webhook settings now, then save: it isn’t shown again.
+              Copy it into {HOST_LABELS[host]}’s webhook settings now, then save: it isn’t shown again.
             </span>
           )}
-          <span className="text-xs text-muted">Signs GitHub’s push webhook, so merges deploy at once.</span>
+          <span className="text-xs text-muted">
+            {host === 'gitlab'
+              ? 'GitLab sends it with each push (the secret token), so merges deploy at once.'
+              : 'Signs GitHub’s push webhook, so merges deploy at once.'}
+          </span>
         </fieldset>
         <div className="flex flex-wrap items-center gap-2 md:col-span-2">
           <Button
@@ -196,7 +335,11 @@ function RepoForm({ settings }: { settings: Settings }) {
               <Button
                 loading={testConnection.isPending}
                 disabled={changed}
-                title={changed ? 'Save first' : 'Sign in to the repo and read the deploy branch'}
+                title={
+                  changed
+                    ? 'Save first'
+                    : `Sign in to the repo and ${HOST_LABELS[settings.host]}, and read the deploy branch`
+                }
                 onClick={() => testConnection.mutate()}
               >
                 <Plug className="size-4" /> Test connection
@@ -223,7 +366,7 @@ function RepoForm({ settings }: { settings: Settings }) {
         </div>
         <div className="md:col-span-2">
           <ErrorNote error={save.error ?? clear.error ?? testConnection.error} />
-          {test && <TestOutcome result={test} branch={settings.branch} />}
+          {test && !changed && <TestOutcome result={test} branch={settings.branch} />}
         </div>
       </form>
     </Card>
@@ -236,6 +379,50 @@ function randomSecret(): string {
 }
 
 function TestOutcome({ result, branch }: { result: TestResult; branch: string }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <RepoOutcome result={result} branch={branch} />
+      {result.host && <HostOutcome report={result.host} />}
+    </div>
+  )
+}
+
+/** What the host's API said (M31): who signed in where, and what's missing for pull or merge requests. */
+function HostOutcome({ report }: { report: NonNullable<TestResult['host']> }) {
+  if (!report.ok)
+    return (
+      <div
+        className="flex items-start gap-2 rounded-md bg-danger/5 px-3 py-2 text-sm text-danger"
+        data-testid="git-test-host"
+      >
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+        <span>{report.message}</span>
+      </div>
+    )
+  const lacking = report.problems.length > 0
+  return (
+    <div
+      className={`flex items-start gap-2 rounded-md px-3 py-2 text-sm ${lacking ? 'bg-warning-soft text-warning-strong' : 'bg-success/5'}`}
+      data-testid="git-test-host"
+    >
+      {lacking ? (
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+      ) : (
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
+      )}
+      <span>
+        {report.message}.
+        {report.problems.map((p) => (
+          <span key={p} className="block">
+            {p}.
+          </span>
+        ))}
+      </span>
+    </div>
+  )
+}
+
+function RepoOutcome({ result, branch }: { result: TestResult; branch: string }) {
   if (!result.ok) {
     return (
       <div
@@ -270,26 +457,45 @@ function TestOutcome({ result, branch }: { result: TestResult; branch: string })
   )
 }
 
-function WebhookHelp({ hasSecret }: { hasSecret: boolean }) {
+function WebhookHelp({ hasSecret, host, branch }: { hasSecret: boolean; host: Host; branch: string }) {
   const url = `${window.location.origin}/api/git/webhook`
+  const secret = hasSecret ? 'The webhook secret above' : 'Generate a webhook secret above first'
   return (
-    <Card className="p-5 text-sm">
-      <h3 className="mb-2 font-semibold">GitHub webhook</h3>
+    <Card className="p-5 text-sm" data-testid="git-webhook-help">
+      <h3 className="mb-2 font-semibold">{HOST_LABELS[host]} webhook</h3>
       <p className="mb-3 text-muted">
         Without it, the instance checks the deploy branch every minute. With it, a merge deploys within
-        seconds. In the repo’s settings, add a webhook with:
+        seconds.{' '}
+        {host === 'gitlab'
+          ? 'In the project’s Settings → Webhooks, add one with:'
+          : 'In the repo’s settings (or the GitHub App’s), add a webhook with:'}
       </p>
       <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1.5">
-        <dt className="text-muted">Payload URL</dt>
+        <dt className="text-muted">{host === 'gitlab' ? 'URL' : 'Payload URL'}</dt>
         <dd className="flex items-center gap-1 font-mono">
           {url} <CopyButton text={url} label="Copy URL" />
         </dd>
-        <dt className="text-muted">Content type</dt>
-        <dd className="font-mono">application/json</dd>
-        <dt className="text-muted">Secret</dt>
-        <dd>{hasSecret ? 'The webhook secret above' : 'Generate a webhook secret above first'}</dd>
-        <dt className="text-muted">Events</dt>
-        <dd>Just the push event</dd>
+        {host === 'gitlab' ? (
+          <>
+            <dt className="text-muted">Secret token</dt>
+            <dd>{secret}</dd>
+            <dt className="text-muted">Trigger</dt>
+            <dd>
+              Push events, for the branch <span className="font-mono">{branch}</span>
+            </dd>
+            <dt className="text-muted">SSL verification</dt>
+            <dd>On</dd>
+          </>
+        ) : (
+          <>
+            <dt className="text-muted">Content type</dt>
+            <dd className="font-mono">application/json</dd>
+            <dt className="text-muted">Secret</dt>
+            <dd>{secret}</dd>
+            <dt className="text-muted">Events</dt>
+            <dd>Just the push event</dd>
+          </>
+        )}
       </dl>
     </Card>
   )
@@ -577,6 +783,7 @@ function NotifyCard({ settings }: { settings: Settings }) {
 /** Promote (M22): a pull request from this instance's deploy branch into another branch, such as production's. */
 function PromoteCard({ branch }: { branch: string }) {
   const trpc = useTRPC()
+  const cr = useChangeRequest()
   const { data: branches } = useQuery(trpc.git.branches.queryOptions())
   const [target, setTarget] = useState('')
   const promote = useMutation(trpc.git.openPromotion.mutationOptions())
@@ -585,7 +792,7 @@ function PromoteCard({ branch }: { branch: string }) {
     <Card className="space-y-3 p-5" data-testid="git-promote">
       <h3 className="font-semibold">Promote</h3>
       <p className="text-sm text-muted">
-        Opens a pull request from <span className="font-mono">{branch}</span> into another instance’s deploy
+        Opens a {cr.noun} from <span className="font-mono">{branch}</span> into another instance’s deploy
         branch. Merging it deploys there; that instance keeps its own secrets, overrides and local values.
       </p>
       <div className="flex items-end gap-2">
@@ -613,7 +820,7 @@ function PromoteCard({ branch }: { branch: string }) {
           disabled={!target.trim() || target.trim() === branch}
           onClick={() => promote.mutate({ target: target.trim() })}
         >
-          <GitPullRequest className="size-4" /> Open pull request
+          <GitPullRequest className="size-4" /> Open {cr.noun}
         </Button>
       </div>
       {result?.status === 'up_to_date' && (
@@ -628,7 +835,7 @@ function PromoteCard({ branch }: { branch: string }) {
             <PullRequestLink pullRequest={result.pullRequest} />
           ) : (
             <p className="rounded-md bg-warning-soft px-3 py-2 text-warning-strong">
-              No pull request was opened: {result.pullRequestError}
+              No {cr.noun} was opened: {result.pullRequestError}
             </p>
           )}
           {result.directories.length > 0 && (

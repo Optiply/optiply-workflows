@@ -1,22 +1,19 @@
-import { isIP } from 'node:net'
-import { connect as tlsConnect } from 'node:tls'
-import { parseTemplate, renderJson, renderTemplate, renderText, TemplateError } from '@ow/expressions'
-import { Agent, type buildConnector, FormData, fetch, Headers, type Response } from 'undici'
+import { parseTemplate, renderText, TemplateError } from '@ow/expressions'
 import { z } from 'zod'
-import { networkError, readBody } from './http'
-import { guardedLookup, hostMatches, isPrivateAddress } from './net-guard'
-import { clientCredentialsToken } from './oauth'
-import { OAUTH_PROVIDERS } from './oauth-presets'
-import { sshConnectionError, tunnelFor } from './ssh/client'
-import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
-import type { SshTunnel } from './ssh/tunnel'
 import {
-  type Connector,
-  ConnectorError,
-  type CredentialSource,
-  type QueryContext,
-  type QueryResult,
-} from './types'
+  buildBody,
+  checkHost,
+  createHttpClient,
+  destroyHttpClient,
+  type HttpClient,
+  type HttpResponse,
+  httpError,
+  httpRequest,
+  testHttp,
+} from './http-core'
+import { OAUTH_PROVIDERS } from './oauth-presets'
+import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
+import type { Connector, QueryContext, QueryResult } from './types'
 
 const keyValues = z.array(z.object({ key: z.string(), value: z.string() })).default([])
 
@@ -129,6 +126,14 @@ const flowSteps = z.array(flowStep).superRefine((steps, ctx) => {
 })
 
 /** An http(s) URL with every `{placeholder}` of a provider preset filled in. */
+const sameOrigin = (a: string, b: string) => {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 const oauthUrl = z
   .url({ protocol: /^https?$/ })
   .refine((url) => !/\{\w+\}|%7B\w+%7D/i.test(url), { message: 'Fill in the {placeholders} in the URL' })
@@ -152,22 +157,29 @@ const authSchema = z
       /** How the client secret is sent to the token endpoint. */
       clientAuth: z.enum(['body', 'basic']).default('body'),
     }),
-    z.object({
-      type: z.literal('oauth2AuthorizationCode'),
-      /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
-      provider: z.enum(OAUTH_PROVIDERS).default('custom'),
-      authorizeUrl: oauthUrl,
-      tokenUrl: oauthUrl,
-      clientId: z.string().min(1),
-      /** As the provider writes them: space-separated for most, comma-separated for Slack. */
-      scope: z.string().default(''),
-      /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
-      authorizeParams: keyValues,
-      clientAuth: z.enum(['body', 'basic']).default('body'),
-      pkce: z.boolean().default(true),
-      /** One connected account per environment, or each person connects their own. */
-      tokens: z.enum(['shared', 'perUser']).default('shared'),
-    }),
+    z
+      .object({
+        type: z.literal('oauth2AuthorizationCode'),
+        /** A preset's quirks (Slack's token response, Entra ID's refresh); `custom` is plain RFC 6749. */
+        provider: z.enum(OAUTH_PROVIDERS).default('custom'),
+        authorizeUrl: oauthUrl,
+        tokenUrl: oauthUrl,
+        /** RFC 7009 revocation for Disconnect (empty: none), on the token URL's origin. */
+        revokeUrl: z.preprocess((v) => (v === '' ? undefined : v), oauthUrl.optional()),
+        clientId: z.string().min(1),
+        /** As the provider writes them: space-separated for most, comma-separated for Slack. */
+        scope: z.string().default(''),
+        /** Extra parameters for the consent screen (`access_type=offline`, `prompt=consent`, …). */
+        authorizeParams: keyValues,
+        clientAuth: z.enum(['body', 'basic']).default('body'),
+        pkce: z.boolean().default(true),
+        /** One connected account per environment, or each person connects their own. */
+        tokens: z.enum(['shared', 'perUser']).default('shared'),
+      })
+      .refine((auth) => !auth.revokeUrl || sameOrigin(auth.revokeUrl, auth.tokenUrl), {
+        path: ['revokeUrl'],
+        message: 'Use a revocation URL on the token URL’s origin (it receives the tokens)',
+      }),
     z
       .object({
         type: z.literal('custom'),
@@ -230,21 +242,18 @@ type Query = z.output<typeof querySchema>
 export type RestConfig = Config
 export type RestSecrets = Secrets
 export type RestQuery = Query
-
-interface Client {
-  config: Config
-  secrets: Secrets
-  agent: Agent
-  token?: { value: string; expiresAt: number }
-  /** The SSH tunnel every request goes through (M17), if the resource has one. */
-  tunnel?: SshTunnel
+export type RestAuth = z.output<typeof authSchema>
+export {
+  authSchema as restAuthSchema,
+  bodySchema as restBodySchema,
+  configSchema as restConfigSchema,
+  keyValues,
+  querySchema as restQuerySchema,
+  queryTemplates as restQueryTemplates,
+  secretsSchema as restSecretsSchema,
 }
 
-const MAX_REDIRECTS = 5
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
-const ERROR_BODY_PREVIEW = 2000
-
-export const restConnector: Connector<Config, Secrets, Query, Client> = {
+export const restConnector: Connector<Config, Secrets, Query, HttpClient> = {
   type: 'rest',
   label: 'REST API',
   configSchema,
@@ -253,31 +262,15 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
   scrubResultData: true,
 
   createClient({ config, secrets }) {
-    const tunnel = tunnelFor(config, secrets)
-    const agent = new Agent({
-      connections: 32,
-      connect: tunnel ? tunnelConnector(tunnel) : config.allowPrivateNetwork ? {} : { lookup: guardedLookup },
-    })
-    return { config, secrets, agent, ...(tunnel ? { tunnel } : {}) }
+    return createHttpClient(config, secrets)
   },
 
-  async destroyClient({ agent, tunnel }) {
-    await agent.close()
-    await tunnel?.close()
-  },
+  destroyClient: destroyHttpClient,
+
+  httpConfig: (config) => config,
 
   async testConnection(client, { signal, credentials }) {
-    if (client.config.auth.type === 'oauth2ClientCredentials') await getToken(client, signal, true)
-    const attempt = await prepareAttempt(client, { signal, credentials })
-    const url = attemptUrl(new URL(client.config.baseUrl), attempt, [])
-    const res = await send(
-      client,
-      url,
-      { method: 'GET', headers: attemptHeaders(client, attempt, []) },
-      signal,
-      attempt.sensitive,
-    )
-    await res.body?.cancel()
+    const res = await testHttp(client, { signal, credentials })
     return { message: `HTTP ${res.status} ${res.statusText}`.trim() }
   },
 
@@ -299,78 +292,56 @@ export const restConnector: Connector<Config, Secrets, Query, Client> = {
 
   async execute(client, query, ctx): Promise<QueryResult> {
     const { url, params } = await buildUrl(client, query, ctx)
-    const queryHeaders: [string, string][] = []
-    for (const { key, value } of query.headers) {
-      // A multipart body's Content-Type carries its boundary: fetch sets it.
-      if (query.body.type === 'multipart' && key.toLowerCase() === 'content-type') continue
-      if (key) queryHeaders.push([key, await renderText(value, ctx.evaluate)])
-    }
-    const { body, contentType } = await buildBody(query, ctx)
-
-    const started = performance.now()
-    const request = async (force = false) => {
-      const attempt = await prepareAttempt(client, ctx, force)
-      return send(
-        client,
-        attemptUrl(url, attempt, params),
-        { method: query.method, headers: attemptHeaders(client, attempt, queryHeaders, contentType), body },
-        ctx.signal,
-        attempt.sensitive,
-      )
-    }
-    let res = await request()
-    // An expired or revoked OAuth token, or a custom flow's session: get fresh ones and retry once.
-    const authType = client.config.auth.type
-    if (
-      res.status === 401 &&
-      (authType === 'oauth2ClientCredentials' ||
-        authType === 'oauth2AuthorizationCode' ||
-        authType === 'custom')
-    ) {
-      await res.body?.cancel()
-      client.token = undefined
-      res = await request(true)
-    }
-
-    const metadata = {
-      status: res.status,
-      statusText: res.statusText,
-      headers: Object.fromEntries(res.headers),
-      url: res.url || url.toString(),
-      durationMs: Math.round(performance.now() - started),
-    }
-    if (query.method === 'HEAD') {
-      await res.body?.cancel()
-      return { data: null, metadata }
-    }
-    const raw = await readBody(res, client.config.maxResponseBytes)
-    const data = decodeBody(raw, res.headers.get('content-type'))
-    if (!res.ok) {
-      const preview = typeof data.value === 'string' ? data.value : JSON.stringify(data.value)
-      throw new ConnectorError('http', `HTTP ${res.status} ${res.statusText}`.trim(), {
-        status: res.status,
-        body: preview?.slice(0, ERROR_BODY_PREVIEW),
-      })
-    }
-    return { data: data.value, metadata: { ...metadata, ...(data.base64 ? { encoding: 'base64' } : {}) } }
+    const res = await httpRequest(
+      client,
+      {
+        method: query.method,
+        url,
+        params,
+        headers: await renderHeaders(query, ctx),
+        ...(await buildBody(query, ctx)),
+      },
+      ctx,
+    )
+    // A HEAD query answers its status whatever it is (whether a URL exists), as before the HTTP core.
+    if (query.method === 'HEAD') return { data: null, metadata: responseMetadata(res) }
+    if (!res.ok) throw httpError(res)
+    return { data: res.data, metadata: responseMetadata(res) }
   },
+}
+
+/** A response's metadata, as REST queries have always returned it. */
+export function responseMetadata(res: HttpResponse): Record<string, unknown> {
+  return {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+    url: res.url,
+    durationMs: res.durationMs,
+    ...(res.base64 ? { encoding: 'base64' } : {}),
+  }
+}
+
+/** The query's headers, rendered; a multipart body's Content-Type is left to fetch (it carries the boundary). */
+export async function renderHeaders(
+  query: Pick<Query, 'headers'> & { body?: { type: string } },
+  ctx: QueryContext,
+): Promise<[string, string][]> {
+  const headers: [string, string][] = []
+  for (const { key, value } of query.headers) {
+    if (query.body?.type === 'multipart' && key.toLowerCase() === 'content-type') continue
+    if (key) headers.push([key, await renderText(value, ctx.evaluate)])
+  }
+  return headers
 }
 
 /** The query's URL (without parameters; checked against the allowed hosts) and its rendered parameters. */
 async function buildUrl(
-  client: Client,
+  client: HttpClient,
   query: Query,
   ctx: QueryContext,
 ): Promise<{ url: URL; params: [string, string][] }> {
-  // Untrusted values can't climb out of their segment (`../admin`) or start a query string: each is encoded.
-  const evaluate: QueryContext['evaluate'] = ctx.untrustedValues
-    ? async (code) => {
-        const value = await ctx.evaluate(code)
-        if (value === null || value === undefined) return value
-        return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
-      }
-    : ctx.evaluate
-  const path = (await renderText(query.path, evaluate)).trim()
+  const path = (await renderText(query.path, urlEvaluate(ctx))).trim()
   let url: URL
   if (/^https?:\/\//i.test(path)) {
     url = new URL(path)
@@ -378,359 +349,30 @@ async function buildUrl(
     const base = client.config.baseUrl.replace(/\/+$/, '')
     url = new URL(path ? `${base}/${path.replace(/^\/+/, '')}` : base)
   }
-  checkHost(client.config, url)
-  const params: [string, string][] = []
-  for (const { key, value } of query.params) {
-    if (key) params.push([key, await renderText(value, ctx.evaluate)])
-  }
-  return { url, params }
+  checkHost(client, url)
+  return { url, params: await renderParams(query.params, ctx) }
 }
 
-/** The body and the content type it implies (used unless a header sets one). */
-async function buildBody(
-  query: Query,
+/**
+ * How a URL's `{{ }}` are evaluated: as they are, or for an app's viewer (`untrustedValues`) each encoded as one
+ * segment, so a value can't climb out of its segment (`../admin`) or start a query string. REST and the built-in REST
+ * API both build URLs with it.
+ */
+export function urlEvaluate(ctx: QueryContext): QueryContext['evaluate'] {
+  if (!ctx.untrustedValues) return ctx.evaluate
+  return async (code) => {
+    const value = await ctx.evaluate(code)
+    if (value === null || value === undefined) return value
+    return encodeURIComponent(typeof value === 'object' ? JSON.stringify(value) : String(value))
+  }
+}
+
+/** A query's parameters, rendered (empty names left out). */
+export async function renderParams(
+  params: readonly { key: string; value: string }[],
   ctx: QueryContext,
-): Promise<{ body?: string | FormData; contentType?: string }> {
-  const body = query.body
-  switch (body.type) {
-    case 'none':
-      return {}
-    case 'json':
-      return {
-        body: JSON.stringify(await renderJson(body.json, ctx.evaluate)),
-        contentType: 'application/json',
-      }
-    case 'form': {
-      const form = new URLSearchParams()
-      for (const { key, value } of body.fields)
-        if (key) form.append(key, await renderText(value, ctx.evaluate))
-      return { body: form.toString(), contentType: 'application/x-www-form-urlencoded' }
-    }
-    case 'raw':
-      return { body: await renderText(body.raw, ctx.evaluate), contentType: body.contentType }
-    case 'multipart': {
-      // No content type here: fetch sets it, with the boundary.
-      const form = new FormData()
-      for (const part of body.parts) {
-        if (!part.key) continue
-        if (part.kind === 'text') {
-          form.append(part.key, await renderText(part.value, ctx.evaluate))
-          continue
-        }
-        const file = multipartFile(part.key, await renderTemplate(part.file, ctx.evaluate))
-        const filename = (await renderText(part.filename, ctx.evaluate)) || file.filename || part.key
-        const type =
-          (await renderText(part.contentType, ctx.evaluate)) || file.contentType || 'application/octet-stream'
-        form.append(part.key, new Blob([new Uint8Array(file.bytes)], { type }), filename)
-      }
-      return { body: form }
-    }
-  }
-}
-
-const BASE64 = /^[A-Za-z0-9+/_-]*={0,2}$/
-
-/** A file part's value: base64 text, or a webhook's file object (`{ base64, filename?, contentType? }`). */
-function multipartFile(
-  key: string,
-  value: unknown,
-): { bytes: Buffer; filename?: string; contentType?: string } {
-  const object = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
-  const base64 = typeof value === 'string' ? value : object?.base64
-  const text = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : null
-  if (text === null || !BASE64.test(text)) {
-    throw new ConnectorError(
-      'query',
-      `File part "${key}" needs base64 text or a file object ({ base64, filename, contentType }), like a webhook's upload`,
-    )
-  }
-  return {
-    bytes: Buffer.from(text, 'base64'),
-    ...(typeof object?.filename === 'string' && { filename: object.filename }),
-    ...(typeof object?.contentType === 'string' && { contentType: object.contentType }),
-  }
-}
-
-/**
- * Whether private addresses may be reached: when allowed, or through an SSH tunnel (M17), where what's reached is the
- * SSH server's network, which is the point (the guard protects this machine's network).
- */
-function privateNetworkAllowed(config: Config): boolean {
-  return config.allowPrivateNetwork || config.ssh !== undefined
-}
-
-/**
- * Connects undici's requests through an SSH tunnel: a channel to the host and port from the last SSH server, and for
- * https TLS over it, with the hostname for SNI and the certificate check. Every request of the resource goes this
- * way, an OAuth2 client-credentials token included.
- */
-function tunnelConnector(tunnel: SshTunnel): buildConnector.connector {
-  return ({ hostname, protocol, port, servername }, callback) => {
-    const https = protocol === 'https:'
-    tunnel.open(hostname, Number(port) || (https ? 443 : 80)).then(
-      (channel) => {
-        if (!https) return callback(null, channel as never)
-        const socket = tlsConnect({
-          socket: channel,
-          servername: servername || (isIP(hostname) ? undefined : hostname),
-          ALPNProtocols: ['http/1.1'],
-        })
-        const failed = (err: Error) => callback(err, null)
-        socket.once('error', failed)
-        socket.once('secureConnect', () => {
-          socket.off('error', failed)
-          callback(null, socket)
-        })
-      },
-      (err) => callback(sshConnectionError(err) ?? err, null),
-    )
-  }
-}
-
-/** Queries may only reach the base URL's host and `allowedHosts`, over http(s). */
-function checkHost(config: Config, url: URL): void {
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new ConnectorError('blocked', `Only http and https URLs are allowed (got ${url.protocol})`)
-  }
-  const baseHost = new URL(config.baseUrl).hostname
-  const allowed = url.hostname === baseHost || config.allowedHosts.some((p) => hostMatches(url.hostname, p))
-  if (!allowed) {
-    throw new ConnectorError(
-      'blocked',
-      `${url.hostname} isn't allowed for this resource. Add it to the resource's allowed hosts.`,
-    )
-  }
-  // IP literals skip DNS, so the connect-time guard never sees them.
-  if (!privateNetworkAllowed(config) && isPrivateAddress(url.hostname)) {
-    throw new ConnectorError('blocked', `${url.hostname} is a private address`)
-  }
-}
-
-/**
- * Sends a request, following redirects by hand so every hop is checked against the allowed hosts. Credentials
- * are dropped when a redirect leaves the original origin.
- */
-async function send(
-  client: Client,
-  url: URL,
-  init: { method: string; headers: Headers; body?: string | FormData },
-  signal: AbortSignal,
-  /** Headers carrying credentials besides the usual ones (a custom auth flow's), dropped like them. */
-  sensitive: string[] = [],
-): Promise<Response> {
-  let current = url
-  let previous: URL | undefined
-  let { method, body } = init
-  const headers = new Headers(init.headers)
-  for (let hop = 0; ; hop++) {
-    try {
-      checkHost(client.config, current)
-    } catch (err) {
-      // Say that the server sent us there: a refused redirect otherwise reads like a mistyped base URL. The target
-      // is shown without its query string, which may carry tokens.
-      if (!previous || !(err instanceof ConnectorError)) throw err
-      throw new ConnectorError(
-        err.code,
-        `${previous.host} redirected to ${current.origin}${current.pathname}. ${err.message}`,
-      )
-    }
-    let res: Response
-    try {
-      res = await fetch(current, {
-        method,
-        headers,
-        body,
-        signal,
-        redirect: 'manual',
-        dispatcher: client.agent,
-      })
-    } catch (err) {
-      throw networkError(err, current)
-    }
-    const location = res.headers.get('location')
-    if (!REDIRECT_STATUSES.has(res.status) || !location) return res
-    await res.body?.cancel()
-    if (hop >= MAX_REDIRECTS)
-      throw new ConnectorError('http', `Too many redirects (more than ${MAX_REDIRECTS})`)
-
-    const next = new URL(location, current)
-    if (next.origin !== url.origin) {
-      for (const name of [
-        'authorization',
-        'cookie',
-        'proxy-authorization',
-        ...Object.keys(client.secrets.headers),
-        ...sensitive,
-      ]) {
-        headers.delete(name)
-      }
-      const auth = client.config.auth
-      if (auth.type === 'apiKey' && auth.in === 'header') headers.delete(auth.name)
-    }
-    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
-      method = 'GET'
-      body = undefined
-      headers.delete('content-type')
-    }
-    previous = current
-    current = next
-  }
-}
-
-/**
- * What one attempt of a request sends besides the query's own parts. Every auth type is assembled the same way
- * (attemptHeaders, attemptUrl): the resource's defaults, then the secret headers, then the query's own, then the
- * credentials. A custom flow only changes how the defaults are rendered (with `auth`).
- */
-interface Attempt {
-  defaultHeaders: [string, string][]
-  defaultParams: [string, string][]
-  authHeaders: Record<string, string>
-  authParams: [string, string][]
-  /** Headers dropped on a cross-origin redirect besides the usual ones: credentials, and defaults using `auth`. */
-  sensitive: string[]
-}
-
-/** A template that reads the custom flow's variables. */
-const USES_AUTH = /\{\{[^}]*\bauth\b/
-
-async function prepareAttempt(
-  client: Client,
-  ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
-  force = false,
-): Promise<Attempt> {
-  const auth = client.config.auth
-  const attempt: Attempt = {
-    defaultHeaders: [],
-    defaultParams: [],
-    authHeaders: {},
-    authParams: [],
-    sensitive: [],
-  }
-  let render = async (text: string) => text
-  switch (auth.type) {
-    case 'oauth2ClientCredentials':
-      attempt.authHeaders.authorization = `Bearer ${await getToken(client, ctx.signal)}`
-      break
-    case 'oauth2AuthorizationCode': {
-      if (!ctx.credentials?.accessToken) {
-        throw new ConnectorError('auth_required', 'Connect an account to this resource before using it')
-      }
-      const token = await ctx.credentials.accessToken({ signal: ctx.signal, force })
-      attempt.authHeaders.authorization = `Bearer ${token}`
-      break
-    }
-    case 'custom': {
-      if (!ctx.credentials?.authVariables) {
-        throw new ConnectorError(
-          'auth_required',
-          "This resource signs in with a custom auth flow, which can't run here",
-        )
-      }
-      const { evaluate } = await ctx.credentials.authVariables({ signal: ctx.signal, force })
-      render = (text) => renderText(text, evaluate)
-      break
-    }
-    case 'apiKey':
-      if (auth.in === 'query')
-        attempt.authParams.push([auth.name, requireSecret(client.secrets.apiKey, 'API key')])
-      else Object.assign(attempt.authHeaders, authHeaders(client))
-      break
-    default:
-      Object.assign(attempt.authHeaders, authHeaders(client))
-  }
-  for (const { key, value } of client.config.headers) {
-    if (!key) continue
-    attempt.defaultHeaders.push([key, await render(value)])
-    if (auth.type === 'custom' && USES_AUTH.test(value)) attempt.sensitive.push(key)
-  }
-  for (const { key, value } of client.config.params) {
-    if (key) attempt.defaultParams.push([key, await render(value)])
-  }
-  attempt.sensitive.push(...Object.keys(attempt.authHeaders))
-  return attempt
-}
-
-function attemptHeaders(
-  client: Client,
-  attempt: Attempt,
-  queryHeaders: [string, string][],
-  contentType?: string,
-): Headers {
-  const headers = new Headers()
-  for (const [key, value] of attempt.defaultHeaders) headers.set(key, value)
-  for (const [key, value] of Object.entries(client.secrets.headers)) headers.set(key, value)
-  for (const [key, value] of queryHeaders) headers.set(key, value)
-  if (contentType && !headers.has('content-type')) headers.set('content-type', contentType)
-  for (const [key, value] of Object.entries(attempt.authHeaders)) headers.set(key, value)
-  return headers
-}
-
-function attemptUrl(base: URL, attempt: Attempt, queryParams: [string, string][]): URL {
-  const url = new URL(base)
-  for (const [key, value] of attempt.defaultParams) url.searchParams.append(key, value)
-  for (const [key, value] of queryParams) url.searchParams.append(key, value)
-  for (const [key, value] of attempt.authParams) url.searchParams.set(key, value)
-  return url
-}
-
-function authHeaders(client: Client): Record<string, string> {
-  const { auth } = client.config
-  const { secrets } = client
-  switch (auth.type) {
-    case 'none':
-    case 'oauth2ClientCredentials':
-    case 'oauth2AuthorizationCode':
-    case 'custom':
-      return {}
-    case 'apiKey':
-      return auth.in === 'header' ? { [auth.name]: requireSecret(secrets.apiKey, 'API key') } : {}
-    case 'bearer':
-      return { authorization: `Bearer ${requireSecret(secrets.bearerToken, 'Bearer token')}` }
-    case 'basic': {
-      const password = secrets.password ?? ''
-      return { authorization: `Basic ${Buffer.from(`${auth.username}:${password}`).toString('base64')}` }
-    }
-  }
-}
-
-/** Client-credentials token, cached on the client until 30s before it expires. */
-async function getToken(client: Client, signal: AbortSignal, force = false): Promise<string> {
-  const auth = client.config.auth
-  if (auth.type !== 'oauth2ClientCredentials') throw new Error('not an OAuth2 client-credentials resource')
-  if (!force && client.token && client.token.expiresAt > Date.now() + 30_000) return client.token.value
-
-  const secret = requireSecret(client.secrets.clientSecret, 'OAuth2 client secret')
-  const token = await clientCredentialsToken(auth, secret, {
-    signal,
-    allowPrivateNetwork: privateNetworkAllowed(client.config),
-    dispatcher: client.agent,
-  })
-  client.token = {
-    value: token.accessToken,
-    expiresAt: token.expiresAt?.getTime() ?? Date.now() + 3600_000,
-  }
-  return token.accessToken
-}
-
-/** JSON is parsed; text-like types are decoded; anything else is returned as base64. */
-function decodeBody(raw: Buffer, contentType: string | null): { value: unknown; base64?: boolean } {
-  const type = (contentType ?? '').toLowerCase()
-  if (raw.length === 0) return { value: null }
-  if (type.includes('json')) {
-    const text = raw.toString('utf8')
-    try {
-      return { value: JSON.parse(text) }
-    } catch {
-      return { value: text }
-    }
-  }
-  if (!type || /^text\/|xml|javascript|x-www-form-urlencoded|csv/.test(type))
-    return { value: raw.toString('utf8') }
-  return { value: raw.toString('base64'), base64: true }
-}
-
-function requireSecret(value: string | undefined, label: string): string {
-  if (!value) throw new ConnectorError('invalid_config', `The ${label} isn't set for this resource`)
-  return value
+): Promise<[string, string][]> {
+  const out: [string, string][] = []
+  for (const { key, value } of params) if (key) out.push([key, await renderText(value, ctx.evaluate)])
+  return out
 }

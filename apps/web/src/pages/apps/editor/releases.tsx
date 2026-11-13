@@ -6,7 +6,14 @@ import { useState } from 'react'
 import { CompareReleasesDialog } from '@/components/compare-releases'
 import { confirmDialog } from '@/components/confirm'
 import { DroppedWarning } from '@/components/dropped-warning'
-import { ProtectDialog, ReleaseAuthor, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
+import {
+  ProtectDialog,
+  ReleaseAuthor,
+  UNPROTECT_CONFIRM,
+  useChangeRequest,
+  useGitInfo,
+  useUnprotect,
+} from '@/components/git'
 import { Badge, Button, Dialog, ErrorNote, Field, Input, Textarea } from '@/components/ui'
 import { errorMessage, type RouterOutputs, trpcClient, useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
@@ -539,6 +546,7 @@ function SettingsDialog({ app, onClose }: { app: EditorApp; onClose: () => void 
 
 /** Owners protect the app or module in Git (M11, M14), or unprotect it. */
 function GitProtection({ app }: { app: EditorApp }) {
+  const cr = useChangeRequest()
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
   const unprotect = useUnprotect(app.kind)
@@ -567,7 +575,7 @@ function GitProtection({ app }: { app: EditorApp }) {
       <span className="text-xs text-muted">
         {app.gitProtected
           ? `Protected: edited on branches, deployed by merging into ${git?.branch ?? 'the deploy branch'}.`
-          : 'Protect it to have changes reviewed in pull requests before they go live.'}
+          : `Protect it to have changes reviewed in ${cr.noun}s before they go live.`}
       </span>
       <ErrorNote error={unprotect.error} />
       {protecting && <ProtectDialog kind={app.kind} object={app} onClose={() => setProtecting(false)} />}

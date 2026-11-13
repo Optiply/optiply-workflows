@@ -8,8 +8,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { ProtectDialog, UNPROTECT_CONFIRM, useGitInfo, useUnprotect } from '@/components/git'
-import { Button, ErrorNote, Field, Input, Spinner, Textarea } from '@/components/ui'
+import {
+  ProtectDialog,
+  UNPROTECT_CONFIRM,
+  useChangeRequest,
+  useGitInfo,
+  useUnprotect,
+} from '@/components/git'
+import { formatBytes, JsPackagesField, useSettled } from '@/components/js-packages'
+import { Button, ErrorNote, Field, Input, Select, Spinner, Textarea } from '@/components/ui'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { useEditor } from './store'
 
@@ -17,7 +24,7 @@ type Workflow = RouterOutputs['workflows']['get']
 type WorkflowSettings = NonNullable<WorkflowDefinition['settings']>
 
 /**
- * Workflow-wide settings: the run timeout and the Python packages are part of the definition (saved with the
+ * Workflow-wide settings: the run timeout and the Python and JavaScript packages are part of the definition (saved with the
  * draft, live once published); the concurrency limit belongs to the workflow and applies to every run at once.
  */
 export function WorkflowSettingsTab({
@@ -58,6 +65,7 @@ export function WorkflowSettingsTab({
         />
       </Field>
       <PythonPackages workflowId={workflow.id} canEdit={canEdit} hasEdit={hasEdit} />
+      <JavaScriptPackages workflowId={workflow.id} canEdit={canEdit} hasEdit={hasEdit} />
       <ConcurrencyLimit workflow={workflow} canEdit={hasEdit} />
       {workflow.level === 'own' && <GitProtection workflow={workflow} />}
     </div>
@@ -76,9 +84,41 @@ function withSetting<K extends keyof WorkflowSettings>(
   return Object.keys(settings).length ? { ...rest, settings } : rest
 }
 
+/** The workflow's JavaScript packages (`settings.javascript.packages`), with their install state. */
+function JavaScriptPackages({
+  workflowId,
+  canEdit,
+  hasEdit,
+}: {
+  workflowId: string
+  canEdit: boolean
+  hasEdit: boolean
+}) {
+  const packages = useEditor((s) => s.definition.settings?.javascript?.packages)
+  // The whole list from the store (a filtered one would be a new array on every read), filtered here.
+  const problems = useEditor((s) => s.diagnostics)
+    .filter((d) => d.code === 'invalid_js_package')
+    .map((d) => ({ ...(typeof d.path[3] === 'number' && { index: d.path[3] }), message: d.message }))
+  return (
+    <JsPackagesField
+      target={{ kind: 'workflow', id: workflowId }}
+      packages={packages}
+      problems={problems}
+      canEdit={canEdit}
+      hasEdit={hasEdit}
+      onChange={(lines) =>
+        useEditor
+          .getState()
+          .update((def) => withSetting(def, 'javascript', lines.length ? { packages: lines } : undefined))
+      }
+    />
+  )
+}
+
 /**
  * The workflow's Python packages (M23): pip requirements, one a line, installed for its Python blocks. Blank lines
- * aren't kept; the validator's problems show under the field, by line.
+ * aren't kept; the validator's problems show under the field, by line. Their package index (M32): the builder's
+ * default or one an admin defined (Settings → Python), shown when there's one to pick or one is picked.
  */
 function PythonPackages({
   workflowId,
@@ -90,7 +130,10 @@ function PythonPackages({
   /** Edit on the workflow: the install state and Install now (they're about the packages, not this draft). */
   hasEdit: boolean
 }) {
+  const trpc = useTRPC()
   const requirements = useEditor((s) => s.definition.settings?.python?.requirements)
+  const index = useEditor((s) => s.definition.settings?.python?.index)
+  const { data: indexes } = useQuery(trpc.pythonIndexes.list.queryOptions())
   // The whole list from the store (a filtered one would be a new array on every read), filtered here.
   const problems = useEditor((s) => s.diagnostics).filter((d) => d.code === 'invalid_requirement')
   const stored = requirements?.join('\n') ?? ''
@@ -99,17 +142,25 @@ function PythonPackages({
   useEffect(() => {
     setText((current) => (requirementLines(current).join('\n') === stored ? current : stored))
   }, [stored])
-  const edit = (value: string) => {
-    setText(value)
-    const lines = requirementLines(value)
+  const save = (lines: string[], picked: string | undefined) =>
     useEditor
       .getState()
-      .update((def) => withSetting(def, 'python', lines.length ? { requirements: lines } : undefined))
+      .update((def) =>
+        withSetting(
+          def,
+          'python',
+          lines.length || picked ? { requirements: lines, ...(picked && { index: picked }) } : undefined,
+        ),
+      )
+  const edit = (value: string) => {
+    setText(value)
+    save(requirementLines(value), index)
   }
+  const indexProblem = useEditor((s) => s.diagnostics).find((d) => d.code === 'invalid_python_index')
   return (
     <Field
       label="Python packages"
-      hint={`pip requirements for this workflow's Python blocks, one a line (polars==1.9.0, openpyxl>=3.1), at most ${MAX_REQUIREMENTS}; wheels from the package index only. Installed before a run, kept with each release.`}
+      hint={`pip requirements for this workflow's Python blocks, one a line (polars==1.9.0, openpyxl>=3.1), at most ${MAX_REQUIREMENTS}; a package without a wheel is built from its source. Installed before a run, kept with each release.`}
     >
       <Textarea
         rows={4}
@@ -134,8 +185,32 @@ function PythonPackages({
           })}
         </ul>
       )}
-      {hasEdit && requirements?.length && !problems.length ? (
-        <PackagesState workflowId={workflowId} requirements={requirements} />
+      {(indexes?.length || index) && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted">From</span>
+          <Select
+            className="h-7 w-auto py-0 text-xs"
+            aria-label="Package index"
+            disabled={!canEdit}
+            value={index ?? ''}
+            onChange={(e) => save(requirements ?? [], e.target.value || undefined)}
+          >
+            <option value="">The default index</option>
+            {indexes?.map((i) => (
+              <option key={i.id} value={i.slug}>
+                {i.name}
+                {i.mode === 'extra' ? ' (with the default)' : ''}
+              </option>
+            ))}
+            {index && !indexes?.some((i) => i.slug === index) && (
+              <option value={index}>{index} (not on this instance)</option>
+            )}
+          </Select>
+        </div>
+      )}
+      {indexProblem && <span className="text-xs text-danger">{indexProblem.message}</span>}
+      {hasEdit && requirements?.length && !problems.length && !indexProblem ? (
+        <PackagesState workflowId={workflowId} requirements={requirements} index={index} />
       ) : null}
     </Field>
   )
@@ -145,11 +220,23 @@ function PythonPackages({
  * Whether these packages are installed (M23): their versions and size, pip's reason when it failed, or not yet;
  * Install now so the next run doesn't wait. Asked again a moment after the field stops changing.
  */
-function PackagesState({ workflowId, requirements }: { workflowId: string; requirements: string[] }) {
+function PackagesState({
+  workflowId,
+  requirements,
+  index,
+}: {
+  workflowId: string
+  requirements: string[]
+  index?: string
+}) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
-  const settled = useSettled(requirements, 600)
-  const input = { workflowId, requirements: settled }
+  const settled = useSettled({ requirements, index }, 600)
+  const input = {
+    workflowId,
+    requirements: settled.requirements,
+    ...(settled.index && { index: settled.index }),
+  }
   const state = useQuery(trpc.workflows.pythonEnv.queryOptions(input))
   const install = useMutation(
     trpc.workflows.installPythonEnv.mutationOptions({
@@ -158,8 +245,10 @@ function PackagesState({ workflowId, requirements }: { workflowId: string; requi
     }),
   )
   const data = state.data
+  // Installs what the field holds now (the state below may still be the settled value's, a moment behind).
+  const now = { workflowId, requirements, ...(index && { index }) }
   const button = (label: string) => (
-    <Button size="sm" loading={install.isPending} onClick={() => install.mutate(input)}>
+    <Button size="sm" loading={install.isPending} onClick={() => install.mutate(now)}>
       {label}
     </Button>
   )
@@ -178,7 +267,15 @@ function PackagesState({ workflowId, requirements }: { workflowId: string; requi
         </div>
       ) : data.state === 'ready' ? (
         <span className="text-muted">
-          Installed: {data.packages.join(', ')} ({formatBytes(data.sizeBytes)})
+          Installed:{' '}
+          {data.packages
+            .map((p, i) => {
+              const detail = data.details?.[i] ?? {}
+              const notes = [detail.index, detail.source === 'sdist' && 'built from source'].filter(Boolean)
+              return notes.length ? `${p} (${notes.join(', ')})` : p
+            })
+            .join(', ')}{' '}
+          ({formatBytes(data.sizeBytes)})
         </span>
       ) : (
         <>
@@ -209,25 +306,9 @@ function requirementLines(text: string): string[] {
     .filter(Boolean)
 }
 
-/** `value` once it has stayed the same for `ms` (compared as JSON). */
-function useSettled<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value)
-  const key = JSON.stringify(value)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for `value`
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms)
-    return () => clearTimeout(timer)
-  }, [key, ms])
-  return settled
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} kB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
 /** Owners protect the workflow in Git (M11), or unprotect it. */
 function GitProtection({ workflow }: { workflow: Workflow }) {
+  const cr = useChangeRequest()
   const { data: git } = useGitInfo()
   const [protecting, setProtecting] = useState(false)
   const unprotect = useUnprotect('workflow')
@@ -258,7 +339,7 @@ function GitProtection({ workflow }: { workflow: Workflow }) {
       <span className="text-xs text-muted">
         {workflow.gitProtected
           ? `Protected: edited on branches, deployed by merging into ${git?.branch ?? 'the deploy branch'}.`
-          : 'Protect it to have changes reviewed in pull requests before they go live.'}
+          : `Protect it to have changes reviewed in ${cr.noun}s before they go live.`}
       </span>
       <ErrorNote error={unprotect.error} />
       {protecting && <ProtectDialog kind="workflow" object={workflow} onClose={() => setProtecting(false)} />}

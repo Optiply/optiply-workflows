@@ -19,7 +19,7 @@ import {
   ErrorNote,
   Field,
   Input,
-  Spinner,
+  ListSkeleton,
   Table,
   Td,
   Th,
@@ -40,7 +40,7 @@ export function ConfigVarsPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: trpc.configVars.list.queryKey() })
   const remove = useMutation(trpc.configVars.delete.mutationOptions({ onSuccess: refresh }))
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton header={false} rows={4} />
   if (!vars) return <ErrorNote error={error} />
 
   return (

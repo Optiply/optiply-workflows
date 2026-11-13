@@ -6,18 +6,23 @@
 export const DELIMITERS = [',', ';', '\t'] as const
 export type Delimiter = (typeof DELIMITERS)[number]
 
-/** Limits that keep a malformed file from eating memory: one field, and fields per record. */
-export const MAX_FIELD_CHARS = 1_000_000
+/**
+ * Limits that keep a malformed file from eating memory: one field, and fields per record. A field holds up to 16
+ * million characters: real exports carry big JSON documents (a workflow definition of 1.1 million characters,
+ * 2026-11-03), and an import's whole file is capped at 50 MB anyway (`IMPORT_MAX_BYTES`).
+ */
+export const MAX_FIELD_CHARS = 16_000_000
 export const MAX_FIELDS = 1000
 
 export class CsvError extends Error {
   override name = 'CsvError'
   constructor(
-    message: string,
+    /** What's wrong, without the line (`message` starts with it). */
+    readonly reason: string,
     /** The 1-based line of the file the problem is on (a quoted field can span lines: where it started). */
     readonly line?: number,
   ) {
-    super(line ? `Line ${line}: ${message}` : message)
+    super(line ? `Line ${line}: ${reason}` : reason)
   }
 }
 

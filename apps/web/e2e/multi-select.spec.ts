@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 type Def = {
   components: { name: string; parent?: string }[]
@@ -51,6 +51,7 @@ test('selects several components and moves, deletes, duplicates them together', 
     await page.getByTestId('frame-b').click({ modifiers: ['Shift'] })
     await page.getByTestId('frame-c').click({ modifiers: ['ControlOrMeta'] })
     await expect(page.getByTestId('inspector-selection')).toContainText('3 components selected')
+    await openEditorPanel(page, 'Component tree')
     const tree = page.getByRole('list').filter({ has: page.getByRole('button', { name: /^d\b/ }) })
     await expect(tree.getByRole('button', { pressed: true })).toHaveCount(3)
     // Shift-click in the tree takes one out.
@@ -59,16 +60,15 @@ test('selects several components and moves, deletes, duplicates them together', 
     await page.getByTestId('frame-c').click({ modifiers: ['Shift'] })
   })
 
-  await test.step('the arrow keys move them together, settling as a drag does', async () => {
+  await test.step('the arrow keys move them together, and they stay where they are put', async () => {
     const before = await at(['a', 'b', 'c', 'd'])
     await page.keyboard.press('ArrowRight')
     await expect
       .poll(() => at(['a', 'b', 'c', 'd']))
       .toEqual(before.map(([x, y], i) => (i < 3 ? [x! + 1, y!] : [x, y])))
-    // Down on the top row: the grid keeps things up against what's above, as it does after a drag.
+    // Down a row: they stay there (session 33: nothing floats back up into the gap).
     await page.keyboard.press('ArrowDown')
-    await page.waitForTimeout(500)
-    await expect.poll(() => at(['a', 'b', 'c'])).toEqual(before.slice(0, 3).map(([x, y]) => [x! + 1, y!]))
+    await expect.poll(() => at(['a', 'b', 'c'])).toEqual(before.slice(0, 3).map(([x, y]) => [x! + 1, y! + 1]))
   })
 
   await test.step('dragging one drags the others by as much', async () => {
@@ -97,7 +97,8 @@ test('selects several components and moves, deletes, duplicates them together', 
     await expect(page.getByTestId('inspector-selection')).toContainText('5 components selected')
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('inspector-selection')).toHaveCount(0)
-    await expect(page.getByTestId('inspector')).toHaveCount(0)
+    // The inspector shows the page and the app again.
+    await expect(page.getByTestId('inspector-app')).toBeVisible()
   })
 
   await test.step('Duplicate and Move into, from the inspector', async () => {

@@ -10,6 +10,11 @@ export interface OAuthProviderPreset {
   /** May contain placeholders such as `{tenant}`, filled in with `fillPlaceholders` before saving. */
   authorizeUrl: string
   tokenUrl: string
+  /**
+   * Where Disconnect revokes the connection (RFC 7009: the token posted as a form); empty when the provider has no
+   * such endpoint (Disconnect then only forgets the tokens here). On the token URL's origin.
+   */
+  revokeUrl: string
   baseUrl: string
   allowedHosts: string[]
   /** A starting point; people replace it with the scopes their queries need. */
@@ -29,6 +34,7 @@ export const oauthPresets: Readonly<Record<OAuthProviderPreset['id'], OAuthProvi
     label: 'Google',
     authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
+    revokeUrl: 'https://oauth2.googleapis.com/revoke',
     baseUrl: 'https://www.googleapis.com',
     allowedHosts: ['*.googleapis.com'],
     scope: 'openid email https://www.googleapis.com/auth/spreadsheets.readonly',
@@ -48,6 +54,8 @@ export const oauthPresets: Readonly<Record<OAuthProviderPreset['id'], OAuthProvi
     label: 'HubSpot',
     authorizeUrl: 'https://app.hubspot.com/oauth/authorize',
     tokenUrl: 'https://api.hubapi.com/oauth/v1/token',
+    // HubSpot deletes a refresh token with its own call (DELETE /oauth/v1/refresh-tokens/:token), not RFC 7009.
+    revokeUrl: '',
     baseUrl: 'https://api.hubapi.com',
     allowedHosts: [],
     scope: 'oauth crm.objects.contacts.read',
@@ -63,6 +71,8 @@ export const oauthPresets: Readonly<Record<OAuthProviderPreset['id'], OAuthProvi
     label: 'Slack',
     authorizeUrl: 'https://slack.com/oauth/v2/authorize',
     tokenUrl: 'https://slack.com/api/oauth.v2.access',
+    // auth.revoke takes the token to revoke in the form, like RFC 7009 (answering 200 with `ok`).
+    revokeUrl: 'https://slack.com/api/auth.revoke',
     baseUrl: 'https://slack.com/api',
     allowedHosts: [],
     scope: 'channels:read,chat:write',
@@ -78,6 +88,8 @@ export const oauthPresets: Readonly<Record<OAuthProviderPreset['id'], OAuthProvi
     label: 'Microsoft 365',
     authorizeUrl: 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize',
     tokenUrl: 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token',
+    // Entra ID has no token revocation endpoint (only revoking all of a user's sessions).
+    revokeUrl: '',
     baseUrl: 'https://graph.microsoft.com/v1.0',
     allowedHosts: [],
     // offline_access is what makes Entra ID issue a refresh token.

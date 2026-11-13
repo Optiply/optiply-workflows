@@ -87,6 +87,40 @@ export const handlerActionSchema = z.discriminatedUnion('type', [
     type: z.literal('moduleEvent'),
     event: appNameSchema,
   }),
+  // Session 41, after Retool's event actions:
+  z.strictObject({
+    /** Opens one of the app's pages (by name; a page rename follows), with query parameters (templates). */
+    type: z.literal('openPage'),
+    page: appNameSchema,
+    params: z.record(z.string().max(64), z.string()).optional(),
+    newTab: z.boolean().optional(),
+  }),
+  z.strictObject({
+    /** Sets query parameters of the page shown (templates; one evaluating to empty is removed), keeping the others. */
+    type: z.literal('setUrlParams'),
+    params: z.record(z.string().max(64), z.string()),
+  }),
+  z.strictObject({
+    type: z.literal('copyToClipboard'),
+    text: z.string(),
+  }),
+  z.strictObject({
+    /** Saves data as a file (`utils.downloadFile`): an array of objects as CSV when the name ends in .csv. */
+    type: z.literal('download'),
+    data: z.string(),
+    fileName: z.string(),
+  }),
+  z.strictObject({
+    /** Keeps a value in this browser for this app, read back as `localStorage.values.<key>`. The key is plain text. */
+    type: z.literal('setLocalStorage'),
+    key: z.string().min(1).max(200),
+    value: z.string(),
+  }),
+  z.strictObject({
+    /** Removes one key the app keeps in this browser, or (without `key`) all of them. */
+    type: z.literal('clearLocalStorage'),
+    key: z.string().min(1).max(200).optional(),
+  }),
 ])
 
 export const eventHandlerSchema = z.strictObject({
@@ -97,6 +131,8 @@ export const eventHandlerSchema = z.strictObject({
   /** A template; the handler runs only when it is truthy. */
   onlyIf: z.string().optional(),
   debounceMs: z.number().int().min(0).max(60_000).optional(),
+  /** Runs at most once in this many milliseconds (session 41); an event within it is dropped. Not with `debounceMs`. */
+  throttleMs: z.number().int().min(0).max(60_000).optional(),
 })
 
 const handlersSchema = z.array(eventHandlerSchema).max(50)
@@ -121,6 +157,8 @@ export const componentSchema = z.strictObject({
   /** Prop values by prop name, sparse: a missing prop takes the registry's default. */
   props: z.record(z.string().max(64), z.json()).optional(),
   events: handlersSchema.optional(),
+  /** A note for the app's editors (session 41, the inspector's "Add a note"); people using the app never see it. */
+  note: z.string().max(2000).optional(),
 })
 
 const queryCommon = {
@@ -142,6 +180,11 @@ const queryCommon = {
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
   /** Handlers for `success` and `failure`. */
   events: handlersSchema.optional(),
+  /**
+   * Names the code that triggers it passes in (`query1.trigger({ additionalScope: { row } })`, M36): known in this
+   * query's templates and code, `undefined` when a trigger doesn't pass them.
+   */
+  scope: z.array(appNameSchema).max(50).optional(),
 }
 
 export const resourceAppQuerySchema = z.strictObject({
@@ -182,10 +225,25 @@ export const libraryAppQuerySchema = z.strictObject({
   run: z.enum(['auto', 'manual']),
 })
 
+/**
+ * Runs a workflow's live release (M36), as the person using the app, in the app's environment: `sync` waits for its
+ * Response block and gives its body as `data` (failing when the run fails); `async` gives `{ runId }` once it's
+ * queued. `input` is a JSON template (like a REST body) for the run's `startTrigger.data`.
+ */
+export const workflowAppQuerySchema = z.strictObject({
+  ...queryCommon,
+  kind: z.literal('workflow'),
+  workflow: workflowSlugSchema,
+  input: z.string().optional(),
+  mode: z.enum(['sync', 'async']).optional(),
+  run: z.enum(['auto', 'manual']),
+})
+
 export const appQuerySchema = z.discriminatedUnion('kind', [
   resourceAppQuerySchema,
   jsAppQuerySchema,
   libraryAppQuerySchema,
+  workflowAppQuerySchema,
 ])
 
 export const transformerSchema = z.strictObject({
@@ -260,6 +318,24 @@ export const frameSchema = z.strictObject({
   showUser: z.boolean().optional(),
 })
 
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'A colour as #rrggbb')
+
+/** The app's look (session 41, after Retool's app theme): colours, corner radius and font; unset keeps Optiply's. */
+export const themeSchema = z.strictObject({
+  /** Buttons, links, selections, focus rings. */
+  primary: hexColor.optional(),
+  /** Behind the app's components. */
+  background: hexColor.optional(),
+  /** The main text colour. */
+  text: hexColor.optional(),
+  danger: hexColor.optional(),
+  success: hexColor.optional(),
+  warning: hexColor.optional(),
+  /** Corner radius of fields, buttons and cards, in pixels. */
+  radius: z.number().int().min(0).max(24).optional(),
+  font: z.enum(['system', 'serif', 'mono']).optional(),
+})
+
 export const appDefinitionSchema = z.strictObject({
   schemaVersion: z.literal(APP_SCHEMA_VERSION),
   /** In order; the first opens by default. An app without pages is one page, holding everything. */
@@ -274,19 +350,34 @@ export const appDefinitionSchema = z.strictObject({
   module: moduleSpecSchema.optional(),
   /** A header bar and/or a sidebar around every page (M24); without it, global components sit above each page. */
   frame: frameSchema.optional(),
+  /** The app's look (session 41). */
+  theme: themeSchema.optional(),
+  /**
+   * The app's own CSS (session 41), applied inside the app only (nested under its root); `url()` and `@import` are
+   * dropped, so styles can't load anything from elsewhere.
+   */
+  css: z.string().max(50_000).optional(),
+  /**
+   * The app's JavaScript packages: npm packages (`zod@^3`), bundled for its JavaScript queries, transformers and
+   * scripts. Loose here like a workflow's (the validator says what's wrong with each). Never on a module: a module's
+   * code uses its app's packages.
+   */
+  javascript: z.strictObject({ packages: z.array(z.string().max(1000)).max(100) }).optional(),
 })
 
 export type Position = z.infer<typeof positionSchema>
 export type AppPage = z.infer<typeof pageSchema>
 export type AppFrame = z.infer<typeof frameSchema>
+export type AppTheme = z.infer<typeof themeSchema>
 export type HandlerAction = z.infer<typeof handlerActionSchema>
 export type EventHandler = z.infer<typeof eventHandlerSchema>
 export type AppComponent = z.infer<typeof componentSchema>
 export type ResourceAppQuery = z.infer<typeof resourceAppQuerySchema>
 export type JsAppQuery = z.infer<typeof jsAppQuerySchema>
 export type LibraryAppQuery = z.infer<typeof libraryAppQuerySchema>
+export type WorkflowAppQuery = z.infer<typeof workflowAppQuerySchema>
 /** The queries the server runs: resource and library queries. */
-export type ServerAppQuery = ResourceAppQuery | LibraryAppQuery
+export type ServerAppQuery = ResourceAppQuery | LibraryAppQuery | WorkflowAppQuery
 export type AppQuery = z.infer<typeof appQuerySchema>
 export type Transformer = z.infer<typeof transformerSchema>
 export type Variable = z.infer<typeof variableSchema>
@@ -310,10 +401,16 @@ export const runsAutomatically = (q: AppQuery): boolean => isServerQuery(q) && q
 
 /**
  * The JSON whose templates the browser evaluates before a server query runs: a resource query's connector query,
- * a library query's parameters.
+ * a library query's parameters, a workflow query's input.
  */
 export const queryTemplates = (q: ServerAppQuery): Record<string, unknown> =>
-  q.kind === 'resource' ? q.query : (q.params ?? {})
+  q.kind === 'resource'
+    ? q.query
+    : q.kind === 'workflow'
+      ? q.input
+        ? { input: q.input }
+        : {}
+      : (q.params ?? {})
 
 /** A new, empty app. */
 export function emptyApp(): AppDefinition {

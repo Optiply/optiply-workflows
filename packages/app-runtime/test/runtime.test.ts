@@ -33,6 +33,7 @@ function setup(
     confirm?: boolean
     delay?: number
     url?: { page?: string | null; params?: Record<string, string> }
+    storage?: Record<string, unknown>
   } = {},
 ) {
   const calls: { query: string; values: Record<string, unknown> }[] = []
@@ -66,6 +67,7 @@ function setup(
       autoRunDelayMs: opts.delay ?? 0,
       globals: { current_user: { email: 'a@optiply.nl' } },
       ...(opts.url && { url: opts.url }),
+      ...(opts.storage && { storage: opts.storage }),
     },
   )
   return { runtime, calls, effects, patches, confirms, state }
@@ -280,6 +282,21 @@ describe('AppRuntime', () => {
       'script.data': ['row 7'],
     })
     expect(t.effects).toEqual([{ type: 'notify', message: 'done', tone: 'success' }])
+  })
+
+  it("gives a query's declared scope names, undefined when a trigger doesn't pass them (M36)", async () => {
+    const t = setup(
+      {
+        queries: [
+          sql('get', 'select {{ id ?? 0 }}, {{ note ?? "none" }}', 'manual', { scope: ['id', 'note'] }),
+        ],
+      },
+      { respond: (_q, values) => [values] },
+    )
+    await t.runtime.start()
+    expect(await t.runtime.trigger('get', { additionalScope: { id: 7 } })).toEqual([
+      { ' id ?? 0 ': 7, ' note ?? "none" ': 'none' },
+    ])
   })
 
   it('reports a failing script handler once', async () => {
@@ -604,6 +621,70 @@ describe('AppRuntime', () => {
     ])
   })
 
+  it("runs Retool's APIs: views by key, local storage, notifications, files, column data (M36)", async () => {
+    const t = setup({
+      components: [
+        comp('box', 'container', {
+          views: [
+            { name: 'orders', label: 'Orders' },
+            { name: 'log', label: '7' },
+          ],
+        }),
+        comp('seen', 'text', { value: '{{ box.currentView }} {{ localStorage.values.k ?? "none" }}' }),
+      ],
+      queries: [
+        js(
+          'retool',
+          [
+            'box.setCurrentView(7)',
+            "localStorage.setValue('k', 'v'); localStorage.setValue('gone', 1); localStorage.removeValue('gone')",
+            "utils.showNotification({ title: 'Saved', description: '3 rows', notificationType: 'success' })",
+            "utils.downloadFile('a', 'report', 'txt')",
+            "return [formatDataAsArray({ id: [1, 2], n: ['a', 'b'] }), formatDataAsArray([{ id: 1 }]), formatDataAsObject([{ id: 1 }, { id: 2, x: 3 }])]",
+          ].join('\n'),
+        ),
+        js('first', 'box.setCurrentViewIndex(0); localStorage.clear()'),
+      ],
+    })
+    await t.runtime.start()
+    expect(await t.runtime.trigger('retool')).toEqual([
+      [
+        { id: 1, n: 'a' },
+        { id: 2, n: 'b' },
+      ],
+      [{ id: 1 }],
+      { id: [1, 2], x: [undefined, 3] },
+    ])
+    expect(t.state['seen.value']).toBe('log v')
+    expect(t.effects).toContainEqual({ type: 'notify', message: 'Saved: 3 rows', tone: 'success' })
+    expect(t.effects).toContainEqual({
+      type: 'download',
+      data: 'a',
+      fileName: 'report.txt',
+      mimeType: 'text/plain',
+    })
+    await t.runtime.trigger('first')
+    expect(t.state['seen.value']).toBe('orders none')
+  })
+
+  it("passes a handler's owner to the query it triggers as triggeredById (M36)", async () => {
+    const t = setup({
+      components: [
+        comp(
+          'b',
+          'button',
+          {},
+          { events: [on('click', { type: 'controlQuery', query: 'who', method: 'trigger' })] },
+        ),
+      ],
+      queries: [js('who', 'return triggeredById', { scope: ['triggeredById'] })],
+    })
+    await t.runtime.start()
+    await t.runtime.fire('b', 'click')
+    expect(t.state['who.data']).toBe('b')
+    expect(await t.runtime.trigger('who')).toBeUndefined()
+  })
+
   it('takes over after an edit, keeping what the user did and re-running only what changed', async () => {
     const calls: string[] = []
     const effects: Effect[] = []
@@ -667,6 +748,35 @@ describe('AppRuntime', () => {
     await done
     expect(calls.at(-1)).toBe('list:{" search.value ":"b"}')
     expect(state).toMatchObject({ 'search.value': 'b', 'picked.value': 2 })
+  })
+
+  it('starts what Reset state names afresh, the rest keeping what the user did', async () => {
+    const calls: string[] = []
+    const state: Record<string, unknown> = {}
+    const bridge = {
+      async runQuery(query: string): Promise<QueryOutcome> {
+        calls.push(query)
+        return { ok: true, data: calls.length }
+      },
+      confirm: async () => true,
+      effect: () => {},
+      publish: (p: StatePatch) => Object.assign(state, p.values),
+      log: () => {},
+    }
+    const def = app({
+      components: [comp('a', 'textInput', { defaultValue: 'x' }), comp('b', 'textInput')],
+      queries: [sql('list', 'select 1')],
+      variables: [{ name: 'v', initialValue: 1 }],
+    })
+    const first = new AppRuntime(def, bridge, { autoRunDelayMs: 0 })
+    await first.start()
+    first.set({ 'a.value': 'typed', 'b.value': 'kept', 'v.value': 5 })
+    await wait()
+    const next = new AppRuntime(def, bridge, { autoRunDelayMs: 0 })
+    await next.start({ previous: first, reset: ['a', 'v', 'list'] })
+    expect(state).toMatchObject({ 'a.value': 'x', 'b.value': 'kept', 'v.value': 1, 'list.data': 2 })
+    // The query reset runs again, as on load.
+    expect(calls).toEqual(['list', 'list'])
   })
 
   it('sets nested values immutably', () => {
@@ -826,5 +936,94 @@ describe('library queries (M14)', () => {
     t.runtime.set({ 'customer.value': 8 })
     await wait(20)
     expect(t.calls.at(-1)).toEqual({ query: 'orders', values: { ' customer.value ': 8 } })
+  })
+})
+
+describe('event actions of session 41', () => {
+  const button = (events: object[]) => comp('go', 'button', {}, { events })
+  const pages = [{ name: 'list' }, { name: 'detail' }]
+
+  it('goes to a page with parameters, and sets the shown page’s parameters keeping the others', async () => {
+    const t = setup(
+      {
+        pages,
+        components: [
+          comp('id', 'textInput', { defaultValue: '7' }),
+          button([
+            on('click', { type: 'openPage', page: 'detail', params: { id: '{{ id.value }}' }, newTab: true }),
+            on('click', { type: 'setUrlParams', params: { tab: 'notes', q: '{{ null }}' } }),
+          ]),
+        ],
+      },
+      { url: { page: 'list', params: { q: 'old', keep: 'yes' } } },
+    )
+    await t.runtime.start()
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toEqual([
+      { type: 'openPage', page: 'detail', params: { id: '7' }, newTab: true },
+      // An empty value removes the parameter.
+      { type: 'openPage', page: 'list', params: { keep: 'yes', tab: 'notes' }, newTab: false },
+    ])
+  })
+
+  it('copies, downloads, and keeps values in local storage', async () => {
+    const t = setup(
+      {
+        components: [
+          comp('note', 'text', { value: '{{ localStorage.values.theme ?? "none" }}' }),
+          button([
+            on('click', { type: 'copyToClipboard', text: '{{ 1 + 1 }}' }),
+            on('click', { type: 'download', data: '{{ [{ a: 1 }] }}', fileName: 'rows.csv' }),
+            on('click', { type: 'setLocalStorage', key: 'theme', value: '{{ "dark" }}' }),
+          ]),
+          comp(
+            'forget',
+            'button',
+            {},
+            { events: [on('click', { type: 'clearLocalStorage', key: 'theme' })] },
+          ),
+          comp('wipe', 'button', {}, { events: [on('click', { type: 'clearLocalStorage' })] }),
+        ],
+      },
+      { storage: { size: 'big' } },
+    )
+    await t.runtime.start()
+    expect(t.state['note.value']).toBe('none')
+    expect(t.state['localStorage.values']).toEqual({ size: 'big' })
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toEqual([
+      { type: 'copy', text: '2' },
+      { type: 'download', data: 'a\r\n1\r\n', fileName: 'rows.csv', mimeType: 'text/csv' },
+      { type: 'storage', key: 'theme', value: 'dark' },
+    ])
+    expect(t.state['note.value']).toBe('dark')
+    await t.runtime.fire('forget', 'click')
+    expect(t.state['localStorage.values']).toEqual({ size: 'big' })
+    await t.runtime.fire('wipe', 'click')
+    expect(t.state['localStorage.values']).toEqual({})
+    expect(t.effects.slice(-2)).toEqual([
+      { type: 'storage', key: 'theme' },
+      { type: 'storage', key: null },
+    ])
+  })
+
+  it('throttles: one run per window, the events within it dropped', async () => {
+    const t = setup({
+      components: [
+        comp(
+          'go',
+          'button',
+          {},
+          { events: [on('click', { type: 'notify', message: 'hi' }, { throttleMs: 200 })] },
+        ),
+      ],
+    })
+    await t.runtime.start()
+    await t.runtime.fire('go', 'click')
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toHaveLength(1)
+    await wait(220)
+    await t.runtime.fire('go', 'click')
+    expect(t.effects).toHaveLength(2)
   })
 })

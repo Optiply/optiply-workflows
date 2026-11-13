@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate, typeInto } from './helpers'
+import { openDebug, openEditorPanel, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M8's done-when, in the browser: build a CRUD app on a Postgres table with an editable Table and a save query.
@@ -36,7 +36,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a new app', async () => {
-    await page.getByRole('link', { name: 'Apps' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Apps' }).click()
     await page.getByRole('button', { name: 'New app' }).click()
     await page.getByLabel('Name', { exact: true }).fill(`Stock ${table}`)
     await page.getByRole('button', { name: 'Create app' }).click()
@@ -44,6 +44,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a query reading the table', async () => {
+    await openEditorPanel(page, 'Code')
     await page.getByTitle('Add a resource query').click()
     await rename(page, page.getByTestId('query-query1'), 'products')
     await typeInto(
@@ -55,6 +56,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a Table showing it, with stock editable', async () => {
+    await openEditorPanel(page, 'Add components')
     await page.getByRole('button', { name: 'Table', exact: true }).click()
     const inspector = page.getByTestId('inspector-table1')
     await typeInto(
@@ -77,6 +79,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('a save query over the changeset, re-reading the table when it succeeds', async () => {
+    await openEditorPanel(page, 'Code')
     await page.getByTitle('Add a resource query').click()
     const query = page.getByTestId('query-query1')
     await rename(page, query, 'save_stock')
@@ -102,7 +105,7 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
   })
 
   await test.step('publish', async () => {
-    await page.getByRole('tab', { name: /Problems/ }).click()
+    await openDebug(page, 'Problems')
     await expect(page.getByText('No problems.')).toBeVisible()
     await page.getByRole('button', { name: 'Publish', exact: true }).click()
     await page.getByTestId('publish-confirm').click()
@@ -111,6 +114,10 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
 
   await test.step('edit a cell in the published app and save it', async () => {
     await page.getByRole('link', { name: 'Open app' }).click()
+    // The editor's canvas has a table1 too, with the same rows: wait for the viewer (its Edit link) before editing,
+    // or a slow runner edits the editor's table and the viewer then opens without the change.
+    await expect(page).toHaveURL(/\/apps\/[^/?]+(\?|$)/)
+    await expect(page.getByRole('link', { name: 'Edit', exact: true })).toBeVisible()
     const grid = page.getByRole('grid', { name: 'table1' })
     await expect(grid.getByRole('row')).toHaveCount(4)
     // Only the editable column edits.

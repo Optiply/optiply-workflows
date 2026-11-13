@@ -10,6 +10,8 @@ import { NAV_ICON_COMPONENTS } from './nav-icons'
 type Link =
   | { kind: 'page'; key: string; label: string; icon?: NavIcon; page: string; params: Record<string, string> }
   | { kind: 'url'; key: string; label: string; icon?: NavIcon; url: string }
+  /** An action (M36): sets the navigation's `clickedItem` to `item` and fires `click`. */
+  | { kind: 'action'; key: string; label: string; icon?: NavIcon; item: string }
   | { kind: 'group'; key: string; label: string; icon?: NavIcon; links: Link[] }
 
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -42,7 +44,11 @@ function linksOf(items: unknown, title: (page: string) => string | undefined, de
       const url = item.url.trim()
       return NAV_URL.test(url) ? [{ kind: 'url', key, label: given ?? url, ...(icon && { icon }), url }] : []
     }
-    if (typeof item.page !== 'string') return []
+    if (typeof item.page !== 'string') {
+      return typeof item.key === 'string' && item.key
+        ? [{ kind: 'action', key, label: given ?? item.key, ...(icon && { icon }), item: item.key }]
+        : []
+    }
     const pageTitle = title(item.page)
     if (pageTitle === undefined) return []
     const params = record(item.params)
@@ -80,9 +86,9 @@ export function NavigationRenderer({ component, definition }: RendererProps) {
         {links.map((link) => (
           <li key={link.key} className="relative">
             {link.kind === 'group' ? (
-              <NavGroup link={link} vertical={vertical} current={current} />
+              <NavGroup owner={name} link={link} vertical={vertical} current={current} />
             ) : (
-              <NavLink link={link} vertical={vertical} current={current} />
+              <NavLink owner={name} link={link} vertical={vertical} current={current} />
             )}
           </li>
         ))}
@@ -105,11 +111,13 @@ function Icon({ icon }: { icon?: NavIcon }) {
 }
 
 function NavLink({
+  owner,
   link,
   vertical,
   current,
   onOpen,
 }: {
+  owner: string
   link: Exclude<Link, { kind: 'group' }>
   vertical: boolean
   current: string | null
@@ -117,6 +125,24 @@ function NavLink({
 }) {
   const host = useAppHostContext()
   const { pageHref } = useContext(AppChromeContext)
+  const clicked = useAppValue<unknown>(`${owner}.clickedItem`)
+  if (link.kind === 'action') {
+    return (
+      <button
+        type="button"
+        aria-current={clicked === link.item ? 'true' : undefined}
+        className={linkClass(clicked === link.item, vertical)}
+        onClick={() => {
+          onOpen?.()
+          host.set({ [`${owner}.clickedItem`]: link.item })
+          host.fire(owner, 'click')
+        }}
+      >
+        <Icon icon={link.icon} />
+        <span className="truncate">{link.label}</span>
+      </button>
+    )
+  }
   if (link.kind === 'url') {
     return (
       <a
@@ -153,10 +179,12 @@ function NavLink({
 }
 
 function NavGroup({
+  owner,
   link,
   vertical,
   current,
 }: {
+  owner: string
   link: Extract<Link, { kind: 'group' }>
   vertical: boolean
   current: string | null
@@ -208,7 +236,13 @@ function NavGroup({
           {link.links.map((sub) =>
             sub.kind === 'group' ? null : (
               <li key={sub.key}>
-                <NavLink link={sub} vertical current={current} onOpen={() => !vertical && setOpen(false)} />
+                <NavLink
+                  owner={owner}
+                  link={sub}
+                  vertical
+                  current={current}
+                  onOpen={() => !vertical && setOpen(false)}
+                />
               </li>
             ),
           )}

@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { signIn, trpcMutate } from './helpers'
+import { openEditorPanel, signIn, trpcMutate } from './helpers'
 
 type Draft = {
   components: { name: string; parent?: string; props?: { value?: string } }[]
@@ -27,7 +27,10 @@ async function draftOf(page: Page, slug: string): Promise<Draft> {
 const saved = (page: Page) => expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10000 })
 /** A component in the sidebar's tree. */
 const inTree = (page: Page, name: string) =>
-  page.locator('aside li button').filter({ has: page.getByText(name, { exact: true }) })
+  page
+    .getByTestId('component-tree')
+    .locator('li button')
+    .filter({ has: page.getByText(name, { exact: true }) })
 const at = (x: number, y: number, w = 6, h = 2) => ({ x, y, w, h })
 
 /** M13 step 4: copy components and code between apps, duplicate them, and refuse what wasn't copied here. */
@@ -50,12 +53,14 @@ test('copy, paste and duplicate components and code between apps', async ({ page
 
   await test.step('copy a container with what is inside it', async () => {
     await page.goto(`/apps/${source}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await inTree(page, 'container1').click()
     await page.keyboard.press('ControlOrMeta+C')
   })
 
   await test.step('paste it into another app: fresh names, the reference follows', async () => {
     await page.goto(`/apps/${target}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await inTree(page, 'textInput1').click()
     await page.keyboard.press('ControlOrMeta+V')
     await expect(inTree(page, 'textInput2')).toBeVisible()
@@ -94,9 +99,11 @@ test('copy, paste and duplicate components and code between apps', async ({ page
 
   await test.step('copy a query into the other app: it reads what is there now, and says so', async () => {
     await page.goto(`/apps/${source}/edit`)
+    await openEditorPanel(page, 'Code')
     await page.locator('nav').getByText('greet', { exact: true }).click()
     await page.keyboard.press('ControlOrMeta+C')
     await page.goto(`/apps/${target}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await expect(inTree(page, 'container2')).toBeVisible()
     await page.locator('body').click({ position: { x: 5, y: 5 } })
     await page.keyboard.press('ControlOrMeta+V')
@@ -156,9 +163,11 @@ test('shortcuts work inside a modal being edited; a copy from another app goes i
 
   await test.step("paste another app's container1 with the target's container1 selected: it goes inside", async () => {
     await page.goto(`/apps/${source}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await inTree(page, 'container1').click()
     await page.keyboard.press('ControlOrMeta+C')
     await page.goto(`/apps/${target}/edit`)
+    await openEditorPanel(page, 'Component tree')
     await inTree(page, 'container1').click()
     await page.keyboard.press('ControlOrMeta+V')
     await expect(inTree(page, 'container2')).toBeVisible()

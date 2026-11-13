@@ -190,7 +190,7 @@ export interface StartedRun {
 /**
  * Inserts a run. With `claimAs`, the run is claimed for the caller in the same transaction (a sync webhook executes
  * it in the API process), unless its workflow is at `max_concurrent_runs`: then it's queued for the workers like any
- * other run. A run with an `idempotencyKey` the workflow already saw isn't inserted; the earlier run comes back
+ * other run. A run with an `idempotencyKey` the workflow already saw in that environment isn't inserted; the earlier run comes back
  * with `replayed`.
  */
 export async function startRun(
@@ -228,7 +228,7 @@ export async function startRun(
           : { status: 'queued' }),
       })
       .onConflictDoNothing({
-        target: [workflowRuns.workflowId, workflowRuns.idempotencyKey],
+        target: [workflowRuns.workflowId, workflowRuns.environmentId, workflowRuns.idempotencyKey],
         where: sql`${workflowRuns.idempotencyKey} is not null`,
       })
       .returning()
@@ -239,6 +239,7 @@ export async function startRun(
         .where(
           and(
             eq(workflowRuns.workflowId, values.workflowId),
+            eq(workflowRuns.environmentId, values.environmentId),
             eq(workflowRuns.idempotencyKey, values.idempotencyKey!),
           ),
         )

@@ -2,15 +2,18 @@ import type { AppDefinition } from '@ow/app-definition'
 import type { AppUrl, ComponentLibraryReleases, ModuleReleases } from '@ow/app-runtime'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router'
+import { LayoutGrid, Lock, Pencil } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
-import { Button, ErrorNote, Select, Spinner } from '@/components/ui'
+import { Button, buttonVariants, EmptyState, ErrorNote, Select, Spinner } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
+import { AccountButton } from '../app-shell'
 import { AppCanvas } from './canvas'
 import { NeededConnections } from './connections'
 import { AppChromeContext } from './grid-context'
 import { Notifications, useConfirmations, useNotifications } from './notifications'
 import { AppHostProvider, useAppHost, useAppHostState, useAppValue } from './runtime/react'
 import { AppStopped } from './stopped'
+import { ThemedApp } from './themed'
 
 const appRoute = getRouteApi('/app')
 
@@ -41,18 +44,7 @@ export function AppViewPage() {
   })
   const environments = useQuery(trpc.environments.list.queryOptions())
 
-  if (app.error)
-    return (
-      <Centered>
-        <div className="flex flex-col items-center gap-3">
-          <ErrorNote error={app.error} />
-          {/* Not published yet: whoever can edit it gets there from here (the editor refuses everyone else). */}
-          <Link to="/apps/$slug/edit" params={{ slug }} className="text-sm text-accent hover:underline">
-            Open the editor
-          </Link>
-        </div>
-      </Centered>
-    )
+  if (app.error) return <CannotOpen slug={slug} />
   if (environments.error)
     return (
       <Centered>
@@ -78,6 +70,7 @@ export function AppViewPage() {
         id: app.data.release.id,
         version: app.data.release.version,
         definition: app.data.release.definition,
+        jsBundleHash: app.data.release.jsBundleHash,
       }}
       modules={app.data.modules}
       libraries={app.data.libraries}
@@ -87,13 +80,51 @@ export function AppViewPage() {
   )
 }
 
+/**
+ * The app didn't open: what to do depends on who's asking. Editors get the editor (it isn't published yet); people
+ * with Use are told it isn't published; anyone else that it isn't theirs (an app that doesn't exist reads the same).
+ */
+function CannotOpen({ slug }: { slug: string }) {
+  const trpc = useTRPC()
+  const access = useQuery(trpc.apps.access.queryOptions({ slug }))
+  if (!access.data)
+    return <Centered>{access.error ? <ErrorNote error={access.error} /> : <Spinner />}</Centered>
+  const { level } = access.data
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex h-12 shrink-0 items-center justify-end border-b border-border/70 bg-surface px-4">
+        <AccountButton />
+      </header>
+      <Centered>
+        {level === 'edit' || level === 'own' ? (
+          <EmptyState icon={<LayoutGrid className="size-6" />} title="Not published yet">
+            People can use it once it's published.{' '}
+            <Link to="/apps/$slug/edit" params={{ slug }} className="font-medium text-accent hover:underline">
+              Open the editor
+            </Link>
+          </EmptyState>
+        ) : level === 'use' ? (
+          <EmptyState icon={<LayoutGrid className="size-6" />} title="Not published yet">
+            You can use this app once its owner publishes it.
+          </EmptyState>
+        ) : (
+          <EmptyState icon={<Lock className="size-6" />} title="You don't have access to this app">
+            Ask an admin or the app's owner for access. (If the link is old, the app may also have been
+            removed.)
+          </EmptyState>
+        )}
+      </Centered>
+    </div>
+  )
+}
+
 function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="flex h-full items-center justify-center p-8">{children}</div>
+  return <div className="flex h-full min-h-0 flex-1 items-center justify-center p-8">{children}</div>
 }
 
 interface RunningAppProps {
   app: { id: string; slug: string; name: string; canEdit: boolean }
-  release: { id: string; version: string; definition: AppDefinition }
+  release: { id: string; version: string; definition: AppDefinition; jsBundleHash: string | null }
   /** The module releases its instances run (M14). */
   modules: ModuleReleases
   /** The component library releases its custom components run (M25). */
@@ -122,7 +153,7 @@ function RunningApp({ app, release, modules, libraries, environment, environment
     const { env: _theirs, ...own } = params
     return {
       to: '/apps/$slug/{-$page}' as const,
-      params: { slug: app.slug, page: to },
+      params: { slug: app.slug, page: to || undefined },
       search: { ...own, ...(env && { env }) },
     }
   }
@@ -134,6 +165,7 @@ function RunningApp({ app, release, modules, libraries, environment, environment
     libraries,
     appId: app.id,
     releaseId: release.id,
+    jsBundleHash: release.jsBundleHash,
     environmentId: environment.id,
     globals: {
       current_user: { id: me.id, email: me.email, name: me.name },
@@ -156,44 +188,50 @@ function RunningApp({ app, release, modules, libraries, environment, environment
 
   return (
     <div className="flex h-full flex-col">
-      {/* Optiply's page header: the app is a page of the platform. */}
-      <header className="mx-2 flex min-h-14 shrink-0 items-center gap-3 border-b-2 border-divider py-2">
-        <h1 className="truncate text-2xl leading-8 font-bold">{app.name}</h1>
-        <span className="text-xs text-muted">v{release.version}</span>
-        {app.canEdit && (
-          <Link
-            to="/apps/$slug/edit"
-            params={{ slug: app.slug }}
-            className="text-xs text-accent hover:underline"
-          >
-            Edit
-          </Link>
-        )}
-        <div className="ml-auto flex items-center gap-2 text-sm">
-          <label htmlFor="app-env" className="text-muted">
-            Environment
-          </label>
-          <Select
-            id="app-env"
-            value={environment.slug}
-            onChange={(e) =>
-              navigate({
-                to: '/apps/$slug/{-$page}',
-                params: { slug: app.slug, page },
-                search: { ...url.params, env: e.target.value },
-              })
-            }
-          >
-            {environments.map((e) => (
-              <option key={e.id} value={e.slug}>
-                {e.name}
-              </option>
-            ))}
-          </Select>
+      {/* Just the app: its name, the environment, Edit for those who build it, the account. No platform around it. */}
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border/70 bg-surface px-4">
+        <h1 className="truncate text-base font-semibold">{app.name}</h1>
+        {app.canEdit && <span className="text-xs text-muted">v{release.version}</span>}
+        <div className="ml-auto flex items-center gap-3 text-sm">
+          {environments.length > 1 && (
+            <>
+              <label htmlFor="app-env" className="text-muted">
+                Environment
+              </label>
+              <Select
+                id="app-env"
+                value={environment.slug}
+                onChange={(e) =>
+                  navigate({
+                    to: '/apps/$slug/{-$page}',
+                    params: { slug: app.slug, page },
+                    search: { ...url.params, env: e.target.value },
+                  })
+                }
+              >
+                {environments.map((e) => (
+                  <option key={e.id} value={e.slug}>
+                    {e.name}
+                  </option>
+                ))}
+              </Select>
+            </>
+          )}
+          {app.canEdit && (
+            <Link
+              to="/apps/$slug/edit"
+              params={{ slug: app.slug }}
+              className={buttonVariants({ variant: 'tertiary', size: 'md' })}
+            >
+              <Pencil className="size-3.5" />
+              Edit
+            </Link>
+          )}
+          <AccountButton />
         </div>
       </header>
       <div ref={ref} className="hidden" />
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {host && (
           <AppHostProvider host={host}>
             <AppChromeContext.Provider
@@ -246,7 +284,9 @@ function AppBody({ definition, appName }: { definition: AppDefinition; appName: 
       )}
       <AppStopped />
       <NeededConnections />
-      <AppCanvas definition={definition} page={page} />
+      <ThemedApp definition={definition}>
+        <AppCanvas definition={definition} page={page} />
+      </ThemedApp>
     </>
   )
 }

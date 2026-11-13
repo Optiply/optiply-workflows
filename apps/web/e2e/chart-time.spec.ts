@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { signIn, trpcMutate, trpcQuery } from './helpers'
+import { openEditorPanel, signIn, trpcMutate, trpcQuery } from './helpers'
 
 /**
  * A chart's time axis (M24): a line chart of daily rows, out of order and with a gap, places them by date (its
@@ -67,10 +67,11 @@ test('charts daily rows on a time axis; a page rename follows utils.openPage', a
 
   await test.step('renaming the page rewrites utils.openPage in the script', async () => {
     await page.goto(`/apps/${slug}/edit`)
+    await openEditorPanel(page, 'Pages')
     const pages = page.getByRole('region', { name: 'Pages' })
     await pages.getByRole('button', { name: 'sales' }).click()
-    await pages.getByLabel('Page name').fill('orders')
-    await pages.getByLabel('Page name').press('Enter')
+    await page.getByTestId('inspector-app').getByLabel('Page name').fill('orders')
+    await page.getByTestId('inspector-app').getByLabel('Page name').press('Enter')
     await expect(page.getByText('Saved', { exact: true })).toBeVisible()
     await expect
       .poll(async () => {

@@ -136,7 +136,26 @@ describe('custom components in an app', () => {
     const iface = componentLibraryInterface(lib).Hello!
     expect(iface.props.name).toEqual({ type: 'string', default: 'world', label: 'Name' })
     const spec = customComponentSpec(iface)
-    expect(Object.keys(spec.props)).toEqual(['library', 'version', 'component', 'hidden', 'name'])
+    expect(Object.keys(spec.props)).toEqual([
+      'library',
+      'version',
+      'component',
+      'hidden',
+      'heightMode',
+      'name',
+    ])
+    // Height (M33): Fixed unless the component grows with its content.
+    expect(spec.props.heightMode).toMatchObject({ type: { enum: ['auto', 'fixed'] }, default: 'fixed' })
+    expect(customComponentSpec({ ...iface, autoHeight: true }).props.heightMode!.default).toBe('auto')
+    expect(
+      componentLibraryInterface({ ...lib, components: [{ ...lib.components[0]!, autoHeight: true }] }).Hello,
+    ).toMatchObject({ autoHeight: true })
+    // A library declaring its own heightMode (before M33) keeps it.
+    const own = customComponentSpec({
+      ...iface,
+      props: { ...iface.props, heightMode: { type: 'string', default: 'x', label: 'Mine' } },
+    })
+    expect(own.props.heightMode).toMatchObject({ label: 'Mine' })
     expect(Object.keys(spec.state)).toEqual(['clicks'])
     expect(Object.keys(spec.methods)).toEqual(['setHidden', 'highlight'])
     expect(spec.events).toEqual(['click'])

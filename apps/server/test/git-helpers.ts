@@ -20,11 +20,16 @@ export function bareRepo(path: string): string {
 }
 
 /** A hook on the remote that refuses every push to `branch`, like GitHub's branch protection. */
-export async function protectBranch(repoPath: string, branch: string): Promise<void> {
+export async function protectBranch(
+  repoPath: string,
+  branch: string,
+  /** What the hook says, as a host would (M31: GitLab's or GitHub's wording). */
+  message = 'protected branch hook declined',
+): Promise<void> {
   const hook = join(repoPath, 'hooks', 'pre-receive')
   await writeFile(
     hook,
-    `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = "refs/heads/${branch}" ]; then echo "protected branch hook declined" >&2; exit 1; fi\ndone\n`,
+    `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = "refs/heads/${branch}" ]; then echo "${message}" >&2; exit 1; fi\ndone\n`,
     { mode: 0o755 },
   )
 }
@@ -38,6 +43,8 @@ export async function gitHttpServer(
   token: string,
   /** Where to listen; 0.0.0.0 to serve containers too (a Compose check). */
   host = '127.0.0.1',
+  /** The username it takes with the token: GitHub's, or GitLab's `oauth2` (M31). */
+  username = 'x-access-token',
 ): Promise<{
   url: string
   port: number
@@ -48,7 +55,7 @@ export async function gitHttpServer(
     execFileSync('git', ['--exec-path'], { env: cleanEnv }).toString().trim(),
     'git-http-backend',
   )
-  const expected = `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+  const expected = `Basic ${Buffer.from(`${username}:${token}`).toString('base64')}`
   const requests = { authorized: 0, refused: 0 }
   const server: Server = createServer((req, res) => {
     if (req.headers.authorization !== expected) {

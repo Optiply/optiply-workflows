@@ -25,7 +25,7 @@ import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './help
 
 const available = executorAvailable() && !process.env.PYTHON_EXECUTOR_TEST_URL
 
-describe.skipIf(!available)("a workflow's Python packages on the server", () => {
+describe.skipIf(!available)("a workflow's Python packages on the server", { timeout: 120_000 }, () => {
   let index: TestIndex
   let builder: TestBuilder
   let executor: TestExecutor
@@ -86,10 +86,12 @@ describe.skipIf(!available)("a workflow's Python packages on the server", () => 
     expect(started.status).toBe(202)
     return waitForRun(started.body.run.id)
   }
+  // A minute: the block's timeout counts its wait for the packages, slow while the whole suite runs.
   const python = (name: string, code: string) => ({
     name,
     type: 'code',
     config: { code, language: 'python' },
+    settings: { timeoutMs: 60_000 },
   })
   const reply = { name: 'reply', type: 'response', config: { body: '{{ use.data }}' } }
   const envRow = async (requirements: string[]) =>

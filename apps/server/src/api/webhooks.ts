@@ -6,6 +6,12 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import type { Metrics } from '../metrics'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import type { RunEventHub } from '../services/run-events'
+import {
+  confirmSnsSubscription,
+  type SnsEnvelope,
+  snsRunData,
+  verifySnsDelivery,
+} from '../services/sns-webhook'
 import { recordRejection, requireUnderLimit, WebhookRejection } from '../services/webhook-limits'
 import { readSigningSecrets, verifyWebhookSignature } from '../services/webhook-signatures'
 import {
@@ -153,7 +159,24 @@ export const webhooksApi: FastifyPluginAsync<{
         `This API key can't start workflow "${workflow.slug}" in ${environment.name}`,
       )
     }
-    if (webhook.auth.type === 'signature') {
+    let sns: SnsEnvelope | undefined
+    if (webhook.auth.type === 'signature' && webhook.auth.preset === 'sns') {
+      // M30: AWS's certificate signs it; the webhook lists the topics whose messages count.
+      const check = await verifySnsDelivery(raw?.bytes ?? Buffer.alloc(0), webhook.auth.topicArns ?? [])
+      if (!check.ok) {
+        req.log.info(
+          { workflow: workflow.slug, reason: check.reason },
+          `webhook signature refused: ${check.message}`,
+        )
+        throw new WebhookRejection(
+          401,
+          'unauthorized',
+          "The request's signature couldn't be verified",
+          check.reason,
+        )
+      }
+      sns = check.envelope
+    } else if (webhook.auth.type === 'signature') {
       const auth = webhook.auth
       const secrets = await readSigningSecrets(db, keyring, auth.secret, environment.id)
       const check = secrets
@@ -184,7 +207,23 @@ export const webhooksApi: FastifyPluginAsync<{
     if (webhook.auth.type !== 'public') await limit()
 
     await requireConfiguredResources(db, release, environment)
-    const data = raw ? await raw.parse() : null
+    // SNS posts its JSON as text/plain: its run gets the message itself (parsed when it's JSON) and its details.
+    const data = sns ? snsRunData(sns) : raw ? await raw.parse() : null
+
+    // SNS asks a new subscription to confirm (and tells of an unsubscribe): answered without a run.
+    if (sns && sns.Type === 'SubscriptionConfirmation') {
+      await confirmSnsSubscription(sns).catch((err: unknown) => {
+        throw new WebhookRejection(
+          503,
+          'confirmation_failed',
+          `The SNS subscription couldn't be confirmed: ${(err as Error).message}`,
+          'confirmation_failed',
+        )
+      })
+      req.log.info({ workflow: workflow.slug, topic: sns.TopicArn }, 'sns subscription confirmed')
+      return reply.code(200).send({ confirmed: true, topicArn: sns.TopicArn })
+    }
+    if (sns && sns.Type !== 'Notification') return reply.code(200).send({ ignored: sns.Type })
 
     // Slack checks a new Events API URL with a challenge, signed like any event: answer it without a run.
     if (webhook.auth.type === 'signature' && webhook.auth.preset === 'slack' && isSlackChallenge(data)) {

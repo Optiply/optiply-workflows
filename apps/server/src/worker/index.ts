@@ -8,11 +8,15 @@ import type { Config } from '../config'
 import { Metrics } from '../metrics'
 import { configureAwsServer } from '../services/aws'
 import { deleteUnusedBundles } from '../services/component-libraries'
+import { configureConnectors } from '../services/connectors'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { deleteUnusedJsBundles } from '../services/js-bundles'
+import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
+import { useRe2ForPatterns } from '../services/regexp'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
@@ -40,6 +44,9 @@ export async function startWorker(deps: {
   if (pythonWarning) log.warn(pythonWarning)
   configureGoogle(config)
   configureAwsServer(config)
+  configureConnectors(config)
+  useRe2ForPatterns()
+  configureJsBundles(config)
   const dispatcher = new Dispatcher({
     db,
     listener: sql,
@@ -50,6 +57,7 @@ export async function startWorker(deps: {
     concurrency: config.WORKER_CONCURRENCY,
     python: configurePython(config) ?? undefined,
     pythonEnvs: pythonEnvProvider(db, config),
+    jsModules: dbJsModules(db),
     library: engineLibrary(db),
     log: log.child({ component: 'dispatcher' }),
     observer: metrics.observer,
@@ -65,7 +73,10 @@ export async function startWorker(deps: {
     db,
     days: config.RUN_RETENTION_DAYS,
     log: log.child({ component: 'retention' }),
-    also: async () => ({ componentBundles: await deleteUnusedBundles(db) }),
+    also: async () => ({
+      componentBundles: await deleteUnusedBundles(db),
+      jsBundles: await deleteUnusedJsBundles(db),
+    }),
   })
   retention.start()
   const git = new GitDeployer({

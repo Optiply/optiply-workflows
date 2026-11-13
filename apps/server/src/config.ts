@@ -74,6 +74,8 @@ const ConfigSchema = z
     GIT_RETRY_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     /** The GitHub REST API to open pull requests with; by default worked out from the repo URL (tests set it). */
     GITHUB_API_URL: z.string().url().optional(),
+    /** GitLab's API, for tests (M31); by default `<origin>/api/v4`, or the settings' API URL. */
+    GITLAB_API_URL: z.string().url().optional(),
     /**
      * The code executor that runs Python code blocks (M12, apps/code-executor), e.g. `http://code-executor:8080`.
      * Without it, workflows with Python can't run or be published.
@@ -93,8 +95,15 @@ const ConfigSchema = z
      * scripts and without the server's own npm settings.
      */
     NPM_REGISTRY_URL: z.string().url().default('https://registry.npmjs.org/'),
+    /** Admin-defined npm registries (M33) over http, for a local mirror or tests. */
+    NPM_ALLOW_INSECURE_REGISTRIES: bool,
     /** Where component library builds and npm's download cache go; default a directory under the system's tmp. */
     COMPONENT_BUILD_DIR: z.string().min(1).optional(),
+    /**
+     * The largest bundle of a workflow's or app's JavaScript packages, in MB: the sandboxes load all of it before
+     * the code runs (apps in every viewer's browser).
+     */
+    JS_BUNDLE_MAX_MB: z.coerce.number().int().min(1).max(50).default(5),
     /**
      * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
      * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
@@ -114,6 +123,40 @@ const ConfigSchema = z
     /** STS's and SQS's endpoints: for tests against the fake AWS. */
     AWS_STS_URL: z.string().url().optional(),
     AWS_SQS_URL: z.string().url().optional(),
+    /** M30's SNS and Kinesis endpoints, the same way (tests). */
+    AWS_SNS_URL: z.string().url().optional(),
+    AWS_KINESIS_URL: z.string().url().optional(),
+    /**
+     * Hosts (host:port) whose SNS signing certificates are trusted besides sns.<region>.amazonaws.com, over http too:
+     * tests only, never production.
+     */
+    SNS_CERT_HOSTS: z.string().default(''),
+    /**
+     * Private hosts the built-in REST API resource (M27) may reach all the same, comma-separated (`*.internal.example`
+     * patterns allowed); every other private address stays refused.
+     */
+    /** The services' API endpoints (M27): for tests against `startFakeServices`. Never a resource setting. */
+    SLACK_API_URL: z.string().url().optional(),
+    HUBSPOT_API_URL: z.string().url().optional(),
+    SENDGRID_API_URL: z.string().url().optional(),
+    SENDGRID_EU_API_URL: z.string().url().optional(),
+    GOOGLE_SHEETS_API_URL: z.string().url().optional(),
+    GOOGLE_DRIVE_API_URL: z.string().url().optional(),
+    /** M29's services, the same way: tests only. */
+    STRIPE_API_URL: z.string().url().optional(),
+    AIRTABLE_API_URL: z.string().url().optional(),
+    NOTION_API_URL: z.string().url().optional(),
+    /** Replaces every Salesforce resource's My Domain URL (tests only). */
+    SALESFORCE_URL: z.string().url().optional(),
+    REST_API_PRIVATE_HOSTS: z
+      .string()
+      .default('')
+      .transform((v) =>
+        v
+          .split(',')
+          .map((h) => h.trim())
+          .filter(Boolean),
+      ),
   })
   .transform(({ ENCRYPTION_KEYS, ENCRYPTION_KEY_CURRENT, ...c }, ctx) => {
     let keyring: Keyring

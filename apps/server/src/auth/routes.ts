@@ -5,7 +5,7 @@ import * as oidc from 'openid-client'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
 import type { Config } from '../config'
-import { provisionUser } from '../services/users'
+import { notifyAdminsOfRequest, provisionUser, SignInRefused, signInDecision } from '../services/users'
 import { verifyPassword } from './password'
 import { createSession, deleteSession, SESSION_COOKIE } from './sessions'
 
@@ -105,17 +105,50 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
     const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : undefined
     const domain = config.OIDC_ALLOWED_DOMAIN.toLowerCase()
     if (!claims || !email || claims.email_verified !== true) return fail('Your email address is not verified')
-    if (!email.endsWith(`@${domain}`) || (claims.hd !== undefined && claims.hd !== domain)) {
-      return fail(`Only @${domain} accounts can sign in`)
+    // A first sign-in waits for an admin's approval (session 44: everyone new, the domain's people too). Who may get
+    // in at all (the domain, or invited) is decided inside provisioning's lock, on the row it uses.
+    let user: Awaited<ReturnType<typeof provisionUser>>
+    try {
+      user = await provisionUser(
+        db,
+        {
+          email,
+          name: typeof claims.name === 'string' ? claims.name : email,
+          avatarUrl: typeof claims.picture === 'string' ? claims.picture : null,
+          oidcSubject: claims.sub,
+        },
+        {
+          status: 'pending',
+          admit: (existing) =>
+            signInDecision({
+              email,
+              domain,
+              hd: typeof claims.hd === 'string' ? claims.hd : undefined,
+              sub: claims.sub,
+              existing,
+            }),
+        },
+      )
+    } catch (err) {
+      if (err instanceof SignInRefused) return fail(err.message)
+      throw err
     }
-
-    const user = await provisionUser(db, {
-      email,
-      name: typeof claims.name === 'string' ? claims.name : email,
-      avatarUrl: typeof claims.picture === 'string' ? claims.picture : null,
-      oidcSubject: claims.sub,
-    })
     if (user.disabled) return fail('Your account has been disabled')
+    if (user.status === 'pending') {
+      if (user.created) {
+        await recordAudit(db, {
+          actorUserId: user.id,
+          action: 'user.requested',
+          objectType: 'user',
+          objectId: user.id,
+          metadata: { email },
+          ...meta(req),
+        })
+        notifyAdminsOfRequest(req.log, { email })
+      }
+      return reply.redirect('/login?pending=1')
+    }
+    if (user.status !== 'active') return fail('Your request to use Optiply Workflows was not approved')
     await startSession(req, reply, user.id, 'oidc')
     return reply.redirect('/')
   })
@@ -131,7 +164,10 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
       .where(eq(users.email, body.data.email.toLowerCase()))
       .limit(1)
     const ok =
-      user?.passwordHash && !user.disabledAt && (await verifyPassword(body.data.password, user.passwordHash))
+      user?.passwordHash &&
+      !user.disabledAt &&
+      user.status === 'active' &&
+      (await verifyPassword(body.data.password, user.passwordHash))
     if (!user || !ok) {
       await recordAudit(db, {
         actorUserId: null,

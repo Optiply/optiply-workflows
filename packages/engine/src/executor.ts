@@ -6,9 +6,15 @@ import {
   workflowDraftSnapshots,
   workflowReleases,
   workflowRuns,
+  workflows,
 } from '@ow/db'
-import { DEFAULT_RUN_TIMEOUT_MS, pythonFields, type WorkflowDefinition } from '@ow/definition'
-import { type CodeRuntime, IvmRuntime, type PythonRunner } from '@ow/sandbox'
+import {
+  DEFAULT_RUN_TIMEOUT_MS,
+  importsJsPackages,
+  pythonFields,
+  type WorkflowDefinition,
+} from '@ow/definition'
+import { type CodeRuntime, IvmRuntime, type PythonRunner, type SandboxModules } from '@ow/sandbox'
 import { eq } from 'drizzle-orm'
 import { PgChildRuns } from './children'
 import { BlockFailure, LeaseLostError, RunCancelledError } from './errors'
@@ -41,6 +47,15 @@ export interface PythonEnvProvider {
   envFor(run: WorkflowRun, definition: WorkflowDefinition): Promise<string>
 }
 
+/** Where a run's JavaScript packages come from: the server bundles them (docs/architecture.md, JS packages). */
+export interface JsModulesProvider {
+  /**
+   * The bundle for this run's packages: a release's, or the draft's package list's. Throws a `BlockFailure`
+   * (`js_packages`, npm's log in its details) when they can't be installed.
+   */
+  modulesFor(run: WorkflowRun, definition: WorkflowDefinition): Promise<SandboxModules>
+}
+
 export interface DispatcherLogger {
   info(obj: object, msg?: string): void
   warn(obj: object, msg?: string): void
@@ -65,6 +80,11 @@ export interface RunExecutorOptions {
    * (`python_packages_unavailable`).
    */
   pythonEnvs?: PythonEnvProvider
+  /**
+   * JavaScript packages: the bundle for a run whose definition declares some. Without it, code importing them fails
+   * (`js_packages_unavailable`).
+   */
+  jsModules?: JsModulesProvider
   /** Library queries for Library query blocks and runners (M21). Without it they fail (`library`). */
   library?: LibraryQueries
   /** Default 30s; renewed every third of it. */
@@ -160,6 +180,10 @@ export class RunExecutor {
     }
     const definition = await loadDefinition(db, run)
     const [env] = await db.select().from(environments).where(eq(environments.id, run.environmentId))
+    const [workflow] = await db
+      .select({ name: workflows.name })
+      .from(workflows)
+      .where(eq(workflows.id, run.workflowId))
     const context = (await this.opts.context?.load(run)) ?? { configVars: {}, secrets: [] }
     const deadline = await ensureDeadline(db, claim, definition.settings?.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS)
     if (!deadline) return // Lost the lease already.
@@ -183,8 +207,11 @@ export class RunExecutor {
           workflowContext: {
             runId: run.id,
             workflowId: run.workflowId,
+            // name and currentRun as Retool's workflowContext has them (M36), so imported code reads them as it is.
+            name: workflow?.name,
             environment: env?.slug,
             triggerType: run.triggerType,
+            currentRun: { id: run.id, startedAtEpochMs: (run.startedAt ?? run.createdAt).getTime() },
           },
           idempotencyKey: run.idempotencyKey ?? run.id,
         },
@@ -197,6 +224,7 @@ export class RunExecutor {
           tasks: this.tasks,
           python: this.opts.python,
           pythonEnv: this.pythonEnvFor(run, definition),
+          jsModules: this.jsModulesFor(run, definition),
           library: this.opts.library,
         },
         store,
@@ -255,6 +283,31 @@ export class RunExecutor {
     const env = shared(() => provider.envFor(run, definition))
     env.prefetch() // the Python block that waits for it reports a failure
     return env
+  }
+
+  /**
+   * The run's JavaScript packages; undefined when its definition declares none. Asked for as the run starts, so a
+   * first install overlaps the blocks before the code that imports them; it waits for it.
+   */
+  private jsModulesFor(
+    run: WorkflowRun,
+    definition: WorkflowDefinition,
+  ): (() => Promise<SandboxModules>) | undefined {
+    // Only code that imports them needs them (a list nothing imports yet costs nothing).
+    if (!definition.settings?.javascript?.packages.length || !importsJsPackages(definition)) return undefined
+    const provider = this.opts.jsModules
+    if (!provider) {
+      return () =>
+        Promise.reject(
+          new BlockFailure(
+            'js_packages_unavailable',
+            "This workflow's JavaScript packages can't be installed on this instance",
+          ),
+        )
+    }
+    const modules = shared(() => provider.modulesFor(run, definition))
+    modules.prefetch() // the code that waits for it reports a failure
+    return modules
   }
 
   private observe(

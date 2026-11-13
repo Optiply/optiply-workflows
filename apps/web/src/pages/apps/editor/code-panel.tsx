@@ -11,7 +11,9 @@ import {
   updateQuery,
   updateTransformer,
   updateVariable,
+  type WorkflowAppQuery,
 } from '@ow/app-definition'
+import { isServiceType } from '@ow/connectors/actions'
 import { useQuery } from '@tanstack/react-query'
 import {
   Braces,
@@ -22,10 +24,15 @@ import {
   Play,
   Trash2,
   Variable as VariableIcon,
+  Workflow,
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
+import { ActionQueryForm } from '@/components/action-query'
+import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
-import { isSqlType } from '@/lib/resource-types'
+import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useOpenApiOperations } from '@/lib/openapi-operations'
+import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/react'
@@ -33,50 +40,11 @@ import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValueP
 import { HandlersEditor } from './handlers'
 import { PageSelect } from './inspector'
 import { AddLibraryQueryDialog, LibraryQueryBody, LibraryQueryHeader } from './library'
-import { type PanelTab, useAppEditor } from './store'
+import { useAppEditor } from './store'
+import { AddWorkflowQueryDialog, WorkflowQueryBody, WorkflowQueryHeader } from './workflow-query'
 
-/** The bottom panel: queries, transformers and variables; the app's state; problems; the console. */
-export function CodePanel() {
-  const tab = useAppEditor((s) => s.panelTab)
-  const setTab = useAppEditor((s) => s.setPanelTab)
-  const problems = useAppEditor((s) => s.diagnostics.filter((d) => d.severity === 'error').length)
-  const logs = useAppHostState((s) => s.logs.length)
-  const tabs: { id: PanelTab; label: string }[] = [
-    { id: 'code', label: 'Code' },
-    { id: 'state', label: 'State' },
-    { id: 'problems', label: problems ? `Problems (${problems})` : 'Problems' },
-    { id: 'console', label: logs ? `Console (${logs})` : 'Console' },
-  ]
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-surface">
-      <div role="tablist" className="flex gap-1 border-b border-border px-2">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              '-mb-px border-b-2 px-3 py-2 text-xs font-medium',
-              tab === t.id ? 'border-accent text-ink' : 'border-transparent text-muted hover:text-ink',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1">
-        {tab === 'code' && <CodeTab />}
-        {tab === 'state' && <StateTab />}
-        {tab === 'problems' && <ProblemsTab />}
-        {tab === 'console' && <ConsoleTab />}
-      </div>
-    </div>
-  )
-}
-
-function CodeTab() {
+/** The Code panel (left): the queries, transformers and variables; one opens in the dock beside it. */
+export function CodeList() {
   const definition = useAppEditor((s) => s.definition)
   const readOnly = useAppEditor((s) => s.readOnly)
   const open = useAppEditor((s) => s.openCode)
@@ -90,112 +58,128 @@ function CodeTab() {
   // New queries and transformers go on the page being edited.
   const page = useAppEditor((s) => (s.definition.pages?.length ? s.url.page : null))
   const [picking, setPicking] = useState(false)
-  const query = definition.queries.find((q) => q.name === open)
-  const transformer = definition.transformers?.find((t) => t.name === open)
-  const variable = definition.variables?.find((v) => v.name === open)
+  const [pickingWorkflow, setPickingWorkflow] = useState(false)
 
   return (
-    <div className="flex h-full min-h-0">
-      <nav className="flex w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2 text-sm">
-        <ListSection
-          title="Queries"
-          actions={
-            // A protected app on main (M22): nothing added.
-            !readOnly && (
-              <>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a resource query"
-                  onClick={() => add((d) => addQuery(d, 'resource', { page }))}
-                >
-                  <Database className="size-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a JS query"
-                  onClick={() => add((d) => addQuery(d, 'js', { page }))}
-                >
-                  <Code2 className="size-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  title="Add a query from the library"
-                  onClick={() => setPicking(true)}
-                >
-                  <Library className="size-3.5" />
-                </Button>
-                {picking && (
-                  <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />
-                )}
-              </>
-            )
-          }
-        >
-          {definition.queries.map((q) => (
-            <ListItem
-              key={q.name}
-              name={q.name}
-              open={open === q.name}
-              onOpen={() => openItem(q.name)}
-              page={q.page}
-              query
-            />
-          ))}
-        </ListSection>
-        <ListSection
-          title="Transformers"
-          actions={
-            !readOnly && (
+    <nav aria-label="Code" className="flex flex-col gap-3 text-sm">
+      <ListSection
+        title="Queries"
+        actions={
+          // A protected app on main (M22): nothing added.
+          !readOnly && (
+            <>
               <Button
                 size="icon"
                 variant="ghost"
-                title="Add a transformer"
-                onClick={() => add((d) => addTransformer(d, { page }))}
+                title="Add a resource query"
+                onClick={() => add((d) => addQuery(d, 'resource', { page }))}
               >
-                <Braces className="size-3.5" />
+                <Database className="size-3.5" />
               </Button>
-            )
-          }
-        >
-          {definition.transformers?.map((t) => (
-            <ListItem
-              key={t.name}
-              name={t.name}
-              open={open === t.name}
-              onOpen={() => openItem(t.name)}
-              page={t.page}
-            />
-          ))}
-        </ListSection>
-        <ListSection
-          title="Variables"
-          actions={
-            !readOnly && (
-              <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
-                <VariableIcon className="size-3.5" />
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a JS query"
+                onClick={() => add((d) => addQuery(d, 'js', { page }))}
+              >
+                <Code2 className="size-3.5" />
               </Button>
-            )
-          }
-        >
-          {definition.variables?.map((v) => (
-            <ListItem key={v.name} name={v.name} open={open === v.name} onOpen={() => openItem(v.name)} />
-          ))}
-        </ListSection>
-      </nav>
-      <div className="min-w-0 flex-1 overflow-y-auto p-3">
-        {query && <QueryEditor query={query} />}
-        {transformer && <TransformerEditor name={transformer.name} />}
-        {variable && <VariableEditor name={variable.name} />}
-        {!query && !transformer && !variable && (
-          <p className="text-sm text-muted">
-            Add a query to read or change data, a transformer to reshape it, or a variable to hold state.
-          </p>
-        )}
-      </div>
-    </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a query from the library"
+                onClick={() => setPicking(true)}
+              >
+                <Library className="size-3.5" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Add a workflow query"
+                onClick={() => setPickingWorkflow(true)}
+              >
+                <Workflow className="size-3.5" />
+              </Button>
+              {picking && <AddLibraryQueryDialog page={page} onAdd={add} onClose={() => setPicking(false)} />}
+              {pickingWorkflow && (
+                <AddWorkflowQueryDialog page={page} onAdd={add} onClose={() => setPickingWorkflow(false)} />
+              )}
+            </>
+          )
+        }
+      >
+        {definition.queries.map((q) => (
+          <ListItem
+            key={q.name}
+            name={q.name}
+            open={open === q.name}
+            onOpen={() => openItem(q.name)}
+            page={q.page}
+            query
+          />
+        ))}
+      </ListSection>
+      <ListSection
+        title="Transformers"
+        actions={
+          !readOnly && (
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Add a transformer"
+              onClick={() => add((d) => addTransformer(d, { page }))}
+            >
+              <Braces className="size-3.5" />
+            </Button>
+          )
+        }
+      >
+        {definition.transformers?.map((t) => (
+          <ListItem
+            key={t.name}
+            name={t.name}
+            open={open === t.name}
+            onOpen={() => openItem(t.name)}
+            page={t.page}
+          />
+        ))}
+      </ListSection>
+      <ListSection
+        title="Variables"
+        actions={
+          !readOnly && (
+            <Button size="icon" variant="ghost" title="Add a variable" onClick={() => add(addVariable)}>
+              <VariableIcon className="size-3.5" />
+            </Button>
+          )
+        }
+      >
+        {definition.variables?.map((v) => (
+          <ListItem key={v.name} name={v.name} open={open === v.name} onOpen={() => openItem(v.name)} />
+        ))}
+      </ListSection>
+      {!definition.queries.length && !definition.transformers?.length && !definition.variables?.length && (
+        <p className="px-1 text-xs text-muted">
+          Add a query to read or change data, a transformer to reshape it, or a variable to hold state.
+        </p>
+      )}
+    </nav>
+  )
+}
+
+/** The open query, transformer or variable (the dock beside the left panel). */
+export function OpenCode() {
+  const definition = useAppEditor((s) => s.definition)
+  const open = useAppEditor((s) => s.openCode)
+  const query = definition.queries.find((q) => q.name === open)
+  const transformer = definition.transformers?.find((t) => t.name === open)
+  const variable = definition.variables?.find((v) => v.name === open)
+  return (
+    <>
+      {query && <QueryEditor query={query} />}
+      {transformer && <TransformerEditor name={transformer.name} />}
+      {variable && <VariableEditor name={variable.name} />}
+    </>
   )
 }
 
@@ -285,9 +269,17 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const edit = (change: (q: AppQuery) => AppQuery) => update((def) => updateQuery(def, query.name, change))
   const editLibrary = (change: (q: LibraryAppQuery) => LibraryAppQuery) =>
     edit((q) => (q.kind === 'library' ? change(q) : q))
+  const editWorkflow = (change: (q: WorkflowAppQuery) => WorkflowAppQuery) =>
+    edit((q) => (q.kind === 'workflow' ? change(q) : q))
   const resource =
     query.kind === 'resource' ? resources.data?.resources.find((r) => r.slug === query.resource) : undefined
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
+  // M27: a service's action form, or GraphQL's query and variables; other HTTP queries are edited as JSON.
+  const kind = resource ? queryKind(resource.type) : null
+  const graphqlSchema = useGraphqlSchema(kind === 'graphql' ? resource : undefined)
+  const openapi = useOpenApiOperations(kind === 'openapi' ? resource : undefined)
+  const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
+    edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
   /** Sets or (empty) removes an optional field. */
   const optional = <K extends 'confirm' | 'disabled' | 'transform'>(key: K, value: string) =>
     edit((q) => {
@@ -309,7 +301,23 @@ function QueryEditor({ query }: { query: AppQuery }) {
               disabled={readOnly}
               className="w-56"
               value={query.resource}
-              onChange={(e) => edit((q) => ({ ...q, resource: e.target.value }))}
+              onChange={(e) => {
+                const next = resources.data?.resources.find((r) => r.slug === e.target.value)
+                // Another kind of resource starts a fresh query (as the workflow inspector does).
+                edit((q) =>
+                  q.kind !== 'resource'
+                    ? q
+                    : {
+                        ...q,
+                        resource: e.target.value,
+                        // Kept only when both are known and alike; the old resource gone, its shape is unknown.
+                        query:
+                          next && resource && queryShape(next.type) === queryShape(resource.type)
+                            ? q.query
+                            : (defaultQuery(next?.type) as Record<string, JsonValue>),
+                      },
+                )
+              }}
             >
               {!resources.data?.resources.some((r) => r.slug === query.resource) && (
                 <option value={query.resource}>{query.resource}</option>
@@ -334,6 +342,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
           </>
         ) : query.kind === 'library' ? (
           <LibraryQueryHeader query={query} edit={editLibrary} />
+        ) : query.kind === 'workflow' ? (
+          <WorkflowQueryHeader query={query} edit={editWorkflow} />
         ) : (
           <span className="self-center text-xs text-muted">JavaScript, run in the browser</span>
         )}
@@ -368,8 +378,76 @@ function QueryEditor({ query }: { query: AppQuery }) {
               edit((q) => (q.kind === 'resource' ? { ...q, query: { ...q.query, sql: text } } : q))
             }
           />
+        ) : kind === 'service' && resource && isServiceType(resource.type) ? (
+          <ActionQueryForm
+            type={resource.type}
+            query={query.query}
+            disabled={readOnly}
+            onChange={(patch, replace) =>
+              editResourceQuery((q) =>
+                replace
+                  ? (patch as Record<string, JsonValue>)
+                  : { ...q, ...(patch as Record<string, JsonValue>) },
+              )
+            }
+            code={({ field, value, onChange, language, height }) => (
+              <AppCodeField
+                path={[...base, 'query', field.key]}
+                language={language}
+                height={height}
+                value={value}
+                problems={problemsAt(diagnostics, [...base, 'query', field.key])}
+                onChange={onChange}
+              />
+            )}
+          />
+        ) : kind === 'openapi' ? (
+          <OpenApiQueryForm
+            query={query.query}
+            operations={openapi.operations}
+            message={openapi.message}
+            disabled={readOnly}
+            onChange={(patch) =>
+              editResourceQuery((q) => ({ ...q, ...(patch as Record<string, JsonValue>) }))
+            }
+            code={({ field, value, onChange, height }) => (
+              <AppCodeField
+                path={[...base, 'query', field]}
+                language="plaintext"
+                height={height}
+                value={value}
+                problems={problemsAt(diagnostics, [...base, 'query', field])}
+                onChange={onChange}
+              />
+            )}
+          />
+        ) : kind === 'graphql' ? (
+          <>
+            <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
+              <AppCodeField
+                path={[...base, 'query', 'query']}
+                language="graphql"
+                height={160}
+                graphqlSchema={graphqlSchema}
+                value={String(query.query.query ?? '')}
+                problems={problemsAt(diagnostics, [...base, 'query', 'query'])}
+                onChange={(text) => editResourceQuery((q) => ({ ...q, query: text }))}
+              />
+            </EditorField>
+            <EditorField label="Variables" hint='JSON with {{ }}, e.g. {"id": {{ table1.selectedRow.id }}}'>
+              <AppCodeField
+                path={[...base, 'query', 'variables']}
+                language="plaintext"
+                height={80}
+                value={String(query.query.variables ?? '')}
+                problems={problemsAt(diagnostics, [...base, 'query', 'variables'])}
+                onChange={(text) => editResourceQuery((q) => ({ ...q, variables: text }))}
+              />
+            </EditorField>
+          </>
         ) : (
           <JsonQueryField
+            builtIn={kind === 'restapi'}
             query={query}
             path={[...base, 'query']}
             onChange={(next) => edit((q) => (q.kind === 'resource' ? { ...q, query: next } : q))}
@@ -384,6 +462,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
           problems={problemsAt(diagnostics, [...base, 'code'])}
           onChange={(code) => edit((q) => (q.kind === 'js' ? { ...q, code } : q))}
         />
+      ) : query.kind === 'workflow' ? (
+        <WorkflowQueryBody query={query} base={base} edit={editWorkflow} />
       ) : (
         <LibraryQueryBody query={query} base={base} edit={editLibrary} />
       )}
@@ -443,6 +523,26 @@ function QueryEditor({ query }: { query: AppQuery }) {
               removeEmpty
             />
           </EditorField>
+          <EditorField
+            label="Additional scope"
+            hint="Names the code triggering it passes in: trigger({ additionalScope: { row } }), comma-separated"
+          >
+            <Input
+              // Kept as typed; the names are saved when the field is left.
+              key={`${query.name}:${(query.scope ?? []).join(',')}`}
+              disabled={readOnly}
+              className="h-8"
+              defaultValue={(query.scope ?? []).join(', ')}
+              placeholder="row, newValues"
+              onBlur={(e) =>
+                edit((q) => {
+                  const { scope: _, ...rest } = q
+                  const names = [...new Set(e.target.value.split(/[\s,]+/).filter(Boolean))].slice(0, 50)
+                  return (names.length ? { ...rest, scope: names } : rest) as AppQuery
+                })
+              }
+            />
+          </EditorField>
           <EditorField label="Timeout (ms)">
             <Input
               type="number"
@@ -478,12 +578,17 @@ function QueryEditor({ query }: { query: AppQuery }) {
   )
 }
 
-/** A non-SQL connector's query (REST) as JSON; strings in it are templates. */
+/** What a resource's queries look like: its kind, or for a service (M27) its type, whose actions are its own. */
+const queryShape = (type: string) => (queryKind(type) === 'service' ? type : queryKind(type))
+
+/** A non-SQL connector's query (REST, the built-in REST API) as JSON; strings in it are templates. */
 function JsonQueryField({
   query,
   path,
   onChange,
+  builtIn = false,
 }: {
+  builtIn?: boolean
   query: Extract<AppQuery, { kind: 'resource' }>
   path: (string | number)[]
   onChange: (next: Record<string, JsonValue>) => void
@@ -494,7 +599,11 @@ function JsonQueryField({
   return (
     <EditorField
       label="Request"
-      hint='The connector’s query as JSON, e.g. {"method": "GET", "path": "/orders/{{ id.value }}"}'
+      hint={
+        builtIn
+          ? 'The request as JSON, e.g. {"method": "GET", "url": "https://api.example.com/orders/{{ id.value }}", "auth": {"type": "bearer", "token": "…"}}. Type the host out: values fill only its path and parameters.'
+          : 'The connector’s query as JSON, e.g. {"method": "GET", "path": "/orders/{{ id.value }}"}'
+      }
     >
       <AppCodeField
         path={path}
@@ -695,7 +804,7 @@ function InitialValueField({
 }
 
 /** Every value of the app, by component, query, transformer and variable. */
-function StateTab() {
+export function StatePanel() {
   const values = useAppHostState((s) => s.values)
   const errors = useAppHostState((s) => s.errors)
   const [filter, setFilter] = useState('')
@@ -707,11 +816,11 @@ function StateTab() {
     byEntity.set(entity, { ...byEntity.get(entity), [key.slice(dot + 1)]: value })
   }
   return (
-    <div className="flex h-full flex-col gap-2 overflow-y-auto p-3">
+    <div className="flex flex-col gap-2">
       <Input
         aria-label="Filter state"
         placeholder="Filter by name"
-        className="h-8 w-64"
+        className="h-8 w-full"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
@@ -730,14 +839,14 @@ function StateTab() {
   )
 }
 
-function ProblemsTab() {
+export function ProblemsList() {
   const diagnostics = useAppEditor((s) => s.diagnostics)
   const definition = useAppEditor((s) => s.definition)
   const select = useAppEditor((s) => s.select)
   const openItem = useAppEditor((s) => s.openCodeItem)
   if (!diagnostics.length) return <p className="p-3 text-sm text-muted">No problems.</p>
   return (
-    <ul className="h-full overflow-y-auto p-2 text-xs">
+    <ul className="p-2 text-xs">
       {diagnostics.map((d) => (
         <li key={`${d.path.join('.')}:${d.code}:${d.start ?? ''}:${d.message}`}>
           <button
@@ -764,12 +873,12 @@ function ProblemsTab() {
   )
 }
 
-function ConsoleTab() {
+export function ConsoleList() {
   const logs = useAppHostState((s) => s.logs)
   if (!logs.length)
     return <p className="p-3 text-sm text-muted">Nothing logged yet. console.log in scripts shows here.</p>
   return (
-    <ol className="h-full overflow-y-auto p-2 font-mono text-xs">
+    <ol className="p-2 font-mono text-xs">
       {logs.map((l) => (
         <li
           key={l.id}

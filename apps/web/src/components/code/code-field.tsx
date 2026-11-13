@@ -1,6 +1,8 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
+import type { IntrospectionQuery } from 'graphql'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from '@/lib/theme'
+import { attachGraphqlSchema } from './graphql'
 import { monaco, optiplyTheme, setScope } from './monaco'
 import { showCursors } from './remote-cursors'
 import { bindText, type TextBinding } from './text-binding'
@@ -15,7 +17,17 @@ export interface FieldProblem {
 export interface CodeFieldProps {
   /** Unique per block and field, so each keeps its own model and undo history. */
   path: string
-  language: 'javascript' | 'typescript' | 'css' | 'python' | 'sql' | 'json' | 'plaintext'
+  language:
+    | 'javascript'
+    | 'typescript'
+    | 'css'
+    | 'python'
+    | 'sql'
+    | 'json'
+    | 'plaintext'
+    | 'graphql'
+    | 'html'
+    | 'markdown'
   value: string
   onChange: (value: string) => void
   /** Pixel height; one-line fields use about 34. */
@@ -28,6 +40,8 @@ export interface CodeFieldProps {
    * undoes through the editor's shared undo. `onChange` isn't called while it's bound.
    */
   binding?: TextBinding | null
+  /** A GraphQL field's schema (M27, a resource's introspection): completions, hover and checks from it. */
+  graphqlSchema?: IntrospectionQuery | null
 }
 
 /** What completions know: declarations for the JavaScript service, sample values for `{{ }}` in SQL and text. */
@@ -51,6 +65,7 @@ export default function CodeField({
   readOnly,
   binding,
   scope,
+  graphqlSchema,
 }: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -93,6 +108,13 @@ export default function CodeField({
       editor.addCommand(monaco.KeyCode.Enter, () => {}, '!suggestWidgetVisible')
     }
   }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `path` switches the editor's model
+  useEffect(() => {
+    const model = editorRef.current?.getModel()
+    if (!mounted || !model || language !== 'graphql' || !graphqlSchema) return
+    return attachGraphqlSchema(model, graphqlSchema)
+  }, [mounted, language, graphqlSchema, path])
 
   // The model (one per path) follows the bound text while both last.
   const text = binding?.text

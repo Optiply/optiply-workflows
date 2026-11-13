@@ -27,7 +27,7 @@ TypeScript monorepo (pnpm + Turborepo):
 
 Requires Node ≥ 24. Docker is **not** needed for development: Postgres comes from the `embedded-postgres` npm package.
 
-`pnpm install` compiles isolated-vm from source, because it carries a patch (`patches/isolated-vm@7.0.1.patch`, the unreleased upstream fix for a timer-thread stack overflow), so a C++ toolchain is needed: the Xcode command-line tools on macOS, `python3 make g++` on Debian/Ubuntu. Drop the patch once isolated-vm releases the fix.
+isolated-vm (7.0.2, which has the upstream fix for a timer-thread stack overflow) loads a prebuilt addon for macOS and Linux (glibc or musl, x64 or arm64) on Node 24; elsewhere `pnpm install` compiles it, which needs a C++ toolchain (the Xcode command-line tools on macOS, `python3 make g++` on Debian/Ubuntu).
 
 ```bash
 corepack enable                  # provides pnpm (or prefix commands with `corepack pnpm`)
@@ -57,10 +57,13 @@ Only verified `@optiply.nl` accounts can sign in (`OIDC_ALLOWED_DOMAIN`, sent to
 
 Open **Workflows** in the app to create one. The editor has:
 
-- a canvas for blocks and connections;
-- a side panel with each block's settings, Monaco for code and SQL, and autocomplete from the latest run;
-- **Run** (it saves first and uses the start trigger's test input) and **Run block** (it reuses earlier results);
-- live status on the canvas, and a run panel with each block's data, logs and output.
+- a canvas whose blocks hold their own forms (Monaco for code and SQL, autocomplete from the latest run), with a header to rename, minimize, open in the side panel, run or use the ⋯ menu, and a footer whose Inputs, Data (a table), JSON (a tree), Logs and Settings open under the block;
+- connections drawn by dragging, removed with the × on hover, moved by dragging an end;
+- a toolbar (bottom left) with zoom, the zoom %, fit, Collapse all and Expand all, and the minimap; a block's ⋯ menu also switches a block to a loop (and back) and adds the workflow's error handler;
+- an icon rail on the left: Blocks (click or drag onto the canvas), Outline, Functions, Triggers, Code search, Releases, Settings and Problems, each opened and closed with one click;
+- **Publish** with its ▾ (compare the draft with live, the release history, roll back to the release before);
+- **Run** (it saves first and uses the start trigger's test input) and ▶ on a block, which runs it alone (reusing earlier results; only its own and its ancestors' problems stop it), or with the blocks before it from its ⋯ menu;
+- live status on the canvas, and a run history panel (drag to resize, maximize) with the runs, each block's time, and its inputs, data, JSON and logs (filtered by text and level).
 
 **Runs** lists every run you can see.
 
@@ -114,7 +117,7 @@ Triggers are set on the start trigger and take effect when you publish:
     -H 'X-Api-Key: ow_…' -H 'Content-Type: application/json' -d '{"note":"hi"}'
   ```
 
-  The call waits for the Response block (up to the webhook's timeout, 30 s by default) and answers with its status, headers and body; without a Response block it gets `200 {runId, status}`, and `500` if the run failed first. `Prefer: respond-async` (or a timeout) answers `202 {runId}` with a `Location` the same key can read. `Idempotency-Key` makes a retry return the same run. Sync webhook runs execute in the API process (`WEBHOOK_INLINE_CONCURRENCY`, default 8) when a slot is free.
+  The call waits for the Response block (up to the webhook's timeout, 30 s by default) and answers with its status, headers and body; without a Response block it gets `200 {runId, status}`, and `500` if the run failed first. `Prefer: respond-async` (or a timeout) answers `202 {runId}` with a `Location` the same key can read. `Idempotency-Key` makes a retry return the same run (keys are per workflow and environment). Sync webhook runs execute in the API process (`WEBHOOK_INLINE_CONCURRENCY`, default 8) when a slot is free.
 - **Schedules**: a cron expression on a time zone's wall clock (Europe/Amsterdam by default) or a fixed interval, in a chosen environment. Workers fire due schedules every 5 s, each fire once; after downtime a schedule catches up with one run. If the previous run is still going, the fire is skipped (default), queued, or allowed to overlap.
 
 **Settings → Runs at once** in the editor caps how many runs of a workflow execute at the same time.
@@ -126,8 +129,8 @@ A REST resource authenticates with an API key, a bearer token, basic auth or OAu
 - **OAuth 2.0 sign-in (authorization code)**, for APIs that act as a person or workspace (Google, HubSpot, Slack, Microsoft 365…). Pick a provider to fill in its URLs and suggested scopes, enter the client ID and secret of an OAuth app you registered with the provider, and register the **redirect URI** the form shows (`<PUBLIC_URL>/api/oauth/callback`, the same for every resource). Save, then **Connect account** under the settings: the provider's consent screen opens in a pop-up.
   - **One shared account** (default): someone with Edit connects it per environment, and every query uses it, including webhook and schedule runs.
   - **Each person's own account**: everyone connects their own (the playground, apps and the editor offer a **Connect your account** button when a query needs it). Workflows using such a resource can be run from the editor but not published, since live runs have no person behind them.
-  - Tokens are stored encrypted and refreshed before they expire or when the API answers 401. When the provider refuses a refresh (revoked access), queries ask for a reconnect; changing the client, URLs or scopes disconnects accounts.
-- **Custom auth flow**, for APIs with their own login. Steps run in order: a **request** (through the resource's base URL and allowed hosts), **code** (JavaScript) or a **variable**. Steps read named secret values as `{{ secrets.NAME }}` and earlier steps by name (`{{ login.data.token }}`); each variable becomes `{{ auth.NAME }}`, which the resource's headers and query parameters use (`Authorization: Bearer {{ auth.token }}`). Optional **refresh steps** run when an API answers 401 (with `auth` holding the current variables), and **sign in again after** limits how long the variables last. The variables are stored encrypted and shared by every query; **Test connection** signs in afresh.
+  - Tokens are stored encrypted and refreshed before they expire or when the API answers 401. When the provider refuses a refresh (revoked access), queries ask for a reconnect; changing the client, URLs or scopes disconnects accounts. **Disconnect** also revokes the account at the provider when a **revocation URL** is set (RFC 7009, on the token URL's origin; the Google and Slack presets fill it in, HubSpot and Microsoft have none).
+- **Custom auth flow**, for APIs with their own login. Steps run in order: a **request** (through the resource's base URL and allowed hosts), **code** (JavaScript) or a **variable**. Steps read named secret values as `{{ secrets.NAME }}` and earlier steps by name (`{{ login.data.token }}`); each variable becomes `{{ auth.NAME }}`, which the resource's headers and query parameters use (`Authorization: Bearer {{ auth.token }}`). Optional **refresh steps** run when an API answers 401 (with `auth` holding the current variables), and **sign in again after** limits how long the variables last. The variables are stored encrypted and shared by every query; **Test connection** signs in afresh. A sign-in that fails isn't tried on every query: the next ones fail with its error for 5 s, then 10 s, … up to 5 minutes, until one succeeds or the steps or secrets change.
 
 ## Managed database
 

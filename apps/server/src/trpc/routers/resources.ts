@@ -1,10 +1,25 @@
 import {
   ConnectorError,
   connectors,
+  createHttpClient,
+  destroyHttpClient,
+  exampleOf,
   getConnector,
+  graphqlConnector,
+  graphqlIntrospect,
+  type HttpClient,
+  type HubSpotProperty,
+  httpRequest,
+  hubspotConnector,
+  hubspotProperties,
   type KafkaConfig,
   type KafkaSecrets,
   kafkaSettingsProblem,
+  OPENAPI_MAX_SPEC,
+  openApiDocument,
+  restApiConnector,
+  restConfigSchema,
+  runOperation,
   runQuery,
   SshSettingsError,
   testResource,
@@ -14,6 +29,7 @@ import {
   environments,
   oauthTokens,
   permissions,
+  REST_API_RESOURCE_SLUG,
   type Resource,
   resourceConfigs,
   resources,
@@ -25,7 +41,7 @@ import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
-import { pubsubSettingsProblem, serverIdentityView } from '../../services/google'
+import { pubsubSettingsProblem, serverIdentityView, sheetsSettingsProblem } from '../../services/google'
 import {
   type AccountKind,
   connectTarget,
@@ -39,6 +55,7 @@ import {
   connectionStatus,
   credentialsFor,
   deleteTokens,
+  disconnectAccount,
 } from '../../services/oauth-tokens'
 import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
@@ -85,12 +102,44 @@ function sshSettled<T>(settle: () => T): T {
 }
 
 /**
- * Why a queue resource's settings couldn't sign in, checked on save (M19, M26): Pub/Sub's key or project, SQS's AWS
- * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity). Null when fine, or for other types.
+ * Why a resource's settings couldn't sign in, checked on save (M19, M26, M27): Pub/Sub's key or project, SQS's AWS
+ * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity), a service's token or OAuth client secret, Google
+ * Sheets' key or the server's identity. Null when fine, or for other types.
  */
 function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
   if (type === 'pubsub') return pubsubSettingsProblem(config, secrets)
-  if (type === 'sqs') return awsSettingsProblem(config, secrets)
+  if (type === 'googlesheets') return sheetsSettingsProblem(config, secrets)
+  if (type === 'slack' || type === 'hubspot' || type === 'sendgrid') {
+    const auth = ((config ?? {}) as { auth?: { type?: string } }).auth?.type ?? 'token'
+    if (auth === 'token' && !secrets.token) return type === 'sendgrid' ? 'Add the API key' : 'Add the token'
+    if (auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
+  }
+  if (type === 'stripe' && !secrets.token) return 'Add the secret key'
+  if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
+  if (type === 'rabbitmq' && !secrets.password) return 'Add the password'
+  if (type === 'openapi') {
+    const spec = ((config ?? {}) as { spec?: unknown }).spec
+    if (typeof spec !== 'string' || !spec.trim())
+      return 'Add the OpenAPI document (paste it, or fetch it from its URL)'
+    try {
+      openApiDocument(spec)
+    } catch (err) {
+      return err instanceof ConnectorError ? err.message : 'The OpenAPI document doesn’t parse'
+    }
+  }
+  if (type === 'salesforce') {
+    const auth = ((config ?? {}) as { auth?: { clientId?: string } }).auth
+    if (!auth?.clientId) return 'Add the connected app’s consumer key'
+    if (!secrets.clientSecret) return 'Add the connected app’s consumer secret'
+  }
+  if (type === 'jira') {
+    const c = (config ?? {}) as { deployment?: string; email?: string }
+    const cloudSite = (c.deployment ?? 'cloud') === 'cloud'
+    if (cloudSite && !c.email) return 'Add the email of the account the API token belongs to'
+    if (!secrets.token) return cloudSite ? 'Add the API token' : 'Add the personal access token'
+  }
+  if (type === 'sqs' || type === 's3' || type === 'sns' || type === 'kinesis')
+    return awsSettingsProblem(config, secrets)
   if (type === 'kafka') {
     const c = (config ?? {}) as KafkaConfig
     return (
@@ -112,12 +161,17 @@ function requireAdminForServerIdentity(
   stored: unknown,
   next: unknown,
 ): string | null {
-  // An SQS resource's own endpoint (M26) receives signed requests and the queues' messages: admins choose it.
+  // An SQS (M26) or S3 (M29) resource's own endpoint receives signed requests and the data: admins choose it.
   const endpoint = (c: unknown) => (c as { endpoint?: unknown } | null)?.endpoint ?? null
-  if (type === 'sqs' && endpoint(next) && endpoint(next) !== endpoint(stored) && !user.isAdmin)
+  if (
+    (type === 'sqs' || type === 's3') &&
+    endpoint(next) &&
+    endpoint(next) !== endpoint(stored) &&
+    !user.isAdmin
+  )
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: 'Only admins can point an SQS resource at another endpoint',
+      message: `Only admins can point an ${type === 's3' ? 'S3' : 'SQS'} resource at another endpoint`,
     })
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
@@ -213,8 +267,11 @@ function levelsByEnv(access: Access, resource: Resource, envIds: string[]) {
 
 export const resourcesRouter = router({
   /** Connector types a resource can have. */
+  /** The types people can create, grouped for the picker (M27); the built-in REST API's isn't one of them. */
   types: authedProcedure.query(() =>
-    Object.values(connectors).map((c) => ({ type: c.type, label: c.label })),
+    Object.values(connectors)
+      .filter((c) => c.type !== restApiConnector.type)
+      .map((c) => ({ type: c.type, label: c.label, group: TYPE_GROUPS[c.type] ?? 'APIs' })),
   ),
 
   list: authedProcedure.query(async ({ ctx }) => {
@@ -320,6 +377,12 @@ export const resourcesRouter = router({
         })
       }
       connectorFor(input.type)
+      if (input.type === restApiConnector.type) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `The REST API resource is built in: use ${REST_API_RESOURCE_SLUG}`,
+        })
+      }
       const [resource] = await uniqueOr('A resource with that slug already exists', () =>
         ctx.db
           .insert(resources)
@@ -454,9 +517,10 @@ export const resourcesRouter = router({
         updatedAt: new Date(),
       }
       // Accounts connected under other OAuth settings (client, URLs, scopes) would need a new consent anyway.
-      const before = existing ? authFingerprint(effectiveConfig(existing)) : null
+      const before = existing ? authFingerprint(resource.type, effectiveConfig(existing)) : null
       const consentChanged =
-        before !== null && before !== authFingerprint(applyOverrides(values.config, existing!.overrides))
+        before !== null &&
+        before !== authFingerprint(resource.type, applyOverrides(values.config, existing!.overrides))
       let disconnectedAccounts = 0
       if (existing) {
         disconnectedAccounts = await ctx.db.transaction(async (tx) => {
@@ -545,7 +609,9 @@ export const resourcesRouter = router({
         effectiveConfig(existing),
         next.data,
       )
-      const consentChanged = authFingerprint(effectiveConfig(existing)) !== authFingerprint(next.data)
+      const consentChanged =
+        authFingerprint(resource.type, effectiveConfig(existing)) !==
+        authFingerprint(resource.type, next.data)
       const disconnectedAccounts = await ctx.db.transaction(async (tx) => {
         await tx
           .update(resourceConfigs)
@@ -645,6 +711,7 @@ export const resourcesRouter = router({
         existing || custom
           ? credentialsFor(
               { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+              resource.type,
               tested,
               ctx.user.id,
               { store: false },
@@ -678,7 +745,7 @@ export const resourcesRouter = router({
       const level = access.level(resource, environmentId)
       if (!level) continue
       const row = await getConfigRow(ctx.db, resource.id, environmentId)
-      const auth = row && authorizationCode(effectiveConfig(row))
+      const auth = row && authorizationCode(resource.type, effectiveConfig(row))
       if (!row || !auth) {
         environments.push({
           environmentId,
@@ -690,7 +757,7 @@ export const resourcesRouter = router({
         continue
       }
       const shared = auth.tokens === 'shared'
-      const consent = authFingerprint(effectiveConfig(row))!
+      const consent = authFingerprint(resource.type, effectiveConfig(row))!
       let connectedPeople: number | null = null
       if (!shared && atLeast(level, 'edit')) {
         const [counted] = await ctx.db
@@ -711,8 +778,9 @@ export const resourcesRouter = router({
   }),
 
   /**
-   * Disconnects the shared account (Edit) or the user's own (Use, or through `appId` like connecting). The provider
-   * isn't told (no revocation).
+   * Disconnects the shared account (Edit) or the user's own (Use, or through `appId` like connecting): revoked at the
+   * provider when the settings have a revocation URL (`revoked`: yes, none, or failed with the reason), and
+   * forgotten here either way.
    */
   oauthDisconnect: authedProcedure
     .input(
@@ -725,17 +793,24 @@ export const resourcesRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const target = await oauthTarget(ctx, input)
-      const removed = await deleteTokens(ctx.db, target.config.id, target.userId)
+      const { removed, ...revocation } = await disconnectAccount(ctx.db, ctx.config.keyring, {
+        resourceConfigId: target.config.id,
+        userId: target.userId,
+        auth: target.auth,
+        clientSecret: target.clientSecret,
+        allowPrivateNetwork: target.allowPrivateNetwork,
+        consent: authFingerprint(target.resource.type, effectiveConfig(target.config)),
+      })
       if (removed) {
         await ctx.audit({
           action: 'resource.oauth_disconnected',
           objectType: 'resource',
           objectId: target.resource.id,
           environmentId: input.environmentId,
-          metadata: { account: target.userId === null ? 'shared' : 'user' },
+          metadata: { account: target.userId === null ? 'shared' : 'user', revoked: revocation.revoked },
         })
       }
-      return { disconnected: removed > 0 }
+      return { disconnected: removed > 0, ...(removed > 0 && revocation) }
     }),
 
   /**
@@ -770,6 +845,7 @@ export const resourcesRouter = router({
       const resolved = toResolved(ctx.config.keyring, row)
       const credentials = credentialsFor(
         { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
         resolved,
         ctx.user.id,
       )
@@ -807,4 +883,217 @@ export const resourcesRouter = router({
       })
       return outcome
     }),
+
+  /**
+   * A GraphQL resource's schema (M27), by introspection through the resource, for the editor's completions and
+   * checks. Needs Use; kept 10 minutes per settings version (and per person, where each connects their own account).
+   */
+  graphqlSchema: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, refresh: z.boolean().default(false) }))
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== graphqlConnector.type) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only GraphQL resources have a schema' })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
+      const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
+      const cached = graphqlSchemas.get(key)
+      if (cached && !input.refresh && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, schema: cached.schema }
+      }
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
+        resolved,
+        ctx.user.id,
+      )
+      try {
+        const schema = toJson(
+          await runOperation(
+            ctx.services.pool,
+            graphqlConnector,
+            resolved,
+            (client, opts) => graphqlIntrospect(client as HttpClient, opts),
+            { ...(credentials && { credentials }) },
+          ),
+        )
+        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
+        graphqlSchemas.set(key, { at: Date.now(), schema })
+        return { ok: true as const, schema }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
+  /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
+  openapiOperations: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id }))
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== 'openapi')
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only OpenAPI resources have operations' })
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      const spec = (row?.config as { spec?: unknown } | undefined)?.spec
+      if (typeof spec !== 'string')
+        return { ok: false as const, message: 'This resource has no OpenAPI document in this environment' }
+      try {
+        const doc = openApiDocument(spec)
+        // Bodies get an example (the document's, or one built from the schema) for the form's "Use the example".
+        const operations = doc.operations.map((op) => {
+          if (!op.body) return op
+          const { schema: _schema, ...body } = op.body
+          return { ...op, body: { ...body, example: op.body.example ?? exampleOf(op.body.schema) } }
+        })
+        return { ok: true as const, title: doc.title, version: doc.version, servers: doc.servers, operations }
+      } catch (err) {
+        return {
+          ok: false as const,
+          message: err instanceof ConnectorError ? err.message : 'The OpenAPI document doesn’t parse',
+        }
+      }
+    }),
+
+  /**
+   * Fetches an OpenAPI document from a public URL (M29) for the settings form, which keeps its text in the settings:
+   * through the HTTP core's guard (no private addresses, redirects re-checked, 5 MB). Needs Edit on the resource.
+   */
+  openapiFetch: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, url: z.url({ protocol: /^https?$/ }) }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      if (resource.type !== 'openapi')
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only OpenAPI resources have a document' })
+      const client = createHttpClient(
+        restConfigSchema.parse({ baseUrl: input.url, maxResponseBytes: OPENAPI_MAX_SPEC }),
+        { headers: {}, values: {} },
+      )
+      try {
+        const res = await httpRequest(
+          client,
+          { method: 'GET', url: new URL(input.url) },
+          { signal: AbortSignal.timeout(20_000) },
+        )
+        if (!res.ok) return { ok: false as const, message: `The URL answered HTTP ${res.status}` }
+        const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
+        const doc = openApiDocument(text)
+        return {
+          ok: true as const,
+          spec: text,
+          title: doc.title,
+          version: doc.version,
+          servers: doc.servers,
+          operations: doc.operations.length,
+        }
+      } catch (err) {
+        return {
+          ok: false as const,
+          message: err instanceof ConnectorError ? err.message : (err as Error).message,
+        }
+      } finally {
+        await destroyHttpClient(client)
+      }
+    }),
+
+  /**
+   * A HubSpot object type's properties (M27), for the query forms' pickers. Needs Use; kept like a GraphQL schema.
+   */
+  hubspotProperties: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        objectType: z
+          .string()
+          .regex(/^[\w-]+$/)
+          .max(100),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== hubspotConnector.type) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only HubSpot resources have properties' })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
+      const key = `hubspot:${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}:${input.objectType}`
+      const cached = graphqlSchemas.get(key)
+      if (cached && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, properties: cached.schema as HubSpotProperty[] }
+      }
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
+        resolved,
+        ctx.user.id,
+      )
+      try {
+        const properties = await runOperation(
+          ctx.services.pool,
+          hubspotConnector,
+          resolved,
+          (client, opts) => hubspotProperties(client as HttpClient, input.objectType, opts),
+          { ...(credentials && { credentials }) },
+        )
+        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
+        graphqlSchemas.set(key, { at: Date.now(), schema: properties })
+        return { ok: true as const, properties }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
 })
+
+/** How the new-resource picker groups the types. */
+const TYPE_GROUPS: Record<string, string> = {
+  postgres: 'Databases',
+  mysql: 'Databases',
+  bigquery: 'Databases',
+  rest: 'APIs',
+  graphql: 'APIs',
+  openapi: 'APIs',
+  pubsub: 'Messaging',
+  sqs: 'Messaging',
+  kafka: 'Messaging',
+  rabbitmq: 'Messaging',
+  sns: 'Messaging',
+  kinesis: 'Messaging',
+  slack: 'Services',
+  hubspot: 'Services',
+  sendgrid: 'Services',
+  googlesheets: 'Services',
+  s3: 'Storage',
+  stripe: 'Services',
+  airtable: 'Services',
+  jira: 'Services',
+  notion: 'Services',
+  salesforce: 'Services',
+  anthropic: 'AI',
+  openai_compatible: 'AI',
+}
+
+const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000
+/**
+ * GraphQL schemas and HubSpot properties by config row, settings version, (per-user accounts) person and object type;
+ * oldest dropped past 200.
+ */
+const graphqlSchemas = new Map<string, { at: number; schema: unknown }>()

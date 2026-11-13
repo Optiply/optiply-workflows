@@ -127,6 +127,33 @@ describe('dispatcher', () => {
     ).toEqual([{ message: 'big 42' }])
   })
 
+  it("gives code the workflow's name and the run's start, as Retool's workflowContext does (M36)", async () => {
+    await dispatcher().start()
+    const run = await queueRun(
+      db,
+      wf(
+        [
+          {
+            name: 'context',
+            type: 'code',
+            config: {
+              code: 'const c = workflowContext; return { name: c.name, id: c.currentRun.id, started: c.currentRun.startedAtEpochMs, runId: c.runId }',
+            },
+          },
+          { name: 'reply', type: 'response', config: { body: '{{ context.data }}' } },
+        ],
+        [
+          ['startTrigger', 'context'],
+          ['context', 'reply'],
+        ],
+      ),
+    )
+    const done = await waitForFinish(db, run.id)
+    expect(done.response).toMatchObject({
+      body: { name: 'Test', id: run.id, runId: run.id, started: done.startedAt!.getTime() },
+    })
+  })
+
   it('publishes every run and block status change on the run events channel', async () => {
     const events: RunEvent[] = []
     const { unlisten } = await listener.listen(RUN_EVENTS_CHANNEL, (payload) =>

@@ -73,6 +73,17 @@ export function guardedLookup(hostname: string, options: LookupOptions, callback
   })
 }
 
+/**
+ * `guardedLookup`, except that hostnames matching `hosts` (patterns as `hostMatches`) may resolve to private addresses:
+ * hosts an admin allowed by name (the built-in REST API resource's `REST_API_PRIVATE_HOSTS`, M27).
+ */
+export function guardedLookupExcept(hosts: readonly string[]) {
+  return (hostname: string, options: LookupOptions, callback: LookupCallback): void => {
+    if (hosts.some((p) => hostMatches(hostname, p))) dnsLookup(hostname, options, callback)
+    else guardedLookup(hostname, options, callback)
+  }
+}
+
 /** `api.example.com` matches itself; `*.example.com` matches any subdomain (not the apex). */
 export function hostMatches(hostname: string, pattern: string): boolean {
   const host = hostname.toLowerCase()

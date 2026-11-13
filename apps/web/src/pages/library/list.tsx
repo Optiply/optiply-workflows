@@ -1,19 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Library, Plus } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   PageHeader,
-  Spinner,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 
 type LibraryQuerySummary = RouterOutputs['libraryQueries']['list'][number]
@@ -34,12 +35,13 @@ export function librarySlug(name: string): string {
 
 /** The Query Library: queries written once, with parameters, used by many apps. */
 export function LibraryPage() {
+  const canCreate = useCanCreate('library')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.libraryQueries.list.queryOptions())
   const { data: folders } = useFolders('library_query')
   const [panel, setPanel] = useState<'none' | 'query' | 'folder'>('none')
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (
@@ -50,18 +52,20 @@ export function LibraryPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'query' ? 'none' : 'query')}>
-              <Plus className="size-4" /> New query
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('query')}>
+                <Plus className="size-4" /> New query
+              </Button>
+            )}
           </>
         }
       />
-      {panel === 'query' && <NewLibraryQueryForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="library_query" onDone={() => setPanel('none')} />}
+      {panel === 'query' && <NewLibraryQueryDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="library_query" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Library className="size-6" />} title="No library queries yet">
           Create one to share a query between apps. If you expected to see some here, ask an admin for access.
@@ -129,7 +133,7 @@ function LibraryRow({ query, hasFolders }: { query: LibraryQuerySummary; hasFold
   )
 }
 
-function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
+function NewLibraryQueryDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -143,17 +147,40 @@ function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
     trpc.libraryQueries.create.mutationOptions({
       onSuccess: async (q) => {
         await queryClient.invalidateQueries({ queryKey: trpc.libraryQueries.list.queryKey() })
+        // Closed first: the next page may take a moment (its access check), and going back mustn't find it open.
+        onClose()
         await navigate({ to: '/library/$slug', params: { slug: q.slug } })
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New library query"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create query
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          if (name && slug) create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -183,16 +210,8 @@ function NewLibraryQueryForm({ onCancel }: { onCancel: () => void }) {
             <FolderSelect type="library_query" value={folderId} onChange={setFolderId} />
           </Field>
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create query
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

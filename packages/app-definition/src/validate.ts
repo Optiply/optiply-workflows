@@ -1,4 +1,11 @@
-import { checkLibraryReference, type LibraryInfo, type QueryValidator } from '@ow/definition'
+import {
+  checkLibraryReference,
+  importProblems,
+  jsPackageDiagnostics,
+  type LibraryInfo,
+  type QueryValidator,
+  splitJsPackage,
+} from '@ow/definition'
 import { parseTemplate } from '@ow/expressions'
 import type { z } from 'zod'
 import { type ComponentLibraryInfo, customComponentSpec, customInstanceInterface } from './component-library'
@@ -22,7 +29,7 @@ import {
 } from './graph'
 import { appNameReason, isAppGlobalName } from './names'
 import { entityPages, pageVisible, RESERVED_PAGES } from './pages'
-import { expressionSide } from './query-values'
+import { expressionSide, isServerQueryField } from './query-values'
 import {
   type AppComponent,
   type AppDefinition,
@@ -47,6 +54,8 @@ export type AppDiagnosticCode =
   | 'invalid_layout'
   | 'unknown_event'
   | 'unknown_query'
+  /** A workflow query's workflow doesn't exist or isn't published (M36). */
+  | 'unknown_workflow'
   | 'unknown_component'
   | 'unknown_variable'
   | 'unknown_method'
@@ -82,6 +91,10 @@ export type AppDiagnosticCode =
   | 'unknown_component_library'
   | 'unpublished_component_library'
   | 'unknown_custom_component'
+  /** A JavaScript package: not a plain npm package, a duplicate, too many, or on a module. */
+  | 'invalid_js_package'
+  /** A JS import line naming a package that isn't one of the app's JavaScript packages (or a file inside one). */
+  | 'unknown_js_import'
 
 export interface AppDiagnostic {
   severity: 'error' | 'warning'
@@ -117,6 +130,8 @@ export interface AppValidateOptions {
    * components take any props and events (their library isn't known).
    */
   resolveComponentLibrary?: (slug: string) => ComponentLibraryInfo | undefined
+  /** Whether a workflow slug names a workflow, and whether it's published (M36: workflow queries). */
+  resolveWorkflow?: (slug: string) => 'published' | 'unpublished' | undefined
 }
 
 /** How deep modules nest below an app (M21): an app holds a module holding a module holding a module, no deeper. */
@@ -182,6 +197,11 @@ export function instanceRelease(
   return { slug, version, key: `${slug}@${version}` }
 }
 
+/** The workflows an app's workflow queries run, by slug, sorted (M36). */
+export function usedWorkflows(def: AppDefinition): string[] {
+  return [...new Set(def.queries.flatMap((q) => (q.kind === 'workflow' ? [q.workflow] : [])))].sort()
+}
+
 /** The library queries an app's queries use, by slug, sorted (M14; the server and the editor both resolve these). */
 export function usedLibraries(def: AppDefinition): string[] {
   return [...new Set(def.queries.flatMap((q) => (q.kind === 'library' ? [q.library] : [])))].sort()
@@ -238,6 +258,7 @@ const LIST = {
   transformer: 'transformers',
   variable: 'variables',
   url: 'url',
+  storage: 'localStorage',
   inputs: 'module',
 }
 
@@ -333,6 +354,16 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
 
   if (def.module) checkModule(def, entities, report)
 
+  if (def.module && def.javascript) {
+    report({
+      code: 'invalid_js_package',
+      message: "A module has no packages of its own: its code uses the app's",
+      path: ['javascript'],
+    })
+  } else {
+    for (const d of jsPackageDiagnostics(def.javascript?.packages, ['javascript', 'packages'])) report(d)
+  }
+
   // Layout entries name components on a grid.
   for (const name of Object.keys(def.layout ?? {})) {
     const entity = entities.get(name)
@@ -364,7 +395,25 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     if (q.kind === 'library' && options.resolveLibrary) {
       checkLibraryUse(q, ['queries', i], options.resolveLibrary, report)
     }
+    if (q.kind === 'workflow' && options.resolveWorkflow) {
+      const found = options.resolveWorkflow(q.workflow)
+      if (found !== 'published') {
+        report({
+          code: 'unknown_workflow',
+          message: found
+            ? `Workflow "${q.workflow}" isn't published`
+            : `No workflow has the slug "${q.workflow}"`,
+          path: ['queries', i, 'workflow'],
+          entity: q.name,
+        })
+      }
+    }
   })
+
+  // Import lines name the app's JavaScript packages (a module's code uses its app's: not checked here).
+  const jsPackages = new Set(
+    (def.javascript?.packages ?? []).map((p) => splitJsPackage(p).name).filter(Boolean),
+  )
 
   // Code: syntax, names, properties.
   for (const field of graph.fields) {
@@ -379,13 +428,30 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
         ...(err.hint && { hint: err.hint }),
       })
     }
+    if (
+      !def.module &&
+      !field.errors.length &&
+      (field.kind === 'function-body' || field.kind === 'sync-function-body')
+    ) {
+      for (const problem of importProblems(field.source, jsPackages, "the app's")) {
+        report({ code: 'unknown_js_import', ...at, ...problem })
+      }
+    }
     const locals = new Set(field.locals)
     for (const ref of field.refs) {
       if (locals.has(ref.name)) continue
       const where = { ...at, start: ref.start, end: ref.end }
       const entity = entities.get(ref.name)
       if (!entity) {
-        if (!isAppGlobalName(ref.name)) {
+        // configVars (M36): only where the server fills it in.
+        if (ref.name === 'configVars' && isServerQueryField(field.path)) continue
+        if (ref.name === 'configVars') {
+          report({
+            code: 'unknown_identifier',
+            message: "configVars can only be read in a resource query's {{ }}, where the server fills it in",
+            ...where,
+          })
+        } else if (!isAppGlobalName(ref.name)) {
           report({ code: 'unknown_identifier', message: `"${ref.name}" is not defined`, ...where })
         }
         continue
@@ -422,15 +488,14 @@ export function validateApp(input: unknown, options: AppValidateOptions = {}): A
     }
   }
 
-  // Resource query values come from the browser, except those reading only current_user.
+  // Resource query values come from the browser, except those reading only current_user or configVars.
   for (const field of graph.fields) {
-    const sent = field.path[2] === 'query' || field.path[2] === 'params'
-    if (field.path[0] !== 'queries' || !sent || field.errors.length) continue
+    if (!isServerQueryField(field.path) || field.errors.length) continue
     for (const part of parseTemplate(field.source)) {
       if (part.type !== 'expression' || expressionSide(part.code) !== 'mixed') continue
       report({
         code: 'mixed_current_user',
-        message: 'current_user is checked on the server only in a {{ }} of its own',
+        message: 'current_user and configVars are read on the server only in a {{ }} of their own',
         hint: 'Split it out, e.g. owner = {{ current_user.email }} and status = {{ select1.value }}',
         path: field.path,
         entity: field.owner,
@@ -557,6 +622,22 @@ function checkHandlers(
         code: 'other_page',
         message: otherPage(target, targetPage!, owner, reader),
         path: [...path, 'action', a.type === 'controlQuery' ? 'query' : 'component'],
+        ...at,
+      })
+    }
+    if (a.type === 'openPage' && !def.pages?.some((p) => p.name === a.page)) {
+      report({
+        code: 'unknown_page',
+        message: def.pages?.length ? `No page is named "${a.page}"` : 'This app has no pages',
+        path: [...path, 'action', 'page'],
+        ...at,
+      })
+    }
+    if (h.debounceMs !== undefined && h.throttleMs !== undefined) {
+      report({
+        code: 'invalid_args',
+        message: 'A handler waits by debounce or by throttle, not both',
+        path: [...path, 'throttleMs'],
         ...at,
       })
     }

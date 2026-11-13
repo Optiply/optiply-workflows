@@ -241,6 +241,40 @@ describe('importing', () => {
     expect(latin1.json().error.message).toMatch(/isn't UTF-8.*CSV UTF-8/)
   })
 
+  it('imports a JSON document of more than a million characters, and names a broken quote once', async () => {
+    const doc = {
+      blocks: Array.from({ length: 6000 }, (_, i) => ({ name: `code${i}`, code: 'x'.repeat(150) })),
+    }
+    const json = JSON.stringify(doc, null, 2)
+    expect(json.length).toBeGreaterThan(1_100_000)
+    const res = await importCsv(
+      {
+        mode: 'create',
+        table: 'workflows_big',
+        columns: [
+          { source: 0, name: 'name', type: 'text' },
+          { source: 1, name: 'definition', type: 'json' },
+        ],
+      },
+      `name,definition\nbig,"${json.replaceAll('"', '""')}"\nsmall,"{}"\n`,
+    )
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().rows).toBe(2)
+    const [big] = await superSql`select definition from owdb_production.workflows_big where name = 'big'`
+    expect(big!.definition).toEqual(doc)
+
+    // The dialog shows "Line n: <message>", so a problem's message doesn't start with the line again.
+    const open = await importCsv(
+      { mode: 'append', table: 'people', columns: [{ source: 1, name: 'name' }] },
+      'id,name\n1,Ann\n2,"Bob\n',
+    )
+    expect(open.statusCode).toBe(400)
+    expect(open.json().error).toMatchObject({
+      message: 'Line 3: a quoted field is never closed',
+      problems: [{ line: 3, message: 'a quoted field is never closed' }],
+    })
+  })
+
   it('refuses a column the file does not have, instead of importing it as empty', async () => {
     const res = await importCsv(
       { mode: 'append', table: 'people', columns: [{ source: 4, name: 'name' }] },

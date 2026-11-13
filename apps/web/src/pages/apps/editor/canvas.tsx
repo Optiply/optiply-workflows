@@ -15,11 +15,11 @@ import {
   slotOf,
   slotsOf,
 } from '@ow/app-definition'
-import { GripVertical, Move } from 'lucide-react'
+import { GripVertical, Move, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import ReactGridLayout, { type Layout, useContainerWidth } from 'react-grid-layout'
+import ReactGridLayout, { type Layout, noCompactor, useContainerWidth } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
-import { sectionLabelClass } from '@/components/ui'
+import { Input, sectionLabelClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ComponentView, placedChildren, ROW_HEIGHT } from '../canvas'
 import { withColumnWidth } from '../components/table-model'
@@ -31,7 +31,8 @@ import {
   ShownModalContext,
   shownViews,
 } from '../grid-context'
-import { moveItems, settleAfterMove } from './layout'
+import { makeRoom, moveItems, settleAfterMove } from './layout'
+import { filterPalette, PALETTE_ENTRIES } from './palette-model'
 import { sharePointer, usePresence } from './presence'
 import { useAppEditor } from './store'
 
@@ -39,23 +40,6 @@ import { useAppEditor } from './store'
 let dragging: string | null = null
 /** The components being dragged to another grid (M24), by name; null otherwise. */
 let moving: string[] | null = null
-
-/** The component types in the palette, in this order. */
-const PALETTE = [
-  'table',
-  'form',
-  'textInput',
-  'numberInput',
-  'dateInput',
-  'select',
-  'checkbox',
-  'button',
-  'text',
-  'container',
-  'modal',
-  'chart',
-  'navigation',
-]
 
 /** Which top-level grid: the page's, or the frame's (global components, in an app with pages). */
 const gridId = (parent: string | undefined, page: string | null | undefined) =>
@@ -80,7 +64,9 @@ export function EditGrid({
   page?: string | null
   slot?: string
 }) {
-  const { width, containerRef, mounted } = useContainerWidth()
+  // Measured before the grid first draws: drawn at the default 1280 px first, its components would shrink into
+  // place on every load (and a drag right after loading would miss its target).
+  const { width, containerRef, mounted } = useContainerWidth({ measureBeforeMount: true })
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   const toggleSelect = useAppEditor((s) => s.toggleSelect)
@@ -118,7 +104,12 @@ export function EditGrid({
       ref={containerRef}
       className={cn(
         'relative',
-        parent === undefined ? 'min-h-[70vh]' : 'min-h-16 rounded-md border border-dashed border-border/70',
+        parent === undefined
+          ? // The components on every page (above each page): a drop zone, not a page's height pushing it down.
+            page === null && slot === undefined
+            ? 'min-h-16 rounded-md border border-dashed border-border/70'
+            : 'min-h-[70vh]'
+          : 'min-h-16 rounded-md border border-dashed border-border/70',
         over && 'bg-accent-soft/40 outline-2 outline-accent/60',
       )}
       data-testid={`grid-${gridId(parent, page)}${slot ? `-${slot}` : ''}`}
@@ -140,6 +131,9 @@ export function EditGrid({
           width={width}
           layout={layout}
           gridConfig={{ cols: 12, rowHeight: ROW_HEIGHT, margin: [12, 0], containerPadding: [0, 0] }}
+          // Components stay where they're put (session 33): nothing floats up into a gap; one dropped on another
+          // pushes it down.
+          compactor={noCompactor}
           dragConfig={{ handle: `.${handle}`, cancel: '.ow-move' }}
           resizeConfig={{ handles: ['se', 'e', 's'] }}
           // Every grid takes drops (M24): a type from the palette, or components from another grid.
@@ -152,11 +146,21 @@ export function EditGrid({
               before && after && chosen.length > 1 && chosen.includes(after.i)
                 ? children.map((c) => c.component.name).filter((n) => n !== after.i && chosen.includes(n))
                 : []
-            if (!others.length) return commit(next)
             const placed = next.filter((l) => l.i !== '__dropping-elem__')
+            // What it was dropped on makes room (pushed down, on through what's below): nothing overlaps.
+            if (!others.length) return commit(after ? makeRoom(placed, [after.i]) : placed)
             commit(moveItems(placed, others, after!.x - before!.x, after!.y - before!.y))
           }}
-          onResizeStop={commit}
+          onResizeStop={(next, _before, after) =>
+            commit(
+              after
+                ? makeRoom(
+                    next.filter((l) => l.i !== '__dropping-elem__'),
+                    [after.i],
+                  )
+                : next,
+            )
+          }
           onDropDragOver={() => {
             if (moving) {
               const def = useAppEditor.getState().definition
@@ -191,7 +195,8 @@ export function EditGrid({
               position: { x: item.x, y: item.y },
               ...target,
             })
-            update(() => added.definition)
+            // Dropped on others: they make room, as for a move.
+            update((def) => settleAfterMove(def, added.definition, [added.name]))
             select(added.name)
           }}
         >
@@ -423,13 +428,21 @@ export function placement(): { parent: string; slot?: string } | { page: string 
   }
 }
 
-/** Component types to drag onto the page, or click to add (see `placement`). */
+/**
+ * Component types to drag onto the page, or click to add (see `placement`), by category with a search (session 41,
+ * after Retool's palette). Enter in the search adds the first match.
+ */
 export function Palette() {
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
   // A module has no pages to link (M14).
   const isModule = useAppEditor((s) => s.kind === 'module')
-  const types = isModule ? PALETTE.filter((type) => type !== 'navigation') : PALETTE
+  const [query, setQuery] = useState('')
+  const groups = filterPalette(
+    query,
+    (type) => COMPONENTS[type]!.label,
+    (type) => !(isModule && type === 'navigation'),
+  )
   const add = (type: string) => {
     const { definition } = useAppEditor.getState()
     const added = addComponent(definition, type, placement())
@@ -437,26 +450,60 @@ export function Palette() {
     select(added.name)
   }
   return (
-    <div className="grid grid-cols-2 gap-1.5">
-      {types.map((type) => (
-        <button
-          key={type}
-          type="button"
-          draggable={!COMPONENTS[type]!.overlay}
-          onDragStart={(e) => {
-            dragging = type
-            // Firefox only starts a drag that carries data.
-            e.dataTransfer.setData('text/plain', type)
+    <div className="flex flex-col gap-3">
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted" />
+        <Input
+          type="search"
+          aria-label="Search components"
+          placeholder="Search components"
+          className="h-8 pl-8"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            const first = groups[0]?.types[0]
+            if (e.key === 'Enter' && first) {
+              add(first)
+              setQuery('')
+            }
           }}
-          onDragEnd={() => {
-            dragging = null
-          }}
-          onClick={() => add(type)}
-          title={`Add a ${COMPONENTS[type]!.label.toLowerCase()}`}
-          className="rounded-md border border-border bg-surface px-2 py-1.5 text-left text-xs hover:border-accent hover:text-accent"
-        >
-          {COMPONENTS[type]!.label}
-        </button>
+        />
+      </div>
+      {groups.length === 0 && <p className="px-1 text-xs text-muted">No component matches “{query}”.</p>}
+      {groups.map((group) => (
+        <section key={group.title} aria-label={group.title}>
+          <h3 className="mb-1.5 px-0.5 text-[11px] font-medium text-muted">{group.title}</h3>
+          <div className="grid grid-cols-3 gap-1.5">
+            {group.types.map((type) => {
+              const Icon = PALETTE_ENTRIES[type]!.icon
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  draggable={!COMPONENTS[type]!.overlay}
+                  onDragStart={(e) => {
+                    dragging = type
+                    // Firefox only starts a drag that carries data.
+                    e.dataTransfer.setData('text/plain', type)
+                  }}
+                  onDragEnd={() => {
+                    dragging = null
+                  }}
+                  onClick={() => add(type)}
+                  title={
+                    COMPONENTS[type]!.overlay
+                      ? `Add a ${COMPONENTS[type]!.label.toLowerCase()}`
+                      : `Add a ${COMPONENTS[type]!.label.toLowerCase()}, or drag it onto the page`
+                  }
+                  className="flex h-16 flex-col items-center justify-center gap-1.5 rounded-md border border-border bg-surface px-1 text-center text-[11px] leading-tight hover:border-accent hover:text-accent"
+                >
+                  <Icon aria-hidden className="size-4.5 text-muted" />
+                  {COMPONENTS[type]!.label}
+                </button>
+              )
+            })}
+          </div>
+        </section>
       ))}
     </div>
   )
@@ -497,7 +544,7 @@ export function ComponentTree() {
   }
   if (!rows.length) return <p className="px-1 text-xs text-muted">No components yet.</p>
   return (
-    <ul className="flex flex-col">
+    <ul className="flex flex-col" data-testid="component-tree">
       {rows.map((r) => (
         <li key={r.name}>
           <button

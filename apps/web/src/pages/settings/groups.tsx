@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronRight, Lock } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
-import { Badge, Button, Card, ErrorNote, Input, Spinner } from '@/components/ui'
+import { Badge, Button, Card, ErrorNote, Input, ListSkeleton } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
 import { AdminOnly } from './layout'
 
@@ -33,7 +33,7 @@ function GroupsList() {
     if (name.trim()) create.mutate({ name: name.trim() })
   }
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton header={false} rows={4} />
   return (
     <div className="space-y-4">
       <ErrorNote error={error} />

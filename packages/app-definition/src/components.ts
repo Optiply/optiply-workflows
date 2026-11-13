@@ -96,7 +96,12 @@ const specs: ComponentSpec[] = [
   {
     type: 'text',
     label: 'Text',
-    props: { value: str('Value'), align: oneOf('Alignment', ['left', 'center', 'right'], 'left') },
+    props: {
+      value: str('Value'),
+      align: oneOf('Alignment', ['left', 'center', 'right'], 'left'),
+      /** Shows the value as Markdown (M36: Retool's Text is Markdown): headings, bold, links, lists… */
+      markdown: bool('Markdown'),
+    },
     state: {},
     methods: {},
     events: [],
@@ -110,14 +115,15 @@ const specs: ComponentSpec[] = [
        * Per link, in order (M24): `{ page, params?, url?, label?, icon?, hidden?, items? }`: a page of the app (with
        * URL params) or an outside `url` (http, https or mailto; opens in a new tab), an icon from `NAV_ICONS`, `hidden`
        * a template, and `items`: one level of sub-links (a group). Labels, params and `hidden` may be templates. Empty
-       * links every page, by title.
+       * links every page, by title. An item with a `key` and neither page nor url (M36) is an action: clicking it sets
+       * `clickedItem` to its key and fires `click` (handlers check `{{ nav1.clickedItem === 'orders' }}`).
        */
       items: { type: 'array', default: [], label: 'Links' },
       orientation: oneOf('Orientation', ['horizontal', 'vertical'], 'horizontal'),
     },
-    state: {},
+    state: { clickedItem: { default: null } },
     methods: {},
-    events: [],
+    events: ['click'],
     defaultSize: { w: 12, h: 3 },
   },
   {
@@ -201,6 +207,210 @@ const specs: ComponentSpec[] = [
     methods: inputMethods,
     events: ['change'],
     defaultSize: { w: 3, h: 2 },
+  },
+  // Session 41: more inputs, after Retool's palette.
+  {
+    type: 'textArea',
+    label: 'Text area',
+    input: true,
+    props: {
+      ...inputProps,
+      placeholder: str('Placeholder'),
+      defaultValue: str('Default value'),
+      rows: num('Rows', 4),
+    },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 6, h: 6 },
+  },
+  {
+    type: 'switch',
+    label: 'Switch',
+    input: true,
+    props: { ...inputProps, defaultValue: bool('On by default') },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 3, h: 2 },
+  },
+  {
+    type: 'checkboxGroup',
+    label: 'Checkbox group',
+    input: true,
+    props: {
+      ...inputProps,
+      /** Values, or `{ label, value }` objects; the value is the checked ones', in the options' order. */
+      options: { type: 'array', default: [], label: 'Options' },
+      defaultValue: { type: 'array', default: [], label: 'Default value' },
+      orientation: oneOf('Orientation', ['vertical', 'horizontal'], 'vertical'),
+    },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 4, h: 5 },
+  },
+  {
+    type: 'radioGroup',
+    label: 'Radio group',
+    input: true,
+    props: {
+      ...inputProps,
+      /** Values, or `{ label, value }` objects. */
+      options: { type: 'array', default: [], label: 'Options' },
+      defaultValue: { type: 'any', default: null, label: 'Default value' },
+      orientation: oneOf('Orientation', ['vertical', 'horizontal'], 'vertical'),
+    },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 4, h: 5 },
+  },
+  {
+    type: 'segmentedControl',
+    label: 'Segmented control',
+    input: true,
+    props: {
+      ...inputProps,
+      /** Values, or `{ label, value }` objects, as side-by-side buttons. */
+      options: { type: 'array', default: [], label: 'Options' },
+      defaultValue: { type: 'any', default: null, label: 'Default value' },
+    },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 5, h: 3 },
+  },
+  {
+    type: 'dateRange',
+    label: 'Date range',
+    input: true,
+    props: {
+      ...inputProps,
+      /** `{ start, end }`, each YYYY-MM-DD or null. */
+      defaultValue: {
+        type: 'object',
+        default: null,
+        nullable: true,
+        label: 'Default value ({ start, end })',
+      },
+      min: { type: 'string', default: null, nullable: true, label: 'Earliest date' },
+      max: { type: 'string', default: null, nullable: true, label: 'Latest date' },
+    },
+    state: { value: { from: 'defaultValue' } },
+    methods: inputMethods,
+    events: ['change'],
+    defaultSize: { w: 6, h: 3 },
+  },
+  {
+    type: 'fileInput',
+    label: 'File input',
+    input: true,
+    props: {
+      ...inputProps,
+      /** What the file picker offers: `.csv,.xlsx`, `image/*`; any file when empty. */
+      accept: str('Accepted types'),
+      multiple: bool('Several files'),
+    },
+    // `[{ name, type, size, base64 }]`, the files picked (each at most 5 MB).
+    state: { value: { default: [] } },
+    methods: { clearValue: { params: [] } },
+    events: ['change'],
+    defaultSize: { w: 4, h: 3 },
+  },
+  // Session 41: presentation.
+  {
+    type: 'statistic',
+    label: 'Statistic',
+    props: {
+      label: str('Label', 'Total'),
+      value: { type: 'any', default: 0, label: 'Value' },
+      format: oneOf('Format', ['number', 'currency', 'percent', 'plain'], 'number'),
+      currency: str('Currency', 'EUR'),
+      decimals: num('Decimals'),
+      caption: str('Caption'),
+      /** A change shown under the value: positive green with an up arrow, negative red with a down arrow. */
+      trend: num('Trend'),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 3, h: 5 },
+  },
+  {
+    type: 'image',
+    label: 'Image',
+    props: {
+      src: str('Source URL'),
+      alt: str('Alternative text'),
+      fit: oneOf('Fit', ['contain', 'cover', 'fill'], 'contain'),
+    },
+    state: {},
+    methods: {},
+    events: ['click'],
+    defaultSize: { w: 4, h: 8 },
+  },
+  {
+    type: 'divider',
+    label: 'Divider',
+    props: { label: str('Label') },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 12, h: 1 },
+  },
+  {
+    type: 'alert',
+    label: 'Alert',
+    props: {
+      title: str('Title', 'Heads up'),
+      description: str('Description'),
+      tone: oneOf('Tone', ['info', 'success', 'warning', 'error'], 'info'),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 6, h: 4 },
+  },
+  {
+    type: 'progressBar',
+    label: 'Progress bar',
+    props: {
+      label: str('Label'),
+      /** 0 to 100. */
+      value: num('Value', 0),
+      showValue: bool('Show the percentage', true),
+      tone: oneOf('Tone', ['accent', 'success', 'warning', 'error'], 'accent'),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 4, h: 2 },
+  },
+  {
+    type: 'keyValue',
+    label: 'Key value',
+    props: {
+      /** An object: one row per key. */
+      data: { type: 'any', default: {}, label: 'Data' },
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 4, h: 8 },
+  },
+  {
+    type: 'jsonExplorer',
+    label: 'JSON explorer',
+    props: {
+      value: { type: 'any', default: null, label: 'Value' },
+      /** How many levels start open. */
+      expandDepth: num('Levels open', 1),
+    },
+    state: {},
+    methods: {},
+    events: [],
+    defaultSize: { w: 6, h: 10 },
   },
   {
     type: 'table',
@@ -341,6 +551,10 @@ const specs: ComponentSpec[] = [
       nextView: { params: [] },
       /** The previous view, staying on the first one; fires `viewChange` when it moves. */
       previousView: { params: [] },
+      /** Retool's (M36): the view with that name or label; fires `viewChange`. */
+      setCurrentView: { params: ['view'] },
+      /** Retool's (M36): the view at that index, from 0; fires `viewChange`. */
+      setCurrentViewIndex: { params: ['index'] },
       /** Unfolds it; fires `expand`. */
       expand: { params: [] },
       /** Folds it to its header (a collapsible container); fires `collapse`. */
@@ -550,6 +764,11 @@ export const VARIABLE_STATE = ['value'] as const
 
 /** `url.page` (the page shown, null in an app without pages) and `url.params` (its query parameters). */
 export const URL_STATE = ['page', 'params'] as const
+
+/** `localStorage.values` (session 41): what the app keeps in this browser, by key (Set local storage). */
+export const STORAGE_STATE = ['values'] as const
+/** Retool's (M36): `localStorage.setValue(key, value)`, `removeValue(key)`, `clear()`. */
+export const STORAGE_METHODS = ['setValue', 'removeValue', 'clear'] as const
 export const VARIABLE_METHODS: Readonly<Record<string, MethodSpec>> = {
   setValue: { params: ['value'] },
   setIn: { params: ['path', 'value'] },

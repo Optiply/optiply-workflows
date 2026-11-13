@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, field, signIn, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, field, openRail, signIn, typeInto } from './helpers'
 
 /**
  * M7's done-when, all in the browser: create a table on the Database page, import a CSV into it, and query it
@@ -11,7 +11,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
 
   await test.step('create a table', async () => {
     await signIn(page)
-    await page.getByRole('link', { name: 'Database' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Database' }).click()
     await page.getByRole('button', { name: 'New table' }).click()
     const dialog = page.getByRole('dialog', { name: 'New table' })
     await dialog.getByRole('textbox', { name: /^Name/ }).fill(table)
@@ -19,7 +19,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await dialog.getByRole('checkbox', { name: 'Required' }).check()
     await dialog.getByRole('button', { name: 'Add column' }).click()
     await dialog.getByLabel('Column name').nth(1).fill('lead_days')
-    await dialog.getByLabel('Column type').nth(1).selectOption('integer')
+    await dialog.getByLabel('Preset').nth(1).selectOption('integer')
     await dialog.getByRole('button', { name: 'Create table' }).click()
     await expect(page.getByRole('heading', { name: table })).toBeVisible()
     await expect(page.getByText('No rows yet.')).toBeVisible()
@@ -41,7 +41,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
   })
 
   await test.step('query it from a workflow', async () => {
-    await page.getByRole('link', { name: 'Workflows' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Workflows' }).click()
     await page.getByRole('button', { name: 'New workflow' }).click()
     await page.getByPlaceholder('Sync orders').fill(`Slow suppliers ${suffix}`)
     await page.getByRole('button', { name: 'Create workflow' }).click()
@@ -51,6 +51,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await typeInto(page, field(page, 'startTrigger', 'testInput.json'), '{"days": 10}')
     await addBlock(page, 'resource query')
     await expect(block(page, 'query1')).toBeVisible()
+    await block(page, 'query1').getByRole('button', { name: 'Open in the side panel' }).click()
     const resource = page.getByTestId('side-panel').getByRole('combobox', { name: /^Resource/ })
     await resource.selectOption('optiply_db')
     await expect(page.getByTestId('side-panel')).toContainText(
@@ -65,7 +66,7 @@ test('create a table, import a CSV, and query it from a workflow', async ({ page
     await typeInto(page, field(page, 'response1', 'body.txt'), '{{ query1.data }}')
     await page.getByTestId('save-status').filter({ hasText: 'Saved' }).waitFor()
     await clickEmptyCanvas(page)
-    await expect(page.getByTestId('side-panel')).toContainText('No problems found.')
+    await expect(await openRail(page, 'problems')).toContainText('No problems found.')
 
     await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
     const panel = page.getByTestId('run-panel')

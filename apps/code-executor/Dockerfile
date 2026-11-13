@@ -16,12 +16,16 @@ RUN git clone --depth 1 --branch "$NSJAIL_VERSION" https://github.com/google/nsj
  && make -j"$(nproc)" && strip nsjail
 
 # The package builder (M23): `--target builder`. The same Python and platform as the executor below, so the wheels it
-# installs fit the jail's interpreter; pip pinned. It runs as its own user and writes only /envs (a volume).
+# installs fit the jail's interpreter; pip pinned. It runs as its own user and writes only /envs (a volume). Since M32
+# it builds sdists' wheels in nsjail, offline, with a compiler toolchain (run it with the executor's flags).
 FROM python:3.12-slim-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libnl-route-3-200 libprotobuf32 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=nsjail /nsjail/nsjail /usr/local/bin/nsjail
 COPY executor/builder-requirements.lock /opt/builder/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r /opt/builder/requirements.lock \
  && useradd --uid 10001 --create-home builder && mkdir /envs && chown builder /envs
-COPY executor/builder.py /opt/builder/
+COPY executor/builder.py executor/sdist-jail.cfg /opt/builder/
 USER builder
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=UTC
 EXPOSE 8080

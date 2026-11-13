@@ -388,10 +388,16 @@ describe('validating M5 blocks', () => {
         withFunctions(
           [start, { name: 'b', type: 'branch', config: { conditions: [{ id: 'c', expression: 'helper' }] } }],
           [['startTrigger', 'b']],
-          [fn([code('x')])],
+          [fn([code('x')], [], { params: [{ name: 'rows' }, { name: 'rate' }] })],
         ),
       )
-      expect(d).toEqual([expect.objectContaining({ code: 'function_call', block: 'b' })])
+      expect(d).toEqual([
+        expect.objectContaining({
+          code: 'function_call',
+          block: 'b',
+          message: 'Functions can only be called from code, as await helper(rows, rate)',
+        }),
+      ])
     })
 
     it('allows fetch in code only', () => {
@@ -591,6 +597,68 @@ describe('child workflows', () => {
       ['unpublished_workflow', 'blocks.2.config.workflow', undefined],
       ['unknown_workflow', 'blocks.3.config.runner.workflow', undefined],
       ['unknown_workflow', 'functions.0.blocks.0.config.workflow', 'f'],
+    ])
+  })
+})
+
+describe('AI agents’ tools (M35)', () => {
+  it('counts them as called workflows, checked like Workflow blocks', () => {
+    const def = withFunctions(
+      [
+        start,
+        {
+          name: 'a',
+          type: 'resourceQuery',
+          config: { resource: 'claude', query: { action: 'agent', prompt: 'x', tools: 'ready, draft-only' } },
+        },
+        loop('l', {
+          kind: 'query',
+          resource: 'claude',
+          query: { action: 'agent', prompt: 'x', tools: ['gone', 'ready'] },
+        }),
+        {
+          name: 'g',
+          type: 'resourceQuery',
+          config: { resource: 'claude', query: { action: 'generate', prompt: 'x', tools: 'ignored' } },
+        },
+      ],
+      [
+        ['startTrigger', 'a'],
+        ['startTrigger', 'l'],
+        ['startTrigger', 'g'],
+      ],
+      [],
+    )
+    expect(calledWorkflows(parse(def)).sort()).toEqual(['draft-only', 'gone', 'ready'])
+    const states: Record<string, 'published' | 'unpublished'> = {
+      ready: 'published',
+      'draft-only': 'unpublished',
+    }
+    const d = validateDefinition(def, { resolveWorkflow: (slug) => states[slug] }).diagnostics
+    expect(d.map((x) => [x.code, x.path.join('.')])).toEqual([
+      ['unpublished_workflow', 'blocks.1.config.query.tools'],
+      ['unknown_workflow', 'blocks.2.config.runner.query.tools'],
+    ])
+    const dynamic = validateDefinition(
+      withFunctions(
+        [
+          start,
+          {
+            name: 'a',
+            type: 'resourceQuery',
+            config: {
+              resource: 'claude',
+              query: { action: 'agent', prompt: 'x', tools: '{{ startTrigger.data.tool }}' },
+            },
+          },
+        ],
+        [['startTrigger', 'a']],
+        [],
+      ),
+      { resolveWorkflow: () => 'published' },
+    ).diagnostics
+    expect(dynamic.map((x) => [x.code, x.path.join('.')])).toEqual([
+      ['invalid_query', 'blocks.1.config.query.tools'],
     ])
   })
 })

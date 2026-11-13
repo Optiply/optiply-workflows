@@ -12,7 +12,9 @@ import {
   textFile,
   type Warning,
 } from './files'
+import { PACKAGE_FILE, packageJsonFile, readPackageJson } from './js-packages'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
+import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots, namedRecords } from './slots'
 
 export const APP_FILE = 'app.json'
@@ -34,7 +36,8 @@ export type ModuleObject = AppObject
  * - `queries/<name>.sql`: a resource query's `sql`; `queries/<name>.js`: a JS query's code;
  *   `queries/<name>.transform.js`: a query's transform;
  * - `transformers/<name>.js`: a transformer's code;
- * - `layout.json`: the grid positions by component name, when the app has a layout.
+ * - `layout.json`: the grid positions by component name, when the app has a layout;
+ * - `package.json`: the JavaScript packages (`javascript.packages`) as npm's `dependencies`, when it has them.
  *
  * Props, handlers (scripts included) and REST queries stay in the JSON. Unlike a workflow's, the layout is kept
  * exactly (even when empty): it counts in the app's hash.
@@ -61,8 +64,14 @@ export function decodeModule(files: Files): Decoded<ModuleObject> {
 }
 
 function encodeAppFiles(main: string, app: AppObject): { files: Files; warnings: Warning[] } {
-  const { layout, ...def } = canonicalizeApp(app.definition)
+  const { layout, javascript, ...def } = canonicalizeApp(app.definition)
   const files: Files = {}
+  const warnings: Warning[] = []
+  if (javascript) {
+    const pkg = packageJsonFile(javascript.packages)
+    files[PACKAGE_FILE] = pkg.content
+    warnings.push(...pkg.warnings)
+  }
   const queries = def.queries.map((query) => moveQueryOut(query, files))
   const transformers = def.transformers?.map(({ code, ...transformer }) => {
     files[`transformers/${transformer.name}.js`] = textFile(code)
@@ -74,7 +83,7 @@ function encodeAppFiles(main: string, app: AppObject): { files: Files; warnings:
   )
   if (layout) files[APP_LAYOUT_FILE] = canonicalJson(layout, { pretty: true })
   const sorted = sortFiles(files)
-  return { files: sorted, warnings: caseCollisions(sorted) }
+  return { files: sorted, warnings: [...warnings, ...caseCollisions(sorted)] }
 }
 
 /** The app back from its directory's files, canonical. Problems name the file they're about. */
@@ -95,13 +104,13 @@ function decodeAppFiles(main: string, files: Files): Decoded<AppObject> {
   if (!isRecord(parsed.value)) return { ok: false, problems: [invalid(main, 'Expected an object')] }
   const { meta, rest: raw, problems } = splitMeta(main, parsed.value)
 
-  const slots = new FileSlots(files, [main, APP_LAYOUT_FILE])
+  const slots = new FileSlots(files, [main, APP_LAYOUT_FILE, PACKAGE_FILE])
   for (const query of namedRecords(raw.queries)) {
     const what = `query ${query.name}`
     if (query.kind === 'js') {
       slots.take(`queries/${query.name}.js`, query, 'code', { required: true, what })
     } else if (query.kind === 'resource') {
-      slots.take(`queries/${query.name}.sql`, query.query, 'sql', { required: false, what })
+      takeQueryText(slots, `queries/${query.name}`, query.query, what)
     }
     slots.take(`queries/${query.name}.transform.js`, query, 'transform', { required: false, what })
   }
@@ -117,6 +126,14 @@ function decodeAppFiles(main: string, files: Files): Decoded<AppObject> {
     const layout = parseJsonFile(APP_LAYOUT_FILE, files[APP_LAYOUT_FILE])
     if (layout.ok) raw.layout = layout.value
     else problems.push(layout.problem)
+  }
+
+  if (files[PACKAGE_FILE] !== undefined) {
+    if (isRecord(raw.javascript))
+      problems.push(invalid(main, `javascript: the packages belong in ${PACKAGE_FILE}`))
+    const read = readPackageJson(files[PACKAGE_FILE])
+    if ('problems' in read) problems.push(...read.problems)
+    else raw.javascript = { packages: read.packages }
   }
 
   const result = appDefinitionSchema.safeParse(raw)
@@ -141,11 +158,7 @@ function moveQueryOut(query: AppQuery, files: Files): AppQuery {
     const { code: _code, ...rest } = out
     out = rest as AppQuery
   } else if (out.kind === 'resource') {
-    const { sql, ...rest } = out.query
-    if (typeof sql === 'string') {
-      files[`queries/${out.name}.sql`] = textFile(sql)
-      out = { ...out, query: rest }
-    }
+    out = { ...out, query: moveQueryText(out.query, `queries/${out.name}`, files) }
   }
   if (out.transform !== undefined) {
     files[`queries/${out.name}.transform.js`] = textFile(out.transform)

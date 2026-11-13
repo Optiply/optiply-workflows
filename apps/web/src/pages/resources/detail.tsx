@@ -98,7 +98,8 @@ export function ResourceDetailPage() {
       {current && tab === 'query' && (
         <Playground key={current.environmentId} resource={resource} environmentId={current.environmentId} />
       )}
-      {current && tab === 'settings' && resource.systemKind && (
+      {current && tab === 'settings' && resource.systemKind === 'rest' && <BuiltInRestSettings />}
+      {current && tab === 'settings' && resource.systemKind === 'database' && (
         <BuiltInSettings
           environmentSlug={environments?.find((e) => e.id === current.environmentId)?.slug}
           user={typeof current.config?.user === 'string' ? current.config.user : undefined}
@@ -125,6 +126,30 @@ export function ResourceDetailPage() {
 }
 
 /** The built-in database resource: the platform sets it up per environment, so there's nothing to edit here. */
+/** The built-in REST API resource (M27): nothing to set; what it may reach and how queries sign in. */
+function BuiltInRestSettings() {
+  return (
+    <Card className="space-y-3 p-5 text-sm" data-testid="built-in-rest">
+      <h2 className="font-semibold">
+        Built-in{' '}
+        <Badge tone="accent" className="ml-1">
+          managed by the platform
+        </Badge>
+      </h2>
+      <p className="text-muted">
+        Queries give a full URL to any public address, without setting up a resource first. Private addresses
+        (this network, localhost) are refused, unless the instance names them in REST_API_PRIVATE_HOSTS.
+      </p>
+      <p className="text-muted">
+        Each query signs in on its own: a bearer token, basic auth or an API key, typed in or read from a
+        secret config var in workflows (<code className="text-xs">{'{{ configVars.API_TOKEN }}'}</code>). In
+        apps, the URL’s host must be typed out: people using the app can only fill in its path and parameters.
+      </p>
+      <p className="text-muted">Who may use it is set on the Access tab; everyone may at first.</p>
+    </Card>
+  )
+}
+
 function BuiltInSettings({ environmentSlug, user }: { environmentSlug?: string; user?: string }) {
   return (
     <Card className="space-y-3 p-5 text-sm">

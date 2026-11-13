@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 import { E2E_GITHUB_TOKEN } from './global-setup'
-import { acceptConfirms, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import {
+  acceptConfirms,
+  editorText,
+  openEditorPanel,
+  signIn,
+  trpcMutate,
+  trpcQuery,
+  typeInto,
+} from './helpers'
 
 /**
  * The Query Library through the UI (M14 step 3a): a library query created from the Library page, its SQL and a
@@ -12,7 +20,7 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await signIn(page)
   const name = `Plus one ${Date.now()}`
 
-  await page.getByRole('link', { name: 'Library' }).click()
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
   await expect(page.getByRole('heading', { name: 'Query Library' })).toBeVisible()
   await page.getByRole('button', { name: 'New query' }).click()
   await page.getByLabel('Name', { exact: true }).fill(name)
@@ -66,16 +74,41 @@ test('create, run, publish and roll back a library query', async ({ page }) => {
   await expect(page.getByTestId('releases')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('library-used-by')).toContainText('Nothing uses it yet')
-  await page.getByRole('link', { name: 'Library', exact: true }).first().click()
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Library', exact: true })
+    .first()
+    .click()
   await expect(page.getByTestId(`library-${slug}`)).toContainText('Live v1.0.0')
 })
 
 /** A library query deleted and created again under its slug opens as the new one, not the deleted one. */
+test('switching the resource starts that kind of resource’s query', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
+  await page.getByRole('button', { name: 'New query' }).click()
+  await page.getByLabel('Name', { exact: true }).fill(`Switch ${Date.now()}`)
+  await page.getByRole('button', { name: 'Create query' }).click()
+  await expect(page).toHaveURL(/\/library\/switch_\d+$/)
+  const resource = page.getByRole('combobox', { name: 'Resource' })
+  const sqlResource = await resource.inputValue()
+
+  // The built-in REST API (M27) starts as its own query (a URL), not a plain REST resource's path.
+  await resource.selectOption('rest_api')
+  const json = page.getByTestId('code-library:rest_api:json')
+  await expect.poll(() => editorText(json)).toContain('"url": "https://"')
+  await expect(page.getByTestId('save-status')).toHaveText('Saved')
+
+  // Back to a SQL resource: SQL again.
+  await resource.selectOption(sqlResource)
+  await expect.poll(() => editorText(page.locator('[data-testid^="code-library:"]'))).toBe('select 1')
+})
+
 test('a library query recreated under a deleted one’s slug opens as itself', async ({ page }) => {
   await signIn(page)
   const name = `Again ${Date.now()}`
   const create = async () => {
-    await page.getByRole('link', { name: 'Library' }).click()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Library' }).click()
     await page.getByRole('button', { name: 'New query' }).click()
     await page.getByLabel('Name', { exact: true }).fill(name)
     await page.getByRole('button', { name: 'Create query' }).click()
@@ -122,6 +155,7 @@ test('use a library query in an app', async ({ page }) => {
   })
 
   await page.goto(`/apps/${app.slug}/edit`)
+  await openEditorPanel(page, 'Code')
   await page.getByTitle('Add a query from the library').click()
   await page.getByTestId('library-picker').getByText(`Double ${stamp}`).click()
   const body = page.getByTestId('library-query-query1')
@@ -187,7 +221,8 @@ test('protect a library query and edit it on a branch', async ({ page }) => {
   await expect(page.getByTestId('commit-files')).toContainText(`library/${slug}/query.sql`)
   await page.getByRole('textbox', { name: 'Message' }).fill('Four times')
   await page.getByTestId('commit-confirm').click()
-  await expect(page.getByTestId('commit-result')).toContainText(branch)
+  // A commit pushes to the test repository: on a loaded CI runner that took over the default 20 s.
+  await expect(page.getByTestId('commit-result')).toContainText(branch, { timeout: 60_000 })
   const sql = execFileSync('git', [
     '--git-dir',
     repoDir,

@@ -1,8 +1,12 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { eq } from 'drizzle-orm'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import { createDb } from './client'
-import { environments, groups } from './schema'
+import { environments, groups, permissions, resourceConfigs, resources } from './schema'
+
+/** The built-in REST API resource (M27): any public URL, no settings; workflows and apps name it by this slug. */
+export const REST_API_RESOURCE_SLUG = 'rest_api'
 
 /** Arbitrary constant so concurrent `migrate` containers serialize instead of racing. */
 const MIGRATION_LOCK_ID = 727_001
@@ -41,4 +45,47 @@ async function seed(db: ReturnType<typeof createDb>['db']) {
       { name: 'All Users', description: 'Every user is a member', systemKind: 'all_users' },
     ])
     .onConflictDoNothing()
+
+  await seedRestApi(db)
+}
+
+/**
+ * The built-in REST API resource, with a config in every environment. Made once, with Use for All Users (admins may
+ * narrow that afterwards, so it isn't granted again); a user's own resource with the slug blocks it.
+ */
+async function seedRestApi(db: ReturnType<typeof createDb>['db']) {
+  let [resource] = await db.select().from(resources).where(eq(resources.systemKind, 'rest'))
+  if (!resource) {
+    const [taken] = await db.select().from(resources).where(eq(resources.slug, REST_API_RESOURCE_SLUG))
+    if (taken) {
+      console.warn(
+        `A resource already has the slug "${REST_API_RESOURCE_SLUG}", which the built-in REST API resource needs: it isn't created. Give that resource another slug, then migrate again.`,
+      )
+      return
+    }
+    ;[resource] = await db
+      .insert(resources)
+      .values({
+        slug: REST_API_RESOURCE_SLUG,
+        name: 'REST API',
+        type: 'restapi',
+        systemKind: 'rest',
+        description:
+          'Any public URL, without setting up a resource. Each query gives its full URL and its own auth.',
+      })
+      .returning()
+    const [allUsers] = await db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    if (allUsers) {
+      await db
+        .insert(permissions)
+        .values({ groupId: allUsers.id, objectType: 'resource', objectId: resource!.id, level: 'use' })
+        .onConflictDoNothing()
+    }
+  }
+  for (const env of await db.select({ id: environments.id }).from(environments)) {
+    await db
+      .insert(resourceConfigs)
+      .values({ resourceId: resource!.id, environmentId: env.id, config: {} })
+      .onConflictDoNothing()
+  }
 }

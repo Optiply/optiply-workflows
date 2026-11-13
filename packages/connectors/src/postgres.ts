@@ -5,7 +5,7 @@ import { resolveFragments } from './sql-fragments'
 import { sshConnectionError, tunnelFor } from './ssh/client'
 import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
 import type { SshTunnel } from './ssh/tunnel'
-import { type Connector, ConnectorError, type QueryResult } from './types'
+import { type Connector, ConnectorError, type QueryResult, statementTimeoutMs } from './types'
 
 const configSchema = z.object({
   host: z.string().min(1),
@@ -23,7 +23,7 @@ const configSchema = z.object({
    */
   readOnly: z.boolean().default(false),
   /** Queries returning more rows than this fail rather than load everything into memory. */
-  maxRows: z.number().int().positive().default(10_000),
+  maxRows: z.number().int().positive().default(1_000_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
   /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
   ssh: sshConfigSchema.optional(),
@@ -114,7 +114,7 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
 
   async execute({ sql, config }, query, ctx): Promise<QueryResult> {
     const plan = await resolveFragments(compileSql(query.sql), 'postgres', ctx.evaluate)
-    const timeoutMs = Math.min(ctx.timeoutMs, config.statementTimeoutMs)
+    const timeoutMs = statementTimeoutMs(ctx, config.statementTimeoutMs)
     // Extended protocol always (simple: false), so a multi-statement string like `commit; delete …` is rejected
     // by Postgres instead of escaping the transaction. Unnamed statements (prepare: false), so arbitrary user SQL
     // doesn't accumulate in a per-connection statement cache.

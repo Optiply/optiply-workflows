@@ -1,6 +1,10 @@
+import { AI_RESOURCE_TYPES } from '@ow/connectors/ai-models'
+import { QUEUE_TRIGGER_KINDS } from '@ow/definition'
+import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import CodeField, { type CodeFieldProps } from '@/components/code/code-field'
 import type { TextBinding } from '@/components/code/text-binding'
+import { useTRPC } from '@/lib/trpc'
 import { currentAwareness } from './collab'
 import { scopeDeclarations } from './scope-types'
 import { graphOf, useEditor } from './store'
@@ -24,14 +28,31 @@ export default function WorkflowCodeField({ text: at, removeEmpty, ...props }: W
   const fn = useEditor((s) => s.graph)
   const shared = useEditor((s) => s.shared)
   const readOnly = useEditor((s) => s.readOnly)
+  const trpc = useTRPC()
+  const { data: resources } = useQuery(trpc.resources.list.queryOptions())
+  const aiResources = useMemo(
+    () =>
+      new Set<string>(
+        (resources?.resources ?? []).filter((r) => AI_RESOURCE_TYPES.has(r.type)).map((r) => r.slug),
+      ),
+    [resources],
+  )
   const scope = useMemo(() => {
     const functions = definition.functions ?? []
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
     const bodySchema = open ? undefined : definition.triggers?.webhook?.bodySchema
     const t = definition.triggers
-    const queues = (['pubsub', 'sqs', 'kafka'] as const).filter((kind) => !!t?.[kind]?.length)
-    return scopeDeclarations(graphOf(definition, fn).blocks, samples, functions, open, bodySchema, queues)
-  }, [definition, samples, fn])
+    const queues = QUEUE_TRIGGER_KINDS.filter((kind) => !!t?.[kind]?.length)
+    return scopeDeclarations(
+      graphOf(definition, fn).blocks,
+      samples,
+      functions,
+      open,
+      bodySchema,
+      queues,
+      aiResources,
+    )
+  }, [definition, samples, fn, aiResources])
   // Looked up again as the definition changes: the text appears with the field's first value, and is replaced when
   // its block or field is.
   const key = at?.join('\u0000')

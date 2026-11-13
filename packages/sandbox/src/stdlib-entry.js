@@ -6,6 +6,10 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import timezone from 'dayjs/plugin/timezone'
 import utc from 'dayjs/plugin/utc'
 import _ from 'lodash'
+import moment from 'moment'
+import numbro from 'numbro'
+import Papa from 'papaparse'
+import * as uuid from 'uuid'
 
 dayjs.extend(utc)
 dayjs.extend(timezone)
@@ -14,6 +18,12 @@ dayjs.extend(relativeTime)
 
 globalThis._ = _
 globalThis.dayjs = dayjs
+// Retool's preloaded libraries (M36), so code imported from Retool runs as it is. uuid needs
+// crypto.getRandomValues: the browser has it, and the workflow sandbox's prelude adds it (stdlib.ts).
+globalThis.moment = moment
+globalThis.numbro = numbro
+globalThis.Papa = Papa
+globalThis.uuid = Object.freeze({ ...uuid })
 
 const quoted = (value) => (value === undefined ? 'nothing' : JSON.stringify(value))
 

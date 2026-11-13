@@ -18,7 +18,9 @@ import {
   textFile,
   type Warning,
 } from './files'
+import { PACKAGE_FILE, packageJsonFile, readPackageJson } from './js-packages'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
+import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots, namedRecords } from './slots'
 
 export const WORKFLOW_FILE = 'workflow.json'
@@ -39,7 +41,10 @@ export interface WorkflowObject extends ObjectMeta {
  * - `functions/<function>/blocks/…`: the same for a function's blocks;
  * - `layout.json`: the canvas positions (`blocks`, and `functions.<name>.blocks`), when there are any;
  * - `requirements.txt`: the Python packages (`settings.python.requirements`), when there are any. Read back, blank
- *   lines and comment lines are left out (people edit it on GitHub too).
+ *   lines and comment lines are left out (people edit it on GitHub too). Its package index (M32,
+ *   `settings.python.index`) is its first line, `# index: <slug>` (a comment to pip);
+ * - `package.json`: the JavaScript packages (`settings.javascript.packages`) as npm's `dependencies`, when the
+ *   workflow has the setting.
  *
  * Everything else (conditions, REST queries, templates) stays in the JSON. Empty layouts aren't kept: they read
  * back as none, which is the same canvas.
@@ -53,8 +58,17 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
     blocks: fn.blocks.map((block) => moveOut(block, `functions/${fn.name}/blocks/`, files)),
   }))
   const { layout: _layout, ...logic } = withoutRequirements(def)
-  const requirements = def.settings?.python?.requirements
-  if (requirements?.length) files[REQUIREMENTS_FILE] = textFile(requirements.join('\n'))
+  const warnings: Warning[] = []
+  if (def.settings?.javascript) {
+    const pkg = packageJsonFile(def.settings.javascript.packages)
+    files[PACKAGE_FILE] = pkg.content
+    warnings.push(...pkg.warnings)
+  }
+  const requirements = def.settings?.python?.requirements ?? []
+  const index = def.settings?.python?.index
+  if (requirements.length || index) {
+    files[REQUIREMENTS_FILE] = textFile([...(index ? [`# index: ${index}`] : []), ...requirements].join('\n'))
+  }
   files[WORKFLOW_FILE] = canonicalJson(
     { ...metaFields(workflow), ...logic, blocks, ...(functions ? { functions } : {}) },
     { pretty: true },
@@ -62,7 +76,7 @@ export function encodeWorkflow(workflow: WorkflowObject): { files: Files; warnin
   const layout = layoutFile(def)
   if (layout) files[LAYOUT_FILE] = canonicalJson(layout, { pretty: true })
   const sorted = sortFiles(files)
-  return { files: sorted, warnings: caseCollisions(sorted) }
+  return { files: sorted, warnings: [...warnings, ...caseCollisions(sorted)] }
 }
 
 /** The workflow back from its directory's files, canonical. Problems name the file they're about. */
@@ -81,7 +95,7 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
   }
   const { meta, rest: raw, problems } = splitMeta(WORKFLOW_FILE, parsed.value)
 
-  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE, REQUIREMENTS_FILE])
+  const slots = new FileSlots(files, [WORKFLOW_FILE, LAYOUT_FILE, REQUIREMENTS_FILE, PACKAGE_FILE])
   for (const block of namedRecords(raw.blocks)) moveIn(block, 'blocks/', slots)
   for (const fn of namedRecords(raw.functions)) {
     for (const block of namedRecords(fn.blocks)) moveIn(block, `functions/${fn.name}/blocks/`, slots)
@@ -100,9 +114,26 @@ export function decodeWorkflow(files: Files): Decoded<WorkflowObject> {
       problems.push(invalid(WORKFLOW_FILE, `settings.python: the packages belong in ${REQUIREMENTS_FILE}`))
     }
     const requirements = readRequirements(files[REQUIREMENTS_FILE])
-    if (requirements.length) {
-      raw.settings = { ...(isRecord(raw.settings) ? raw.settings : {}), python: { requirements } }
+    const index = readRequirementsIndex(files[REQUIREMENTS_FILE])
+    if (requirements.length || index) {
+      raw.settings = {
+        ...(isRecord(raw.settings) ? raw.settings : {}),
+        python: { requirements, ...(index && { index }) },
+      }
     }
+  }
+
+  if (files[PACKAGE_FILE] !== undefined) {
+    if (isRecord(raw.settings) && isRecord(raw.settings.javascript)) {
+      problems.push(invalid(WORKFLOW_FILE, `settings.javascript: the packages belong in ${PACKAGE_FILE}`))
+    }
+    const read = readPackageJson(files[PACKAGE_FILE])
+    if ('problems' in read) problems.push(...read.problems)
+    else
+      raw.settings = {
+        ...(isRecord(raw.settings) ? raw.settings : {}),
+        javascript: { packages: read.packages },
+      }
   }
 
   const result = workflowDefinitionSchema.safeParse(raw)
@@ -136,10 +167,13 @@ export function workflowForGit(def: WorkflowDefinition): WorkflowDefinition {
   return out
 }
 
-/** The definition without its Python packages (they're `requirements.txt`), and without `settings` left empty. */
+/**
+ * The definition without its packages (Python's are `requirements.txt`, JavaScript's `package.json`), and without
+ * `settings` left empty.
+ */
 function withoutRequirements(def: WorkflowDefinition): WorkflowDefinition {
-  if (!def.settings?.python) return def
-  const { python: _python, ...settings } = def.settings
+  if (!def.settings?.python && !def.settings?.javascript) return def
+  const { python: _python, javascript: _javascript, ...settings } = def.settings
   const { settings: _settings, ...rest } = def
   return Object.keys(settings).length ? { ...rest, settings } : rest
 }
@@ -152,6 +186,15 @@ export function readRequirements(content: string): string[] {
     .filter((line) => line && !line.startsWith('#'))
 }
 
+/** `requirements.txt`'s package index (M32): its `# index: <slug>` line, if it has one. */
+export function readRequirementsIndex(content: string): string | undefined {
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^#\s*index:\s*(\S+)$/.exec(line.trim())
+    if (match) return match[1]
+  }
+  return undefined
+}
+
 /** The block without the strings that get files, which go into `files`. */
 function moveOut(block: Block, dir: string, files: Files): Block {
   switch (block.type) {
@@ -160,12 +203,11 @@ function moveOut(block: Block, dir: string, files: Files): Block {
       const { code: _code, ...config } = block.config
       return { ...block, config } as Block
     }
-    case 'resourceQuery': {
-      const { sql, ...query } = block.config.query
-      if (typeof sql !== 'string') return block
-      files[`${dir}${block.name}.sql`] = textFile(sql)
-      return { ...block, config: { ...block.config, query } }
-    }
+    case 'resourceQuery':
+      return {
+        ...block,
+        config: { ...block.config, query: moveQueryText(block.config.query, `${dir}${block.name}`, files) },
+      }
     case 'loop': {
       const runner = block.config.runner
       if (runner.kind === 'code') {
@@ -174,9 +216,7 @@ function moveOut(block: Block, dir: string, files: Files): Block {
         return { ...block, config: { ...block.config, runner: rest } } as Block
       }
       if (runner.kind === 'query') {
-        const { sql, ...query } = runner.query
-        if (typeof sql !== 'string') return block
-        files[`${dir}${block.name}.sql`] = textFile(sql)
+        const query = moveQueryText(runner.query, `${dir}${block.name}`, files)
         return { ...block, config: { ...block.config, runner: { ...runner, query } } }
       }
       return block
@@ -209,7 +249,7 @@ function moveIn(block: Record<string, unknown> & { name: string }, dir: string, 
       return
     case 'resourceQuery':
       if (isRecord(config)) {
-        slots.take(`${dir}${block.name}.sql`, config.query, 'sql', { required: false, what: what('query') })
+        takeQueryText(slots, `${dir}${block.name}`, config.query, what('query'))
       }
       return
     case 'loop': {
@@ -221,7 +261,7 @@ function moveIn(block: Record<string, unknown> & { name: string }, dir: string, 
           what: what('loop'),
         })
       } else if (runner.kind === 'query') {
-        slots.take(`${dir}${block.name}.sql`, runner.query, 'sql', { required: false, what: what('loop') })
+        takeQueryText(slots, `${dir}${block.name}`, runner.query, what('loop'))
       }
       return
     }

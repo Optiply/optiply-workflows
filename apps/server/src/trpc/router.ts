@@ -1,6 +1,8 @@
 import { environments } from '@ow/db'
 import { asc, desc } from 'drizzle-orm'
+import { capabilities } from '../services/capabilities'
 import { authedProcedure, publicProcedure, router } from './init'
+import { accessTokensRouter } from './routers/access-tokens'
 import { apiKeysRouter } from './routers/api-keys'
 import { appsRouter } from './routers/apps'
 import { auditRouter } from './routers/audit'
@@ -11,11 +13,15 @@ import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
 import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
+import { jsPackagesRouter } from './routers/js-packages'
 import { libraryQueriesRouter } from './routers/library-queries'
 import { modulesRouter } from './routers/modules'
+import { npmRegistriesRouter } from './routers/npm-registries'
 import { permissionsRouter } from './routers/permissions'
+import { pythonIndexesRouter } from './routers/python-indexes'
 import { releasesRouter } from './routers/releases'
 import { resourcesRouter } from './routers/resources'
+import { retoolImportRouter } from './routers/retool-import'
 import { tasksRouter } from './routers/tasks'
 import { usersRouter } from './routers/users'
 import { workflowsRouter } from './routers/workflows'
@@ -28,10 +34,11 @@ export const appRouter = router({
     allowedDomain: ctx.config.OIDC_ALLOWED_DOMAIN,
   })),
 
-  me: publicProcedure.query(({ ctx }) => {
+  /** The signed-in person, and what they can reach (the sidebar's sections, where they may create). */
+  me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null
     const { sessionId: _sessionId, ...user } = ctx.user
-    return user
+    return { ...user, ...(await capabilities(ctx.db, ctx.user)) }
   }),
 
   environments: router({
@@ -46,17 +53,22 @@ export const appRouter = router({
   resources: resourcesRouter,
   database: databaseRouter,
   folders: foldersRouter,
+  jsPackages: jsPackagesRouter,
+  npmRegistries: npmRegistriesRouter,
   permissions: permissionsRouter,
   tasks: tasksRouter,
   configVars: configVarsRouter,
   workflows: workflowsRouter,
+  retoolImport: retoolImportRouter,
   releases: releasesRouter,
+  accessTokens: accessTokensRouter,
   apiKeys: apiKeysRouter,
   apps: appsRouter,
   libraryQueries: libraryQueriesRouter,
   modules: modulesRouter,
   componentLibraries: componentLibrariesRouter,
   git: gitRouter,
+  pythonIndexes: pythonIndexesRouter,
   branchDrafts: branchDraftsRouter,
 })
 

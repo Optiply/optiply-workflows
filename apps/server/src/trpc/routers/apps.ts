@@ -10,8 +10,9 @@ import {
 } from '@ow/app-definition'
 import { type App, appReleases, apps, permissions, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
+import { getAppVersion, listAppVersions, recordAppVersion } from '../../services/app-history'
 import { checkApp, publishAppRelease, runAppQuery, setLiveAppRelease } from '../../services/apps'
 import { componentLibraryReleasesByKey } from '../../services/component-libraries'
 import { requireGitRepo, requireRollbackAllowed, requireUnprotected } from '../../services/git/protection'
@@ -41,7 +42,7 @@ const QueryName = z.string().max(64)
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
 /** The app and the caller's access; apps the caller can't see are NOT_FOUND. */
-async function visibleApp(
+export async function visibleApp(
   ctx: AuthedContext,
   where: { id: string } | { slug: string },
 ): Promise<{ access: Access; app: App }> {
@@ -80,10 +81,27 @@ async function liveRelease(ctx: AuthedContext, app: App) {
  * browser.
  */
 export const appsRouter = router({
+  /** The apps the user can see, with who edited each last and its live release's version and time (session 40). */
   list: authedProcedure.query(async ({ ctx }) => {
     const access = await loadAccess(ctx.db, ctx.user)
-    const rows = await ctx.db.select().from(apps).orderBy(asc(apps.name))
-    return rows.filter((a) => access.appLevel(a) !== null).map((a) => summary(a, access))
+    const rows = await ctx.db
+      .select({
+        app: apps,
+        editor: users.name,
+        liveVersion: appReleases.version,
+        publishedAt: appReleases.createdAt,
+      })
+      .from(apps)
+      .leftJoin(users, eq(users.id, apps.updatedBy))
+      .leftJoin(appReleases, eq(appReleases.id, apps.liveReleaseId))
+      .orderBy(asc(apps.name))
+    return rows
+      .filter((r) => access.appLevel(r.app) !== null)
+      .map(({ app, editor, liveVersion, publishedAt }) => ({
+        ...summary(app, access),
+        updatedByName: editor,
+        liveRelease: liveVersion && publishedAt ? { version: liveVersion, publishedAt } : null,
+      }))
   }),
 
   /**
@@ -112,6 +130,19 @@ export const appsRouter = router({
     }),
 
   /**
+   * The caller's level on an app and whether it's live: what the app's page says when it can't open (editors are
+   * offered the editor, people with Use are told it isn't published, others that it isn't theirs). An app that
+   * doesn't exist and one they can't see answer alike (`level: null`), so nothing about it leaks.
+   */
+  access: authedProcedure.input(z.object({ slug: Slug })).query(async ({ ctx, input }) => {
+    const access = await loadAccess(ctx.db, ctx.user)
+    const [app] = await ctx.db.select().from(apps).where(eq(apps.slug, input.slug))
+    const level = app ? access.appLevel(app) : null
+    if (!app || level === null) return { level: null, name: null, published: false }
+    return { level, name: app.name, published: app.liveReleaseId !== null }
+  }),
+
+  /**
    * For people using the app: its live release, the module releases its instances run (M14) and the component
    * library releases its custom components run (M25, its modules' too), by `slug@version` (the app's publisher
    * vouched for them; one whose release is gone doesn't run). NOT_FOUND until the first release.
@@ -124,7 +155,14 @@ export const appsRouter = router({
     }
     return {
       ...summary(app, access),
-      release: { id: live.id, version: live.version, definition: live.definition, createdAt: live.createdAt },
+      release: {
+        id: live.id,
+        version: live.version,
+        definition: live.definition,
+        createdAt: live.createdAt,
+        /** Its JavaScript packages' bundle, at `/api/js-bundles/<hash>.js`; null without packages. */
+        jsBundleHash: live.jsBundleHash,
+      },
       ...(await placedReleases(ctx.db, live.definition)),
     }
   }),
@@ -213,17 +251,28 @@ export const appsRouter = router({
       const parsed = appDefinitionSchema.safeParse(input.definition)
       if (!parsed.success) throw invalidInput('app definition', parsed.error.issues)
       const definition: AppDefinition = parsed.data
-      const [saved] = await ctx.db
-        .update(apps)
-        .set({ draftDefinition: definition, draftRevision: input.revision + 1, updatedBy: ctx.user.id })
-        .where(and(eq(apps.id, input.id), eq(apps.draftRevision, input.revision)))
-        .returning({ revision: apps.draftRevision })
-      if (!saved) {
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: `Someone else saved this app since revision ${input.revision}; reload to get their changes`,
+      // The draft and its history entry together (session 41): one can't be saved without the other, and a collab
+      // save can't come between them.
+      const saved = await ctx.db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(apps)
+          .set({ draftDefinition: definition, draftRevision: input.revision + 1, updatedBy: ctx.user.id })
+          .where(and(eq(apps.id, input.id), eq(apps.draftRevision, input.revision)))
+          .returning({ revision: apps.draftRevision })
+        if (!row) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `Someone else saved this app since revision ${input.revision}; reload to get their changes`,
+          })
+        }
+        await recordAppVersion(tx, {
+          appId: input.id,
+          definition,
+          revision: row.revision,
+          userId: ctx.user.id,
         })
-      }
+        return row
+      })
       return {
         revision: saved.revision,
         draftHash: await appDefinitionHash(definition),
@@ -235,6 +284,12 @@ export const appsRouter = router({
   delete: authedProcedure.input(z.object({ id: Id })).mutation(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, input)
     requireLevel(access.appLevel(app), 'own', 'this app')
+    if (app.gitProtected) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'This app is kept in Git: unprotect it before deleting it',
+      })
+    }
     await ctx.db.transaction(async (tx) => {
       await tx.delete(apps).where(eq(apps.id, input.id))
       // Grants reference objects polymorphically, so they're removed here rather than by a foreign key.
@@ -249,6 +304,146 @@ export const appsRouter = router({
       metadata: { slug: app.slug },
     })
     return { ok: true }
+  }),
+
+  /**
+   * A copy of an app's draft under a new slug and name (session 40, as workflows have): no releases, not in Git,
+   * in the same folder unless another is given. Needs Edit on the original (Use opens the live app without its draft,
+   * which a copy would show) and the right to create apps.
+   */
+  duplicate: authedProcedure
+    .input(
+      z.object({
+        id: Id,
+        slug: Slug,
+        name: Name,
+        folderId: Id.nullish(),
+        /** A version from the app's history (session 41) instead of its draft. */
+        fromVersionId: Id.optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { access, app } = await visibleApp(ctx, { id: input.id })
+      requireLevel(access.appLevel(app), 'edit', 'this app')
+      if (!access.canCreateApps) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to all apps to create one' })
+      }
+      const version = input.fromVersionId
+        ? await getAppVersion(ctx.db, app.id, input.fromVersionId)
+        : undefined
+      if (input.fromVersionId && !version)
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
+      const folderId = input.folderId === undefined ? app.folderId : input.folderId
+      await checkFolderType(ctx.db, 'app', folderId)
+      const [copy] = await uniqueOr('An app with that slug already exists', () =>
+        ctx.db
+          .insert(apps)
+          .values({
+            slug: input.slug,
+            name: input.name,
+            description: app.description,
+            folderId,
+            draftDefinition: version?.definition ?? app.draftDefinition,
+            createdBy: ctx.user.id,
+            updatedBy: ctx.user.id,
+          })
+          .returning(),
+      )
+      await ctx.audit({
+        action: 'app.created',
+        objectType: 'app',
+        objectId: copy!.id,
+        metadata: {
+          slug: input.slug,
+          duplicateOf: { id: app.id, slug: app.slug },
+          ...(version && { fromVersion: { id: version.id, revision: version.revision } }),
+        },
+      })
+      return summary(copy!, access)
+    }),
+
+  /**
+   * The draft's history (session 41), newest first, a page at a time: each entry's label parts, who and when. Edit
+   * access, as for the draft itself.
+   */
+  history: authedProcedure
+    .input(
+      z.object({
+        appId: Id,
+        before: z.object({ updatedAt: z.coerce.date(), id: Id }).optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { access, app } = await visibleApp(ctx, { id: input.appId })
+      requireLevel(access.appLevel(app), 'edit', 'this app')
+      const page = await listAppVersions(ctx.db, app.id, input.before ? { before: input.before } : {})
+      const authorIds = [...new Set(page.versions.flatMap((v) => (v.createdBy ? [v.createdBy] : [])))]
+      const authors = authorIds.length
+        ? await ctx.db
+            .select({ id: users.id, name: users.name, email: users.email })
+            .from(users)
+            .where(inArray(users.id, authorIds))
+        : []
+      const byId = new Map(authors.map((a) => [a.id, a]))
+      return {
+        versions: page.versions.map((v) => ({
+          ...v,
+          author: v.createdBy ? (byId.get(v.createdBy) ?? null) : null,
+        })),
+        more: page.more,
+      }
+    }),
+
+  /** One version of the draft (session 41), to compare with the draft or preview. */
+  historyVersion: authedProcedure.input(z.object({ appId: Id, id: Id })).query(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    const version = await getAppVersion(ctx.db, app.id, input.id)
+    if (!version)
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
+    return {
+      id: version.id,
+      revision: version.revision,
+      definition: version.definition,
+      updatedAt: version.updatedAt,
+    }
+  }),
+
+  /**
+   * Makes a version the draft again (session 41): the draft is replaced (open editors fold it in, as after any save
+   * from elsewhere) and the restore is a history entry of its own. Not on a Git-protected app's main draft.
+   */
+  restoreVersion: authedProcedure.input(z.object({ appId: Id, id: Id })).mutation(async ({ ctx, input }) => {
+    const { access, app } = await visibleApp(ctx, { id: input.appId })
+    requireLevel(access.appLevel(app), 'edit', 'this app')
+    requireUnprotected(app, 'app', 'restore a version')
+    const revision = await ctx.db.transaction(async (tx) => {
+      const version = await getAppVersion(tx, app.id, input.id)
+      if (!version)
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That version is no longer in the history' })
+      const [locked] = await tx.select().from(apps).where(eq(apps.id, app.id)).for('update')
+      if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The app was deleted meanwhile' })
+      const next = locked.draftRevision + 1
+      await tx
+        .update(apps)
+        .set({ draftDefinition: version.definition, draftRevision: next, updatedBy: ctx.user.id })
+        .where(eq(apps.id, app.id))
+      await recordAppVersion(tx, {
+        appId: app.id,
+        definition: version.definition,
+        revision: next,
+        userId: ctx.user.id,
+        restoredFrom: version.id,
+      })
+      return next
+    })
+    await ctx.audit({
+      action: 'app.draft_restored',
+      objectType: 'app',
+      objectId: app.id,
+      metadata: { slug: app.slug, version: input.id },
+    })
+    return { revision }
   }),
 
   /** Releases, newest first, without definitions. */
@@ -320,7 +515,11 @@ export const appsRouter = router({
   setLive: authedProcedure.input(z.object({ appId: Id, releaseId: Id })).mutation(async ({ ctx, input }) => {
     const { access, app } = await visibleApp(ctx, { id: input.appId })
     requireRollbackAllowed(app, 'app', ctx.user)
-    const release = await setLiveAppRelease(ctx.db, access, { app, releaseId: input.releaseId })
+    const release = await setLiveAppRelease(ctx.db, access, {
+      app,
+      releaseId: input.releaseId,
+      actorUserId: ctx.user.id,
+    })
     await ctx.audit({
       action: 'app.release_live',
       objectType: 'app',
@@ -360,7 +559,13 @@ export const appsRouter = router({
     .mutation(async ({ ctx, input, signal }) => {
       const { access, app } = await visibleApp(ctx, { id: input.appId })
       const { outcome, manual, version, library, module } = await runAppQuery(
-        { db: ctx.db, keyring: ctx.config.keyring, pool: ctx.services.pool, sandbox: ctx.services.sandbox },
+        {
+          db: ctx.db,
+          keyring: ctx.config.keyring,
+          pool: ctx.services.pool,
+          sandbox: ctx.services.sandbox,
+          ...(ctx.services.runs && { runs: ctx.services.runs }),
+        },
         access,
         ctx.user,
         {

@@ -1,5 +1,15 @@
 import { expect, test } from '@playwright/test'
-import { addBlock, block, fakePubSub, field, signIn, trpcMutate, trpcQuery, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  fakePubSub,
+  field,
+  openRail,
+  signIn,
+  trpcMutate,
+  trpcQuery,
+  typeInto,
+} from './helpers'
 
 const KEY_EMAIL = 'tunnel@fake-project.iam.gserviceaccount.com'
 
@@ -111,7 +121,7 @@ test('a Pub/Sub trigger runs the workflow per message, and the editor and run pa
   await page.goto(`/workflows/${flow.id}`)
 
   await test.step('the trigger is set up in the start block: a Pub/Sub resource and its subscription', async () => {
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     const section = page.getByTestId('pubsub-triggers')
     await section.getByRole('button', { name: 'Add' }).click()
     const card = page.getByTestId('pubsub-subscription-1')

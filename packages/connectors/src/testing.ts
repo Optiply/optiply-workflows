@@ -103,8 +103,12 @@ export async function startTestMysql(): Promise<TestMysql> {
   }
 }
 
+export { type FakeAi, sample as fakeAiSample, startFakeAi } from './ai/fake'
 export { type FakeAws, type FakeAwsKey, type FakeAwsRole, startFakeAws } from './aws/fake'
 export type { FakeSqs, FakeSqsMessage, FakeSqsQueueOptions } from './aws/fake-sqs'
+export { s3Available, startTestS3, type TestS3 } from './aws/test-s3'
+export { startTestGraphql, type TestGraphql } from './graphql-fake'
+export { type FakeRegistry, startFakeRegistry } from './kafka/fake-registry'
 export { kafkaAvailable, startTestKafka, type TestKafka } from './kafka/test-kafka'
 export {
   type FakeDelivery,
@@ -112,6 +116,16 @@ export {
   type FakeSubscriptionSettings,
   startFakePubSub,
 } from './pubsub/fake'
+export { rabbitAvailable, startTestRabbit, type TestRabbit } from './rabbitmq/test-rabbitmq'
+export {
+  type FakeHubSpot,
+  type FakeSendGrid,
+  type FakeServices,
+  type FakeSheets,
+  type FakeSlack,
+  type FakeSpreadsheet,
+  startFakeServices,
+} from './services/fake'
 export {
   startTestIapServer,
   startTestSshServer,

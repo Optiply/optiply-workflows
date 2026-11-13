@@ -1,4 +1,4 @@
-import type { Block, FunctionDefinition } from '@ow/definition'
+import type { Block, FunctionDefinition, QueueTriggerKind } from '@ow/definition'
 
 /** What the last run produced for a block, if anything. */
 export interface SampleResult {
@@ -231,10 +231,36 @@ const GLOBALS = `
 declare const _: any
 /** Day.js, with the utc, timezone, customParseFormat and relativeTime plugins. */
 declare const dayjs: any
+/** Moment.js (no timezone data: use dayjs.tz for time zones). */
+declare const moment: any
+/** Numbro, number formatting: numbro(1234.5).format({ thousandSeparated: true, mantissa: 2 }). */
+declare const numbro: any
+/** Papa Parse: Papa.parse(csvText, { header: true }).data, Papa.unparse(rows). */
+declare const Papa: any
+/** uuid: uuid.v4(), uuid.v7(), uuid.validate(text). */
+declare const uuid: {
+  v1(): string
+  v4(): string
+  v7(): string
+  validate(text: string): boolean
+  version(text: string): number
+  NIL: string
+  MAX: string
+  [name: string]: any
+}
 ${SQL_HELPERS}
 /** Config vars for the run's environment (secret ones only in released runs). */
 declare const configVars: Record<string, string>
-declare const workflowContext: { runId: string; workflowId: string; environment: string; triggerType: string }
+declare const workflowContext: {
+  runId: string
+  workflowId: string
+  /** The workflow's name. */
+  name: string
+  environment: string
+  triggerType: string
+  /** The run (as Retool's workflowContext has it). */
+  currentRun: { id: string; startedAtEpochMs: number }
+}
 /** The caller's Idempotency-Key, or the run id. */
 declare const idempotencyKey: string
 /** In a filter condition or a loop: the current item. */
@@ -250,6 +276,8 @@ interface OwPubSubMessage {
   subscription: string
   /** The data's bytes, for binary payloads. */
   dataBase64: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 /** An SQS trigger's message (runs an SQS trigger started); its body is \`startTrigger.data\`. */
 interface OwSqsMessage {
@@ -274,6 +302,30 @@ interface OwKafkaMessage {
   /** This run's attempt at the message, counting from 1. */
   attempt: number
   groupId: string
+  /** The Schema Registry schema the value was decoded with. */
+  schemaId?: number
+  /** Why a value in the registry's wire format couldn't be decoded. */
+  schemaError?: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
+}
+interface OwKinesisMessage {
+  stream: string; shardId: string; sequenceNumber: string; partitionKey: string; arrivedAt: string
+  /** This run's attempt at the record, counting from 1. */
+  attempt: number
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
+}
+interface OwRabbitMessage {
+  queue: string
+  /** Empty: the default exchange (the routing key is then the queue). */
+  exchange: string; routingKey: string
+  /** Delivered before and not acked (a lost connection, another worker). */
+  redelivered: boolean
+  headers: Record<string, any>
+  messageId?: string; contentType?: string; correlationId?: string; timestamp?: string
+  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
+  encoding?: 'base64'
 }
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean
@@ -283,6 +335,50 @@ interface OwResponse {
 /** An HTTP request (code only). The body must be a string; private and internal addresses are refused. */
 declare function fetch(url: string, init?: { method?: string; headers?: Record<string, string> | [string, string][]; body?: string }): Promise<OwResponse>
 `
+
+/** An AI query's metadata (M35): who answered, the tokens and the cost. */
+const AI_METADATA =
+  'provider: string; model: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }; costUsd: number | null; stopReason: string; durationMs: number;'
+
+/**
+ * What an AI query's data is (M35), from its action: text, the extract schema's type, the classify labels, the
+ * agent's answer and steps. Undefined when the action isn't one of them.
+ */
+export function aiDataType(query: unknown): string | undefined {
+  if (!query || typeof query !== 'object') return undefined
+  const q = query as Record<string, unknown>
+  switch (q.action) {
+    case 'generate':
+    case 'summarize':
+      return 'string'
+    case 'extract': {
+      let schema = q.schema
+      if (typeof schema === 'string') {
+        try {
+          schema = JSON.parse(schema)
+        } catch {
+          return 'unknown'
+        }
+      }
+      return schemaType(schema)
+    }
+    case 'classify': {
+      const list = Array.isArray(q.labels)
+        ? q.labels
+        : typeof q.labels === 'string'
+          ? q.labels.split(',')
+          : []
+      const labels = [...new Set(list.map((l) => String(l).trim()).filter((l) => l && !l.includes('{{')))]
+      const label = labels.length ? labels.map(literal).join(' | ') : 'string'
+      const several = q.multiple === true || q.multiple === 'true'
+      return several ? `{ labels: (${label})[]; reason: string }` : `{ label: ${label}; reason: string }`
+    }
+    case 'agent':
+      return '{ answer: string; steps: { workflow: string; input: unknown; runId: string | null; ok: boolean }[] }'
+    default:
+      return undefined
+  }
+}
 
 /**
  * Declarations for every block's result in the open graph, typed from the last run where there is one, so
@@ -297,9 +393,17 @@ export function scopeDeclarations(
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
   /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
-  queues: readonly ('pubsub' | 'sqs' | 'kafka')[] = [],
+  queues: readonly QueueTriggerKind[] = [],
+  /** Slugs of the AI resources (M35): their queries' data is typed from the action. */
+  aiResources: ReadonlySet<string> = new Set(),
 ): { dts: string; sample: Record<string, unknown> } {
-  const MESSAGE_TYPES = { pubsub: 'OwPubSubMessage', sqs: 'OwSqsMessage', kafka: 'OwKafkaMessage' } as const
+  const MESSAGE_TYPES = {
+    pubsub: 'OwPubSubMessage',
+    sqs: 'OwSqsMessage',
+    kafka: 'OwKafkaMessage',
+    rabbitmq: 'OwRabbitMessage',
+    kinesis: 'OwKinesisMessage',
+  } as const
   const messageType = queues.length ? queues.map((k) => MESSAGE_TYPES[k]).join(' | ') : 'OwPubSubMessage'
   const lines = [GLOBALS]
   for (const fn of functions) {
@@ -313,9 +417,20 @@ export function scopeDeclarations(
   const sample: Record<string, unknown> = {
     _: {},
     dayjs: {},
+    moment: {},
+    numbro: {},
+    Papa: {},
+    uuid: {},
     sql: {},
     configVars: {},
-    workflowContext: { runId: '', workflowId: '', environment: '', triggerType: '' },
+    workflowContext: {
+      runId: '',
+      workflowId: '',
+      name: '',
+      environment: '',
+      triggerType: '',
+      currentRun: { id: '', startedAtEpochMs: 0 },
+    },
     idempotencyKey: '',
   }
   if (inFunction) {
@@ -324,18 +439,24 @@ export function scopeDeclarations(
   for (const block of blocks) {
     // Function blocks have no run samples (function calls aren't recorded per block).
     const result = inFunction ? undefined : samples[block.name]
+    const ai =
+      block.type === 'resourceQuery' && aiResources.has(block.config.resource)
+        ? aiDataType(block.config.query)
+        : undefined
     const data =
       block.type === 'startTrigger' && bodySchema
         ? schemaType(bodySchema)
-        : result
-          ? typeOf(result.data)
-          : 'unknown'
+        : ai
+          ? ai
+          : result
+            ? typeOf(result.data)
+            : 'unknown'
     const extra =
       block.type === 'startTrigger'
         ? ` headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: ${messageType};`
         : ''
     lines.push(
-      `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; [key: string]: unknown };${extra} }`,
+      `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; ${ai ? AI_METADATA : ''} [key: string]: unknown };${extra} }`,
     )
     sample[block.name] = {
       data: result?.data ?? null,

@@ -8,8 +8,22 @@ import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { CustomAuthFields } from './custom-auth'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
+import { OpenApiSpecFields } from './openapi-settings'
 import { OverridesCard } from './overrides'
-import { KafkaFields, SqsFields } from './queue-settings'
+import { KafkaFields, KinesisFields, RabbitFields, S3Fields, SnsFields, SqsFields } from './queue-settings'
+import {
+  AirtableFields,
+  AnthropicFields,
+  GoogleSheetsFields,
+  HubSpotFields,
+  JiraFields,
+  NotionFields,
+  OpenAiCompatibleFields,
+  SalesforceFields,
+  SendGridFields,
+  SlackFields,
+  StripeFields,
+} from './service-settings'
 import {
   ConnectorErrorNote,
   type KeyValue,
@@ -41,7 +55,7 @@ const DEFAULTS: Record<string, Config> = {
     ssl: 'prefer',
     poolSize: 5,
     readOnly: false,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
   },
   mysql: {
@@ -52,17 +66,41 @@ const DEFAULTS: Record<string, Config> = {
     ssl: 'require',
     poolSize: 5,
     readOnly: false,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
   },
   bigquery: {
     maximumBytesBilled: 10 * 1024 ** 3,
-    maxRows: 10_000,
+    maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
     labels: {},
   },
   pubsub: { identity: 'key' },
+  slack: { auth: { type: 'token' } },
+  hubspot: { auth: { type: 'token' } },
+  sendgrid: { region: 'global' },
+  stripe: {},
+  anthropic: { model: 'claude-sonnet-5-5', hidePrompts: false, fallback: true, allowPrivateNetwork: false },
+  openai_compatible: { baseUrl: '', model: '', hidePrompts: false, allowPrivateNetwork: false },
+  airtable: {},
+  jira: { siteUrl: '', deployment: 'cloud', allowPrivateNetwork: false },
+  notion: {},
+  salesforce: { domain: '', apiVersion: 'v62.0', auth: { type: 'oauth', clientId: '' } },
+  googlesheets: { auth: { type: 'serviceAccount' } },
+  graphql: {
+    baseUrl: '',
+    headers: [],
+    params: [],
+    auth: { type: 'none' },
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    maxResponseBytes: 10 * 1024 * 1024,
+  },
   sqs: { region: 'eu-west-1', identity: 'key' },
+  s3: { region: 'eu-west-1', identity: 'key', forcePathStyle: false },
+  rabbitmq: { host: '', vhost: '/', username: '', tls: false, allowPrivateNetwork: false },
+  sns: { region: 'eu-west-1', identity: 'key' },
+  kinesis: { region: 'eu-west-1', identity: 'key' },
   kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
@@ -72,6 +110,16 @@ const DEFAULTS: Record<string, Config> = {
     allowedHosts: [],
     allowPrivateNetwork: false,
     maxResponseBytes: 10 * 1024 * 1024,
+  },
+  openapi: {
+    baseUrl: '',
+    headers: [],
+    params: [],
+    auth: { type: 'none' },
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    maxResponseBytes: 10 * 1024 * 1024,
+    spec: '',
   },
 }
 
@@ -202,12 +250,47 @@ export function SettingsPanel({
           <PubSubFields {...props} />
         ) : resource.type === 'sqs' ? (
           <SqsFields {...props} />
+        ) : resource.type === 's3' ? (
+          <S3Fields {...props} />
+        ) : resource.type === 'rabbitmq' ? (
+          <RabbitFields {...props} />
+        ) : resource.type === 'sns' ? (
+          <SnsFields {...props} />
+        ) : resource.type === 'kinesis' ? (
+          <KinesisFields {...props} />
         ) : resource.type === 'kafka' ? (
           <KafkaFields {...props} />
+        ) : resource.type === 'slack' ? (
+          <SlackFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'hubspot' ? (
+          <HubSpotFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'sendgrid' ? (
+          <SendGridFields {...props} />
+        ) : resource.type === 'stripe' ? (
+          <StripeFields {...props} />
+        ) : resource.type === 'anthropic' ? (
+          <AnthropicFields {...props} />
+        ) : resource.type === 'openai_compatible' ? (
+          <OpenAiCompatibleFields {...props} />
+        ) : resource.type === 'airtable' ? (
+          <AirtableFields {...props} />
+        ) : resource.type === 'jira' ? (
+          <JiraFields {...props} />
+        ) : resource.type === 'notion' ? (
+          <NotionFields {...props} />
+        ) : resource.type === 'salesforce' ? (
+          <SalesforceFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'googlesheets' ? (
+          <GoogleSheetsFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
-          <RestFields {...props} resourceId={resource.id} />
+          <>
+            <RestFields {...props} resourceId={resource.id} graphql={resource.type === 'graphql'} />
+            {resource.type === 'openapi' && (
+              <OpenApiSpecFields {...props} resourceId={resource.id} environmentId={environmentId} />
+            )}
+          </>
         )}
       </Card>
       {fromGit && stored?.config && (
@@ -436,7 +519,10 @@ function SqlFields(props: FieldsProps & { type: string }) {
         <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
           <Input {...number('maxRows')} />
         </Field>
-        <Field label="Statement timeout (ms)">
+        <Field
+          label="Statement timeout (ms)"
+          hint="For queries without a timeout of their own; a block's or query's timeout overrides it."
+        >
           <Input {...number('statementTimeoutMs')} />
         </Field>
         <Field label="Connection pool size">
@@ -613,7 +699,10 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
           <Input {...number('maxRows')} />
         </Field>
-        <Field label="Statement timeout (ms)" hint="The job is cancelled when it runs longer.">
+        <Field
+          label="Statement timeout (ms)"
+          hint="The job is cancelled when it runs longer. A block's or query's own timeout overrides it."
+        >
           <Input {...number('statementTimeoutMs')} />
         </Field>
       </Grid>
@@ -638,8 +727,9 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
 
 type Auth = { type: string; [key: string]: unknown }
 
-function RestFields(props: FieldsProps & { resourceId: string }) {
-  const { config, set, secrets, edits, setEdit, disabled, resourceId } = props
+/** A REST resource's settings, and GraphQL's (M27), whose base URL is the endpoint queries are posted to. */
+function RestFields(props: FieldsProps & { resourceId: string; graphql?: boolean }) {
+  const { config, set, secrets, edits, setEdit, disabled, resourceId, graphql } = props
   const auth = (config.auth ?? { type: 'none' }) as Auth
   const setAuth = (patch: Partial<Auth>) => set('auth', { ...auth, ...patch })
   const secret = (key: string, label: string) => (
@@ -665,12 +755,16 @@ function RestFields(props: FieldsProps & { resourceId: string }) {
   return (
     <>
       <Field
-        label="Base URL"
-        hint="Queries add a path to this; they can't reach other hosts unless allowed below."
+        label={graphql ? 'Endpoint URL' : 'Base URL'}
+        hint={
+          graphql
+            ? 'Queries are posted here as JSON. Test connection fetches the schema for the editor.'
+            : "Queries add a path to this; they can't reach other hosts unless allowed below."
+        }
       >
         <Input
           value={String(config.baseUrl ?? '')}
-          placeholder="https://api.example.com/v1"
+          placeholder={graphql ? 'https://api.example.com/graphql' : 'https://api.example.com/v1'}
           disabled={disabled}
           onChange={(e) => set('baseUrl', e.target.value)}
         />

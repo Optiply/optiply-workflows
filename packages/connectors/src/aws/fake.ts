@@ -1,6 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { type FakeKinesis, fakeKinesis } from './fake-kinesis'
+import { type FakeSns, fakeSns } from './fake-sns'
 import { type FakeSqs, type FakeSqsOptions, fakeSqs } from './fake-sqs'
 
 /**
@@ -47,6 +49,8 @@ export interface FakeAws {
   /** Service handlers by signed service name. */
   readonly handlers: Map<string, ServiceHandler>
   sqs: FakeSqs
+  sns: FakeSns
+  kinesis: FakeKinesis
 }
 
 export type ServiceHandler = (req: SignedRequest, res: ServerResponse) => void | Promise<void>
@@ -68,6 +72,9 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   const failures = new Map<string, { code: string; status: number; count: number }>()
   const calls: FakeAws['calls'] = []
   const handlers = new Map<string, ServiceHandler>()
+  let base = ''
+  const sns = fakeSns(handlers, account, () => base)
+  const kinesis = fakeKinesis(handlers, account)
 
   function newKey(prefix: string, arn: string, extra: Partial<FakeAwsKey> = {}): FakeAwsKey {
     const key: FakeAwsKey = {
@@ -133,6 +140,8 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   })
 
   async function handle(req: IncomingMessage, res: ServerResponse, body: Buffer): Promise<void> {
+    // SNS's certificate and subscription confirmations are fetched without signing, as from AWS.
+    if (req.method === 'GET' && sns.route(req.url ?? '/', res)) return
     const signed = verify(req, body, keys)
     if ('error' in signed) {
       const json = String(req.headers['content-type'] ?? '').includes('json')
@@ -157,12 +166,15 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
   const url = `http://127.0.0.1:${port}`
+  base = url
   const sqs = fakeSqs(handlers, account, () => url, opts.sqs)
 
   return {
     url,
     account,
     sqs,
+    sns,
+    kinesis,
     calls,
     handlers,
     addUser(name) {

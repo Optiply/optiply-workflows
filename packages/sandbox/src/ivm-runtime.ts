@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import ivm from 'isolated-vm'
 import { stdlibSource } from './stdlib'
 import {
@@ -6,11 +7,16 @@ import {
   type RunOptions,
   SandboxError,
   type SandboxFetchRequest,
+  type SandboxModules,
 } from './types'
 
 const DEFAULT_TIMEOUT_MS = 10_000
 /** Extra wall-clock time after `timeoutMs` before the watchdog disposes the whole isolate. */
 const WATCHDOG_GRACE_MS = 250
+/** Random bytes for the sandbox's crypto.getRandomValues (the prelude caps a call at 64 KiB). */
+const RANDOM = new ivm.Callback((n: number) =>
+  randomBytes(Math.min(Math.max(0, n | 0), 65536)).toString('hex'),
+)
 
 let snapshot: ivm.ExternalCopy<ArrayBuffer> | undefined
 function getSnapshot() {
@@ -37,10 +43,12 @@ export interface IvmRuntimeOptions {
  */
 export class IvmRuntime implements CodeRuntime {
   private isolate: ivm.Isolate | undefined
+  /** Package bundles compiled in the current isolate, by hash (a script runs in any of its contexts). */
+  private scripts = new Map<string, ivm.Script>()
   private readonly memoryLimitMb: number
 
   constructor(opts: IvmRuntimeOptions = {}) {
-    this.memoryLimitMb = opts.memoryLimitMb ?? 128
+    this.memoryLimitMb = opts.memoryLimitMb ?? 512
   }
 
   evalExpression(expression: string, scope: Record<string, unknown>, opts: RunOptions = {}) {
@@ -57,6 +65,7 @@ export class IvmRuntime implements CodeRuntime {
   dispose() {
     if (this.isolate && !this.isolate.isDisposed) this.isolate.dispose()
     this.isolate = undefined
+    this.scripts = new Map()
   }
 
   /** CPU time consumed by the current isolate, for run metadata. */
@@ -67,6 +76,7 @@ export class IvmRuntime implements CodeRuntime {
   private getIsolate(): ivm.Isolate {
     if (!this.isolate || this.isolate.isDisposed) {
       this.isolate = new ivm.Isolate({ memoryLimit: this.memoryLimitMb, snapshot: getSnapshot() })
+      this.scripts = new Map()
     }
     return this.isolate
   }
@@ -97,6 +107,8 @@ export class IvmRuntime implements CodeRuntime {
           throw new SandboxError('serialization', `Scope value "${key}" is not serializable: ${message(err)}`)
         }
       }
+      // crypto.getRandomValues (the prelude's) reads its bytes from here, as hex.
+      global.setSync('__owRandom', RANDOM)
       const onLog = opts.onLog
       if (onLog) {
         global.setSync(
@@ -110,8 +122,14 @@ export class IvmRuntime implements CodeRuntime {
         if (names.length) context.evalSync(`__owBindFunctions(${JSON.stringify(names)})`)
       }
 
+      // The bundle's time counts toward the code's limit: the code gets what's left.
+      const started = Date.now()
+      if (opts.modules) {
+        await (await this.modulesScript(isolate, opts.modules)).run(context, { timeout: timeoutMs })
+      }
+
       return await context.eval(code, {
-        timeout: timeoutMs,
+        timeout: Math.max(1, timeoutMs - (Date.now() - started)),
         copy: true,
         promise: mode.async,
         filename: 'user-code.js',
@@ -124,6 +142,19 @@ export class IvmRuntime implements CodeRuntime {
       if (context && !isolate.isDisposed) context.release()
       if (isolate.isDisposed && this.isolate === isolate) this.isolate = undefined
     }
+  }
+
+  private async modulesScript(isolate: ivm.Isolate, modules: SandboxModules): Promise<ivm.Script> {
+    let script = this.scripts.get(modules.hash)
+    if (!script) {
+      try {
+        script = await isolate.compileScript(modules.js, { filename: 'ow:packages.js' })
+      } catch (err) {
+        throw new SandboxError('runtime', `The JavaScript packages couldn't be loaded: ${message(err)}`)
+      }
+      this.scripts.set(modules.hash, script)
+    }
+    return script
   }
 }
 

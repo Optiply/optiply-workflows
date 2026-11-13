@@ -27,6 +27,15 @@ describe('queueMessageLine (M26)', () => {
         input: { message: { topic: 'orders', partition: 1, offset: '42', key: 'k', attempt: 3 } },
       }),
     ).toBe('Kafka orders/1@42 · key k · attempt 3')
+    // M30: decoded by the Schema Registry.
+    expect(
+      queueMessageLine({
+        triggerType: 'kafka',
+        input: {
+          message: { topic: 'orders', partition: 0, offset: '7', key: null, schemaId: 3, attempt: 1 },
+        },
+      }),
+    ).toBe('Kafka orders/0@7 · schema 3')
     expect(queueMessageLine({ triggerType: 'webhook', input: { data: {} } })).toBeUndefined()
   })
 })

@@ -8,7 +8,7 @@ import type {
 import { Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { Button, Card, ErrorNote, Field, Input, SectionLabel, Select } from '@/components/ui'
+import { Button, Card, Checkbox, ErrorNote, Field, Input, SectionLabel, Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
 type Edit = (next: (d: ComponentLibraryDefinition) => ComponentLibraryDefinition) => void
@@ -196,6 +196,17 @@ export function ComponentsCard({
               />
             </Field>
           </div>
+          <Checkbox
+            label="Grows with its content (Height: Auto in apps)"
+            checked={!!component.autoHeight}
+            disabled={readOnly}
+            onChange={(e) =>
+              editComponent((c) => {
+                const { autoHeight: _, ...rest } = c
+                return e.target.checked ? { ...rest, autoHeight: true } : rest
+              })
+            }
+          />
 
           <SectionLabel>Props</SectionLabel>
           {Object.entries(component.props).map(([name, prop]) => (

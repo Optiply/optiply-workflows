@@ -76,6 +76,7 @@ export async function runStoredQuery(
     // A person is always behind these queries: per-user resources use their own account.
     const credentials = credentialsFor(
       { db, keyring: deps.keyring, sandbox: deps.sandbox },
+      resource.type,
       resolved,
       user.id,
     )

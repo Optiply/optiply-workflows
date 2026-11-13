@@ -10,13 +10,29 @@ export const TYPE_LABELS: Record<Column['type'], string> = {
   text: 'Text',
   integer: 'Integer',
   bigint: 'Big integer',
-  decimal: 'Decimal',
-  boolean: 'True/false',
+  decimal: 'Number',
+  boolean: 'Checkbox',
   date: 'Date',
-  datetime: 'Date & time',
+  datetime: 'Date + Time',
   json: 'JSON',
   uuid: 'UUID',
   other: 'Other',
+}
+
+/** How a column's type reads: its preset where it has one (an enum, a foreign key, an auto-numbered ID). */
+export function columnLabel(column: Column): string {
+  if (column.primaryKey) return 'key'
+  if (column.identity) return 'Auto ID'
+  if (column.references) return `→ ${column.references.table}`
+  if (column.enumValues) return 'Enum'
+  if (
+    column.type === 'datetime' &&
+    column.default.kind === 'expression' &&
+    column.default.expression === 'now()'
+  )
+    return 'Created time'
+  if (column.type === 'other') return column.sqlType
+  return TYPE_LABELS[column.type]
 }
 
 /** Starting widths, by type; columns can be resized. */
@@ -85,6 +101,8 @@ export function parseCell(
   text: string,
   column: Column,
 ): { ok: true; value: unknown } | { ok: false; error: string } {
+  // An enum's select: empty is NULL, like the other selects.
+  if (column.enumValues) return { ok: true, value: text === '' ? null : text }
   if (column.type === 'text') return { ok: true, value: text }
   if (text.trim() === '') return { ok: true, value: null }
   if (column.type === 'json') {
@@ -139,6 +157,28 @@ export function ValueInput({
   id?: string
 }) {
   const base = 'h-full w-full bg-surface px-2 text-sm outline-none'
+  if (column.enumValues) {
+    return (
+      <select
+        id={id}
+        className={cn(base, className)}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        // biome-ignore lint/a11y/noAutofocus: the editor opens on purpose, focused
+        autoFocus={autoFocus}
+      >
+        <option value="">NULL</option>
+        {/* A value set in SQL before the enum stays choosable. */}
+        {value !== '' && !column.enumValues.includes(value) && <option value={value}>{value}</option>}
+        {column.enumValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+    )
+  }
   if (column.type === 'boolean') {
     return (
       <select

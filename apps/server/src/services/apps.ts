@@ -8,9 +8,11 @@ import {
   usedComponentLibraries,
   usedLibraries,
   usedModules,
+  usedWorkflows,
   validateApp,
 } from '@ow/app-definition'
 import { getConnector } from '@ow/connectors'
+import { scrubSecretsDeep } from '@ow/crypto'
 import {
   type App,
   type AppRelease,
@@ -24,16 +26,21 @@ import {
   type Module,
   type Resource,
   resources,
+  workflows,
 } from '@ow/db'
 import { canonicalJson, type VersionBump } from '@ow/definition'
+import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray } from 'drizzle-orm'
+import { type AppWorkflowRuns, runWorkflowQuery } from './app-workflow-query'
 import { componentLibraryInfos } from './component-libraries'
+import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
 import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
+import { loadConfigVars } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -59,16 +66,31 @@ export async function checkApp(
   libraries: LibraryQuery[]
   modules: Module[]
   componentLibraries: ComponentLibrary[]
+  /** The workflows its workflow queries run (M36). */
+  workflows: { id: string; slug: string; folderId: string | null }[]
   errors: AppDiagnostic[]
   diagnostics: AppDiagnostic[]
 }> {
   const slugs = queriedResources(definition)
-  const [rows, libraries, placed, components] = await Promise.all([
+  const workflowSlugs = usedWorkflows(definition)
+  const [rows, libraries, placed, components, ran] = await Promise.all([
     slugs.length ? db.select().from(resources).where(inArray(resources.slug, slugs)) : [],
     libraryInfos(db, usedLibraries(definition)),
     moduleInfos(db, usedModules(definition)),
     componentLibraryInfos(db, usedComponentLibraries(definition)),
+    workflowSlugs.length
+      ? db
+          .select({
+            id: workflows.id,
+            slug: workflows.slug,
+            folderId: workflows.folderId,
+            liveReleaseId: workflows.liveReleaseId,
+          })
+          .from(workflows)
+          .where(inArray(workflows.slug, workflowSlugs))
+      : [],
   ])
+  const workflowsBySlug = new Map(ran.map((w) => [w.slug, w]))
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const { diagnostics } = validateApp(definition, {
     resolveModule: (slug) => placed.get(slug)?.info,
@@ -78,6 +100,10 @@ export async function checkApp(
     },
     resolveLibrary: (slug) => libraries.get(slug)?.info,
     resolveComponentLibrary: (slug) => components.get(slug)?.info,
+    resolveWorkflow: (slug) => {
+      const workflow = workflowsBySlug.get(slug)
+      return workflow ? (workflow.liveReleaseId ? 'published' : 'unpublished') : undefined
+    },
     ...(self && { self }),
   })
   return {
@@ -85,6 +111,7 @@ export async function checkApp(
     libraries: [...libraries.values()].map((l) => l.query),
     modules: [...placed.values()].map((m) => m.module),
     componentLibraries: [...components.values()].map((c) => c.library),
+    workflows: ran.map(({ id, slug, folderId }) => ({ id, slug, folderId })),
     errors: diagnostics.filter((d) => d.severity === 'error'),
     diagnostics,
   }
@@ -101,11 +128,24 @@ async function checkReleasable(
   access: Access | null,
   app: App,
   definition: AppDefinition,
-): Promise<void> {
+  /** Whose release it is, and (a rollback) the release's own JavaScript bundle and lock. */
+  js: { actorUserId: string | null; existing?: { jsLock: string | null; jsBundleHash: string | null } },
+): Promise<ReleaseJsBundle | null> {
   if (access && !atLeast(access.appLevel(app), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this app to release it' })
   }
   await checkVouched(db, access, definition, 'app')
+  // Last, as it may take a while (a first install): every cheaper reason to refuse comes first.
+  try {
+    return await releaseJsBundle(db, definition.javascript?.packages, js.existing ?? null, {
+      objectType: 'app',
+      objectId: app.id,
+      actorUserId: js.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
 }
 
 /**
@@ -126,6 +166,7 @@ export async function checkVouched(
     libraries,
     modules: placed,
     componentLibraries,
+    workflows: ran,
     errors,
   } = await checkApp(db, definition, self)
   if (errors.length) {
@@ -136,6 +177,14 @@ export async function checkVouched(
     })
   }
   if (!access) return
+  for (const workflow of ran) {
+    if (!atLeast(access.workflowLevel(workflow), 'use')) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `You need use access to workflow "${workflow.slug}" to release this ${what}, which runs it`,
+      })
+    }
+  }
   for (const library of libraries) {
     if (!atLeast(access.libraryQueryLevel(library), 'use')) {
       throw new TRPCError({
@@ -192,7 +241,7 @@ export async function publishAppRelease(
   if (app.draftRevision !== opts.draftRevision) throw changedSince(opts.draftRevision)
   const definition = canonicalizeApp(app.draftDefinition)
   const hash = await appDefinitionHash(definition)
-  await checkReleasable(db, access, app, definition)
+  const js = await checkReleasable(db, access, app, definition, { actorUserId: user.id })
 
   return db.transaction(async (tx) => {
     // Serializes publishing and setting the live release of one app.
@@ -204,6 +253,7 @@ export async function publishAppRelease(
       notes: opts.notes,
       createdBy: user.id,
       gitCommit: null,
+      js,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -235,7 +285,7 @@ export async function deployAppFromGit(
 ): Promise<AppRelease | null> {
   const definition = canonicalizeApp(opts.definition)
   const hash = await appDefinitionHash(definition)
-  await checkReleasable(db, null, opts.app, definition)
+  const js = await checkReleasable(db, null, opts.app, definition, { actorUserId: null })
   return db.transaction(async (tx) => {
     const [locked] = await tx.select().from(apps).where(eq(apps.id, opts.app.id)).for('update')
     if (!locked) throw new TRPCError({ code: 'NOT_FOUND', message: 'The app was deleted meanwhile' })
@@ -255,6 +305,7 @@ export async function deployAppFromGit(
       notes: opts.notes,
       createdBy: null,
       gitCommit: opts.commit,
+      js,
     })
     if ('unchanged' in release) return null
     await tx.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, locked.id))
@@ -274,6 +325,7 @@ async function insertAppRelease(
     notes?: string | null
     createdBy: string | null
     gitCommit: string | null
+    js: ReleaseJsBundle | null
   },
 ): Promise<AppRelease | { unchanged: string }> {
   const existing = await tx
@@ -296,6 +348,8 @@ async function insertAppRelease(
       notes: opts.notes?.trim() || null,
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
+      jsLock: opts.js?.jsLock ?? null,
+      jsBundleHash: opts.js?.jsBundleHash ?? null,
     })
     .returning()
   return release!
@@ -305,19 +359,27 @@ async function insertAppRelease(
 export async function setLiveAppRelease(
   db: Db,
   access: Access,
-  opts: { app: App; releaseId: string },
+  opts: { app: App; releaseId: string; actorUserId?: string | null },
 ): Promise<AppRelease> {
   const [release] = await db
     .select()
     .from(appReleases)
     .where(and(eq(appReleases.id, opts.releaseId), eq(appReleases.appId, opts.app.id)))
   if (!release) throw new TRPCError({ code: 'NOT_FOUND', message: 'Release not found' })
-  await checkReleasable(db, access, opts.app, release.definition)
+  const js = await checkReleasable(db, access, opts.app, release.definition, {
+    actorUserId: opts.actorUserId ?? null,
+    existing: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
+  })
+  // Its JavaScript packages' bundle, when it had none or lost it (rebuilt from its lock).
+  if (js && (js.jsBundleHash !== release.jsBundleHash || js.jsLock !== release.jsLock)) {
+    await db.update(appReleases).set(js).where(eq(appReleases.id, release.id))
+    Object.assign(release, js)
+  }
   await db.update(apps).set({ liveReleaseId: release.id }).where(eq(apps.id, opts.app.id))
   return release
 }
 
-export type AppQueryDeps = QueryRunDeps
+export type AppQueryDeps = QueryRunDeps & { runs?: AppWorkflowRuns }
 export type AppQueryOutcome = QueryOutcome
 
 /**
@@ -465,16 +527,23 @@ export async function runDefinitionQuery(
     })
   }
   const currentUser = { id: user.id, email: user.email, name: user.name }
-  const evaluate = (code: string): unknown => {
+  // Config vars (M36), loaded once the first {{ }} reads them: secret ones for a release, not for a draft (whoever
+  // edits a draft could show one). Their secret values are scrubbed from what goes back to the browser.
+  let config: Promise<{ configVars: Record<string, unknown>; secrets: string[] }> | undefined
+  const configOf = () =>
+    (config ??= loadConfigVars(deps.db, deps.keyring, opts.environmentId, { withSecrets: !opts.draft }))
+  /** The outcome without secret config values, when the query read config vars. */
+  const scrubbed = async (outcome: AppQueryOutcome): Promise<AppQueryOutcome> =>
+    config ? scrubSecretsDeep(outcome, (await config).secrets) : outcome
+  const evaluate = async (code: string): Promise<unknown> => {
     switch (expressionSide(code)) {
-      case 'server':
-        return deps.sandbox.evalExpression(
-          code,
-          { current_user: currentUser },
-          { timeoutMs: EXPRESSION_TIMEOUT_MS },
-        )
+      case 'server': {
+        const scope: Record<string, unknown> = { current_user: currentUser }
+        if (/\bconfigVars\b/.test(code)) scope.configVars = (await configOf()).configVars
+        return deps.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS })
+      }
       case 'mixed':
-        throw new Error('current_user must be in a {{ }} of its own')
+        throw new Error('current_user and configVars must be in a {{ }} of their own')
       case 'browser':
         if (!Object.hasOwn(opts.values, code)) {
           throw new Error('The browser sent no value for it; reload the app')
@@ -495,7 +564,17 @@ export async function runDefinitionQuery(
       ...(opts.signal && { signal: opts.signal }),
       labels,
     })
-    return { outcome, manual: query.run === 'manual', library: null }
+    return { outcome: await scrubbed(outcome), manual: query.run === 'manual', library: null }
+  }
+  if (query.kind === 'workflow') {
+    const outcome = await runWorkflowQuery(deps, access, user, {
+      query,
+      environmentId: opts.environmentId,
+      evaluate,
+      draft: opts.draft,
+      ...(opts.signal && { signal: opts.signal }),
+    })
+    return { outcome: await scrubbed(outcome), manual: query.run === 'manual', library: null }
   }
 
   // A library query (M14): the release's resource and query run, vouched for by whoever published it. The app's
@@ -529,7 +608,7 @@ export async function runDefinitionQuery(
     labels: { ...labels, ow_library: libraryQuery.slug },
   })
   return {
-    outcome,
+    outcome: await scrubbed(outcome),
     manual: query.run === 'manual',
     library: { slug: libraryQuery.slug, version: release.version },
   }

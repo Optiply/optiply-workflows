@@ -4,17 +4,19 @@ import {
   ConnectorError,
   type CredentialSource,
   type FlowSandbox,
+  httpConfigFor,
   OAuthGrantError,
   type ResolvedResource,
+  type RestAuth,
   refreshAccessToken,
   restConnector,
+  revokeToken,
   type TokenSet,
 } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
 import { and, eq, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
-import type { z } from 'zod'
 import { recordAudit } from '../audit'
 import { customAuthCredentials, customFlowHash } from './custom-auth'
 import { withRefreshLock } from './refresh-lock'
@@ -29,27 +31,27 @@ interface StoredTokens {
 /** Access tokens this close to expiring are refreshed before use, so they don't expire mid-request. */
 const EXPIRY_MARGIN_MS = 60_000
 
-type RestAuth = z.output<typeof restConnector.configSchema>['auth']
 export type AuthorizationCodeAuth = Extract<RestAuth, { type: 'oauth2AuthorizationCode' }>
 
 /**
  * What connected accounts and signed-in variables were granted under: the consent settings of an
  * authorization-code resource, or a custom auth flow. Null for any other config. When it changes, they go.
  */
-export function authFingerprint(config: unknown): string | null {
-  const parsed = restConnector.configSchema.safeParse(config)
-  if (!parsed.success) return null
-  if (parsed.data.auth.type === 'oauth2AuthorizationCode') {
-    return consentHash({ ...parsed.data, auth: parsed.data.auth })
-  }
-  if (parsed.data.auth.type === 'custom') return customFlowHash(parsed.data)
+export function authFingerprint(type: string, config: unknown): string | null {
+  const http = httpConfigFor(type, config)
+  if (!http) return null
+  if (http.auth.type === 'oauth2AuthorizationCode') return consentHash({ ...http, auth: http.auth })
+  if (http.auth.type === 'custom') return customFlowHash(http)
   return null
 }
 
-/** The authorization-code settings of a REST resource config (defaults applied), or null for any other config. */
-export function authorizationCode(config: unknown): AuthorizationCodeAuth | null {
-  const parsed = restConnector.configSchema.safeParse(config)
-  return parsed.success && parsed.data.auth.type === 'oauth2AuthorizationCode' ? parsed.data.auth : null
+/**
+ * The authorization-code settings of an HTTP resource config (REST's, or what another type connects with; defaults
+ * applied), or null for any other config.
+ */
+export function authorizationCode(type: string, config: unknown): AuthorizationCodeAuth | null {
+  const http = httpConfigFor(type, config)
+  return http?.auth.type === 'oauth2AuthorizationCode' ? http.auth : null
 }
 
 /**
@@ -166,6 +168,50 @@ export async function deleteTokens(
     )
     .returning({ id: oauthTokens.id })
   return rows.length
+}
+
+/** What Disconnect told the provider: `none` when there was nothing to tell (no URL, no tokens). */
+export type Revocation = { revoked: 'yes' | 'none' } | { revoked: 'failed'; reason: string }
+
+/**
+ * Disconnects one owner's account: revokes it at the provider when the auth settings have a revocation URL and the
+ * tokens were granted under the current consent settings (so they only go back where they came from), then forgets
+ * them here whatever the provider answered.
+ */
+export async function disconnectAccount(
+  db: Db,
+  keyring: Keyring,
+  target: {
+    resourceConfigId: string
+    userId: string | null
+    auth: AuthorizationCodeSettings
+    clientSecret: string | undefined
+    allowPrivateNetwork: boolean
+    consent: string | null
+  },
+): Promise<{ removed: number } & Revocation> {
+  const [row] = await db
+    .select()
+    .from(oauthTokens)
+    .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), ownedBy(target.userId)))
+  let revocation: Revocation = { revoked: 'none' }
+  if (row && target.auth.revokeUrl && row.consentHash === target.consent) {
+    const stored = decryptTokens(keyring, row)
+    const token = stored.refreshToken
+      ? { value: stored.refreshToken, type: 'refresh_token' as const }
+      : { value: stored.accessToken, type: 'access_token' as const }
+    try {
+      await revokeToken(target.auth, target.clientSecret, token, {
+        signal: AbortSignal.timeout(10_000),
+        allowPrivateNetwork: target.allowPrivateNetwork,
+      })
+      revocation = { revoked: 'yes' }
+    } catch (err) {
+      revocation = { revoked: 'failed', reason: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  const removed = await deleteTokens(db, target.resourceConfigId, target.userId)
+  return { removed, ...revocation }
 }
 
 export type ConnectionStatus =
@@ -354,23 +400,25 @@ export function oauthCredentials(
  */
 export function credentialsFor(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
+  type: string,
   resource: ResolvedResource,
   actingUserId: string | null,
   opts: { store?: boolean } = {},
 ): CredentialSource | undefined {
-  const parsed = restConnector.configSchema.safeParse(resource.config)
-  if (!parsed.success) return undefined
-  if (parsed.data.auth.type === 'custom') {
+  const http = httpConfigFor(type, resource.config)
+  if (!http) return undefined
+  if (http.auth.type === 'custom') {
+    // Only REST-shaped secrets have the values a flow reads (REST, GraphQL).
     return customAuthCredentials(deps, {
       resourceConfigId: resource.id,
       environmentId: resource.environmentId,
-      config: parsed.data,
+      config: http,
       secrets: restConnector.secretsSchema.parse(resource.secrets ?? {}),
       store: opts.store ?? true,
     })
   }
-  if (parsed.data.auth.type !== 'oauth2AuthorizationCode') return undefined
-  const auth = parsed.data.auth
+  if (http.auth.type !== 'oauth2AuthorizationCode') return undefined
+  const auth = http.auth
   if (auth.tokens === 'perUser' && actingUserId === null) {
     return {
       async accessToken() {
@@ -395,8 +443,8 @@ export function credentialsFor(
     userId: auth.tokens === 'shared' ? null : actingUserId,
     auth,
     clientSecret: typeof secrets.clientSecret === 'string' ? secrets.clientSecret : undefined,
-    allowPrivateNetwork: parsed.data.allowPrivateNetwork,
-    consent: consentHash({ ...parsed.data, auth }),
+    allowPrivateNetwork: http.allowPrivateNetwork,
+    consent: consentHash({ ...http, auth }),
   })
 }
 

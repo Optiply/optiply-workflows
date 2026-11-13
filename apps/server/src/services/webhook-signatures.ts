@@ -155,6 +155,9 @@ function schemeFor(auth: WebhookSignatureAuth): Scheme {
         prefix: '',
         payload: (req) => [req.body],
       }
+    case 'sns':
+      // Not an HMAC: AWS's certificate signs it, checked by services/sns-webhook.ts before this would be reached.
+      throw new Error('SNS deliveries are verified by verifySnsDelivery')
     case 'custom': {
       const parsed = parseSignedPayload(auth.signedPayload ?? DEFAULT_SIGNED_PAYLOAD)
       // The validator refuses a bad payload before a release; treat one as the body alone if it ever gets here.

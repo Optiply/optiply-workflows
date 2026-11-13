@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { type AppDiagnostic, browserExpressions, expressionSide, validateApp } from '../src'
+import {
+  type AppDiagnostic,
+  addWorkflowQuery,
+  browserExpressions,
+  expressionSide,
+  usedWorkflows,
+  validateApp,
+} from '../src'
 import { app, comp, sqlQuery } from './helpers'
 
 const codes = (input: unknown, options = {}) =>
@@ -95,6 +102,120 @@ describe('validateApp', () => {
       ['duplicate_name', 'queries.0.name', 'error'],
       ['invalid_name', 'transformers.0.name', 'error'],
     ])
+  })
+
+  it("knows Retool's APIs: local storage methods, view keys, helpers and the Worker's globals (M36)", () => {
+    const def = app({
+      components: [
+        comp('box', 'container', { views: [{ name: 'a' }, { name: 'b' }] }),
+        comp(
+          'nav',
+          'navigation',
+          { items: [{ key: 'x', label: 'X' }] },
+          {
+            events: [
+              {
+                id: 'h',
+                event: 'click',
+                action: { type: 'runScript', code: 'box.setCurrentView(nav.clickedItem)' },
+              },
+            ],
+          },
+        ),
+      ],
+      queries: [
+        {
+          name: 'q',
+          kind: 'js',
+          code: "localStorage.setValue('k', 1); localStorage.removeValue('k'); localStorage.clear(); box.setCurrentViewIndex(0)\nsetTimeout(() => {}, 1); return formatDataAsArray(btoa('x'))",
+        },
+      ],
+    })
+    expect(validateApp(def).diagnostics).toEqual([])
+  })
+
+  it('checks workflow queries: their input like a resource query’s, their workflow when known (M36)', () => {
+    const def = app({
+      components: [comp('amount', 'numberInput')],
+      queries: [
+        {
+          name: 'run',
+          kind: 'workflow',
+          workflow: 'doubler',
+          input: '{"n": {{ amount.value }}, "k": {{ configVars.KEY }}}',
+          run: 'manual',
+        },
+        { name: 'other', kind: 'workflow', workflow: 'missing', run: 'manual' },
+        { name: 'bad', kind: 'workflow', workflow: 'doubler', input: '{"n": {{ nope }}}', run: 'manual' },
+      ],
+    })
+    const resolveWorkflow = (slug: string) => (slug === 'doubler' ? ('published' as const) : undefined)
+    expect(codes(def, { resolveWorkflow })).toEqual([
+      ['unknown_workflow', 'queries.1.workflow', 'error'],
+      ['unknown_identifier', 'queries.2.input', 'error'],
+    ])
+    expect(usedWorkflows(def)).toEqual(['doubler', 'missing'])
+    const added = addWorkflowQuery(def, 'doubler', { page: null })
+    expect(added.definition.queries.at(-1)).toEqual({
+      name: added.name,
+      kind: 'workflow',
+      workflow: 'doubler',
+      input: '{}',
+      mode: 'sync',
+      run: 'manual',
+    })
+  })
+
+  it('lets resource queries read configVars, which the server fills in, and nothing else (M36)', () => {
+    const def = app({
+      components: [comp('t', 'text', { value: '{{ configVars.REGION }}' })],
+      queries: [
+        sqlQuery('q', 'select {{ configVars.REGION }}, {{ current_user.email }}'),
+        sqlQuery('mixed', 'select {{ configVars.REGION + t.value }}'),
+      ],
+    })
+    expect(codes(def)).toEqual([
+      ['unknown_identifier', 'components.0.props.value', 'error'],
+      ['mixed_current_user', 'queries.1.query.sql', 'error'],
+    ])
+  })
+
+  it("keeps a query's scope names out of its transform, and reserves configVars (M36 review)", () => {
+    const def = app({
+      components: [comp('configVars', 'text')],
+      queries: [
+        sqlQuery('save', 'select {{ row.a }}', 'manual', { scope: ['row'], transform: 'return row' }),
+      ],
+    })
+    expect(codes(def)).toEqual([
+      ['invalid_name', 'components.0.name', 'error'],
+      ['unknown_identifier', 'queries.0.transform', 'error'],
+    ])
+  })
+
+  it("knows a query's declared scope names in its own fields only (M36)", () => {
+    const def = app({
+      components: [comp('t', 'text', { value: '{{ row }}' })],
+      queries: [
+        sqlQuery('save', 'update x set a = {{ row.a }}', 'manual', {
+          scope: ['row'],
+          confirm: 'Save {{ row.a }}?',
+        }),
+      ],
+    })
+    expect(codes(def)).toEqual([['unknown_identifier', 'components.0.props.value', 'error']])
+  })
+
+  it("reserves Retool's libraries and lets code read them (M36)", () => {
+    const def = app({
+      components: [
+        comp('moment', 'text'),
+        comp('when', 'text', {
+          value: '{{ moment().format("L") + numbro(1).format() + Papa.unparse([]) + uuid.v4() }}',
+        }),
+      ],
+    })
+    expect(codes(def)).toEqual([['invalid_name', 'components.0.name', 'error']])
   })
 
   it('reads currentRow and i in a table column’s value, and nowhere else (M24)', () => {

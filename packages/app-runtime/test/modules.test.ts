@@ -314,3 +314,64 @@ describe('module instances on pages (M21)', () => {
     expect(sent(next.calls)).toEqual([])
   })
 })
+
+describe('local storage in module instances (session 41 review)', () => {
+  it('is the app’s: an instance writes through the app, and both see every write', async () => {
+    const keeper: AppDefinition = {
+      schemaVersion: 1,
+      components: [
+        comp(
+          'store',
+          'button',
+          {},
+          { events: [on('click', { type: 'setLocalStorage', key: 'k', value: 'from module' })] },
+        ),
+        comp('seen', 'text', { value: '{{ localStorage.values.k ?? "none" }}' }),
+      ],
+      queries: [],
+      module: { inputs: [], outputs: [], events: [] },
+    }
+    const app: AppDefinition = {
+      schemaVersion: 1,
+      components: [
+        comp('keeper1', 'module', { module: 'keeper' }),
+        comp('seen', 'text', { value: '{{ localStorage.values.k ?? "none" }}' }),
+        comp(
+          'store',
+          'button',
+          {},
+          { events: [on('click', { type: 'setLocalStorage', key: 'k', value: 'from app' })] },
+        ),
+      ],
+      queries: [],
+    }
+    const effects: unknown[] = []
+    const state: Record<string, unknown> = {}
+    const runtime = new AppRuntime(
+      app,
+      {
+        runQuery: async () => ({ ok: true, data: null }),
+        confirm: async () => true,
+        effect: (e) => effects.push(e),
+        publish: (p) => Object.assign(state, p.values),
+        log: () => {},
+      },
+      {
+        autoRunDelayMs: 0,
+        modules: { 'keeper@latest': { definition: keeper, releaseId: 'r1' } },
+        storage: { k: 'kept' },
+      },
+    )
+    await runtime.start()
+    expect([state['seen.value'], state['keeper1/seen.value']]).toEqual(['kept', 'kept'])
+    await runtime.fire('keeper1/store', 'click')
+    expect([state['seen.value'], state['keeper1/seen.value']]).toEqual(['from module', 'from module'])
+    await runtime.fire('store', 'click')
+    expect([state['seen.value'], state['keeper1/seen.value']]).toEqual(['from app', 'from app'])
+    // The page keeps each write once.
+    expect(effects).toEqual([
+      { type: 'storage', key: 'k', value: 'from module' },
+      { type: 'storage', key: 'k', value: 'from app' },
+    ])
+  })
+})

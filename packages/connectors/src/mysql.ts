@@ -5,7 +5,7 @@ import { resolveFragments } from './sql-fragments'
 import { deferredStream, sshConnectionError, tunnelFor } from './ssh/client'
 import { sshConfigSchema, sshSecretsSchema } from './ssh/settings'
 import type { SshTunnel } from './ssh/tunnel'
-import { type Connector, ConnectorError, type QueryResult } from './types'
+import { type Connector, ConnectorError, type QueryResult, statementTimeoutMs } from './types'
 
 const configSchema = z.object({
   host: z.string().min(1),
@@ -26,7 +26,7 @@ const configSchema = z.object({
    */
   readOnly: z.boolean().default(false),
   /** Queries returning more rows than this fail rather than load everything into memory. */
-  maxRows: z.number().int().positive().default(10_000),
+  maxRows: z.number().int().positive().default(1_000_000),
   statementTimeoutMs: z.number().int().positive().default(120_000),
   /** Connect through an SSH server (and jump hosts) rather than directly (M17). */
   ssh: sshConfigSchema.optional(),
@@ -124,7 +124,7 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
     const { text, params } = expandParams(plan, values)
     return runStatement(client, text, params, {
       signal: ctx.signal,
-      timeoutMs: Math.min(ctx.timeoutMs, client.config.statementTimeoutMs),
+      timeoutMs: statementTimeoutMs(ctx, client.config.statementTimeoutMs),
       maxRows: client.config.maxRows,
     })
   },

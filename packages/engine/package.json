@@ -17,11 +17,12 @@
     "@ow/definition": "workspace:*",
     "@ow/expressions": "workspace:*",
     "@ow/sandbox": "workspace:*",
-    "zod": "4.6.7",
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "0.45.4",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@ow/code-executor": "workspace:*",
+    "@types/amqplib": "0.10.8",
     "postgres": "3.4.9",
     "tsx": "4.23.15",
     "vitest": "5.0.4"

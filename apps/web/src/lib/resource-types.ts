@@ -1,6 +1,8 @@
+import { defaultActionQuery, isServiceType } from '@ow/connectors/actions'
+
 /**
- * Resource types whose queries are `{ sql }`; `pubsub`, `sqs` and `kafka` send messages (M19, M26); every other type
- * is a REST API.
+ * Resource types whose queries are `{ sql }`; `pubsub`, `sqs` and `kafka` send messages (M19, M26); the rest are HTTP
+ * APIs (REST, the built-in REST API, GraphQL, the services: see `queryKind`).
  */
 const SQL_TYPES = new Set(['postgres', 'mysql', 'bigquery'])
 
@@ -14,11 +16,31 @@ export function isMessageKind(kind: string | undefined): kind is MessageKind {
   return kind === 'pubsub' || kind === 'sqs' || kind === 'kafka'
 }
 
-/** The shape of a resource type's queries. */
-export function queryKind(type: string | undefined): 'sql' | MessageKind | 'rest' {
+export type QueryKind = 'sql' | MessageKind | 'rest' | 'restapi' | 'graphql' | 'openapi' | 'service'
+
+/**
+ * The shape of a resource type's queries: SQL, a message, REST's request, the built-in REST API's (a full URL and its
+ * own auth, M27), GraphQL's, or a service's action (Slack, HubSpot, SendGrid, Google Sheets, M27).
+ */
+export function queryKind(type: string | undefined): QueryKind {
   if (isSqlType(type)) return 'sql'
-  return isMessageKind(type) ? type : 'rest'
+  if (isMessageKind(type)) return type
+  if (type === 'restapi' || type === 'graphql' || type === 'openapi') return type
+  return isServiceType(type) ? 'service' : 'rest'
 }
+
+/** The built-in REST API resource's new query (M27). */
+export const DEFAULT_RESTAPI_QUERY = {
+  method: 'GET',
+  url: 'https://',
+  params: [],
+  headers: [],
+  body: { type: 'none' },
+  auth: { type: 'none' },
+}
+
+/** A GraphQL resource's new query (M27). */
+export const DEFAULT_GRAPHQL_QUERY = { query: '{\n  \n}', variables: '', operationName: '', headers: [] }
 
 /**
  * The message queries (Pub/Sub publishes, SQS sends, Kafka produces): the field naming where messages go, and its
@@ -50,7 +72,7 @@ export const MESSAGE_QUERIES: Record<
     hint: 'The topic’s name.',
     messages: '{"key": "", "value": {}}',
     messagesHint:
-      'One message or an array of them: {"key": "…", "value": …, "headers": {…}, "partition": 0}. A value that isn’t a string is sent as JSON; null is a tombstone.',
+      'One message or an array of them: {"key": "…", "value": …, "headers": {…}, "partition": 0}. A value that isn’t a string is sent as JSON; null is a tombstone. With a schema registry, "subject": "orders-value" encodes the value by that subject’s latest schema (Avro or JSON Schema).',
   },
 }
 
@@ -70,6 +92,10 @@ export function defaultQuery(type: string | undefined, sql = 'select 1'): { [key
   const kind = queryKind(type)
   if (kind === 'sql') return { sql }
   if (isMessageKind(kind)) return defaultMessageQuery(kind)
+  if (kind === 'restapi') return structuredClone(DEFAULT_RESTAPI_QUERY)
+  if (kind === 'graphql') return { ...DEFAULT_GRAPHQL_QUERY, headers: [] }
+  if (kind === 'openapi') return { operationId: '', parameters: '{}', body: '', contentType: '' }
+  if (kind === 'service' && isServiceType(type)) return defaultActionQuery(type)
   return { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } }
 }
 
@@ -85,4 +111,22 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   pubsub: { label: 'PS', className: 'bg-op-yellow-1 text-op-yellow-4' },
   sqs: { label: 'SQS', className: 'bg-op-red-1 text-op-red-4' },
   kafka: { label: 'KF', className: 'bg-op-purple-2 text-op-purple-4' },
+  restapi: { label: 'API', className: 'bg-op-orange-2 text-op-orange-4' },
+  graphql: { label: 'GQL', className: 'bg-op-red-1 text-op-red-4' },
+  slack: { label: 'SL', className: 'bg-op-purple-1 text-op-purple-4' },
+  hubspot: { label: 'HS', className: 'bg-op-orange-1 text-op-orange-4' },
+  sendgrid: { label: 'SG', className: 'bg-op-blue-1 text-op-blue-4' },
+  googlesheets: { label: 'GS', className: 'bg-op-green-1 text-op-green-4' },
+  s3: { label: 'S3', className: 'bg-op-green-2 text-op-green-4' },
+  stripe: { label: 'ST', className: 'bg-op-purple-1 text-op-purple-4' },
+  airtable: { label: 'AT', className: 'bg-op-yellow-1 text-op-yellow-4' },
+  jira: { label: 'JI', className: 'bg-op-blue-1 text-op-blue-4' },
+  notion: { label: 'NO', className: 'bg-op-purple-2 text-op-purple-4' },
+  salesforce: { label: 'SF', className: 'bg-op-blue-2 text-op-blue-4' },
+  openapi: { label: 'OAS', className: 'bg-op-green-1 text-op-green-4' },
+  rabbitmq: { label: 'RMQ', className: 'bg-op-orange-2 text-op-orange-4' },
+  sns: { label: 'SNS', className: 'bg-op-red-1 text-op-red-4' },
+  kinesis: { label: 'KIN', className: 'bg-op-orange-1 text-op-orange-4' },
+  anthropic: { label: 'AI', className: 'bg-op-orange-2 text-op-orange-4' },
+  openai_compatible: { label: 'AI', className: 'bg-op-green-2 text-op-green-4' },
 }

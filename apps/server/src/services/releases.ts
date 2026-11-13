@@ -4,6 +4,7 @@ import {
   type Db,
   type Environment,
   environments,
+  kinesisCheckpoints,
   resourceConfigs,
   type Workflow,
   type WorkflowRelease,
@@ -18,6 +19,7 @@ import {
   nextScheduleFire,
   type PythonLock,
   parseWebhookAlias,
+  type QueueTriggerKind,
   type ResolvedWebhook,
   resolveWebhookSettings,
   type ScheduleTrigger,
@@ -29,6 +31,7 @@ import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
+import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { authorizationCode } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
@@ -83,6 +86,7 @@ export async function publishRelease(
       createdBy: user.id,
       gitCommit: null,
       pythonLock: plan.pythonLock,
+      js: plan.js,
     })
     if ('unchanged' in release) {
       throw new TRPCError({
@@ -136,6 +140,7 @@ export async function deployWorkflowFromGit(
       createdBy: null,
       gitCommit: opts.commit,
       pythonLock: plan.pythonLock,
+      js: plan.js,
     })
     if ('unchanged' in release) return null
     await makeLive(tx, locked.id, release, plan, opts.now ?? new Date())
@@ -159,6 +164,7 @@ async function insertRelease(
     createdBy: string | null
     gitCommit: string | null
     pythonLock: PythonLock | null
+    js: ReleaseJsBundle | null
   },
 ): Promise<WorkflowRelease | { unchanged: string }> {
   const existing = await tx
@@ -186,6 +192,8 @@ async function insertRelease(
       createdBy: opts.createdBy,
       gitCommit: opts.gitCommit,
       pythonLock: opts.pythonLock,
+      jsLock: opts.js?.jsLock ?? null,
+      jsBundleHash: opts.js?.jsBundleHash ?? null,
     })
     .returning()
   return release!
@@ -205,12 +213,20 @@ export async function setLiveRelease(
   const plan = await checkReleasable(db, access, opts.workflow, release.definition, {
     actorUserId: opts.actorUserId ?? null,
     lock: release.pythonLock,
+    js: { jsLock: release.jsLock, jsBundleHash: release.jsBundleHash },
   })
   // A release from before its packages had a lock (or before M23) gets one now: live runs install it.
   if (plan.pythonLock && !release.pythonLock) {
     await db
       .update(workflowReleases)
       .set({ pythonLock: plan.pythonLock })
+      .where(eq(workflowReleases.id, release.id))
+  }
+  // Its JavaScript packages' bundle, when it had none or lost it (rebuilt from its lock).
+  if (plan.js && (plan.js.jsBundleHash !== release.jsBundleHash || plan.js.jsLock !== release.jsLock)) {
+    await db
+      .update(workflowReleases)
+      .set({ jsLock: plan.js.jsLock, jsBundleHash: plan.js.jsBundleHash })
       .where(eq(workflowReleases.id, release.id))
   }
   await db.transaction(async (tx) => {
@@ -233,6 +249,8 @@ interface ReleasePlan {
   aliasShape: string | null
   /** The Python packages' lock (M23), installed: null without packages or Python. */
   pythonLock: PythonLock | null
+  /** The JavaScript packages' lock and bundle, built: null without packages. */
+  js: ReleaseJsBundle | null
 }
 
 /**
@@ -248,7 +266,12 @@ async function checkReleasable(
   access: Access | null,
   workflow: Workflow,
   definition: WorkflowDefinition,
-  python: { actorUserId: string | null; lock?: PythonLock | null },
+  python: {
+    actorUserId: string | null
+    lock?: PythonLock | null
+    /** The release's JavaScript bundle and lock, for a rollback. */
+    js?: { jsLock: string | null; jsBundleHash: string | null }
+  },
 ): Promise<ReleasePlan> {
   if (access && !atLeast(access.workflowLevel(workflow), 'edit')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'You need edit access to this workflow to release it' })
@@ -295,7 +318,11 @@ async function checkReleasable(
           resources.map((r) => r.id),
         ),
       )
-    const perUser = configs.find((c) => authorizationCode(effectiveConfig(c))?.tokens === 'perUser')
+    const perUser = configs.find(
+      (c) =>
+        authorizationCode(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c))?.tokens ===
+        'perUser',
+    )
     if (perUser) {
       const resource = resources.find((r) => r.id === perUser.resourceId)!
       const env = envs.find((e) => e.id === perUser.environmentId)
@@ -397,7 +424,18 @@ async function checkReleasable(
     if (!(err instanceof BlockFailure)) throw err
     throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
   }
-  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock }
+  let js: ReleaseJsBundle | null
+  try {
+    js = await releaseJsBundle(db, definition.settings?.javascript?.packages, python.js ?? null, {
+      objectType: 'workflow',
+      objectId: workflow.id,
+      actorUserId: python.actorUserId,
+    })
+  } catch (err) {
+    if (!(err instanceof BlockFailure)) throw err
+    throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
+  }
+  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock, js }
 }
 
 /**
@@ -415,7 +453,8 @@ async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Envi
     }
   }
   const runsIn = webhookEnvironments(webhook, envs)
-  if (webhook.auth.type !== 'signature') return
+  // SNS (M30) signs with AWS's certificate: there's no secret to check.
+  if (webhook.auth.type !== 'signature' || webhook.auth.preset === 'sns') return
   const name = webhook.auth.secret
   const [variable] = await db.select().from(configVars).where(eq(configVars.name, name))
   if (!variable) {
@@ -535,12 +574,37 @@ async function projectTriggers(
     )
   for (const row of rows) {
     const current = find(row.kind, row.name)
-    if (current) await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
-    else await tx.insert(workflowTriggers).values(row)
+    if (current) {
+      await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
+      // M30: a Kinesis trigger reading another stream (or the same name elsewhere) starts afresh: its checkpoints
+      // name the old stream's shards. After the update, which locks the row: the old adapter's saves wait for it.
+      if (row.kind === 'kinesis' && kinesisSourceChanged(current, row))
+        await tx.delete(kinesisCheckpoints).where(eq(kinesisCheckpoints.triggerId, current.id))
+    } else await tx.insert(workflowTriggers).values(row)
   }
 }
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+/** Whether a Kinesis trigger now reads another stream, through another resource or in another environment. */
+function kinesisSourceChanged(
+  before: typeof workflowTriggers.$inferSelect,
+  after: typeof workflowTriggers.$inferInsert,
+): boolean {
+  const a = before.config as { stream?: string; resource?: string }
+  const b = after.config as { stream?: string; resource?: string }
+  return (
+    a.stream !== b.stream ||
+    a.resource !== b.resource ||
+    before.environmentId !== (after.environmentId ?? null)
+  )
+}
+
+const QUEUE_LABELS = {
+  pubsub: 'Pub/Sub',
+  sqs: 'SQS',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
+} as const
 
 /** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
 function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
@@ -549,6 +613,8 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
     ...(t?.pubsub ?? []).map((trigger) => ({ kind: 'pubsub' as const, trigger })),
     ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
     ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
+    ...(t?.rabbitmq ?? []).map((trigger) => ({ kind: 'rabbitmq' as const, trigger })),
+    ...(t?.kinesis ?? []).map((trigger) => ({ kind: 'kinesis' as const, trigger })),
   ]
 }
 
@@ -556,12 +622,12 @@ function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
  * What a queue trigger leaves out, as its consumer reads it. Kafka's group is named after the workflow's id, so a
  * renamed workflow keeps its offsets.
  */
-function queueDefaults(
-  kind: 'pubsub' | 'sqs' | 'kafka',
-  workflowId: string,
-  name: string,
-): Record<string, unknown> {
+function queueDefaults(kind: QueueTriggerKind, workflowId: string, name: string): Record<string, unknown> {
   const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
+  // RabbitMQ closes a channel whose delivery stays unacked past its consumer_timeout (30 minutes by default),
+  // handing every message on it back: the hold lets go before that.
+  if (kind === 'rabbitmq') return { ...shared, maxHoldMinutes: 25 }
+  if (kind === 'kinesis') return { ...shared, startAt: 'latest', maxAttempts: 3, retryBackoffSeconds: 10 }
   if (kind !== 'kafka') return shared
   return {
     ...shared,

@@ -4,12 +4,15 @@ import { join } from 'node:path'
 import { kafkaClient, produceTo } from '@ow/connectors'
 import {
   kafkaAvailable,
+  rabbitAvailable,
   startFakeAws,
   startFakePubSub,
   startTestKafka,
+  startTestRabbit,
   type TestKafka,
+  type TestRabbit,
 } from '@ow/connectors/testing'
-import { createDb, workflowTriggers } from '@ow/db'
+import { createDb, kinesisCheckpoints, workflowTriggers } from '@ow/db'
 import { bumpVersion, compareVersions, nextScheduleFire } from '@ow/definition'
 import { eq } from 'drizzle-orm'
 import pino from 'pino'
@@ -312,6 +315,42 @@ describe('rollback', () => {
     expect(
       failure(await admin.mutate('releases.setLive', { workflowId: other.id, releaseId: v1.id })).code,
     ).toBe('NOT_FOUND')
+  })
+})
+
+describe('secret config values in run data', () => {
+  it('leaves the runs API scrubbed from block data and the stored reply, while the run itself reads them', async () => {
+    const secret = 'live-run-secret-7f3a9c'
+    const token = data(await admin.mutate('configVars.create', { name: 'RUN_TOKEN', isSecret: true }))
+    await admin.mutate('configVars.setValue', { configVarId: token.id, environmentId: prodId, value: secret })
+    const wf = await workflowWith(
+      'echo-secret',
+      definition([
+        code('leak', 'return { auth: `Bearer ${configVars.RUN_TOKEN}`, size: configVars.RUN_TOKEN.length }'),
+        reply('{"auth": {{ leak.data.auth }}, "size": {{ leak.data.size }}}'),
+      ]),
+    )
+    data(await publish(wf))
+    const run = await runLive(wf.slug, {})
+    expect(run.status).toBe('succeeded')
+    // The blocks saw the value (its length came through); what leaves the API doesn't show it.
+    expect(run.response.body).toEqual({ auth: 'Bearer [REDACTED]', size: secret.length })
+    const block = (
+      await env.app.inject({
+        method: 'GET',
+        url: `/api/v1/runs/${run.id}/blocks/leak`,
+        headers: { cookie: adminCookie },
+      })
+    ).json().block
+    expect(block.data).toEqual({ auth: 'Bearer [REDACTED]', size: secret.length })
+    const list = (
+      await env.app.inject({
+        method: 'GET',
+        url: `/api/v1/workflows/${wf.slug}/runs`,
+        headers: { cookie: adminCookie },
+      })
+    ).json().runs
+    expect(JSON.stringify(list)).not.toContain(secret)
   })
 })
 
@@ -781,6 +820,185 @@ describe('SQS triggers on the worker (M26)', () => {
       kind: 'sqs',
       queue: { worker: worker.dispatcher.workerId, lastDay: { messages: 1, succeeded: 1, failed: 0 } },
     })
+  })
+})
+
+describe.skipIf(!rabbitAvailable())('RabbitMQ triggers on the worker (M30)', () => {
+  let rabbit: TestRabbit
+  beforeAll(async () => {
+    rabbit = await startTestRabbit()
+    await rabbit.declare('m30-jobs', { deadLetterQueue: 'm30-jobs-dead' })
+  }, 120_000)
+  afterAll(async () => {
+    await rabbit?.stop()
+  })
+
+  it('projects the defaults, runs the live release per message, and acks it', async () => {
+    const { id: brokerId } = data(
+      await admin.mutate('resources.create', { type: 'rabbitmq', name: 'Live broker', slug: 'broker_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: brokerId,
+        environmentId: prodId,
+        config: {
+          host: rabbit.host,
+          port: rabbit.port,
+          username: rabbit.username,
+          allowPrivateNetwork: true,
+        },
+        secrets: { password: rabbit.password },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_rabbit_jobs',
+      definition([code('seen', 'return { id: startTrigger.message.messageId, n: startTrigger.data.n }')], {
+        triggers: { rabbitmq: [{ name: 'jobs', enabled: true, resource: 'broker_live', queue: 'm30-jobs' }] },
+      }),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'rabbitmq',
+      config: { queue: 'm30-jobs', maxInFlight: 4, maxHoldMinutes: 25 },
+    })
+    await rabbit.send('m30-jobs', '{"n": 9}', { messageId: 'job-9' })
+    await worker.queues.tick()
+    let run: { status: string; triggerType: string; id: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_rabbit_jobs/runs',
+            headers: { cookie: adminCookie },
+          })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'rabbitmq' })
+    // Acked: nothing left in the queue or its dead-letter queue.
+    await expect
+      .poll(
+        async () => (await rabbit.drain('m30-jobs')).length + (await rabbit.drain('m30-jobs-dead')).length,
+      )
+      .toBe(0)
+  })
+})
+
+describe('Kinesis triggers on the worker (M30)', () => {
+  let aws: Awaited<ReturnType<typeof startFakeAws>>
+  beforeAll(async () => {
+    aws = await startFakeAws()
+    aws.kinesis.createStream('clicks')
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_KINESIS_URL: aws.url })
+  })
+  afterAll(async () => {
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    await aws?.close()
+  })
+
+  it('projects the defaults, runs the live release per record, and keeps the shard’s checkpoint', async () => {
+    const user = aws.addUser('reader')
+    const { id: streamsId } = data(
+      await admin.mutate('resources.create', { type: 'kinesis', name: 'Live streams', slug: 'streams_live' }),
+    )
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: streamsId,
+        environmentId: prodId,
+        config: { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId },
+        secrets: { secretAccessKey: user.secretAccessKey },
+      }),
+    )
+    const wf = await workflowWith(
+      'on_clicks',
+      definition(
+        [code('seen', 'return { n: startTrigger.data.n, key: startTrigger.message.partitionKey }')],
+        {
+          triggers: {
+            kinesis: [
+              {
+                name: 'clicks',
+                enabled: true,
+                resource: 'streams_live',
+                stream: 'clicks',
+                startAt: 'trimHorizon',
+              },
+            ],
+          },
+        },
+      ),
+    )
+    data(await publish(wf))
+    const [projected] = await triggersOf(wf.id)
+    expect(projected).toMatchObject({
+      kind: 'kinesis',
+      config: {
+        stream: 'clicks',
+        startAt: 'trimHorizon',
+        maxAttempts: 3,
+        retryBackoffSeconds: 10,
+        maxInFlight: 4,
+      },
+    })
+    aws.kinesis.put('clicks', '{"n": 5}', 'user-1')
+    await worker.queues.tick()
+    let run: { status: string; triggerType: string } | undefined
+    await expect
+      .poll(
+        async () => {
+          const listed = await env.app.inject({
+            method: 'GET',
+            url: '/api/v1/workflows/on_clicks/runs',
+            headers: { cookie: adminCookie },
+          })
+          run = listed.json().runs[0]
+          return run?.status
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('succeeded')
+    expect(run).toMatchObject({ triggerType: 'kinesis' })
+    const db = createDb(env.databaseUrl, { max: 1 })
+    try {
+      await expect
+        .poll(async () => (await db.db.select().from(kinesisCheckpoints)).map((c) => c.sequenceNumber), {
+          timeout: 10_000,
+        })
+        .toEqual([aws.kinesis.shards('clicks')[0]!.records[0]!.seq])
+
+      // A release reading another stream starts afresh: the old stream's checkpoints go (review fix), the trigger
+      // keeps its id.
+      aws.kinesis.createStream('clicks-v2')
+      await wf.save(
+        definition([code('seen', 'return startTrigger.data')], {
+          triggers: {
+            kinesis: [
+              {
+                name: 'clicks',
+                enabled: true,
+                resource: 'streams_live',
+                stream: 'clicks-v2',
+                startAt: 'trimHorizon',
+              },
+            ],
+          },
+        }),
+      )
+      data(await publish(wf))
+      const [moved] = await triggersOf(wf.id)
+      expect(moved).toMatchObject({ id: projected!.id, config: { stream: 'clicks-v2' } })
+      await new Promise((r) => setTimeout(r, 500))
+      expect(
+        await db.db.select().from(kinesisCheckpoints).where(eq(kinesisCheckpoints.triggerId, projected!.id)),
+      ).toEqual([])
+    } finally {
+      await db.close()
+    }
   })
 })
 

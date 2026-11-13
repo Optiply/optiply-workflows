@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { acceptConfirms, block, field, signIn, trpcMutate, typeInto } from './helpers'
+import { acceptConfirms, block, field, openRail, signIn, trpcMutate, typeInto } from './helpers'
 
 /**
  * M5 end to end: a workflow whose loop calls a function that doesn't exist yet. Create the function in the
@@ -45,6 +45,7 @@ test('functions, loops, a wait and cancel in the editor', async ({ page }) => {
       },
     })
     await page.goto(`/workflows/${workflowId}`)
+    await openRail(page, 'problems')
     await expect(page.getByTestId('problems')).toContainText('No function is named "square"')
     await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled()
   })

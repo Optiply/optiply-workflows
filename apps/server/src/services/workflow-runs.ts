@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { getConnector } from '@ow/connectors'
 import type { Keyring } from '@ow/crypto'
 import {
@@ -20,6 +21,7 @@ import {
   workflows,
 } from '@ow/db'
 import {
+  blockingErrors,
   buildGraph,
   calledWorkflows,
   type Diagnostic,
@@ -99,7 +101,9 @@ export async function startManualRun(
  * The editor's "Run block": runs one block of the draft, reusing its ancestors' results from an earlier run
  * (`fromRunId`, or the latest finished run in that environment) instead of running them again. Ancestors that run
  * has no result for (blocks added since, or that failed) run first. Nothing after the block runs. The same checks as
- * a draft run apply. Passing `input` runs every ancestor fresh with it; otherwise the earlier run's input is reused.
+ * a draft run apply. Passing `input` runs every ancestor fresh with it. Passing `testInput` (the editor's current
+ * test input) reuses the earlier run only if it ran with that input, else runs every ancestor fresh with it, so a
+ * changed test input is never answered from a stale start trigger. With neither, the earlier run's input is reused.
  */
 export async function startBlockRun(
   db: Db,
@@ -111,10 +115,16 @@ export async function startBlockRun(
     block: string
     fromRunId?: string
     input?: unknown
+    /** `{ value }`: the editor's test input (null when empty). */
+    testInput?: { value: unknown }
     branchDraftId?: string
   },
 ): Promise<WorkflowRun> {
-  const { definition, source } = await prepareRun(db, access, user, { ...opts, version: 'draft' })
+  const { definition, source } = await prepareRun(db, access, user, {
+    ...opts,
+    version: 'draft',
+    targets: [opts.block],
+  })
   if (!definition.blocks.some((b) => b.name === opts.block)) {
     throw new RunRequestError(404, 'not_found', `The draft has no block named "${opts.block}"`)
   }
@@ -137,9 +147,16 @@ export async function startBlockRun(
   }
 
   // Every block depends on the start trigger, so new input means nothing upstream can be reused.
+  const earlierInput = (earlier?.input as { data?: unknown } | undefined)?.data ?? null
+  const input =
+    opts.input !== undefined
+      ? opts.input
+      : opts.testInput && (!earlier || !isDeepStrictEqual(earlierInput, opts.testInput.value ?? null))
+        ? (opts.testInput.value ?? null)
+        : undefined
   const ancestors = buildGraph(definition).ancestors(opts.block)
   const seed =
-    earlier && opts.input === undefined
+    earlier && input === undefined
       ? (await loadCheckpoints(db, earlier.id))
           .filter((c) => ancestors.has(c.key) && c.status !== 'failed')
           .map((c) => ({
@@ -154,7 +171,7 @@ export async function startBlockRun(
       ...source,
       environmentId: opts.environmentId,
       triggerType: 'manual',
-      input: opts.input !== undefined ? { data: opts.input } : (earlier?.input ?? { data: null }),
+      input: input !== undefined ? { data: input } : (earlier?.input ?? { data: null }),
       createdBy: user.id,
       targetBlocks: [opts.block],
     },
@@ -167,7 +184,14 @@ async function prepareRun(
   db: Db,
   access: Access,
   user: { id: string },
-  opts: { workflow: Workflow; environmentId: string; version: RunVersion; branchDraftId?: string },
+  opts: {
+    workflow: Workflow
+    environmentId: string
+    version: RunVersion
+    branchDraftId?: string
+    /** A block run's blocks: only errors they depend on count. */
+    targets?: string[]
+  },
 ): Promise<{
   definition: WorkflowDefinition
   source: { releaseId: string } | { draftSnapshotId: string }
@@ -205,10 +229,17 @@ async function prepareRun(
     libraries,
     errors,
   } = await checkDefinition(db, definition, 'run', version === 'draft')
-  if (errors.length) {
-    throw new RunRequestError(400, 'invalid_definition', `The workflow isn't valid: ${errors[0]!.message}`, {
-      diagnostics: errors satisfies Diagnostic[],
-    })
+  // A block run needs only that block, its ancestors and what they call to be valid (M28).
+  const blocking = blockingErrors(definition, errors, opts.targets)
+  if (blocking.length) {
+    throw new RunRequestError(
+      400,
+      'invalid_definition',
+      `The workflow isn't valid: ${blocking[0]!.message}`,
+      {
+        diagnostics: blocking satisfies Diagnostic[],
+      },
+    )
   }
   // A draft run starts its child workflows as the person pressing Run (a release was vouched for when published).
   if (version === 'draft') {
@@ -416,7 +447,12 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
       return {
         connector,
         resource: resolved,
-        credentials: credentialsFor({ db, keyring, sandbox }, resolved, opts?.actingUserId ?? null),
+        credentials: credentialsFor(
+          { db, keyring, sandbox },
+          resource.type,
+          resolved,
+          opts?.actingUserId ?? null,
+        ),
       }
     },
   }
@@ -429,29 +465,56 @@ export function dbResourceProvider(db: Db, keyring: Keyring, sandbox: CodeRuntim
  */
 export function dbRunContext(db: Db, keyring: Keyring): RunContextProvider {
   return {
-    async load(run) {
-      const rows = await db
-        .select({ name: configVars.name, isSecret: configVars.isSecret, value: configVarValues })
-        .from(configVars)
-        .innerJoin(
-          configVarValues,
-          and(
-            eq(configVarValues.configVarId, configVars.id),
-            eq(configVarValues.environmentId, run.environmentId),
-          ),
-        )
-      const vars: Record<string, unknown> = {}
-      const secrets: string[] = []
-      for (const { name, isSecret, value } of rows) {
-        if (!isSecret) {
-          vars[name] = value.value
-          continue
-        }
-        const plain = decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!)
-        secrets.push(plain)
-        if (run.releaseId) vars[name] = plain
-      }
-      return { configVars: vars, secrets }
-    },
+    load: (run) => loadConfigVars(db, keyring, run.environmentId, { withSecrets: !!run.releaseId }),
   }
+}
+
+/**
+ * An environment's config vars by name (secret ones only `withSecrets`), plus every secret value (to scrub from what
+ * leaves the server). Used by runs and, since M36, by app resource queries (`{{ configVars.X }}`).
+ */
+export async function loadConfigVars(
+  db: Db,
+  keyring: Keyring,
+  environmentId: string,
+  opts: { withSecrets: boolean },
+): Promise<{ configVars: Record<string, unknown>; secrets: string[] }> {
+  const rows = await db
+    .select({ name: configVars.name, isSecret: configVars.isSecret, value: configVarValues })
+    .from(configVars)
+    .innerJoin(
+      configVarValues,
+      and(eq(configVarValues.configVarId, configVars.id), eq(configVarValues.environmentId, environmentId)),
+    )
+  const vars: Record<string, unknown> = {}
+  const secrets: string[] = []
+  for (const { name, isSecret, value } of rows) {
+    if (!isSecret) {
+      vars[name] = value.value
+      continue
+    }
+    const plain = decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!)
+    secrets.push(plain)
+    if (opts.withSecrets) vars[name] = plain
+  }
+  return { configVars: vars, secrets }
+}
+
+/**
+ * The secret config var values of an environment, as they are now. The runs API scrubs block data and stored
+ * replies with them on the way out: the stored data stays as the blocks returned it, because resumed runs and
+ * parent runs read it back.
+ */
+export async function secretConfigValues(db: Db, keyring: Keyring, environmentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ value: configVarValues })
+    .from(configVars)
+    .innerJoin(
+      configVarValues,
+      and(eq(configVarValues.configVarId, configVars.id), eq(configVarValues.environmentId, environmentId)),
+    )
+    .where(eq(configVars.isSecret, true))
+  return rows.map(({ value }) =>
+    decryptForRow<string>(keyring, 'config_var_values', value, value.valueEncrypted!),
+  )
 }

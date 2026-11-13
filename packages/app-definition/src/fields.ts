@@ -73,17 +73,30 @@ export function appFields(def: AppDefinition): AppField[] {
   def.queries.forEach((q, i) => {
     const base = ['queries', i]
     const deps = runsAutomatically(q) ? nodeKey(q.name, '$deps') : undefined
+    // Names its triggers pass in (`additionalScope`) are known in its own fields, but not its transform (which runs
+    // with `data` only).
+    const scope = q.scope ?? []
     const at = (
       path: (string | number)[],
       kind: FieldKind,
       source: string,
       node?: string,
-      locals?: string[],
+      locals: string[] = [],
     ) => {
-      fields.push({ path, kind, source, owner: q.name, ...(node && { node }), ...(locals && { locals }) })
+      const all = path.at(-1) === 'transform' ? locals : [...locals, ...scope]
+      fields.push({
+        path,
+        kind,
+        source,
+        owner: q.name,
+        ...(node && { node }),
+        ...(all.length && { locals: all }),
+      })
     }
     if (q.kind === 'resource') {
       templateStrings(q.query, [...base, 'query'], (path, source) => at(path, 'template', source, deps))
+    } else if (q.kind === 'workflow') {
+      if (q.input !== undefined) at([...base, 'input'], 'template', q.input, deps)
     } else if (q.kind === 'library') {
       templateStrings(q.params ?? {}, [...base, 'params'], (path, source) =>
         at(path, 'template', source, deps),
@@ -160,8 +173,24 @@ function handlerFields(
       case 'openUrl':
         push(['action', 'url'], 'template', a.url)
         break
+      case 'openPage':
+      case 'setUrlParams':
+        for (const [key, value] of Object.entries(a.params ?? {}))
+          push(['action', 'params', key], 'template', value)
+        break
+      case 'copyToClipboard':
+        push(['action', 'text'], 'template', a.text)
+        break
+      case 'download':
+        push(['action', 'data'], 'template', a.data)
+        push(['action', 'fileName'], 'template', a.fileName)
+        break
+      case 'setLocalStorage':
+        push(['action', 'value'], 'template', a.value)
+        break
       case 'controlQuery':
       case 'moduleEvent':
+      case 'clearLocalStorage':
         break
     }
   })

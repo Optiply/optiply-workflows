@@ -83,5 +83,12 @@ export function requirementProblems(requirements: readonly string[]): { index: n
  */
 export interface PythonLock {
   platform: string
-  packages: { name: string; version: string; sha256: string }[]
+  /**
+   * `index`: the package index it came from (M32: an index's slug; absent for the builder's default); `source`:
+   * `sdist` for one built from its sdist (whose hash `sha256` is then).
+   */
+  packages: { name: string; version: string; sha256: string; index?: string; source?: 'sdist' }[]
 }
+
+/** A package index's slug (M32): what `settings.python.index` names. */
+export const PYTHON_INDEX_SLUG = /^[a-z0-9][a-z0-9_-]{0,62}$/

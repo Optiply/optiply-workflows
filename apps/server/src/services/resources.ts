@@ -119,7 +119,7 @@ export function iapKeyInfo(secrets: Record<string, unknown>): Record<string, Iap
  * no one's key does.
  */
 export function serverIdentityTarget(config: unknown, type?: string): string | null {
-  if (type === 'sqs' || type === 'kafka') {
+  if (type === 'sqs' || type === 'kafka' || type === 's3' || type === 'sns' || type === 'kinesis') {
     // M26: the server's own AWS credentials, for SQS or Kafka's MSK IAM: the region and any role assumed with them
     // (they may be allowed to assume roles no one's key is).
     const c = config as {
@@ -140,6 +140,11 @@ export function serverIdentityTarget(config: unknown, type?: string): string | n
   if (type === 'pubsub') {
     const c = config as { identity?: unknown; project?: unknown } | null
     return c?.identity === 'server' ? `pubsub:${String(c.project ?? '')}` : null
+  }
+  if (type === 'googlesheets') {
+    // M27: any spreadsheet shared with the server's identity; choosing it is the admin's call, as for Pub/Sub.
+    const c = config as { auth?: { type?: unknown } } | null
+    return c?.auth?.type === 'server' ? 'google:sheets' : null
   }
   const hop = (config as { ssh?: SshConfig } | null)?.ssh?.hops[0]
   if (hop?.reach !== 'iap' || hop.iap?.identity !== 'server') return null

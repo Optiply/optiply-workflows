@@ -64,6 +64,8 @@ export const customComponentSchema = z.strictObject({
   defaultSize: z
     .strictObject({ w: z.number().int().min(1).max(12), h: z.number().int().min(1).max(1000) })
     .default({ w: 6, h: 20 }),
+  /** Grows and shrinks with its content in apps by default (M33); an instance's Height can say otherwise. */
+  autoHeight: z.boolean().optional(),
 })
 
 export const componentFileSchema = z.strictObject({ path: z.string().max(300), content: z.string() })
@@ -154,6 +156,8 @@ export interface CustomComponentInterface {
   events: string[]
   methods: Record<string, { params: string[] }>
   defaultSize: { w: number; h: number }
+  /** Its instances' Height is Auto unless set (M33). */
+  autoHeight?: boolean
 }
 
 /** A release's components by name, as an app sees them. */
@@ -173,6 +177,7 @@ export function componentLibraryInterface(def: ComponentLibraryDefinition): Comp
         events: c.events,
         methods: c.methods,
         defaultSize: c.defaultSize,
+        ...(c.autoHeight && { autoHeight: true }),
       },
     ]),
   )
@@ -193,6 +198,12 @@ export function customComponentSpec(iface: CustomComponentInterface | null): Com
     version: { type: 'string', default: 'latest', label: 'Version' },
     component: { type: 'string', default: '', label: 'Component' },
     hidden: { type: 'boolean', default: false, label: 'Hidden' },
+    // M33: Auto grows and shrinks the component with its content (the frame tells its height); Fixed keeps its rows.
+    heightMode: {
+      type: { enum: ['auto', 'fixed'] },
+      default: iface?.autoHeight ? 'auto' : 'fixed',
+      label: 'Height',
+    },
   }
   const methods: Record<string, { params: readonly string[] }> = { setHidden: { params: ['hidden'] } }
   if (!iface) {
@@ -206,6 +217,8 @@ export function customComponentSpec(iface: CustomComponentInterface | null): Com
       openProps: true,
     }
   }
+  // A library from before M33 may declare its own `heightMode`: its prop, then (it follows the default height).
+  if (Object.hasOwn(iface.props, 'heightMode')) delete props.heightMode
   for (const [name, spec] of Object.entries(iface.props)) if (!Object.hasOwn(props, name)) props[name] = spec
   for (const [name, spec] of Object.entries(iface.methods))
     if (!Object.hasOwn(methods, name)) methods[name] = spec

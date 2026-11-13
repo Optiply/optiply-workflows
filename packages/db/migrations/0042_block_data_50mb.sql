@@ -1,0 +1,2 @@
+ALTER TABLE "block_run_payloads" DROP CONSTRAINT "block_run_payloads_size_ck";--> statement-breakpoint
+ALTER TABLE "block_run_payloads" ADD CONSTRAINT "block_run_payloads_size_ck" CHECK ("block_run_payloads"."size_bytes" between 0 and 52428800);

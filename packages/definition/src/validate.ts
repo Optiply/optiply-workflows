@@ -1,11 +1,18 @@
-import { analyzePython, PYTHON_KEYWORDS, type TemplateError } from '@ow/expressions'
+import {
+  analyzePython,
+  PYTHON_KEYWORDS,
+  packageName,
+  parseImports,
+  type TemplateError,
+} from '@ow/expressions'
 import type { z } from 'zod'
 import { isValidTimeZone, nextCronFire, parseCron } from './cron'
 import { codeFields, fieldRefs } from './fields'
 import { buildGraph } from './graph'
+import { jsPackageProblems, MAX_JS_PACKAGES, splitJsPackage } from './js-packages'
 import { checkLibraryReference, type LibraryInfo } from './library'
 import { CODE_ONLY_GLOBALS, isGlobalName, PARAMS_NAME, RUN_GLOBALS, reservedNameReason } from './names'
-import { MAX_REQUIREMENTS, requirementProblems } from './requirements'
+import { MAX_REQUIREMENTS, PYTHON_INDEX_SLUG, requirementProblems } from './requirements'
 import {
   type Block,
   type BlockOf,
@@ -14,6 +21,7 @@ import {
   isTrigger,
   MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
+  type QueueTriggerKind,
   suspends,
   type WebhookTrigger,
   type WorkflowDefinition,
@@ -29,6 +37,7 @@ import {
   WEBHOOK_PRESETS,
 } from './triggers'
 import {
+  agentTools,
   type BlockGraphSource,
   blockGraphs,
   calledFunctions,
@@ -75,6 +84,12 @@ export type DiagnosticCode =
   /** A Kafka trigger's settings (M26): its resource (a `kafka` one), topics, group or dead-letter topic. */
   | 'invalid_kafka'
   | 'duplicate_kafka'
+  /** A RabbitMQ trigger's settings (M30): its resource (a `rabbitmq` one) or queue. */
+  | 'invalid_rabbitmq'
+  | 'duplicate_rabbitmq'
+  /** A Kinesis trigger's settings (M30): its resource (a `kinesis` one) or stream. */
+  | 'invalid_kinesis'
+  | 'duplicate_kinesis'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -106,8 +121,13 @@ export type DiagnosticCode =
   | 'python_unavailable'
   /** A workflow's Python package (M23): not a plain requirement, a duplicate, or too many. */
   | 'invalid_requirement'
+  | 'invalid_python_index'
   /** The server's: packages declared, no package builder to install them (M23). */
   | 'python_packages_unavailable'
+  /** A workflow's or app's JavaScript package: not a plain npm package, a duplicate, or too many. */
+  | 'invalid_js_package'
+  /** A JS import line naming a package that isn't one of the JavaScript packages (or a file inside one). */
+  | 'unknown_js_import'
 
 export interface Diagnostic {
   severity: 'error' | 'warning'
@@ -186,13 +206,17 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   checkFunctions(def, functions, report)
   let start: string | undefined
   const usesPython = pythonFields(def).length > 0
+  const jsPackages = new Set(
+    (def.settings?.javascript?.packages ?? []).map((p) => splitJsPackage(p).name).filter(Boolean),
+  )
   for (const source of blockGraphs(def)) {
-    const found = checkGraph(source, functions, report, usesPython)
+    const found = checkGraph(source, functions, report, usesPython, jsPackages)
     if (!source.function) start = found
   }
   checkRecursion(def, functions, report)
   checkTriggers(def, start, report, options)
   checkRequirements(def, report)
+  checkJsPackages(def.settings?.javascript?.packages, ['settings', 'javascript', 'packages'], report)
 
   // User Task assignees written out in full exist.
   if (options.resolveAssignee) {
@@ -221,25 +245,44 @@ export function validateDefinition(input: unknown, options: ValidateOptions = {}
   if (options.resolveWorkflow) {
     for (const { blocks, path, function: fn } of blockGraphs(def)) {
       blocks.forEach((block, i) => {
-        const call =
+        const calls: { slug: string; at: (string | number)[] }[] =
           block.type === 'workflow'
-            ? { slug: block.config.workflow, at: ['config', 'workflow'] }
+            ? [{ slug: block.config.workflow, at: ['config', 'workflow'] }]
             : block.type === 'loop' && block.config.runner.kind === 'workflow'
-              ? { slug: block.config.runner.workflow, at: ['config', 'runner', 'workflow'] }
-              : undefined
-        if (!call) return
-        const state = options.resolveWorkflow!(call.slug)
-        if (state === 'published') return
-        report({
-          code: state === undefined ? 'unknown_workflow' : 'unpublished_workflow',
-          message:
-            state === undefined
-              ? `No workflow has the slug "${call.slug}"`
-              : `Workflow "${call.slug}" isn't published; publish it so this one can call it`,
-          path: [...path, 'blocks', i, ...call.at],
-          block: block.name,
-          ...(fn && { function: fn.name }),
-        })
+              ? [{ slug: block.config.runner.workflow, at: ['config', 'runner', 'workflow'] }]
+              : // An AI agent's tools (M35).
+                block.type === 'resourceQuery'
+                ? agentTools(block.config.query).map((slug) => ({ slug, at: ['config', 'query', 'tools'] }))
+                : block.type === 'loop' && block.config.runner.kind === 'query'
+                  ? agentTools(block.config.runner.query).map((slug) => ({
+                      slug,
+                      at: ['config', 'runner', 'query', 'tools'],
+                    }))
+                  : []
+        for (const call of calls) {
+          if (call.slug.includes('{{')) {
+            report({
+              code: 'invalid_query',
+              message: 'An agent’s tools are workflow slugs written out, not {{ }} expressions',
+              path: [...path, 'blocks', i, ...call.at],
+              block: block.name,
+              ...(fn && { function: fn.name }),
+            })
+            continue
+          }
+          const state = options.resolveWorkflow!(call.slug)
+          if (state === 'published') continue
+          report({
+            code: state === undefined ? 'unknown_workflow' : 'unpublished_workflow',
+            message:
+              state === undefined
+                ? `No workflow has the slug "${call.slug}"`
+                : `Workflow "${call.slug}" isn't published; publish it so this one can call it`,
+            path: [...path, 'blocks', i, ...call.at],
+            block: block.name,
+            ...(fn && { function: fn.name }),
+          })
+        }
       })
     }
   }
@@ -337,6 +380,8 @@ function checkGraph(
   functions: ReadonlyMap<string, FunctionDefinition>,
   report: Report,
   usesPython = false,
+  /** The workflow's JavaScript packages, by name: what import lines may name. */
+  jsPackages: ReadonlySet<string> = new Set(),
 ): string | undefined {
   const fn = source.function
   const { blocks, edges } = source
@@ -562,6 +607,8 @@ function checkGraph(
           ...(err.hint && { hint: err.hint }),
         })
       }
+      if (field.kind === 'function-body' && !errors.length)
+        checkImports(field.source, jsPackages, path, at, report)
       const python = field.kind === 'python-body'
       if (python) {
         // Assigning a name makes it the code's own in Python: reading the block (or `value`, `params`, …) before
@@ -626,9 +673,11 @@ function checkGraph(
           }
         } else if (functions.has(ref.name)) {
           if (field.kind !== 'function-body') {
+            // Calls are positional: the arguments in the order of the function's params.
+            const args = (functions.get(ref.name)?.params ?? []).map((p) => p.name).join(', ')
             report({
               code: 'function_call',
-              message: `Functions can only be called from code, as await ${ref.name}({ ... })`,
+              message: `Functions can only be called from code, as await ${ref.name}(${args})`,
               hint: 'Use a Function block, or call it from a code block',
               ...where,
             })
@@ -649,6 +698,53 @@ function checkGraph(
   })
 
   return fn ? undefined : graph.start
+}
+
+/**
+ * A JS code body's import lines: each names one of the workflow's JavaScript packages, itself (not a file inside it,
+ * which the bundle doesn't have). Shared with apps.
+ */
+export function importProblems(
+  code: string,
+  packages: ReadonlySet<string>,
+  where: string,
+): { message: string; hint?: string; start: number; end: number }[] {
+  let imports: ReturnType<typeof parseImports>
+  try {
+    imports = parseImports(code)
+  } catch {
+    return [] // A syntax error, reported as one.
+  }
+  const problems: { message: string; hint?: string; start: number; end: number }[] = []
+  for (const imp of imports) {
+    const name = packageName(imp.source)
+    const span = { start: imp.sourceStart, end: imp.sourceEnd }
+    if (!packages.has(name)) {
+      problems.push({
+        message: `The package "${name}" isn't one of ${where} JavaScript packages`,
+        hint: `Add it to ${where} JavaScript packages (in its settings)`,
+        ...span,
+      })
+    } else if (imp.source !== name) {
+      problems.push({
+        message: `Import "${imp.source}": only a package itself can be imported, from "${name}"`,
+        ...span,
+      })
+    }
+  }
+  return problems
+}
+
+function checkImports(
+  code: string,
+  packages: ReadonlySet<string>,
+  path: (string | number)[],
+  at: { block: string; function?: string },
+  report: Report,
+) {
+  for (const problem of importProblems(code, packages, "the workflow's")) {
+    report({ code: 'unknown_js_import', path, ...at, ...problem })
+  }
 }
 
 /** Why a block can't be part of a function, or null if it can. */
@@ -831,8 +927,19 @@ function checkRecursion(
 }
 
 /** Trigger problems are pinned to the start trigger, whose inspector edits them. */
-/** M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS. */
+/**
+ * M23's Python packages: each a plain requirement (`requirementProblems`), at most MAX_REQUIREMENTS; M32's index a
+ * slug (whether it exists is the server's to say, when it installs them).
+ */
 function checkRequirements(def: WorkflowDefinition, report: Report) {
+  const index = def.settings?.python?.index
+  if (index !== undefined && !PYTHON_INDEX_SLUG.test(index)) {
+    report({
+      code: 'invalid_python_index',
+      message: 'A package index is named by its slug: lowercase letters, digits, - and _',
+      path: ['settings', 'python', 'index'],
+    })
+  }
   const requirements = def.settings?.python?.requirements
   if (!requirements) return
   const path = ['settings', 'python', 'requirements']
@@ -842,6 +949,24 @@ function checkRequirements(def: WorkflowDefinition, report: Report) {
   for (const { index, message } of requirementProblems(requirements)) {
     report({ code: 'invalid_requirement', message, path: [...path, index] })
   }
+}
+
+/** The JavaScript packages: each a plain npm package (`jsPackageProblems`), at most MAX_JS_PACKAGES. */
+export function jsPackageDiagnostics(
+  packages: readonly string[] | undefined,
+  path: (string | number)[],
+): { code: 'invalid_js_package'; message: string; path: (string | number)[] }[] {
+  if (!packages) return []
+  const found: { code: 'invalid_js_package'; message: string; path: (string | number)[] }[] = []
+  if (packages.length > MAX_JS_PACKAGES)
+    found.push({ code: 'invalid_js_package', message: `At most ${MAX_JS_PACKAGES} packages`, path })
+  for (const { index, message } of jsPackageProblems(packages))
+    found.push({ code: 'invalid_js_package', message, path: [...path, index] })
+  return found
+}
+
+function checkJsPackages(packages: readonly string[] | undefined, path: (string | number)[], report: Report) {
+  for (const d of jsPackageDiagnostics(packages, path)) report(d)
 }
 
 function checkTriggers(
@@ -868,6 +993,8 @@ function checkTriggers(
   checkQueueTriggers('pubsub', def.triggers?.pubsub, at, report, options)
   checkQueueTriggers('sqs', def.triggers?.sqs, at, report, options)
   checkQueueTriggers('kafka', def.triggers?.kafka, at, report, options)
+  checkQueueTriggers('rabbitmq', def.triggers?.rabbitmq, at, report, options)
+  checkQueueTriggers('kinesis', def.triggers?.kinesis, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -930,14 +1057,20 @@ const KAFKA_TOPIC = /^(?!\.{1,2}$)[\w.-]{1,249}$/
 /** A consumer group id: printable, no spaces at the ends. */
 const KAFKA_GROUP = /^\S(.*\S)?$/
 
-const QUEUE_LABELS = { pubsub: 'Pub/Sub', sqs: 'SQS', kafka: 'Kafka' } as const
+const QUEUE_LABELS = {
+  pubsub: 'Pub/Sub',
+  sqs: 'SQS',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  kinesis: 'Kinesis',
+} as const
 type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
 
 /**
  * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
  * known), and the kind's own settings: a subscription name, a queue, topics and a group.
  */
-function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka'>(
+function checkQueueTriggers<K extends QueueTriggerKind>(
   kind: K,
   triggers: QueueTriggers[K],
   at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
@@ -977,7 +1110,24 @@ function checkQueueTriggers<K extends 'pubsub' | 'sqs' | 'kafka'>(
         message: `${where}: "${trigger.subscription}" isn't a subscription id or projects/…/subscriptions/… name`,
         ...at([kind, i, 'subscription']),
       })
-    if ('queue' in trigger && !SQS_QUEUE.test(trigger.queue))
+    if (
+      kind === 'rabbitmq' &&
+      'queue' in trigger &&
+      (trigger.queue.startsWith('amq.') || [...trigger.queue].some((ch) => ch.charCodeAt(0) < 32))
+    )
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.queue}" can't be consumed (amq. names are the broker's own)`,
+        ...at([kind, i, 'queue']),
+      })
+    if ('stream' in trigger && !KINESIS_STREAM.test(trigger.stream))
+      report({
+        code: invalid,
+        message: `${where}: "${trigger.stream}" isn't a stream name or ARN`,
+        hint: 'Letters, digits, _ . and - (up to 128), or arn:aws:kinesis:…:stream/name',
+        ...at([kind, i, 'stream']),
+      })
+    if (kind === 'sqs' && 'queue' in trigger && !SQS_QUEUE.test(trigger.queue))
       report({
         code: invalid,
         message: `${where}: "${trigger.queue}" isn't a queue name or URL`,
@@ -1030,6 +1180,10 @@ const CUSTOM_SIGNATURE_FIELDS = [
   'signedPayload',
 ] as const
 
+const KINESIS_STREAM =
+  /^([a-zA-Z0-9_.-]{1,128}|arn:aws[\w-]*:kinesis:[a-z0-9-]+:\d{12}:stream\/[a-zA-Z0-9_.-]{1,128})$/
+const SNS_TOPIC_ARN = /^arn:aws[\w-]*:sns:[a-z0-9-]+:\d{12}:[\w-]{1,256}(\.fifo)?$/
+
 /** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */
 function checkWebhook(
   webhook: WebhookTrigger,
@@ -1040,7 +1194,33 @@ function checkWebhook(
   const auth = webhook.auth
   if (auth?.type === 'signature') {
     const authAt = (field: string) => at(['auth', field])
-    if (!auth.secret) {
+    if (auth.preset === 'sns') {
+      // SNS signs with AWS's certificate: no secret, but the topics whose messages count.
+      if (!auth.topicArns?.length)
+        report({
+          code: 'invalid_webhook_auth',
+          message: 'List the SNS topics (ARNs) whose messages may start runs',
+          hint: 'Any SNS topic in any account could otherwise send signed messages to this URL',
+          ...authAt('topicArns'),
+        })
+      auth.topicArns?.forEach((arn, i) => {
+        if (!SNS_TOPIC_ARN.test(arn))
+          report({
+            code: 'invalid_webhook_auth',
+            message: `"${arn}" isn't a topic ARN`,
+            ...at(['auth', 'topicArns', i]),
+          })
+      })
+    } else if (auth.topicArns !== undefined) {
+      report({
+        code: 'invalid_webhook_auth',
+        message: 'Topic ARNs are for the SNS preset only',
+        ...authAt('topicArns'),
+      })
+    }
+    if (auth.preset === 'sns') {
+      // Nothing more: the secret is unused.
+    } else if (!auth.secret) {
       report({
         code: 'invalid_webhook_auth',
         message: 'Choose the secret config var that holds the signing secret',

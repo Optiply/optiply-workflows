@@ -389,12 +389,28 @@ export const workflowSettingsSchema = z.strictObject({
    * The workflow's Python packages (M23): pip requirements, installed for its Python blocks. Loose here (the
    * validator says what's wrong with each, see `requirementProblems`), so a bad line doesn't hide other problems.
    */
-  python: z.strictObject({ requirements: z.array(z.string().max(1000)).max(100) }).optional(),
+  python: z
+    .strictObject({
+      requirements: z.array(z.string().max(1000)).max(100),
+      /** The package index to resolve them from (M32): an admin-defined index's slug; none for the default. */
+      index: z.string().max(100).optional(),
+    })
+    .optional(),
+  /**
+   * The workflow's JavaScript packages: npm packages (`zod@^3`), bundled for its JavaScript code. Loose here like
+   * `python` (the validator says what's wrong with each, see `jsPackageProblems`).
+   */
+  javascript: z
+    .strictObject({
+      packages: z.array(z.string().max(1000)).max(100),
+    })
+    .optional(),
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
-export const DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS = 30_000
 export const MAX_WEBHOOK_SYNC_TIMEOUT_MS = 5 * 60_000
+/** As long as allowed: slow queries (minutes on the production read replica) still answer the caller with data. */
+export const DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS = MAX_WEBHOOK_SYNC_TIMEOUT_MS
 export const MIN_SCHEDULE_INTERVAL_MS = 60_000
 
 /**
@@ -408,6 +424,8 @@ export const WEBHOOK_SIGNATURE_PRESETS = [
   'slack',
   'hubspot',
   'shopify',
+  /** Amazon SNS (M30): signed with AWS's certificate, not a shared secret; `topicArns` says whose messages count. */
+  'sns',
   'custom',
 ] as const
 export const WEBHOOK_HMAC_ALGORITHMS = ['sha256', 'sha1', 'sha512'] as const
@@ -423,8 +441,10 @@ export const webhookAuthSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('signature'),
     preset: z.enum(WEBHOOK_SIGNATURE_PRESETS),
-    /** The name of a secret config var holding the signing secret, so it's set per environment. */
+    /** The name of a secret config var holding the signing secret, so it's set per environment (not for `sns`). */
     secret: z.string().max(64),
+    /** `sns` only: the topics whose messages start runs (any SNS topic could otherwise sign messages to this URL). */
+    topicArns: z.array(z.string().max(300)).max(20).optional(),
     /** `custom` only: the header with the signature. */
     header: z.string().max(100).optional(),
     /** `custom` only; default sha256. */
@@ -539,6 +559,56 @@ export const sqsTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_SQS_HOLD_MINUTES).optional(),
 })
 
+/**
+ * A RabbitMQ queue of the live release (M30, architecture §2.33): each message starts a run in `environment`, through
+ * the `rabbitmq` resource's settings there; acked when its run succeeds, nacked without requeueing when it fails (the
+ * queue's dead-letter exchange applies).
+ */
+export const rabbitmqTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `rabbitmq` resource. */
+  resource: z.string().max(63),
+  queue: z.string().min(1).max(255),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Messages whose runs may be under way at once (default 4): the consumer's prefetch. */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** How long a message is held while its run lasts (default 60); then it's acked and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
+/**
+ * A Kinesis stream of the live release (M30, architecture §2.33): each record starts a run in `environment`, one
+ * record per shard at a time, in order; where each shard has got to is kept in Postgres. A run that fails is retried
+ * after `retryBackoffSeconds` (doubling) up to `maxAttempts` runs, then the record is skipped (dropped).
+ */
+export const kinesisTriggerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Use lowercase letters, digits, - or _'),
+  enabled: z.boolean(),
+  /** The slug of a `kinesis` resource. */
+  resource: z.string().max(63),
+  /** The stream's name, or its ARN. */
+  stream: z.string().min(1).max(2048),
+  /** Where a shard with no checkpoint starts: new records only (default) or the oldest kept. */
+  startAt: z.enum(['latest', 'trimHorizon']).optional(),
+  /** Environment slug. */
+  environment: z.string().max(63).optional(),
+  /** Records whose runs may be under way at once, across shards (default 4); at most one per shard. */
+  maxInFlight: z.number().int().min(1).max(MAX_PUBSUB_IN_FLIGHT).optional(),
+  /** Runs per record before it is skipped (default 3). */
+  maxAttempts: z.number().int().min(1).max(20).optional(),
+  /** The wait before the first retry (default 10), doubling, at most 15 minutes. */
+  retryBackoffSeconds: z
+    .number()
+    .int()
+    .min(1)
+    .max(15 * 60)
+    .optional(),
+  /** How long a record is held while its run lasts (default 60); then its shard moves on and the run goes on. */
+  maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
+})
+
 export const MAX_KAFKA_ATTEMPTS = 20
 export const MAX_KAFKA_BACKOFF_SECONDS = 15 * 60
 
@@ -571,20 +641,41 @@ export const kafkaTriggerSchema = z.strictObject({
   maxHoldMinutes: z.number().int().min(1).max(MAX_PUBSUB_HOLD_MINUTES).optional(),
 })
 
+/** The triggers that start a run per message (M19, M26, M30): each a list under its kind in `triggers`. */
+export const QUEUE_TRIGGER_KINDS = ['pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
+export type QueueTriggerKind = (typeof QUEUE_TRIGGER_KINDS)[number]
+
 export const triggersSchema = z.strictObject({
   webhook: webhookTriggerSchema.optional(),
   schedules: z.array(scheduleTriggerSchema).max(20).optional(),
   pubsub: z.array(pubsubTriggerSchema).max(20).optional(),
   sqs: z.array(sqsTriggerSchema).max(20).optional(),
   kafka: z.array(kafkaTriggerSchema).max(20).optional(),
+  rabbitmq: z.array(rabbitmqTriggerSchema).max(20).optional(),
+  kinesis: z.array(kinesisTriggerSchema).max(20).optional(),
 })
 
 export const layoutSchema = z.strictObject({
-  blocks: z.record(blockNameSchema, z.strictObject({ x: z.number(), y: z.number() })).optional(),
+  blocks: z
+    .record(
+      blockNameSchema,
+      z.strictObject({
+        x: z.number(),
+        y: z.number(),
+        /** The block's width on the canvas, once resized (M28); otherwise its type's. */
+        w: z.number().min(160).max(2000).optional(),
+        /** Shown as its header only (M28). */
+        minimized: z.boolean().optional(),
+        /** The height of the result panel under the block, once resized (M28). */
+        h: z.number().min(96).max(448).optional(),
+      }),
+    )
+    .optional(),
 })
 
 /**
- * A reusable subflow, called from a Function block, a Loop's function runner, or `await name({ ... })` in code.
+ * A reusable subflow, called from a Function block, a Loop's function runner, or `await name(a, b)` in code
+ * (positional: the arguments in the order of `params`).
  * Its blocks read the arguments as `{{ params.<name> }}`; every block nothing connects into starts the function.
  * Block names are local to the function. It returns the data of its `returns` block (by default the only block
  * nothing follows). Function calls aren't checkpointed: they belong to the block that calls them.
@@ -633,6 +724,8 @@ export type WebhookSignatureAuth = Extract<WebhookAuth, { type: 'signature' }>
 export type ScheduleTrigger = z.output<typeof scheduleTriggerSchema>
 export type PubSubTrigger = z.output<typeof pubsubTriggerSchema>
 export type SqsTrigger = z.output<typeof sqsTriggerSchema>
+export type RabbitmqTrigger = z.output<typeof rabbitmqTriggerSchema>
+export type KinesisTrigger = z.output<typeof kinesisTriggerSchema>
 export type KafkaTrigger = z.output<typeof kafkaTriggerSchema>
 export type WebhookMethod = (typeof WEBHOOK_METHODS)[number]
 export type FunctionDefinition = z.output<typeof functionSchema>
@@ -672,6 +765,12 @@ export function resolveBlockSettings(block: Block): ResolvedBlockSettings {
     retry: { ...DEFAULT_BLOCK_SETTINGS.retry, ...stripUndefined(s?.retry ?? {}) },
     finally: s?.finally ?? DEFAULT_BLOCK_SETTINGS.finally,
   }
+}
+
+/** Whether the block sets its own timeout (rather than taking the default): its queries then get all of it. */
+export function hasOwnTimeout(block: Block): boolean {
+  const s: BlockSettings | undefined = 'settings' in block ? block.settings : undefined
+  return s?.timeoutMs !== undefined
 }
 
 /** A loop iteration's limit and retries: `config.iteration`, with the block defaults. */

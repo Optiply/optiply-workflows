@@ -1,6 +1,6 @@
 import type { ComponentLibraryDefinition, CustomComponentDefinition } from '@ow/app-definition'
 import type { FromFrame } from '@ow/component-sdk/protocol'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Hammer, Play } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Card, ErrorNote, Field, Input, SectionLabel, Select } from '@/components/ui'
@@ -41,6 +41,16 @@ export function BuildCard({
   const shown = definition.components.find((c) => c.name === component) ?? definition.components[0]
   const outcome = build.data
   const canEdit = detail.level === 'edit' || detail.level === 'own'
+  const remoteChanges = useComponentLibraryEditor((s) => s.remoteChanges)
+  // Pushes from the components CLI (M33): a change from elsewhere asks whether it was one; a new one rebuilds.
+  const lastPush = useQuery({
+    ...trpc.componentLibraries.lastPush.queryOptions({ componentLibraryId: detail.id }),
+    enabled: canEdit && !branchDraftId,
+  })
+  const followed = useRef<number | null>(null)
+  /** A push came while a build ran: build again when it's done (the latest `run`, through the ref). */
+  const again = useRef(false)
+  const latestRun = useRef<() => Promise<void>>(async () => {})
 
   const run = async () => {
     setSaveError(null)
@@ -59,9 +69,37 @@ export function BuildCard({
             if (!branchDraftId) setLock(result.lock)
           }
         },
+        onSettled: () => {
+          if (!again.current) return
+          again.current = false
+          void latestRun.current()
+        },
       },
     )
   }
+  latestRun.current = run
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: asks again after a change from elsewhere
+  useEffect(() => {
+    if (!remoteChanges || !lastPush.isFetched) return
+    const timer = setTimeout(() => void lastPush.refetch(), 400)
+    return () => clearTimeout(timer)
+  }, [remoteChanges])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs for a new push only
+  useEffect(() => {
+    if (lastPush.data === undefined) return
+    const at = lastPush.data ? new Date(lastPush.data.at).getTime() : 0
+    if (followed.current === null) {
+      followed.current = at // what was there when the editor opened: nothing to follow
+      return
+    }
+    if (at > followed.current) {
+      followed.current = at
+      if (!canEdit) return
+      if (build.isPending) again.current = true
+      else void run()
+    }
+  }, [lastPush.data])
 
   return (
     <Card className="flex flex-col gap-3 p-4" data-testid="library-build">
@@ -85,6 +123,12 @@ export function BuildCard({
           </Button>
         )}
       </div>
+      {lastPush.data && (
+        <p className="text-xs text-muted" data-testid="library-last-push">
+          Pushed from the CLI by {lastPush.data.by}, {new Date(lastPush.data.at).toLocaleString()}
+          {lastPush.data.revision ? ` (draft revision ${lastPush.data.revision})` : ''}
+        </p>
+      )}
       <ErrorNote error={saveError ?? build.error} />
       {outcome && !outcome.ok && (
         <ul className="flex flex-col gap-1 text-sm" data-testid="build-problems">
@@ -134,7 +178,36 @@ export function BuildCard({
           />
         </>
       )}
+      <UseTheCli slug={detail.slug} />
     </Card>
+  )
+}
+
+/** How to work on this library from a folder with the components CLI (M33). */
+function UseTheCli({ slug }: { slug: string }) {
+  const origin = window.location.origin
+  return (
+    <details className="text-xs text-muted" data-testid="use-the-cli">
+      <summary className="cursor-pointer">Use the CLI</summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <p>
+          Work on this library in your own editor: make a token under Settings → Access tokens, then (Node 20
+          or later):
+        </p>
+        <pre className="overflow-auto rounded-md bg-canvas p-2 font-mono text-ink">
+          {[
+            `curl -O ${origin}/api/cli/ow-components.mjs`,
+            `node ow-components.mjs login ${origin}`,
+            `node ow-components.mjs pull ${slug}`,
+            `cd ${slug} && node ../ow-components.mjs dev`,
+          ].join('\n')}
+        </pre>
+        <p>
+          <code className="font-mono">dev</code> pushes each saved file into this draft and builds it; this
+          Preview follows. <code className="font-mono">push --publish 1.2.0</code> publishes a release.
+        </p>
+      </div>
+    </details>
   )
 }
 

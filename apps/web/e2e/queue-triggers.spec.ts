@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { block, fakeSqs, signIn, testKafka, trpcMutate, trpcQuery } from './helpers'
+import { fakeSqs, openRail, signIn, testKafka, trpcMutate, trpcQuery } from './helpers'
 
 // M26 step 5b: SQS and Kafka resources set up in the browser, and their triggers in the editor.
 const kafka = process.env.E2E_KAFKA_SCRAM
@@ -153,7 +153,7 @@ test('an SQS trigger runs the workflow per message; the editor and run pages sho
   await page.goto(`/workflows/${flow.id}`)
 
   await test.step('set up in the start block: the resource and its queue', async () => {
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     await page.getByTestId('sqs-triggers').getByRole('button', { name: 'Add' }).click()
     const card = page.getByTestId('sqs-queue-1')
     await card.getByRole('combobox', { name: 'Resource' }).selectOption(`order_queues_${stamp}`)
@@ -204,7 +204,7 @@ test('a Kafka trigger runs the workflow per message; the editor and run pages sh
   await page.goto(`/workflows/${flow.id}`)
 
   await test.step('set up in the start block: the resource, its topic, retries and a dead-letter topic', async () => {
-    await block(page, 'startTrigger').click()
+    await openRail(page, 'triggers')
     await page.getByTestId('kafka-triggers').getByRole('button', { name: 'Add' }).click()
     const card = page.getByTestId('kafka-topic-1')
     await card.getByRole('combobox', { name: 'Resource' }).selectOption(`event_cluster_${stamp}`)

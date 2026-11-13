@@ -357,6 +357,14 @@ describe('stopping', () => {
     expect((await failure(run(bqResource(), 'SELECT slow', {}, { timeoutMs: 300 }))).code).toBe('timeout')
     const second = insertBody().jobReference.jobId
     await expect.poll(() => fake.jobs.get(second)?.cancelled).toBe(true)
+
+    // The query's own timeout overrides the resource's statement timeout: the run timeout ends it, not the 300 ms.
+    const started = Date.now()
+    const own = await failure(
+      run(bqResource({ statementTimeoutMs: 300 }), 'SELECT slow', {}, { timeoutMs: 800 }),
+    )
+    expect(own).toMatchObject({ code: 'timeout', message: 'The query timed out after 800 ms' })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(750)
   })
 })
 

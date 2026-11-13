@@ -492,13 +492,20 @@ function isNews(outcome: ObjectOutcome, row: GitObject | undefined): boolean {
 }
 
 /**
- * A release's notes from the commit it deploys: its subject, or for GitHub's merge commits ("Merge pull request
- * #12 from optiply/branch", the title on the next line) the pull request's title and number.
+ * A release's notes from the commit it deploys: its subject, or for a merge commit the request's title and number:
+ * GitHub's ("Merge pull request #12 from optiply/branch", the title on the next line) and GitLab's (M31: "Merge branch
+ * 'a' into 'main'", the title, then "See merge request group/project!12").
  */
 export function releaseNotes(info: { subject: string; body: string }): string {
-  const merge = /^Merge pull request #(\d+) from \S+$/.exec(info.subject)
-  const title = info.body.split('\n')[0]?.trim()
-  return merge && title ? `${title} (#${merge[1]})` : info.subject
+  const lines = info.body.split('\n').map((l) => l.trim())
+  const title = lines.find(Boolean)
+  const github = /^Merge pull request #(\d+) from \S+$/.exec(info.subject)
+  if (github && title) return `${title} (#${github[1]})`
+  const gitlab = /^Merge branch '.+' into '.+'$/.test(info.subject)
+    ? lines.map((l) => /^See merge request \S*!(\d+)$/.exec(l)).find(Boolean)
+    : null
+  if (gitlab && title && !title.startsWith('See merge request')) return `${title} (!${gitlab[1]})`
+  return info.subject
 }
 
 /** Creates or updates one object of any kind from its decoded files. Problems come back as an outcome. */
@@ -589,6 +596,7 @@ async function deployObject(
             componentBuildConfig({
               NPM_REGISTRY_URL: config.NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY,
               COMPONENT_BUILD_DIR: config.COMPONENT_BUILD_DIR,
+              keyring: config.keyring,
             }),
             {
               ...meta,

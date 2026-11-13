@@ -246,6 +246,104 @@
       "when": 1793348908031,
       "tag": "0034_queue_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793741314048,
+      "tag": "0035_brokers",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793787117541,
+      "tag": "0036_git_hosts",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793802958538,
+      "tag": "0037_python_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793811642112,
+      "tag": "0038_access_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793813053069,
+      "tag": "0039_npm_registries",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1793865001555,
+      "tag": "0040_idempotency_per_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1793870549957,
+      "tag": "0041_raise_max_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1793870924354,
+      "tag": "0042_block_data_50mb",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1793900833655,
+      "tag": "0043_app_draft_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794396368033,
+      "tag": "0044_person_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794402647844,
+      "tag": "0045_user_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794471921940,
+      "tag": "0046_js_bundles",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794493695815,
+      "tag": "0047_app_workflow_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794494570482,
+      "tag": "0048_retool_imports",
+      "breakpoints": true
     }
   ]
 }

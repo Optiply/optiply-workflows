@@ -278,6 +278,41 @@ describe('apps: running queries', () => {
     expect(who).toMatchObject({ ok: true, data: [{ email: 'admin@optiply.nl' }] })
   })
 
+  it('fills in config vars on the server: secret ones only for the live release, scrubbed on the way out (M36)', async () => {
+    const plain = data(await admin.mutate('configVars.create', { name: 'APP_REGION' }))
+    const secret = data(await admin.mutate('configVars.create', { name: 'APP_TOKEN', isSecret: true }))
+    await admin.mutate('configVars.setValue', {
+      configVarId: plain.id,
+      environmentId: prodId,
+      value: 'eu-west',
+    })
+    await admin.mutate('configVars.setValue', {
+      configVarId: secret.id,
+      environmentId: prodId,
+      value: 's3cr3t-value',
+    })
+    const cv = await appWith(
+      'config-vars-app',
+      crudApp({
+        queries: [
+          sqlQuery(
+            'region',
+            "select {{ configVars.APP_REGION }}::text as region, {{ configVars.APP_TOKEN ?? 'none' }}::text as token",
+          ),
+          sqlQuery('echo', 'select {{ configVars.APP_TOKEN }}::text as token'),
+        ],
+      }),
+    )
+    // The draft: plain ones only; the browser's values for them are ignored.
+    const draft = data(await run(admin, cv.id, 'region', { ' configVars.APP_REGION ': 'hacked' }))
+    expect(draft).toMatchObject({ ok: true, data: [{ region: 'eu-west', token: 'none' }] })
+    // The live release: secret ones too, never sent back as they are.
+    const release = data(await admin.mutate('apps.publish', { appId: cv.id, draftRevision: cv.revision() }))
+    const live = data(await run(admin, cv.id, 'echo', {}, { releaseId: release.id }))
+    expect(live.ok).toBe(true)
+    expect(JSON.stringify(live)).not.toContain('s3cr3t-value')
+  })
+
   it('refuses mixed current_user expressions and missing values', async () => {
     await app.save(
       crudApp({ queries: [sqlQuery('mixed', 'select {{ current_user.email + search.value }} as x')] }),
@@ -285,7 +320,7 @@ describe('apps: running queries', () => {
     const mixed = data(await run(admin, app.id, 'mixed', { ' current_user.email + search.value ': 'x' }))
     expect(mixed).toMatchObject({
       ok: false,
-      error: { code: 'expression', message: expect.stringContaining('of its own') },
+      error: { code: 'expression', message: expect.stringContaining('of their own') },
     })
     const missing = data(await run(admin, app.id, 'customers', {}))
     expect(missing).toMatchObject({
@@ -343,6 +378,20 @@ describe('apps: running queries', () => {
 })
 
 describe('apps: releases', () => {
+  it('lists each app with its last editor and live release (session 40)', async () => {
+    const app = await appWith('listed-app', crudApp())
+    const draftOnly = await appWith('listed-draft', crudApp())
+    const released = data(
+      await admin.mutate('apps.publish', { appId: app.id, draftRevision: app.revision() }),
+    )
+    const list = data(await admin.query('apps.list'))
+    expect(list.find((a: { id: string }) => a.id === app.id)).toMatchObject({
+      updatedByName: 'admin',
+      liveRelease: { version: released.version ?? '1.0.0', publishedAt: expect.any(String) },
+    })
+    expect(list.find((a: { id: string }) => a.id === draftOnly.id)).toMatchObject({ liveRelease: null })
+  })
+
   it('publishes with the right checks, serves the live release to Use, and refuses stale releases', async () => {
     const app = await appWith('orders', crudApp())
     data(await run(admin, app.id, 'setup'))
@@ -431,6 +480,61 @@ describe('apps: releases', () => {
     const left = await env.db.select().from(permissions).where(eq(permissions.objectId, app.id))
     expect(left).toEqual([])
     expect(failure(await admin.query('apps.get', { id: app.id }))).toMatchObject({ code: 'NOT_FOUND' })
+
+    // An app kept in Git is unprotected first (session 40, as workflows).
+    const kept = await appWith('kept', crudApp())
+    await env.db.update(appsTable).set({ gitProtected: true }).where(eq(appsTable.id, kept.id))
+    expect(failure(await admin.mutate('apps.delete', { id: kept.id }))).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'This app is kept in Git: unprotect it before deleting it',
+    })
+  })
+
+  it('duplicates an app’s draft, in its folder, without releases (session 40)', async () => {
+    const folder = data(await admin.mutate('folders.create', { name: 'Copies', type: 'app' }))
+    const original = await appWith('original', crudApp())
+    data(await admin.mutate('apps.update', { id: original.id, folderId: folder.id }))
+    data(await admin.mutate('apps.publish', { appId: original.id, draftRevision: original.revision() }))
+
+    const copy = data(
+      await admin.mutate('apps.duplicate', {
+        id: original.id,
+        slug: 'original-copy',
+        name: 'Original (copy)',
+      }),
+    )
+    expect(copy).toMatchObject({
+      slug: 'original-copy',
+      name: 'Original (copy)',
+      folderId: folder.id,
+      liveReleaseId: null,
+    })
+    const [a, b] = await Promise.all([
+      admin.query('apps.get', { id: original.id }),
+      admin.query('apps.get', { id: copy.id }),
+    ])
+    expect(data(b).draftDefinition).toEqual(data(a).draftDefinition)
+    expect(data(await admin.query('apps.releases', { appId: copy.id }))).toEqual([])
+    const [audit] = await env.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.objectId, copy.id), eq(auditEvents.action, 'app.created')))
+    expect(audit!.metadata).toMatchObject({ duplicateOf: { id: original.id, slug: 'original' } })
+
+    // A taken slug; Use on the original isn't enough (the draft isn't theirs to see).
+    expect(
+      failure(await admin.mutate('apps.duplicate', { id: original.id, slug: 'original-copy', name: 'Again' }))
+        .code,
+    ).toBe('CONFLICT')
+    await grantApp(original.id, 'use')
+    expect(
+      failure(await member.mutate('apps.duplicate', { id: original.id, slug: 'member-copy', name: 'Mine' }))
+        .code,
+    ).toBe('FORBIDDEN')
+    // Leave no folder behind for the folders tests below.
+    data(await admin.mutate('apps.delete', { id: copy.id }))
+    data(await admin.mutate('apps.delete', { id: original.id }))
+    data(await admin.mutate('folders.delete', { id: folder.id }))
   })
 })
 

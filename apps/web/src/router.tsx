@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-router'
 import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-react-query'
 import { z } from 'zod'
+import { visibleSections } from './components/command-palette'
 import { ConfirmHost } from './components/confirm'
 import { queryClient, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
@@ -23,15 +24,20 @@ import { ModulesPage } from './pages/modules/list'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
+import { AccessTokensPage } from './pages/settings/access-tokens'
 import { ApiKeysPage } from './pages/settings/api-keys'
 import { AuditPage } from './pages/settings/audit'
+import { ComponentsSettingsPage } from './pages/settings/components'
 import { ConfigVarsPage } from './pages/settings/config-vars'
 import { EnvironmentsPage } from './pages/settings/environments'
 import { GitSettingsPage } from './pages/settings/git'
 import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
 import { SettingsLayout } from './pages/settings/layout'
+import { PythonSettingsPage } from './pages/settings/python'
+import { UserDetailPage } from './pages/settings/user-detail'
 import { UsersPage } from './pages/settings/users'
+import { StartPage } from './pages/start'
 import { WorkflowsPage } from './pages/workflows/list'
 
 export interface RouterContext {
@@ -54,7 +60,7 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Root 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
-  validateSearch: z.object({ error: z.string().optional() }),
+  validateSearch: z.object({ error: z.string().optional(), pending: z.coerce.number().optional() }),
   component: LoginPage,
 })
 
@@ -63,7 +69,12 @@ const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'app',
   beforeLoad: async ({ context }) => {
-    const me = await context.queryClient.ensureQueryData(context.trpc.me.queryOptions())
+    // Refreshed in the background now and then, so changed access shows on a later page without a reload.
+    const me = await context.queryClient.ensureQueryData({
+      ...context.trpc.me.queryOptions(),
+      staleTime: 30_000,
+      revalidateIfStale: true,
+    })
     if (!me) throw redirect({ to: '/login' })
     return { me }
   },
@@ -73,10 +84,14 @@ const appRoute = createRoute({
 const indexRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/',
-  beforeLoad: () => {
-    throw redirect({ to: '/workflows' })
+  // The first section they can reach; with none, the page that says so.
+  beforeLoad: ({ context }) => {
+    const first = visibleSections(context.me)[0]
+    throw redirect({ to: first?.to ?? '/start' })
   },
 })
+
+const startRoute = createRoute({ getParentRoute: () => appRoute, path: '/start', component: StartPage })
 
 /** The lists (workflows, resources, apps, library queries, modules) open one folder at a time: `folder` is its id. */
 const folderSearch = z.object({ folder: z.string().uuid().optional() })
@@ -90,7 +105,7 @@ const workflowsRoute = createRoute({
 const workflowEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/workflows/$workflowId',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `run` opens that run in the run panel (links from /runs); `branch` edits a protected workflow's draft there (M11). */
   validateSearch: z.object({ run: z.string().uuid().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/workflows/editor'), 'WorkflowEditorPage'),
@@ -129,7 +144,7 @@ const appSearch = z.looseObject({ env: z.string().optional() })
 const appViewRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps/$slug/{-$page}',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, bare: true },
   validateSearch: appSearch,
   component: lazyRouteComponent(() => import('./pages/apps/view'), 'AppViewPage'),
 })
@@ -137,9 +152,16 @@ const appViewRoute = createRoute({
 const appEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/apps/$slug/edit',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `branch` edits a protected app's draft on that Git branch (M11). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
+  // People who may only use the app get the app itself, not an editor that would refuse them.
+  beforeLoad: async ({ context, params }) => {
+    const access = await context.queryClient
+      .fetchQuery(context.trpc.apps.access.queryOptions({ slug: params.slug }))
+      .catch(() => null)
+    if (access?.level === 'use') throw redirect({ to: '/apps/$slug/{-$page}', params: { slug: params.slug } })
+  },
   component: lazyRouteComponent(() => import('./pages/apps/editor'), 'AppEditorPage'),
 })
 /** The Query Library (M14): library queries, and each one's editor in its own chunk (Monaco loads with it). */
@@ -166,7 +188,7 @@ const modulesRoute = createRoute({
 const moduleEditorRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/modules/$slug',
-  staticData: { fullBleed: true },
+  staticData: { fullBleed: true, editor: true },
   /** `branch` edits a protected module's draft on that Git branch (M14). */
   validateSearch: z.object({ env: z.string().optional(), branch: z.string().optional() }),
   component: lazyRouteComponent(() => import('./pages/modules/editor'), 'ModuleEditorPage'),
@@ -222,6 +244,11 @@ const groupsRoute = createRoute({
   path: '/groups',
   component: GroupsPage,
 })
+export const userDetailRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/users/$userId',
+  component: UserDetailPage,
+})
 export const groupDetailRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/groups/$groupId',
@@ -242,17 +269,41 @@ const apiKeysRoute = createRoute({
   path: '/api-keys',
   component: ApiKeysPage,
 })
+const accessTokensRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/access-tokens',
+  component: AccessTokensPage,
+})
 const auditRoute = createRoute({ getParentRoute: () => settingsRoute, path: '/audit', component: AuditPage })
 const gitRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/git',
   component: GitSettingsPage,
 })
+const pythonRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/python',
+  component: PythonSettingsPage,
+})
+const npmSettingsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/npm',
+  component: ComponentsSettingsPage,
+})
+/** The npm registries' page was Settings → Components (M33) before workflows and apps used it too. */
+const componentsSettingsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/components',
+  beforeLoad: () => {
+    throw redirect({ to: '/settings/npm' })
+  },
+})
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
   appRoute.addChildren([
     indexRoute,
+    startRoute,
     workflowsRoute,
     workflowEditorRoute,
     resourcesRoute,
@@ -273,12 +324,17 @@ const routeTree = rootRoute.addChildren([
     settingsRoute.addChildren([
       settingsIndexRoute,
       usersRoute,
+      userDetailRoute,
       groupsRoute,
       groupDetailRoute,
       environmentsRoute,
       configVarsRoute,
       apiKeysRoute,
+      accessTokensRoute,
       gitRoute,
+      pythonRoute,
+      npmSettingsRoute,
+      componentsSettingsRoute,
       auditRoute,
     ]),
   ]),
@@ -315,5 +371,9 @@ declare module '@tanstack/react-router' {
   interface StaticDataRouteOption {
     /** The page fills the whole content area instead of the centred, padded column. */
     fullBleed?: boolean
+    /** An editor: the sidebar folds to icons by default and the editor's header goes in the top bar. */
+    editor?: boolean
+    /** Just the page, without the platform around it: a published app at its URL (editors press Edit for more). */
+    bare?: boolean
   }
 }

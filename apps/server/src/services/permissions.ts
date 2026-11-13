@@ -1,7 +1,7 @@
 import { type Db, folders, groupMembers, PERMISSION_LEVELS, type PermissionLevel, permissions } from '@ow/db'
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, or } from 'drizzle-orm'
 
 const RANK: Record<PermissionLevel, number> = { use: 1, edit: 2, own: 3 }
 
@@ -177,6 +177,28 @@ export class Access {
     return best
   }
 
+  /**
+   * Whether any grant reaches something of a kind: on one of them, on all of them, or on a folder of that kind
+   * (`ignore`: object ids that don't count, like built-in resources everyone may use). What shows a sidebar section.
+   */
+  reaches(type: ObjectKind | 'resource', ignore: ReadonlySet<string> = new Set()): boolean {
+    if (this.isAdmin) return true
+    return this.grants.some((g) => {
+      // As `objectLevel`: only grants for every environment count for kinds without environments.
+      if (type !== 'resource' && g.environmentId !== null) return false
+      if (g.objectType === type) return g.objectId === null || !ignore.has(g.objectId)
+      if (g.objectType !== 'folder' || g.objectId === null) return false
+      // As `folderGrant`: a folder of that kind, or one whose kind isn't known.
+      const folderType = this.folderTypes.get(g.objectId)
+      return folderType === undefined || folderType === type
+    })
+  }
+
+  /** Whether they can share anything: admins, and anyone owning something (Own manages access). */
+  get canShare(): boolean {
+    return this.isAdmin || this.grants.some((g) => g.level === 'own')
+  }
+
   /** A grant on one of the object's folders, a folder of the object's own type. */
   private folderGrant(g: Grant, folderIds: Set<string>, type: string): boolean {
     if (g.objectType !== 'folder' || g.objectId === null || !folderIds.has(g.objectId)) return false
@@ -198,17 +220,20 @@ export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean })
     .from(groupMembers)
     .where(eq(groupMembers.userId, user.id))
   const groupIds = memberships.map((m) => m.groupId)
-  const grants = groupIds.length
-    ? await db
-        .select({
-          objectType: permissions.objectType,
-          objectId: permissions.objectId,
-          environmentId: permissions.environmentId,
-          level: permissions.level,
-        })
-        .from(permissions)
-        .where(inArray(permissions.groupId, groupIds))
-    : []
+  // Their groups' grants and their own.
+  const grants = await db
+    .select({
+      objectType: permissions.objectType,
+      objectId: permissions.objectId,
+      environmentId: permissions.environmentId,
+      level: permissions.level,
+    })
+    .from(permissions)
+    .where(
+      groupIds.length
+        ? or(inArray(permissions.groupId, groupIds), eq(permissions.userId, user.id))
+        : eq(permissions.userId, user.id),
+    )
   const folderRows = grants.some((g) => g.objectType === 'folder')
     ? await db
         .select({ id: folders.id, parentId: folders.parentId, objectType: folders.objectType })

@@ -5,12 +5,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   kafkaAvailable,
+  rabbitAvailable,
+  s3Available,
   startFakeAws,
   startFakePubSub,
   startTestIapServer,
   startTestKafka,
+  startTestRabbit,
+  startTestS3,
   startTestSshServer,
   type TestKafka,
+  type TestRabbit,
+  type TestS3,
 } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
 import { desc, eq } from 'drizzle-orm'
@@ -131,7 +137,7 @@ describe('resources (admin)', () => {
     expect(data(saved).config).toMatchObject({
       ...pgConfig,
       port: pgConfig.port,
-      maxRows: 10_000,
+      maxRows: 1_000_000,
       readOnly: false,
     })
 
@@ -388,7 +394,10 @@ describe('permissions', () => {
   let groupId: string
 
   it('hides resources from users without a grant', async () => {
-    expect(data(await member.query('resources.list'))).toEqual({ resources: [], canCreate: false })
+    // Only the built-in REST API resource (M27), which All Users may use.
+    const visible = data(await member.query('resources.list'))
+    expect(visible.canCreate).toBe(false)
+    expect(visible.resources.map((r: { slug: string }) => r.slug)).toEqual(['rest_api'])
     expect((await member.query('resources.get', { id: pgId })).status).toBe(404)
     expect(
       (
@@ -417,6 +426,7 @@ describe('permissions', () => {
     expect(grant.status).toBe(200)
 
     const list = data(await member.query('resources.list'))
+    list.resources = list.resources.filter((r: { systemKind: string | null }) => !r.systemKind)
     expect(list.resources).toHaveLength(1)
     expect(list.resources[0].environments).toEqual(
       expect.arrayContaining([
@@ -1242,6 +1252,118 @@ describe('SQS resources (M26)', () => {
     expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
     // Kept as it is by an editor, yes.
     expect((await save(member, id, endpoint)).status).toBe(200)
+  })
+})
+
+describe.skipIf(!rabbitAvailable())('RabbitMQ resources (M30)', () => {
+  let rabbit: TestRabbit
+  let id: string
+  beforeAll(async () => {
+    rabbit = await startTestRabbit()
+    SECRETS.push(rabbit.password)
+    await rabbit.declare('m30-orders')
+    id = data(
+      await admin.mutate('resources.create', { type: 'rabbitmq', name: 'Broker', slug: 'broker_m30' }),
+    ).id
+  }, 120_000)
+  afterAll(async () => {
+    await rabbit?.stop()
+  })
+
+  it('checks the password on save, tests the connection, publishes', async () => {
+    const config = {
+      host: rabbit.host,
+      port: rabbit.port,
+      username: rabbit.username,
+      allowPrivateNetwork: true,
+    }
+    const save = (secrets?: object) =>
+      admin.mutate('resources.saveConfig', {
+        resourceId: id,
+        environmentId: prodId,
+        config,
+        ...(secrets ? { secrets } : {}),
+      })
+    expect((await save()).body.error?.message).toBe('Add the password')
+    expect((await save({ password: rabbit.password })).status).toBe(200)
+    expect(
+      data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId })),
+    ).toMatchObject({
+      ok: true,
+      message: expect.stringMatching(/^RabbitMQ 4/),
+    })
+    const run = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { action: 'publish', routingKey: 'm30-orders', messages: '{"body": {"n": {{ 6 * 7 }}}}' },
+      }),
+    )
+    expect(run).toMatchObject({ ok: true, data: { published: 1 } })
+    expect((await rabbit.drain('m30-orders')).map((m) => m.body)).toEqual(['{"n":42}'])
+  })
+})
+
+describe.skipIf(!s3Available())('S3 resources (M29)', () => {
+  let store: TestS3
+  let id: string
+  const save = (as: ReturnType<typeof trpc>, config: object, secrets?: object) =>
+    as.mutate('resources.saveConfig', {
+      resourceId: id,
+      environmentId: prodId,
+      config,
+      ...(secrets ? { secrets } : {}),
+    })
+
+  beforeAll(async () => {
+    store = await startTestS3()
+    SECRETS.push(store.secretAccessKey)
+    id = data(await admin.mutate('resources.create', { type: 's3', name: 'Files', slug: 'files_m29' })).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'S3 editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    await admin.mutate('permissions.set', {
+      objectType: 'resource',
+      objectId: id,
+      groupId,
+      environmentId: prodId,
+      level: 'edit',
+    })
+  }, 120_000)
+  afterAll(async () => {
+    await store?.stop()
+  })
+
+  it('lets only admins set an endpoint, checks the key, and puts and gets an object', async () => {
+    const config = {
+      region: store.region,
+      identity: 'key',
+      accessKeyId: store.accessKeyId,
+      endpoint: store.endpoint,
+      forcePathStyle: true,
+      bucket: 'exports',
+    }
+    expect((await save(member, config, { secretAccessKey: store.secretAccessKey })).body.error?.message).toBe(
+      'Only admins can point an S3 resource at another endpoint',
+    )
+    expect((await save(admin, config)).body.error?.message).toBe('Add the secret access key')
+    const saved = await save(admin, config, { secretAccessKey: store.secretAccessKey })
+    expect(saved.status).toBe(200)
+    expect(data(saved).secrets).toEqual({ secretAccessKey: { set: true } })
+    // Kept as it is by an editor, yes.
+    expect((await save(member, config)).status).toBe(200)
+
+    await store.createBucket('exports')
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({ ok: true, message: `Bucket exports in ${store.region} is reachable` })
+    const run = (query: object) =>
+      admin.mutate('resources.run', { resourceId: id, environmentId: prodId, query })
+    expect(
+      data(await run({ action: 'put', key: 'a.json', body: '{{ { n: 6 * 7 } }}', format: 'json' })),
+    ).toMatchObject({ ok: true })
+    expect(data(await run({ action: 'get', key: 'a.json', format: 'json' }))).toMatchObject({
+      ok: true,
+      data: { n: 42 },
+    })
   })
 })
 

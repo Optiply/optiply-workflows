@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -15,16 +15,27 @@ import {
 import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
 import {
   kafkaAvailable,
+  rabbitAvailable,
+  s3Available,
+  startFakeAi,
   startFakeAws,
   startFakePubSub,
+  startFakeRegistry,
+  startFakeServices,
+  startTestGraphql,
   startTestIapServer,
   startTestKafka,
+  startTestRabbit,
+  startTestS3,
   type TestKafka,
+  type TestRabbit,
+  type TestS3,
 } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
 import { startTestDatabase } from '@ow/db/testing'
 import { FakeGoogle } from '../../../packages/connectors/test/google-fake'
 import { fakeGitHub } from '../../server/test/fake-github'
+import { fakeGitLab } from '../../server/test/fake-gitlab'
 import { startTestRegistry } from '../../server/test/npm-registry'
 import { E2E_PORT } from '../playwright.config'
 
@@ -33,10 +44,16 @@ const webDist = fileURLToPath(new URL('../dist', import.meta.url))
 
 export const E2E_EMAIL = 'e2e@optiply.nl'
 export const E2E_PASSWORD = 'e2e-password-not-secret'
+/** The e2e's private package index's password (M32; username `ci`). */
+const E2E_PRIVATE_INDEX_PASSWORD = 'private-index-password-not-secret'
+/** The e2e's private npm registry's token (M33). */
+const E2E_NPM_PRIVATE_TOKEN = 'npm-token-not-secret'
 /** A second person, for what differs between people (their own OAuth accounts). Same password. */
 export const E2E_SECOND_EMAIL = 'e2e-second@optiply.nl'
 /** Someone who isn't an admin: they reach only what's shared with them (M10's done-when). Same password. */
 export const E2E_MEMBER_EMAIL = 'e2e-member@optiply.nl'
+/** Someone who signed in once and waits for an admin's approval (session 44): a password, to sign in once approved. */
+export const E2E_WAITING_EMAIL = 'e2e-waiting@optiply.nl'
 /** The token the fake GitHub takes (M11). */
 export const E2E_GITHUB_TOKEN = 'github_pat_e2e_not_secret'
 /** The VM the fake IAP endpoint reaches (at 127.0.0.1, on the port asked for: specs start the SSH server) (M18). */
@@ -72,9 +89,46 @@ export default async function globalSetup() {
   execFileSync('git', ['init', '--bare', '--quiet', '--initial-branch=main', repoPath], {
     env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
   })
-  const github = await fakeGitHub({ repoPath, owner: 'optiply', repo: 'flows', token: E2E_GITHUB_TOKEN })
+  // M31: the fake GitHub also has a GitHub App installed on the repo (E2E_GITHUB_APP: its id and private key).
+  const appKeys = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  })
+  const github = await fakeGitHub({
+    repoPath,
+    owner: 'optiply',
+    repo: 'flows',
+    token: E2E_GITHUB_TOKEN,
+    app: { id: '424242', publicKey: appKeys.publicKey },
+  })
   process.env.E2E_GIT_REPO_URL = `file://${repoPath}`
   process.env.E2E_FAKE_GITHUB = github.url
+  process.env.E2E_GITHUB_APP = JSON.stringify({ id: '424242', privateKey: appKeys.privateKey })
+  // M31: a second repo (optiply/data/flows) behind a fake GitLab, its project the file:// path as GitLab reads it
+  // (E2E_GITLAB: the fake's URL, the repo, the project and the token).
+  mkdirSync(join(gitRoot, 'optiply', 'data'))
+  const gitlabRepo = join(gitRoot, 'optiply', 'data', 'flows.git')
+  execFileSync('git', ['init', '--bare', '--quiet', '--initial-branch=main', gitlabRepo], {
+    env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  })
+  const gitlabProject = gitlabRepo
+    .replace(/\.git$/, '')
+    .split('/')
+    .filter(Boolean)
+    .join('/')
+  const gitlab = await fakeGitLab({
+    repoPath: gitlabRepo,
+    project: gitlabProject,
+    token: 'glpat-e2e-not-secret',
+  })
+  process.env.E2E_GITLAB = JSON.stringify({
+    url: gitlab.url,
+    repoUrl: `file://${gitlabRepo}`,
+    repoDir: gitlabRepo,
+    project: gitlabProject,
+    token: 'glpat-e2e-not-secret',
+  })
 
   // Python (M12): the code executor in a container, when Docker is there (CI must have it). Specs that need it read
   // E2E_PYTHON.
@@ -93,6 +147,26 @@ export default async function globalSetup() {
         { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
       ])
     : null
+  // M32: a private index with a password (a package only it has, and one with only an sdist). Specs read
+  // E2E_PRIVATE_INDEX_URL and E2E_PRIVATE_INDEX_PASSWORD (username `ci`).
+  const privateIndex = packages
+    ? await startTestIndex(
+        [
+          {
+            name: 'owtest-private',
+            version: '1.0.0',
+            requires: ['owtest-b'],
+            files: { 'owtest_private/__init__.py': 'SAUCE = 42\n' },
+          },
+          { name: 'owtest-psrc', version: '2.0.0', files: { 'owtest_psrc.py': 'P = 2\n' }, sdist: {} },
+        ],
+        { auth: { username: 'ci', password: E2E_PRIVATE_INDEX_PASSWORD } },
+      )
+    : null
+  if (privateIndex) {
+    process.env.E2E_PRIVATE_INDEX_URL = privateIndex.url
+    process.env.E2E_PRIVATE_INDEX_PASSWORD = E2E_PRIVATE_INDEX_PASSWORD
+  }
   const volume = packages ? testEnvsVolume() : null
   // The builder first: a new volume takes its /envs and their owner.
   const builder =
@@ -147,6 +221,77 @@ export default async function globalSetup() {
   process.env.E2E_AWS_SERVER_ARN = awsServer.arn
   process.env.E2E_AWS_USER_ARN = awsUser.arn
 
+  // M27: fakes of Slack, HubSpot, SendGrid and Google Sheets (with Drive) on one server, and a GraphQL endpoint. Sheets
+  // also takes the fake Google's tokens (`sa-…` for E2E_IAP_KEY's service account, `md-…` the server's identity).
+  // Specs read state and seed spreadsheets through E2E_SERVICES's /_fake routes; the built-in REST API may reach
+  // 127.0.0.1 (REST_API_PRIVATE_HOSTS), so specs call E2E_SERVICES's /_fake/echo with it.
+  const services = await startFakeServices({
+    sheetsTrust: (token) =>
+      /^sa-\d+$/.test(token)
+        ? 'tunnel@fake-project.iam.gserviceaccount.com'
+        : /^md-\d+$/.test(token)
+          ? 'any'
+          : null,
+  })
+  const graphql = await startTestGraphql()
+  process.env.E2E_SERVICES = services.url
+  process.env.E2E_SERVICES_TOKENS = JSON.stringify({
+    slack: services.slack.token,
+    hubspot: services.hubspot.token,
+    sendgrid: services.sendgrid.key,
+  })
+  process.env.E2E_GRAPHQL = JSON.stringify({ url: graphql.url, token: graphql.token })
+  // M29: Stripe, Airtable, Jira, Notion and Salesforce on the same fake server; an Airtable base and a Notion
+  // database to start from. Specs read their state through /_fake/state (`m29`).
+  services.airtable.bases.set('appE2EBASE0000001', [
+    {
+      id: 'tblStock00000001',
+      name: 'Stock',
+      fields: [
+        { id: 'fldSku', name: 'SKU', type: 'singleLineText' },
+        { id: 'fldQty', name: 'Qty', type: 'number' },
+      ],
+      records: new Map(),
+    },
+  ])
+  services.notion.databases.set('5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b', {
+    id: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b',
+    title: 'Purchase orders',
+    properties: {
+      Name: { id: 'title', type: 'title' },
+      Qty: { id: 'q', type: 'number' },
+      Status: { id: 's', type: 'status' },
+    },
+  })
+  process.env.E2E_M29 = JSON.stringify({
+    stripe: services.stripe.key,
+    airtable: { token: services.airtable.token, base: 'appE2EBASE0000001' },
+    jira: { site: services.urls.jiraCloud, email: services.jira.email, token: services.jira.apiToken },
+    notion: { token: services.notion.token, database: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b' },
+    salesforce: { clientId: services.salesforce.clientId, clientSecret: services.salesforce.clientSecret },
+  })
+  // M35: fakes of Anthropic's Messages API and an OpenAI-compatible API on one server (markers in prompts steer them:
+  // REFUSE_ME, RATE_LIMIT_ONCE, LABEL=). Specs read the URLs and keys from E2E_AI.
+  const ai = await startFakeAi()
+  process.env.E2E_AI = JSON.stringify({
+    anthropicUrl: ai.anthropicUrl,
+    anthropicKey: ai.anthropicKey,
+    openaiUrl: ai.openaiUrl,
+    openaiKey: ai.openaiKey,
+  })
+  // S3 (M29): an S3-compatible store in Docker where Docker runs (the spec's S3 part skips without E2E_S3).
+  let s3: TestS3 | undefined
+  if (s3Available()) {
+    s3 = await startTestS3()
+    await s3.createBucket('e2e-files')
+    process.env.E2E_S3 = JSON.stringify({
+      endpoint: s3.endpoint,
+      region: s3.region,
+      accessKeyId: s3.accessKeyId,
+      secretAccessKey: s3.secretAccessKey,
+    })
+  }
+
   // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
   // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
   let kafka: TestKafka | undefined
@@ -159,6 +304,7 @@ export default async function globalSetup() {
       'm26-retry-dlt',
       'm26-takeover',
       'm26-produced',
+      'm30-avro',
     ])
       await kafka.createTopic(topic)
     process.env.E2E_KAFKA = kafka.plaintext
@@ -171,6 +317,41 @@ export default async function globalSetup() {
       mtls: kafka.mtls,
     })
   }
+  // M30: RabbitMQ in Docker where Docker runs (E2E_RABBIT; specs skip without it); SNS and Kinesis on the fake AWS (the
+  // server trusts the fake's certificate host through SNS_CERT_HOSTS, and its HTTP subscriptions post to the e2e
+  // server's webhooks); a fake Schema Registry with an Avro subject for Kafka. E2E_M30 names the topic and registry.
+  let rabbit: TestRabbit | undefined
+  if (rabbitAvailable()) {
+    rabbit = await startTestRabbit()
+    await rabbit.declare('m30-jobs', { deadLetterQueue: 'm30-jobs-dead' })
+    process.env.E2E_RABBIT = JSON.stringify({
+      host: rabbit.host,
+      port: rabbit.port,
+      username: rabbit.username,
+      password: rabbit.password,
+    })
+  }
+  const m30Topic = aws.sns.createTopic('m30-orders')
+  aws.kinesis.createStream('m30-clicks')
+  const schemaRegistry = await startFakeRegistry()
+  const avroSchemaId = schemaRegistry.register('m30-avro-value', {
+    type: 'record',
+    name: 'Order',
+    fields: [
+      { name: 'id', type: 'long' },
+      { name: 'sku', type: 'string' },
+    ],
+  })
+  process.env.E2E_M30 = JSON.stringify({
+    topicArn: m30Topic,
+    registry: {
+      url: schemaRegistry.url,
+      username: schemaRegistry.username,
+      password: schemaRegistry.password,
+      avroSchemaId,
+    },
+  })
+
   const kafkaPlain = () =>
     kafkaClient({ brokers: [kafka!.plaintext], auth: 'none', tls: false, identity: 'key' }, {})
 
@@ -243,6 +424,17 @@ export default async function globalSetup() {
       return json(got)
     }
     if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
+    // M30: subscribe a webhook to an SNS topic (the fake sends its SubscriptionConfirmation at once), and whether it
+    // confirmed; what an SNS topic was sent; what's left in a RabbitMQ queue (read and acked).
+    if (url.pathname === '/sns/subscribe' && req.method === 'POST') {
+      await aws.sns.subscribe(param('topicArn'), param('endpoint'))
+      return json({})
+    }
+    if (url.pathname === '/sns/confirmed')
+      return json(aws.sns.confirmed(param('topicArn'), param('endpoint')))
+    if (url.pathname === '/sns/messages')
+      return json(aws.sns.messages.filter((m) => m.topicArn === param('topicArn')))
+    if (url.pathname === '/rabbit/drain') return json(await rabbit!.drain(param('queue')))
     if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
       pubsub.redeliver(param('subscription'), param('messageId'))
       return json({})
@@ -269,6 +461,19 @@ export default async function globalSetup() {
       files: { 'index.js': 'module.exports = (n) => "#" + String(n).padStart(3, "0")' },
     },
   ])
+  // M33: a private registry for the @acme scope, with a token. Specs read E2E_NPM_PRIVATE_URL and _TOKEN.
+  const privateNpm = await startTestRegistry(
+    [
+      {
+        name: '@acme/greeting',
+        version: '1.0.0',
+        files: { 'index.js': 'module.exports = (name) => "Hello from @acme, " + name' },
+      },
+    ],
+    { token: E2E_NPM_PRIVATE_TOKEN },
+  )
+  process.env.E2E_NPM_PRIVATE_URL = privateNpm.url
+  process.env.E2E_NPM_PRIVATE_TOKEN = E2E_NPM_PRIVATE_TOKEN
   const origins = await Promise.all(
     ['allowed', 'other'].map(async (which) => {
       const origin = createServer((_req, res) => {
@@ -307,10 +512,12 @@ export default async function globalSetup() {
     GIT_ALLOW_INSECURE_URLS: 'true',
     GIT_CACHE_DIR: join(gitRoot, 'cache'),
     GITHUB_API_URL: github.url,
+    GITLAB_API_URL: gitlab.url,
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
     NPM_REGISTRY_URL: registry.url,
+    NPM_ALLOW_INSECURE_REGISTRIES: 'true',
     COMPONENT_BUILD_DIR: componentBuilds,
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
@@ -321,6 +528,20 @@ export default async function globalSetup() {
     AWS_SERVER_IDENTITY: 'allow',
     AWS_STS_URL: aws.url,
     AWS_SQS_URL: aws.url,
+    AWS_SNS_URL: aws.url,
+    AWS_KINESIS_URL: aws.url,
+    SNS_CERT_HOSTS: new URL(aws.url).host,
+    SLACK_API_URL: services.urls.slack,
+    HUBSPOT_API_URL: services.urls.hubspot,
+    SENDGRID_API_URL: services.urls.sendgrid,
+    SENDGRID_EU_API_URL: services.urls.sendgridEu,
+    GOOGLE_SHEETS_API_URL: services.urls.sheets,
+    GOOGLE_DRIVE_API_URL: services.urls.drive,
+    STRIPE_API_URL: services.urls.stripe,
+    AIRTABLE_API_URL: services.urls.airtable,
+    NOTION_API_URL: services.urls.notion,
+    SALESFORCE_URL: services.urls.salesforce,
+    REST_API_PRIVATE_HOSTS: '127.0.0.1',
     // The server's own AWS credentials: the fake's `server` user, never the developer's.
     AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
     AWS_SECRET_ACCESS_KEY: awsServer.secretAccessKey,
@@ -334,6 +555,7 @@ export default async function globalSetup() {
     [E2E_EMAIL, 'E2E'],
     [E2E_SECOND_EMAIL, 'Second'],
     [E2E_MEMBER_EMAIL, 'Member'],
+    [E2E_WAITING_EMAIL, 'Waiting Person'],
   ] as const) {
     await run(['dist/cli/create-admin.js', '--email', email, '--name', name], {
       ...env,
@@ -348,6 +570,16 @@ export default async function globalSetup() {
         and group_id = (select id from groups where system_kind = 'admins')`,
     [E2E_MEMBER_EMAIL],
   )
+  // The waiting person: not an admin, and waiting, as a first Google sign-in leaves them.
+  await members.sql.unsafe(
+    `delete from group_members
+      where user_id = (select id from users where email = $1)
+        and group_id = (select id from groups where system_kind = 'admins')`,
+    [E2E_WAITING_EMAIL],
+  )
+  await members.sql.unsafe(`update users set status = 'pending', requested_at = now() where email = $1`, [
+    E2E_WAITING_EMAIL,
+  ])
   await members.close()
   const server = spawn('node', ['--no-node-snapshot', 'dist/main.js'], {
     cwd: serverDir,
@@ -389,17 +621,26 @@ export default async function globalSetup() {
     await new Promise((resolve) => server.once('exit', resolve))
     await pg.stop()
     await github.close()
+    await gitlab.close()
     await executor?.stop()
     await builder?.stop()
     await index?.stop()
+    await privateIndex?.stop()
     volume?.remove()
     await new Promise((r) => iapControl.close(r))
     await iap.close()
     await pubsub.close()
     await aws.close()
     await kafka?.stop()
+    await rabbit?.stop()
+    await schemaRegistry.stop()
+    await s3?.stop()
     await google.stop()
+    await services.stop()
+    await ai.stop()
+    await graphql.stop()
     await registry.stop()
+    await privateNpm.stop()
     for (const origin of origins) await new Promise((r) => origin.close(r))
     rmSync(componentBuilds, { recursive: true, force: true })
     rmSync(gitRoot, { recursive: true, force: true })

@@ -5,10 +5,19 @@ import type { Files } from '@ow/git-format'
 import { z } from 'zod'
 import { askpassScript, GitError, type GitRunOptions, runGit } from './cli'
 
-/** Where the repo is and how to sign in. The token is a GitHub token with Contents (and Pull requests) access. */
+/**
+ * Where the repo is and how to sign in: a token (GitHub's username `x-access-token`), or `credentials`, asked before
+ * each command that talks to the remote (M31: the host's username, and a token that may be short-lived).
+ */
 export interface GitRemote {
   url: string
   token: string | null
+  credentials?: (opts?: { refresh?: boolean }) => Promise<{
+    username: string
+    token: string
+    /** A short-lived token that can be minted again (a GitHub App's): a refused sign-in is tried once more. */
+    refreshable?: boolean
+  } | null>
 }
 
 export interface GitAuthor {
@@ -20,6 +29,18 @@ const EMPTY_SHA = '0000000000000000000000000000000000000000'
 const SHA = /^[0-9a-f]{40}$/
 /** When this process last pushed to each cache directory's remote: what was read of its branches before is old. */
 const pushedAt = new Map<string, number>()
+
+/**
+ * What to change when the host refused a push to a protected branch (M31), from what it said: GitLab's "not allowed
+ * to push code to protected branches", GitHub's GH006. Empty for other refusals.
+ */
+export function protectedHint(stderr: string): string {
+  if (/not allowed to push code to protected branches/i.test(stderr))
+    return ' (the branch is protected on GitLab: give the token\'s role "Allowed to push" in the project\'s protected branches, or use Maintainer)'
+  if (/GH006|Protected branch update failed/i.test(stderr))
+    return " (the branch is protected on GitHub: let the token's user or the GitHub App bypass its rules, or protect the objects here so changes go through pull requests)"
+  return ''
+}
 
 /**
  * A branch name git and GitHub both take: letters, digits, `.`, `_`, `-` and `/` between parts, none of git's
@@ -146,16 +167,36 @@ export class GitRepo {
   }
 
   /** A command that talks to the remote: the allowed protocols, no redirects, the token through askpass. */
-  private network(args: string[], opts: Omit<GitRunOptions, 'gitDir'> = {}) {
+  private async network(args: string[], opts: Omit<GitRunOptions, 'gitDir'> = {}) {
     const protocols = ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always']
     if (this.allowInsecure)
       protocols.push('-c', 'protocol.http.allow=always', '-c', 'protocol.file.allow=always')
-    const token = this.remote.token
-    return this.git([...protocols, '-c', 'http.followRedirects=false', ...args], {
-      ...opts,
-      env: { ...opts.env, ...(token ? { GIT_ASKPASS: this.askpass, OW_GIT_TOKEN: token } : {}) },
-      secrets: token ? [token] : [],
-    })
+    const run = async (refresh: boolean) => {
+      const signIn = this.remote.credentials
+        ? await this.remote.credentials({ refresh })
+        : this.remote.token
+          ? { username: 'x-access-token', token: this.remote.token }
+          : null
+      const result = this.git([...protocols, '-c', 'http.followRedirects=false', ...args], {
+        ...opts,
+        env: {
+          ...opts.env,
+          ...(signIn
+            ? { GIT_ASKPASS: this.askpass, OW_GIT_USERNAME: signIn.username, OW_GIT_TOKEN: signIn.token }
+            : {}),
+        },
+        secrets: signIn ? [signIn.token] : [],
+      })
+      return { result, refreshable: signIn?.refreshable === true }
+    }
+    const first = await run(false)
+    try {
+      return await first.result
+    } catch (err) {
+      // A short-lived token revoked before it expired: once more with a new one.
+      if (err instanceof GitError && err.kind === 'auth' && first.refreshable) return (await run(true)).result
+      throw err
+    }
   }
 
   /** The remote's branches and their commits. */
@@ -333,7 +374,10 @@ export class GitRepo {
       if (refLine?.startsWith('!')) {
         if (/\[remote rejected\]/.test(refLine)) {
           const reason = /\[remote rejected\]\s*(?:\((.*)\))?/.exec(refLine)?.[1] ?? 'refused by the server'
-          throw new GitError('refused', `The push to ${name} was refused: ${reason}`)
+          throw new GitError(
+            'refused',
+            `The push to ${name} was refused: ${reason}${protectedHint(result.stderr)}`,
+          )
         }
         return 'rejected'
       }

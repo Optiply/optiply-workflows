@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { addBlock, block, clickEmptyCanvas, field, signIn, typeInto } from './helpers'
+import { addBlock, block, clickEmptyCanvas, field, openRail, signIn, typeInto } from './helpers'
 
 /**
  * M23's done-when (docs/architecture.md §2.7, §2.26): two Python executions in a row share nothing (the warm pool's
@@ -69,8 +69,7 @@ test("M23's done-when", async ({ page }) => {
   await test.step("a workflow's own package, in a draft run", async () => {
     slug = await newWorkflow(page, `Packaged ${stamp}`)
     await clickEmptyCanvas(page)
-    const side = page.getByTestId('side-panel')
-    await side.getByRole('button', { name: 'Settings', exact: true }).click()
+    const side = await openRail(page, 'settings')
     await side.getByLabel('Python packages').fill('owtest-a')
     await block(page, 'startTrigger').click()
     await addBlock(page, 'Python code')
@@ -136,11 +135,11 @@ async function saved(page: Page) {
 
 /** Runs the draft from the editor and waits for this run (not an earlier one) to succeed. */
 async function run(page: Page, timeout = 30_000) {
-  const picker = page.getByLabel('Run', { exact: true })
-  const previous = (await picker.count()) ? await picker.inputValue() : ''
+  const picker = page.getByTestId('run-panel')
+  const previous = (await picker.count()) ? await picker.getAttribute('data-run-id') : ''
   await page.locator('header').getByRole('button', { name: 'Run', exact: true }).click()
   const panel = page.getByTestId('run-panel')
-  await expect(picker).not.toHaveValue(previous)
+  await expect(picker).not.toHaveAttribute('data-run-id', previous ?? '')
   await expect(panel.getByTestId('run-status').first()).toHaveText('succeeded', { timeout })
   return panel
 }

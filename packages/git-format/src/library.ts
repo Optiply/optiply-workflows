@@ -13,6 +13,7 @@ import {
   type Warning,
 } from './files'
 import { metaFields, type ObjectMeta, splitMeta } from './meta'
+import { moveQueryText, takeQueryText } from './query-text'
 import { FileSlots } from './slots'
 
 export const LIBRARY_QUERY_FILE = 'query.json'
@@ -24,15 +25,13 @@ export interface LibraryQueryObject extends ObjectMeta {
 
 /**
  * A library query (M14) as the files of its directory: `query.json` (the name, the description and the canonical
- * definition) and `query.sql` (the query's `sql`, when it has one).
+ * definition) and `query.sql` (the query's `sql`, when it has one; `query.graphql` and `query.html` likewise, M27).
  */
 export function encodeLibraryQuery(object: LibraryQueryObject): { files: Files; warnings: Warning[] } {
   const { query, ...def } = object.definition
   const files: Files = {}
-  const { sql, ...rest } = query
-  if (typeof sql === 'string') files[LIBRARY_QUERY_SQL_FILE] = textFile(sql)
   files[LIBRARY_QUERY_FILE] = canonicalJson(
-    { ...metaFields(object), ...def, query: typeof sql === 'string' ? rest : query },
+    { ...metaFields(object), ...def, query: moveQueryText(query, 'query', files) },
     { pretty: true },
   )
   const sorted = sortFiles(files)
@@ -58,7 +57,7 @@ export function decodeLibraryQuery(files: Files): Decoded<LibraryQueryObject> {
   const { meta, rest: raw, problems } = splitMeta(LIBRARY_QUERY_FILE, parsed.value)
   const slots = new FileSlots(files, [LIBRARY_QUERY_FILE])
   if (isRecord(raw.query)) {
-    slots.take(LIBRARY_QUERY_SQL_FILE, raw.query, 'sql', { required: false, what: 'the query' })
+    takeQueryText(slots, 'query', raw.query, 'the query')
   }
   problems.push(...slots.problems, ...slots.leftovers())
   const result = libraryQueryDefinitionSchema.safeParse(raw)

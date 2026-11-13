@@ -1,6 +1,17 @@
 import { expect, type Page, test } from '@playwright/test'
 import { E2E_MEMBER_EMAIL, E2E_SECOND_EMAIL } from './global-setup'
-import { addBlock, block, clickEmptyCanvas, editorText, field, signIn, trpcMutate, typeInto } from './helpers'
+import {
+  addBlock,
+  block,
+  clickEmptyCanvas,
+  editorText,
+  field,
+  openCode,
+  openRail,
+  signIn,
+  trpcMutate,
+  typeInto,
+} from './helpers'
 
 const saved = (page: Page) => expect(page.getByTestId('save-status')).toHaveText('Saved')
 
@@ -237,6 +248,8 @@ test('two people typing in one app query merge as they type', async ({ page, bro
   const other = await otherContext.newPage()
   await signIn(other)
   await other.goto(`/apps/${slug}/edit`)
+  await openCode(page, 'query1')
+  await openCode(other, 'query1')
   const mine = page.locator('[data-testid$="/queries/0/code"]')
   const theirs = other.locator('[data-testid$="/queries/0/code"]')
   await expect.poll(() => editorText(mine)).toBe('return 1')
@@ -302,6 +315,7 @@ test('an editor whose draft goes away stops and says why', async ({ page }) => {
   await page.getByRole('button', { name: 'Create workflow' }).click()
   await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]{36}$/)
   await saved(page)
+  await openRail(page, 'blocks')
   await expect(page.getByTitle('Add a code block')).toBeVisible()
   const id = page.url().split('/').at(-1)!
   await trpcMutate(page, 'workflows.delete', { id })

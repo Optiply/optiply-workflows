@@ -64,12 +64,18 @@
 
   --optiblue-1: #009ee3;
 
-  --shadow-1: 0 1px 4px rgb(50 55 60 / 10%);
+  --shadow-1: 0 1px 2px rgb(34 43 54 / 4%), 0 1px 3px rgb(80 101 127 / 8%);
   --shadow-7:
-    0 8px 32px -8px rgb(80 101 127 / 8%), 0 6px 8px -6px rgb(80 101 127 / 10%),
-    0 8px 16px 0 rgb(80 101 127 / 20%);
-  --focus-ring: 0 0 0 4px rgb(25 102 210 / 20%), 0 0 0 2px var(--blue-3);
-  --invalid-ring: 0 0 0 4px #c625251a, 0 0 0 2px var(--red-3);
+    0 0 0 1px rgb(80 101 127 / 8%), 0 16px 40px -12px rgb(80 101 127 / 24%),
+    0 4px 10px -4px rgb(80 101 127 / 12%);
+  --focus-ring: 0 0 0 1px var(--blue-3), 0 0 0 4px color-mix(in srgb, var(--blue-3) 18%, transparent);
+  --invalid-ring: 0 0 0 1px var(--red-3), 0 0 0 4px color-mix(in srgb, var(--red-3) 14%, transparent);
+
+  /* The modern look (session 42): a calm light page, raised controls, a veil behind dialogs. */
+  --page: var(--shade-3);
+  --hover: var(--shade-6);
+  --raised: 0 1px 2px rgb(34 43 54 / 6%);
+  --overlay: rgb(34 43 54 / 28%);
 }
 
 .dark {
@@ -129,7 +135,26 @@
 
   /* Dark shadows add a 1px outline so surfaces stay visible. */
   --shadow-1: 0 0 0 1px rgb(47 53 69 / 100%);
-  --shadow-7: 0 12px 24px 0 rgb(17 18 23 / 80%), 0 0 0 1px rgb(59 66 84);
+  --shadow-7: 0 16px 40px -8px rgb(8 10 14 / 70%), 0 0 0 1px rgb(59 66 84);
+
+  --page: var(--shade-5);
+  --hover: var(--shade-4);
+  --raised: 0 1px 2px rgb(0 0 0 / 24%);
+  --overlay: rgb(8 10 14 / 55%);
+}
+
+/*
+ * Buttons and inputs are rounded-md (7px), cards and tables rounded-xl (12px), dialogs rounded-2xl. Not `inline`:
+ * an app's theme (theme-model.ts) sets these variables on its root to round its components its own way.
+ */
+@theme {
+  --radius-sm: 5px;
+  --radius: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-panel: 12px;
 }
 
 /* What the components use: Optiply's tokens by role. `inline`, so dark mode is only the class switch above. */
@@ -138,7 +163,9 @@
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* Page background (Optiply's blue-grey), surfaces, and the subtle fills inside them. */
-  --color-app: var(--shade-5);
+  --color-app: var(--page);
+  --color-hover: var(--hover);
+  --color-overlay: var(--overlay);
   --color-surface: var(--shade-1);
   --color-field: var(--shade-2);
   --color-canvas: var(--shade-3);
@@ -196,13 +223,26 @@
   --color-op-purple-3: var(--purple-3);
   --color-op-purple-4: var(--purple-4);
 
-  /* Buttons and inputs are rounded-md (6px), cards rounded-lg (8px), page containers rounded-panel. */
-  --radius-panel: 10px;
-
   --shadow-card: var(--shadow-1);
   --shadow-menu: var(--shadow-7);
   --shadow-focus: var(--focus-ring);
   --shadow-invalid: var(--invalid-ring);
+  --shadow-raised: var(--raised);
+
+  --animate-fade-in: ow-fade-in 140ms ease-out;
+  --animate-pop-in: ow-pop-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1);
+
+  @keyframes ow-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes ow-pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
 }
 
 @layer base {
@@ -216,6 +256,14 @@
   }
   ::placeholder {
     color: var(--color-faint);
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.011em;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--blue-3) 22%, transparent);
   }
 }
 
@@ -244,11 +292,14 @@
 }
 .react-flow .react-flow__controls {
   overflow: hidden;
-  border-radius: 6px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  box-shadow: var(--shadow-raised, var(--shadow-1));
 }
 .react-flow .react-flow__minimap {
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   box-shadow: var(--shadow-1);
 }
 .react-flow .ow-handle {
@@ -259,6 +310,14 @@
 }
 .react-flow .ow-handle.ow-handle-error {
   background: var(--color-danger);
+}
+.react-flow .react-flow__edge .react-flow__edge-path {
+  stroke-width: 1.5;
+}
+.react-flow .react-flow__edge:hover .react-flow__edge-path,
+.react-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-accent);
+  stroke-width: 2;
 }
 .react-flow .react-flow__edge.ow-edge-error .react-flow__edge-path {
   stroke: var(--color-danger);
@@ -310,6 +369,13 @@
 .monaco-editor .ow-remote-caret {
   border-left: 2px solid var(--presence);
   margin-left: -1px;
+}
+/* The same caret in a block's code preview on the canvas (M28). */
+.ow-preview-caret {
+  display: inline-block;
+  height: 1.2em;
+  margin: 0 -1px -0.25em;
+  border-left: 2px solid var(--presence);
 }
 
 /* A block someone else has selected. */

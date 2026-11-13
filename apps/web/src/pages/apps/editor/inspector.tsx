@@ -10,17 +10,43 @@ import {
   type PropSpec,
   removeComponent,
   removeComponents,
+  setComponentNote,
   setEntityPage,
   setHandlers,
   setProp,
   slotOf,
+  switchableTypes,
+  switchComponentType,
   withDescendants,
 } from '@ow/app-definition'
-import { Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  Copy,
+  CopyPlus,
+  MoreHorizontal,
+  Pencil,
+  Replace,
+  RotateCcw,
+  Scissors,
+  StickyNote,
+  Trash2,
+} from 'lucide-react'
 import { useState } from 'react'
-import { Button, Checkbox, Select, sectionLabelClass } from '@/components/ui'
+import {
+  Button,
+  Checkbox,
+  Menu,
+  MenuGroup,
+  MenuItem,
+  MenuSeparator,
+  Select,
+  sectionLabelClass,
+  Textarea,
+} from '@/components/ui'
+import { cn } from '@/lib/utils'
 import { tableColumns } from '../components/table-model'
-import { useAppError, useAppValue } from '../runtime/react'
+import { useAppError, useAppHostContext, useAppValue } from '../runtime/react'
+import { copyComponentsText } from './clipboard'
 import { ColumnsEditor } from './columns'
 import { CustomInstanceFields } from './custom'
 import { AppCodeField, EditorField, NameField, ProblemList, problemsAt, useParsedText } from './fields'
@@ -103,7 +129,7 @@ export function SelectionInspector({ names, onDuplicate }: { names: string[]; on
 }
 
 /** Everything about the selected component: name, parent, props and event handlers. */
-export function ComponentInspector({ name }: { name: string }) {
+export function ComponentInspector({ name, onDuplicate }: { name: string; onDuplicate: () => void }) {
   const definition = useAppEditor((s) => s.definition)
   const update = useAppEditor((s) => s.update)
   const select = useAppEditor((s) => s.select)
@@ -133,13 +159,27 @@ export function ComponentInspector({ name }: { name: string }) {
   const inContainer = holder?.type === 'container'
   const parentViews = containerViews(holder)
 
+  const props = Object.entries(spec.props)
+    // An instance's module and version have their own fields; the rest are the module's inputs. A custom
+    // component's library, component and version likewise (M25); the rest are its declared props.
+    .filter(([prop]) => !instance || !(MODULE_PROPS as readonly string[]).includes(prop))
+    .filter(([prop]) => !custom || !(CUSTOM_PROPS as readonly string[]).includes(prop))
+  const field = ([prop, propSpec]: [string, PropSpec]) => (
+    <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
+  )
+  // Module inputs and a custom component's props are its content.
+  const sectionOf = (prop: string) => (instance || custom ? 'content' : propSection(prop))
+  const interaction = props.filter(([prop]) => sectionOf(prop) === 'interaction')
+  const appearance = props.filter(([prop]) => sectionOf(prop) === 'appearance')
+
   return (
     <div className="flex flex-col gap-4 p-4" data-testid={`inspector-${name}`}>
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-1">
         <div className="min-w-0 flex-1">
           <NameField name={name} onRenamed={select} />
           <div className="mt-1 text-xs text-muted">{spec.label}</div>
         </div>
+        <ComponentMenu name={name} type={component.type} onDuplicate={onDuplicate} />
         <Button
           size="icon"
           variant="ghost"
@@ -152,106 +192,110 @@ export function ComponentInspector({ name }: { name: string }) {
           <Trash2 className="size-4" />
         </Button>
       </div>
+      <NoteField name={name} note={component.note} />
 
-      {!spec.overlay && (
-        <EditorField label="Inside">
-          <Select
-            aria-label="Inside"
-            value={component.parent ?? ''}
-            onChange={(e) => update((def) => moveToParent(def, name, e.target.value || undefined, { page }))}
-          >
-            <option value="">{definition.pages?.length ? `Page ${page}` : 'The page'}</option>
-            {parents.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </EditorField>
-      )}
-
-      {inContainer && (
-        <EditorField label="Area">
-          <Select
-            aria-label="Area"
-            value={slotOf(definition, component) ?? ''}
-            onChange={(e) =>
-              update((def) =>
-                moveToParent(def, name, component.parent, { slot: e.target.value || undefined }),
-              )
-            }
-          >
-            {parentViews.length ? (
-              parentViews.map((v) => (
-                <option key={v.name} value={v.name}>
-                  {v.label || v.name}
-                </option>
-              ))
-            ) : (
-              <option value="">Body</option>
-            )}
-            <option value="header">Header</option>
-            <option value="footer">Footer</option>
-          </Select>
-        </EditorField>
-      )}
-
-      {component.parent === undefined &&
-        !spec.overlay &&
-        definition.frame?.sidebar &&
-        component.page === undefined && (
-          <EditorField label="Area">
-            <Select
-              aria-label="Area"
-              value={component.slot === 'sidebar' ? 'sidebar' : ''}
-              onChange={(e) =>
-                update((def) =>
-                  moveToParent(def, name, undefined, { slot: e.target.value || undefined, page: null }),
-                )
-              }
-            >
-              <option value="">{definition.frame.header ? 'Header' : 'Above the page'}</option>
-              <option value="sidebar">Sidebar</option>
-            </Select>
-          </EditorField>
-        )}
-
-      {definition.pages?.length && component.parent === undefined ? (
-        <PageField
-          value={component.page ?? null}
-          onChange={(to) => {
-            update((def) => setEntityPage(def, name, to))
-            // Moved to another page: open it, so the component stays in view (and selected).
-            if (to !== null) setUrl(to)
-          }}
-        />
-      ) : null}
-
-      <section className="flex flex-col gap-3">
-        <h3 className={sectionLabelClass}>
-          {instance ? 'Module' : custom ? 'Custom component' : 'Properties'}
-        </h3>
+      <InspectorSection title={instance ? 'Module instance' : custom ? 'Custom component' : 'Content'}>
         {instance && <ModuleInstanceFields component={component} index={index} />}
         {custom && <CustomInstanceFields component={component} index={index} />}
-        {Object.entries(spec.props)
-          // An instance's module and version have their own fields; the rest are the module's inputs. A custom
-          // component's library, component and version likewise (M25); the rest are its declared props.
-          .filter(([prop]) => !instance || !(MODULE_PROPS as readonly string[]).includes(prop))
-          .filter(([prop]) => !custom || !(CUSTOM_PROPS as readonly string[]).includes(prop))
-          .map(([prop, propSpec]) => (
-            <PropField key={prop} component={component} index={index} prop={prop} spec={propSpec} />
-          ))}
-      </section>
+        {props.filter(([prop]) => sectionOf(prop) === 'content').map(field)}
+      </InspectorSection>
 
-      <section className="flex flex-col gap-2">
-        <h3 className={sectionLabelClass}>Event handlers</h3>
-        <HandlersEditor
-          handlers={component.events ?? []}
-          events={spec.events}
-          base={[...base, 'events']}
-          onChange={(events) => update((def) => setHandlers(def, name, events))}
-        />
-      </section>
+      <InspectorSection title="Interaction">
+        {interaction.map(field)}
+        <div className="flex flex-col gap-2">
+          <h4 className="text-xs font-medium text-muted">Event handlers</h4>
+          <HandlersEditor
+            handlers={component.events ?? []}
+            events={spec.events}
+            base={[...base, 'events']}
+            onChange={(events) => update((def) => setHandlers(def, name, events))}
+          />
+        </div>
+      </InspectorSection>
+
+      {appearance.length > 0 && (
+        <InspectorSection title="Appearance">{appearance.map(field)}</InspectorSection>
+      )}
+
+      {(!spec.overlay || (definition.pages?.length && component.parent === undefined)) && (
+        <InspectorSection title="Layout">
+          {!spec.overlay && (
+            <EditorField label="Inside">
+              <Select
+                aria-label="Inside"
+                value={component.parent ?? ''}
+                onChange={(e) =>
+                  update((def) => moveToParent(def, name, e.target.value || undefined, { page }))
+                }
+              >
+                <option value="">{definition.pages?.length ? `Page ${page}` : 'The page'}</option>
+                {parents.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+            </EditorField>
+          )}
+
+          {inContainer && (
+            <EditorField label="Area">
+              <Select
+                aria-label="Area"
+                value={slotOf(definition, component) ?? ''}
+                onChange={(e) =>
+                  update((def) =>
+                    moveToParent(def, name, component.parent, { slot: e.target.value || undefined }),
+                  )
+                }
+              >
+                {parentViews.length ? (
+                  parentViews.map((v) => (
+                    <option key={v.name} value={v.name}>
+                      {v.label || v.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">Body</option>
+                )}
+                <option value="header">Header</option>
+                <option value="footer">Footer</option>
+              </Select>
+            </EditorField>
+          )}
+
+          {component.parent === undefined &&
+            !spec.overlay &&
+            definition.frame?.sidebar &&
+            component.page === undefined && (
+              <EditorField label="Area">
+                <Select
+                  aria-label="Area"
+                  value={component.slot === 'sidebar' ? 'sidebar' : ''}
+                  onChange={(e) =>
+                    update((def) =>
+                      moveToParent(def, name, undefined, { slot: e.target.value || undefined, page: null }),
+                    )
+                  }
+                >
+                  <option value="">{definition.frame.header ? 'Header' : 'Above the page'}</option>
+                  <option value="sidebar">Sidebar</option>
+                </Select>
+              </EditorField>
+            )}
+
+          {definition.pages?.length && component.parent === undefined ? (
+            <PageField
+              value={component.page ?? null}
+              onChange={(to) => {
+                update((def) => setEntityPage(def, name, to))
+                // Moved to another page: open it, so the component stays in view (and selected).
+                if (to !== null) setUrl(to)
+              }}
+            />
+          ) : null}
+        </InspectorSection>
+      )}
     </div>
   )
 }
@@ -300,6 +344,7 @@ function PropField({
   const multiLine = spec.type === 'array' || spec.type === 'object'
   // A table's columns and a Navigation's links as lists (M24), or as JSON on request; a template is always text.
   const [asJson, setAsJson] = useState(false)
+  const [focused, setFocused] = useState(false)
   const listable = (value === undefined || Array.isArray(value)) && !asJson
   const columnsList =
     component.type === 'table' && prop === 'columns' && (value === undefined || Array.isArray(value))
@@ -389,8 +434,22 @@ function PropField({
           : undefined
       }
     >
-      {control}
-      {runtimeError && <span className="text-xs text-danger">{runtimeError}</span>}
+      {/* While a {{ }} field has the focus, what it evaluates to now shows under it (session 41). */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: listens for focus moving in and out of the field inside */}
+      <div
+        className="contents"
+        onFocus={() => setFocused(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node | null)) setFocused(false)
+        }}
+      >
+        {control}
+      </div>
+      {focused && isTemplate(value) ? (
+        <EvaluatedValue entityKey={`${component.name}.${prop}`} error={runtimeError} />
+      ) : (
+        runtimeError && <span className="text-xs text-danger">{runtimeError}</span>
+      )}
       {fixedKind && <ProblemList path={path} />}
     </EditorField>
   )
@@ -495,5 +554,269 @@ function PageField(props: { value: string | null; onChange: (page: string | null
     <EditorField label="Page">
       <PageSelect {...props} />
     </EditorField>
+  )
+}
+
+/** Props people set to decide what a component does, as opposed to what it shows or how it looks. */
+const INTERACTION_PROPS = new Set([
+  'disabled',
+  'required',
+  'loading',
+  'formDataKey',
+  'min',
+  'max',
+  'step',
+  'rowSelection',
+  'search',
+  'showFilters',
+  'allowAddRow',
+  'paging',
+  'pageSize',
+  'resetAfterSubmit',
+  'closeOnOutsideClick',
+  'collapsible',
+  'defaultExpanded',
+  'accept',
+  'multiple',
+])
+/** Props about how a component looks. */
+const APPEARANCE_PROPS = new Set([
+  'hidden',
+  'variant',
+  'orientation',
+  'showBorder',
+  'showTabs',
+  'background',
+  'padding',
+  'scroll',
+  'size',
+  'stacked',
+  'showLegend',
+  'tone',
+  'fit',
+  'showValue',
+  'expandDepth',
+])
+
+/** The inspector section a built-in component's prop goes in (session 41, after Retool's). */
+export function propSection(prop: string): 'content' | 'interaction' | 'appearance' {
+  if (INTERACTION_PROPS.has(prop)) return 'interaction'
+  if (APPEARANCE_PROPS.has(prop)) return 'appearance'
+  return 'content'
+}
+
+/** Which sections are folded, remembered per browser. */
+function useFolded(title: string): [boolean, (folded: boolean) => void] {
+  const key = `ow.appEditor.folded.${title}`
+  const [folded, setFolded] = useState(() => {
+    try {
+      return localStorage.getItem(key) === '1'
+    } catch {
+      return false
+    }
+  })
+  return [
+    folded,
+    (next) => {
+      setFolded(next)
+      try {
+        if (next) localStorage.setItem(key, '1')
+        else localStorage.removeItem(key)
+      } catch {
+        // Not remembered: private windows may refuse storage.
+      }
+    },
+  ]
+}
+
+/** A foldable group of the inspector's fields. */
+function InspectorSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const [folded, setFolded] = useFolded(title)
+  return (
+    <section aria-label={title} className="flex flex-col gap-3 border-t border-border pt-3">
+      <h3>
+        <button
+          type="button"
+          aria-expanded={!folded}
+          onClick={() => setFolded(!folded)}
+          className={cn('flex w-full items-center gap-1 text-left', sectionLabelClass)}
+        >
+          <ChevronDown className={cn('size-3.5 transition-transform', folded && '-rotate-90')} />
+          {title}
+        </button>
+      </h3>
+      {!folded && children}
+    </section>
+  )
+}
+
+/** A component's note for the app's editors: "Add a note", then the note. */
+function NoteField({ name, note }: { name: string; note: string | undefined }) {
+  const update = useAppEditor((s) => s.update)
+  const [adding, setAdding] = useState(false)
+  if (note === undefined && !adding)
+    return (
+      <button
+        type="button"
+        onClick={() => setAdding(true)}
+        className="flex items-center gap-1.5 self-start rounded px-1 py-0.5 text-xs text-muted hover:bg-canvas hover:text-ink"
+      >
+        <StickyNote className="size-3.5" /> Add a note
+      </button>
+    )
+  return (
+    <Textarea
+      aria-label="Note"
+      placeholder="A note for the app's editors; people using the app don't see it"
+      // biome-ignore lint/a11y/noAutofocus: opened by "Add a note", to type in it straight away
+      autoFocus={adding}
+      rows={2}
+      className="min-h-0 bg-warning-soft/40 text-xs"
+      value={note ?? ''}
+      onChange={(e) => update((def) => setComponentNote(def, name, e.target.value))}
+      // Open while it has the focus: an emptied note (removed from the definition) mustn't take the field away.
+      onFocus={() => setAdding(true)}
+      onBlur={() => setAdding(false)}
+    />
+  )
+}
+
+/** The inspector's ··· menu: copy, cut, duplicate, rename, switch type, reset state, delete. */
+function ComponentMenu({ name, type, onDuplicate }: { name: string; type: string; onDuplicate: () => void }) {
+  const update = useAppEditor((s) => s.update)
+  const select = useAppEditor((s) => s.select)
+  const readOnly = useAppEditor((s) => s.readOnly)
+  const host = useAppHostContext()
+  const switchable = switchableTypes(type)
+  // The inspected component (with the others selected with it), whatever was chosen last: the open code item
+  // mustn't be what's copied while the component is what's cut (review).
+  const targets = () => {
+    const { selection } = useAppEditor.getState()
+    return selection.includes(name) ? selection : [name]
+  }
+  const copy = () => {
+    const text = copyComponentsText(targets())
+    if (text) void navigator.clipboard?.writeText(text).catch(() => {})
+    return text
+  }
+  return (
+    <Menu
+      label={`${name} actions`}
+      trigger={(props) => (
+        <Button {...props} size="icon" variant="ghost" title="More actions">
+          <MoreHorizontal className="size-4" />
+        </Button>
+      )}
+    >
+      <MenuItem icon={<Copy />} onClick={copy}>
+        Copy <Kbd>⌘C</Kbd>
+      </MenuItem>
+      {!readOnly && (
+        <>
+          <MenuItem
+            icon={<Scissors />}
+            onClick={() => {
+              const names = targets()
+              if (!copy()) return
+              update((def) => removeComponents(def, names))
+              select(null)
+            }}
+          >
+            Cut <Kbd>⌘X</Kbd>
+          </MenuItem>
+          <MenuItem icon={<CopyPlus />} onClick={onDuplicate}>
+            Duplicate <Kbd>⌘D</Kbd>
+          </MenuItem>
+          <MenuItem
+            icon={<Pencil />}
+            onClick={() => {
+              const field = document.querySelector<HTMLInputElement>(
+                `[data-testid="inspector-${CSS.escape(name)}"] input[aria-label="Name"]`,
+              )
+              field?.focus()
+              field?.select()
+            }}
+          >
+            Rename
+          </MenuItem>
+          {switchable.length > 0 && (
+            <>
+              <MenuSeparator />
+              <MenuGroup label="Switch to">
+                {switchable.map((to) => (
+                  <MenuItem
+                    key={to}
+                    icon={<Replace />}
+                    onClick={() => update((def) => switchComponentType(def, name, to))}
+                  >
+                    {componentSpec(to)?.label ?? to}
+                  </MenuItem>
+                ))}
+              </MenuGroup>
+            </>
+          )}
+        </>
+      )}
+      <MenuSeparator />
+      <MenuItem icon={<RotateCcw />} onClick={() => host.resetState([name])}>
+        Reset state
+      </MenuItem>
+      {!readOnly && (
+        <MenuItem
+          danger
+          icon={<Trash2 />}
+          onClick={() => {
+            update((def) => removeComponent(def, name))
+            select(null)
+          }}
+        >
+          Delete <Kbd>⌫</Kbd>
+        </MenuItem>
+      )}
+    </Menu>
+  )
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <span aria-hidden className="float-right font-mono text-[11px] leading-5 text-muted">
+      {children}
+    </span>
+  )
+}
+
+/** What a value is, as the live preview names it. */
+export function valueKind(value: unknown): string {
+  if (value === null) return 'Null'
+  if (value === undefined) return 'Undefined'
+  if (Array.isArray(value)) return `Array (${value.length})`
+  if (typeof value === 'object') return 'Object'
+  return typeof value === 'string' ? 'String' : typeof value === 'number' ? 'Number' : 'Boolean'
+}
+
+/** A value on one or a few lines for the live preview: strings as they are, the rest as JSON, cut short. */
+export function previewText(value: unknown, max = 300): string {
+  const text = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value))
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/** Under a focused {{ }} field: what it evaluates to now, and its kind (Retool's live preview). */
+function EvaluatedValue({ entityKey, error }: { entityKey: string; error: string | undefined }) {
+  const value = useAppValue<unknown>(entityKey)
+  return (
+    <div
+      data-testid="evaluated-value"
+      className={cn(
+        'rounded-md border px-2 py-1.5 font-mono text-[11px]',
+        error ? 'border-danger/40 bg-danger-soft/40' : 'border-border bg-canvas',
+      )}
+    >
+      <div className="mb-0.5 font-sans text-[10px] font-medium text-muted uppercase">
+        {error ? 'Error' : valueKind(value)}
+      </div>
+      <div className="max-h-24 overflow-auto break-all whitespace-pre-wrap">
+        {error ?? previewText(value)}
+      </div>
+    </div>
   )
 }

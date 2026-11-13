@@ -144,7 +144,7 @@ export async function startTestExecutor(
   return { ...(await waitForHealth(name)), token, container: name }
 }
 
-export { buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
+export { buildSdist, buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
 
 export interface TestBuilder {
   url: string
@@ -170,6 +170,8 @@ export async function startTestBuilder(opts: {
   const env = Object.entries({
     PYTHON_BUILDER_TOKEN: token,
     PYTHON_PACKAGE_INDEX_URL: opts.indexUrl,
+    // The tests' indexes are http (M32's named indexes refuse it otherwise).
+    PYTHON_ALLOW_INSECURE_INDEXES: '1',
     ...opts.env,
   }).flatMap(([k, v]) => ['-e', `${k}=${v}`])
   execFileSync(
@@ -180,6 +182,8 @@ export async function startTestBuilder(opts: {
       '--rm',
       '--name',
       name,
+      // nsjail for sdist builds (M32), as the executor's.
+      ...EXECUTOR_DOCKER_FLAGS,
       // Docker Desktop knows host.docker.internal; Linux (CI) needs it named.
       '--add-host',
       'host.docker.internal:host-gateway',

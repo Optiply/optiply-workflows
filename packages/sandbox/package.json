@@ -14,13 +14,17 @@
     "bench": "SANDBOX_BENCH=1 vitest run test/ivm-bench.test.ts --reporter=verbose"
   },
   "dependencies": {
-    "isolated-vm": "7.0.1"
+    "isolated-vm": "7.0.2"
   },
   "devDependencies": {
     "dayjs": "1.11.23",
     "esbuild": "0.28.2",
     "lodash": "4.18.1",
+    "moment": "2.31.0",
+    "numbro": "2.5.0",
+    "papaparse": "5.7.0",
     "tsx": "4.23.15",
+    "uuid": "14.0.3",
     "vitest": "5.0.4"
   }
 }

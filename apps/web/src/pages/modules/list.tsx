@@ -1,19 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FolderPlus, Plus, Puzzle } from 'lucide-react'
-import { useState } from 'react'
-import { FolderBrowser, FolderSelect, NewFolderForm, useFolders, useOpenFolder } from '@/components/folders'
+import { useId, useState } from 'react'
+import { FolderBrowser, FolderSelect, NewFolderDialog, useFolders, useOpenFolder } from '@/components/folders'
 import {
   Badge,
   Button,
-  Card,
+  Dialog,
   EmptyState,
   ErrorNote,
   Field,
   Input,
+  ListSkeleton,
   PageHeader,
-  Spinner,
 } from '@/components/ui'
+import { useCanCreate } from '@/lib/capabilities'
 import { type RouterOutputs, useTRPC } from '@/lib/trpc'
 import { librarySlug } from '../library/list'
 
@@ -23,12 +24,13 @@ const LEVELS = { use: 'Can use', edit: 'Can edit', own: 'Owner' } as const
 
 /** Modules (M14): pieces of app built once, with inputs, outputs and events, placed in many apps. */
 export function ModulesPage() {
+  const canCreate = useCanCreate('modules')
   const trpc = useTRPC()
   const { data, isLoading, error } = useQuery(trpc.modules.list.queryOptions())
   const { data: folders } = useFolders('module')
   const [panel, setPanel] = useState<'none' | 'module' | 'folder'>('none')
 
-  if (isLoading) return <Spinner />
+  if (isLoading) return <ListSkeleton />
   if (!data) return <ErrorNote error={error} />
 
   return (
@@ -39,18 +41,20 @@ export function ModulesPage() {
         actions={
           <>
             {folders?.canManage && (
-              <Button onClick={() => setPanel(panel === 'folder' ? 'none' : 'folder')}>
+              <Button onClick={() => setPanel('folder')}>
                 <FolderPlus className="size-4" /> New folder
               </Button>
             )}
-            <Button variant="primary" onClick={() => setPanel(panel === 'module' ? 'none' : 'module')}>
-              <Plus className="size-4" /> New module
-            </Button>
+            {canCreate && (
+              <Button variant="primary" onClick={() => setPanel('module')}>
+                <Plus className="size-4" /> New module
+              </Button>
+            )}
           </>
         }
       />
-      {panel === 'module' && <NewModuleForm onCancel={() => setPanel('none')} />}
-      {panel === 'folder' && <NewFolderForm type="module" onDone={() => setPanel('none')} />}
+      {panel === 'module' && <NewModuleDialog onClose={() => setPanel('none')} />}
+      {panel === 'folder' && <NewFolderDialog type="module" onDone={() => setPanel('none')} />}
       {data.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Puzzle className="size-6" />} title="No modules yet">
           Create one to share a piece of app between apps. If you expected to see some here, ask an admin for
@@ -119,7 +123,7 @@ function ModuleRow({ module, hasFolders }: { module: ModuleSummary; hasFolders: 
   )
 }
 
-function NewModuleForm({ onCancel }: { onCancel: () => void }) {
+function NewModuleDialog({ onClose }: { onClose: () => void }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -133,17 +137,40 @@ function NewModuleForm({ onCancel }: { onCancel: () => void }) {
     trpc.modules.create.mutationOptions({
       onSuccess: async (q) => {
         await queryClient.invalidateQueries({ queryKey: trpc.modules.list.queryKey() })
+        // Closed first: the next page may take a moment (its access check), and going back mustn't find it open.
+        onClose()
         await navigate({ to: '/modules/$slug', params: { slug: q.slug } })
       },
     }),
   )
+  const id = useId()
   return (
-    <Card className="mb-6 p-5">
+    <Dialog
+      title="New module"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form={id}
+            variant="primary"
+            loading={create.isPending}
+            disabled={!name || !slug}
+          >
+            Create module
+          </Button>
+        </>
+      }
+    >
       <form
-        className="grid gap-4 sm:grid-cols-2"
+        id={id}
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          create.mutate({ name, slug, folderId })
+          if (name && slug) create.mutate({ name, slug, folderId })
         }}
       >
         <Field label="Name">
@@ -173,16 +200,8 @@ function NewModuleForm({ onCancel }: { onCancel: () => void }) {
             <FolderSelect type="module" value={folderId} onChange={setFolderId} />
           </Field>
         )}
-        <div className="flex items-center gap-2 sm:col-span-2">
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={!name || !slug}>
-            Create module
-          </Button>
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <ErrorNote error={create.error} />
-        </div>
+        <ErrorNote error={create.error} />
       </form>
-    </Card>
+    </Dialog>
   )
 }

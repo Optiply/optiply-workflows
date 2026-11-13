@@ -330,3 +330,101 @@ describe('review fixes (session 18)', () => {
     expect(basic.json.headers.authorization).toBe('Basic dXNlcjpwYXNz')
   })
 })
+
+describe('SNS webhooks (M30)', () => {
+  let aws: Awaited<ReturnType<typeof import('@ow/connectors/testing').startFakeAws>>
+  let topic: string
+  let other: string
+  beforeAll(async () => {
+    const { startFakeAws } = await import('@ow/connectors/testing')
+    const { configureSnsWebhooks } = await import('../src/services/sns-webhook')
+    aws = await startFakeAws()
+    topic = aws.sns.createTopic('orders')
+    other = aws.sns.createTopic('someone-elses')
+    // The fake's certificate host is trusted as AWS's would be (SNS_CERT_HOSTS, tests only).
+    configureSnsWebhooks(new URL(aws.url).host)
+  })
+  afterAll(async () => {
+    const { configureSnsWebhooks } = await import('../src/services/sns-webhook')
+    configureSnsWebhooks('')
+    await aws?.close()
+  })
+
+  const post = (envelope: Record<string, string>) =>
+    call('/api/v1/workflows/sns-hook/webhook', {
+      body: JSON.stringify(envelope),
+      headers: {
+        'content-type': 'text/plain; charset=UTF-8',
+        'x-amz-sns-message-type': envelope.Type!,
+        'x-amz-sns-message-id': envelope.MessageId!,
+      },
+    })
+
+  it('needs the topics listed, and no secret', async () => {
+    const refused = await publish('sns-hook-none', { auth: { type: 'signature', preset: 'sns', secret: '' } })
+    expect(refused.body.error?.message).toMatch(/List the SNS topics/)
+  })
+
+  it('confirms a subscription, runs a notification with its message, and refuses forgeries and other topics', async () => {
+    await published('sns-hook', {
+      auth: { type: 'signature', preset: 'sns', secret: '', topicArns: [topic] },
+    })
+    const before = await runCount()
+    const confirm = aws.sns.envelope('SubscriptionConfirmation', topic, 'You have chosen to subscribe…')
+    expect(await post(confirm)).toMatchObject({ status: 200, json: { confirmed: true, topicArn: topic } })
+    // The SubscribeURL was fetched: the fake marks the subscription confirmed.
+    expect(aws.sns.confirmed(topic, '')).toBe(true)
+    expect(await runCount()).toBe(before)
+
+    const note = aws.sns.envelope('Notification', topic, '{"order": 42}', { subject: 'New order' })
+    const ok = await post(note)
+    expect(ok.status).toBe(200)
+    expect(ok.json.data).toMatchObject({
+      message: { order: 42 },
+      subject: 'New order',
+      messageId: note.MessageId,
+      topicArn: topic,
+    })
+    // SignatureVersion 1 (SHA1) too.
+    expect(
+      (await post(aws.sns.envelope('Notification', topic, 'plain text', { signatureVersion: '1' }))).json
+        .data,
+    ).toMatchObject({ message: 'plain text' })
+
+    for (const bad of [
+      { ...note, Message: '{"order": 43}' },
+      { ...note, SigningCertURL: 'https://evil.example.com/cert.pem' },
+      aws.sns.envelope('Notification', other, '{"order": 1}'),
+    ]) {
+      expect(await post(bad)).toMatchObject({ status: 401, json: { error: { code: 'unauthorized' } } })
+    }
+    expect(await runCount()).toBe(before + 2)
+  })
+
+  it('fetches a bounded number of new certificates, and not one that just failed again (review fix)', async () => {
+    const { configureSnsWebhooks, verifySnsDelivery } = await import('../src/services/sns-webhook')
+    configureSnsWebhooks(new URL(aws.url).host)
+    const body = (certUrl: string) =>
+      Buffer.from(
+        JSON.stringify({ ...aws.sns.envelope('Notification', topic, 'x'), SigningCertURL: certUrl }),
+      )
+    const missing = (i: number) => `${aws.url}/missing-${i}.pem`
+    const messages: string[] = []
+    for (let i = 0; i < 11; i++) {
+      const check = await verifySnsDelivery(body(missing(i)), [topic])
+      messages.push(check.ok ? 'ok' : check.message)
+    }
+    // Ten fetched (and failed), the eleventh refused without a fetch.
+    expect(messages.slice(0, 10).every((m) => /couldn't be read/.test(m) && !/too many/.test(m))).toBe(true)
+    expect(messages[10]).toMatch(/too many new signing certificates/)
+    // One that failed isn't fetched again for a while.
+    configureSnsWebhooks(new URL(aws.url).host)
+    expect((await verifySnsDelivery(body(missing(0)), [topic])) as { message: string }).toMatchObject({
+      message: expect.stringMatching(/couldn't be read/),
+    })
+    expect((await verifySnsDelivery(body(missing(0)), [topic])) as { message: string }).toMatchObject({
+      message: expect.stringMatching(/failed a moment ago/),
+    })
+    configureSnsWebhooks(new URL(aws.url).host)
+  })
+})

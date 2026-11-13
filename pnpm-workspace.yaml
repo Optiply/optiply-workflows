@@ -6,10 +6,9 @@ onlyBuiltDependencies:
   - esbuild
   - "@confluentinc/kafka-javascript"
   - isolated-vm
+  - re2
   - "@biomejs/biome"
   - "@embedded-postgres/darwin-arm64"
   - "@embedded-postgres/darwin-x64"
   - "@embedded-postgres/linux-x64"
   - "@embedded-postgres/linux-arm64"
-patchedDependencies:
-  isolated-vm@7.0.1: patches/isolated-vm@7.0.1.patch
