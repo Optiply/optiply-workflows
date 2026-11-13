@@ -321,6 +321,159 @@ describe('columns', () => {
   }, 20_000)
 })
 
+describe("Retool's presets", () => {
+  const inProd = { environmentId: production }
+  const table = async (name: string) =>
+    data(await member.query('database.tables', { environmentId: production })).find(
+      (t: { name: string }) => t.name === name,
+    )
+  const col = async (t: string, name: string) =>
+    (await table(t)).columns.find((c: { name: string }) => c.name === name)
+
+  it('makes auto-incrementing IDs, enums, foreign keys and custom types, and reads them back', async () => {
+    const vendors = await member.mutate('database.createTable', {
+      ...inProd,
+      environmentId: production,
+      name: 'vendors',
+      columns: [{ name: 'code', type: 'text', unique: true, nullable: false }],
+    })
+    expect(error(vendors)).toBeUndefined()
+    const made = await member.mutate('database.createTable', {
+      environmentId: production,
+      name: 'purchases',
+      columns: [
+        { name: 'number', type: 'integer', identity: true },
+        { name: 'ref', type: 'uuid', default: { kind: 'expression', expression: 'gen_random_uuid()' } },
+        { name: 'created', type: 'datetime', default: { kind: 'expression', expression: 'now()' } },
+        {
+          name: 'status',
+          type: 'text',
+          enumValues: ['open', "it's late", 'a, b'],
+          default: { kind: 'value', value: 'open' },
+        },
+        {
+          name: 'vendor_id',
+          type: 'foreignKey',
+          references: { table: 'vendors', column: 'id', onDelete: 'cascade' },
+        },
+        { name: 'vendor_code', type: 'foreignKey', references: { table: 'vendors', column: 'code' } },
+        { name: 'sku', type: 'custom', sqlType: 'varchar(20)' },
+        { name: 'tags', type: 'custom', sqlType: 'text[]' },
+      ],
+    })
+    expect(error(made)).toBeUndefined()
+    const byName = Object.fromEntries(data(made).columns.map((c: { name: string }) => [c.name, c]))
+    expect(byName.number).toMatchObject({ type: 'integer', identity: true })
+    expect(byName.ref).toMatchObject({
+      type: 'uuid',
+      default: { kind: 'expression', expression: 'gen_random_uuid()' },
+    })
+    expect(byName.created).toMatchObject({
+      type: 'datetime',
+      default: { kind: 'expression', expression: 'now()' },
+    })
+    expect(byName.status).toMatchObject({
+      type: 'text',
+      enumValues: ['open', "it's late", 'a, b'],
+      references: null,
+    })
+    expect(byName.vendor_id).toMatchObject({
+      type: 'bigint',
+      references: { table: 'vendors', column: 'id', onDelete: 'cascade' },
+      enumValues: null,
+    })
+    expect(byName.vendor_code).toMatchObject({
+      type: 'text',
+      references: { table: 'vendors', column: 'code', onDelete: 'no action' },
+    })
+    expect(byName.sku).toMatchObject({ type: 'other', sqlType: 'character varying(20)' })
+    expect(byName.tags).toMatchObject({ type: 'other', sqlType: 'text[]' })
+
+    // Postgres holds them to it.
+    await superSql`insert into owdb_production.vendors (code) values ('ACME')`
+    const [row] = await superSql`
+      insert into owdb_production.purchases (vendor_id, vendor_code) values (1, 'ACME') returning number, status, ref`
+    expect(row).toMatchObject({ number: 1, status: 'open', ref: expect.any(String) })
+    await expect(superSql`insert into owdb_production.purchases (status) values ('closed')`).rejects.toThrow(
+      /check/,
+    )
+    await expect(superSql`insert into owdb_production.purchases (vendor_id) values (99)`).rejects.toThrow(
+      /foreign key/,
+    )
+  })
+
+  it('refuses types Postgres lacks or that try to end the statement, and extras on the wrong type', async () => {
+    for (const column of [
+      { name: 'x', type: 'custom', sqlType: 'not_a_type' },
+      { name: 'x', type: 'custom', sqlType: 'text); drop table vendors; --' },
+      { name: 'x', type: 'custom' },
+      { name: 'x', type: 'integer', enumValues: ['a'] },
+      { name: 'x', type: 'text', identity: true },
+      { name: 'x', type: 'text', enumValues: ['a', 'a'] },
+      { name: 'x', type: 'foreignKey' },
+      { name: 'x', type: 'foreignKey', references: { table: 'vendors', column: 'nope' } },
+      { name: 'x', type: 'foreignKey', references: { table: 'purchases', column: 'status' } },
+    ]) {
+      const res = await member.mutate('database.addColumn', {
+        ...inProd,
+        environmentId: production,
+        table: 'purchases',
+        column,
+      })
+      expect(error(res)?.data?.code, JSON.stringify(column)).toBe('BAD_REQUEST')
+    }
+    expect(await table('vendors')).toBeTruthy()
+  })
+
+  it('changes enums, foreign keys and custom types on existing columns', async () => {
+    const on = { environmentId: production, table: 'purchases' }
+    const alter = (column: string, change: object) =>
+      member.mutate('database.alterColumn', { ...on, column, change })
+
+    // A value outside the new list stops the change.
+    await superSql`update owdb_production.purchases set status = 'a, b'`
+    expect(error(await alter('status', { enumValues: ['open', 'done'] }))?.data?.code).toBe('BAD_REQUEST')
+    expect(await col('purchases', 'status')).toMatchObject({ enumValues: ['open', "it's late", 'a, b'] })
+    expect(error(await alter('status', { enumValues: ['open', 'a, b', 'done'] }))).toBeUndefined()
+    expect(await col('purchases', 'status')).toMatchObject({ enumValues: ['open', 'a, b', 'done'] })
+    // Plain text again, then an enum from text.
+    expect(error(await alter('status', { enumValues: null }))).toBeUndefined()
+    expect(await col('purchases', 'status')).toMatchObject({ type: 'text', enumValues: null })
+    expect(error(await alter('status', { type: 'text', enumValues: ['a, b'] }))).toBeUndefined()
+    expect(await col('purchases', 'status')).toMatchObject({ enumValues: ['a, b'] })
+    // Leaving text drops the enum.
+    await superSql`update owdb_production.purchases set status = null`
+    expect(error(await alter('status', { type: 'json', default: { kind: 'none' } }))).toBeUndefined()
+    expect(await col('purchases', 'status')).toMatchObject({ type: 'json', enumValues: null })
+
+    // A foreign key made from a plain column (converted to the referenced type), and back.
+    expect(
+      error(await alter('sku', { type: 'foreignKey', references: { table: 'vendors', column: 'code' } })),
+    ).toBeUndefined()
+    expect(await col('purchases', 'sku')).toMatchObject({
+      type: 'text',
+      references: { table: 'vendors', column: 'code' },
+    })
+    expect(error(await alter('sku', { type: 'text' }))).toBeUndefined()
+    expect(await col('purchases', 'sku')).toMatchObject({ type: 'text', references: null })
+    // The on-delete rule changes on its own.
+    expect(
+      error(
+        await alter('vendor_id', { references: { table: 'vendors', column: 'id', onDelete: 'set null' } }),
+      ),
+    ).toBeUndefined()
+    expect(await col('purchases', 'vendor_id')).toMatchObject({ references: { onDelete: 'set null' } })
+    // A custom type, values converted; an auto-incrementing column stays an integer (Postgres says so).
+    expect(
+      error(await alter('ref', { type: 'custom', sqlType: 'varchar(40)', default: { kind: 'none' } })),
+    ).toBeUndefined()
+    expect(await col('purchases', 'ref')).toMatchObject({ type: 'other', sqlType: 'character varying(40)' })
+    expect(error(await alter('number', { type: 'custom', sqlType: 'numeric(12,2)' }))?.message).toMatch(
+      /identity column/,
+    )
+  })
+})
+
 describe('a shared connection', () => {
   it("isn't thrown off by settings a playground query left behind", async () => {
     const [db] = await env.db.select().from(resources).where(eq(resources.systemKind, 'database'))

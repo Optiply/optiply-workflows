@@ -1,10 +1,10 @@
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
-import { Button, Checkbox, Dialog, ErrorNote, Field, Input, Select } from '@/components/ui'
+import { Button, Checkbox, Dialog, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { errorMessage, useTRPC } from '@/lib/trpc'
-import { type Column, type TableInfo, TYPE_LABELS } from './cells'
+import { type Column, columnLabel, type TableInfo, TYPE_LABELS } from './cells'
 
 export type ColumnType = Exclude<Column['type'], 'other'>
 export const COLUMN_TYPES = Object.keys(TYPE_LABELS).filter((t) => t !== 'other') as ColumnType[]
@@ -17,12 +17,298 @@ export type DefaultSpec =
   | { kind: 'value'; value: string }
   | { kind: 'expression'; expression: Expression }
 
-export interface ColumnSpec {
+/**
+ * Retool's column presets. Most are a type (Checkbox is a boolean, Number a decimal); UUID and Created time also
+ * get a default Postgres fills in; Auto-incrementing Integer ID is numbered by Postgres; Enum is text limited to a
+ * list; Foreign key takes the type of the column it references; Custom is any Postgres type by name.
+ */
+export type Preset =
+  | 'uuid'
+  | 'autoId'
+  | 'createdTime'
+  | 'text'
+  | 'boolean'
+  | 'enum'
+  | 'number'
+  | 'integer'
+  | 'bigint'
+  | 'json'
+  | 'date'
+  | 'datetime'
+  | 'foreignKey'
+  | 'custom'
+
+export const PRESETS: { id: Preset; label: string }[] = [
+  { id: 'uuid', label: 'UUID' },
+  { id: 'autoId', label: 'Auto-incrementing Integer ID' },
+  { id: 'createdTime', label: 'Created time' },
+  { id: 'text', label: 'Text' },
+  { id: 'boolean', label: 'Checkbox' },
+  { id: 'enum', label: 'Enum' },
+  { id: 'number', label: 'Number' },
+  { id: 'integer', label: 'Integer' },
+  { id: 'bigint', label: 'Big integer' },
+  { id: 'json', label: 'JSON' },
+  { id: 'date', label: 'Date' },
+  { id: 'datetime', label: 'Date + Time' },
+  { id: 'foreignKey', label: 'Foreign key' },
+  { id: 'custom', label: 'Custom' },
+]
+
+/** The type a preset stores as (a foreign key's and a custom column's are worked out by the server). */
+const PRESET_TYPES: Record<Preset, ColumnType | 'foreignKey' | 'custom'> = {
+  uuid: 'uuid',
+  autoId: 'integer',
+  createdTime: 'datetime',
+  text: 'text',
+  boolean: 'boolean',
+  enum: 'text',
+  number: 'decimal',
+  integer: 'integer',
+  bigint: 'bigint',
+  json: 'json',
+  date: 'date',
+  datetime: 'datetime',
+  foreignKey: 'foreignKey',
+  custom: 'custom',
+}
+
+/** The default a preset starts with. */
+function presetDefault(preset: Preset): DefaultSpec {
+  if (preset === 'uuid') return { kind: 'expression', expression: 'gen_random_uuid()' }
+  if (preset === 'createdTime') return { kind: 'expression', expression: 'now()' }
+  return { kind: 'none' }
+}
+
+export const ON_DELETE = [
+  { id: 'no action', label: 'Refuse the delete' },
+  { id: 'cascade', label: 'Delete these rows too' },
+  { id: 'set null', label: 'Empty this column' },
+] as const
+export type OnDelete = 'no action' | 'restrict' | 'cascade' | 'set null'
+
+/** What a preset needs besides the type: the enum's values, the referenced column, the custom type's name. */
+export interface PresetExtras {
+  enumValues: string[]
+  references: { table: string; column: string; onDelete: OnDelete }
+  sqlType: string
+}
+
+export interface ColumnSpec extends PresetExtras {
   name: string
-  type: ColumnType
+  preset: Preset
   nullable: boolean
   unique: boolean
   default: DefaultSpec
+}
+
+const blankExtras = (): PresetExtras => ({
+  enumValues: [],
+  references: { table: '', column: '', onDelete: 'no action' },
+  sqlType: '',
+})
+
+/** The preset an existing column reads as, and its extras. */
+export function presetOf(column: Column): Preset {
+  if (column.identity) return 'autoId'
+  if (column.references) return 'foreignKey'
+  if (column.enumValues) return 'enum'
+  if (column.type === 'other') return 'custom'
+  if (column.type === 'decimal') return 'number'
+  if (
+    column.type === 'datetime' &&
+    column.default.kind === 'expression' &&
+    column.default.expression === 'now()'
+  )
+    return 'createdTime'
+  return column.type
+}
+
+function extrasOf(column: Column): PresetExtras {
+  return {
+    enumValues: column.enumValues ?? [],
+    references: column.references ?? { table: '', column: '', onDelete: 'no action' },
+    sqlType: column.type === 'other' ? column.sqlType : '',
+  }
+}
+
+/** An enum's lines as values: trimmed, blank lines left out. */
+const cleanValues = (lines: string[]) => lines.map((v) => v.trim()).filter(Boolean)
+
+/** What's missing for the preset, or null. */
+function extrasProblem(preset: Preset, extras: PresetExtras): string | null {
+  const values = cleanValues(extras.enumValues)
+  if (preset === 'enum' && !values.length) return 'Give the enum at least one value'
+  if (preset === 'enum' && new Set(values).size !== values.length) return 'The enum has the same value twice'
+  if (preset === 'foreignKey' && (!extras.references.table || !extras.references.column))
+    return 'Choose the table and column the foreign key references'
+  if (preset === 'custom' && !extras.sqlType.trim()) return 'Write the Postgres type, e.g. varchar(20)'
+  return null
+}
+
+/** A new column as the server takes it. */
+function toServerColumn(spec: ColumnSpec) {
+  const type = PRESET_TYPES[spec.preset]
+  return {
+    name: spec.name,
+    type,
+    nullable: spec.nullable,
+    unique: spec.unique,
+    default: spec.preset === 'autoId' ? ({ kind: 'none' } as const) : spec.default,
+    ...(spec.preset === 'autoId' && { identity: true }),
+    ...(spec.preset === 'enum' && { enumValues: cleanValues(spec.enumValues) }),
+    ...(spec.preset === 'foreignKey' && { references: spec.references }),
+    ...(spec.preset === 'custom' && { sqlType: spec.sqlType.trim() }),
+  }
+}
+
+/** The preset picker. Auto-incrementing IDs are made with a new column only. */
+function PresetSelect({
+  value,
+  onChange,
+  includeAutoId = true,
+  className,
+  disabled,
+}: {
+  value: Preset
+  onChange: (preset: Preset) => void
+  includeAutoId?: boolean
+  className?: string
+  disabled?: boolean
+}) {
+  return (
+    <Select
+      aria-label="Preset"
+      className={className}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value as Preset)}
+    >
+      {PRESETS.filter((p) => includeAutoId || p.id !== 'autoId' || value === 'autoId').map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.label}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+/** The preset's own fields: the enum's values, the referenced table and column, or the custom type. */
+function PresetFields({
+  environmentId,
+  preset,
+  value,
+  onChange,
+  ownTable,
+}: {
+  environmentId: string
+  preset: Preset
+  value: PresetExtras
+  onChange: (patch: Partial<PresetExtras>) => void
+  /** The table being edited, which can't be referenced from its own dialog before it exists. */
+  ownTable?: string
+}) {
+  const trpc = useTRPC()
+  const tables = useQuery({
+    ...trpc.database.tables.queryOptions({ environmentId }),
+    enabled: preset === 'foreignKey',
+  })
+  if (preset === 'enum') {
+    return (
+      <Field
+        label="Values"
+        hint="One per line. The column only takes these (or empty, unless it's required)."
+      >
+        <Textarea
+          aria-label="Enum values"
+          rows={4}
+          value={value.enumValues.join('\n')}
+          placeholder={'open\nin progress\ndone'}
+          onChange={(e) => onChange({ enumValues: e.target.value.split('\n') })}
+          onBlur={() => onChange({ enumValues: cleanValues(value.enumValues) })}
+        />
+      </Field>
+    )
+  }
+  if (preset === 'foreignKey') {
+    const target = tables.data?.find((t) => t.name === value.references.table)
+    // Postgres only lets a key or unique column be referenced.
+    const keys = target?.columns.filter((c) => c.unique) ?? []
+    return (
+      <div className="flex flex-wrap gap-3">
+        <Field label="References table" className="min-w-40 flex-1">
+          <Select
+            aria-label="Referenced table"
+            value={value.references.table}
+            onChange={(e) => {
+              const table = tables.data?.find((t) => t.name === e.target.value)
+              const key = table?.columns.find((c) => c.primaryKey) ?? table?.columns.find((c) => c.unique)
+              onChange({
+                references: { ...value.references, table: e.target.value, column: key?.name ?? '' },
+              })
+            }}
+          >
+            <option value="">Choose a table…</option>
+            {tables.data
+              ?.filter((t) => t.name !== ownTable)
+              .map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+        <Field
+          label="Column"
+          className="min-w-32 flex-1"
+          hint={target && !keys.length ? 'No key or unique column' : undefined}
+        >
+          <Select
+            aria-label="Referenced column"
+            value={value.references.column}
+            disabled={!target}
+            onChange={(e) => onChange({ references: { ...value.references, column: e.target.value } })}
+          >
+            {!value.references.column && <option value="">Choose…</option>}
+            {keys.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="When that row is deleted" className="min-w-44 flex-1">
+          <Select
+            aria-label="On delete"
+            value={value.references.onDelete === 'restrict' ? 'no action' : value.references.onDelete}
+            onChange={(e) =>
+              onChange({ references: { ...value.references, onDelete: e.target.value as OnDelete } })
+            }
+          >
+            {ON_DELETE.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+    )
+  }
+  if (preset === 'custom') {
+    return (
+      <Field label="Postgres type" hint="Any type Postgres knows, e.g. varchar(20), smallint, inet, text[]">
+        <Input
+          aria-label="Postgres type"
+          className="font-mono"
+          value={value.sqlType}
+          placeholder="varchar(20)"
+          onChange={(e) => onChange({ sqlType: e.target.value })}
+        />
+      </Field>
+    )
+  }
+  return null
 }
 
 /** What new names may be (the server checks the same). */
@@ -36,10 +322,11 @@ export function nameProblem(name: string): string | null {
 
 const blankColumn = (): ColumnSpec => ({
   name: '',
-  type: 'text',
+  preset: 'text',
   nullable: true,
   unique: false,
   default: { kind: 'none' },
+  ...blankExtras(),
 })
 
 /** The default, chosen from a list (no default, a value, now(), …), with a value box when it's a value. */
@@ -111,13 +398,17 @@ export function NewTableDialog({
     ...used.map((c) => (nameProblem(c.name) ? `${c.name}: ${nameProblem(c.name)}` : null)),
     used.some((c) => c.name === 'id') && 'Every table already has an id column',
     new Set(used.map((c) => c.name)).size !== used.length && 'Two columns have the same name',
+    ...used.map((c) => {
+      const problem = extrasProblem(c.preset, c)
+      return problem && `${c.name}: ${problem}`
+    }),
   ].filter(Boolean)
 
   const submit = async () => {
     setTried(true)
     if (problems.length) return
     try {
-      await create.mutateAsync({ environmentId, name, columns: used })
+      await create.mutateAsync({ environmentId, name, columns: used.map(toServerColumn) })
       onCreated(name)
       onClose()
     } catch {
@@ -159,17 +450,11 @@ export function NewTableDialog({
                   value={c.name}
                   onChange={(e) => update(i, { name: e.target.value.trim() })}
                 />
-                <Select
-                  aria-label="Column type"
-                  value={c.type}
-                  onChange={(e) => update(i, { type: e.target.value as ColumnType })}
-                >
-                  {COLUMN_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {TYPE_LABELS[t]}
-                    </option>
-                  ))}
-                </Select>
+                <PresetSelect
+                  className="w-56"
+                  value={c.preset}
+                  onChange={(preset) => update(i, { preset, default: presetDefault(preset) })}
+                />
                 <Checkbox
                   label="Required"
                   checked={!c.nullable}
@@ -180,9 +465,11 @@ export function NewTableDialog({
                   checked={c.unique}
                   onChange={(e) => update(i, { unique: e.target.checked })}
                 />
-                <div className="min-w-64 flex-1">
-                  <DefaultEditor value={c.default} onChange={(d) => update(i, { default: d })} />
-                </div>
+                {c.preset !== 'autoId' && (
+                  <div className="min-w-64 flex-1">
+                    <DefaultEditor value={c.default} onChange={(d) => update(i, { default: d })} />
+                  </div>
+                )}
                 <Button
                   size="icon"
                   variant="ghost"
@@ -191,6 +478,16 @@ export function NewTableDialog({
                 >
                   <Trash2 className="size-4" />
                 </Button>
+                {(c.preset === 'enum' || c.preset === 'foreignKey' || c.preset === 'custom') && (
+                  <div className="w-full">
+                    <PresetFields
+                      environmentId={environmentId}
+                      preset={c.preset}
+                      value={c}
+                      onChange={(patch) => update(i, patch)}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -230,7 +527,8 @@ export function ColumnDialog({
 }) {
   const trpc = useTRPC()
   const [name, setName] = useState(column?.name ?? '')
-  const [type, setType] = useState<Column['type']>(column?.type ?? 'text')
+  const [preset, setPreset] = useState<Preset>(column ? presetOf(column) : 'text')
+  const [extras, setExtras] = useState<PresetExtras>(column ? extrasOf(column) : blankExtras())
   const [nullable, setNullable] = useState(column?.nullable ?? true)
   const [unique, setUnique] = useState(column?.unique ?? false)
   const [fallback, setFallback] = useState<DefaultSpec | { kind: 'other'; expression: string }>(
@@ -241,32 +539,39 @@ export function ColumnDialog({
   const rename = useMutation(trpc.database.renameColumn.mutationOptions())
   const alter = useMutation(trpc.database.alterColumn.mutationOptions())
   const busy = add.isPending || rename.isPending || alter.isPending
+  const original = column ? presetOf(column) : undefined
+
+  const choosePreset = (next: Preset) => {
+    setPreset(next)
+    // UUID and Created time bring their default; leaving them drops it.
+    if (next === 'uuid' || next === 'createdTime') setFallback(presetDefault(next))
+    else if (preset === 'uuid' || preset === 'createdTime') setFallback({ kind: 'none' })
+  }
 
   const submit = async () => {
-    const problem = name !== column?.name ? nameProblem(name) : null
+    const problem = (name !== column?.name ? nameProblem(name) : null) ?? extrasProblem(preset, extras)
     if (problem) return setError(problem)
     if (name === 'id' && name !== column?.name) return setError('Every table already has an id column')
     setError(null)
     try {
       if (!column) {
-        if (type === 'other') return
         await add.mutateAsync({
           environmentId,
           table: table.name,
-          column: {
+          column: toServerColumn({
             name,
-            type,
+            preset,
             nullable,
             unique,
             default: fallback.kind === 'other' ? { kind: 'none' } : fallback,
-          },
+            ...extras,
+          }),
         })
       } else {
         if (name !== column.name) {
           await rename.mutateAsync({ environmentId, table: table.name, column: column.name, to: name })
         }
-        const change: Record<string, unknown> = {}
-        if (type !== column.type && type !== 'other') change.type = type
+        const change: Record<string, unknown> = { ...presetChange(column, original!, preset, extras) }
         if (nullable !== column.nullable) change.nullable = nullable
         if (unique !== column.unique) change.unique = unique
         if (fallback.kind !== 'other' && JSON.stringify(fallback) !== JSON.stringify(column.default)) {
@@ -288,6 +593,7 @@ export function ColumnDialog({
   return (
     <Dialog
       title={column ? `Edit ${column.name}` : `Add a column to ${table.name}`}
+      className="max-w-xl"
       onClose={onClose}
       footer={
         <>
@@ -303,37 +609,82 @@ export function ColumnDialog({
           <Input value={name} autoFocus onChange={(e) => setName(e.target.value.trim())} />
         </Field>
         <Field
-          label="Type"
+          label="Preset"
           hint={
-            column && type !== column.type
-              ? 'Existing values are converted; if one does not fit, nothing changes.'
-              : undefined
+            column?.identity
+              ? 'Numbered by Postgres; its type stays.'
+              : column && (preset !== original || JSON.stringify(extras) !== JSON.stringify(extrasOf(column)))
+                ? 'Existing values are converted; if one does not fit, nothing changes.'
+                : undefined
           }
         >
-          <Select value={type} onChange={(e) => setType(e.target.value as Column['type'])}>
-            {column?.type === 'other' && <option value="other">Other ({column.sqlType})</option>}
-            {COLUMN_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {TYPE_LABELS[t]}
-              </option>
-            ))}
-          </Select>
+          <PresetSelect
+            value={preset}
+            onChange={choosePreset}
+            includeAutoId={!column}
+            disabled={column?.identity}
+          />
         </Field>
+        <PresetFields
+          environmentId={environmentId}
+          preset={preset}
+          value={extras}
+          onChange={(patch) => setExtras({ ...extras, ...patch })}
+          ownTable={table.name}
+        />
         <div className="flex gap-6">
           <Checkbox label="Required" checked={!nullable} onChange={(e) => setNullable(!e.target.checked)} />
           <Checkbox label="Unique" checked={unique} onChange={(e) => setUnique(e.target.checked)} />
         </div>
-        <Field label="Default" hint="What new rows get when they leave this column out.">
-          <DefaultEditor
-            value={fallback}
-            onChange={setFallback}
-            current={fallback.kind === 'other' ? fallback.expression : undefined}
-          />
-        </Field>
+        {preset !== 'autoId' && (
+          <Field label="Default" hint="What new rows get when they leave this column out.">
+            <DefaultEditor
+              value={fallback}
+              onChange={setFallback}
+              current={fallback.kind === 'other' ? fallback.expression : undefined}
+            />
+          </Field>
+        )}
         <ErrorNote error={error} />
       </div>
     </Dialog>
   )
+}
+
+/**
+ * The type part of a change to an existing column, from the preset it had to the one chosen: a new type, an
+ * enum's values (null: plain text again), a foreign key's target, or a custom type's name.
+ */
+function presetChange(
+  column: Column,
+  from: Preset,
+  to: Preset,
+  extras: PresetExtras,
+): Record<string, unknown> {
+  if (column.identity) return {}
+  const was = extrasOf(column)
+  if (to === 'custom') {
+    return from !== 'custom' || extras.sqlType.trim() !== was.sqlType
+      ? { type: 'custom', sqlType: extras.sqlType.trim() }
+      : {}
+  }
+  if (to === 'foreignKey') {
+    if (from !== 'foreignKey') return { type: 'foreignKey', references: extras.references }
+    return JSON.stringify(extras.references) !== JSON.stringify(was.references)
+      ? { references: extras.references }
+      : {}
+  }
+  const type = PRESET_TYPES[to] as ColumnType
+  const change: Record<string, unknown> = {}
+  // Leaving a foreign key (even for the same type) takes the key off.
+  if (type !== column.type || from === 'foreignKey') change.type = type
+  if (to === 'enum') {
+    const values = cleanValues(extras.enumValues)
+    if (JSON.stringify(values) !== JSON.stringify(column.enumValues)) change.enumValues = values
+  } else if (column.enumValues) {
+    change.enumValues = null
+  }
+  return change
 }
 
 /** A table's shape: rename or delete it, and add, change or delete its columns. */
@@ -408,21 +759,29 @@ export function SchemaDialog({
                 data-testid={`schema-column-${c.name}`}
               >
                 <span className="w-40 truncate font-medium">{c.name}</span>
-                <span className="w-28 text-muted">
-                  {c.type === 'other' ? c.sqlType : TYPE_LABELS[c.type]}
+                <span className="w-36 truncate text-muted" title={c.sqlType}>
+                  {columnLabel(c)}
                 </span>
-                <span className="flex-1 truncate text-xs text-muted">
-                  {[
+                {(() => {
+                  const details = [
                     c.primaryKey && 'key',
                     !c.nullable && !c.primaryKey && 'required',
                     c.unique && !c.primaryKey && 'unique',
                     c.default.kind === 'value' && `default ${c.default.value}`,
                     (c.default.kind === 'expression' || c.default.kind === 'other') &&
                       `default ${c.default.expression}`,
+                    c.enumValues?.join(', '),
+                    c.references &&
+                      `${c.references.table}.${c.references.column}, on delete ${c.references.onDelete}`,
                   ]
                     .filter(Boolean)
-                    .join(' · ')}
-                </span>
+                    .join(' · ')
+                  return (
+                    <span className="flex-1 truncate text-xs text-muted" title={details}>
+                      {details}
+                    </span>
+                  )
+                })()}
                 {!c.primaryKey && (
                   <>
                     <Button

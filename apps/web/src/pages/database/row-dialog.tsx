@@ -2,7 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Button, Dialog, ErrorNote } from '@/components/ui'
 import { errorMessage, useTRPC } from '@/lib/trpc'
-import { type Column, parseCell, type TableInfo, TYPE_LABELS, ValueInput } from './cells'
+import { type Column, columnLabel, parseCell, type TableInfo, ValueInput } from './cells'
 
 /**
  * Adds a row: a field per column the database doesn't fill in itself. Fields left empty get the column's default
@@ -110,7 +110,7 @@ function RowField({
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className="flex items-baseline justify-between text-sm font-medium">
         {column.name}
-        <span className="text-xs font-normal text-muted">{TYPE_LABELS[column.type]}</span>
+        <span className="text-xs font-normal text-muted">{columnLabel(column)}</span>
       </label>
       <div className="h-8 overflow-hidden rounded-md border border-border bg-field focus-within:border-transparent focus-within:shadow-focus">
         <ValueInput id={id} column={column} value={value} onChange={onChange} />

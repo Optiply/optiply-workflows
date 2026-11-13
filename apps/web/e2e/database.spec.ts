@@ -210,7 +210,7 @@ test('make and change a table, and import CSV files into it', async ({ page }) =
     await dialog.getByRole('checkbox', { name: 'Unique' }).check()
     await dialog.getByRole('button', { name: 'Add column' }).click()
     await dialog.getByLabel('Column name').nth(1).fill('score')
-    await dialog.getByLabel('Column type').nth(1).selectOption('integer')
+    await dialog.getByLabel('Preset').nth(1).selectOption('integer')
     await dialog.getByLabel('Default').nth(1).selectOption('value')
     await dialog.getByLabel('Default value').fill('0')
     await dialog.getByRole('button', { name: 'Create table' }).click()
@@ -225,15 +225,15 @@ test('make and change a table, and import CSV files into it', async ({ page }) =
     await schema().getByRole('button', { name: 'Add column' }).click()
     const add = page.getByRole('dialog', { name: `Add a column to ${name}` })
     await add.getByRole('textbox', { name: /^Name/ }).fill('joined')
-    await add.getByRole('combobox', { name: /^Type/ }).selectOption('date')
+    await add.getByRole('combobox', { name: /^Preset/ }).selectOption('date')
     await add.getByRole('button', { name: 'Add column' }).click()
     await expect(page.getByTestId('schema-column-joined')).toContainText('Date')
 
     await schema().getByRole('button', { name: 'Edit score' }).click()
     const edit = page.getByRole('dialog', { name: 'Edit score' })
-    await edit.getByRole('combobox', { name: /^Type/ }).selectOption('decimal')
+    await edit.getByRole('combobox', { name: /^Preset/ }).selectOption('number')
     await edit.getByRole('button', { name: 'Save' }).click()
-    await expect(page.getByTestId('schema-column-score')).toContainText('Decimal')
+    await expect(page.getByTestId('schema-column-score')).toContainText('Number')
     await expect(page.getByTestId('schema-column-score')).toContainText('default 0')
 
     await acceptConfirms(page)
@@ -351,4 +351,94 @@ test('the built-in resource queries the managed tables', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('link', { name: 'Open the tables on the Database page' }).click()
   await expect(page).toHaveURL(/\/database\?env=production/)
+})
+
+/**
+ * Retool's column presets in the schema editor: UUID and Created time come with their defaults, the
+ * auto-incrementing ID is numbered by Postgres, an enum's cells are a choice of its values, a foreign key points at
+ * another table's key, and a custom column takes any Postgres type by name.
+ */
+test('columns from the presets: UUID, auto ID, created time, enum, foreign key, custom', async ({ page }) => {
+  const suffix = Date.now().toString(36)
+  const teams = `teams_${suffix}`
+  const tickets = `tickets_${suffix}`
+  await signIn(page)
+  const status = await trpcQuery<{ environments: { id: string; slug: string }[] }>(
+    page,
+    'database.environments',
+  )
+  const environmentId = status.environments.find((e) => e.slug === 'production')!.id
+  await trpcMutate(page, 'database.createTable', {
+    environmentId,
+    name: teams,
+    columns: [{ name: 'name', type: 'text' }],
+  })
+  await trpcMutate(page, 'database.insertRow', { environmentId, table: teams, values: { name: 'Support' } })
+  await page.goto('/database?env=production')
+
+  await test.step('a table made from the presets', async () => {
+    await page.getByRole('button', { name: 'New table' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New table' })
+    await dialog.getByRole('textbox', { name: /^Name/ }).fill(tickets)
+    const columns: [string, string][] = [
+      ['ref', 'uuid'],
+      ['number', 'autoId'],
+      ['created', 'createdTime'],
+      ['status', 'enum'],
+      ['team', 'foreignKey'],
+      ['code', 'custom'],
+    ]
+    for (const [i, [column, preset]] of columns.entries()) {
+      if (i > 0) await dialog.getByRole('button', { name: 'Add column' }).click()
+      await dialog.getByLabel('Column name').nth(i).fill(column)
+      await dialog.getByLabel('Preset').nth(i).selectOption(preset)
+    }
+    await dialog.getByLabel('Enum values').fill('open\nin progress\ndone')
+    await dialog.getByLabel('Referenced table').selectOption(teams)
+    await expect(dialog.getByLabel('Referenced column')).toHaveValue('id')
+    await dialog.getByLabel('On delete').selectOption('cascade')
+    await dialog.getByLabel('Postgres type').fill('varchar(20)')
+    await dialog.getByRole('button', { name: 'Create table' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: tickets })).toBeVisible()
+    const header = (column: string) => page.getByRole('columnheader', { name: new RegExp(`^${column}`) })
+    await expect(header('ref')).toContainText('UUID')
+    await expect(header('number')).toContainText('Auto ID')
+    await expect(header('created')).toContainText('Created time')
+    await expect(header('status')).toContainText('Enum')
+    await expect(header('team')).toContainText(`→ ${teams}`)
+    await expect(header('code')).toContainText('character varying(20)')
+  })
+
+  await test.step('a row: the enum is a choice, the rest is filled in by Postgres', async () => {
+    await page.getByRole('button', { name: 'Add row' }).click()
+    const dialog = page.getByRole('dialog', { name: /Add a row/ })
+    await expect(dialog.getByLabel(/^status/)).toHaveRole('combobox')
+    await dialog.getByLabel(/^status/).selectOption('in progress')
+    await dialog.getByLabel(/^team/).fill('1')
+    await dialog.getByLabel(/^code/).fill('T-1')
+    await dialog.getByRole('button', { name: 'Add row' }).click()
+    await expect(page.getByTestId('row-count')).toHaveText('1 row')
+    await expect(cell(page, 0, 'status')).toHaveText('in progress')
+    await expect(cell(page, 0, 'number')).toHaveText('1')
+    await expect(cell(page, 0, 'ref')).toHaveText(/^[0-9a-f-]{36}$/)
+    await expect(cell(page, 0, 'created')).not.toBeEmpty()
+  })
+
+  await test.step('the schema reads the presets back, and an enum is changed', async () => {
+    await page.getByRole('button', { name: 'Table', exact: true }).click()
+    const schema = page.getByRole('dialog', { name: /^Table / })
+    await expect(page.getByTestId('schema-column-team')).toContainText(`→ ${teams}`)
+    await schema.getByRole('button', { name: 'Edit status' }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit status' })
+    await expect(edit.getByRole('combobox', { name: /^Preset/ })).toHaveValue('enum')
+    await expect(edit.getByLabel('Enum values')).toHaveValue('open\nin progress\ndone')
+    await edit.getByLabel('Enum values').fill('open\nin progress\ndone\nwon’t fix')
+    await edit.getByRole('button', { name: 'Save' }).click()
+    await expect(edit).toHaveCount(0)
+    await schema.getByRole('button', { name: 'Edit status' }).click()
+    await expect(page.getByRole('dialog', { name: 'Edit status' }).getByLabel('Enum values')).toHaveValue(
+      'open\nin progress\ndone\nwon’t fix',
+    )
+  })
 })
