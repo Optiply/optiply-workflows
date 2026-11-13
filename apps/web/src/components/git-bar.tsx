@@ -431,7 +431,11 @@ function CommitDialog(
   const { ensureSaved } = props
   useEffect(() => {
     ensureSaved()
-      .then(() => setSaved(true))
+      .then(() => {
+        // A later try (the effect runs again) that saves clears an earlier one's timeout.
+        setSaveError(null)
+        setSaved(true)
+      })
       .catch((err) => setSaveError(errorMessage(err)))
   }, [ensureSaved])
   const refresh = () =>

@@ -221,7 +221,8 @@ test('protect a library query and edit it on a branch', async ({ page }) => {
   await expect(page.getByTestId('commit-files')).toContainText(`library/${slug}/query.sql`)
   await page.getByRole('textbox', { name: 'Message' }).fill('Four times')
   await page.getByTestId('commit-confirm').click()
-  await expect(page.getByTestId('commit-result')).toContainText(branch)
+  // A commit pushes to the test repository: on a loaded CI runner that took over the default 20 s.
+  await expect(page.getByTestId('commit-result')).toContainText(branch, { timeout: 60_000 })
   const sql = execFileSync('git', [
     '--git-dir',
     repoDir,

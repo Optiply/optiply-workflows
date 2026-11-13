@@ -730,7 +730,9 @@ describe('M5: cancel, child workflows and loop iterations', () => {
 
     const cancelled = await rest(adminCookie, 'POST', `/runs/${runId}/cancel`)
     expect(cancelled.status).toBe(202)
-    expect(cancelled.body.run).toMatchObject({ id: runId, status: 'running' })
+    // The reply reads the run back: still running, or (a busy machine) already cancelled by its worker.
+    expect(cancelled.body.run).toMatchObject({ id: runId })
+    expect(['running', 'cancelled']).toContain(cancelled.body.run.status)
     const run = await waitForRun(runId)
     expect(run).toMatchObject({ status: 'cancelled', error: { code: 'cancelled' } })
     const blocks = (await rest(adminCookie, 'GET', `/runs/${runId}/blocks`)).body.blocks

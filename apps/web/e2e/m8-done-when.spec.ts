@@ -114,6 +114,10 @@ test('build a CRUD app on a Postgres table with an editable Table and a save que
 
   await test.step('edit a cell in the published app and save it', async () => {
     await page.getByRole('link', { name: 'Open app' }).click()
+    // The editor's canvas has a table1 too, with the same rows: wait for the viewer (its Edit link) before editing,
+    // or a slow runner edits the editor's table and the viewer then opens without the change.
+    await expect(page).toHaveURL(/\/apps\/[^/?]+(\?|$)/)
+    await expect(page.getByRole('link', { name: 'Edit', exact: true })).toBeVisible()
     const grid = page.getByRole('grid', { name: 'table1' })
     await expect(grid.getByRole('row')).toHaveCount(4)
     // Only the editable column edits.
