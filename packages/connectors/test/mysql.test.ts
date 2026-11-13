@@ -362,6 +362,21 @@ describe.skipIf(!available)('MySQL connector', () => {
         'timeout',
       )
       await expect.poll(() => running('%SLEEP(5)%'), { timeout: 2000 }).toEqual([])
+
+      // A block's or query's own timeout overrides the resource's statement timeout; a default budget doesn't.
+      expect((await run(strict, 'SELECT SLEEP(1) AS slept', {}, 5000)).data).toEqual([{ slept: 0 }])
+      const defaulted = runQuery(
+        pool,
+        mysqlConnector,
+        strict,
+        { sql: 'SELECT SLEEP(1) AS defaulted' },
+        {
+          evaluate: scopeEvaluator({}),
+          timeoutMs: 5000,
+          ownTimeout: false,
+        },
+      )
+      expect((await failure(defaulted)).code).toBe('timeout')
     })
 
     it('cancels on abort: the query is killed on the server, and its connection is replaced', async () => {

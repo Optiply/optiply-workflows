@@ -766,6 +766,12 @@ export function resolveBlockSettings(block: Block): ResolvedBlockSettings {
   }
 }
 
+/** Whether the block sets its own timeout (rather than taking the default): its queries then get all of it. */
+export function hasOwnTimeout(block: Block): boolean {
+  const s: BlockSettings | undefined = 'settings' in block ? block.settings : undefined
+  return s?.timeoutMs !== undefined
+}
+
 /** A loop iteration's limit and retries: `config.iteration`, with the block defaults. */
 export function resolveIterationSettings(
   block: BlockOf<'loop'>,

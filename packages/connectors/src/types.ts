@@ -22,6 +22,11 @@ export interface QueryContext {
   signal: AbortSignal
   /** Time budget for this execution. */
   timeoutMs: number
+  /**
+   * `timeoutMs` was set on the block or query itself (not a default), so it overrides the resource's statement
+   * timeout: a block given 10 minutes gets 10 minutes, even on a resource whose statement timeout is 2.
+   */
+  ownTimeout?: boolean
   /** Who is running the query (workflow, run, user), for connectors that can tag their work: BigQuery job labels. */
   labels?: Record<string, string>
   /**
@@ -33,6 +38,17 @@ export interface QueryContext {
   credentials?: CredentialSource
   /** AI resources (M35): the run's token budget so far and, in workflows, the workflows an agent may call. */
   ai?: AiRunContext
+}
+
+/**
+ * How long a SQL statement may run: the block's or query's own timeout when it set one, otherwise the shorter of
+ * the default budget and the resource's statement timeout.
+ */
+export function statementTimeoutMs(
+  ctx: Pick<QueryContext, 'timeoutMs' | 'ownTimeout'>,
+  resourceMs: number,
+): number {
+  return ctx.ownTimeout ? ctx.timeoutMs : Math.min(ctx.timeoutMs, resourceMs)
 }
 
 /**

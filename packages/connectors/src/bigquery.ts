@@ -12,7 +12,13 @@ import {
 } from './google-auth'
 import { networkError, readBody } from './http'
 import { resolveFragments } from './sql-fragments'
-import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
+import {
+  type Connector,
+  ConnectorError,
+  type QueryContext,
+  type QueryResult,
+  statementTimeoutMs,
+} from './types'
 
 /** Label keys and values: lowercase letters, digits, `_` and `-`, at most 63 characters; keys start with a letter. */
 const labelKey = z
@@ -194,7 +200,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
     queryParameters.push({ name: `p${i + 1}`, ...toQueryParameter(await paramValue(param, ctx.evaluate)) })
   }
 
-  const statementTimeout = AbortSignal.timeout(Math.min(ctx.timeoutMs, config.statementTimeoutMs))
+  const statementTimeout = AbortSignal.timeout(statementTimeoutMs(ctx, config.statementTimeoutMs))
   const signal = AbortSignal.any([ctx.signal, statementTimeout])
   const project = enc(client.projectId)
 

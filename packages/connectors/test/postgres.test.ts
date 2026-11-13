@@ -189,6 +189,21 @@ describe('guards', () => {
     expect((await failure(run(strict, 'select pg_sleep(2)'))).code).toBe('timeout')
     expect((await failure(run(pgResource(), 'select pg_sleep(2)', {}, 200))).code).toBe('timeout')
 
+    // A block's or query's own timeout overrides the resource's statement timeout; a default budget doesn't.
+    expect((await run(strict, 'select 1 as ok from pg_sleep(0.5)', {}, 5000)).data).toEqual([{ ok: 1 }])
+    const defaulted = runQuery(
+      pool,
+      postgresConnector,
+      strict,
+      { sql: 'select pg_sleep(0.5)' },
+      {
+        evaluate: scopeEvaluator({}),
+        timeoutMs: 5000,
+        ownTimeout: false,
+      },
+    )
+    expect((await failure(defaulted)).code).toBe('timeout')
+
     const controller = new AbortController()
     setTimeout(() => controller.abort(), 150)
     const started = Date.now()

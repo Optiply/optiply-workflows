@@ -21,20 +21,22 @@ beforeAll(async () => {
     pool,
     resources: {
       async resolve(slug, environmentId) {
-        if (slug !== 'warehouse') throw new Error('unknown')
+        // `strict`: the same database with a short statement timeout.
+        if (slug !== 'warehouse' && slug !== 'strict') throw new Error('unknown')
         return {
           connector: postgresConnector,
           resource: {
             id: 'rc-1',
             resourceId: 'r-1',
             environmentId,
-            version: '1',
+            version: slug,
             config: {
               host: url.hostname,
               port: Number(url.port),
               database: url.pathname.slice(1),
               user: decodeURIComponent(url.username),
               ssl: 'disable',
+              ...(slug === 'strict' && { statementTimeoutMs: 200 }),
             },
             secrets: { password: decodeURIComponent(url.password) },
           },
@@ -51,10 +53,10 @@ beforeAll(async () => {
 })
 afterAll(() => stop?.())
 
-const sql = (name: string, text: string, settings?: object) => ({
+const sql = (name: string, text: string, settings?: object, resource = 'warehouse') => ({
   name,
   type: 'resourceQuery',
-  config: { resource: 'warehouse', query: { sql: text } },
+  config: { resource, query: { sql: text } },
   ...(settings && { settings }),
 })
 
@@ -117,5 +119,31 @@ describe('resource queries against Postgres', () => {
     const active =
       await admin`select count(*)::int as n from pg_stat_activity where query like 'select pg_sleep%' and state = 'active'`
     expect(active).toEqual([{ n: 0 }])
+  })
+
+  it("lets a block's own timeout override the resource's statement timeout", async () => {
+    const own = await run(
+      services,
+      wf(
+        [
+          sql('own', 'select 1 as ok from pg_sleep(0.5)', { timeoutMs: 5000 }, 'strict'),
+          response('reply', '{{ own.data }}'),
+        ],
+        [
+          ['startTrigger', 'own'],
+          ['own', 'reply'],
+        ],
+      ),
+    )
+    expect(own.outcome.error).toBeNull()
+    expect(own.outcome.response?.body).toEqual([{ ok: 1 }])
+
+    // Without a timeout of its own, the block keeps to the resource's.
+    const defaulted = await run(
+      services,
+      wf([sql('defaulted', 'select pg_sleep(0.5)', undefined, 'strict')], [['startTrigger', 'defaulted']]),
+    )
+    expect(defaulted.outcome.error).toMatchObject({ code: 'timeout', block: 'defaulted' })
+    expect(defaulted.outcome.error!.message).toMatch(/statement timeout/)
   })
 })

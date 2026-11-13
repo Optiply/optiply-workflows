@@ -46,6 +46,8 @@ export interface BlockContext {
   /** Aborted on timeout, run failure or interruption. */
   signal: AbortSignal
   timeoutMs: number
+  /** See `Work.ownTimeout`. */
+  ownTimeout?: boolean
   log: (level: LogLevel, message: string) => void
   /** The run, and this attempt of the block (child runs are keyed by them). */
   runId: string
@@ -75,6 +77,11 @@ export interface Work {
   scope: Record<string, unknown>
   signal: AbortSignal
   timeoutMs: number
+  /**
+   * `timeoutMs` is the block's (or iteration's) own setting, not a default: a query then gets all of it, past the
+   * resource's statement timeout.
+   */
+  ownTimeout?: boolean
   log: (level: LogLevel, message: string) => void
 }
 
@@ -536,6 +543,8 @@ export async function runResourceQuery(
   opts: {
     evaluate?: Evaluate
     timeoutMs?: number
+    /** Whether `timeoutMs` is the query's own (see `Work.ownTimeout`); default: the work's. */
+    ownTimeout?: boolean
     labels?: Record<string, string>
     /** Keys an AI agent's child runs (M35): the block attempt or loop iteration. None: no agent tools. */
     key?: string
@@ -557,6 +566,7 @@ export async function runResourceQuery(
       evaluate: opts.evaluate ?? evaluatorFor(work, ctx),
       signal: work.signal,
       timeoutMs: opts.timeoutMs ?? work.timeoutMs,
+      ownTimeout: opts.ownTimeout ?? work.ownTimeout ?? false,
       ...(target.credentials && { credentials: target.credentials }),
       ...(ctx.ai && {
         ai: {
@@ -685,6 +695,7 @@ export async function runLibraryQuery(
   const { data, metadata } = await runResourceQuery(definition.resource, definition.query, work, ctx, {
     evaluate: evaluateLibrary,
     timeoutMs: Math.min(work.timeoutMs, definition.timeoutMs ?? work.timeoutMs),
+    ownTimeout: work.ownTimeout === true || definition.timeoutMs !== undefined,
     labels: { ow_library: ref.library },
   })
   return { data, metadata: { ...metadata, library: { slug: ref.library, version } } }

@@ -156,7 +156,13 @@ async function iteration(
         runner(
           block,
           ctx,
-          { scope, signal: timeoutSignal, timeoutMs: settings.timeoutMs, log },
+          {
+            scope,
+            signal: timeoutSignal,
+            timeoutMs: settings.timeoutMs,
+            ownTimeout: block.config.iteration?.timeoutMs !== undefined,
+            log,
+          },
           `${key}:${attempt}`,
         ),
       )

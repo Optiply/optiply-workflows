@@ -519,7 +519,10 @@ function SqlFields(props: FieldsProps & { type: string }) {
         <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
           <Input {...number('maxRows')} />
         </Field>
-        <Field label="Statement timeout (ms)">
+        <Field
+          label="Statement timeout (ms)"
+          hint="For queries without a timeout of their own; a block's or query's timeout overrides it."
+        >
           <Input {...number('statementTimeoutMs')} />
         </Field>
         <Field label="Connection pool size">
@@ -696,7 +699,10 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
         <Field label="Max rows" hint="Queries returning more fail instead of loading everything.">
           <Input {...number('maxRows')} />
         </Field>
-        <Field label="Statement timeout (ms)" hint="The job is cancelled when it runs longer.">
+        <Field
+          label="Statement timeout (ms)"
+          hint="The job is cancelled when it runs longer. A block's or query's own timeout overrides it."
+        >
           <Input {...number('statementTimeoutMs')} />
         </Field>
       </Grid>

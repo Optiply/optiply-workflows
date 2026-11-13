@@ -19,6 +19,11 @@ export interface RunOptions {
   signal?: AbortSignal
   /** Default 120s, Retool's default query timeout. */
   timeoutMs?: number
+  /**
+   * See `QueryContext.ownTimeout`. Defaults to whether `timeoutMs` was given; pass false when it is only a default
+   * (a workflow block that set no timeout).
+   */
+  ownTimeout?: boolean
   /** See `QueryContext.labels`. */
   labels?: Record<string, string>
   /** See `QueryContext.untrustedValues`. */
@@ -68,6 +73,7 @@ export async function runQuery(
         evaluate: wrapEvaluate(opts.evaluate),
         signal,
         timeoutMs,
+        ownTimeout: opts.ownTimeout ?? opts.timeoutMs !== undefined,
         ...(opts.labels && { labels: opts.labels }),
         ...(opts.untrustedValues && { untrustedValues: true }),
         ...(credentials && { credentials }),
