@@ -211,7 +211,15 @@ function RunDetail({ run, tab, setTab }: { run: RunView; tab: DetailTab; setTab:
   })
   const byKey = new Map((blocks.data ?? []).map((b) => [b.key, b]))
   const order = definition.blocks.map((b) => b.name)
-  const keys = [...new Set([...order.filter((k) => live[k] || byKey.has(k)), ...byKey.keys()])]
+  // In the order they ran: by start time, then (not started yet) as the definition lists them. The definition's
+  // order is only where blocks were stored (an imported workflow keeps Retool's), not the order they run in.
+  const started = (k: string) => {
+    const at = byKey.get(k)?.startedAt
+    return at ? Date.parse(at) : Number.POSITIVE_INFINITY
+  }
+  const keys = [...new Set([...order.filter((k) => live[k] || byKey.has(k)), ...byKey.keys()])].sort(
+    (a, b) => started(a) - started(b) || 0,
+  )
   const current = chosen !== GLOBAL && keys.includes(chosen) ? chosen : GLOBAL
 
   return (
