@@ -196,7 +196,10 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
               value={Math.round((webhook?.syncTimeoutMs ?? DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS) / 1000)}
               onChange={(e) => {
                 const seconds = Math.min(300, Math.max(0, Number(e.target.value) || 0))
-                set({ syncTimeoutMs: seconds === 30 ? undefined : seconds * 1000 })
+                set({
+                  syncTimeoutMs:
+                    seconds * 1000 === DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS ? undefined : seconds * 1000,
+                })
               }}
             />
           </Field>

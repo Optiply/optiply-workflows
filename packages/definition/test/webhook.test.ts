@@ -75,7 +75,7 @@ describe('resolveWebhookSettings', () => {
     expect(resolveWebhookSettings({ enabled: true })).toEqual({
       enabled: true,
       methods: ['POST'],
-      syncTimeoutMs: 30_000,
+      syncTimeoutMs: 300_000,
       auth: { type: 'apiKey' },
       bodySchema: null,
       rateLimit: null,

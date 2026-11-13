@@ -408,8 +408,9 @@ export const workflowSettingsSchema = z.strictObject({
 })
 
 export const WEBHOOK_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
-export const DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS = 30_000
 export const MAX_WEBHOOK_SYNC_TIMEOUT_MS = 5 * 60_000
+/** As long as allowed: slow queries (minutes on the production read replica) still answer the caller with data. */
+export const DEFAULT_WEBHOOK_SYNC_TIMEOUT_MS = MAX_WEBHOOK_SYNC_TIMEOUT_MS
 export const MIN_SCHEDULE_INTERVAL_MS = 60_000
 
 /**
