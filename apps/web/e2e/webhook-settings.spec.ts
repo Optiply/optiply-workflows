@@ -188,10 +188,15 @@ test('draft a body schema, and complete startTrigger.data from it', async ({ pag
   await typeInto(page, field(page, 'code1', 'code.js'), 'return startTrigger.data.')
   await code.locator('.view-lines').click({ position: { x: 4, y: 4 } })
   await page.keyboard.press('End')
-  await page.keyboard.press('Control+Space')
   // The visible one: the body schema's JSON editor keeps a (hidden) suggest widget of its own.
   const suggestions = page.locator('.suggest-widget.visible')
-  await expect(suggestions).toContainText('orderId')
+  // Opened before the TypeScript worker has the schema's types (a slow CI runner), the list holds the document's
+  // words and doesn't refresh: open it again, as someone would.
+  await expect(async () => {
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Control+Space')
+    await expect(suggestions).toContainText('orderId', { timeout: 3000 })
+  }).toPass({ timeout: 30_000 })
   await expect(suggestions).toContainText('lines')
 })
 
