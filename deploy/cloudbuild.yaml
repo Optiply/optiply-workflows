@@ -1,0 +1,38 @@
+# Builds the five images for the VM (linux/amd64) and pushes them to Artifact Registry (docs/runbooks/deploy.md):
+#   gcloud builds submit --project optiply-workflows --region us-east1 \
+#     --config deploy/cloudbuild.yaml --substitutions _TAG=$(git rev-parse --short HEAD) .
+# The source upload follows .gcloudignore (no .env, no node_modules, no build output).
+substitutions:
+  _PREFIX: us-east1-docker.pkg.dev/optiply-workflows/ow
+  _TAG: latest
+options:
+  # The default machine (e2-standard-2): Cloud Build's free tier covers it (2,500 build-minutes a month); bigger
+  # machines are billed from the first minute. Budget: €5 a month in all.
+  logging: CLOUD_LOGGING_ONLY
+timeout: 3600s
+steps:
+  - id: app
+    name: gcr.io/cloud-builders/docker
+    args: [build, -t, '${_PREFIX}/app:${_TAG}', .]
+  - id: code-executor
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, -t, '${_PREFIX}/code-executor:${_TAG}', apps/code-executor]
+  - id: python-builder
+    name: gcr.io/cloud-builders/docker
+    waitFor: [code-executor]
+    args: [build, --target, builder, -t, '${_PREFIX}/python-builder:${_TAG}', apps/code-executor]
+  - id: sdk-runner
+    name: gcr.io/cloud-builders/docker
+    waitFor: [code-executor]
+    args: [build, --target, sdk-runner, -t, '${_PREFIX}/sdk-runner:${_TAG}', apps/code-executor]
+  - id: jdbc-runner
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, --build-arg, SKIP_TESTS=true, -t, '${_PREFIX}/jdbc-runner:${_TAG}', apps/jdbc-runner]
+images:
+  - '${_PREFIX}/app:${_TAG}'
+  - '${_PREFIX}/code-executor:${_TAG}'
+  - '${_PREFIX}/python-builder:${_TAG}'
+  - '${_PREFIX}/sdk-runner:${_TAG}'
+  - '${_PREFIX}/jdbc-runner:${_TAG}'

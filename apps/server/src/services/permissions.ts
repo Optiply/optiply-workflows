@@ -2,6 +2,7 @@ import { type Db, folders, groupMembers, PERMISSION_LEVELS, type PermissionLevel
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { eq, inArray, or } from 'drizzle-orm'
+import { systemGroupId } from './users'
 
 const RANK: Record<PermissionLevel, number> = { use: 1, edit: 2, own: 3 }
 
@@ -283,4 +284,35 @@ export async function checkFolderMove(
   if (opts.to === undefined || opts.to === opts.from) return
   requireLevel(opts.level, 'own', `this ${KIND_LABELS[opts.type]} to move it between folders`)
   await checkFolderType(db, opts.type, opts.to)
+}
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+/** `SHARE_NEW_WITH_EVERYONE` (on unless set off; set once at start, buildApp). */
+let shareNewWithEveryone = true
+export function setShareNewWithEveryone(on: boolean) {
+  shareNewWithEveryone = on
+}
+
+/**
+ * What something new starts with (the owner's choice, session 54): everyone (All Users) may Use it, and the person who
+ * made it may Edit it; admins change it afterwards. Admins can do everything anyway, so they get no grant of their own.
+ * Objects Git sync creates don't come here: an admin approves those and shares them.
+ */
+export async function grantDefaultAccess(
+  db: Db | Tx,
+  kind: ObjectKind,
+  objectId: string,
+  creator: { id: string; isAdmin: boolean },
+): Promise<void> {
+  if (!shareNewWithEveryone) return
+  const allUsers = await systemGroupId(db, 'all_users')
+  await db
+    .insert(permissions)
+    .values([
+      { groupId: allUsers, objectType: kind, objectId, environmentId: null, level: 'use' as const },
+      ...(!creator.isAdmin
+        ? [{ userId: creator.id, objectType: kind, objectId, environmentId: null, level: 'edit' as const }]
+        : []),
+    ])
 }

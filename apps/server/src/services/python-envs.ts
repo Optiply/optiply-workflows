@@ -64,6 +64,17 @@ export type BuildAnswer =
   | { ok: true; envId: string; lock?: PythonLock; sizeBytes: number; cached: boolean; log: string }
   | { ok: false; error: { kind: string; message: string }; log: string }
 
+export type NpmBuildAnswer =
+  | {
+      ok: true
+      envId: string
+      lock: { node: string; dependencies: Record<string, string>; packages: Record<string, string> }
+      sizeBytes: number
+      cached: boolean
+      log: string
+    }
+  | { ok: false; error: { kind: string; message: string }; log: string }
+
 /** A build or an install takes at most 5 minutes in the builder, which may first wait as long for a slot. */
 const BUILDER_TIMEOUT_MS = 11 * 60_000
 
@@ -83,6 +94,17 @@ export class PythonBuilderClient {
   /** Installs a lock made before (a release's), unless its env is there; never resolves. */
   install(lock: PythonLock, indexes: BuilderIndex[] = []): Promise<BuildAnswer> {
     return this.post('/install', { lock, ...(indexes.length && { indexes }) })
+  }
+
+  /**
+   * An SDK resource's JavaScript packages (M37): npm installs them into `envs/node/<envId>` (no install scripts), from
+   * the registries given (their tokens for this request only), or finds them there.
+   */
+  buildNpm(
+    dependencies: Record<string, string>,
+    registries: { scope: string | null; url: string; token?: string }[],
+  ): Promise<NpmBuildAnswer> {
+    return this.post('/build-npm', { dependencies, registries }) as Promise<NpmBuildAnswer>
   }
 
   /** Whether a package index answers and takes its sign-in (M32, Settings → Python's Test). */
@@ -195,12 +217,15 @@ async function lockIndexes(db: Db, lock: PythonLock): Promise<BuilderIndex[]> {
 }
 
 /** A failed build or install as the Python block's failure, pip's output in its details. */
-function packagesFailure(answer: Extract<BuildAnswer, { ok: false }>): BlockFailure {
-  return new BlockFailure(
-    'python_packages',
-    `The workflow's Python packages couldn't be installed: ${answer.error.message}`,
-    { kind: answer.error.kind, ...(answer.log && { log: answer.log }) },
-  )
+function packagesFailure(
+  answer: Extract<BuildAnswer, { ok: false }>,
+  /** Whose packages they are, for the message (an SDK resource's, M37). */
+  label = "The workflow's Python packages",
+): BlockFailure {
+  return new BlockFailure('python_packages', `${label} couldn't be installed: ${answer.error.message}`, {
+    kind: answer.error.kind,
+    ...(answer.log && { log: answer.log }),
+  })
 }
 
 /**
@@ -212,8 +237,13 @@ export async function envForRequirements(
   db: Db,
   client: PythonBuilderClient,
   requirements: string[],
-  /** Whose workflow it is, for the audit of a new install (`python.env_built`). */
-  who: { workflowId: string; actorUserId: string | null },
+  /** Whose workflow it is (or an SDK resource's, M37), for the audit of a new install (`python.env_built`). */
+  who: {
+    workflowId: string
+    actorUserId: string | null
+    objectType?: 'workflow' | 'resource'
+    label?: string
+  },
   /** The package index to resolve from (M32: `settings.python.index`), else the builder's default. */
   indexSlug?: string,
 ): Promise<{ envId: string; lock: PythonLock }> {
@@ -228,7 +258,7 @@ export async function envForRequirements(
       return { envId: installed.envId, lock: row.lock }
     }
     // Only a lock for another platform (the builder moved) is worth resolving again; the rest is the failure.
-    if (installed.error.kind !== 'platform') throw packagesFailure(installed)
+    if (installed.error.kind !== 'platform') throw packagesFailure(installed, who.label)
   }
   const built = await client.build(requirements, indexes)
   const recorded = built.ok
@@ -251,13 +281,14 @@ export async function envForRequirements(
       built.ok
         ? { ok: false, error: { kind: 'install', message: 'The builder gave no lock' }, log: built.log }
         : built,
+      who.label,
     )
   }
   if (!built.cached) {
     await recordAudit(db, {
       actorUserId: who.actorUserId,
       action: 'python.env_built',
-      objectType: 'workflow',
+      objectType: who.objectType ?? 'workflow',
       objectId: who.workflowId,
       metadata: {
         requirements,

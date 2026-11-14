@@ -33,6 +33,7 @@ import { EnvironmentsPage } from './pages/settings/environments'
 import { GitSettingsPage } from './pages/settings/git'
 import { GroupDetailPage } from './pages/settings/group-detail'
 import { GroupsPage } from './pages/settings/groups'
+import { JdbcSettingsPage } from './pages/settings/jdbc'
 import { SettingsLayout } from './pages/settings/layout'
 import { PythonSettingsPage } from './pages/settings/python'
 import { UserDetailPage } from './pages/settings/user-detail'
@@ -285,6 +286,11 @@ const pythonRoute = createRoute({
   path: '/python',
   component: PythonSettingsPage,
 })
+const jdbcSettingsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/jdbc',
+  component: JdbcSettingsPage,
+})
 const npmSettingsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '/npm',
@@ -334,6 +340,7 @@ const routeTree = rootRoute.addChildren([
       gitRoute,
       pythonRoute,
       npmSettingsRoute,
+      jdbcSettingsRoute,
       componentsSettingsRoute,
       auditRoute,
     ]),

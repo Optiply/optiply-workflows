@@ -1,6 +1,7 @@
 import { environments } from '@ow/db'
 import { asc, desc } from 'drizzle-orm'
 import { capabilities } from '../services/capabilities'
+import { groupsOf } from '../services/tasks'
 import { authedProcedure, publicProcedure, router } from './init'
 import { accessTokensRouter } from './routers/access-tokens'
 import { apiKeysRouter } from './routers/api-keys'
@@ -13,6 +14,7 @@ import { databaseRouter } from './routers/database'
 import { foldersRouter } from './routers/folders'
 import { gitRouter } from './routers/git'
 import { groupsRouter } from './routers/groups'
+import { jdbcDriversRouter } from './routers/jdbc-drivers'
 import { jsPackagesRouter } from './routers/js-packages'
 import { libraryQueriesRouter } from './routers/library-queries'
 import { modulesRouter } from './routers/modules'
@@ -38,7 +40,9 @@ export const appRouter = router({
   me: publicProcedure.query(async ({ ctx }) => {
     if (!ctx.user) return null
     const { sessionId: _sessionId, ...user } = ctx.user
-    return { ...user, ...(await capabilities(ctx.db, ctx.user)) }
+    const [caps, groups] = await Promise.all([capabilities(ctx.db, ctx.user), groupsOf(ctx.db, ctx.user.id)])
+    // Settings are for Optiply's own admins; `isAdmin` already leaves out Admins members from outside the domain.
+    return { ...user, ...caps, groups, settings: user.isAdmin }
   }),
 
   environments: router({
@@ -69,6 +73,7 @@ export const appRouter = router({
   componentLibraries: componentLibrariesRouter,
   git: gitRouter,
   pythonIndexes: pythonIndexesRouter,
+  jdbcDrivers: jdbcDriversRouter,
   branchDrafts: branchDraftsRouter,
 })
 

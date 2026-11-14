@@ -44,14 +44,23 @@ export async function createSession(
   return { token, expiresAt }
 }
 
-const isAdminSql = sql<boolean>`exists (
+/**
+ * Admin powers are for Optiply's own people (session 54): a member of Admins whose email is outside the sign-in
+ * domain (an invited partner) counts as an ordinary user, with only what is shared with them. Set once at start.
+ */
+let adminDomain = 'optiply.nl'
+export function setAdminDomain(domain: string) {
+  adminDomain = domain.toLowerCase()
+}
+
+const isAdminSql = () => sql<boolean>`(exists (
   select 1 from ${groupMembers} gm join ${groups} g on g.id = gm.group_id
   where gm.user_id = ${users.id} and g.system_kind = 'admins'
-)`
+) and split_part(lower(${users.email}), '@', 2) = ${adminDomain})`
 
 export async function lookupSession(db: Db, token: string | undefined): Promise<SessionUser | null> {
   if (!token) return null
-  const isAdmin = isAdminSql
+  const isAdmin = isAdminSql()
   const [row] = await db
     .select({
       id: users.id,
@@ -105,7 +114,7 @@ export async function lookupAccessToken(db: Db, token: string): Promise<TokenUse
       email: users.email,
       name: users.name,
       avatarUrl: users.avatarUrl,
-      isAdmin: isAdminSql,
+      isAdmin: isAdminSql(),
       tokenId: personalAccessTokens.id,
       prefix: personalAccessTokens.prefix,
       scopes: personalAccessTokens.scopes,

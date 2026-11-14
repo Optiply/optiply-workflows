@@ -1056,11 +1056,14 @@ export class AppRuntime {
             : csv && Array.isArray(data)
               ? toCsv(data)
               : JSON.stringify(data, null, 2)
+        // A PDF an app writes itself (text: 7-bit, so the browser's UTF-8 Blob keeps its bytes).
         const mimeType = csv
           ? 'text/csv'
           : file.toLowerCase().endsWith('.json')
             ? 'application/json'
-            : 'text/plain'
+            : file.toLowerCase().endsWith('.pdf')
+              ? 'application/pdf'
+              : 'text/plain'
         this.bridge.effect({ type: 'download', data: text, fileName: file, mimeType })
       },
     }

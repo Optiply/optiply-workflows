@@ -40,6 +40,7 @@ import {
   atLeast,
   checkFolderMove,
   checkFolderType,
+  grantDefaultAccess,
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
@@ -192,6 +193,7 @@ export const componentLibrariesRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'component_library', library!.id, ctx.user)
       await ctx.audit({
         action: 'component_library.created',
         objectType: 'component_library',

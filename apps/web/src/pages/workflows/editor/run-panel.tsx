@@ -20,7 +20,6 @@ import {
   duration,
   FINAL_RUN_STATUSES,
   type IterationView,
-  queueMessageLine,
   type RunView,
   runsApi,
 } from '@/lib/runs-api'
@@ -302,12 +301,6 @@ function RunDetail({ run, tab, setTab }: { run: RunView; tab: DetailTab; setTab:
           <div className="flex-1" />
           <span className="min-w-0 truncate text-muted">
             {run.environment} · {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version}
-            {queueMessageLine(run) && (
-              <span data-testid={run.triggerType === 'pubsub' ? 'run-pubsub' : 'run-queue'}>
-                {' '}
-                · {queueMessageLine(run)}
-              </span>
-            )}
             {run.parentRunId && (
               <>
                 {' '}
@@ -475,6 +468,13 @@ interface AgentStepView {
   ok: boolean
 }
 
+/** How the run view names each AI provider (M35, M37). */
+const AI_PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai_compatible: 'OpenAI-compatible',
+  gemini: 'Gemini',
+}
+
 /** An AI call's metadata (M35): a query's, or a failed one's error details. */
 function aiMetaOf(block: BlockView & { data: unknown }): AiMeta | null {
   for (const m of [block.metadata, block.error?.details] as unknown[]) {
@@ -498,7 +498,7 @@ function AiCall({ block }: { block: BlockView & { data: unknown } }) {
   const steps =
     ((block.data as { steps?: unknown } | null)?.steps as AgentStepView[] | undefined) ??
     ((block.error?.details as { steps?: unknown } | undefined)?.steps as AgentStepView[] | undefined)
-  const provider = ai.provider === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible'
+  const provider = AI_PROVIDER_LABELS[ai.provider] ?? ai.provider
   const cost =
     typeof ai.costUsd === 'number' ? `$${ai.costUsd.toFixed(ai.costUsd < 0.01 ? 6 : 4)}` : 'cost unknown'
   return (

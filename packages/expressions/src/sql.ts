@@ -2,7 +2,33 @@ import { type Node, parseExpressionAt } from 'acorn'
 import type * as ESTree from 'estree'
 import { findExpressionEnd, TemplateError } from './template'
 
-export type SqlDialect = 'postgres' | 'mysql' | 'bigquery'
+export type SqlDialect =
+  | 'postgres'
+  | 'mysql'
+  | 'bigquery'
+  | 'mssql'
+  // JDBC resources (M38): by driver, and `jdbc` for an uploaded one.
+  | 'oracle'
+  | 'snowflake'
+  | 'clickhouse'
+  | 'jdbc'
+
+const JDBC_DIALECTS: ReadonlySet<SqlDialect> = new Set(['oracle', 'snowflake', 'clickhouse', 'jdbc'])
+
+/** A JDBC resource's dialect (M38): `?` placeholders, as JDBC binds them. */
+export function isJdbcDialect(dialect: SqlDialect): boolean {
+  return JDBC_DIALECTS.has(dialect)
+}
+
+/**
+ * The dialect's placeholder for the `n`th value (from 1): `$n` (Postgres), `?` (MySQL, JDBC), `@pn` (BigQuery, SQL
+ * Server).
+ */
+export function placeholderFor(dialect: SqlDialect, n: number): string {
+  if (dialect === 'mysql' || isJdbcDialect(dialect)) return '?'
+  if (dialect === 'bigquery' || dialect === 'mssql') return `@p${n}`
+  return `$${n}`
+}
 
 export interface SqlParam {
   /** Expression source between the braces; evaluated in the sandbox to produce the bound value. */
@@ -56,7 +82,7 @@ export interface SqlFragment {
 export interface CompiledSql {
   /** The dialect it was compiled for: its placeholders' form. */
   dialect: SqlDialect
-  /** SQL with each `{{ }}` replaced by a placeholder: `$1`, `$2`, … (Postgres), `?` (MySQL), `@p1`, … (BigQuery). */
+  /** SQL with each `{{ }}` replaced by a placeholder: `$1`, … (Postgres), `?` (MySQL), `@p1`, … (BigQuery, SQL Server). */
   text: string
   /** One per placeholder, in order: `params[0]` binds `$1`. */
   params: SqlParam[]
@@ -83,6 +109,12 @@ const HINT = 'Write the value as {{ expression }}; it becomes a bind parameter a
  * - BigQuery (GoogleSQL): `'…'`, `"…"`, `'''…'''` and `"""…"""` strings, optionally raw or bytes (`r'…'`,
  *   `b"…"`, `rb'''…'''`), all with backslash escapes; `` `identifiers` ``; `# line`, `-- line` and non-nesting
  *   `/* block *\/` comments; placeholders `@p1`, `@p2`, ….
+ * - SQL Server (T-SQL): `'…'` and `N'…'` strings (with `''`, no backslash escapes), `[identifiers]` (with `]]`) and
+ *   `"identifiers"`, `-- line` and nested `/* block *\/` comments (`#` starts a temp table's name, not a comment);
+ *   placeholders `@p1`, `@p2`, …. `@variables` are T-SQL's own and stay, except `@p1`-like names, which would collide.
+ * - JDBC (Oracle, Snowflake, ClickHouse, an uploaded driver): `'…'` strings (with `''`; Snowflake and ClickHouse also
+ *   take backslash escapes), `"identifiers"` and `` `identifiers` ``, `-- line` and `/* block *\/` comments (Snowflake
+ *   also `// line` and `$$…$$` strings); placeholders `?`.
  *
  * A `{{ }}` inside a string literal or quoted identifier is an error with a fix-it hint; inside a comment it's
  * left as text. Hand-written placeholders (`$1`, `?`, `@name`) are rejected so they can't collide.
@@ -91,6 +123,9 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
   const pg = dialect === 'postgres'
   const mysql = dialect === 'mysql'
   const bq = dialect === 'bigquery'
+  const ms = dialect === 'mssql'
+  const jd = isJdbcDialect(dialect)
+  const sf = dialect === 'snowflake'
   const params: SqlParam[] = []
   const offsets: number[] = []
   const fragments: SqlFragment[] = []
@@ -119,7 +154,7 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
       }
       params.push({ code, start: i, end: end + 2 })
       // Keep the placeholder a separate token: `x{{a}}` must not become the identifier `x$1`.
-      const placeholder = mysql ? '?' : bq ? `@p${params.length}` : `$${params.length}`
+      const placeholder = placeholderFor(dialect, params.length)
       const before = out.length && IDENT.test(out.at(-1)!) ? ' ' : ''
       const after = IDENT.test(src[end + 2] ?? '') ? ' ' : ''
       offsets.push(out.length + before.length)
@@ -130,7 +165,8 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
 
     if (
       (ch === '-' && next === '-' && (!mysql || isMysqlDashCommentEnd(src[i + 2]))) ||
-      (!pg && ch === '#')
+      ((mysql || bq) && ch === '#') ||
+      (sf && ch === '/' && next === '/')
     ) {
       const nl = src.indexOf('\n', i)
       const stop = nl === -1 ? src.length : nl
@@ -140,14 +176,28 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
     }
 
     if (ch === '/' && next === '*') {
-      const stop = skipBlockComment(src, i, pg)
+      const stop = skipBlockComment(src, i, pg || ms)
       out += src.slice(i, stop)
       i = stop
       continue
     }
 
-    if (ch === "'" || (!pg && ch === '"')) {
-      const backslashes = !pg || ((prev === 'E' || prev === 'e') && !IDENT.test(src[i - 2] ?? ''))
+    if (sf && ch === '$' && next === '$') {
+      const close = src.indexOf('$$', i + 2)
+      if (close === -1) throw new TemplateError('Unterminated $$ string', i, src.length)
+      rejectExpressionsIn(src, i, close + 2, 'string', 2)
+      out += src.slice(i, close + 2)
+      i = close + 2
+      continue
+    }
+
+    if (ch === "'" || ((mysql || bq) && ch === '"')) {
+      const backslashes =
+        mysql ||
+        bq ||
+        sf ||
+        dialect === 'clickhouse' ||
+        (pg && (prev === 'E' || prev === 'e') && !IDENT.test(src[i - 2] ?? ''))
       const triple = bq && src.startsWith(ch.repeat(3), i)
       const stop = triple ? skipTripleQuoted(src, i, ch) : skipQuoted(src, i, ch, backslashes)
       rejectExpressionsIn(src, i, stop, 'string', triple ? 3 : 1)
@@ -156,15 +206,15 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
       continue
     }
 
-    if (ch === (pg ? '"' : '`')) {
-      const stop = skipQuoted(src, i, ch, bq, 'identifier')
+    if (ms ? ch === '"' || ch === '[' : jd ? ch === '"' || ch === '`' : ch === (pg ? '"' : '`')) {
+      const stop = skipQuoted(src, i, ch, bq, 'identifier', ch === '[' ? ']' : ch)
       rejectExpressionsIn(src, i, stop, 'identifier')
       out += src.slice(i, stop)
       i = stop
       continue
     }
 
-    if (!pg && ch === '?') {
+    if ((mysql || bq || jd) && ch === '?') {
       throw new TemplateError("Positional parameter ? isn't supported", i, i + 1, HINT)
     }
 
@@ -172,6 +222,19 @@ export function compileSql(src: string, dialect: SqlDialect = 'postgres'): Compi
     if (bq && ch === '@' && next !== '@' && prev !== '@' && /[A-Za-z_]/.test(next ?? '')) {
       const m = /^@[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i))!
       throw new TemplateError(`Named parameter ${m[0]} isn't supported`, i, i + m[0].length, HINT)
+    }
+
+    // T-SQL's `@variables` stay; only names like our own placeholders (`@p1`, any case) would collide.
+    if (ms && ch === '@' && prev !== '@' && !IDENT.test(prev)) {
+      const m = /^@p\d+(?![A-Za-z0-9_@#$])/i.exec(src.slice(i))
+      if (m) {
+        throw new TemplateError(
+          `The variable name ${m[0]} is reserved for {{ }} values`,
+          i,
+          i + m[0].length,
+          HINT,
+        )
+      }
     }
 
     if (pg && ch === '$' && !IDENT.test(prev)) {
@@ -350,8 +413,31 @@ export function fragmentText(
   return quoteColumn(column, dialect)
 }
 
-/** A checked column as an identifier for the dialect: `"p"."name"`, `` `p`.`name` ``. */
+/**
+ * A checked column as an identifier for the dialect: `"p"."name"`, `` `p`.`name` ``, `[p].[name]`. Always quoted, so
+ * a column named like a keyword (`date`, `level`) works. Oracle and Snowflake store unquoted names in upper case, so a
+ * name written all in one case is quoted in upper case (`date` → `"DATE"`, the table's own unquoted column); a
+ * mixed-case one (`createdAt`) is quoted as written, for columns made with quotes. ClickHouse's names are as written.
+ */
 function quoteColumn(column: string, dialect: SqlDialect): string {
+  if (isJdbcDialect(dialect)) {
+    const folds = dialect === 'oracle' || dialect === 'snowflake'
+    const quote = dialect === 'clickhouse' ? '`' : '"'
+    return column
+      .split('.')
+      .map((part) => {
+        const name =
+          folds && (part === part.toLowerCase() || part === part.toUpperCase()) ? part.toUpperCase() : part
+        return quote + name + quote
+      })
+      .join('.')
+  }
+  if (dialect === 'mssql') {
+    return column
+      .split('.')
+      .map((part) => `[${part.replaceAll(']', ']]')}]`)
+      .join('.')
+  }
   const quote = dialect === 'postgres' ? '"' : '`'
   return column
     .split('.')
@@ -405,11 +491,13 @@ function whereSql(columns: readonly string[], value: unknown, dialect: SqlDialec
   const fail = (message: string): never => {
     throw new SqlFragmentError(`sql.where ${message}`)
   }
-  if (value === null || value === undefined) return { text: 'TRUE', values: [] }
+  // T-SQL has no boolean literal.
+  const always = dialect === 'mssql' || isJdbcDialect(dialect) ? '1=1' : 'TRUE'
+  if (value === null || value === undefined) return { text: always, values: [] }
   if (!Array.isArray(value)) fail(`got ${describe(value)}: expected a list of filters`)
   const filters = value as unknown[]
   if (filters.length > MAX_FILTERS) fail(`takes at most ${MAX_FILTERS} filters`)
-  if (!filters.length) return { text: 'TRUE', values: [] }
+  if (!filters.length) return { text: always, values: [] }
   const P = FRAGMENT_PLACEHOLDER
   const values: unknown[] = []
   const parts = filters.map((filter) => {
@@ -451,13 +539,39 @@ function whereSql(columns: readonly string[], value: unknown, dialect: SqlDialec
         ? `${q}::text`
         : dialect === 'mysql'
           ? `CAST(${q} AS CHAR)`
-          : `CAST(${q} AS STRING)`
+          : dialect === 'mssql'
+            ? `CAST(${q} AS NVARCHAR(MAX))`
+            : dialect === 'oracle'
+              ? `CAST(${q} AS VARCHAR2(4000))`
+              : dialect === 'snowflake'
+                ? `CAST(${q} AS VARCHAR)`
+                : dialect === 'clickhouse'
+                  ? `toString(${q})`
+                  : dialect === 'jdbc'
+                    ? `CAST(${q} AS VARCHAR(4000))`
+                    : `CAST(${q} AS STRING)`
+    // Oracle stores '' as NULL: comparing with '' is never true, so empty means NULL there, and an empty search
+    // matches everything (as it does elsewhere).
+    if (dialect === 'oracle' && (op === 'empty' || op === 'notEmpty')) {
+      return op === 'empty' ? `${q} IS NULL` : `${q} IS NOT NULL`
+    }
+    if (dialect === 'oracle' && op === 'contains') {
+      const needle = scalar(raw)
+      const text = needle === null ? '' : String(needle)
+      if (!text) return '1=1'
+      values.push(text)
+      return `INSTR(LOWER(${asText}), LOWER(${P})) > 0`
+    }
     switch (op as FilterOp) {
       case 'contains': {
         const needle = scalar(raw)
         values.push(needle === null ? '' : String(needle))
         if (dialect === 'postgres') return `position(lower(${P}) in lower(${asText})) > 0`
         if (dialect === 'mysql') return `LOCATE(LOWER(${P}), LOWER(${asText})) > 0`
+        if (dialect === 'mssql') return `CHARINDEX(LOWER(${P}), LOWER(${asText})) > 0`
+        if (dialect === 'snowflake') return `CONTAINS(LOWER(${asText}), LOWER(${P}))`
+        if (dialect === 'clickhouse') return `positionCaseInsensitiveUTF8(${asText}, ${P}) > 0`
+        if (dialect === 'jdbc') return `POSITION(LOWER(${P}) IN LOWER(${asText})) > 0`
         return `STRPOS(LOWER(${asText}), LOWER(${P})) > 0`
       }
       case 'empty':
@@ -492,7 +606,7 @@ function describe(value: unknown): string {
 export function withFragments(plan: CompiledSql, pieces: readonly (string | FragmentSql)[]): CompiledSql {
   if (!plan.fragments.length) return plan
   const { dialect } = plan
-  const placeholder = (n: number) => (dialect === 'mysql' ? '?' : dialect === 'bigquery' ? `@p${n}` : `$${n}`)
+  const placeholder = (n: number) => placeholderFor(dialect, n)
   // What sits in the text, in order: the plan's placeholders (each its param) and the fragments.
   type Slot =
     | { at: number; length: number; param: SqlParam }
@@ -568,20 +682,24 @@ function skipTripleQuoted(src: string, start: number, quote: string): number {
   throw new TemplateError('Unterminated string literal', start, src.length)
 }
 
-/** Index just past the closing quote. A doubled quote is an escaped quote; so is a backslash escape in E-strings. */
+/**
+ * Index just past the closing quote (`close`: `]` for `[`). A doubled closing quote is an escaped one; so is a
+ * backslash escape in E-strings.
+ */
 function skipQuoted(
   src: string,
   start: number,
   quote: string,
   backslashes: boolean,
   kind: 'string' | 'identifier' = 'string',
+  close = quote,
 ): number {
   let i = start + 1
   while (i < src.length) {
     const ch = src[i]
     if (backslashes && ch === '\\') i += 2
-    else if (ch === quote && src[i + 1] === quote) i += 2
-    else if (ch === quote) return i + 1
+    else if (ch === close && src[i + 1] === close) i += 2
+    else if (ch === close) return i + 1
     else i++
   }
   throw new TemplateError(
@@ -591,7 +709,7 @@ function skipQuoted(
   )
 }
 
-/** Index just past the final `*\/` (or the end of input). Postgres block comments nest; MySQL's don't. */
+/** Index just past the final `*\/` (or the end of input). Postgres and T-SQL block comments nest; MySQL's don't. */
 function skipBlockComment(src: string, start: number, nested: boolean): number {
   let depth = 0
   let i = start

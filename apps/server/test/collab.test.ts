@@ -171,9 +171,9 @@ beforeAll(async () => {
   // Access is checked again often, so a test can see it end.
   env = await startTestApp({ COLLAB_ACCESS_CHECK_MS: '200' })
   baseUrl = (await env.app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws')
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
   const member = await createLocalUser(env.db, 'member@example.com')
-  adminCookie = await login(env.app, 'admin@example.com')
+  adminCookie = await login(env.app, 'admin@optiply.nl')
   memberCookie = await login(env.app, 'member@example.com')
   admin = trpc(env.app, adminCookie)
   memberGroupId = data(await admin.mutate('groups.create', { name: 'Ops' })).id
@@ -344,7 +344,7 @@ describe('collab documents', () => {
     await env.db.update(workflows).set({ gitProtected: false }).where(eq(workflows.id, id))
 
     // Signed out (in another tab, say), and the workflow deleted.
-    const own = await login(env.app, 'admin@example.com')
+    const own = await login(env.app, 'admin@optiply.nl')
     const signedIn = await connect(own, key)
     await env.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie: own } })
     expect(await signedIn.closedWith()).toEqual({ code: 4403, reason: 'Not signed in' })
@@ -685,7 +685,7 @@ describe('collab documents across API processes', () => {
 /** M16 review: the store's reads and loads against compactions and other processes, and presence ids freed. */
 describe('collab store and rooms', () => {
   const targetOf = async (key: string) => {
-    const [user] = await env.db.select().from(users).where(eq(users.email, 'admin@example.com'))
+    const [user] = await env.db.select().from(users).where(eq(users.email, 'admin@optiply.nl'))
     const session = {
       id: user!.id,
       email: user!.email,

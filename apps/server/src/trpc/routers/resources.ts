@@ -12,9 +12,6 @@ import {
   httpRequest,
   hubspotConnector,
   hubspotProperties,
-  type KafkaConfig,
-  type KafkaSecrets,
-  kafkaSettingsProblem,
   OPENAPI_MAX_SPEC,
   openApiDocument,
   restApiConnector,
@@ -34,14 +31,19 @@ import {
   resourceConfigs,
   resources,
 } from '@ow/db'
-import { canonicalJson } from '@ow/definition'
+import { canonicalJson, parseJsPackage, parseRequirement } from '@ow/definition'
 import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
-import { pubsubSettingsProblem, serverIdentityView, sheetsSettingsProblem } from '../../services/google'
+import {
+  geminiSettingsProblem,
+  gmailSettingsProblem,
+  serverIdentityView,
+  sheetsSettingsProblem,
+} from '../../services/google'
 import {
   type AccountKind,
   connectTarget,
@@ -75,6 +77,7 @@ import {
   toResolved,
 } from '../../services/resources'
 import { encryptForRow } from '../../services/secrets'
+import { groupsOf } from '../../services/tasks'
 import { invalidInput, uniqueOr } from '../errors'
 import { authedProcedure, type Context, router } from '../init'
 
@@ -102,21 +105,56 @@ function sshSettled<T>(settle: () => T): T {
 }
 
 /**
- * Why a resource's settings couldn't sign in, checked on save (M19, M26, M27): Pub/Sub's key or project, SQS's AWS
- * identity, what a Kafka auth mode needs (and MSK IAM's AWS identity), a service's token or OAuth client secret, Google
- * Sheets' key or the server's identity. Null when fine, or for other types.
+ * Why a resource's settings couldn't sign in, checked on save (M26, M27): an AWS identity (S3), a service's token
+ * or OAuth client secret, Google Sheets' key or the server's identity. Null when fine, or for other types.
  */
 function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
-  if (type === 'pubsub') return pubsubSettingsProblem(config, secrets)
   if (type === 'googlesheets') return sheetsSettingsProblem(config, secrets)
+  if (type === 'gemini') return geminiSettingsProblem(config, secrets)
+  if (type === 'gmail') return gmailSettingsProblem(config, secrets)
+  if (type === 'sdk') {
+    const c = (config ?? {}) as {
+      language?: string
+      packages?: string[]
+      setup?: string
+      auth?: { type?: string }
+    }
+    const language = c.language ?? 'python'
+    for (const line of c.packages ?? []) {
+      const parsed = language === 'python' ? parseRequirement(line) : parseJsPackage(line)
+      if ('error' in parsed) return `Packages: "${line}": ${parsed.error}`
+    }
+    if (!c.setup?.trim()) return 'Write the setup code that makes the SDK’s client'
+    const auth = c.auth?.type ?? 'bearer'
+    if (auth === 'bearer' && !secrets.bearerToken) return 'Add the token'
+    // OAuth sign-in may be a public client (PKCE, no secret), as REST's; client credentials always need one.
+    if (auth === 'oauth2ClientCredentials' && !secrets.clientSecret)
+      return 'Add the OAuth app’s client secret'
+  }
+  if (type === 'msteams') {
+    const auth = ((config ?? {}) as { auth?: { type?: string; clientId?: string } }).auth ?? { type: 'oauth' }
+    if (auth.type === 'webhook') return secrets.webhookUrl ? null : 'Add the webhook URL'
+    if (!auth.clientId) return 'Add the app registration’s client (application) id'
+    if (!secrets.clientSecret) return 'Add the app registration’s client secret'
+  }
   if (type === 'slack' || type === 'hubspot' || type === 'sendgrid') {
     const auth = ((config ?? {}) as { auth?: { type?: string } }).auth?.type ?? 'token'
     if (auth === 'token' && !secrets.token) return type === 'sendgrid' ? 'Add the API key' : 'Add the token'
     if (auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
   }
+  if (type === 'mssql') {
+    const auth = ((config ?? {}) as { auth?: string }).auth ?? 'sql'
+    if (auth === 'entra-service-principal') return secrets.clientSecret ? null : 'Add the app’s client secret'
+    if (auth !== 'sql' && !secrets.password) return 'Add the password'
+  }
+  if (type === 'jdbc') {
+    const c = (config ?? {}) as { auth?: string; wallet?: boolean }
+    if (c.auth === 'keyPair' && !secrets.privateKey) return 'Add the private key'
+    if (c.auth === 'oauth' && !secrets.clientSecret) return 'Add the OAuth app’s client secret'
+    if (c.wallet && !secrets.wallet) return 'Add the wallet zip'
+  }
   if (type === 'stripe' && !secrets.token) return 'Add the secret key'
   if ((type === 'airtable' || type === 'notion') && !secrets.token) return 'Add the token'
-  if (type === 'rabbitmq' && !secrets.password) return 'Add the password'
   if (type === 'openapi') {
     const spec = ((config ?? {}) as { spec?: unknown }).spec
     if (typeof spec !== 'string' || !spec.trim())
@@ -138,21 +176,13 @@ function settingsProblem(type: string, config: unknown, secrets: Record<string, 
     if (cloudSite && !c.email) return 'Add the email of the account the API token belongs to'
     if (!secrets.token) return cloudSite ? 'Add the API token' : 'Add the personal access token'
   }
-  if (type === 'sqs' || type === 's3' || type === 'sns' || type === 'kinesis')
-    return awsSettingsProblem(config, secrets)
-  if (type === 'kafka') {
-    const c = (config ?? {}) as KafkaConfig
-    return (
-      kafkaSettingsProblem(c, secrets as KafkaSecrets) ??
-      (c.auth === 'aws-msk-iam' ? awsSettingsProblem(config, secrets) : null)
-    )
-  }
+  if (type === 's3') return awsSettingsProblem(config, secrets)
   return null
 }
 
 /**
- * Settings that use the server's own Google identity (M18, M19) or AWS credentials (M26) somewhere other than the
- * stored settings' need an admin, as does an SQS endpoint: editors may keep such settings (and change the rest), not
+ * Settings that use the server's own Google identity (M18) or AWS credentials (M26) somewhere other than the
+ * stored settings' need an admin, as does an S3 endpoint: editors may keep such settings (and change the rest), not
  * choose or move them. Returns the new target.
  */
 function requireAdminForServerIdentity(
@@ -161,28 +191,20 @@ function requireAdminForServerIdentity(
   stored: unknown,
   next: unknown,
 ): string | null {
-  // An SQS (M26) or S3 (M29) resource's own endpoint receives signed requests and the data: admins choose it.
+  // An S3 resource's own endpoint (M29) receives signed requests and the data: admins choose it.
   const endpoint = (c: unknown) => (c as { endpoint?: unknown } | null)?.endpoint ?? null
-  if (
-    (type === 'sqs' || type === 's3') &&
-    endpoint(next) &&
-    endpoint(next) !== endpoint(stored) &&
-    !user.isAdmin
-  )
+  if (type === 's3' && endpoint(next) && endpoint(next) !== endpoint(stored) && !user.isAdmin)
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: `Only admins can point an ${type === 's3' ? 'S3' : 'SQS'} resource at another endpoint`,
+      message: 'Only admins can point an S3 resource at another endpoint',
     })
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message:
-        type === 'pubsub'
-          ? "Only admins can use this server's own Google identity for a Pub/Sub project"
-          : target.startsWith('aws:')
-            ? "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them"
-            : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
+      message: target.startsWith('aws:')
+        ? "Only admins can use this server's own AWS credentials, or change the region or role used with them"
+        : "Only admins can point an SSH tunnel at a VM with this server's own Google identity",
     })
   }
   return target
@@ -353,7 +375,7 @@ export const resourcesRouter = router({
   serverIdentity: authedProcedure.query(({ ctx }) => serverIdentityView(ctx.user)),
 
   /**
-   * Whether SQS resources and Kafka's MSK IAM may use this server's own AWS credentials (M26, AWS_SERVER_IDENTITY),
+   * Whether AWS resources (S3) may use this server's own AWS credentials (M26, AWS_SERVER_IDENTITY),
    * whose they are, and whether this user may choose them (admins only).
    */
   awsIdentity: authedProcedure.query(({ ctx }) => awsIdentityView(ctx.user)),
@@ -840,7 +862,12 @@ export const resourcesRouter = router({
       const scope = {
         ...input.scope,
         configVars: await publicConfigVars(ctx.db, input.environmentId),
-        current_user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name },
+        current_user: {
+          id: ctx.user.id,
+          email: ctx.user.email,
+          name: ctx.user.name,
+          groups: await groupsOf(ctx.db, ctx.user.id),
+        },
       }
       const resolved = toResolved(ctx.config.keyring, row)
       const credentials = credentialsFor(
@@ -1067,16 +1094,12 @@ export const resourcesRouter = router({
 const TYPE_GROUPS: Record<string, string> = {
   postgres: 'Databases',
   mysql: 'Databases',
+  mssql: 'Databases',
+  jdbc: 'Databases',
   bigquery: 'Databases',
   rest: 'APIs',
   graphql: 'APIs',
   openapi: 'APIs',
-  pubsub: 'Messaging',
-  sqs: 'Messaging',
-  kafka: 'Messaging',
-  rabbitmq: 'Messaging',
-  sns: 'Messaging',
-  kinesis: 'Messaging',
   slack: 'Services',
   hubspot: 'Services',
   sendgrid: 'Services',
@@ -1087,8 +1110,12 @@ const TYPE_GROUPS: Record<string, string> = {
   jira: 'Services',
   notion: 'Services',
   salesforce: 'Services',
+  gmail: 'Services',
+  msteams: 'Services',
+  sdk: 'APIs',
   anthropic: 'AI',
   openai_compatible: 'AI',
+  gemini: 'AI',
 }
 
 const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000

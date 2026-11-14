@@ -1,4 +1,4 @@
-import type { Block, FunctionDefinition, QueueTriggerKind } from '@ow/definition'
+import type { Block, FunctionDefinition } from '@ow/definition'
 
 /** What the last run produced for a block, if anything. */
 export interface SampleResult {
@@ -268,65 +268,6 @@ declare const value: any
 /** In a filter condition or a loop: the current item's index. */
 declare const index: number
 interface OwBlockError { code: string; message: string; details?: unknown }
-/** A Pub/Sub trigger's message (runs a Pub/Sub trigger started); its data is \`startTrigger.data\`. */
-interface OwPubSubMessage {
-  messageId: string; publishTime: string; attributes: Record<string, string>; orderingKey?: string
-  /** Pub/Sub's count, on subscriptions with a dead-letter policy. */
-  deliveryAttempt?: number
-  subscription: string
-  /** The data's bytes, for binary payloads. */
-  dataBase64: string
-  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
-  encoding?: 'base64'
-}
-/** An SQS trigger's message (runs an SQS trigger started); its body is \`startTrigger.data\`. */
-interface OwSqsMessage {
-  messageId: string
-  /** The queue's URL. */
-  queue: string
-  /** SQS's own attributes (SentTimestamp, ApproximateReceiveCount, …). */
-  attributes: Record<string, string>
-  /** The sender's message attributes, as text. */
-  messageAttributes: Record<string, string>
-  /** How many times SQS has handed it out, counting this one. */
-  receiveCount: number
-  sentAt: string
-  groupId?: string; deduplicationId?: string; sequenceNumber?: string
-}
-/** A Kafka trigger's message (runs a Kafka trigger started); its value is \`startTrigger.data\`. */
-interface OwKafkaMessage {
-  topic: string; partition: number; offset: string
-  key: string | null
-  headers: Record<string, string>
-  timestamp: string
-  /** This run's attempt at the message, counting from 1. */
-  attempt: number
-  groupId: string
-  /** The Schema Registry schema the value was decoded with. */
-  schemaId?: number
-  /** Why a value in the registry's wire format couldn't be decoded. */
-  schemaError?: string
-  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
-  encoding?: 'base64'
-}
-interface OwKinesisMessage {
-  stream: string; shardId: string; sequenceNumber: string; partitionKey: string; arrivedAt: string
-  /** This run's attempt at the record, counting from 1. */
-  attempt: number
-  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
-  encoding?: 'base64'
-}
-interface OwRabbitMessage {
-  queue: string
-  /** Empty: the default exchange (the routing key is then the queue). */
-  exchange: string; routingKey: string
-  /** Delivered before and not acked (a lost connection, another worker). */
-  redelivered: boolean
-  headers: Record<string, any>
-  messageId?: string; contentType?: string; correlationId?: string; timestamp?: string
-  /** \`startTrigger.data\` is the bytes in base64: they weren't text. */
-  encoding?: 'base64'
-}
 interface OwResponse {
   ok: boolean; status: number; statusText: string; url: string; redirected: boolean
   headers: { get(name: string): string | null; has(name: string): boolean }
@@ -392,19 +333,9 @@ export function scopeDeclarations(
   inFunction?: FunctionDefinition,
   /** The webhook's body schema: when there is one, `startTrigger.data` is typed from it rather than a run. */
   bodySchema?: Record<string, unknown>,
-  /** The workflow's queue trigger kinds: `startTrigger.message` is their messages' type (Pub/Sub's without any). */
-  queues: readonly QueueTriggerKind[] = [],
   /** Slugs of the AI resources (M35): their queries' data is typed from the action. */
   aiResources: ReadonlySet<string> = new Set(),
 ): { dts: string; sample: Record<string, unknown> } {
-  const MESSAGE_TYPES = {
-    pubsub: 'OwPubSubMessage',
-    sqs: 'OwSqsMessage',
-    kafka: 'OwKafkaMessage',
-    rabbitmq: 'OwRabbitMessage',
-    kinesis: 'OwKinesisMessage',
-  } as const
-  const messageType = queues.length ? queues.map((k) => MESSAGE_TYPES[k]).join(' | ') : 'OwPubSubMessage'
   const lines = [GLOBALS]
   for (const fn of functions) {
     const args = (fn.params ?? []).map((p) => `${p.name}?: any`).join(', ')
@@ -453,7 +384,7 @@ export function scopeDeclarations(
             : 'unknown'
     const extra =
       block.type === 'startTrigger'
-        ? ` headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>; message?: ${messageType};`
+        ? ` headers: Record<string, string>; pathParams: Record<string, string>; urlParams: Record<string, string>;`
         : ''
     lines.push(
       `declare const ${block.name}: { data: ${data}; error: OwBlockError | null; metadata: { status: string; ${ai ? AI_METADATA : ''} [key: string]: unknown };${extra} }`,

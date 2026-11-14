@@ -1,7 +1,7 @@
-# Optional (M18, M19): lets SSH tunnels through Google Cloud IAP and Pub/Sub resources use this server's own Google
-# identity, taken from the host's gcloud application-default login (`gcloud auth application-default login`, an
-# `authorized_user` file). Only admins can choose that identity for a resource (docs/runbooks/ssh-tunnels.md,
-# "Through Google Cloud IAP", and docs/runbooks/pubsub.md).
+# Optional (M18): lets SSH tunnels through Google Cloud IAP (and Google Sheets and Gemini on Vertex AI) use this
+# server's own Google identity, taken from the host's gcloud application-default login (`gcloud auth
+# application-default login`, an `authorized_user` file). Only admins can choose that identity for a resource
+# (docs/runbooks/ssh-tunnels.md, "Through Google Cloud IAP").
 #
 #   docker compose -f docker-compose.yml -f docker-compose.gcloud.yml up -d
 #

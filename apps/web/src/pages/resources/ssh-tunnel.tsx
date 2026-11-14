@@ -63,7 +63,7 @@ const newHop = (): SshHop => ({
 
 /**
  * A resource configuration's SSH tunnel: off, or an SSH server reached directly or through jump hosts, each with its
- * key or password. Shown for Postgres, MySQL and REST resources.
+ * key or password. Shown for Postgres, MySQL, SQL Server and REST resources.
  */
 export function SshTunnelFields({
   ssh,

@@ -4,7 +4,7 @@ Python code blocks (and loop code runners) run in the **code executor** (`apps/c
 each execution is a fresh CPython 3.12 interpreter in an [nsjail](https://github.com/google/nsjail) jail with no
 network, a read-only view of Python and its packages, and limits on memory, processes, CPU and time. Some jails are
 started ahead (the warm pool, below). The design is `docs/architecture.md` §2.14 and §2.26; this page is for running
-it.
+it. A company SDK that needs the network (M37) is an SDK resource instead: `docs/runbooks/sdk.md`.
 
 ## How it fits
 

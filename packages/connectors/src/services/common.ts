@@ -29,6 +29,10 @@ export interface ServiceUrls {
   notion?: string
   /** Replaces every Salesforce resource's My Domain URL (tests only). */
   salesforce?: string
+  gmail?: string
+  /** Microsoft Graph, and where the tests' fake Teams webhooks live. */
+  graph?: string
+  teamsWebhook?: string
 }
 
 let urls: ServiceUrls = {}

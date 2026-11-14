@@ -12,6 +12,8 @@ export class FakeGoogle {
   /** An `authorized_user` file (as `gcloud auth application-default login` writes) this fake accepts. */
   readonly userJson: string
   readonly issued = { jwt: 0, refresh: 0, metadata: 0 }
+  /** The Workspace user each service-account token acts as (domain-wide delegation's `sub`, M37). */
+  readonly subjects = new Map<string, string>()
   /** Scopes asked of the metadata server, in order. */
   readonly metadataScopes: string[] = []
   private readonly publicKey: string
@@ -96,10 +98,9 @@ export class FakeGoogle {
       const c = valid ? JSON.parse(Buffer.from(claims!, 'base64url').toString()) : {}
       if (!valid || c.aud !== this.tokenUrl)
         return { status: 400, json: { error: 'invalid_grant', error_description: 'Invalid JWT Signature.' } }
-      return {
-        status: 200,
-        json: { access_token: `sa-${++this.issued.jwt}`, expires_in: 3599, scope: c.scope },
-      }
+      const token = `sa-${++this.issued.jwt}`
+      if (typeof c.sub === 'string') this.subjects.set(token, c.sub)
+      return { status: 200, json: { access_token: token, expires_in: 3599, scope: c.scope } }
     }
     return { status: 404, text: 'Not found' }
   }

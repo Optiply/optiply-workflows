@@ -25,14 +25,9 @@ export function sortWorkflows<T extends ListedWorkflow>(items: readonly T[], key
 const TRIGGER_NAMES: Record<string, [string, string]> = {
   schedule: ['schedule', 'schedules'],
   webhook: ['webhook', 'webhooks'],
-  pubsub: ['Pub/Sub subscription', 'Pub/Sub subscriptions'],
-  sqs: ['SQS queue', 'SQS queues'],
-  kafka: ['Kafka topic', 'Kafka topics'],
-  rabbitmq: ['RabbitMQ queue', 'RabbitMQ queues'],
-  kinesis: ['Kinesis stream', 'Kinesis streams'],
 }
 
-/** `2 schedules`, `1 webhook`, `1 Kafka topic`. */
+/** `2 schedules`, `1 webhook`. */
 export function triggerLabel(kind: string, count: number): string {
   const [one, many] = TRIGGER_NAMES[kind] ?? [kind, kind]
   return `${count} ${count === 1 ? one : many}`

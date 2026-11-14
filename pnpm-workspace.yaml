@@ -4,7 +4,6 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
-  - "@confluentinc/kafka-javascript"
   - isolated-vm
   - re2
   - "@biomejs/biome"

@@ -38,7 +38,7 @@ declare const uuid: {
 }
 ${SQL_HELPERS}
 /** Who is using the app. In a resource query, a {{ }} reading only current_user is filled in by the server. */
-declare const current_user: { id: string; email: string; name: string }
+declare const current_user: { id: string; email: string; name: string; groups: { id: string; name: string }[] }
 declare const appContext: { appSlug: string; environment: string; version: string | null }
 /** The page shown (null in an app without pages) and the query parameters of its URL. */
 declare const url: { page: string | null; params: Record<string, string> }
@@ -96,7 +96,7 @@ function methodSignatures(entity: Entity): string[] {
 export function appScope(def: AppDefinition, values: Record<string, unknown>): CodeScope {
   const lines = [GLOBALS]
   const sample: Record<string, unknown> = {
-    current_user: { id: '', email: '', name: '' },
+    current_user: { id: '', email: '', name: '', groups: [] },
     utils: {},
     appContext: {},
   }

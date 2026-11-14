@@ -65,3 +65,5 @@ jobs:
       - run: docker build -t optiply-workflows:ci .
       - run: docker build -t optiply-workflows-code-executor:ci apps/code-executor
       - run: docker build --target builder -t optiply-workflows-python-builder:ci apps/code-executor
+      - run: docker build --target sdk-runner -t optiply-workflows-sdk-runner:ci apps/code-executor
+      - run: docker build -t optiply-workflows-jdbc-runner:ci apps/jdbc-runner

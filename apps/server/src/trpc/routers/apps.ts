@@ -21,6 +21,7 @@ import {
   type Access,
   checkFolderMove,
   checkFolderType,
+  grantDefaultAccess,
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
@@ -200,6 +201,7 @@ export const appsRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'app', app!.id, ctx.user)
       await ctx.audit({
         action: 'app.created',
         objectType: 'app',
@@ -349,6 +351,7 @@ export const appsRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'app', copy!.id, ctx.user)
       await ctx.audit({
         action: 'app.created',
         objectType: 'app',

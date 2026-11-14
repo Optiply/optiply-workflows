@@ -19,58 +19,6 @@ export interface RunError {
   details?: unknown
 }
 
-/** What a Pub/Sub-triggered run got besides its data (M19): `startTrigger.message`. */
-export interface RunPubSubMessage {
-  messageId: string
-  publishTime: string
-  attributes: Record<string, string>
-  orderingKey?: string
-  deliveryAttempt?: number
-  subscription: string
-}
-
-/** What an SQS- or Kafka-triggered run got besides its data (M26), as far as the run views show it. */
-export interface RunQueueMessage {
-  messageId?: string
-  queue?: string
-  receiveCount?: number
-  topic?: string
-  partition?: number
-  offset?: string
-  key?: string | null
-  attempt?: number
-  /** Kafka (M30): the Schema Registry schema its value was decoded with. */
-  schemaId?: number
-  /** RabbitMQ (M30). */
-  redelivered?: boolean
-  /** Kinesis (M30). */
-  stream?: string
-  shardId?: string
-  sequenceNumber?: string
-}
-
-/** A run's Pub/Sub message, when a Pub/Sub trigger started it. */
-export function pubsubMessage(run: Pick<RunView, 'triggerType' | 'input'>): RunPubSubMessage | undefined {
-  return run.triggerType === 'pubsub' ? (run.input?.message as RunPubSubMessage | undefined) : undefined
-}
-
-/** The line naming a queue-triggered run's message (Pub/Sub, SQS, Kafka), or undefined for other runs. */
-export function queueMessageLine(run: Pick<RunView, 'triggerType' | 'input'>): string | undefined {
-  const m = run.input?.message as (RunPubSubMessage & RunQueueMessage) | undefined
-  if (!m) return undefined
-  if (run.triggerType === 'pubsub')
-    return `Pub/Sub message ${m.messageId} · ${m.subscription}${m.deliveryAttempt ? ` · delivery ${m.deliveryAttempt}` : ''}`
-  if (run.triggerType === 'sqs')
-    return `SQS message ${m.messageId} · ${m.queue?.split('/').pop()}${m.receiveCount && m.receiveCount > 1 ? ` · receive ${m.receiveCount}` : ''}`
-  if (run.triggerType === 'kafka')
-    return `Kafka ${m.topic}/${m.partition}@${m.offset}${m.key ? ` · key ${m.key}` : ''}${m.schemaId ? ` · schema ${m.schemaId}` : ''}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
-  if (run.triggerType === 'kinesis')
-    return `Kinesis ${m.stream}/${m.shardId}@${m.sequenceNumber}${m.attempt && m.attempt > 1 ? ` · attempt ${m.attempt}` : ''}`
-  if (run.triggerType === 'rabbitmq')
-    return `RabbitMQ message${m.messageId ? ` ${m.messageId}` : ''} · ${m.queue}${m.redelivered ? ' · redelivered' : ''}`
-  return undefined
-}
-
 export interface RunView {
   id: string
   workflow: { id: string; slug: string; name: string }
@@ -79,7 +27,7 @@ export interface RunView {
   targetBlocks: string[] | null
   status: RunStatus
   triggerType: string
-  input: { data?: unknown; message?: RunPubSubMessage | RunQueueMessage }
+  input: { data?: unknown }
   response: { status: number; headers: Record<string, string>; body: unknown } | null
   error: RunError | null
   recoveries: number

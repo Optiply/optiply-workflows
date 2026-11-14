@@ -2,25 +2,19 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers'
 import { awsCredentials, configureAws, describeAws } from '@ow/connectors'
 import type { Config } from '../config'
 
-type AwsConfig = Pick<
-  Config,
-  'AWS_SERVER_IDENTITY' | 'AWS_STS_URL' | 'AWS_SQS_URL' | 'AWS_SNS_URL' | 'AWS_KINESIS_URL'
->
+type AwsConfig = Pick<Config, 'AWS_SERVER_IDENTITY' | 'AWS_STS_URL'>
 
 let allowed = false
 
 /**
  * Hands the connectors their AWS settings (M26): the server's own credentials only where AWS_SERVER_IDENTITY=allow,
- * and the fakes' endpoints in tests. Called once at startup by the API and the worker, like `configureGoogle`.
+ * and the fake STS's endpoint in tests. Called once at startup by the API and the worker, like `configureGoogle`.
  */
 export function configureAwsServer(config: AwsConfig): void {
   allowed = config.AWS_SERVER_IDENTITY === 'allow'
   configureAws({
     ...(allowed ? { serverCredentials: fromNodeProviderChain() } : {}),
     ...(config.AWS_STS_URL ? { stsEndpoint: config.AWS_STS_URL } : {}),
-    ...(config.AWS_SQS_URL ? { sqsEndpoint: config.AWS_SQS_URL } : {}),
-    ...(config.AWS_SNS_URL ? { snsEndpoint: config.AWS_SNS_URL } : {}),
-    ...(config.AWS_KINESIS_URL ? { kinesisEndpoint: config.AWS_KINESIS_URL } : {}),
   })
 }
 
@@ -45,7 +39,7 @@ export async function awsIdentityView(user: { isAdmin: boolean }): Promise<AwsId
 }
 
 /**
- * Why an AWS identity's settings (an SQS resource, or Kafka's MSK IAM) couldn't sign in, checked on save: an access
+ * Why an AWS identity's settings (an AWS resource) couldn't sign in, checked on save: an access
  * key's id and secret for `identity: 'key'`; for the server's credentials, the instance allowing them. Null when fine.
  */
 export function awsSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {

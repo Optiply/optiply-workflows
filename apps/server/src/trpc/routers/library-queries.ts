@@ -25,6 +25,7 @@ import {
   type Access,
   checkFolderMove,
   checkFolderType,
+  grantDefaultAccess,
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
@@ -143,6 +144,7 @@ export const libraryQueriesRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'library_query', query!.id, ctx.user)
       await ctx.audit({
         action: 'library_query.created',
         objectType: 'library_query',

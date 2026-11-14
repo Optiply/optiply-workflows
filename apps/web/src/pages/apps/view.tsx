@@ -168,7 +168,7 @@ function RunningApp({ app, release, modules, libraries, environment, environment
     jsBundleHash: release.jsBundleHash,
     environmentId: environment.id,
     globals: {
-      current_user: { id: me.id, email: me.email, name: me.name },
+      current_user: { id: me.id, email: me.email, name: me.name, groups: me.groups ?? [] },
       appContext: { appSlug: app.slug, environment: environment.slug, version: release.version },
     },
     notify,

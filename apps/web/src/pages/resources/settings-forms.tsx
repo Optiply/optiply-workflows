@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, GitBranch, Plus } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
@@ -6,14 +6,18 @@ import { SaveToBranchDialog } from '@/components/settings-git'
 import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
+import { S3Fields } from './aws-settings'
 import { CustomAuthFields } from './custom-auth'
+import { JdbcFields } from './jdbc-settings'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OpenApiSpecFields } from './openapi-settings'
 import { OverridesCard } from './overrides'
-import { KafkaFields, KinesisFields, RabbitFields, S3Fields, SnsFields, SqsFields } from './queue-settings'
+import { SDK_TEMPLATES, SdkFields } from './sdk-settings'
 import {
   AirtableFields,
   AnthropicFields,
+  GeminiFields,
+  GmailFields,
   GoogleSheetsFields,
   HubSpotFields,
   JiraFields,
@@ -23,6 +27,7 @@ import {
   SendGridFields,
   SlackFields,
   StripeFields,
+  TeamsFields,
 } from './service-settings'
 import {
   ConnectorErrorNote,
@@ -69,24 +74,63 @@ const DEFAULTS: Record<string, Config> = {
     maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
   },
+  mssql: {
+    host: '',
+    port: 1433,
+    database: '',
+    auth: 'sql',
+    user: '',
+    ssl: 'require',
+    poolSize: 5,
+    readOnly: false,
+    maxRows: 1_000_000,
+    statementTimeoutMs: 120_000,
+  },
+  jdbc: {
+    driver: 'oracle',
+    mode: 'fields',
+    oracleConnect: 'service',
+    https: true,
+    auth: 'password',
+    user: '',
+    wallet: false,
+    properties: {},
+    oauthTokens: 'perUser',
+    readOnly: false,
+    maxRows: 1_000_000,
+    statementTimeoutMs: 120_000,
+    poolSize: 5,
+    tunnelHosts: [],
+  },
   bigquery: {
     maximumBytesBilled: 10 * 1024 ** 3,
     maxRows: 1_000_000,
     statementTimeoutMs: 120_000,
     labels: {},
   },
-  pubsub: { identity: 'key' },
   slack: { auth: { type: 'token' } },
   hubspot: { auth: { type: 'token' } },
   sendgrid: { region: 'global' },
   stripe: {},
   anthropic: { model: 'claude-sonnet-5-5', hidePrompts: false, fallback: true, allowPrivateNetwork: false },
   openai_compatible: { baseUrl: '', model: '', hidePrompts: false, allowPrivateNetwork: false },
+  gemini: { platform: 'gemini', model: 'gemini-3.8-flash', hidePrompts: false, allowPrivateNetwork: false },
   airtable: {},
   jira: { siteUrl: '', deployment: 'cloud', allowPrivateNetwork: false },
   notion: {},
   salesforce: { domain: '', apiVersion: 'v62.0', auth: { type: 'oauth', clientId: '' } },
   googlesheets: { auth: { type: 'serviceAccount' } },
+  gmail: { auth: { type: 'oauth' } },
+  msteams: { auth: { type: 'oauth' } },
+  sdk: {
+    language: 'python',
+    packages: [],
+    allowedHosts: [],
+    allowPrivateNetwork: false,
+    options: {},
+    setup: SDK_TEMPLATES.python,
+    auth: { type: 'bearer' },
+  },
   graphql: {
     baseUrl: '',
     headers: [],
@@ -96,12 +140,7 @@ const DEFAULTS: Record<string, Config> = {
     allowPrivateNetwork: false,
     maxResponseBytes: 10 * 1024 * 1024,
   },
-  sqs: { region: 'eu-west-1', identity: 'key' },
   s3: { region: 'eu-west-1', identity: 'key', forcePathStyle: false },
-  rabbitmq: { host: '', vhost: '/', username: '', tls: false, allowPrivateNetwork: false },
-  sns: { region: 'eu-west-1', identity: 'key' },
-  kinesis: { region: 'eu-west-1', identity: 'key' },
-  kafka: { brokers: [], auth: 'none', tls: false, identity: 'key' },
   rest: {
     baseUrl: '',
     headers: [],
@@ -246,20 +285,8 @@ export function SettingsPanel({
       <Card className="space-y-5 p-5">
         {resource.type === 'bigquery' ? (
           <BigQueryFields {...props} />
-        ) : resource.type === 'pubsub' ? (
-          <PubSubFields {...props} />
-        ) : resource.type === 'sqs' ? (
-          <SqsFields {...props} />
         ) : resource.type === 's3' ? (
           <S3Fields {...props} />
-        ) : resource.type === 'rabbitmq' ? (
-          <RabbitFields {...props} />
-        ) : resource.type === 'sns' ? (
-          <SnsFields {...props} />
-        ) : resource.type === 'kinesis' ? (
-          <KinesisFields {...props} />
-        ) : resource.type === 'kafka' ? (
-          <KafkaFields {...props} />
         ) : resource.type === 'slack' ? (
           <SlackFields {...props} resourceId={resource.id} />
         ) : resource.type === 'hubspot' ? (
@@ -272,6 +299,8 @@ export function SettingsPanel({
           <AnthropicFields {...props} />
         ) : resource.type === 'openai_compatible' ? (
           <OpenAiCompatibleFields {...props} />
+        ) : resource.type === 'gemini' ? (
+          <GeminiFields {...props} />
         ) : resource.type === 'airtable' ? (
           <AirtableFields {...props} />
         ) : resource.type === 'jira' ? (
@@ -282,6 +311,14 @@ export function SettingsPanel({
           <SalesforceFields {...props} resourceId={resource.id} />
         ) : resource.type === 'googlesheets' ? (
           <GoogleSheetsFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'gmail' ? (
+          <GmailFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'msteams' ? (
+          <TeamsFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'sdk' ? (
+          <SdkFields {...props} resourceId={resource.id} />
+        ) : resource.type === 'jdbc' ? (
+          <JdbcFields {...props} resourceId={resource.id} />
         ) : isSqlType(resource.type) ? (
           <SqlFields {...props} type={resource.type} />
         ) : (
@@ -431,8 +468,8 @@ export function Checkbox({
   )
 }
 
-/** The SSH tunnel section of a Postgres, MySQL or REST resource's settings (M17). */
-function Tunnel({
+/** The SSH tunnel section of a Postgres, MySQL, SQL Server, JDBC or REST resource's settings (M17). */
+export function Tunnel({
   config,
   set,
   secrets,
@@ -458,7 +495,7 @@ function Tunnel({
   )
 }
 
-/** Postgres and MySQL settings: the same fields, with each one's TLS modes. */
+/** Postgres, MySQL and SQL Server settings: the same fields, with each one's TLS modes and SQL Server's sign-ins. */
 function SqlFields(props: FieldsProps & { type: string }) {
   const { config, set, secrets, edits, setEdit, disabled, type } = props
   const text = (key: string) => ({
@@ -481,21 +518,40 @@ function SqlFields(props: FieldsProps & { type: string }) {
         <Field label="Port">
           <Input {...number('port')} />
         </Field>
+        {type === 'mssql' && (
+          <Field
+            label="Instance name"
+            hint="A named instance (SQLEXPRESS): its port is looked up instead. Leave empty to use the port."
+          >
+            <Input
+              value={String(config.instanceName ?? '')}
+              disabled={disabled}
+              data-testid="mssql-instance"
+              onChange={(e) => set('instanceName', e.target.value.trim() || undefined)}
+            />
+          </Field>
+        )}
         <Field label="Database">
           <Input {...text('database')} />
         </Field>
-        <Field label="User" hint="For read-only use, connect as a user that only has SELECT.">
-          <Input {...text('user')} />
-        </Field>
-        <Field label="Password">
-          <SecretField
-            isSet={isSet(secrets, 'password')}
-            edit={edits.password as SecretEdit}
-            onChange={(e) => setEdit('password', e)}
-            disabled={disabled}
-          />
-        </Field>
-        <Field label="SSL">
+        {type === 'mssql' ? (
+          <MssqlSignIn {...props} />
+        ) : (
+          <>
+            <Field label="User" hint="For read-only use, connect as a user that only has SELECT.">
+              <Input {...text('user')} />
+            </Field>
+            <Field label="Password">
+              <SecretField
+                isSet={isSet(secrets, 'password')}
+                edit={edits.password as SecretEdit}
+                onChange={(e) => setEdit('password', e)}
+                disabled={disabled}
+              />
+            </Field>
+          </>
+        )}
+        <Field label={type === 'mssql' ? 'Encryption' : 'SSL'}>
           <Select value={String(config.ssl)} disabled={disabled} onChange={(e) => set('ssl', e.target.value)}>
             {type === 'postgres' && <option value="prefer">Prefer (try TLS, fall back)</option>}
             <option value="require">Require (don't check the certificate)</option>
@@ -534,104 +590,102 @@ function SqlFields(props: FieldsProps & { type: string }) {
         disabled={disabled}
         onChange={(v) => set('readOnly', v)}
         label="Read-only"
-        hint={`${
-          type === 'mysql' ? 'Makes the session read-only' : 'Runs every query in a read-only transaction'
-        }. A guard against mistakes; use a SELECT-only user for security.`}
+        hint={
+          type === 'mssql'
+            ? 'Runs every query in a transaction that is always rolled back; a query that changes rows fails. A guard against mistakes; use a login with only db_datareader for security.'
+            : `${
+                type === 'mysql'
+                  ? 'Makes the session read-only'
+                  : 'Runs every query in a read-only transaction'
+              }. A guard against mistakes; use a SELECT-only user for security.`
+        }
       />
       <Tunnel {...props} target="the database" />
     </>
   )
 }
 
-const GIB = 1024 ** 3
-
-/**
- * A Pub/Sub resource's settings (M19): its project, and whose Google identity it signs in as: a service account key, or
- * this server's own where the instance allows it (only admins choose it, as for IAP).
- */
-function PubSubFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
-  const trpc = useTRPC()
-  const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data
-  const canChoose = !!server?.allowed && server.canChoose
-  const identity = (config.identity as string | undefined) ?? 'key'
-  // Editors keep the server's identity an admin chose, but can't point it at another project.
-  const locked = disabled || (identity === 'server' && !canChoose)
+/** How a SQL Server resource signs in (M38): a SQL login, a Windows account, or Entra ID (a user or an app). */
+function MssqlSignIn({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+  const auth = String(config.auth ?? 'sql')
+  const text = (key: string, testId: string) => ({
+    value: String(config[key] ?? ''),
+    disabled,
+    'data-testid': testId,
+    onChange: (e: { target: { value: string } }) => set(key, e.target.value),
+  })
+  const secret = (key: 'password' | 'clientSecret') => (
+    <SecretField
+      isSet={isSet(secrets, key)}
+      edit={edits[key] as SecretEdit}
+      onChange={(e) => setEdit(key, e)}
+      disabled={disabled}
+    />
+  )
   return (
     <>
-      <Field
-        label="Google identity"
-        hint="It needs roles/pubsub.subscriber on the subscriptions triggers pull, and roles/pubsub.publisher on the topics it publishes to."
-      >
+      <Field label="Sign in with">
         <Select
-          value={identity}
-          disabled={locked}
-          data-testid="pubsub-identity"
-          onChange={(e) => set('identity', e.target.value)}
+          value={auth}
+          disabled={disabled}
+          data-testid="mssql-auth"
+          onChange={(e) => set('auth', e.target.value)}
         >
-          <option value="key">A service account key</option>
-          <option value="server" disabled={!canChoose}>
-            This server's Google identity
-          </option>
+          <option value="sql">SQL Server login</option>
+          <option value="ntlm">Windows account (NTLM)</option>
+          <option value="entra-password">Entra ID user and password</option>
+          <option value="entra-service-principal">Entra ID app (service principal)</option>
         </Select>
       </Field>
-      {identity === 'server' ? (
-        server &&
-        (server.allowed ? (
-          <div className="space-y-1 text-xs" data-testid="pubsub-server-note">
-            {server.identity && (
-              <p className="text-muted">
-                Signs in as <code className="text-ink">{server.identity}</code>
-              </p>
-            )}
-            {server.error && <p className="text-danger">{server.error}</p>}
-            {!canChoose && (
-              <p className="text-muted">Chosen by an admin: only admins can point it at another project.</p>
-            )}
-          </div>
-        ) : (
-          <p className="text-xs text-danger" data-testid="pubsub-server-note">
-            This instance doesn't let resources use its own Google identity (any more): choose a service
-            account key.
-          </p>
-        ))
-      ) : (
+      {auth === 'ntlm' && (
+        <Field label="Windows domain">
+          <Input {...text('domain', 'mssql-domain')} placeholder="CORP" />
+        </Field>
+      )}
+      {auth !== 'entra-service-principal' && (
+        <Field
+          label={auth === 'entra-password' ? 'Entra user' : auth === 'ntlm' ? 'Windows user' : 'Login'}
+          hint={
+            auth === 'entra-password'
+              ? 'name@yourcompany.com. Accounts that need MFA can’t sign in this way: use an app instead.'
+              : 'For read-only use, connect as a login that only has db_datareader.'
+          }
+        >
+          <Input {...text('user', 'mssql-user')} />
+        </Field>
+      )}
+      {(auth === 'entra-password' || auth === 'entra-service-principal') && (
         <>
-          {server && !canChoose && (
-            <p className="text-xs text-muted">
-              {server.allowed
-                ? "Only admins can choose this server's own Google identity."
-                : "This instance doesn't let resources use its own Google identity (GOOGLE_SERVER_IDENTITY)."}
-            </p>
-          )}
-          <Field label="Service account key" hint="The JSON key file. Stored encrypted; never shown again.">
-            <SecretField
-              isSet={isSet(secrets, 'serviceAccountKey')}
-              edit={edits.serviceAccountKey as SecretEdit}
-              onChange={(e) => setEdit('serviceAccountKey', e)}
-              disabled={disabled}
-              placeholder='{ "type": "service_account", … }'
-            />
+          <Field
+            label="Entra app (client) id"
+            hint={
+              auth === 'entra-password'
+                ? 'A public client app registered in your directory, allowed to sign users in with a password.'
+                : 'The app registration whose service principal is a user in the database.'
+            }
+          >
+            <Input {...text('clientId', 'mssql-client-id')} />
+          </Field>
+          <Field
+            label="Directory (tenant) id"
+            hint={
+              auth === 'entra-password'
+                ? 'Optional: your directory, if the user’s domain isn’t enough.'
+                : undefined
+            }
+          >
+            <Input {...text('tenantId', 'mssql-tenant-id')} />
           </Field>
         </>
       )}
-      <Field
-        label="Project"
-        hint={
-          identity === 'server'
-            ? 'The project its subscriptions and topics are in.'
-            : "The project its subscriptions and topics are in. Defaults to the key's project."
-        }
-      >
-        <Input
-          value={String(config.project ?? '')}
-          disabled={locked}
-          placeholder="optiply-production"
-          onChange={(e) => set('project', e.target.value || undefined)}
-        />
+      <Field label={auth === 'entra-service-principal' ? 'Client secret' : 'Password'}>
+        {secret(auth === 'entra-service-principal' ? 'clientSecret' : 'password')}
       </Field>
     </>
   )
 }
+
+const GIB = 1024 ** 3
 
 function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
   const text = (key: string) => ({

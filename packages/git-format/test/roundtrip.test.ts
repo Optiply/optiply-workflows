@@ -280,7 +280,7 @@ function resource(r: Rng): ResourceObject {
     name: `Resource ${r.int(100)}`,
     description: r.chance(0.5) ? text(r).trim() || null : null,
     ...folder(r),
-    type: r.pick(['postgres', 'rest', 'mysql', 'bigquery', 'pubsub']),
+    type: r.pick(['postgres', 'rest', 'mysql', 'bigquery', 's3']),
     environments: Object.fromEntries(
       ENVIRONMENTS.filter(() => r.chance(0.5)).map((env) => [
         env,

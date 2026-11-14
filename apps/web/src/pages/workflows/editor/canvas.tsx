@@ -20,6 +20,7 @@ import {
   NodeResizeControl,
   Position,
   ReactFlow,
+  ResizeControlVariant,
   useNodesInitialized,
   useReactFlow,
   useStore,
@@ -568,9 +569,11 @@ function BlockNodeView({ data, selected }: NodeProps<BlockNode>) {
       {editable && !minimized && (
         <NodeResizeControl
           position="right"
+          variant={ResizeControlVariant.Line}
           minWidth={200}
           maxWidth={1200}
-          className="!h-full !w-2 !translate-x-1 !border-0 !bg-transparent hover:!bg-accent/30"
+          // An invisible grip along the right edge: the ew-resize cursor shows it, no bar
+          className="!w-2 !border-0 !bg-transparent"
           resizeDirection="horizontal"
           onResizeEnd={(_, { width: w }) => setEntry(name, { w: Math.round(w) })}
         />

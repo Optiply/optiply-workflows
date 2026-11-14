@@ -157,21 +157,18 @@ describe('SharedDefinition', () => {
     expect(a.value.edges).toEqual([{ from: 'startTrigger', port: 'out', to: 'fetch' }])
   })
 
-  it("matches Pub/Sub triggers by name, so two people's edits to one trigger land, wherever it moved (M19)", () => {
-    const orders = { name: 'orders', enabled: true, resource: 'events', subscription: 'orders-sub' }
+  it("matches schedules by name, so two people's edits to one schedule land, wherever it moved", () => {
+    const nightly = { name: 'nightly', enabled: true, cron: '0 3 * * *' }
     const a = replica<WorkflowDefinition>(workflowSpec)
-    a.set(workflow([], { triggers: { pubsub: [orders] } }))
+    a.set(workflow([], { triggers: { schedules: [nightly] } }))
     const b = replica<WorkflowDefinition>(workflowSpec, a)
-    const refunds = { ...orders, name: 'refunds', subscription: 'refunds-sub' }
-    // a adds a trigger before it and raises its limit; b points it at another subscription.
-    a.set({ ...a.value, triggers: { pubsub: [refunds, { ...orders, maxInFlight: 9 }] } })
-    b.set({ ...b.value, triggers: { pubsub: [{ ...orders, subscription: 'orders-v2' }] } })
+    const hourly = { ...nightly, name: 'hourly', cron: '0 * * * *' }
+    // a adds a schedule before it and lets fires overlap; b moves it to another hour.
+    a.set({ ...a.value, triggers: { schedules: [hourly, { ...nightly, overlap: 'allow' as const }] } })
+    b.set({ ...b.value, triggers: { schedules: [{ ...nightly, cron: '0 4 * * *' }] } })
     sync(a, b)
     expect(a.value).toEqual(b.value)
-    expect(a.value.triggers?.pubsub).toEqual([
-      refunds,
-      { ...orders, maxInFlight: 9, subscription: 'orders-v2' },
-    ])
+    expect(a.value.triggers?.schedules).toEqual([hourly, { ...nightly, overlap: 'allow', cron: '0 4 * * *' }])
   })
 
   it('keeps the first of two blocks added with one name, everywhere, and drops the other on the next edit', () => {

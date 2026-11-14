@@ -5,8 +5,11 @@ import { sleep } from './retry'
 /** How long webhook rejections are kept, and how many per webhook at most. */
 export const REJECTION_DAYS = 7
 export const MAX_REJECTIONS_PER_WEBHOOK = 200
-/** How long finished Pub/Sub deliveries are kept: Pub/Sub keeps an unacked message 31 days at most. */
-export const PUBSUB_DELIVERY_DAYS = 32
+/**
+ * How long finished queue deliveries are kept (Pub/Sub kept an unacked message 31 days at most). The queue triggers
+ * were removed in session 54: nothing records deliveries any more, and the rows left age out here.
+ */
+export const QUEUE_DELIVERY_DAYS = 32
 
 export interface RetentionOptions {
   /** Runs that finished longer ago than this many days are deleted. */
@@ -35,7 +38,7 @@ export interface RetentionResult {
   rateWindows: number
   /** Webhook rejections older than 7 days, or beyond the latest 200 of their webhook. */
   rejections: number
-  /** Finished Pub/Sub deliveries past Pub/Sub's longest message retention (M19). */
+  /** Finished queue deliveries (M19–M30; queue triggers removed in session 54) past Pub/Sub's longest retention. */
   queueDeliveries: number
   /** The longest single statement, in ms: each one is its own short transaction. */
   longestStatementMs: number
@@ -192,15 +195,14 @@ export async function deleteOldRuns(db: Db, opts: RetentionOptions): Promise<Ret
           limit ${chunk})
         returning 1`,
     )
-    // Kept while Pub/Sub could still redeliver the message (31 days at most; SQS 14 days): a redelivery of one whose run
-    // succeeded must still be recognised.
+    // Rows left by the queue triggers (removed in session 54), kept as long as they were while a redelivery could come.
     result.queueDeliveries = await drain(
       'queue_deliveries',
       () => sql`
         delete from queue_deliveries where (trigger_id, message_id) in (
           select trigger_id, message_id from queue_deliveries
           where outcome is not null
-            and updated_at < ${now}::timestamptz - interval '${sql.raw(String(PUBSUB_DELIVERY_DAYS))} days'
+            and updated_at < ${now}::timestamptz - interval '${sql.raw(String(QUEUE_DELIVERY_DAYS))} days'
           limit ${chunk})
         returning 1`,
     )

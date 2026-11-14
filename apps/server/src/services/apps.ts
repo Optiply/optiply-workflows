@@ -40,6 +40,7 @@ import { moduleInfos, walkInstancePath } from './modules'
 import { type Access, atLeast } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
+import { groupsOf } from './tasks'
 import { loadConfigVars } from './workflow-runs'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -526,7 +527,13 @@ export async function runDefinitionQuery(
       message: `"${query.name}" is a JS query; it runs in the browser`,
     })
   }
-  const currentUser = { id: user.id, email: user.email, name: user.name }
+  // `groups` is read only when an expression asks for it (one query, then kept).
+  let groupsOfUser: Promise<{ id: string; name: string }[]> | undefined
+  const currentUserFor = async (code: string) => {
+    if (!/\bgroups\b/.test(code)) return { id: user.id, email: user.email, name: user.name }
+    groupsOfUser ??= groupsOf(db, user.id)
+    return { id: user.id, email: user.email, name: user.name, groups: await groupsOfUser }
+  }
   // Config vars (M36), loaded once the first {{ }} reads them: secret ones for a release, not for a draft (whoever
   // edits a draft could show one). Their secret values are scrubbed from what goes back to the browser.
   let config: Promise<{ configVars: Record<string, unknown>; secrets: string[] }> | undefined
@@ -538,7 +545,7 @@ export async function runDefinitionQuery(
   const evaluate = async (code: string): Promise<unknown> => {
     switch (expressionSide(code)) {
       case 'server': {
-        const scope: Record<string, unknown> = { current_user: currentUser }
+        const scope: Record<string, unknown> = { current_user: await currentUserFor(code) }
         if (/\bconfigVars\b/.test(code)) scope.configVars = (await configOf()).configVars
         return deps.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS })
       }

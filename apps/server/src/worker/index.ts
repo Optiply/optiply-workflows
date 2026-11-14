@@ -1,6 +1,6 @@
 import { CodeFetcher, PoolManager } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { Dispatcher, QueueConsumer, RetentionJob, Scheduler } from '@ow/engine'
+import { Dispatcher, RetentionJob, Scheduler } from '@ow/engine'
 import { IvmRuntime } from '@ow/sandbox'
 import type { Logger } from 'pino'
 import type postgres from 'postgres'
@@ -11,12 +11,14 @@ import { deleteUnusedBundles } from '../services/component-libraries'
 import { configureConnectors } from '../services/connectors'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { configureJdbcDriverLookup } from '../services/jdbc-drivers'
 import { deleteUnusedJsBundles } from '../services/js-bundles'
 import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
 import { useRe2ForPatterns } from '../services/regexp'
+import { configureSdkPackages } from '../services/sdk-envs'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 
 /**
@@ -45,6 +47,8 @@ export async function startWorker(deps: {
   configureGoogle(config)
   configureAwsServer(config)
   configureConnectors(config)
+  configureJdbcDriverLookup(db)
+  configureSdkPackages(db, config)
   useRe2ForPatterns()
   configureJsBundles(config)
   const dispatcher = new Dispatcher({
@@ -87,23 +91,12 @@ export async function startWorker(deps: {
     retryMs: config.GIT_RETRY_MINUTES * 60_000,
   })
   git.start()
-  // Queue triggers (Pub/Sub M19, SQS and Kafka M26): received by one worker at a time each, under the dispatcher's name.
-  const queues = new QueueConsumer({
-    db,
-    resources: dbResourceProvider(db, config.keyring, authSandbox),
-    workerId: dispatcher.workerId,
-    log: log.child({ component: 'queue' }),
-  })
-  queues.start()
   return {
     dispatcher,
     scheduler,
     retention,
     git,
-    queues,
     stop: async () => {
-      // First, so held messages are nacked to the next worker while this one can still finish runs.
-      await queues.stop()
       await git.stop()
       await retention.stop()
       await scheduler.stop()

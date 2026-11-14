@@ -4,6 +4,7 @@ import {
   fragmentSql,
   fragmentText,
   paramValue,
+  type SqlDialect,
   SqlFragmentError,
   sqlFragment,
   TemplateError,
@@ -218,6 +219,88 @@ describe('compileSql (bigquery)', () => {
   })
 })
 
+describe('compileSql (mssql)', () => {
+  const ms = (sql: string) => compileSql(sql, 'mssql')
+  const codes = (sql: string) => ms(sql).params.map((p) => p.code.trim())
+
+  it('replaces each {{ }} with a named @pN parameter', () => {
+    const compiled = ms('SELECT TOP 10 * FROM dbo.orders WHERE id = {{ id }} AND status = {{status}}')
+    expect(compiled.text).toBe('SELECT TOP 10 * FROM dbo.orders WHERE id = @p1 AND status = @p2')
+    expect(compiled.offsets.map((o) => compiled.text.slice(o, o + 3))).toEqual(['@p1', '@p2'])
+    expect(ms('select x{{a}}y').text).toBe('select x @p1 y')
+  })
+
+  it("knows '' and N'' strings, without backslash escapes", () => {
+    expect(ms("SELECT N'it''s', 'a\\', {{ x }}").text).toBe("SELECT N'it''s', 'a\\', @p1")
+    expect(() => ms("SELECT N'{{ x }}'")).toThrow(/inside a SQL string literal/)
+    expect(() => ms("SELECT 'oops")).toThrow(/Unterminated string literal/)
+    // Double quotes are identifiers (QUOTED_IDENTIFIER ON, the default).
+    expect(() => ms('SELECT "{{ x }}" FROM t')).toThrow(/inside a quoted identifier/)
+  })
+
+  it('knows [bracketed] identifiers, with ]] inside', () => {
+    expect(ms('SELECT [order], [we]]ird], {{ x }} FROM [dbo].[t]').text).toBe(
+      'SELECT [order], [we]]ird], @p1 FROM [dbo].[t]',
+    )
+    expect(() => ms('SELECT * FROM [{{ table }}]')).toThrow(/inside a quoted identifier/)
+    expect(() => ms('SELECT [oops')).toThrow(/Unterminated quoted identifier/)
+  })
+
+  it('knows its comments: -- and nested /* */; # is a temp table, not a comment', () => {
+    expect(codes('SELECT 1 -- {{ x }}\n, {{ y }}')).toEqual(['y'])
+    expect(codes('SELECT /* a /* {{ x }} */ {{ y }} */ {{ z }}')).toEqual(['z'])
+    expect(ms('SELECT * FROM #tmp WHERE a = {{ a }}').text).toBe('SELECT * FROM #tmp WHERE a = @p1')
+  })
+
+  it('keeps T-SQL @variables and ?, but refuses @p1-like names that would collide', () => {
+    expect(ms('DECLARE @from date = {{ from }}; SELECT @@ROWCOUNT, @from, @pid, @p1x').text).toBe(
+      'DECLARE @from date = @p1; SELECT @@ROWCOUNT, @from, @pid, @p1x',
+    )
+    expect(() => ms('DECLARE @p1 int = 1; SELECT {{ x }}')).toThrow(/@p1 is reserved/)
+    expect(() => ms('SELECT @P2')).toThrow(/@P2 is reserved/)
+    expect(ms("SELECT '@p1', [@p1], {{ x }} -- @p1").text).toBe("SELECT '@p1', [@p1], @p1 -- @p1")
+  })
+
+  describe('injection payloads inside expressions never reach the SQL text', () => {
+    it.each(["'; DROP TABLE x; --", '@p2', ']; DROP TABLE x; --', "N''"])('%s', (payload) => {
+      const compiled = ms(`SELECT * FROM users WHERE email = {{ ${JSON.stringify(payload)} }}`)
+      expect(compiled.text).toBe('SELECT * FROM users WHERE email = @p1')
+    })
+  })
+})
+
+describe('compileSql (JDBC: oracle, snowflake, clickhouse, jdbc)', () => {
+  const c = (sql: string, d: SqlDialect) => compileSql(sql, d)
+  const codes = (sql: string, d: SqlDialect) => c(sql, d).params.map((p) => p.code.trim())
+
+  it('replaces each {{ }} with ?, in every JDBC dialect', () => {
+    for (const d of ['oracle', 'snowflake', 'clickhouse', 'jdbc'] as const) {
+      const compiled = c('SELECT * FROM orders WHERE id IN ({{ ids }}) AND status = {{status}}', d)
+      expect(compiled.text).toBe('SELECT * FROM orders WHERE id IN (?) AND status = ?')
+      expect(compiled.offsets.map((o) => compiled.text[o])).toEqual(['?', '?'])
+      expect(() => c('SELECT * FROM t WHERE id = ?', d)).toThrow(/Positional parameter \?/)
+      expect(() => c('SELECT "{{ col }}" FROM t', d)).toThrow(/inside a quoted identifier/)
+      expect(() => c("SELECT '{{ x }}'", d)).toThrow(/inside a SQL string literal/)
+      expect(codes(`SELECT 1 -- {{ x }}\n, '?', "?", /* ? {{ y }} */ {{ z }}`, d)).toEqual(['z'])
+    }
+  })
+
+  it('knows backslash escapes where the database has them', () => {
+    // Snowflake and ClickHouse: \' is an escaped quote; Oracle and generic JDBC: a backslash, then the end.
+    expect(c(String.raw`SELECT 'a\'b', {{ x }}`, 'snowflake').text).toBe(String.raw`SELECT 'a\'b', ?`)
+    expect(c(String.raw`SELECT 'a\'b', {{ x }}`, 'clickhouse').text).toBe(String.raw`SELECT 'a\'b', ?`)
+    expect(c(String.raw`SELECT 'a\', {{ x }}`, 'oracle').text).toBe(String.raw`SELECT 'a\', ?`)
+    expect(c("SELECT 'it''s', {{ x }}", 'jdbc').text).toBe("SELECT 'it''s', ?")
+  })
+
+  it("knows Snowflake's // comments and $$ strings, and ClickHouse's backtick names", () => {
+    expect(codes('SELECT 1 // {{ x }}\n, {{ y }}', 'snowflake')).toEqual(['y'])
+    expect(c("SELECT $$it's ?$$, {{ x }}", 'snowflake').text).toBe("SELECT $$it's ?$$, ?")
+    expect(() => c('SELECT $${{ x }}$$', 'snowflake')).toThrow(/inside a SQL string literal/)
+    expect(() => c('SELECT `{{ x }}` FROM t', 'clickhouse')).toThrow(/inside a quoted identifier/)
+  })
+})
+
 describe('sql.column and sql.direction', () => {
   const sort =
     "select * from products order by {{ sql.column(t.sort?.column, ['name', 'price'], 'id') }} {{ sql.direction(t.sort?.desc) }} limit {{ t.pageSize }}"
@@ -261,6 +344,16 @@ describe('sql.column and sql.direction', () => {
     expect(fragmentText(spec, 'name')).toBe('"name"')
     expect(fragmentText(spec, 'p.price')).toBe('"p"."price"')
     expect(fragmentText(spec, 'p.price', 'mysql')).toBe('`p`.`price`')
+    expect(fragmentText(spec, 'p.price', 'mssql')).toBe('[p].[price]')
+    // JDBC: always quoted (keywords work); Oracle and Snowflake in upper case unless the name mixes cases.
+    expect(fragmentText(spec, 'p.price', 'oracle')).toBe('"P"."PRICE"')
+    const odd = sqlFragment("sql.column(v, ['order total', 'date', 'createdAt', 'x'])")!
+    expect(fragmentText(odd, 'date', 'oracle')).toBe('"DATE"')
+    expect(fragmentText(odd, 'createdAt', 'snowflake')).toBe('"createdAt"')
+    expect(fragmentText(odd, 'order total', 'snowflake')).toBe('"ORDER TOTAL"')
+    expect(fragmentText(odd, 'date', 'clickhouse')).toBe('`date`')
+    expect(fragmentText(odd, 'date', 'jdbc')).toBe('"date"')
+    expect(fragmentText(sqlFragment("sql.column(v, ['we]ird'])")!, 'we]ird', 'mssql')).toBe('[we]]ird]')
     for (const empty of [null, undefined, '', 'id']) expect(fragmentText(spec, empty)).toBe('"id"')
     for (const bad of ['NAME', 'name; drop table products', '"name"', 'name"--', ['name'], { name: 1 }, 1]) {
       expect(() => fragmentText(spec, bad)).toThrow(SqlFragmentError)
@@ -336,7 +429,7 @@ describe('sql.column and sql.direction', () => {
 })
 
 describe('sql.where (M24)', () => {
-  const where = (sql: string, filters: unknown, dialect: 'postgres' | 'mysql' | 'bigquery' = 'postgres') => {
+  const where = (sql: string, filters: unknown, dialect: SqlDialect = 'postgres') => {
     const plan = compileSql(sql, dialect)
     return withFragments(
       plan,
@@ -382,7 +475,7 @@ describe('sql.where (M24)', () => {
   })
 
   it('writes each operator per dialect', () => {
-    const one = (op: string, value: unknown, dialect: 'postgres' | 'mysql' | 'bigquery', type?: string) =>
+    const one = (op: string, value: unknown, dialect: SqlDialect, type?: string) =>
       where("{{ sql.where(f, ['c']) }}", [{ column: 'c', op, value, ...(type && { type }) }], dialect).text
     expect(one('equals', 1, 'postgres')).toBe('("c" = $1)')
     expect(one('notEquals', 1, 'postgres')).toBe('("c" <> $1 OR "c" IS NULL)')
@@ -395,6 +488,25 @@ describe('sql.where (M24)', () => {
     expect(one('between', ['a', 'b'], 'bigquery', 'datetime')).toBe(
       '(CAST(`c` AS TIMESTAMP) BETWEEN CAST(@p1 AS TIMESTAMP) AND CAST(@p2 AS TIMESTAMP))',
     )
+    expect(one('contains', 'x', 'mssql')).toBe(
+      '(CHARINDEX(LOWER(@p1), LOWER(CAST([c] AS NVARCHAR(MAX)))) > 0)',
+    )
+    expect(one('empty', null, 'mssql')).toBe("([c] IS NULL OR CAST([c] AS NVARCHAR(MAX)) = '')")
+    expect(one('between', [1, 2], 'mssql')).toBe('([c] BETWEEN @p1 AND @p2)')
+    expect(one('contains', 'x', 'oracle')).toBe('(INSTR(LOWER(CAST("C" AS VARCHAR2(4000))), LOWER(?)) > 0)')
+    // Oracle's '' is NULL: an empty search matches all, emptiness is NULL.
+    expect(one('contains', '', 'oracle')).toBe('(1=1)')
+    expect(one('empty', null, 'oracle')).toBe('("C" IS NULL)')
+    expect(one('notEmpty', null, 'oracle')).toBe('("C" IS NOT NULL)')
+    expect(one('contains', 'x', 'snowflake')).toBe('(CONTAINS(LOWER(CAST("C" AS VARCHAR)), LOWER(?)))')
+    expect(one('contains', 'x', 'clickhouse')).toBe('(positionCaseInsensitiveUTF8(toString(`c`), ?) > 0)')
+    expect(one('contains', 'x', 'jdbc')).toBe('(POSITION(LOWER(?) IN LOWER(CAST("c" AS VARCHAR(4000)))) > 0)')
+    expect(one('between', [1, 2], 'oracle')).toBe('("C" BETWEEN ? AND ?)')
+    expect(where("select 1 from dual where {{ sql.where(f, ['c']) }}", [], 'oracle').text).toBe(
+      'select 1 from dual where 1=1',
+    )
+    // T-SQL has no TRUE.
+    expect(where("select 1 where {{ sql.where(f, ['c']) }}", [], 'mssql').text).toBe('select 1 where 1=1')
   })
 
   it('refuses what the query doesn’t allow, and never puts a value in the text', () => {

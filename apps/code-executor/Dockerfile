@@ -18,6 +18,7 @@ RUN git clone --depth 1 --branch "$NSJAIL_VERSION" https://github.com/google/nsj
 # The package builder (M23): `--target builder`. The same Python and platform as the executor below, so the wheels it
 # installs fit the jail's interpreter; pip pinned. It runs as its own user and writes only /envs (a volume). Since M32
 # it builds sdists' wheels in nsjail, offline, with a compiler toolchain (run it with the executor's flags).
+FROM node:24-bookworm-slim AS node
 FROM python:3.12-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential libnl-route-3-200 libprotobuf32 \
  && rm -rf /var/lib/apt/lists/*
@@ -26,14 +27,18 @@ COPY executor/builder-requirements.lock /opt/builder/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r /opt/builder/requirements.lock \
  && useradd --uid 10001 --create-home builder && mkdir /envs && chown builder /envs
 COPY executor/builder.py executor/sdist-jail.cfg /opt/builder/
+# SDK resources' JavaScript packages (M37): npm installs them (no install scripts) into envs/node/<envId>.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && npm --version
 USER builder
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=UTC
 EXPOSE 8080
 VOLUME /envs
 CMD ["python3", "-I", "/opt/builder/builder.py"]
 
-# The executor (the default target).
-FROM python:3.12-slim-bookworm
+# The executor (the default target: the last stage below is this one).
+FROM python:3.12-slim-bookworm AS executor
 RUN apt-get update && apt-get install -y --no-install-recommends libnl-route-3-200 libprotobuf32 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=nsjail /nsjail/nsjail /usr/local/bin/nsjail
@@ -48,3 +53,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=UTC
 EXPOSE 8080
 ENTRYPOINT ["/opt/executor/entrypoint.sh"]
 CMD ["python3", "-I", "/opt/executor/server.py"]
+
+# The SDK runner (M37, `--target sdk-runner`, docs/architecture.md §2.41): the executor's image with Node and the SDK
+# jail; a company SDK's call, Python or JavaScript, with network only through its own proxy (sdk_server.py).
+FROM executor AS sdk-runner
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY executor/sdk_server.py executor/runner_sdk.py executor/runner_sdk.mjs executor/sdk-jail.cfg /opt/executor/
+RUN node --version
+CMD ["python3", "-I", "/opt/executor/sdk_server.py"]
+
+# The default target stays the executor.
+FROM executor

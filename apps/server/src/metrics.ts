@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { aiStats, queryStats, sshTunnelStats } from '@ow/connectors'
 import type { Db } from '@ow/db'
-import { QUEUE_KINDS, QUEUE_OUTCOMES, queueStats, type RunObserver, type ScheduleFire } from '@ow/engine'
+import type { RunObserver, ScheduleFire } from '@ow/engine'
 import { pythonStats } from '@ow/sandbox'
 import { sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
@@ -174,40 +174,6 @@ export class Metrics {
       collect() {
         this.reset()
         for (const jail of ['warm', 'cold'] as const) this.inc({ jail }, pythonStats[jail])
-      },
-    })
-
-    // Queue triggers (Pub/Sub M19, SQS and Kafka M26), as this process's consumer counts them, per kind.
-    new client.Counter({
-      name: 'ow_queue_messages_total',
-      help:
-        'Queue trigger messages this process finished with, by kind and outcome (acked, nacked, retried, ' +
-        'dead_lettered, dropped, duplicate, released past the hold)',
-      labelNames: ['kind', 'outcome'],
-      registers,
-      collect() {
-        this.reset()
-        for (const kind of QUEUE_KINDS)
-          for (const outcome of QUEUE_OUTCOMES) this.inc({ kind, outcome }, queueStats[kind][outcome])
-      },
-    })
-    new client.Gauge({
-      name: 'ow_queue_in_flight',
-      help: 'Queue trigger messages this process holds now, their runs under way, by kind',
-      labelNames: ['kind'],
-      registers,
-      collect() {
-        for (const kind of QUEUE_KINDS) this.set({ kind }, queueStats[kind].inFlight)
-      },
-    })
-    new client.Counter({
-      name: 'ow_queue_pull_errors_total',
-      help: "Receives of this process's queue triggers that failed (no access, a missing queue, the service down), by kind",
-      labelNames: ['kind'],
-      registers,
-      collect() {
-        this.reset()
-        for (const kind of QUEUE_KINDS) this.inc({ kind }, queueStats[kind].pullErrors)
       },
     })
 

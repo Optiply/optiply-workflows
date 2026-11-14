@@ -24,6 +24,8 @@ export async function startTestApp(overrides: Record<string, string> = {}): Prom
     ENCRYPTION_KEYS: `v1:${generateKey()}`,
     LOCAL_LOGIN_ENABLED: 'true',
     NODE_ENV: 'test',
+    // Tests check grants on their own: new objects start unshared unless a test turns sharing on.
+    SHARE_NEW_WITH_EVERYONE: 'false',
     ...overrides,
   })
   const { db, sql, close } = createDb(pg.url, { max: 5 })

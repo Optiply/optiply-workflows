@@ -35,6 +35,15 @@ x-app: &app
     # Without a token Python stays off (a warning at start): the app runs, Python blocks can't.
     PYTHON_EXECUTOR_URL: http://code-executor:8080
     PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:-}
+    # SDK resources (M37): their calls run in the sdk-runner; without a token SDK resources can't run.
+    SDK_RUNNER_URL: http://sdk-runner:8080
+    SDK_RUNNER_TOKEN: ${SDK_RUNNER_TOKEN:-}
+    # JDBC resources (M38): their queries run in the jdbc-runner; without a token JDBC resources can't run.
+    JDBC_RUNNER_URL: http://jdbc-runner:8080
+    JDBC_RUNNER_TOKEN: ${JDBC_RUNNER_TOKEN:-}
+    # JDBC resources through SSH: the runner connects back to this port of the process that holds the tunnel (on the
+    # executor network, by its container's host name), opening each connection with that tunnel's secret.
+    JDBC_FORWARDER_PORT: ${JDBC_FORWARDER_PORT:-7070}
     # Workflows' Python packages (M23): the python-builder service below. Without its token, workflows that declare
     # packages can't run or be published.
     PYTHON_BUILDER_URL: http://python-builder:8080
@@ -185,13 +194,78 @@ services:
       retries: 6
       start_period: 5s
 
+  # Calls company SDKs (M37, docs/architecture.md §2.41, docs/runbooks/sdk.md): each call in a fresh nsjail jail
+  # (Python or Node), its network only through a proxy of its own that lets the resource's hosts through. The
+  # executor's privileges and profile (nsjail); its token and nothing else (a call's OAuth token and secrets come
+  # with the call and go to the jail on stdin). It reaches the internet through sdk-egress, the jails never directly.
+  sdk-runner:
+    build:
+      context: apps/code-executor
+      target: sdk-runner
+    image: optiply-workflows-sdk-runner:local
+    restart: unless-stopped
+    environment:
+      # Without one it refuses to start (and SDK resources can't run).
+      SDK_RUNNER_TOKEN: ${SDK_RUNNER_TOKEN:-}
+      SDK_MEMORY_MB: ${SDK_MEMORY_MB:-512}
+      SDK_MAX_CONCURRENT: ${SDK_MAX_CONCURRENT:-4}
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=./apps/code-executor/seccomp.json
+      - apparmor=unconfined
+    mem_limit: 3g
+    pids_limit: 512
+    networks: [executor, sdk-egress]
+    # The SDKs' installed packages (the builder's), mounted read-only into each jail that needs them.
+    volumes:
+      - python-envs:/envs:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  # Runs JDBC resources' queries (M38, docs/architecture.md §2.42, docs/runbooks/jdbc.md): Java, with Oracle,
+  # Snowflake and ClickHouse drivers built in and admins' uploaded jars (kept in jdbc-drivers). Its token and nothing
+  # else: each query brings its connection's settings and secrets. Read-only, /tmp in memory (wallets, drivers'
+  # caches); it reaches databases through jdbc-egress, and nothing of the app's but through the executor network.
+  jdbc-runner:
+    build: apps/jdbc-runner
+    image: optiply-workflows-jdbc-runner:local
+    restart: unless-stopped
+    environment:
+      # Without one it refuses to start (and JDBC resources can't run).
+      JDBC_RUNNER_TOKEN: ${JDBC_RUNNER_TOKEN:-}
+      JDBC_MAX_CONCURRENT: ${JDBC_MAX_CONCURRENT:-32}
+      JDBC_MAX_POOLS: ${JDBC_MAX_POOLS:-50}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    mem_limit: 2g
+    networks: [executor, jdbc-egress]
+    volumes:
+      - jdbc-drivers:/drivers
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ok <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
 networks:
-  # The app, the code executor and the builder; internal: the executor reaches nothing outside it.
+  # The app, the code executor, the builder and the SDK and JDBC runners; internal: the executor reaches nothing
+  # outside it.
   executor:
     internal: true
   # The builder's way out to the package index.
   builder-egress: {}
+  # The SDK runner's proxy's way out to the SDKs' APIs (M37).
+  sdk-egress: {}
+  # The JDBC runner's way out to the databases (M38).
+  jdbc-egress: {}
 
 volumes:
   pgdata:
   python-envs:
+  jdbc-drivers:

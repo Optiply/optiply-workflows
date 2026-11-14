@@ -30,6 +30,7 @@ import {
   atLeast,
   checkFolderMove,
   checkFolderType,
+  grantDefaultAccess,
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
@@ -160,6 +161,7 @@ export const modulesRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'module', module!.id, ctx.user)
       await ctx.audit({
         action: 'module.created',
         objectType: 'module',

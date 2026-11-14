@@ -157,6 +157,12 @@ export function TableRenderer({ component }: RendererProps) {
       return w ? `${w}px` : 'minmax(140px, 1fr)'
     })
     .join(' ')
+  /**
+   * The rows' least width: the header, the new rows and the body all take it (or the table's width when wider), so
+   * their columns line up. (`max-content` sized the header by its labels, while the body's rows, positioned
+   * absolutely, only had the table's width: with many columns the header's ran wider than the cells under them.)
+   */
+  const rowMinWidth = columns.reduce((sum, c) => sum + (widths[c.key] ?? c.width ?? 140), 0)
 
   /** Drags a header's right edge: the width follows the pointer; in the editor the drop saves it (M24). */
   const startResize = (e: PointerEvent<HTMLDivElement>, col: TableColumn) => {
@@ -398,7 +404,7 @@ export function TableRenderer({ component }: RendererProps) {
             role="row"
             aria-rowindex={1}
             className="sticky top-0 z-10 grid border-b border-border bg-surface"
-            style={{ gridTemplateColumns: template, minWidth: 'max-content' }}
+            style={{ gridTemplateColumns: template, minWidth: rowMinWidth }}
           >
             {columns.map((col) => {
               const sorted = sort?.key === col.key
@@ -457,7 +463,7 @@ export function TableRenderer({ component }: RendererProps) {
             })}
           </div>
           {newRows.length > 0 && (
-            <div data-testid="new-rows" style={{ minWidth: 'max-content' }}>
+            <div data-testid="new-rows" style={{ minWidth: rowMinWidth }}>
               {newRows.map((row, at) => (
                 <div
                   // biome-ignore lint/suspicious/noArrayIndexKey: new rows have no identity yet but their place
@@ -496,9 +502,7 @@ export function TableRenderer({ component }: RendererProps) {
           {ordered.length === 0 ? (
             <div className="p-6 text-center text-sm text-muted">{emptyMessage}</div>
           ) : (
-            <div
-              style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: 'max-content' }}
-            >
+            <div style={{ height: virtualizer.getTotalSize(), position: 'relative', minWidth: rowMinWidth }}>
               {virtualizer.getVirtualItems().map((v) => {
                 const { row, index } = ordered[v.index]!
                 const selected = selectedKeys.has(selectionKey(row, primaryKey))

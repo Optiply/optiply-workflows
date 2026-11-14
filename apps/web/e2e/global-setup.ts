@@ -10,25 +10,17 @@ import {
   startTestBuilder,
   startTestExecutor,
   startTestIndex,
+  startTestSdkRunner,
   testEnvsVolume,
 } from '@ow/code-executor/testing'
-import { kafkaClient, kafkaConsumer, produceTo } from '@ow/connectors'
 import {
-  kafkaAvailable,
-  rabbitAvailable,
   s3Available,
   startFakeAi,
   startFakeAws,
-  startFakePubSub,
-  startFakeRegistry,
   startFakeServices,
   startTestGraphql,
   startTestIapServer,
-  startTestKafka,
-  startTestRabbit,
   startTestS3,
-  type TestKafka,
-  type TestRabbit,
   type TestS3,
 } from '@ow/connectors/testing'
 import { createDb } from '@ow/db'
@@ -145,6 +137,27 @@ export default async function globalSetup() {
           files: { 'owtest_a/__init__.py': 'from owtest_b import VERSION as B\nNAME = "owtest-a"\n' },
         },
         { name: 'owtest-b', version: '1.0.0', files: { 'owtest_b/__init__.py': 'VERSION = "1.0.0"\n' } },
+        // M37: a company SDK for an SDK resource (it calls E2E_SDK's API with its token).
+        {
+          name: 'acme-py',
+          version: '3.0.0',
+          files: {
+            'acme_py/__init__.py': [
+              'import json, urllib.request',
+              'class Acme:',
+              '    def __init__(self, token, base_url):',
+              '        self._token, self.base_url = token, base_url',
+              '    def get(self, path):',
+              '        """Fetches a path from the API."""',
+              '        print("GET", path)',
+              '        req = urllib.request.Request(self.base_url + path, headers={"Authorization": "Bearer " + self._token})',
+              '        return json.loads(urllib.request.urlopen(req, timeout=10).read())',
+              '    def orders(self, status="open"):',
+              '        """Orders, by status."""',
+              '        return self.get("/orders?status=" + status)',
+            ].join('\n'),
+          },
+        },
       ])
     : null
   // M32: a private index with a password (a package only it has, and one with only an sdist). Specs read
@@ -174,6 +187,31 @@ export default async function globalSetup() {
   const executor = docker ? await startTestExecutor(volume ? { envsVolume: volume.name } : {}) : null
   if (executor) process.env.E2E_PYTHON = '1'
   if (builder) process.env.E2E_PYTHON_PACKAGES = '1'
+  // SDK resources (M37): the SDK runner on the builder's envs, and a company API it may reach (from its container, as
+  // host.docker.internal) that wants E2E_SDK's token. Specs read E2E_SDK.
+  const sdkRunner = builder && volume ? await startTestSdkRunner({ envsVolume: volume.name }) : null
+  const sdkApi = createServer((req: IncomingMessage, res: ServerResponse) => {
+    res.setHeader('content-type', 'application/json')
+    if (req.headers.authorization !== 'Bearer e2e-sdk-token-31') {
+      res.writeHead(401)
+      return res.end('{"error":"unauthorized"}')
+    }
+    const url = new URL(req.url ?? '/', 'http://x')
+    res.end(
+      JSON.stringify(
+        url.pathname === '/orders'
+          ? [{ id: 1042, status: url.searchParams.get('status'), customer: 'Ada' }]
+          : { path: url.pathname },
+      ),
+    )
+  })
+  await new Promise<void>((resolve) => sdkApi.listen(0, '0.0.0.0', resolve))
+  if (sdkRunner) {
+    process.env.E2E_SDK = JSON.stringify({
+      apiUrl: `http://host.docker.internal:${(sdkApi.address() as { port: number }).port}`,
+      token: 'e2e-sdk-token-31',
+    })
+  }
 
   // Google Cloud IAP (M18): a fake Google issues tokens (for a service account key, and from its metadata server as
   // this server's own identity) and a fake IAP endpoint takes them. Specs read the key from E2E_IAP_KEY.
@@ -187,45 +225,18 @@ export default async function globalSetup() {
   process.env.E2E_IAP_KEY = google.keyJson
   // Specs steer the fake IAP from their own process: POST /drop cuts every WebSocket (sessions stay, as on a dropped
   // network), POST /refuse-next?code=&reason= closes the next connect so; GET /stats counts connects and reconnects.
-  // Pub/Sub (M19): a fake in project `fake-project`, a topic per spec part with a subscription each (`<topic>-sub`):
-  // `flaky-sub` dead-letters to `flaky-dead` after 3 deliveries, `slow-sub` gives 2 s to ack. Specs publish and look
-  // through E2E_IAP_CONTROL's /pubsub routes.
-  const pubsub = await startFakePubSub({ project: 'fake-project' })
-  pubsub.createTopic('flaky-dead')
-  for (const topic of ['orders', 'refunds', 'm19', 'flaky', 'slow', 'busy', 'chain', 'paused']) {
-    pubsub.createTopic(topic)
-    pubsub.createSubscription(`${topic}-sub`, {
-      topic,
-      ...(topic === 'flaky' && {
-        deadLetterPolicy: { deadLetterTopic: 'flaky-dead', maxDeliveryAttempts: 3 },
-      }),
-      ...(topic === 'slow' && { ackDeadlineSeconds: 2 }),
-    })
-  }
-  // SQS (M26): a fake AWS (STS and SQS, signatures checked) with a queue per spec part: `m26-flaky` moves a message to
-  // `m26-dlq` after 2 receives, `m26-slow` hides one for 2 s, `m26-groups.fifo` deduplicates by content. Specs sign in
-  // with E2E_AWS_KEY_ID / E2E_AWS_SECRET (or assume E2E_AWS_ROLE with external id `optiply-e2e`), and send and look
-  // through E2E_IAP_CONTROL's /sqs routes. The server's own credentials are a fake user's, never the developer's.
+  // A fake AWS (M26): STS, signatures checked, for the AWS identity (the server's own credentials are a fake user's,
+  // never the developer's), and SNS's side of a webhook subscription (M30).
   const aws = await startFakeAws()
-  const awsUser = aws.addUser('e2e')
   const awsServer = aws.addUser('server')
-  const awsRole = aws.addRole('m26-reader', { trusted: [awsUser.arn], externalId: 'optiply-e2e' })
-  aws.sqs.createQueue('m26-dlq')
-  for (const queue of ['orders', 'm26', 'm26-busy', 'm26-sent']) aws.sqs.createQueue(queue)
-  aws.sqs.createQueue('m26-slow', { visibilityTimeout: 2 })
-  aws.sqs.createQueue('m26-flaky', { redrive: { deadLetterQueue: 'm26-dlq', maxReceiveCount: 2 } })
-  aws.sqs.createQueue('m26-groups.fifo', { contentBasedDeduplication: true })
-  process.env.E2E_AWS_KEY_ID = awsUser.accessKeyId
-  process.env.E2E_AWS_SECRET = awsUser.secretAccessKey
-  process.env.E2E_AWS_ROLE = awsRole.arn
-  process.env.E2E_AWS_SERVER_ARN = awsServer.arn
-  process.env.E2E_AWS_USER_ARN = awsUser.arn
 
   // M27: fakes of Slack, HubSpot, SendGrid and Google Sheets (with Drive) on one server, and a GraphQL endpoint. Sheets
   // also takes the fake Google's tokens (`sa-…` for E2E_IAP_KEY's service account, `md-…` the server's identity).
   // Specs read state and seed spreadsheets through E2E_SERVICES's /_fake routes; the built-in REST API may reach
   // 127.0.0.1 (REST_API_PRIVATE_HOSTS), so specs call E2E_SERVICES's /_fake/echo with it.
   const services = await startFakeServices({
+    // Gmail (M37): a delegated key's tokens from the fake Google, as the mailbox each acts as.
+    gmailTrust: (token) => google.subjects.get(token) ?? null,
     sheetsTrust: (token) =>
       /^sa-\d+$/.test(token)
         ? 'tunnel@fake-project.iam.gserviceaccount.com'
@@ -235,6 +246,16 @@ export default async function globalSetup() {
   })
   const graphql = await startTestGraphql()
   process.env.E2E_SERVICES = services.url
+  // Gmail (M37): a support mailbox with an order mail and its attachment.
+  services.gmail.seed('support@optiply.nl', {
+    id: 'order-mail',
+    from: 'Ada <ada@example.com>',
+    to: 'support@optiply.nl',
+    subject: 'Order 1042: 3 lamps',
+    text: 'Please send 3 lamps.',
+    messageId: '<order-1042@example.com>',
+    attachments: [{ filename: 'order.csv', mimeType: 'text/csv', content: 'sku,qty\nLAMP,3\n' }],
+  })
   process.env.E2E_SERVICES_TOKENS = JSON.stringify({
     slack: services.slack.token,
     hubspot: services.hubspot.token,
@@ -270,7 +291,7 @@ export default async function globalSetup() {
     notion: { token: services.notion.token, database: '5e1d2c3b-4a59-4687-9a8b-7c6d5e4f3a2b' },
     salesforce: { clientId: services.salesforce.clientId, clientSecret: services.salesforce.clientSecret },
   })
-  // M35: fakes of Anthropic's Messages API and an OpenAI-compatible API on one server (markers in prompts steer them:
+  // M35, M37: fakes of Anthropic's Messages API, an OpenAI-compatible API, Gemini and Vertex AI on one server (markers in prompts steer them:
   // REFUSE_ME, RATE_LIMIT_ONCE, LABEL=). Specs read the URLs and keys from E2E_AI.
   const ai = await startFakeAi()
   process.env.E2E_AI = JSON.stringify({
@@ -278,6 +299,10 @@ export default async function globalSetup() {
     anthropicKey: ai.anthropicKey,
     openaiUrl: ai.openaiUrl,
     openaiKey: ai.openaiKey,
+    // M37: Gemini's API and Vertex AI.
+    geminiUrl: ai.geminiUrl,
+    geminiKey: ai.geminiKey,
+    vertexUrl: ai.vertexUrl,
   })
   // S3 (M29): an S3-compatible store in Docker where Docker runs (the spec's S3 part skips without E2E_S3).
   let s3: TestS3 | undefined
@@ -292,68 +317,10 @@ export default async function globalSetup() {
     })
   }
 
-  // Kafka (M26): a broker in Docker where Docker runs (specs skip without E2E_KAFKA), one topic per spec part.
-  // E2E_KAFKA is its plaintext listener; E2E_KAFKA_SCRAM its SASL-over-TLS one with a SCRAM-SHA-256 user and the CA.
-  let kafka: TestKafka | undefined
-  if (kafkaAvailable()) {
-    kafka = await startTestKafka()
-    for (const topic of [
-      'kafka-ui',
-      'm26-keys',
-      'm26-retry',
-      'm26-retry-dlt',
-      'm26-takeover',
-      'm26-produced',
-      'm30-avro',
-    ])
-      await kafka.createTopic(topic)
-    process.env.E2E_KAFKA = kafka.plaintext
-    process.env.E2E_KAFKA_SCRAM = JSON.stringify({
-      broker: kafka.saslSsl,
-      ...kafka.users.scram256,
-      ca: kafka.ca,
-      clientCertificate: kafka.clientCertificate,
-      clientKey: kafka.clientKey,
-      mtls: kafka.mtls,
-    })
-  }
-  // M30: RabbitMQ in Docker where Docker runs (E2E_RABBIT; specs skip without it); SNS and Kinesis on the fake AWS (the
-  // server trusts the fake's certificate host through SNS_CERT_HOSTS, and its HTTP subscriptions post to the e2e
-  // server's webhooks); a fake Schema Registry with an Avro subject for Kafka. E2E_M30 names the topic and registry.
-  let rabbit: TestRabbit | undefined
-  if (rabbitAvailable()) {
-    rabbit = await startTestRabbit()
-    await rabbit.declare('m30-jobs', { deadLetterQueue: 'm30-jobs-dead' })
-    process.env.E2E_RABBIT = JSON.stringify({
-      host: rabbit.host,
-      port: rabbit.port,
-      username: rabbit.username,
-      password: rabbit.password,
-    })
-  }
+  // M30: a webhook's SNS option against the fake AWS's SNS (the server trusts the fake's certificate host through
+  // SNS_CERT_HOSTS, and its HTTP subscriptions post to the e2e server's webhooks). E2E_M30 names the topic.
   const m30Topic = aws.sns.createTopic('m30-orders')
-  aws.kinesis.createStream('m30-clicks')
-  const schemaRegistry = await startFakeRegistry()
-  const avroSchemaId = schemaRegistry.register('m30-avro-value', {
-    type: 'record',
-    name: 'Order',
-    fields: [
-      { name: 'id', type: 'long' },
-      { name: 'sku', type: 'string' },
-    ],
-  })
-  process.env.E2E_M30 = JSON.stringify({
-    topicArn: m30Topic,
-    registry: {
-      url: schemaRegistry.url,
-      username: schemaRegistry.username,
-      password: schemaRegistry.password,
-      avroSchemaId,
-    },
-  })
-
-  const kafkaPlain = () =>
-    kafkaClient({ brokers: [kafka!.plaintext], auth: 'none', tls: false, identity: 'key' }, {})
+  process.env.E2E_M30 = JSON.stringify({ topicArn: m30Topic })
 
   const iapControl = createServer((req, res) => {
     control(req, res).catch((err: unknown) => {
@@ -368,77 +335,18 @@ export default async function globalSetup() {
       res.end(JSON.stringify(body))
     }
     const param = (name: string) => url.searchParams.get(name) ?? ''
-    if (url.pathname === '/pubsub/publish' && req.method === 'POST')
-      return json({
-        messageId: pubsub.publish(param('topic'), param('data'), JSON.parse(param('attributes') || '{}')),
-      })
-    if (url.pathname === '/pubsub/messages') return json(pubsub.messages(param('subscription')))
-    if (url.pathname === '/sqs/send' && req.method === 'POST')
-      return json({
-        messageId: aws.sqs.send(param('queue'), param('body'), {
-          attributes: JSON.parse(param('attributes') || '{}'),
-          ...(param('groupId') ? { groupId: param('groupId') } : {}),
-        }),
-      })
-    if (url.pathname === '/sqs/messages') return json(aws.sqs.messages(param('queue')))
-    if (url.pathname === '/kafka/produce' && req.method === 'POST') {
-      const client = kafkaPlain()
-      try {
-        await produceTo(
-          client,
-          param('topic'),
-          [
-            {
-              ...(param('key') ? { key: param('key') } : {}),
-              value: param('value'),
-              headers: JSON.parse(param('headers') || '{}'),
-            },
-          ],
-          AbortSignal.timeout(10_000),
-        )
-      } finally {
-        await client.close()
-      }
-      return json({})
-    }
-    if (url.pathname === '/kafka/read') {
-      // A topic from its beginning, by a group of its own: what was produced to it (dead letters).
-      const client = kafkaPlain()
-      const consumer = await kafkaConsumer(client, {
-        groupId: `e2e-reader-${randomBytes(4).toString('hex')}`,
-        topics: [param('topic')],
-        startAt: 'earliest',
-        onAssign() {},
-        onRevoke() {},
-      })
-      const got: { key: string | null; value: string | null; headers: Record<string, string> }[] = []
-      try {
-        const deadline = Date.now() + 10_000
-        while (got.length < Number(param('count') || 1) && Date.now() < deadline)
-          for (const m of await consumer.consume(10, 500))
-            got.push({ key: m.key, value: m.value?.toString() ?? null, headers: m.headers })
-      } finally {
-        await consumer.close()
-        await client.close()
-      }
-      return json(got)
-    }
-    if (url.pathname === '/pubsub/published') return json(pubsub.published(param('topic')))
-    // M30: subscribe a webhook to an SNS topic (the fake sends its SubscriptionConfirmation at once), and whether it
-    // confirmed; what an SNS topic was sent; what's left in a RabbitMQ queue (read and acked).
+    // M30: subscribe a webhook to an SNS topic (the fake sends its SubscriptionConfirmation at once), whether it
+    // confirmed, and publish to the topic (each confirmed subscription is posted a signed Notification).
     if (url.pathname === '/sns/subscribe' && req.method === 'POST') {
       await aws.sns.subscribe(param('topicArn'), param('endpoint'))
       return json({})
     }
     if (url.pathname === '/sns/confirmed')
       return json(aws.sns.confirmed(param('topicArn'), param('endpoint')))
-    if (url.pathname === '/sns/messages')
-      return json(aws.sns.messages.filter((m) => m.topicArn === param('topicArn')))
-    if (url.pathname === '/rabbit/drain') return json(await rabbit!.drain(param('queue')))
-    if (url.pathname === '/pubsub/redeliver' && req.method === 'POST') {
-      pubsub.redeliver(param('subscription'), param('messageId'))
-      return json({})
-    }
+    if (url.pathname === '/sns/publish' && req.method === 'POST')
+      return json({
+        messageId: await aws.sns.publish(param('topicArn'), param('message'), param('subject') || undefined),
+      })
     if (req.method === 'POST' && url.pathname === '/drop') iap.dropAll()
     else if (req.method === 'POST' && url.pathname === '/refuse-next')
       iap.refuseNext(Number(url.searchParams.get('code')), url.searchParams.get('reason') ?? '')
@@ -506,6 +414,8 @@ export default async function globalSetup() {
     SESSION_SECRET: randomBytes(32).toString('base64url'),
     ENCRYPTION_KEYS: `v1:${randomBytes(32).toString('base64')}`,
     LOCAL_LOGIN_ENABLED: 'true',
+    // The specs check grants on their own ("No access to …"): new objects start unshared here (session 54).
+    SHARE_NEW_WITH_EVERYONE: 'false',
     AUTO_MIGRATE: 'true',
     MIGRATIONS_DIR: `${serverDir}/../../packages/db/migrations`,
     WEB_DIST_DIR: webDist,
@@ -516,20 +426,17 @@ export default async function globalSetup() {
     GIT_POLL_SECONDS: '2',
     ...(executor && { PYTHON_EXECUTOR_URL: executor.url, PYTHON_EXECUTOR_TOKEN: executor.token }),
     ...(builder && { PYTHON_BUILDER_URL: builder.url, PYTHON_BUILDER_TOKEN: builder.token }),
+    ...(sdkRunner && { SDK_RUNNER_URL: sdkRunner.url, SDK_RUNNER_TOKEN: sdkRunner.token }),
     NPM_REGISTRY_URL: registry.url,
     NPM_ALLOW_INSECURE_REGISTRIES: 'true',
     COMPONENT_BUILD_DIR: componentBuilds,
     GOOGLE_SERVER_IDENTITY: 'allow',
     GOOGLE_IAP_URL: iap.url,
-    GOOGLE_PUBSUB_URL: pubsub.url,
     GOOGLE_TOKEN_URL: google.tokenUrl,
     // The server's identity is the fake metadata server's, never the developer's own gcloud login.
     GOOGLE_APPLICATION_CREDENTIALS: '',
     AWS_SERVER_IDENTITY: 'allow',
     AWS_STS_URL: aws.url,
-    AWS_SQS_URL: aws.url,
-    AWS_SNS_URL: aws.url,
-    AWS_KINESIS_URL: aws.url,
     SNS_CERT_HOSTS: new URL(aws.url).host,
     SLACK_API_URL: services.urls.slack,
     HUBSPOT_API_URL: services.urls.hubspot,
@@ -541,6 +448,9 @@ export default async function globalSetup() {
     AIRTABLE_API_URL: services.urls.airtable,
     NOTION_API_URL: services.urls.notion,
     SALESFORCE_URL: services.urls.salesforce,
+    GMAIL_API_URL: services.urls.gmail,
+    MICROSOFT_GRAPH_URL: services.urls.graph,
+    TEAMS_WEBHOOK_URL: services.urls.teamsWebhook,
     REST_API_PRIVATE_HOSTS: '127.0.0.1',
     // The server's own AWS credentials: the fake's `server` user, never the developer's.
     AWS_ACCESS_KEY_ID: awsServer.accessKeyId,
@@ -623,17 +533,15 @@ export default async function globalSetup() {
     await github.close()
     await gitlab.close()
     await executor?.stop()
+    await sdkRunner?.stop()
+    await new Promise((r) => sdkApi.close(r))
     await builder?.stop()
     await index?.stop()
     await privateIndex?.stop()
     volume?.remove()
     await new Promise((r) => iapControl.close(r))
     await iap.close()
-    await pubsub.close()
     await aws.close()
-    await kafka?.stop()
-    await rabbit?.stop()
-    await schemaRegistry.stop()
     await s3?.stop()
     await google.stop()
     await services.stop()

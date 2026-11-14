@@ -4,18 +4,10 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  kafkaAvailable,
-  rabbitAvailable,
   s3Available,
-  startFakeAws,
-  startFakePubSub,
   startTestIapServer,
-  startTestKafka,
-  startTestRabbit,
   startTestS3,
   startTestSshServer,
-  type TestKafka,
-  type TestRabbit,
   type TestS3,
 } from '@ow/connectors/testing'
 import { auditEvents, configVarValues, oauthTokens, permissions, resourceConfigs } from '@ow/db'
@@ -1054,146 +1046,15 @@ describe('Google IAP settings (M18)', () => {
   })
 })
 
-describe('Pub/Sub resources (M19)', () => {
-  const google = new FakeGoogle()
-  const keyLine = (JSON.parse(google.keyJson).private_key as string).split('\n')[5]!
-  const keyFile = join(mkdtempSync(join(tmpdir(), 'ow-pubsub-')), 'key.json')
-  let pubsub: Awaited<ReturnType<typeof startFakePubSub>>
+describe("S3 resources: the server's AWS credentials (M26)", () => {
   let id: string
-  let other: string
-  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
-    as.mutate('resources.saveConfig', {
-      resourceId,
-      environmentId: prodId,
-      config,
-      ...(secrets ? { secrets } : {}),
-    })
-  const configure = (identity: 'allow' | 'deny') =>
-    configureGoogle(
-      { GOOGLE_SERVER_IDENTITY: identity, GOOGLE_PUBSUB_URL: pubsub.url, GOOGLE_TOKEN_URL: google.tokenUrl },
-      { GOOGLE_APPLICATION_CREDENTIALS: keyFile },
-    )
+  const save = (as: ReturnType<typeof trpc>, config: object) =>
+    as.mutate('resources.saveConfig', { resourceId: id, environmentId: prodId, config })
 
   beforeAll(async () => {
-    SECRETS.push(keyLine)
-    await google.start()
-    writeFileSync(keyFile, google.keyJson)
-    pubsub = await startFakePubSub({ project: 'fake-project', pullWaitMs: 50 })
-    pubsub.createTopic('orders')
-    configure('deny')
-    id = data(
-      await admin.mutate('resources.create', { type: 'pubsub', name: 'Events', slug: 'events_m19' }),
-    ).id
-    other = data(
-      await admin.mutate('resources.create', { type: 'pubsub', name: 'More', slug: 'more_m19' }),
-    ).id
-    const groupId = data(await admin.mutate('groups.create', { name: 'Pub/Sub editors' })).id
-    await admin.mutate('groups.addMember', { groupId, userId: memberId })
-    for (const objectId of [id, other])
-      await admin.mutate('permissions.set', {
-        objectType: 'resource',
-        objectId,
-        groupId,
-        environmentId: prodId,
-        level: 'edit',
-      })
-  })
-  afterAll(async () => {
-    configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny' })
-    await pubsub.close()
-    await google.stop()
-  })
-
-  it('saves a key (masked), tests the connection as its account, and publishes', async () => {
-    expect((await save(admin, id, { identity: 'key' })).body.error?.message).toBe(
-      'Add the service account key',
-    )
-    const saved = await save(admin, id, { identity: 'key' }, { serviceAccountKey: google.keyJson })
-    expect(saved.status).toBe(200)
-    expect(data(saved).config).toEqual({ identity: 'key' })
-    expect(data(saved).secrets).toEqual({ serviceAccountKey: { set: true } })
-    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
-    expect(tested).toMatchObject({
-      ok: true,
-      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
-    })
-    const run = data(
-      await admin.mutate('resources.run', {
-        resourceId: id,
-        environmentId: prodId,
-        query: { topic: 'orders', messages: '{"data": {{ 6 * 7 }}}' },
-      }),
-    )
-    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
-    expect(pubsub.published('orders').at(-1)).toMatchObject({ data: '42' })
-  })
-
-  it("refuses the server's identity where the instance doesn't allow it, or without a project", async () => {
-    const refused = await save(admin, id, { identity: 'server', project: 'fake-project' })
-    expect(refused.status).toBe(400)
-    expect(refused.body.error?.message).toMatch(/doesn't let resources use its own Google identity/)
-    configure('allow')
-    expect((await save(admin, id, { identity: 'server' })).body.error?.message).toBe(
-      "Name the project: the server's identity has none of its own",
-    )
-  })
-
-  it("lets only admins use the server's identity for a project; editors keep it or go back to a key", async () => {
-    configure('allow')
-    const server = { identity: 'server', project: 'fake-project' }
-    expect((await save(member, other, server)).status).toBe(403)
-    expect((await save(member, other, server)).body.error?.message).toBe(
-      "Only admins can use this server's own Google identity for a Pub/Sub project",
-    )
-    expect((await save(admin, other, server)).status).toBe(200)
-    const [audit] = await env.db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.action, 'resource.config_saved'))
-      .orderBy(desc(auditEvents.at))
-      .limit(1)
-    expect(audit!.metadata).toMatchObject({ serverIdentityTarget: 'pubsub:fake-project' })
-    // Saved again as it is, yes; another project, no; Test connection with another project, no.
-    expect((await save(member, other, server)).status).toBe(200)
-    expect((await save(member, other, { ...server, project: 'elsewhere' })).status).toBe(403)
-    const moved = await member.mutate('resources.test', {
-      resourceId: other,
-      environmentId: prodId,
-      config: { ...server, project: 'elsewhere' },
-    })
-    expect(moved.status).toBe(403)
-    const tested = data(await member.mutate('resources.test', { resourceId: other, environmentId: prodId }))
-    expect(tested).toMatchObject({
-      ok: true,
-      message: 'Pub/Sub project fake-project as tunnel@fake-project.iam.gserviceaccount.com',
-    })
-    // Back to a key is anyone's to choose.
-    expect(
-      (await save(member, other, { identity: 'key' }, { serviceAccountKey: google.keyJson })).status,
-    ).toBe(200)
-  })
-})
-
-describe('SQS resources (M26)', () => {
-  let aws: Awaited<ReturnType<typeof startFakeAws>>
-  let user: ReturnType<Awaited<ReturnType<typeof startFakeAws>>['addUser']>
-  let id: string
-  const save = (as: ReturnType<typeof trpc>, resourceId: string, config: object, secrets?: object) =>
-    as.mutate('resources.saveConfig', {
-      resourceId,
-      environmentId: prodId,
-      config,
-      ...(secrets ? { secrets } : {}),
-    })
-
-  beforeAll(async () => {
-    aws = await startFakeAws({ sqs: { secondMs: 50 } })
-    user = aws.addUser('workflows')
-    SECRETS.push(user.secretAccessKey)
-    aws.sqs.createQueue('orders')
-    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
-    id = data(await admin.mutate('resources.create', { type: 'sqs', name: 'Queues', slug: 'queues_m26' })).id
-    const groupId = data(await admin.mutate('groups.create', { name: 'SQS editors' })).id
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
+    id = data(await admin.mutate('resources.create', { type: 's3', name: 'Bucket', slug: 'bucket_m26' })).id
+    const groupId = data(await admin.mutate('groups.create', { name: 'AWS editors' })).id
     await admin.mutate('groups.addMember', { groupId, userId: memberId })
     await admin.mutate('permissions.set', {
       objectType: 'resource',
@@ -1203,104 +1064,19 @@ describe('SQS resources (M26)', () => {
       level: 'edit',
     })
   })
-  afterAll(async () => {
-    configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' })
-    await aws.close()
-  })
+  afterAll(() => configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' }))
 
-  it('saves an access key (the secret masked), tests the connection as its user, and sends', async () => {
-    const config = { region: 'eu-west-1', identity: 'key', accessKeyId: user.accessKeyId }
-    expect((await save(admin, id, config)).body.error?.message).toBe('Add the secret access key')
-    const saved = await save(admin, id, config, { secretAccessKey: user.secretAccessKey })
-    expect(saved.status).toBe(200)
-    expect(data(saved).secrets).toEqual({ secretAccessKey: { set: true } })
-    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
-    expect(tested).toMatchObject({ ok: true, message: `SQS in eu-west-1 as ${user.arn}` })
-    const run = data(
-      await admin.mutate('resources.run', {
-        resourceId: id,
-        environmentId: prodId,
-        query: { queue: 'orders', messages: '{"body": {{ 6 * 7 }}}' },
-      }),
+  it("lets only admins choose the server's credentials or change their role; editors keep them", async () => {
+    const server = { region: 'eu-west-1', identity: 'server', bucket: 'exports' }
+    expect((await save(admin, server)).body.error?.message).toMatch(/doesn't let resources use its own AWS/)
+    configureAwsServer({ AWS_SERVER_IDENTITY: 'allow' })
+    expect((await save(member, server)).body.error?.message).toBe(
+      "Only admins can use this server's own AWS credentials, or change the region or role used with them",
     )
-    expect(run).toMatchObject({ ok: true, data: [{ messageId: expect.any(String) }] })
-    expect(aws.sqs.messages('orders').at(-1)).toMatchObject({ body: '42' })
-  })
-
-  it("lets only admins choose the server's credentials, change their role, or set an endpoint", async () => {
-    const server = { region: 'eu-west-1', identity: 'server' }
-    expect((await save(admin, id, server)).body.error?.message).toMatch(
-      /doesn't let resources use its own AWS/,
-    )
-    configureAwsServer({ AWS_SERVER_IDENTITY: 'allow', AWS_STS_URL: aws.url, AWS_SQS_URL: aws.url })
-    expect((await save(member, id, server)).body.error?.message).toBe(
-      "Only admins can use this server's own AWS credentials, or change the region, role or brokers used with them",
-    )
-    expect((await save(admin, id, server)).status).toBe(200)
-    expect((await save(member, id, server)).status).toBe(200)
+    expect((await save(admin, server)).status).toBe(200)
+    expect((await save(member, server)).status).toBe(200)
     const role = { ...server, roleArn: 'arn:aws:iam::123456789012:role/other' }
-    expect((await save(member, id, role)).status).toBe(403)
-    const endpoint = {
-      region: 'eu-west-1',
-      identity: 'key',
-      accessKeyId: user.accessKeyId,
-      endpoint: aws.url,
-    }
-    expect(
-      (await save(member, id, endpoint, { secretAccessKey: user.secretAccessKey })).body.error?.message,
-    ).toBe('Only admins can point an SQS resource at another endpoint')
-    expect((await save(admin, id, endpoint, { secretAccessKey: user.secretAccessKey })).status).toBe(200)
-    // Kept as it is by an editor, yes.
-    expect((await save(member, id, endpoint)).status).toBe(200)
-  })
-})
-
-describe.skipIf(!rabbitAvailable())('RabbitMQ resources (M30)', () => {
-  let rabbit: TestRabbit
-  let id: string
-  beforeAll(async () => {
-    rabbit = await startTestRabbit()
-    SECRETS.push(rabbit.password)
-    await rabbit.declare('m30-orders')
-    id = data(
-      await admin.mutate('resources.create', { type: 'rabbitmq', name: 'Broker', slug: 'broker_m30' }),
-    ).id
-  }, 120_000)
-  afterAll(async () => {
-    await rabbit?.stop()
-  })
-
-  it('checks the password on save, tests the connection, publishes', async () => {
-    const config = {
-      host: rabbit.host,
-      port: rabbit.port,
-      username: rabbit.username,
-      allowPrivateNetwork: true,
-    }
-    const save = (secrets?: object) =>
-      admin.mutate('resources.saveConfig', {
-        resourceId: id,
-        environmentId: prodId,
-        config,
-        ...(secrets ? { secrets } : {}),
-      })
-    expect((await save()).body.error?.message).toBe('Add the password')
-    expect((await save({ password: rabbit.password })).status).toBe(200)
-    expect(
-      data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId })),
-    ).toMatchObject({
-      ok: true,
-      message: expect.stringMatching(/^RabbitMQ 4/),
-    })
-    const run = data(
-      await admin.mutate('resources.run', {
-        resourceId: id,
-        environmentId: prodId,
-        query: { action: 'publish', routingKey: 'm30-orders', messages: '{"body": {"n": {{ 6 * 7 }}}}' },
-      }),
-    )
-    expect(run).toMatchObject({ ok: true, data: { published: 1 } })
-    expect((await rabbit.drain('m30-orders')).map((m) => m.body)).toEqual(['{"n":42}'])
+    expect((await save(member, role)).status).toBe(403)
   })
 })
 
@@ -1365,57 +1141,6 @@ describe.skipIf(!s3Available())('S3 resources (M29)', () => {
       data: { n: 42 },
     })
   })
-})
-
-describe.skipIf(!kafkaAvailable())('Kafka resources (M26)', () => {
-  let kafka: TestKafka
-  let id: string
-  const save = (config: object, secrets?: object) =>
-    admin.mutate('resources.saveConfig', {
-      resourceId: id,
-      environmentId: prodId,
-      config,
-      ...(secrets ? { secrets } : {}),
-    })
-
-  beforeAll(async () => {
-    kafka = await startTestKafka()
-    await kafka.createTopic('orders')
-    SECRETS.push(kafka.users.scram256.password)
-    id = data(
-      await admin.mutate('resources.create', { type: 'kafka', name: 'Cluster', slug: 'cluster_m26' }),
-    ).id
-  }, 120_000)
-  afterAll(async () => {
-    await kafka?.stop()
-  })
-
-  it('saves SCRAM over TLS (the password masked), tests the connection as its user, and produces', async () => {
-    const config = {
-      brokers: [kafka.saslSsl],
-      auth: 'scram-sha-256',
-      tls: true,
-      username: kafka.users.scram256.username,
-      caCertificate: kafka.ca,
-    }
-    expect((await save(config)).body.error?.message).toBe('Add the password')
-    const saved = await save(config, { password: kafka.users.scram256.password })
-    expect(saved.status).toBe(200)
-    expect(data(saved).secrets).toEqual({ password: { set: true } })
-    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
-    expect(tested).toMatchObject({
-      ok: true,
-      message: expect.stringContaining('as bob (SCRAM-SHA-256 over TLS)'),
-    })
-    const run = data(
-      await admin.mutate('resources.run', {
-        resourceId: id,
-        environmentId: prodId,
-        query: { topic: 'orders', messages: '{"key": "k", "value": {{ 6 * 7 }}}' },
-      }),
-    )
-    expect(run).toMatchObject({ ok: true, data: [{ partition: 0, baseOffset: '0' }] })
-  }, 60_000)
 })
 
 describe('no secret in any API response', () => {

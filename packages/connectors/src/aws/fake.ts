@@ -1,19 +1,17 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { type FakeKinesis, fakeKinesis } from './fake-kinesis'
 import { type FakeSns, fakeSns } from './fake-sns'
-import { type FakeSqs, type FakeSqsOptions, fakeSqs } from './fake-sqs'
 
 /**
- * A fake AWS for tests (M26): STS (`GetCallerIdentity`, `AssumeRole`) and SQS (`fake-sqs.ts`), on one local port.
- * Every request's SigV4 signature is checked against the key it names, so a test proves the right secret (or the
- * assumed role's session) signed it. Not AWS: one account, no policies beyond who may assume which role.
+ * A fake AWS for tests (M26): STS (`GetCallerIdentity`, `AssumeRole`), on one local port, and SNS's side of an HTTP
+ * subscription to a webhook (`fake-sns.ts`). Every signed request's SigV4 signature is checked against the key it
+ * names, so a test proves the right secret (or the assumed role's session) signed it. Not AWS: one account, no
+ * policies beyond who may assume which role.
  */
 export interface FakeAwsOptions {
   /** The account every identity is in. */
   account?: string
-  sqs?: FakeSqsOptions
 }
 
 export interface FakeAwsKey {
@@ -48,9 +46,7 @@ export interface FakeAws {
   close(): Promise<void>
   /** Service handlers by signed service name. */
   readonly handlers: Map<string, ServiceHandler>
-  sqs: FakeSqs
   sns: FakeSns
-  kinesis: FakeKinesis
 }
 
 export type ServiceHandler = (req: SignedRequest, res: ServerResponse) => void | Promise<void>
@@ -73,8 +69,7 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   const calls: FakeAws['calls'] = []
   const handlers = new Map<string, ServiceHandler>()
   let base = ''
-  const sns = fakeSns(handlers, account, () => base)
-  const kinesis = fakeKinesis(handlers, account)
+  const sns = fakeSns(account, () => base)
 
   function newKey(prefix: string, arn: string, extra: Partial<FakeAwsKey> = {}): FakeAwsKey {
     const key: FakeAwsKey = {
@@ -167,14 +162,11 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   const { port } = server.address() as AddressInfo
   const url = `http://127.0.0.1:${port}`
   base = url
-  const sqs = fakeSqs(handlers, account, () => url, opts.sqs)
 
   return {
     url,
     account,
-    sqs,
     sns,
-    kinesis,
     calls,
     handlers,
     addUser(name) {
@@ -196,7 +188,7 @@ export async function startFakeAws(opts: FakeAwsOptions = {}): Promise<FakeAws> 
   }
 }
 
-/** The action a request asks for: STS's form `Action`, or a JSON protocol's `X-Amz-Target` (`AmazonSQS.Receive…`). */
+/** The action a request asks for: STS's form `Action`, or a JSON protocol's `X-Amz-Target`. */
 function actionOf(service: string, headers: IncomingMessage['headers'], body: Buffer): string {
   const target = headers['x-amz-target']
   if (typeof target === 'string') return target.split('.').pop()!
@@ -287,11 +279,11 @@ function stsError(res: ServerResponse, status: number, code: string, message: st
   )
 }
 
-/** An error in AWS's JSON protocols (SQS): `__type` names it, as the SDK reads it. */
-export function jsonError(res: ServerResponse, status: number, code: string, message: string): void {
+/** An error in AWS's JSON protocols: `__type` names it, as the SDK reads it. */
+function jsonError(res: ServerResponse, status: number, code: string, message: string): void {
   res.writeHead(status, {
     'content-type': 'application/x-amz-json-1.0',
     'x-amzn-query-error': `${code};Sender`,
   })
-  res.end(JSON.stringify({ __type: `com.amazonaws.sqs#${code}`, message }))
+  res.end(JSON.stringify({ __type: `com.amazonaws#${code}`, message }))
 }

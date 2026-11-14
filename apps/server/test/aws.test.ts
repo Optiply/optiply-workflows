@@ -39,23 +39,15 @@ describe('the AWS identity on save', () => {
 describe('serverIdentityTarget for AWS', () => {
   beforeAll(() => configureAwsServer({ AWS_SERVER_IDENTITY: 'deny' }))
 
-  it("is the region and role of an SQS resource or Kafka's MSK IAM on the server's credentials", () => {
-    expect(serverIdentityTarget({ identity: 'key', region: 'eu-west-1' }, 'sqs')).toBe(null)
-    expect(serverIdentityTarget({ identity: 'server', region: 'eu-west-1' }, 'sqs')).toBe('aws:eu-west-1:')
+  it("is the region and role of an AWS resource on the server's credentials", () => {
+    expect(serverIdentityTarget({ identity: 'key', region: 'eu-west-1' }, 's3')).toBe(null)
+    expect(serverIdentityTarget({ identity: 'server', region: 'eu-west-1' }, 's3')).toBe('aws:eu-west-1:')
     const role = 'arn:aws:iam::123456789012:role/reader'
-    expect(serverIdentityTarget({ identity: 'server', region: 'eu-west-1', roleArn: role }, 'sqs')).toBe(
+    expect(serverIdentityTarget({ identity: 'server', region: 'eu-west-1', roleArn: role }, 's3')).toBe(
       `aws:eu-west-1:${role}`,
     )
-    // MSK IAM's brokers too: its signed token goes to them (review fix).
-    expect(
-      serverIdentityTarget(
-        { auth: 'aws-msk-iam', identity: 'server', region: 'us-east-1', brokers: ['b-2:9098', 'b-1:9098'] },
-        'kafka',
-      ),
-    ).toBe('aws:us-east-1::b-1:9098,b-2:9098')
-    // Only MSK IAM signs with AWS: a leftover identity under another auth mode doesn't count.
-    expect(serverIdentityTarget({ auth: 'plain', identity: 'server', region: 'us-east-1' }, 'kafka')).toBe(
-      null,
-    )
+    // Kafka, SQS, SNS and Kinesis were removed (session 54): their types no longer reach the server's credentials.
+    for (const type of ['kafka', 'sqs', 'sns', 'kinesis'])
+      expect(serverIdentityTarget({ identity: 'server', region: 'us-east-1' }, type)).toBe(null)
   })
 })

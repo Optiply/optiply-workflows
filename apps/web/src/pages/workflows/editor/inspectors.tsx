@@ -10,7 +10,6 @@ import {
   type Diagnostic,
   isTrigger,
   MAX_LOOP_CONCURRENCY,
-  QUEUE_TRIGGER_KINDS,
   renameBlock,
   resolveBlockSettings,
   TASK_DUE_UNITS,
@@ -27,14 +26,7 @@ import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { useGraphqlSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
-import {
-  defaultQuery,
-  isMessageKind,
-  MESSAGE_QUERIES,
-  type MessageKind,
-  type QueryKind,
-  queryKind,
-} from '@/lib/resource-types'
+import { defaultQuery, type QueryKind, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -387,10 +379,10 @@ function EnabledTriggers({ name }: { name: string }) {
   const triggers = useEditor((s) => s.definition.triggers)
   const on = [
     triggers?.webhook?.enabled ? 'Webhook' : null,
-    ...(['schedules', ...QUEUE_TRIGGER_KINDS] as const).map((kind) => {
-      const n = (triggers?.[kind] ?? []).filter((t) => t.enabled).length
-      return n ? `${TRIGGER_LABELS[kind]}${n > 1 ? ` (${n})` : ''}` : null
-    }),
+    (() => {
+      const n = (triggers?.schedules ?? []).filter((t) => t.enabled).length
+      return n ? `Schedule${n > 1 ? ` (${n})` : ''}` : null
+    })(),
   ].filter(Boolean)
   return (
     <div className="flex flex-col gap-1.5">
@@ -404,15 +396,6 @@ function EnabledTriggers({ name }: { name: string }) {
     </div>
   )
 }
-
-const TRIGGER_LABELS = {
-  schedules: 'Schedule',
-  pubsub: 'Pub/Sub',
-  sqs: 'SQS',
-  kafka: 'Kafka',
-  rabbitmq: 'RabbitMQ',
-  kinesis: 'Kinesis',
-} as const
 
 function CodeForm({ block, ctx }: { block: BlockOf<'code'>; ctx: FormContext }) {
   return (
@@ -553,20 +536,15 @@ function QueryEditor({
     ? queryKind(current.type)
     : typeof query.sql === 'string'
       ? 'sql'
-      : typeof query.messages === 'string'
-        ? typeof query.queue === 'string'
-          ? 'sqs'
-          : 'pubsub'
-        : typeof query.action === 'string'
-          ? null
-          : typeof query.operationId === 'string'
-            ? 'openapi'
-            : typeof query.url === 'string'
-              ? 'restapi'
-              : typeof query.query === 'string'
-                ? 'graphql'
-                : 'rest'
-  const messageKind = kind !== null && isMessageKind(kind) ? kind : null
+      : typeof query.action === 'string'
+        ? null
+        : typeof query.operationId === 'string'
+          ? 'openapi'
+          : typeof query.url === 'string'
+            ? 'restapi'
+            : typeof query.query === 'string'
+              ? 'graphql'
+              : 'rest'
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
 
   return (
@@ -610,15 +588,6 @@ function QueryEditor({
             onChange={(sql) => setQuery({ sql })}
           />
         </EditorField>
-      ) : messageKind ? (
-        <MessageQueryForm
-          kind={messageKind}
-          query={query}
-          setQuery={setQuery}
-          ctx={ctx}
-          at={at}
-          models={models}
-        />
       ) : kind === 'service' && current && isServiceType(current.type) ? (
         <ActionQueryForm
           type={current.type}
@@ -670,52 +639,6 @@ function QueryEditor({
           builtIn={kind === 'restapi'}
         />
       )}
-    </div>
-  )
-}
-
-/**
- * A message resource's query (Pub/Sub M19, SQS and Kafka M26): send to a topic or queue, messages as JSON with
- * `{{ }}`.
- */
-function MessageQueryForm({
-  kind,
-  query,
-  setQuery,
-  ctx,
-  at,
-  models,
-}: {
-  kind: MessageKind
-  query: Record<string, unknown>
-  setQuery: (patch: Record<string, unknown>) => void
-  ctx: FormContext
-  at: (string | number)[]
-  models: string
-}) {
-  const q = MESSAGE_QUERIES[kind]
-  return (
-    <div className="flex flex-col gap-4">
-      <Field label={q.label} hint={q.hint}>
-        <Input
-          className="font-mono"
-          placeholder="orders"
-          data-testid={`query-${q.target}`}
-          value={String(query[q.target] ?? '')}
-          onChange={(e) => setQuery({ [q.target]: e.target.value })}
-        />
-      </Field>
-      <EditorField label="Messages" hint={q.messagesHint}>
-        <Code
-          path={ctx.modelPath(`${models}messages`)}
-          language="plaintext"
-          height={140}
-          value={String(query.messages ?? '')}
-          problems={ctx.problemsAt(...at, 'query', 'messages')}
-          text={ctx.text(...at, 'query', 'messages')}
-          onChange={(messages) => setQuery({ messages })}
-        />
-      </EditorField>
     </div>
   )
 }

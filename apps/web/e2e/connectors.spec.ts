@@ -43,6 +43,9 @@ test('a Slack resource: the picker, its token, Test connection, and a message fr
     'Jira',
     'Notion',
     'Salesforce',
+    // M37
+    'Gmail',
+    'Microsoft Teams',
   ])
   await expect(type.locator('option[value="restapi"]')).toHaveCount(0)
   await type.selectOption('slack')

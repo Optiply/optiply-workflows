@@ -38,6 +38,8 @@ export interface QueryContext {
   credentials?: CredentialSource
   /** AI resources (M35): the run's token budget so far and, in workflows, the workflows an agent may call. */
   ai?: AiRunContext
+  /** What the query prints as it runs (an SDK's prints, M37), for the run's log; ignored where there's none. */
+  log?: (level: 'log' | 'info' | 'warn' | 'error', message: string) => void
 }
 
 /**
@@ -141,6 +143,12 @@ export type ConnectorErrorCode =
   | 'ai_budget'
   | 'ai_invalid_output'
   | 'ai_max_steps'
+  /** SDK resources (M37): the SDK failed (its type and HTTP status in details), a method that isn't there, the
+   * SDK's packages couldn't be installed, the SDK runner isn't there or busy. */
+  | 'sdk'
+  | 'sdk_method'
+  | 'sdk_install'
+  | 'sdk_unavailable'
 
 /** Every failure surfaced to users. Messages and details are scrubbed of the resource's secrets. */
 export class ConnectorError extends Error {

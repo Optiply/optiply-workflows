@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { Field, Input, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
+import { SdkBrowser } from './sdk-browser'
 
 // The service resources' query forms (M27), drawn from `@ow/connectors/actions`: an action, then its fields. The same
 // form in the workflow inspector, the playground and the app editor; each host brings its own code editor.
@@ -134,6 +135,12 @@ export function ActionQueryForm({
           </Field>
         )
       })}
+      {type === 'sdk' && lookup && !disabled && (
+        <SdkBrowser
+          lookup={lookup}
+          onPick={(method) => onChange({ ...switchAction('sdk', query, 'call'), method }, true)}
+        />
+      )}
     </div>
   )
 }

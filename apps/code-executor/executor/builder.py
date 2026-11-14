@@ -9,7 +9,10 @@ the code executor reads, so its Python blocks can import them. It alone has netw
                  -> {"ok": true, "envId": "...", "sizeBytes": n, "cached": bool, "log": "..."}
   POST /check-index {"index": {...}}  (M32: whether an index answers, and takes its sign-in)
                  -> {"ok": true, "status": 200} or {"ok": false, "status": 401, "message": "..."}
-  GET  /health   -> {"ok": true, "python": "3.12.x", "platform": "cp312-linux-aarch64", "pip": "..."}
+  POST /build-npm {"dependencies": {"acme-sdk": "^2.1.0"}, "registries": [{"scope": "@acme" | null, "url", "token"?}]}
+                 (M37: an SDK resource's JavaScript packages) -> {"ok": true, "envId", "lock": {"node", "dependencies",
+                 "packages": {name: version}}, "sizeBytes", "cached", "log"}
+  GET  /health   -> {"ok": true, "python": "3.12.x", "platform": "cp312-linux-aarch64", "pip": "...", "node": "v24…"}
 
 /build and /install also take `indexes` (M32): [{"name", "url", "username"?, "password"?, "mode"}], an admin's
 package indexes, `primary` (instead of PYTHON_PACKAGE_INDEX_URL) or `extra` (searched with it). They're used for that
@@ -25,6 +28,11 @@ indexes, downloads it itself (no package code runs to read its metadata), downlo
 wheels, and builds the wheel in nsjail (sdist-jail.cfg: no network, no token, not the envs volume). Built wheels are
 kept by the sdist's hash (`envs/.wheels/<sha256>/`); resolving then runs again with them. In the lock such a package
 has its sdist's hash and `"source": "sdist"`. Failures of that build are kind `sdist`.
+
+JavaScript envs (M37) are `envs/node/<envId>/node_modules` (envId: the hash of the dependencies, the registries' scopes
+and URLs, and Node's major version), installed by npm without install scripts (`--ignore-scripts`: no package code
+runs here), with `lock.json` and `used` beside them; the registries' tokens reach npm through a userconfig file
+outside the env, removed after. Failures as /build's, kinds `resolve`, `install`, `too_big`, `timeout`, `invalid`.
 
 A lock is {"platform", "packages": [{"name", "version", "sha256", "index"?, "source"?}]}, sorted by name; its env is `envs/<envId>/site`
 (envId: the lock's hash), with `lock.json` beside it and `used` touched whenever a build or install names it. Envs
@@ -666,6 +674,10 @@ def index_refusal(indexes, deadline):
 def hide(text, body):
     """The text without any password a request's indexes carry (pip may echo one, decoded or not)."""
     raw = body.get("indexes") if isinstance(body.get("indexes"), list) else [body.get("index")]
+    # npm registries' tokens too (M37's /build-npm).
+    raw = list(raw) + [
+        {"password": r.get("token")} for r in (body.get("registries") or []) if isinstance(r, dict)
+    ] if isinstance(body.get("registries"), list) else raw
     for index in raw:
         password = index.get("password") if isinstance(index, dict) else None
         if isinstance(password, str) and len(password) >= 3:
@@ -861,6 +873,136 @@ def unused(used, now):
     return os.path.isfile(used) and now - os.stat(used).st_mtime > KEEP_DAYS * 86400
 
 
+# SDK resources' JavaScript packages (M37).
+NODE_ENVS = os.path.join(ENVS, "node")
+NPM_NAME = re.compile(r"^(@[a-z0-9-~][a-z0-9-._~]*/)?[a-z0-9-~][a-z0-9-._~]*$")
+NPM_RANGE = re.compile(r"^[A-Za-z0-9.^~<>=*|+ -]{1,100}$")
+NPM_SCOPE = re.compile(r"^@[a-z0-9-~][a-z0-9-._~]*$")
+MAX_NPM_DEPENDENCIES = 20
+ALLOW_INSECURE_NPM = os.environ.get("NPM_ALLOW_INSECURE_REGISTRIES", "").lower() in ("1", "true", "yes")
+NODE_VERSION = ""
+
+
+def check_npm(body):
+    """The dependencies and registries, checked: names npm takes, ranges or tags (no URLs, git or paths), https
+    registries (http only when allowed), tokens without spaces."""
+    deps = body.get("dependencies")
+    if not isinstance(deps, dict) or not 0 < len(deps) <= MAX_NPM_DEPENDENCIES:
+        raise BuildError("invalid", f"Expected dependencies: 1 to {MAX_NPM_DEPENDENCIES} packages with their versions")
+    for name, spec in deps.items():
+        if not isinstance(name, str) or len(name) > 214 or not NPM_NAME.match(name):
+            raise BuildError("invalid", f"{name!r} isn't an npm package name")
+        if not isinstance(spec, str) or not NPM_RANGE.match(spec) or ":" in spec or "/" in spec:
+            raise BuildError("invalid", f"{name}: {spec!r} isn't a version, range or tag")
+    registries = body.get("registries") or []
+    if not isinstance(registries, list) or len(registries) > 20:
+        raise BuildError("invalid", "Expected registries: at most 20")
+    checked = []
+    for r in registries:
+        if not isinstance(r, dict):
+            raise BuildError("invalid", "A registry is {scope, url, token?}")
+        scope, url, token = r.get("scope"), r.get("url"), r.get("token")
+        if scope is not None and not (isinstance(scope, str) and NPM_SCOPE.match(scope)):
+            raise BuildError("invalid", f"{scope!r} isn't an npm scope")
+        parsed = urllib.parse.urlparse(url if isinstance(url, str) else "")
+        if parsed.scheme not in ("https", "http") or not parsed.netloc or (parsed.scheme == "http" and not ALLOW_INSECURE_NPM):
+            raise BuildError("invalid", f"{url!r} isn't an https registry URL")
+        if token is not None and (not isinstance(token, str) or re.search(r"\s", token) or not token):
+            raise BuildError("invalid", "A registry's token has no spaces or line breaks")
+        checked.append({"scope": scope, "url": url if url.endswith("/") else url + "/", "token": token})
+    return {k: deps[k] for k in sorted(deps)}, checked
+
+
+def npm_env_id(deps, registries):
+    key = json.dumps(
+        {"deps": deps, "registries": [[r["scope"], r["url"]] for r in registries], "node": NODE_VERSION.split(".")[0]},
+        sort_keys=True,
+    )
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
+def npmrc(registries):
+    lines = []
+    for r in registries:
+        lines.append(f"{r['scope']}:registry={r['url']}" if r["scope"] else f"registry={r['url']}")
+        if r["token"]:
+            u = urllib.parse.urlparse(r["url"])
+            path = u.path if u.path.endswith("/") else u.path + "/"
+            lines.append(f"//{u.netloc}{path}:_authToken={r['token']}")
+    return "\n".join(lines) + "\n"
+
+
+def build_npm(body):
+    deps, registries = check_npm(body)
+    eid = npm_env_id(deps, registries)
+    root = os.path.join(NODE_ENVS, eid)
+    os.makedirs(NODE_ENVS, exist_ok=True)
+    with env_lock(f"node-{eid}"):
+        lock_path = os.path.join(root, "lock.json")
+        if os.path.isfile(lock_path) and os.path.isdir(os.path.join(root, "node_modules")):
+            touch(os.path.join(root, "used"))
+            with open(lock_path) as f:
+                return {"ok": True, "envId": eid, "lock": json.load(f), "sizeBytes": dir_size(root), "cached": True, "log": ""}
+        if not builds.acquire(timeout=BUILD_TIMEOUT_S):
+            return None
+        work = home = None
+        try:
+            work = tempfile.mkdtemp(prefix=".tmp-", dir=NODE_ENVS)
+            # The SDK runner's jails read it as nobody (mkdtemp makes it the builder's alone).
+            os.chmod(work, 0o755)
+            home = tempfile.mkdtemp(prefix="ow-npm-")
+            with open(os.path.join(work, "package.json"), "w") as f:
+                json.dump({"name": "ow-sdk-env", "private": True, "dependencies": deps}, f)
+            userconfig = os.path.join(home, ".npmrc")
+            with open(userconfig, "w") as f:
+                f.write(npmrc(registries))
+            os.chmod(userconfig, 0o600)
+            env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "npm_config_cache": os.path.join(home, "cache")}
+            try:
+                done = subprocess.run(
+                    ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev", "--no-update-notifier",
+                     "--userconfig", userconfig, "--globalconfig", os.path.join(home, "global-npmrc")],
+                    cwd=work, env=env, capture_output=True, text=True, timeout=BUILD_TIMEOUT_S,
+                )
+            except subprocess.TimeoutExpired:
+                raise BuildError("timeout", f"npm didn't finish within {int(BUILD_TIMEOUT_S)} s")
+            output = (done.stdout + done.stderr)[-MAX_LOG_CHARS:]
+            if done.returncode != 0:
+                kind = "resolve" if re.search(r"E404|ETARGET|No matching version|not in this registry", output) else "install"
+                raise BuildError(kind, first_npm_error(output) or f"npm install failed (exit {done.returncode})", output)
+            size = dir_size(work)
+            if size > MAX_ENV_BYTES:
+                raise BuildError("too_big", f"The packages take {size // (1024 * 1024)} MB, over the {MAX_ENV_BYTES // (1024 * 1024)} MB allowed", output)
+            with open(os.path.join(work, "package-lock.json")) as f:
+                locked = json.load(f).get("packages", {})
+            packages = {
+                path[len("node_modules/"):]: info.get("version")
+                for path, info in locked.items()
+                if path.startswith("node_modules/") and "/node_modules/" not in path[len("node_modules/"):]
+            }
+            lock = {"node": NODE_VERSION, "dependencies": deps, "packages": dict(sorted(packages.items()))}
+            with open(os.path.join(work, "lock.json"), "w") as f:
+                json.dump(lock, f)
+            touch(os.path.join(work, "used"))
+            shutil.rmtree(root, ignore_errors=True)
+            os.rename(work, root)
+            work = None
+            return {"ok": True, "envId": eid, "lock": lock, "sizeBytes": size, "cached": False, "log": output}
+        finally:
+            builds.release()
+            if home:
+                shutil.rmtree(home, ignore_errors=True)
+            if work:
+                shutil.rmtree(work, ignore_errors=True)
+
+
+def first_npm_error(output):
+    for line in output.splitlines():
+        if line.startswith("npm error") and not re.search(r"A complete log|^npm error\s*$", line):
+            return line[len("npm error"):].strip()[:300]
+    return None
+
+
 def clean():
     """Removes envs unused for KEEP_DAYS, wheels built from sdists unused as long, and temporary directories a crash
     left behind."""
@@ -878,9 +1020,27 @@ def clean():
                     shutil.rmtree(path, ignore_errors=True)
         except OSError:
             pass
+    # SDK resources' JavaScript envs (M37): unused ones, and a crash's temporary directories.
+    try:
+        node_envs = os.listdir(NODE_ENVS)
+    except OSError:
+        node_envs = []
+    for name in node_envs:
+        path = os.path.join(NODE_ENVS, name)
+        try:
+            if name.startswith(".tmp-"):
+                if now - os.stat(path).st_mtime > BUILD_TIMEOUT_S * 2:
+                    shutil.rmtree(path, ignore_errors=True)
+            elif unused(os.path.join(path, "used"), now):
+                with env_lock(f"node-{name}"):
+                    if unused(os.path.join(path, "used"), now):
+                        shutil.rmtree(path, ignore_errors=True)
+                        log("env_removed", envId=name, language="javascript")
+        except OSError:
+            pass
     for name in os.listdir(ENVS):
         path = os.path.join(ENVS, name)
-        if name == ".wheels":
+        if name in (".wheels", "node"):
             continue
         try:
             if name.startswith(".tmp-"):
@@ -971,7 +1131,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/health":
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
-        self.send_json(HTTPStatus.OK, {"ok": True, "python": PYTHON_VERSION, "platform": PLATFORM, "pip": PIP_VERSION})
+        self.send_json(
+            HTTPStatus.OK,
+            {"ok": True, "python": PYTHON_VERSION, "platform": PLATFORM, "pip": PIP_VERSION, "node": NODE_VERSION},
+        )
 
     def check_index(self, body):
         """POST /check-index: the index's root page, signed in; what its answer means for the Settings page."""
@@ -985,8 +1148,25 @@ class Handler(BaseHTTPRequestHandler):
             answer["message"] = hide(scrub(message), body)
         return self.send_json(HTTPStatus.OK, answer)
 
+    def build_npm(self, body):
+        """POST /build-npm (M37): an SDK's JavaScript packages, installed (or found) in envs/node."""
+        started = time.monotonic()
+        try:
+            answer = build_npm(body)
+        except BuildError as exc:
+            answer = {"ok": False, "error": {"kind": exc.kind, "message": hide(scrub(str(exc)), body)}, "log": hide(scrub(exc.output), body)}
+        except OSError as exc:
+            answer = {"ok": False, "error": {"kind": "install", "message": f"The env couldn't be written: {exc}"}, "log": ""}
+        if answer is None:
+            return self.refuse(HTTPStatus.SERVICE_UNAVAILABLE, "The builder is busy; try again")
+        if answer.get("ok"):
+            answer["log"] = hide(scrub(answer.get("log", "")), body)
+        error = answer.get("error")
+        log("build_npm", ms=round((time.monotonic() - started) * 1000), ok=answer["ok"], error=error and error["kind"], envId=answer.get("envId"), cached=answer.get("cached"))
+        self.send_json(HTTPStatus.OK, answer)
+
     def do_POST(self):
-        if self.path not in ("/build", "/install", "/check-index"):
+        if self.path not in ("/build", "/install", "/check-index", "/build-npm"):
             return self.refuse(HTTPStatus.NOT_FOUND, "Not found")
         if not self.authorized():
             return self.refuse(HTTPStatus.UNAUTHORIZED, "A valid bearer token is required")
@@ -999,6 +1179,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse(HTTPStatus.BAD_REQUEST, "Send a JSON object of at most 1 MB")
         if self.path == "/check-index":
             return self.check_index(body)
+        if self.path == "/build-npm":
+            return self.build_npm(body)
         if self.path == "/build":
             requirements = body.get("requirements")
             if (
@@ -1029,7 +1211,7 @@ PIP_VERSION = ""
 
 
 def main():
-    global PIP_VERSION
+    global PIP_VERSION, NODE_VERSION
     if not TOKEN or len(TOKEN) < 16:
         sys.exit("PYTHON_BUILDER_TOKEN must be set (16 characters or more)")
     os.makedirs(ENVS, exist_ok=True)
@@ -1037,6 +1219,10 @@ def main():
         PIP_VERSION = importlib.metadata.version("pip")
     except importlib.metadata.PackageNotFoundError:
         pass
+    try:
+        NODE_VERSION = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        NODE_VERSION = ""
     threading.Thread(target=cleaner, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True

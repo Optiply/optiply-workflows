@@ -1,6 +1,7 @@
 # Runbook: JavaScript packages
 
-Workflows and apps can use npm packages in their JavaScript code. Each workflow or app lists its packages, one a
+Workflows and apps can use npm packages in their JavaScript code (bundled for the sandbox: no Node built-ins; an SDK that
+needs Node, such as a company's, is an SDK resource instead: `docs/runbooks/sdk.md`). Each workflow or app lists its packages, one a
 line, and its code imports them at the top:
 
 ```js

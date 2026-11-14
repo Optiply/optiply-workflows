@@ -536,6 +536,7 @@ export const workflowReleases = pgTable(
   ],
 )
 
+// The queue trigger kinds (pubsub, sqs, kafka, rabbitmq, kinesis) were removed in session 54: rows kept, none created.
 export const TRIGGER_KINDS = ['webhook', 'schedule', 'pubsub', 'sqs', 'kafka', 'rabbitmq', 'kinesis'] as const
 
 /** A queue trigger's runtime state (Pub/Sub, SQS, Kafka), as its consumer reports it (`workflow_triggers.state`). */
@@ -704,6 +705,7 @@ export const RUN_STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'faile
  * `git` (M22): Settings → Git's notify workflow, run when a deploy's problems change. `app` (M36): an app's "Run
  * workflow" query, as the person using the app.
  */
+// Queue trigger runs (pubsub, sqs, kafka, rabbitmq, kinesis; removed in session 54) are kept; none are started.
 export const RUN_TRIGGER_TYPES = [
   'manual',
   'webhook',
@@ -1421,6 +1423,28 @@ export const retoolMappings = pgTable(
   ],
 )
 
+/**
+ * JDBC drivers admins uploaded (M38): a jar each, by its SHA-256, with the class that is its `java.sql.Driver`. JDBC
+ * resources pick one by id; the JDBC runner gets the jar the first time it needs it.
+ */
+export const jdbcDrivers = pgTable(
+  'jdbc_drivers',
+  {
+    id: id(),
+    name: text().notNull(),
+    className: text().notNull(),
+    fileName: text().notNull(),
+    sha256: text().notNull(),
+    size: integer().notNull(),
+    jar: bytea().notNull(),
+    uploadedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique('jdbc_drivers_name_uq').on(t.name)],
+)
+
+export type JdbcDriverRow = typeof jdbcDrivers.$inferSelect
 export type RetoolImport = typeof retoolImports.$inferSelect
 export type RetoolMapping = typeof retoolMappings.$inferSelect
 export type RunStatus = (typeof RUN_STATUSES)[number]

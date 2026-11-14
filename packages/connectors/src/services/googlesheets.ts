@@ -30,7 +30,7 @@ import {
 export const SHEETS_SCOPE =
   'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file'
 
-/** This process's Sheets settings, set once by the server (like `configurePubSub`). */
+/** This process's Sheets settings, set once by the server (like `configureAws`). */
 export interface SheetsDefaults {
   /** The server's own Google identity with the Sheets scope, only where the instance allows resources to use it. */
   serverIdentity?: ServerIdentity

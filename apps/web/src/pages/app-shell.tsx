@@ -169,20 +169,22 @@ export function AppShell() {
         </nav>
 
         <div className={cn('flex shrink-0 flex-col gap-0.5 py-3', collapsed ? 'px-2.5' : 'px-3')}>
-          <Link
-            to="/settings"
-            aria-label="Settings"
-            title={collapsed ? 'Settings' : undefined}
-            activeProps={{ className: navClass(true, collapsed) }}
-            inactiveProps={{ className: navClass(false, collapsed) }}
-          >
-            <span className="relative">
-              <Settings className="size-4" />
-              {me.isAdmin && <GitProblemsBadge className="absolute -top-2 -right-2" />}
-              {me.isAdmin && <PendingUsersBadge className="absolute -right-2 -bottom-2" />}
-            </span>
-            {!collapsed && <span>Settings</span>}
-          </Link>
+          {me.settings && (
+            <Link
+              to="/settings"
+              aria-label="Settings"
+              title={collapsed ? 'Settings' : undefined}
+              activeProps={{ className: navClass(true, collapsed) }}
+              inactiveProps={{ className: navClass(false, collapsed) }}
+            >
+              <span className="relative">
+                <Settings className="size-4" />
+                {me.isAdmin && <GitProblemsBadge className="absolute -top-2 -right-2" />}
+                {me.isAdmin && <PendingUsersBadge className="absolute -right-2 -bottom-2" />}
+              </span>
+              {!collapsed && <span>Settings</span>}
+            </Link>
+          )}
           {!narrow && (
             <button
               type="button"

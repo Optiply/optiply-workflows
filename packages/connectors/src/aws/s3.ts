@@ -25,7 +25,7 @@ import { type Connector, ConnectorError, type QueryResult } from '../types'
 import { awsCredentials, awsError, awsIdentityConfig, awsIdentitySecrets } from './credentials'
 
 // S3 and S3-compatible stores (M29): M26's AWS identity (an access key, a role, or the server's own credentials), an
-// optional endpoint for MinIO, Cloudflare R2 or Google Cloud Storage's interoperability (admins choose it, as SQS's),
+// optional endpoint for MinIO, Cloudflare R2 or Google Cloud Storage's interoperability (admins choose it),
 // and actions on objects: list, get, put, delete, copy, head, presigned URLs.
 
 const configSchema = z.object({

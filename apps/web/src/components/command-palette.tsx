@@ -121,13 +121,14 @@ export function GlobalPalette({ onClose, onSignOut }: { onClose: () => void; onS
       icon: icon(s.icon),
       run: () => navigate({ to: s.to }),
     }))
-    out.push({
-      id: 'page:/settings',
-      group: 'Pages',
-      label: 'Settings',
-      icon: icon(Settings),
-      run: () => navigate({ to: '/settings' }),
-    })
+    if (me.settings)
+      out.push({
+        id: 'page:/settings',
+        group: 'Pages',
+        label: 'Settings',
+        icon: icon(Settings),
+        run: () => navigate({ to: '/settings' }),
+      })
     for (const w of workflows.data ?? [])
       out.push({
         id: `wf:${w.id}`,

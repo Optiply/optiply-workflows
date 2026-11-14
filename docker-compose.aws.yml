@@ -1,6 +1,6 @@
-# Optional (M26): lets SQS resources and Kafka's MSK IAM use this server's own AWS credentials, taken from the host's
-# ~/.aws (mounted read-only; `aws configure` or `aws sso login`; AWS_PROFILE picks a profile). Only admins can choose
-# those credentials for a resource (docs/runbooks/sqs.md).
+# Optional (M26): lets S3 resources use this server's own AWS credentials, taken from the host's ~/.aws (mounted
+# read-only; `aws configure` or `aws sso login`; AWS_PROFILE picks a profile). Only admins can choose those credentials
+# for a resource (docs/runbooks/connectors.md, "Amazon S3").
 #
 #   docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d
 #

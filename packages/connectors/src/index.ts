@@ -1,24 +1,24 @@
 import { anthropicConnector } from './ai/anthropic'
+import { geminiConnector } from './ai/gemini'
 import { openaiCompatibleConnector } from './ai/openai'
-import { kinesisConnector } from './aws/kinesis'
 import { s3Connector } from './aws/s3'
-import { snsConnector } from './aws/sns'
-import { sqsConnector } from './aws/sqs'
 import { bigqueryConnector } from './bigquery'
 import { graphqlConnector } from './graphql'
-import { kafkaConnector } from './kafka/connector'
+import { jdbcConnector } from './jdbc/connector'
+import { mssqlConnector } from './mssql/connector'
 import { mysqlConnector } from './mysql'
 import { openapiConnector } from './openapi'
 import { postgresConnector } from './postgres'
-import { pubsubConnector } from './pubsub/connector'
-import { rabbitmqConnector } from './rabbitmq/connector'
 import type { RestConfig } from './rest'
 import { restConnector } from './rest'
 import { restApiConnector } from './restapi'
+import { sdkConnector } from './sdk/connector'
 import { airtableConnector } from './services/airtable'
+import { gmailConnector } from './services/gmail'
 import { googleSheetsConnector } from './services/googlesheets'
 import { hubspotConnector } from './services/hubspot'
 import { jiraConnector } from './services/jira'
+import { msteamsConnector } from './services/msteams'
 import { notionConnector } from './services/notion'
 import { salesforceConnector } from './services/salesforce'
 import { sendgridConnector } from './services/sendgrid'
@@ -28,6 +28,7 @@ import type { AnyConnector } from './types'
 
 export { anthropicConnector } from './ai/anthropic'
 export type { AiRunContext, AiToolHost, AiToolSpec } from './ai/core'
+export { configureGemini, type GeminiDefaults, geminiConnector, VERTEX_SCOPE } from './ai/gemini'
 export { openaiCompatibleConnector } from './ai/openai'
 export {
   AI_RESOURCE_TYPES,
@@ -51,17 +52,7 @@ export {
   configureAws,
   describeAws,
 } from './aws/credentials'
-export {
-  type KinesisRecord,
-  type KinesisResourceClient,
-  kinesisClient,
-  kinesisConnector,
-  kinesisRecord,
-  streamRef,
-} from './aws/kinesis'
 export { S3_MAX_BYTES, type S3Handle, s3Client, s3Connector } from './aws/s3'
-export { snsConnector, snsMessage } from './aws/sns'
-export { type SqsReceived, type SqsResourceClient, sqsClient, sqsConnector } from './aws/sqs'
 export { type BigQueryEndpoints, bigqueryConnector, createBigQueryConnector } from './bigquery'
 export {
   CodeFetcher,
@@ -88,38 +79,44 @@ export {
   httpError,
   httpRequest,
 } from './http-core'
+export { expandParams as jdbcExpandParams, jdbcConnector } from './jdbc/connector'
 export {
-  type KafkaAdmin,
-  type KafkaClientExtras,
-  type KafkaProducer,
-  type KafkaResourceClient,
-  kafkaClient,
-  kafkaError,
-  type RdkafkaSettings,
-  withSignal,
-} from './kafka/client'
+  configureJdbcForwarder,
+  JdbcForwarder,
+  type JdbcTunnel,
+  jdbcForwarder,
+  normalHost as jdbcNormalHost,
+} from './jdbc/forwarder'
 export {
-  type KafkaAuth,
-  type KafkaConfig,
-  type KafkaSecrets,
-  kafkaSettingsProblem,
-  usesTls,
-} from './kafka/config'
+  configureJdbcDrivers,
+  configureJdbcRunner,
+  type JarSource,
+  type JdbcQueryRequest,
+  type JdbcRunner,
+  JdbcRunnerClient,
+  jdbcRunner,
+  type UploadedDriver,
+} from './jdbc/runner'
 export {
-  kafkaConnector,
-  kafkaResourceClient,
-  type OutgoingKafkaMessage,
-  produceTo,
-} from './kafka/connector'
+  JDBC_DEFAULT_PORTS,
+  JDBC_DRIVERS,
+  JDBC_URL_PREFIXES,
+  JDBC_URL_TEMPLATES,
+  type JdbcConfig,
+  type JdbcConnection,
+  type JdbcDriver,
+  type JdbcSecrets,
+  jdbcConnection,
+  jdbcUrl,
+  snowflakeHost,
+} from './jdbc/settings'
 export {
-  type KafkaConsumerHandle,
-  type KafkaConsumerOptions,
-  type KafkaPartition,
-  type KafkaReceived,
-  kafkaConsumer,
-} from './kafka/consumer'
-export { type MskIamToken, mskIamToken } from './kafka/msk-iam'
-export { type SchemaRegistry, schemaRegistry, wireSchemaId } from './kafka/registry'
+  cellValue as mssqlCellValue,
+  endsTransaction as mssqlEndsTransaction,
+  MSSQL_AUTH_TYPES,
+  type MssqlAuth,
+  mssqlConnector,
+} from './mssql/connector'
 export { mysqlConnector } from './mysql'
 export { BlockedAddressError, isPrivateAddress } from './net-guard'
 export {
@@ -156,31 +153,6 @@ export {
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export {
-  MAX_ACK_DEADLINE_SECONDS,
-  type OutgoingMessage,
-  PubSubClient,
-  type PubSubMessage,
-  type ReceivedMessage,
-  resourcePath,
-  type SubscriptionInfo,
-} from './pubsub/client'
-export {
-  configurePubSub,
-  type PubSubDefaults,
-  type PubSubResourceClient,
-  pubsubClient,
-  pubsubConnector,
-} from './pubsub/connector'
-export {
-  type RabbitClient,
-  type RabbitConfig,
-  type RabbitSecrets,
-  rabbitClient,
-  rabbitConfigSchema,
-  rabbitError,
-} from './rabbitmq/client'
-export { publishTo, rabbitMessage, rabbitmqConnector } from './rabbitmq/connector'
-export {
   type AuthFlowStep,
   type RestAuth,
   type RestConfig,
@@ -193,8 +165,22 @@ export {
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { queryStats, type RunOptions, runOperation, runQuery, testResource } from './run'
+export { sdkAllowedHosts, sdkConnector } from './sdk/connector'
+export {
+  configureSdkEnvs,
+  configureSdkRunner,
+  type SdkEnvProvider,
+  type SdkEnvSpec,
+  type SdkOutcome,
+  type SdkRunner,
+  SdkRunnerClient,
+  type SdkRunRequest,
+  sdkEnvs,
+  sdkRunner,
+} from './sdk/runner'
 export { airtableConnector } from './services/airtable'
 export { configureServiceUrls, type ServiceUrls } from './services/common'
+export { configureGmail, GMAIL_SCOPE, type GmailDefaults, gmailConnector } from './services/gmail'
 export {
   configureSheets,
   googleSheetsConnector,
@@ -205,6 +191,7 @@ export {
 } from './services/googlesheets'
 export { type HubSpotProperty, hubspotConnector, hubspotProperties } from './services/hubspot'
 export { jiraConnector } from './services/jira'
+export { msteamsConnector, TEAMS_SCOPE } from './services/msteams'
 export { notionConnector } from './services/notion'
 export { salesforceConnector } from './services/salesforce'
 export { sendgridConnector } from './services/sendgrid'
@@ -244,6 +231,8 @@ export * from './types'
 export const connectors: Readonly<Record<string, AnyConnector>> = {
   [postgresConnector.type]: postgresConnector,
   [mysqlConnector.type]: mysqlConnector,
+  [mssqlConnector.type]: mssqlConnector,
+  [jdbcConnector.type]: jdbcConnector,
   [bigqueryConnector.type]: bigqueryConnector,
   [restConnector.type]: restConnector,
   [restApiConnector.type]: restApiConnector,
@@ -253,20 +242,18 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [hubspotConnector.type]: hubspotConnector,
   [sendgridConnector.type]: sendgridConnector,
   [googleSheetsConnector.type]: googleSheetsConnector,
-  [pubsubConnector.type]: pubsubConnector,
-  [sqsConnector.type]: sqsConnector,
-  [kafkaConnector.type]: kafkaConnector,
-  [rabbitmqConnector.type]: rabbitmqConnector,
-  [snsConnector.type]: snsConnector,
-  [kinesisConnector.type]: kinesisConnector,
   [s3Connector.type]: s3Connector,
   [stripeConnector.type]: stripeConnector,
   [airtableConnector.type]: airtableConnector,
   [jiraConnector.type]: jiraConnector,
   [notionConnector.type]: notionConnector,
   [salesforceConnector.type]: salesforceConnector,
+  [gmailConnector.type]: gmailConnector,
+  [msteamsConnector.type]: msteamsConnector,
+  [sdkConnector.type]: sdkConnector,
   [anthropicConnector.type]: anthropicConnector,
   [openaiCompatibleConnector.type]: openaiCompatibleConnector,
+  [geminiConnector.type]: geminiConnector,
 }
 
 export function getConnector(type: string): AnyConnector | undefined {

@@ -7,15 +7,7 @@ import { type MultipartPart, MultipartParts } from '@/components/multipart-parts
 import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
-import {
-  DEFAULT_GRAPHQL_QUERY,
-  DEFAULT_PUBSUB_QUERY,
-  isMessageKind,
-  MESSAGE_QUERIES,
-  type MessageKind,
-  PLACEHOLDERS,
-  queryKind,
-} from '@/lib/resource-types'
+import { DEFAULT_GRAPHQL_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -29,10 +21,6 @@ type RestBody =
 interface Draft {
   sql: string
   rest: { method: string; path: string; params: KeyValue[]; headers: KeyValue[]; body: RestBody }
-  /** A message resource's send: Pub/Sub's publish (M19), SQS's send and Kafka's produce (M26), by kind. */
-  pubsub: { topic: string; messages: string }
-  sqs: { queue: string; messages: string }
-  kafka: { topic: string; messages: string }
   /** The built-in REST API's request (M27): a full URL and its own sign-in. */
   restapi: Draft['rest'] & { url: string; auth: { type: string; [key: string]: string } }
   graphql: { query: string; variables: string; operationName: string; headers: KeyValue[] }
@@ -46,9 +34,6 @@ interface Draft {
 const EMPTY: Draft = {
   sql: 'select * from information_schema.tables limit 10',
   rest: { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } },
-  pubsub: DEFAULT_PUBSUB_QUERY,
-  sqs: { queue: '', messages: MESSAGE_QUERIES.sqs.messages },
-  kafka: { topic: '', messages: MESSAGE_QUERIES.kafka.messages },
   restapi: {
     method: 'GET',
     path: '',
@@ -64,19 +49,27 @@ const EMPTY: Draft = {
   scope: '{\n  \n}',
 }
 
+/** A first query in each SQL dialect that has no `LIMIT` (M38). */
+const STARTER_SQL: Record<string, string> = {
+  mssql: 'SELECT TOP 10 * FROM INFORMATION_SCHEMA.TABLES',
+  // Oracle (23ai), Snowflake and ClickHouse all take it.
+  jdbc: 'SELECT 1 AS ok',
+}
+
 /** Drafts are per resource and per browser; a convenience, so failures to read or write are ignored. */
-function loadDraft(resourceId: string): Draft {
+function loadDraft(resourceId: string, type: string): Draft {
+  const empty = STARTER_SQL[type] ? { ...EMPTY, sql: STARTER_SQL[type] } : EMPTY
   try {
     const raw = localStorage.getItem(`ow:playground:${resourceId}`)
-    return raw ? { ...EMPTY, ...JSON.parse(raw) } : EMPTY
+    return raw ? { ...empty, ...JSON.parse(raw) } : empty
   } catch {
-    return EMPTY
+    return empty
   }
 }
 
 export function Playground({ resource, environmentId }: { resource: ResourceDetail; environmentId: string }) {
   const trpc = useTRPC()
-  const [draft, setDraft] = useState<Draft>(() => loadDraft(resource.id))
+  const [draft, setDraft] = useState<Draft>(() => loadDraft(resource.id, resource.type))
   const run = useMutation(trpc.resources.run.mutationOptions())
   const configured = !!resource.environments.find((e) => e.environmentId === environmentId)?.config
   const kind = queryKind(resource.type)
@@ -105,17 +98,15 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     const query =
       kind === 'sql'
         ? { sql: draft.sql }
-        : isMessageKind(kind)
-          ? draft[kind]
-          : kind === 'restapi'
-            ? (({ path: _path, ...rest }) => rest)(draft.restapi)
-            : kind === 'graphql'
-              ? draft.graphql
-              : kind === 'openapi'
-                ? draft.openapi
-                : kind === 'service'
-                  ? serviceQuery
-                  : draft.rest
+        : kind === 'restapi'
+          ? (({ path: _path, ...rest }) => rest)(draft.restapi)
+          : kind === 'graphql'
+            ? draft.graphql
+            : kind === 'openapi'
+              ? draft.openapi
+              : kind === 'service'
+                ? serviceQuery
+                : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -159,8 +150,6 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
                 onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
               />
             </Field>
-          ) : isMessageKind(kind) ? (
-            <MessageDraft kind={kind} draft={draft} setDraft={setDraft} onKeyDown={onKeyDown} />
           ) : kind === 'service' && isServiceType(resource.type) ? (
             <ActionQueryForm
               type={resource.type}
@@ -450,46 +439,6 @@ function RestQueryEditor({
           </div>
         </Field>
       )}
-    </>
-  )
-}
-
-/** A message resource's playground query: where to, and the messages (sent for real). */
-function MessageDraft({
-  kind,
-  draft,
-  setDraft,
-  onKeyDown,
-}: {
-  kind: MessageKind
-  draft: Draft
-  setDraft: (draft: Draft) => void
-  onKeyDown: (e: KeyboardEvent) => void
-}) {
-  const q = MESSAGE_QUERIES[kind]
-  const current = draft[kind] as Record<string, string>
-  const update = (patch: Record<string, string>) => setDraft({ ...draft, [kind]: { ...current, ...patch } })
-  return (
-    <>
-      <Field label={q.label} hint={q.hint}>
-        <Input
-          className="font-mono"
-          placeholder="orders"
-          value={current[q.target] ?? ''}
-          onKeyDown={onKeyDown}
-          onChange={(e) => update({ [q.target]: e.target.value })}
-        />
-      </Field>
-      <Field label="Messages" hint={`${q.messagesHint} Running sends them for real.`}>
-        <Textarea
-          rows={8}
-          spellCheck={false}
-          className="font-mono text-[13px]"
-          value={current.messages ?? ''}
-          onKeyDown={onKeyDown}
-          onChange={(e) => update({ messages: e.target.value })}
-        />
-      </Field>
     </>
   )
 }

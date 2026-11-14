@@ -57,6 +57,8 @@ export interface ServiceAccountTokenOptions {
   scope: string
   /** Where the key is set, for errors (`serviceAccountKey`). */
   field: string
+  /** Domain-wide delegation (M37, Gmail): the Workspace user the service account acts as (the JWT's `sub`). */
+  subject?: string
   tokenUrl?: string
   dispatcher?: Dispatcher
 }
@@ -89,13 +91,14 @@ function cachedTokens(fetchToken: (signal: AbortSignal) => Promise<Token>): Goog
 
 async function fetchServiceAccountToken(
   key: ServiceAccountKey,
-  { scope, field, tokenUrl = GOOGLE_TOKEN_URL, dispatcher }: ServiceAccountTokenOptions,
+  { scope, field, subject, tokenUrl = GOOGLE_TOKEN_URL, dispatcher }: ServiceAccountTokenOptions,
   signal: AbortSignal,
 ): Promise<Token> {
   const now = Math.floor(Date.now() / 1000)
   const b64 = (json: object) => Buffer.from(JSON.stringify(json)).toString('base64url')
   const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({
     iss: key.client_email,
+    ...(subject && { sub: subject }),
     scope,
     aud: tokenUrl,
     iat: now,
@@ -112,7 +115,13 @@ async function fetchServiceAccountToken(
   return requestToken(
     tokenUrl,
     { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${unsigned}.${signature}` },
-    { signal, dispatcher, refused: 'Google refused the service account key' },
+    {
+      signal,
+      dispatcher,
+      refused: subject
+        ? `Google refused the service account key acting as ${subject} (is domain-wide delegation set up for its client id and these scopes?)`
+        : 'Google refused the service account key',
+    },
   )
 }
 

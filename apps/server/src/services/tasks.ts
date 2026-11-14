@@ -11,6 +11,16 @@ import {
 import { asc, desc, eq, inArray, type SQL, sql } from 'drizzle-orm'
 import { type Access, atLeast } from './permissions'
 
+/** The groups a user is in, with their names, by name (apps' `current_user.groups`, as Retool gives them). */
+export async function groupsOf(db: Db, userId: string): Promise<{ id: string; name: string }[]> {
+  return db
+    .select({ id: groups.id, name: groups.name })
+    .from(groupMembers)
+    .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+    .where(eq(groupMembers.userId, userId))
+    .orderBy(asc(groups.name))
+}
+
 /** The groups a user is in. */
 export async function groupIdsOf(db: Db, userId: string): Promise<string[]> {
   const rows = await db

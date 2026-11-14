@@ -4,7 +4,6 @@ import {
   type Db,
   type Environment,
   environments,
-  kinesisCheckpoints,
   resourceConfigs,
   type Workflow,
   type WorkflowRelease,
@@ -19,7 +18,6 @@ import {
   nextScheduleFire,
   type PythonLock,
   parseWebhookAlias,
-  type QueueTriggerKind,
   type ResolvedWebhook,
   resolveWebhookSettings,
   type ScheduleTrigger,
@@ -244,8 +242,6 @@ export async function setLiveRelease(
 interface ReleasePlan {
   /** Schedule name → environment id. */
   scheduleEnvironments: Map<string, string>
-  /** Queue trigger (`<kind>:<name>`: Pub/Sub, SQS, Kafka) → environment id. */
-  queueEnvironments: Map<string, string>
   aliasShape: string | null
   /** The Python packages' lock (M23), installed: null without packages or Python. */
   pythonLock: PythonLock | null
@@ -365,32 +361,6 @@ async function checkReleasable(
     }
     scheduleEnvironments.set(schedule.name, env.id)
   }
-  const queueEnvironments = new Map<string, string>()
-  for (const { kind, trigger } of queueTriggers(definition)) {
-    const label = QUEUE_LABELS[kind]
-    const env = trigger.environment ? envs.find((e) => e.slug === trigger.environment) : defaultEnv
-    if (!env) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: `${label} trigger "${trigger.name}" runs in environment "${trigger.environment}", which doesn't exist`,
-      })
-    }
-    queueEnvironments.set(`${kind}:${trigger.name}`, env.id)
-    // A trigger receives with its resource's settings in its environment: they must be there, or every pull would
-    // fail.
-    const resource = resources.find((r) => r.slug === trigger.resource)
-    if (!resource) continue
-    const [configured] = await db
-      .select({ id: resourceConfigs.id })
-      .from(resourceConfigs)
-      .where(and(eq(resourceConfigs.resourceId, resource.id), eq(resourceConfigs.environmentId, env.id)))
-    if (!configured) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: `${label} trigger "${trigger.name}" runs in environment "${env.slug}", where resource "${trigger.resource}" isn't configured`,
-      })
-    }
-  }
 
   const webhook = definition.triggers?.webhook
   if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)
@@ -435,7 +405,7 @@ async function checkReleasable(
     if (!(err instanceof BlockFailure)) throw err
     throw new TRPCError({ code: 'BAD_REQUEST', message: err.message })
   }
-  return { scheduleEnvironments, queueEnvironments, aliasShape, pythonLock, js }
+  return { scheduleEnvironments, aliasShape, pythonLock, js }
 }
 
 /**
@@ -549,20 +519,6 @@ async function projectTriggers(
     })
   }
 
-  for (const { kind, trigger } of queueTriggers({ triggers })) {
-    rows.push({
-      workflowId,
-      releaseId: release.id,
-      kind,
-      name: trigger.name,
-      enabled: trigger.enabled,
-      config: { ...queueDefaults(kind, workflowId, trigger.name), ...trigger },
-      environmentId: plan.queueEnvironments.get(`${kind}:${trigger.name}`)!,
-      aliasShape: null,
-      nextFireAt: null,
-    })
-  }
-
   const keep = rows.map((r) => find(r.kind, r.name)?.id).filter((id): id is string => !!id)
   await tx
     .delete(workflowTriggers)
@@ -576,64 +532,6 @@ async function projectTriggers(
     const current = find(row.kind, row.name)
     if (current) {
       await tx.update(workflowTriggers).set(row).where(eq(workflowTriggers.id, current.id))
-      // M30: a Kinesis trigger reading another stream (or the same name elsewhere) starts afresh: its checkpoints
-      // name the old stream's shards. After the update, which locks the row: the old adapter's saves wait for it.
-      if (row.kind === 'kinesis' && kinesisSourceChanged(current, row))
-        await tx.delete(kinesisCheckpoints).where(eq(kinesisCheckpoints.triggerId, current.id))
     } else await tx.insert(workflowTriggers).values(row)
-  }
-}
-
-/** Whether a Kinesis trigger now reads another stream, through another resource or in another environment. */
-function kinesisSourceChanged(
-  before: typeof workflowTriggers.$inferSelect,
-  after: typeof workflowTriggers.$inferInsert,
-): boolean {
-  const a = before.config as { stream?: string; resource?: string }
-  const b = after.config as { stream?: string; resource?: string }
-  return (
-    a.stream !== b.stream ||
-    a.resource !== b.resource ||
-    before.environmentId !== (after.environmentId ?? null)
-  )
-}
-
-const QUEUE_LABELS = {
-  pubsub: 'Pub/Sub',
-  sqs: 'SQS',
-  kafka: 'Kafka',
-  rabbitmq: 'RabbitMQ',
-  kinesis: 'Kinesis',
-} as const
-
-/** The definition's queue triggers (Pub/Sub M19, SQS and Kafka M26), each with its kind. */
-function queueTriggers(definition: Pick<WorkflowDefinition, 'triggers'>) {
-  const t = definition.triggers
-  return [
-    ...(t?.pubsub ?? []).map((trigger) => ({ kind: 'pubsub' as const, trigger })),
-    ...(t?.sqs ?? []).map((trigger) => ({ kind: 'sqs' as const, trigger })),
-    ...(t?.kafka ?? []).map((trigger) => ({ kind: 'kafka' as const, trigger })),
-    ...(t?.rabbitmq ?? []).map((trigger) => ({ kind: 'rabbitmq' as const, trigger })),
-    ...(t?.kinesis ?? []).map((trigger) => ({ kind: 'kinesis' as const, trigger })),
-  ]
-}
-
-/**
- * What a queue trigger leaves out, as its consumer reads it. Kafka's group is named after the workflow's id, so a
- * renamed workflow keeps its offsets.
- */
-function queueDefaults(kind: QueueTriggerKind, workflowId: string, name: string): Record<string, unknown> {
-  const shared = { maxInFlight: 4, maxHoldMinutes: 60 }
-  // RabbitMQ closes a channel whose delivery stays unacked past its consumer_timeout (30 minutes by default),
-  // handing every message on it back: the hold lets go before that.
-  if (kind === 'rabbitmq') return { ...shared, maxHoldMinutes: 25 }
-  if (kind === 'kinesis') return { ...shared, startAt: 'latest', maxAttempts: 3, retryBackoffSeconds: 10 }
-  if (kind !== 'kafka') return shared
-  return {
-    ...shared,
-    startAt: 'latest',
-    maxAttempts: 3,
-    retryBackoffSeconds: 10,
-    groupId: `ow-${workflowId}-${name}`,
   }
 }

@@ -604,12 +604,12 @@ describe('AppRuntime', () => {
     expect(t.effects).toEqual([{ type: 'notify', message: 'abc', tone: 'info' }])
   })
 
-  it('downloads CSV and JSON through utils', async () => {
+  it('downloads CSV, JSON and PDF through utils', async () => {
     const t = setup({
       queries: [
         js(
           'dl',
-          "utils.downloadFile([{ a: 1, b: '=1+1' }, { a: 'x,y' }], 'out.csv'); utils.downloadFile({ a: 1 }, 'o.json')",
+          "utils.downloadFile([{ a: 1, b: '=1+1' }, { a: 'x,y' }], 'out.csv'); utils.downloadFile({ a: 1 }, 'o.json'); utils.downloadFile('%PDF-1.4', 'report', 'pdf')",
         ),
       ],
     })
@@ -618,6 +618,7 @@ describe('AppRuntime', () => {
     expect(t.effects).toEqual([
       { type: 'download', data: 'a,b\r\n1,\'=1+1\r\n"x,y",\r\n', fileName: 'out.csv', mimeType: 'text/csv' },
       { type: 'download', data: '{\n  "a": 1\n}', fileName: 'o.json', mimeType: 'application/json' },
+      { type: 'download', data: '%PDF-1.4', fileName: 'report.pdf', mimeType: 'application/pdf' },
     ])
   })
 

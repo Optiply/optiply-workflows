@@ -3,7 +3,6 @@ import {
   permissions,
   pythonEnvs,
   pythonIndexes,
-  queueDeliveries,
   users,
   type Workflow,
   webhookRejections,
@@ -25,7 +24,7 @@ import { checkBodySchema } from '@ow/definition/body-schema'
 import { BlockFailure } from '@ow/engine'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { dependents, inUseMessage } from '../../services/dependents'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
@@ -33,6 +32,7 @@ import {
   type Access,
   checkFolderMove,
   checkFolderType,
+  grantDefaultAccess,
   loadAccess,
   requireLevel,
 } from '../../services/permissions'
@@ -126,7 +126,13 @@ export const workflowsRouter = router({
           n: sql<number>`count(*)::int`,
         })
         .from(workflowTriggers)
-        .where(and(inArray(workflowTriggers.workflowId, ids), eq(workflowTriggers.enabled, true)))
+        .where(
+          and(
+            inArray(workflowTriggers.workflowId, ids),
+            eq(workflowTriggers.enabled, true),
+            inArray(workflowTriggers.kind, LIVE_TRIGGER_KINDS),
+          ),
+        )
         .groupBy(workflowTriggers.workflowId, workflowTriggers.kind)
         .orderBy(asc(workflowTriggers.kind)),
       // One index probe per workflow (workflow_runs_workflow_idx), not a scan of every run.
@@ -206,34 +212,10 @@ export const workflowsRouter = router({
       .select({ trigger: workflowTriggers, environment: environments.slug })
       .from(workflowTriggers)
       .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
-      .where(eq(workflowTriggers.workflowId, workflow.id))
+      .where(
+        and(eq(workflowTriggers.workflowId, workflow.id), inArray(workflowTriggers.kind, LIVE_TRIGGER_KINDS)),
+      )
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
-    // Queue triggers (Pub/Sub M19, SQS and Kafka M26): their last day's messages, from what the consumer recorded.
-    const isQueue = (kind: string) =>
-      kind === 'pubsub' || kind === 'sqs' || kind === 'kafka' || kind === 'rabbitmq' || kind === 'kinesis'
-    const queueIds = rows.filter((r) => isQueue(r.trigger.kind)).map((r) => r.trigger.id)
-    const counts = new Map(
-      (queueIds.length
-        ? await ctx.db
-            .select({
-              triggerId: queueDeliveries.triggerId,
-              messages: sql<number>`count(*)::int`,
-              succeeded: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'succeeded')::int`,
-              failed: sql<number>`count(*) filter (where ${queueDeliveries.outcome} in ('failed', 'dead_lettered', 'dropped'))::int`,
-              deadLettered: sql<number>`count(*) filter (where ${queueDeliveries.outcome} = 'dead_lettered')::int`,
-            })
-            .from(queueDeliveries)
-            .where(
-              and(
-                inArray(queueDeliveries.triggerId, queueIds),
-                gt(queueDeliveries.updatedAt, sql`now() - interval '1 day'`),
-              ),
-            )
-            .groupBy(queueDeliveries.triggerId)
-        : []
-      ).map((c) => [c.triggerId, c]),
-    )
-    const now = Date.now()
     return rows.map(({ trigger, environment }) => ({
       id: trigger.id,
       kind: trigger.kind,
@@ -244,22 +226,6 @@ export const workflowsRouter = router({
       releaseId: trigger.releaseId,
       nextFireAt: trigger.nextFireAt,
       lastFiredAt: trigger.lastFiredAt,
-      ...(isQueue(trigger.kind) && {
-        queue: {
-          // Only a lease still current: a worker gone without a goodbye isn't pulling.
-          worker:
-            trigger.leaseOwner && trigger.leaseExpiresAt && trigger.leaseExpiresAt.getTime() > now
-              ? trigger.leaseOwner
-              : null,
-          state: trigger.state ?? null,
-          lastDay: {
-            messages: counts.get(trigger.id)?.messages ?? 0,
-            succeeded: counts.get(trigger.id)?.succeeded ?? 0,
-            failed: counts.get(trigger.id)?.failed ?? 0,
-            deadLettered: counts.get(trigger.id)?.deadLettered ?? 0,
-          },
-        },
-      }),
     }))
   }),
 
@@ -325,6 +291,7 @@ export const workflowsRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'workflow', workflow!.id, ctx.user)
       await ctx.audit({
         action: 'workflow.created',
         objectType: 'workflow',
@@ -519,8 +486,7 @@ export const workflowsRouter = router({
 
   /**
    * A copy of a workflow's draft under a new slug and name: no releases, not in Git, and **every trigger turned off**,
-   * so the copy doesn't fire schedules or webhooks, or share a queue subscription with the original, until someone
-   * turns them on. Needs Use on the original (whoever can open it can copy it) and the right to create workflows.
+   * so the copy doesn't fire schedules or webhooks until someone turns them on. Needs Use on the original (whoever can open it can copy it) and the right to create workflows.
    */
   duplicate: authedProcedure
     .input(z.object({ id: Id, slug: Slug, name: Name, folderId: Id.nullish() }))
@@ -550,6 +516,7 @@ export const workflowsRouter = router({
           })
           .returning(),
       )
+      await grantDefaultAccess(ctx.db, 'workflow', copy!.id, ctx.user)
       await ctx.audit({
         action: 'workflow.created',
         objectType: 'workflow',
@@ -560,7 +527,13 @@ export const workflowsRouter = router({
     }),
 })
 
-/** The definition with every trigger (schedules, webhooks, Pub/Sub, SQS, Kafka) turned off. */
+/**
+ * The trigger kinds that start runs: rows of the queue triggers removed in session 54 stay until the workflow's next
+ * release replaces them, and are left out.
+ */
+const LIVE_TRIGGER_KINDS: ('webhook' | 'schedule')[] = ['webhook', 'schedule']
+
+/** The definition with every trigger (the webhook and the schedules) turned off. */
 function withTriggersOff(definition: WorkflowDefinition): WorkflowDefinition {
   if (!definition.triggers) return definition
   const off = (t: unknown) =>

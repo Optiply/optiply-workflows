@@ -2,10 +2,12 @@ import { createVerify, generateKeyPairSync } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { type FakeAirtable, fakeAirtable } from './fake-airtable'
+import { type FakeGmail, fakeGmail } from './fake-gmail'
 import { type FakeJira, fakeJira } from './fake-jira'
 import { type FakeNotion, fakeNotion } from './fake-notion'
 import { type FakeSalesforce, fakeSalesforce } from './fake-salesforce'
 import { type FakeStripe, fakeStripe } from './fake-stripe'
+import { type FakeTeams, fakeTeams } from './fake-teams'
 
 // Fakes of the services M27 connects to, on one HTTP server for tests: Slack's Web API under `/slack/api`, HubSpot's
 // CRM under `/hubspot`, SendGrid under `/sendgrid`, Google Sheets under `/sheets/v4/spreadsheets` and Drive under
@@ -30,6 +32,11 @@ export interface FakeServices {
     /** Jira sites: a resource's site URL, not an instance setting. */
     jiraCloud: string
     jiraDataCenter: string
+    /** Gmail's API base (`GMAIL_API_URL`). */
+    gmail: string
+    /** Microsoft Graph (`MICROSOFT_GRAPH_URL`), and the prefix of the fake Teams webhooks (`TEAMS_WEBHOOK_URL`). */
+    graph: string
+    teamsWebhook: string
   }
   slack: FakeSlack
   hubspot: FakeHubSpot
@@ -40,6 +47,8 @@ export interface FakeServices {
   jira: FakeJira
   notion: FakeNotion
   salesforce: FakeSalesforce
+  gmail: FakeGmail
+  teams: FakeTeams
   calls: {
     service: string
     method: string
@@ -117,6 +126,8 @@ export async function startFakeServices(
     sendgridKey?: string
     /** Tokens issued elsewhere that Sheets takes all the same (another fake Google's), with whose they are. */
     sheetsTrust?: (token: string) => string | null
+    /** OAuth tokens issued elsewhere that Gmail takes, with the mailbox each is. */
+    gmailTrust?: (token: string) => string | null
   } = {},
 ): Promise<FakeServices> {
   const calls: FakeServices['calls'] = []
@@ -125,6 +136,8 @@ export async function startFakeServices(
   const jira = fakeJira()
   const notion = fakeNotion()
   const salesforce = fakeSalesforce()
+  const teams = fakeTeams(() => origin)
+  const gmail = fakeGmail({ ...(opts.gmailTrust && { trust: opts.gmailTrust }) })
   const slack: FakeSlack = {
     token: opts.slackToken ?? 'xoxb-fake-token',
     acceptTokens: new Set(),
@@ -604,11 +617,18 @@ export async function startFakeServices(
       .update(`${header}.${claims}`)
       .verify(publicKey, signature ?? '', 'base64url')
     const c = valid ? JSON.parse(Buffer.from(claims!, 'base64url').toString()) : {}
-    if (!valid || c.aud !== `${origin}/google/token` || !String(c.scope).includes('spreadsheets')) {
+    const scope = String(c.scope)
+    if (!valid || c.aud !== `${origin}/google/token` || !/spreadsheets|gmail/.test(scope)) {
       return { status: 400, json: { error: 'invalid_grant', error_description: 'Invalid JWT Signature.' } }
     }
     const token = `ya29.sa-${++tokens}`
-    sheets.acceptTokens.set(token, c.iss)
+    // Gmail (M37): a key acting as a mailbox (domain-wide delegation's `sub`); without one Gmail refuses it.
+    if (scope.includes('gmail')) {
+      if (!c.sub) {
+        return { status: 400, json: { error: 'invalid_grant', error_description: 'Gmail needs a subject' } }
+      }
+      gmail.state.acceptTokens.set(token, c.sub)
+    } else sheets.acceptTokens.set(token, c.iss)
     return { status: 200, json: { access_token: token, expires_in: 3599, token_type: 'Bearer' } }
   }
   const sheetsHandler: Handler = async (req, url, body) => {
@@ -784,6 +804,12 @@ export async function startFakeServices(
             [...hubspot.records].map(([type, records]) => [type, [...records.values()]]),
           ),
           sendgrid: sendgrid.mails,
+          // M37
+          gmail: { sent: gmail.state.sent },
+          teams: {
+            webhooks: teams.state.webhooks,
+            channels: teams.state.teams.flatMap((t) => t.channels.map((c) => ({ team: t.id, ...c }))),
+          },
           sheets: Object.fromEntries(sheets.spreadsheets),
           m29: {
             stripe: Object.fromEntries([...stripe.state.objects].map(([kind, m]) => [kind, [...m.values()]])),
@@ -848,6 +874,9 @@ export async function startFakeServices(
     ['/salesforce/', 'salesforce', salesforce.handler],
     ['/jira-cloud/', 'jira', jira.handler],
     ['/jira-dc/', 'jira', jira.handler],
+    ['/gmail/', 'gmail', gmail.handler],
+    ['/graph/', 'graph', teams.handler],
+    ['/teams-webhook/', 'teams', teams.webhook],
   ]
 
   const server = createServer(async (req, res: ServerResponse) => {
@@ -899,6 +928,9 @@ export async function startFakeServices(
       salesforce: `${origin}/salesforce`,
       jiraCloud: `${origin}/jira-cloud`,
       jiraDataCenter: `${origin}/jira-dc`,
+      gmail: `${origin}/gmail/gmail/v1`,
+      graph: `${origin}/graph/v1.0`,
+      teamsWebhook: `${origin}/teams-webhook/`,
     },
     slack,
     hubspot,
@@ -908,6 +940,8 @@ export async function startFakeServices(
     airtable: airtable.state,
     jira: jira.state,
     notion: notion.state,
+    gmail: gmail.state,
+    teams: teams.state,
     salesforce: salesforce.state,
     calls,
     stop: () => new Promise((resolve) => server.close(() => resolve())),

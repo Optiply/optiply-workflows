@@ -112,8 +112,8 @@ async function logsOf(
 beforeAll(async () => {
   fake = await startFakeAi()
   env = await startTestApp()
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
-  adminCookie = await login(env.app, 'admin@example.com')
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
+  adminCookie = await login(env.app, 'admin@optiply.nl')
   admin = trpc(env.app, adminCookie)
   prodId = data(await admin.query('environments.list')).find(
     (e: { slug: string }) => e.slug === 'production',

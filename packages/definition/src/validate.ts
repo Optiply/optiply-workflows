@@ -21,7 +21,6 @@ import {
   isTrigger,
   MAX_WAIT_MS,
   MIN_SCHEDULE_INTERVAL_MS,
-  type QueueTriggerKind,
   suspends,
   type WebhookTrigger,
   type WorkflowDefinition,
@@ -75,21 +74,6 @@ export type DiagnosticCode =
   | 'invalid_cron'
   | 'invalid_timezone'
   | 'duplicate_schedule'
-  /** A Pub/Sub trigger's settings: its resource (a `pubsub` one) or subscription name (M19). */
-  | 'invalid_pubsub'
-  | 'duplicate_pubsub'
-  /** An SQS trigger's settings (M26): its resource (an `sqs` one) or queue. */
-  | 'invalid_sqs'
-  | 'duplicate_sqs'
-  /** A Kafka trigger's settings (M26): its resource (a `kafka` one), topics, group or dead-letter topic. */
-  | 'invalid_kafka'
-  | 'duplicate_kafka'
-  /** A RabbitMQ trigger's settings (M30): its resource (a `rabbitmq` one) or queue. */
-  | 'invalid_rabbitmq'
-  | 'duplicate_rabbitmq'
-  /** A Kinesis trigger's settings (M30): its resource (a `kinesis` one) or stream. */
-  | 'invalid_kinesis'
-  | 'duplicate_kinesis'
   | 'error_trigger'
   | 'handler_overlap'
   | 'not_in_function'
@@ -147,8 +131,6 @@ export interface Diagnostic {
 
 /** What the validator needs from a connector; `AnyConnector` from @ow/connectors fits. */
 export interface QueryValidator {
-  /** The resource type (`postgres`, `pubsub`, …): a Pub/Sub trigger needs a `pubsub` resource. */
-  type?: string
   querySchema: z.ZodType
   validateQuery(query: never): TemplateError[]
 }
@@ -990,11 +972,6 @@ function checkTriggers(
   }
   if (def.triggers?.webhook)
     checkWebhook(def.triggers.webhook, (path) => at(['webhook', ...path]), report, options)
-  checkQueueTriggers('pubsub', def.triggers?.pubsub, at, report, options)
-  checkQueueTriggers('sqs', def.triggers?.sqs, at, report, options)
-  checkQueueTriggers('kafka', def.triggers?.kafka, at, report, options)
-  checkQueueTriggers('rabbitmq', def.triggers?.rabbitmq, at, report, options)
-  checkQueueTriggers('kinesis', def.triggers?.kinesis, at, report, options)
 
   const names = new Set<string>()
   def.triggers?.schedules?.forEach((schedule, i) => {
@@ -1048,129 +1025,6 @@ function checkTriggers(
   })
 }
 
-/** A subscription id (Pub/Sub's rule: a letter, then 2–254 of letters, digits and `-_.~+%`), or a full name. */
-const PUBSUB_SUBSCRIPTION = /^(projects\/[^/]+\/subscriptions\/)?[A-Za-z][\w.~+%-]{2,254}$/
-/** A queue name (SQS's rule: up to 80 of letters, digits, `-` and `_`, `.fifo` for FIFO queues), or an https URL. */
-const SQS_QUEUE = /^(https?:\/\/[^\s/]+\/[^\s]+|[\w-]{1,80}(\.fifo)?)$/
-/** A topic name (Kafka's rule: up to 249 of letters, digits, `.`, `_` and `-`; not `.` or `..`). */
-const KAFKA_TOPIC = /^(?!\.{1,2}$)[\w.-]{1,249}$/
-/** A consumer group id: printable, no spaces at the ends. */
-const KAFKA_GROUP = /^\S(.*\S)?$/
-
-const QUEUE_LABELS = {
-  pubsub: 'Pub/Sub',
-  sqs: 'SQS',
-  kafka: 'Kafka',
-  rabbitmq: 'RabbitMQ',
-  kinesis: 'Kinesis',
-} as const
-type QueueTriggers = NonNullable<WorkflowDefinition['triggers']>
-
-/**
- * Queue triggers (Pub/Sub M19, SQS and Kafka M26): unique names per kind, a resource of the kind (where resources are
- * known), and the kind's own settings: a subscription name, a queue, topics and a group.
- */
-function checkQueueTriggers<K extends QueueTriggerKind>(
-  kind: K,
-  triggers: QueueTriggers[K],
-  at: (path: (string | number)[]) => { path: (string | number)[]; block?: string },
-  report: Report,
-  options: ValidateOptions,
-) {
-  const label = QUEUE_LABELS[kind]
-  const invalid = `invalid_${kind}` as const
-  const names = new Set<string>()
-  triggers?.forEach((trigger, i) => {
-    const where = `${label} trigger "${trigger.name}"`
-    if (names.has(trigger.name))
-      report({
-        code: `duplicate_${kind}`,
-        message: `Another ${label} trigger is already named "${trigger.name}"`,
-        ...at([kind, i, 'name']),
-      })
-    names.add(trigger.name)
-    if (options.resolveResource) {
-      const connector = options.resolveResource(trigger.resource)
-      if (!connector)
-        report({
-          code: 'unknown_resource',
-          message: `${where}: no resource has the slug "${trigger.resource}"`,
-          ...at([kind, i, 'resource']),
-        })
-      else if (connector.type !== kind)
-        report({
-          code: invalid,
-          message: `${where}: "${trigger.resource}" isn't ${kind === 'sqs' ? 'an' : 'a'} ${label} resource`,
-          ...at([kind, i, 'resource']),
-        })
-    }
-    if ('subscription' in trigger && !PUBSUB_SUBSCRIPTION.test(trigger.subscription))
-      report({
-        code: invalid,
-        message: `${where}: "${trigger.subscription}" isn't a subscription id or projects/…/subscriptions/… name`,
-        ...at([kind, i, 'subscription']),
-      })
-    if (
-      kind === 'rabbitmq' &&
-      'queue' in trigger &&
-      (trigger.queue.startsWith('amq.') || [...trigger.queue].some((ch) => ch.charCodeAt(0) < 32))
-    )
-      report({
-        code: invalid,
-        message: `${where}: "${trigger.queue}" can't be consumed (amq. names are the broker's own)`,
-        ...at([kind, i, 'queue']),
-      })
-    if ('stream' in trigger && !KINESIS_STREAM.test(trigger.stream))
-      report({
-        code: invalid,
-        message: `${where}: "${trigger.stream}" isn't a stream name or ARN`,
-        hint: 'Letters, digits, _ . and - (up to 128), or arn:aws:kinesis:…:stream/name',
-        ...at([kind, i, 'stream']),
-      })
-    if (kind === 'sqs' && 'queue' in trigger && !SQS_QUEUE.test(trigger.queue))
-      report({
-        code: invalid,
-        message: `${where}: "${trigger.queue}" isn't a queue name or URL`,
-        hint: 'Use the name (letters, digits, - and _, .fifo for a FIFO queue) or the https:// URL',
-        ...at([kind, i, 'queue']),
-      })
-    if ('topics' in trigger) {
-      trigger.topics.forEach((topic, t) => {
-        if (!KAFKA_TOPIC.test(topic))
-          report({
-            code: invalid,
-            message: `${where}: "${topic}" isn't a topic name`,
-            hint: 'Letters, digits, ., _ and -',
-            ...at([kind, i, 'topics', t]),
-          })
-      })
-      if (new Set(trigger.topics).size !== trigger.topics.length)
-        report({ code: invalid, message: `${where} names a topic twice`, ...at([kind, i, 'topics']) })
-      if (trigger.groupId !== undefined && !KAFKA_GROUP.test(trigger.groupId))
-        report({
-          code: invalid,
-          message: `${where}: the group id can't start or end with a space`,
-          ...at([kind, i, 'groupId']),
-        })
-      if (trigger.deadLetterTopic !== undefined) {
-        if (!KAFKA_TOPIC.test(trigger.deadLetterTopic))
-          report({
-            code: invalid,
-            message: `${where}: "${trigger.deadLetterTopic}" isn't a topic name`,
-            ...at([kind, i, 'deadLetterTopic']),
-          })
-        else if (trigger.topics.includes(trigger.deadLetterTopic))
-          report({
-            code: invalid,
-            message: `${where}: the dead-letter topic can't be one it reads`,
-            hint: 'A failing message would come back to it forever',
-            ...at([kind, i, 'deadLetterTopic']),
-          })
-      }
-    }
-  })
-}
-
 const CUSTOM_SIGNATURE_FIELDS = [
   'header',
   'algorithm',
@@ -1180,8 +1034,6 @@ const CUSTOM_SIGNATURE_FIELDS = [
   'signedPayload',
 ] as const
 
-const KINESIS_STREAM =
-  /^([a-zA-Z0-9_.-]{1,128}|arn:aws[\w-]*:kinesis:[a-z0-9-]+:\d{12}:stream\/[a-zA-Z0-9_.-]{1,128})$/
 const SNS_TOPIC_ARN = /^arn:aws[\w-]*:sns:[a-z0-9-]+:\d{12}:[\w-]{1,256}(\.fifo)?$/
 
 /** M15's webhook settings: signature auth, the body schema, allowed environments, the idempotency header. */

@@ -41,3 +41,7 @@ const user = await provisionUser(
 await close()
 console.log(`${user.created ? 'Created' : 'Updated'} admin ${values.email}`)
 if (!config.LOCAL_LOGIN_ENABLED) console.log('Note: set LOCAL_LOGIN_ENABLED=true to allow password login.')
+if (!values.email.toLowerCase().endsWith(`@${config.OIDC_ALLOWED_DOMAIN.toLowerCase()}`))
+  console.log(
+    `Note: only ${config.OIDC_ALLOWED_DOMAIN} addresses get admin powers; this one is in Admins but isn't one.`,
+  )

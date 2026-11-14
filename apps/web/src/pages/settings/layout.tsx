@@ -1,6 +1,7 @@
 import { getRouteApi, Link, Outlet } from '@tanstack/react-router'
 import {
   Boxes,
+  Database,
   FileCode2,
   GitBranch,
   KeyRound,
@@ -38,6 +39,7 @@ export const SETTINGS_TABS: readonly {
   { to: '/settings/git', label: 'Git', adminOnly: true, group: 'Platform', icon: GitBranch },
   { to: '/settings/python', label: 'Python', adminOnly: true, group: 'Platform', icon: FileCode2 },
   { to: '/settings/npm', label: 'npm registries', adminOnly: true, group: 'Platform', icon: Boxes },
+  { to: '/settings/jdbc', label: 'JDBC drivers', adminOnly: true, group: 'Platform', icon: Database },
   { to: '/settings/audit', label: 'Audit log', adminOnly: true, group: 'Monitoring', icon: ScrollText },
 ]
 
@@ -55,6 +57,13 @@ const activeItemClass =
 export function SettingsLayout() {
   const { me } = appRoute.useRouteContext()
   const tabs = SETTINGS_TABS.filter((t) => me.isAdmin || !t.adminOnly)
+  // Only Optiply's admins see Settings (no link in the sidebar or ⌘K); a typed or old link says so.
+  if (!me.settings)
+    return (
+      <EmptyState icon={<ShieldAlert className="size-6" />} title="No access to Settings">
+        Settings are for Optiply admins. Ask an admin if you need something changed here.
+      </EmptyState>
+    )
   return (
     <>
       <PageHeader title="Settings" description="Manage who has access and how the platform is configured." />

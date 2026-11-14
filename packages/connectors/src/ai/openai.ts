@@ -1,4 +1,4 @@
-import { Agent, fetch as undiciFetch } from 'undici'
+import { Agent } from 'undici'
 import { z } from 'zod'
 import { guardedLookup } from '../net-guard'
 import { actionQuerySchema, validateActionQuery } from '../services/common'
@@ -10,6 +10,7 @@ import {
   checkBaseUrl,
   executeAiQuery,
 } from './core'
+import { aiRequest } from './http'
 import { costOf } from './prices'
 
 // OpenAI-compatible providers (M35, docs/architecture.md §2.38): OpenAI, Azure OpenAI's v1 API, Mistral, Ollama, vLLM,
@@ -42,7 +43,6 @@ interface Client {
 }
 
 const querySchema = actionQuerySchema('openai_compatible')
-const RETRIES = 2
 
 interface ChatResponse {
   model?: string
@@ -193,8 +193,8 @@ function parseArguments(text: string | undefined): unknown {
   }
 }
 
-/** One API call, retried twice on 408/409/429/5xx and connection failures (the `retry-after` header honoured). */
-async function call(
+/** One API call (`aiRequest`: retried, redirects refused, the API's message kept). */
+function call(
   client: Client,
   method: 'GET' | 'POST',
   path: string,
@@ -203,97 +203,15 @@ async function call(
   timeoutMs: number,
 ): Promise<ChatResponse & { data?: { id?: string }[] }> {
   checkBaseUrl(client.config.baseUrl, client.config.allowPrivateNetwork)
-  const url = `${client.config.baseUrl.replace(/\/+$/, '')}${path}`
-  const deadline = Date.now() + timeoutMs
-  for (let attempt = 0; ; attempt++) {
-    let res: Awaited<ReturnType<typeof undiciFetch>>
-    try {
-      res = await undiciFetch(url, {
-        method,
-        headers: {
-          'content-type': 'application/json',
-          ...(client.apiKey && { authorization: `Bearer ${client.apiKey}` }),
-        },
-        ...(body !== undefined && { body: JSON.stringify(body) }),
-        dispatcher: client.agent,
-        // Never followed: a redirect could lead past the private-network guard (an address written out isn't looked
-        // up). A 3xx is an error naming where it pointed.
-        redirect: 'manual',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]),
-      })
-    } catch (err) {
-      if (signal.aborted) throw new ConnectorError('aborted', 'The request was cancelled')
-      if (Date.now() >= deadline) throw new ConnectorError('timeout', 'The API didn’t answer in time')
-      const cause = (err as { cause?: unknown }).cause
-      if (cause instanceof Error && /private address|blocked/i.test(cause.message)) {
-        throw new ConnectorError(
-          'blocked',
-          'The API is on a private network: allow private networks in the resource to reach it',
-        )
-      }
-      if (attempt < RETRIES) {
-        await wait(500 * 2 ** attempt, signal)
-        continue
-      }
-      throw new ConnectorError(
-        'connection',
-        `Couldn't reach ${url}: ${(cause as Error)?.message ?? (err as Error).message}`,
-      )
-    }
-    if (res.status >= 300 && res.status < 400) {
-      await res.body?.cancel()
-      throw new ConnectorError(
-        'http',
-        `The API answered ${res.status}, redirecting to ${res.headers.get('location') ?? 'nowhere'}: use that address as the base URL`,
-        { status: res.status },
-      )
-    }
-    const text = await res.text()
-    if (res.ok) {
-      try {
-        return JSON.parse(text)
-      } catch {
-        throw new ConnectorError('http', `${url} answered ${res.status} with something that isn't JSON`)
-      }
-    }
-    if ([408, 409, 429].includes(res.status) || res.status >= 500) {
-      if (attempt < RETRIES) {
-        const after = Number(res.headers.get('retry-after'))
-        await wait(
-          Number.isFinite(after) && after > 0 ? Math.min(after, 30) * 1000 : 500 * 2 ** attempt,
-          signal,
-        )
-        continue
-      }
-    }
-    let message = text.slice(0, 500)
-    try {
-      const parsed = JSON.parse(text) as { error?: { message?: string } | string }
-      message = typeof parsed.error === 'string' ? parsed.error : (parsed.error?.message ?? message)
-    } catch {}
-    const hint =
-      res.status === 401
-        ? ' (check the API key)'
-        : res.status === 404
-          ? ' (check the base URL and model)'
-          : ''
-    throw new ConnectorError('http', `The API answered ${res.status}: ${message}${hint}`, {
-      status: res.status,
-    })
-  }
-}
-
-function wait(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        reject(new ConnectorError('aborted', 'The request was cancelled'))
-      },
-      { once: true },
-    )
+  return aiRequest({
+    method,
+    url: `${client.config.baseUrl.replace(/\/+$/, '')}${path}`,
+    headers: client.apiKey ? { authorization: `Bearer ${client.apiKey}` } : {},
+    body,
+    agent: client.agent,
+    signal,
+    timeoutMs,
+    hints: { 401: ' (check the API key)', 404: ' (check the base URL and model)' },
   })
 }
 

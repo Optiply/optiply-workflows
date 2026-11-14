@@ -32,8 +32,8 @@ async function workflow(slug: string, blocks: object[], triggers?: object) {
 
 beforeAll(async () => {
   env = await startTestApp()
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
-  admin = trpc(env.app, await login(env.app, 'admin@example.com'))
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
+  admin = trpc(env.app, await login(env.app, 'admin@optiply.nl'))
 })
 
 afterAll(async () => {

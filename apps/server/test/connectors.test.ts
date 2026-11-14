@@ -62,10 +62,13 @@ beforeAll(async () => {
     AIRTABLE_API_URL: fake.urls.airtable,
     NOTION_API_URL: fake.urls.notion,
     SALESFORCE_URL: fake.urls.salesforce,
+    GMAIL_API_URL: fake.urls.gmail,
+    MICROSOFT_GRAPH_URL: fake.urls.graph,
+    TEAMS_WEBHOOK_URL: fake.urls.teamsWebhook,
   })
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
   memberId = (await createLocalUser(env.db, 'member@example.com')).id
-  adminCookie = await login(env.app, 'admin@example.com')
+  adminCookie = await login(env.app, 'admin@optiply.nl')
   admin = trpc(env.app, adminCookie, { record: seen })
   member = trpc(env.app, await login(env.app, 'member@example.com'))
   prodId = data(await admin.query('environments.list')).find(
@@ -154,12 +157,15 @@ describe('the types offered', () => {
   it('are grouped for the picker, without the built-in REST API, which nobody creates', async () => {
     const types = data(await admin.query('resources.types'))
     expect(types.find((t: { type: string }) => t.type === 'restapi')).toBeUndefined()
+    // The message resources were removed (session 54): no Messaging group is offered.
+    expect(types.filter((t: { group: string }) => t.group === 'Messaging')).toEqual([])
     expect(types).toEqual(
       expect.arrayContaining([
         { type: 'graphql', label: 'GraphQL', group: 'APIs' },
         { type: 'slack', label: 'Slack', group: 'Services' },
         { type: 'googlesheets', label: 'Google Sheets', group: 'Services' },
-        { type: 'kafka', label: expect.any(String), group: 'Messaging' },
+        { type: 'gmail', label: 'Gmail', group: 'Services' },
+        { type: 'msteams', label: 'Microsoft Teams', group: 'Services' },
       ]),
     )
     const refused = await admin.mutate('resources.create', { type: 'restapi', name: 'Mine', slug: 'my_api' })
@@ -554,6 +560,77 @@ describe('service resources', () => {
     } finally {
       configureGoogle({ GOOGLE_SERVER_IDENTITY: 'deny', GOOGLE_TOKEN_URL: fake.urls.googleToken })
     }
+  })
+
+  it('Gmail (M37): sign-in checked on save, delegation an admin’s choice, a delegated search', async () => {
+    fake.gmail.seed('support@optiply.nl', {
+      from: 'ada@example.com',
+      to: 'support@optiply.nl',
+      subject: 'Order 7',
+      text: 'x',
+    })
+    const gmail = data(
+      await admin.mutate('resources.create', { type: 'gmail', name: 'Support mail', slug: 'support_mail' }),
+    )
+    const save = (as: ReturnType<typeof trpc>, config: unknown, secrets: unknown = {}) =>
+      as.mutate('resources.saveConfig', { resourceId: gmail.id, environmentId: prodId, config, secrets })
+    expect((await save(admin, { auth: { type: 'oauth' } })).body.error?.message).toContain('client id')
+    expect((await save(admin, { auth: { type: 'oauth', clientId: 'c' } })).body.error?.message).toContain(
+      'client secret',
+    )
+    expect(
+      (await save(admin, { auth: { type: 'delegation', mailbox: 'support@optiply.nl' } })).body.error
+        ?.message,
+    ).toContain('service account key')
+    // An editor may keep the OAuth sign-in, but not switch to delegation.
+    const groupId = data(await admin.mutate('groups.create', { name: 'Mail editors' })).id
+    await admin.mutate('groups.addMember', { groupId, userId: memberId })
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId: gmail.id,
+        groupId,
+        environmentId: null,
+        level: 'edit',
+      }),
+    )
+    const delegation = [
+      { auth: { type: 'delegation', mailbox: 'support@optiply.nl' } },
+      { serviceAccountKey: fake.sheets.serviceAccountKey },
+    ] as const
+    expect((await save(member, ...delegation)).status).toBe(403)
+    expect((await save(admin, ...delegation)).status).toBe(200)
+    expect(await run(gmail.id, { action: 'search', q: 'order' })).toMatchObject({
+      ok: true,
+      data: [{ subject: 'Order 7', from: 'ada@example.com' }],
+    })
+    const tested = data(await admin.mutate('resources.test', { resourceId: gmail.id, environmentId: prodId }))
+    expect(tested).toMatchObject({ ok: true, message: expect.stringContaining('support@optiply.nl') })
+  })
+
+  it('Microsoft Teams (M37): sign-in checked on save, a card posted through a Workflows webhook', async () => {
+    const teams = data(
+      await admin.mutate('resources.create', { type: 'msteams', name: 'Ops channel', slug: 'ops_channel' }),
+    )
+    const save = (config: unknown, secrets: unknown = {}) =>
+      admin.mutate('resources.saveConfig', { resourceId: teams.id, environmentId: prodId, config, secrets })
+    expect((await save({ auth: { type: 'oauth' } })).body.error?.message).toContain('client (application) id')
+    expect((await save({ auth: { type: 'oauth', clientId: 'app' } })).body.error?.message).toContain(
+      'client secret',
+    )
+    expect((await save({ auth: { type: 'webhook' } })).body.error?.message).toContain('webhook URL')
+    expect(
+      (await save({ auth: { type: 'webhook' } }, { webhookUrl: `${fake.urls.teamsWebhook}flow-1` })).status,
+    ).toBe(200)
+    expect(
+      await run(teams.id, { action: 'postWebhook', text: 'Stock low: {{ sku }}' }, { sku: 'LAMP-3' }),
+    ).toMatchObject({
+      ok: true,
+      data: { status: 202 },
+    })
+    expect(JSON.stringify(fake.teams.webhooks.at(-1)!.body)).toContain('Stock low: LAMP-3')
+    // The webhook's URL is a secret: never sent back.
+    expect(seen.join('\n')).not.toContain('flow-1')
   })
 
   it('count queries by type, action and outcome', async () => {

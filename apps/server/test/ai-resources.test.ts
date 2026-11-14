@@ -1,8 +1,9 @@
 import { type FakeAi, startFakeAi } from '@ow/connectors/testing'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { serverIdentityTarget } from '../src/services/resources'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
-// AI resources (M35, docs/architecture.md §2.38) through the API: settings and the key (a secret), Test, a query
+// AI resources (M35, docs/architecture.md §2.38; Gemini M37) through the API: settings and the key (a secret), Test, a query
 // from the playground with its usage and cost, nothing of the key coming back.
 
 let env: TestEnv
@@ -33,8 +34,8 @@ async function resourceOf(type: string, slug: string, config: unknown, secrets: 
 beforeAll(async () => {
   fake = await startFakeAi()
   env = await startTestApp()
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
-  admin = trpc(env.app, await login(env.app, 'admin@example.com'), { record: seen })
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
+  admin = trpc(env.app, await login(env.app, 'admin@optiply.nl'), { record: seen })
   prodId = data(await admin.query('environments.list')).find(
     (e: { slug: string }) => e.slug === 'production',
   ).id
@@ -106,6 +107,50 @@ describe('AI resources', () => {
       }),
     )
     expect(ran).toMatchObject({ ok: true, data: { label: 'refund' } })
+  })
+
+  it('saves a Gemini resource (M37), refusing one without its key; Vertex with the server identity is an admin’s', async () => {
+    const bad = data(
+      await admin.mutate('resources.create', { type: 'gemini', name: 'gemini_bad', slug: 'gemini_bad' }),
+    )
+    const refused = await admin.mutate('resources.saveConfig', {
+      resourceId: bad.id,
+      environmentId: prodId,
+      config: { baseUrl: fake.geminiUrl },
+      secrets: {},
+    })
+    expect(refused.status).toBe(400)
+    expect(JSON.stringify(refused.body)).toContain('Add the Gemini API key')
+    const id = await resourceOf(
+      'gemini',
+      'gemini',
+      { baseUrl: fake.geminiUrl, allowPrivateNetwork: true },
+      { apiKey: fake.geminiKey },
+    )
+    const tested = data(await admin.mutate('resources.test', { resourceId: id, environmentId: prodId }))
+    expect(tested).toMatchObject({
+      ok: true,
+      message: expect.stringContaining('gemini-3.8-flash among them'),
+    })
+    const ran = data(
+      await admin.mutate('resources.run', {
+        resourceId: id,
+        environmentId: prodId,
+        query: { action: 'summarize', input: '{{ text }}', length: 'short' },
+        scope: { text: 'A long email' },
+      }),
+    )
+    expect(ran).toMatchObject({
+      ok: true,
+      metadata: { provider: 'gemini', model: 'gemini-3.8-flash', costUsd: expect.any(Number) },
+    })
+    expect(seen.join('\n')).not.toContain(fake.geminiKey)
+    // The server's identity on Vertex is what an admin chooses: its target names the project and region.
+    expect(serverIdentityTarget({ platform: 'vertex', identity: 'server', project: 'p1' }, 'gemini')).toBe(
+      'vertex:p1:global',
+    )
+    expect(serverIdentityTarget({ platform: 'vertex', identity: 'key', project: 'p1' }, 'gemini')).toBeNull()
+    expect(serverIdentityTarget({ platform: 'gemini', identity: 'server' }, 'gemini')).toBeNull()
   })
 
   it("runs an app's AI query on the server, with the data typed by its action; the agent stays in workflows", async () => {

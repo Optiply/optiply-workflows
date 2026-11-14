@@ -72,9 +72,13 @@ function UsersTable() {
           </Link>
           .
         </p>
-        <Button variant="primary" onClick={() => setInviting(true)}>
-          <UserPlus className="size-4" /> Invite people
-        </Button>
+        {/* Off for now: invitations need an email to send them from (the user, session 54). The span holds the
+            tooltip: a disabled button takes no pointer events. */}
+        <span title="Not available yet: invitations need an email address to be sent from">
+          <Button variant="primary" disabled onClick={() => setInviting(true)}>
+            <UserPlus className="size-4" /> Invite people
+          </Button>
+        </span>
       </div>
 
       {pending.length > 0 && (

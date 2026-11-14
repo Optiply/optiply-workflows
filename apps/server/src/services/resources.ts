@@ -114,35 +114,43 @@ export function iapKeyInfo(secrets: Record<string, unknown>): Record<string, Iap
 
 /**
  * What a config reaches with the server's own Google identity or AWS credentials, or null when it doesn't use them: the
- * VM its first SSH server is reached at through IAP (M18), as `project/zone/instance/interface:port`, a Pub/Sub
- * resource's project (M19), as `pubsub:<project>`, or an SQS or MSK IAM region and role (M26), as `aws:<region>:<role>`. Only admins may choose it or point it elsewhere: the server's identity may reach what
- * no one's key does.
+ * VM its first SSH server is reached at through IAP (M18), as `project/zone/instance/interface:port`, or an AWS
+ * resource's region and role (M26), as `aws:<region>:<role>`. Only admins may choose it or point it elsewhere: the
+ * server's identity may reach what no one's key does.
  */
 export function serverIdentityTarget(config: unknown, type?: string): string | null {
-  if (type === 'sqs' || type === 'kafka' || type === 's3' || type === 'sns' || type === 'kinesis') {
-    // M26: the server's own AWS credentials, for SQS or Kafka's MSK IAM: the region and any role assumed with them
+  if (type === 's3') {
+    // M26: the server's own AWS credentials: the region and any role assumed with them
     // (they may be allowed to assume roles no one's key is).
-    const c = config as {
-      identity?: unknown
-      auth?: unknown
-      region?: unknown
-      roleArn?: unknown
-      brokers?: unknown
-    } | null
-    if (type === 'kafka' && c?.auth !== 'aws-msk-iam') return null
+    const c = config as { identity?: unknown; region?: unknown; roleArn?: unknown } | null
     if (c?.identity !== 'server') return null
-    const target = `aws:${String(c.region ?? '')}:${String(c.roleArn ?? '')}`
-    // MSK IAM sends its signed token to the brokers: where they are is the admin's choice too.
-    return type === 'kafka'
-      ? `${target}:${[...((c.brokers as string[] | undefined) ?? [])].sort().join(',')}`
-      : target
+    return `aws:${String(c.region ?? '')}:${String(c.roleArn ?? '')}`
   }
-  if (type === 'pubsub') {
-    const c = config as { identity?: unknown; project?: unknown } | null
-    return c?.identity === 'server' ? `pubsub:${String(c.project ?? '')}` : null
+  if (type === 'sdk') {
+    // M37: an SDK whose hosts may be on the private network reaches what the instance does; an admin's call.
+    return (config as { allowPrivateNetwork?: unknown } | null)?.allowPrivateNetwork === true
+      ? 'sdk:private'
+      : null
+  }
+  if (type === 'gmail') {
+    // M37: a key with domain-wide delegation acts as any mailbox of the domain; choosing it is an admin's call.
+    const c = config as { auth?: { type?: unknown } } | null
+    return c?.auth?.type === 'delegation' ? 'gmail:delegation' : null
+  }
+  if (type === 'gemini') {
+    // M37: Vertex AI billed to a project the server's identity can use; choosing it is the admin's call.
+    const c = config as {
+      platform?: unknown
+      identity?: unknown
+      project?: unknown
+      location?: unknown
+    } | null
+    return c?.platform === 'vertex' && c.identity === 'server'
+      ? `vertex:${String(c.project ?? '')}:${String(c.location ?? 'global')}`
+      : null
   }
   if (type === 'googlesheets') {
-    // M27: any spreadsheet shared with the server's identity; choosing it is the admin's call, as for Pub/Sub.
+    // M27: any spreadsheet shared with the server's identity; choosing it is the admin's call.
     const c = config as { auth?: { type?: unknown } } | null
     return c?.auth?.type === 'server' ? 'google:sheets' : null
   }

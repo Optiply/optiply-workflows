@@ -35,6 +35,14 @@ const ConfigSchema = z
     OIDC_ALLOWED_DOMAIN: z.string().default('optiply.nl'),
     /** Break-glass email/password login for local admins (created via the create-admin CLI). */
     LOCAL_LOGIN_ENABLED: bool,
+    /**
+     * Whether something new (a workflow, app, library query, module or component library) starts shared with everyone:
+     * All Users gets Use, its creator Edit (session 54, the owner's choice). The tests turn it off to test grants alone.
+     */
+    SHARE_NEW_WITH_EVERYONE: z
+      .enum(['true', 'false', '1', '0'])
+      .transform((v) => v === 'true' || v === '1')
+      .default(true),
     /** Directory with the built web app to serve (production). */
     WEB_DIST_DIR: z.string().optional(),
     /** Resource credentials and secret config vars: `v1:<base64 32 bytes>[,v2:…]`. Losing these loses every secret. */
@@ -83,6 +91,19 @@ const ConfigSchema = z
     PYTHON_EXECUTOR_URL: z.string().url().optional(),
     /** The executor's bearer token (its PYTHON_EXECUTOR_TOKEN). Without it Python stays off (a warning at start). */
     PYTHON_EXECUTOR_TOKEN: z.string().min(16).optional(),
+    /** The SDK runner (M37) and its bearer token: without both, SDK resources can't run. */
+    SDK_RUNNER_URL: z.string().url().optional(),
+    SDK_RUNNER_TOKEN: z.string().min(16).optional(),
+    /** The JDBC runner (M38) and its bearer token: without both, JDBC resources can't run. */
+    JDBC_RUNNER_URL: z.string().url().optional(),
+    JDBC_RUNNER_TOKEN: z.string().min(16).optional(),
+    /**
+     * JDBC resources through SSH (M38): the port this process's tunnel forwarder listens on for the JDBC runner, and
+     * the host name the runner reaches this process by (its container's, by default). Without a port, JDBC resources
+     * can't use SSH.
+     */
+    JDBC_FORWARDER_PORT: z.coerce.number().int().min(0).max(65535).optional(),
+    JDBC_FORWARDER_HOST: z.string().min(1).optional(),
     /**
      * The package builder that installs workflows' Python packages (M23, the `python-builder` service), e.g.
      * `http://python-builder:8080`. Without it, workflows that declare packages can't run or be published.
@@ -105,27 +126,23 @@ const ConfigSchema = z
      */
     JS_BUNDLE_MAX_MB: z.coerce.number().int().min(1).max(50).default(5),
     /**
-     * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18) and
-     * Pub/Sub resources (M19). It's the Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's
-     * file, or the metadata server). Off by default; only admins can choose it for a resource.
+     * `allow` lets resources use this server's own Google identity: SSH tunnels through Google Cloud IAP (M18), Google
+     * Sheets and Gemini on Vertex AI (M37). It's the Application Default Credentials
+     * (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud's file, or the metadata server). Off by default; only admins can choose
+     * it for a resource.
      */
     GOOGLE_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
-    /** IAP's WebSocket endpoint, Pub/Sub's REST API and Google's token endpoint: for tests against fakes. */
+    /** IAP's WebSocket endpoint and Google's token endpoint: for tests against fakes. */
     GOOGLE_IAP_URL: z.string().url().optional(),
-    GOOGLE_PUBSUB_URL: z.string().url().optional(),
     GOOGLE_TOKEN_URL: z.string().url().optional(),
     /**
-     * `allow` lets SQS resources and Kafka's MSK IAM (M26) use this server's own AWS credentials: the SDK's default
+     * `allow` lets AWS resources (M26) use this server's own AWS credentials: the SDK's default
      * chain (environment, `~/.aws`, SSO, web identity, ECS and EC2 metadata). Off by default; only admins can choose it
      * for a resource.
      */
     AWS_SERVER_IDENTITY: z.enum(['allow', 'deny']).default('deny'),
-    /** STS's and SQS's endpoints: for tests against the fake AWS. */
+    /** STS's endpoint: for tests against the fake AWS. */
     AWS_STS_URL: z.string().url().optional(),
-    AWS_SQS_URL: z.string().url().optional(),
-    /** M30's SNS and Kinesis endpoints, the same way (tests). */
-    AWS_SNS_URL: z.string().url().optional(),
-    AWS_KINESIS_URL: z.string().url().optional(),
     /**
      * Hosts (host:port) whose SNS signing certificates are trusted besides sns.<region>.amazonaws.com, over http too:
      * tests only, never production.
@@ -148,6 +165,11 @@ const ConfigSchema = z
     NOTION_API_URL: z.string().url().optional(),
     /** Replaces every Salesforce resource's My Domain URL (tests only). */
     SALESFORCE_URL: z.string().url().optional(),
+    /** Gmail's API base (M37; tests only). */
+    GMAIL_API_URL: z.string().url().optional(),
+    /** Microsoft Graph, and the prefix webhook URLs the tests' fake Teams webhooks have (M37; tests only). */
+    MICROSOFT_GRAPH_URL: z.string().url().optional(),
+    TEAMS_WEBHOOK_URL: z.string().url().optional(),
     REST_API_PRIVATE_HOSTS: z
       .string()
       .default('')

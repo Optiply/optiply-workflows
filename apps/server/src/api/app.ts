@@ -12,6 +12,7 @@ import Fastify, { type FastifyBaseLogger } from 'fastify'
 import pino from 'pino'
 import type postgres from 'postgres'
 import { authRoutes } from '../auth/routes'
+import { setAdminDomain } from '../auth/sessions'
 import type { Config } from '../config'
 import { Metrics, metricsAllowed } from '../metrics'
 import { configureAwsServer } from '../services/aws'
@@ -21,12 +22,15 @@ import { configureConnectors } from '../services/connectors'
 import { DatabaseSetupError, provisionDatabases } from '../services/database'
 import { GitDeployer } from '../services/git/deployer'
 import { configureGoogle } from '../services/google'
+import { configureJdbcDriverLookup } from '../services/jdbc-drivers'
 import { configureJsBundles, dbJsModules } from '../services/js-modules'
 import { engineLibrary } from '../services/library-queries'
+import { setShareNewWithEveryone } from '../services/permissions'
 import { configurePython, pythonConfigWarning } from '../services/python'
 import { pythonEnvProvider } from '../services/python-envs'
 import { useRe2ForPatterns } from '../services/regexp'
 import { RunEventHub } from '../services/run-events'
+import { configureSdkPackages } from '../services/sdk-envs'
 import { configureSnsWebhooks } from '../services/sns-webhook'
 import { dbResourceProvider, dbRunContext } from '../services/workflow-runs'
 import { contextFactory, type Services } from '../trpc/init'
@@ -37,6 +41,7 @@ import { collabApi, MAX_COLLAB_MESSAGE_BYTES } from './collab'
 import { componentBundlesApi } from './component-bundles'
 import { databaseApi } from './database'
 import { gitWebhookApi } from './git-webhook'
+import { jdbcDriversApi } from './jdbc-drivers'
 import { jsBundlesApi } from './js-bundles'
 import { oauthApi } from './oauth'
 import { runsApi } from './runs'
@@ -57,6 +62,10 @@ export async function buildApp(deps: {
 }) {
   const { db, config } = deps
   useRe2ForPatterns()
+  // Who counts as an admin: Admins members from the sign-in domain only.
+  setAdminDomain(config.OIDC_ALLOWED_DOMAIN)
+  // Whether new objects start shared with All Users (Use) and their creator (Edit).
+  setShareNewWithEveryone(config.SHARE_NEW_WITH_EVERYONE)
   const logger = deps.logger || pino({ level: deps.logger === false ? 'silent' : config.LOG_LEVEL })
   const app = Fastify({
     loggerInstance: logger,
@@ -88,6 +97,8 @@ export async function buildApp(deps: {
   configureGoogle(config)
   configureAwsServer(config)
   configureConnectors(config)
+  configureJdbcDriverLookup(db)
+  configureSdkPackages(db, config)
   configureSnsWebhooks(config.SNS_CERT_HOSTS)
   configureJsBundles(config)
   const runner = new InlineRunner({
@@ -146,6 +157,7 @@ export async function buildApp(deps: {
   await app.register(jsBundlesApi, { db })
   await app.register(cliApi)
   await app.register(databaseApi, { prefix: '/api/v1', db, keyring: config.keyring, pool: services.pool })
+  await app.register(jdbcDriversApi, { prefix: '/api/v1', db })
   await app.register(webhooksApi, {
     prefix: '/api/v1',
     db,

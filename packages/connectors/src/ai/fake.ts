@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-// Fakes of the AI APIs M35 calls, on one HTTP server for tests: Anthropic's Messages API under `/anthropic/v1` and an
-// OpenAI-compatible API under `/openai/v1`. Deterministic, scriptable by markers in the prompt:
+// Fakes of the AI APIs M35 and M37 call, on one HTTP server for tests: Anthropic's Messages API under `/anthropic/v1`,
+// an OpenAI-compatible API under `/openai/v1`, the Gemini API under `/gemini/v1beta` and Vertex AI under `/vertex/v1`
+// (any `ya29.` bearer token: the Google token fakes issue those). Deterministic, scriptable by markers in the prompt:
 //   REFUSE_ME          the model declines (Anthropic: stop_reason refusal, category `cyber`; OpenAI: a refusal)
 //   RATE_LIMIT_ONCE    the first such request answers 429 (retry-after 0), the next succeeds
 //   LABEL=<label>      a classification picks that label (else the first)
@@ -15,37 +16,74 @@ export interface FakeAi {
   /** Base URLs for resources: Anthropic's (`…/anthropic`) and the OpenAI-compatible one (`…/openai/v1`). */
   anthropicUrl: string
   openaiUrl: string
+  /** Gemini API (`…/gemini/v1beta`) and Vertex AI (`…/vertex/v1`) base URLs. */
+  geminiUrl: string
+  vertexUrl: string
   anthropicKey: string
   openaiKey: string
+  geminiKey: string
   /** Every request, in order: which API, its path and body. */
-  requests: { api: 'anthropic' | 'openai'; path: string; body: Record<string, unknown> }[]
+  requests: { api: FakeAiApi; path: string; body: Record<string, unknown>; authorization?: string }[]
   /** Queues a reply for the next request to that API (a status and body; checked before the defaults). */
-  next(
-    api: 'anthropic' | 'openai',
-    reply: { status?: number; body: unknown; headers?: Record<string, string> },
-  ): void
+  next(api: FakeAiApi, reply: { status?: number; body: unknown; headers?: Record<string, string> }): void
   stop(): Promise<void>
 }
 
 type Json = Record<string, unknown>
+export type FakeAiApi = 'anthropic' | 'openai' | 'gemini' | 'vertex'
 
 export async function startFakeAi(): Promise<FakeAi> {
   const requests: FakeAi['requests'] = []
-  const queued: Record<
-    'anthropic' | 'openai',
-    { status?: number; body: unknown; headers?: Record<string, string> }[]
-  > = { anthropic: [], openai: [] }
+  const queued: Record<FakeAiApi, { status?: number; body: unknown; headers?: Record<string, string> }[]> = {
+    anthropic: [],
+    openai: [],
+    gemini: [],
+    vertex: [],
+  }
   const limited = new Set<string>()
   const anthropicKey = 'sk-ant-fake-key'
   const openaiKey = 'sk-openai-fake-key'
+  const geminiKey = 'AIza-fake-gemini-key'
   let ids = 0
 
   const server = createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0]!
     const body = req.method === 'POST' ? await readJson(req) : {}
-    const api = path.startsWith('/anthropic/') ? 'anthropic' : path.startsWith('/openai/') ? 'openai' : null
+    const api: FakeAiApi | null = path.startsWith('/anthropic/')
+      ? 'anthropic'
+      : path.startsWith('/openai/')
+        ? 'openai'
+        : path.startsWith('/gemini/')
+          ? 'gemini'
+          : path.startsWith('/vertex/')
+            ? 'vertex'
+            : null
     if (!api) return send(res, 404, { error: 'Not found' })
-    requests.push({ api, path, body })
+    requests.push({
+      api,
+      path,
+      body,
+      ...(req.headers.authorization && { authorization: req.headers.authorization }),
+    })
+    if (api === 'gemini' || api === 'vertex') {
+      const ok =
+        api === 'gemini'
+          ? req.headers['x-goog-api-key'] === geminiKey
+          : /^Bearer (ya29\.|sa-|md-)/.test(req.headers.authorization ?? '')
+      if (!ok) {
+        return send(res, api === 'gemini' ? 400 : 401, {
+          error: {
+            code: api === 'gemini' ? 400 : 401,
+            message:
+              api === 'gemini' ? 'API key not valid. Please pass a valid API key.' : 'Invalid credentials',
+            status: api === 'gemini' ? 'INVALID_ARGUMENT' : 'UNAUTHENTICATED',
+          },
+        })
+      }
+      const reply = queued[api].shift()
+      if (reply) return send(res, reply.status ?? 200, reply.body, reply.headers)
+      return googleAnswer(res, path, body, limited, ++ids)
+    }
     // The SDK (1.x) sends the key as a bearer token; older clients as x-api-key.
     const anthropicAuth = req.headers['x-api-key'] ?? req.headers.authorization?.replace(/^Bearer /, '')
     if (api === 'anthropic' && anthropicAuth !== anthropicKey) {
@@ -105,8 +143,11 @@ export async function startFakeAi(): Promise<FakeAi> {
     url,
     anthropicUrl: `${url}/anthropic`,
     openaiUrl: `${url}/openai/v1`,
+    geminiUrl: `${url}/gemini/v1beta`,
+    vertexUrl: `${url}/vertex/v1`,
     anthropicKey,
     openaiKey,
+    geminiKey,
     requests,
     next: (api, reply) => queued[api].push(reply),
     stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
@@ -206,6 +247,106 @@ function openaiAnswer(body: Json, prompt: string, id: number): Json {
     ? JSON.stringify(sample(format.json_schema.schema, prompt))
     : `You said: ${prompt.slice(0, 200)}`
   return choice({ content }, 'stop')
+}
+
+/** Gemini's `generateContent` and `countTokens`, and the Gemini API's model list (Vertex has none per project). */
+function googleAnswer(res: ServerResponse, path: string, body: Json, limited: Set<string>, id: number) {
+  if (path.endsWith('/models')) {
+    return send(res, 200, {
+      models: ['gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-3.5-flash-lite'].map((m) => ({
+        name: `models/${m}`,
+        supportedGenerationMethods: ['generateContent', 'countTokens'],
+      })),
+    })
+  }
+  const model = /models\/([^/:]+):/.exec(path)?.[1] ?? 'unknown'
+  if (path.endsWith(':countTokens')) return send(res, 200, { totalTokens: 1 })
+  if (!path.endsWith(':generateContent'))
+    return send(res, 404, { error: { code: 404, message: 'Not found' } })
+  if (model === 'missing-model') {
+    return send(res, 404, {
+      error: { code: 404, message: `models/${model} is not found`, status: 'NOT_FOUND' },
+    })
+  }
+  const contents = (body.contents ?? []) as { role: string; parts: Json[] }[]
+  const prompt = String(contents[0]?.parts?.[0]?.text ?? '')
+  if (prompt.includes('RATE_LIMIT_ONCE') && !limited.has(prompt)) {
+    limited.add(prompt)
+    return send(
+      res,
+      429,
+      { error: { code: 429, message: 'Resource has been exhausted', status: 'RESOURCE_EXHAUSTED' } },
+      { 'retry-after': '0' },
+    )
+  }
+  const promptTokens = Math.ceil(JSON.stringify(body.contents ?? '').length / 4)
+  const answer = (parts: Json[], finishReason: string, extra: Json = {}) => ({
+    candidates: [{ content: { role: 'model', parts }, finishReason, index: 0 }],
+    usageMetadata: {
+      promptTokenCount: promptTokens,
+      candidatesTokenCount: Math.ceil(JSON.stringify(parts).length / 4),
+      thoughtsTokenCount: 7,
+      cachedContentTokenCount: prompt.includes('CACHED') ? 4 : 0,
+      totalTokenCount: 0,
+    },
+    modelVersion: model,
+    responseId: `fake-${id}`,
+    ...extra,
+  })
+  if (prompt.includes('BLOCK_PROMPT')) {
+    return send(res, 200, {
+      promptFeedback: { blockReason: 'PROHIBITED_CONTENT' },
+      usageMetadata: { promptTokenCount: promptTokens },
+      modelVersion: model,
+    })
+  }
+  if (prompt.includes('REFUSE_ME')) return send(res, 200, answer([], 'SAFETY'))
+  // A thought first, as Gemini sends one, with its signature (which must come back unchanged).
+  const thought = { text: 'Thinking it over', thought: true, thoughtSignature: `sig-${id}` }
+  const tools = (
+    body.tools as { functionDeclarations?: { name: string; parametersJsonSchema?: Json }[] }[]
+  )?.[0]?.functionDeclarations
+  if (tools?.length) {
+    const results = contents.flatMap((c) =>
+      c.role === 'user'
+        ? c.parts.flatMap((p) => {
+            const r = p.functionResponse as { response?: Json } | undefined
+            const value = r?.response?.result ?? r?.response?.error ?? r?.response
+            return r ? [typeof value === 'string' ? value : JSON.stringify(value)] : []
+          })
+        : [],
+    )
+    if (!results.length) {
+      const tool = tools[0]!
+      return send(
+        res,
+        200,
+        answer(
+          [thought, { functionCall: { name: tool.name, args: sample(tool.parametersJsonSchema, prompt) } }],
+          'STOP',
+        ),
+      )
+    }
+    // The model's earlier turn must have come back with its thought signature.
+    const echoed = contents.some((c) => c.role === 'model' && c.parts.some((p) => p.thoughtSignature))
+    return send(
+      res,
+      200,
+      answer([{ text: `Done: ${results.at(-1)}${echoed ? '' : ' (signature lost)'}` }], 'STOP'),
+    )
+  }
+  const config = (body.generationConfig ?? {}) as { responseJsonSchema?: Json; maxOutputTokens?: number }
+  const text = config.responseJsonSchema
+    ? JSON.stringify(sample(config.responseJsonSchema, prompt))
+    : `You said: ${prompt.slice(0, 200)}`
+  if (Number(config.maxOutputTokens) < Math.ceil(text.length / 4)) {
+    return send(
+      res,
+      200,
+      answer([thought, { text: text.slice(0, Number(config.maxOutputTokens) * 4) }], 'MAX_TOKENS'),
+    )
+  }
+  return send(res, 200, answer([thought, { text }], 'STOP'))
 }
 
 /** A value valid against a (simple) JSON Schema: enums pick `LABEL=` or the first, strings name their property. */

@@ -1,0 +1,120 @@
+# Deploys main to production (docs/runbooks/deploy.md) once CI has passed on it, or by hand ("Run workflow"): builds
+# the images on Cloud Build, copies deploy/ to the VM, runs deploy.sh (migrations included), checks health and rolls
+# back to the previous version when the app doesn't come up.
+# GitHub signs in to Google Cloud without a stored key (Workload Identity Federation): the provider trusts only this
+# repository's main branch, as the service account gh-deployer (Cloud Builds, SSH to ow-prod through IAP).
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Deploy this already-built image tag (a short commit hash, e.g. to roll back) instead of building main"
+        required: false
+        default: ""
+
+# One deploy at a time; a newer one waits for the running one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT: optiply-workflows
+  REGION: us-east1
+  ZONE: us-east1-b
+  VM: ow-prod
+  SITE: https://104-196-197-26.sslip.io
+
+jobs:
+  deploy:
+    # A push to main whose CI passed (not a pull request's run), or a run by hand on main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/961583540192/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: gh-deployer@optiply-workflows.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Choose the version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            # Only a tag's characters: it ends up in a command on the VM.
+            [[ "$INPUT_TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::Not a valid image tag: $INPUT_TAG"; exit 1; }
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the images (Cloud Build)
+        if: steps.version.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # --async + polling: streaming the build's log would need a log-reading role.
+          id=$(gcloud builds submit --project "$PROJECT" --region "$REGION" --config deploy/cloudbuild.yaml \
+            --substitutions "_TAG=$TAG" --async --format='value(id)' .)
+          echo "Build $id: https://console.cloud.google.com/cloud-build/builds;region=$REGION/$id?project=$PROJECT"
+          for _ in $(seq 1 120); do
+            status=$(gcloud builds describe "$id" --project "$PROJECT" --region "$REGION" --format='value(status)')
+            case "$status" in
+              SUCCESS) echo "Built $TAG"; exit 0 ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) echo "::error::Build $status"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "::error::The build took longer than 40 minutes"; exit 1
+
+      - name: Copy deploy/ to the VM
+        run: |
+          mkdir -p /tmp/ow && cp deploy/* apps/code-executor/seccomp.json /tmp/ow/
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+            --command 'rm -rf /tmp/ow-deploy && mkdir -p /tmp/ow-deploy'
+          gcloud compute scp /tmp/ow/* "$VM":/tmp/ow-deploy/ --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+            --command 'sudo cp /tmp/ow-deploy/* /opt/ow/ && sudo chmod +x /opt/ow/*.sh && rm -rf /tmp/ow-deploy'
+
+      - name: Deploy
+        id: deploy
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+            --command "sudo /opt/ow/deploy.sh $TAG"
+
+      - name: Check health, roll back if it fails
+        # Also after a failed deploy step: whatever it left half done is checked, and rolled back when unhealthy.
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          for _ in $(seq 1 36); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$SITE/api/health")" = 200 ]; then
+              echo "Healthy: $SITE"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$SITE/api/health didn't answer 200 within 3 minutes: rolling back"
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+            --command 'sudo /opt/ow/deploy.sh $(cat /opt/ow/.previous-tag)'
+          exit 1

@@ -110,7 +110,7 @@ const WATCHDOG = { intervalMs: 1000, stallMs: 5000 }
 
 /** Only these can be opened from an app. */
 const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
-const DOWNLOAD_TYPES = new Set(['text/plain', 'text/csv', 'application/json'])
+const DOWNLOAD_TYPES = new Set(['text/plain', 'text/csv', 'application/json', 'application/pdf'])
 /** At most this much JSON text of local storage per app (session 41). */
 const STORAGE_LIMIT = 100_000
 

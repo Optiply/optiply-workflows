@@ -75,8 +75,8 @@ const draftOf = async (key: string) =>
 
 beforeAll(async () => {
   env = await startTestApp()
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
-  cookie = await login(env.app, 'admin@example.com')
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
+  cookie = await login(env.app, 'admin@optiply.nl')
   admin = trpc(env.app, cookie)
   baseUrl = (await env.app.listen({ port: 0, host: '127.0.0.1' })).replace('http', 'ws')
 }, 120_000)

@@ -4,19 +4,15 @@ import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from '@smit
 import { z } from 'zod'
 import { ConnectorError } from '../types'
 
-/** This process's AWS settings (M26), set once by the server, like `configurePubSub`. */
+/** This process's AWS settings (M26), set once by the server. */
 export interface AwsDefaults {
   /**
    * The server's own credentials (the SDK's default chain: environment, `~/.aws`, SSO, web identity, ECS and EC2
    * metadata), only where the instance allows resources to use them (`AWS_SERVER_IDENTITY=allow`).
    */
   serverCredentials?: AwsCredentialIdentityProvider
-  /** STS's and SQS's endpoints for every region, for tests (a resource's own `endpoint` wins for SQS). */
+  /** STS's endpoint for every region, for tests. */
   stsEndpoint?: string
-  sqsEndpoint?: string
-  /** SNS's and Kinesis's (M30), the same way. */
-  snsEndpoint?: string
-  kinesisEndpoint?: string
 }
 
 let defaults: AwsDefaults = {}
@@ -29,7 +25,7 @@ export function awsDefaults(): AwsDefaults {
   return defaults
 }
 
-/** The AWS identity's settings, shared by SQS and Kafka's MSK IAM. */
+/** The AWS identity's settings, shared by the AWS resources (S3). */
 export const awsIdentityConfig = {
   region: z
     .string()

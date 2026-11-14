@@ -27,7 +27,6 @@ import {
   type Diagnostic,
   literalAssignees,
   queriedResources,
-  triggerResources,
   usedLibraries,
   validateDefinition,
   type WorkflowDefinition,
@@ -323,8 +322,7 @@ export async function checkDefinition(
   libraries: LibraryQuery[]
   errors: Diagnostic[]
 }> {
-  // A Pub/Sub trigger's resource is used with no one behind the run, like a queried one: checked and vouched for alike.
-  const slugs = [...new Set([...queriedResources(definition), ...triggerResources(definition)])]
+  const slugs = queriedResources(definition)
   const rows = slugs.length ? await db.select().from(resources).where(inArray(resources.slug, slugs)) : []
   const bySlug = new Map(rows.map((r) => [r.slug, r]))
   const childSlugs = calledWorkflows(definition)

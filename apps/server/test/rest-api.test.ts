@@ -67,9 +67,9 @@ beforeAll(async () => {
   origin = `http://127.0.0.1:${(echo.address() as AddressInfo).port}`
 
   env = await startTestApp({ REST_API_PRIVATE_HOSTS: '127.0.0.1' })
-  await createLocalUser(env.db, 'admin@example.com', { admin: true })
+  await createLocalUser(env.db, 'admin@optiply.nl', { admin: true })
   await createLocalUser(env.db, 'member@example.com')
-  adminCookie = await login(env.app, 'admin@example.com')
+  adminCookie = await login(env.app, 'admin@optiply.nl')
   admin = trpc(env.app, adminCookie)
   member = trpc(env.app, await login(env.app, 'member@example.com'))
   const envs = data(await admin.query('environments.list'))

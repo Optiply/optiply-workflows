@@ -43,7 +43,7 @@ export type LogLevel = 'log' | 'info' | 'warn' | 'error'
 
 /** What the app's code sees as `current_user` and `appContext`. */
 export interface RuntimeGlobals {
-  current_user: { id: string; email: string; name: string }
+  current_user: { id: string; email: string; name: string; groups?: { id: string; name: string }[] }
   appContext: { appSlug: string; environment: string; version: string | null }
 }
 

@@ -77,8 +77,8 @@ api / worker ──WSS──▶ tunnel.cloudproxy.app ──TCP──▶ VM:22 �
      gcloud iam service-accounts keys create key.json \
        --iam-account optiply-workflows-iap@PROJECT.iam.gserviceaccount.com
      ```
-   - or **this server's own identity**: its Application Default Credentials (Pub/Sub resources can use it too, M19:
-     `docs/runbooks/pubsub.md`). Off unless the instance opts in
+   - or **this server's own identity**: its Application Default Credentials (Google Sheets and Gemini on Vertex AI
+     can use it too: `docs/runbooks/connectors.md`, `docs/runbooks/ai.md`). Off unless the instance opts in
      (`GOOGLE_SERVER_IDENTITY=allow`), and **only admins** can choose it for a resource or point it at another VM
      (editors keep it and change the rest): it may reach VMs no one's key does. Where it comes from, in this order:
      the file `GOOGLE_APPLICATION_CREDENTIALS` names (a service account key or an `authorized_user` file), gcloud's

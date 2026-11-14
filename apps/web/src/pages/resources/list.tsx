@@ -80,7 +80,7 @@ export function ResourcesPage() {
       {data.resources.length === 0 && !(folders?.canManage && folders.folders.length) ? (
         <EmptyState icon={<Plug className="size-6" />} title="No resources yet">
           {data.canCreate
-            ? 'Add a database (Postgres, MySQL or BigQuery) or a REST API to query it from workflows.'
+            ? 'Add a database (Postgres, MySQL, SQL Server, BigQuery, or Oracle, Snowflake, ClickHouse and others over JDBC) or a REST API to query it from workflows.'
             : 'Nothing has been shared with you yet. Ask an admin for access to a resource.'}
         </EmptyState>
       ) : (
@@ -189,7 +189,7 @@ function NewResourceForm({ onDone }: { onDone: () => void }) {
       >
         <Field label="Type">
           <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            {['Databases', 'APIs', 'Storage', 'Messaging', 'Services', 'AI'].map((group) => (
+            {['Databases', 'APIs', 'Storage', 'Services', 'AI'].map((group) => (
               <optgroup key={group} label={group}>
                 {types
                   ?.filter((t) => t.group === group)

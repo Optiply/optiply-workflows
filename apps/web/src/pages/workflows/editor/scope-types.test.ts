@@ -152,17 +152,6 @@ describe('scopeDeclarations', () => {
       'declare const startTrigger: { data: { other: number };',
     )
   })
-
-  it("types startTrigger.message as the workflow's queue triggers' messages (M26)", () => {
-    const blocks = [{ name: 'startTrigger', type: 'startTrigger' }] as never
-    expect(scopeDeclarations(blocks, {}).dts).toContain('message?: OwPubSubMessage;')
-    expect(scopeDeclarations(blocks, {}, [], undefined, undefined, ['sqs']).dts).toContain(
-      'message?: OwSqsMessage;',
-    )
-    const both = scopeDeclarations(blocks, {}, [], undefined, undefined, ['sqs', 'kafka']).dts
-    expect(both).toContain('message?: OwSqsMessage | OwKafkaMessage;')
-    expect(both).toContain('interface OwKafkaMessage {')
-  })
 })
 
 describe('draftSchema', () => {
@@ -237,7 +226,7 @@ describe('AI queries (M35)', () => {
         config: { resource: 'db', query: { action: 'extract' } },
       } as never,
     ]
-    const { dts } = scopeDeclarations(blocks, {}, [], undefined, undefined, [], new Set(['claude']))
+    const { dts } = scopeDeclarations(blocks, {}, [], undefined, undefined, new Set(['claude']))
     expect(dts).toContain('declare const order: { data: { qty: number; [key: string]: unknown }')
     expect(dts).toContain('declare const kind: { data: { label: "order" | "complaint"; reason: string }')
     expect(dts).toContain('declare const kinds: { data: { labels: ("a" | "b")[]; reason: string }')

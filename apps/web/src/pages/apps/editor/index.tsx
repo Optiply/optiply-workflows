@@ -290,7 +290,7 @@ export function Editor({ app, environment, environments, branchDraftId, branch =
     branchDraftId,
     environmentId: environment.id,
     globals: {
-      current_user: { id: me.id, email: me.email, name: me.name },
+      current_user: { id: me.id, email: me.email, name: me.name, groups: me.groups ?? [] },
       appContext: { appSlug: app.slug, environment: environment.slug, version: null },
     },
     notify,

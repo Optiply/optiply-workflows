@@ -56,92 +56,6 @@ export interface RunInput {
   headers?: Record<string, string>
   pathParams?: Record<string, string>
   urlParams?: Record<string, string>
-  /**
-   * A queue trigger's message (Pub/Sub M19, SQS and Kafka M26): `data` holds its data or body, this the rest
-   * (`startTrigger.message`).
-   */
-  message?: PubSubRunMessage | SqsRunMessage | KafkaRunMessage | RabbitRunMessage | KinesisRunMessage
-}
-
-/** What an SQS-triggered run sees of its message, besides its body (M26). */
-export interface SqsRunMessage {
-  messageId: string
-  /** The queue's URL. */
-  queue: string
-  /** SQS's own attributes (`SentTimestamp`, `ApproximateReceiveCount`, …), as SQS names them. */
-  attributes: Record<string, string>
-  /** The sender's message attributes, as text (binary ones as base64). */
-  messageAttributes: Record<string, string>
-  /** How many times SQS has handed it out, counting this one. */
-  receiveCount: number
-  sentAt: string
-  groupId?: string
-  deduplicationId?: string
-  sequenceNumber?: string
-}
-
-/** What a Kafka-triggered run sees of its message, besides its value (M26). */
-export interface KafkaRunMessage {
-  topic: string
-  partition: number
-  offset: string
-  key: string | null
-  headers: Record<string, string>
-  timestamp: string
-  /** This run's attempt at the message, counting from 1. */
-  attempt: number
-  groupId: string
-  /** M30: the Schema Registry's schema the value was decoded with. */
-  schemaId?: number
-  /** M30: why a wire-format value couldn't be decoded (it runs as it came). */
-  schemaError?: string
-  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
-  encoding?: 'base64'
-}
-
-/** What a Kinesis-triggered run sees of its record, besides its data (M30). */
-export interface KinesisRunMessage {
-  stream: string
-  shardId: string
-  sequenceNumber: string
-  partitionKey: string
-  arrivedAt: string
-  /** This run's attempt at the record, counting from 1. */
-  attempt: number
-  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
-  encoding?: 'base64'
-}
-
-/** What a RabbitMQ-triggered run sees of its message, besides its body (M30). */
-export interface RabbitRunMessage {
-  queue: string
-  /** The exchange it was published to (empty: the default exchange) and its routing key. */
-  exchange: string
-  routingKey: string
-  /** Delivered before and not acked (a lost channel, another worker). */
-  redelivered: boolean
-  headers: Record<string, unknown>
-  messageId?: string
-  contentType?: string
-  correlationId?: string
-  timestamp?: string
-  /** M30: the data is the bytes in base64 (they weren't text: not UTF-8, or holding a NUL). */
-  encoding?: 'base64'
-}
-
-/** What a Pub/Sub-triggered run sees of its message, besides its data. */
-export interface PubSubRunMessage {
-  messageId: string
-  publishTime: string
-  attributes: Record<string, string>
-  orderingKey?: string
-  /** Pub/Sub's count, on subscriptions with a dead-letter policy. */
-  deliveryAttempt?: number
-  subscription: string
-  /** The data's bytes, for binary payloads `data` can only show as text. */
-  dataBase64: string
-  /** M30: `data` is `dataBase64` too (the bytes weren't text: not UTF-8, or holding a NUL). */
-  encoding?: 'base64'
 }
 
 /**
@@ -311,8 +225,8 @@ export interface ExecuteRunOptions {
    */
   actingUserId?: string | null
   /**
-   * Whoever started the run (M21): manual, editor and app runs, inherited by child runs; null for schedules,
-   * webhooks and Pub/Sub. Library queries see them as `current_user`.
+   * Whoever started the run (M21): manual, editor and app runs, inherited by child runs; null for schedules
+   * and webhooks. Library queries see them as `current_user`.
    */
   currentUserId?: string | null
   input: RunInput

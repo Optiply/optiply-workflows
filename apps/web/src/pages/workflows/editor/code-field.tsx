@@ -1,5 +1,4 @@
 import { AI_RESOURCE_TYPES } from '@ow/connectors/ai-models'
-import { QUEUE_TRIGGER_KINDS } from '@ow/definition'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import CodeField, { type CodeFieldProps } from '@/components/code/code-field'
@@ -41,15 +40,12 @@ export default function WorkflowCodeField({ text: at, removeEmpty, ...props }: W
     const functions = definition.functions ?? []
     const open = fn === null ? undefined : functions.find((f) => f.name === fn)
     const bodySchema = open ? undefined : definition.triggers?.webhook?.bodySchema
-    const t = definition.triggers
-    const queues = QUEUE_TRIGGER_KINDS.filter((kind) => !!t?.[kind]?.length)
     return scopeDeclarations(
       graphOf(definition, fn).blocks,
       samples,
       functions,
       open,
       bodySchema,
-      queues,
       aiResources,
     )
   }, [definition, samples, fn, aiResources])

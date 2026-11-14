@@ -98,7 +98,7 @@ test('the sidebar shows only the sections someone can reach', async ({ page, bro
   })
   const memberPage = await (await browser.newContext()).newPage()
   await signIn(memberPage, E2E_MEMBER_EMAIL)
-  type Me = { sections: Record<string, boolean>; canCreate: Record<string, boolean> }
+  type Me = { sections: Record<string, boolean>; canCreate: Record<string, boolean>; settings: boolean }
   const me = await trpcQuery<Me>(memberPage, 'me', undefined)
   expect(me.sections.apps).toBe(true)
 
@@ -136,6 +136,16 @@ test('the sidebar shows only the sections someone can reach', async ({ page, bro
       me.sections[key] ? 1 : 0,
     )
   }
+  // Settings are for Optiply's admins only: not in the sidebar or ⌘K, and a typed link says so.
+  expect(me.settings).toBe(false)
+  await expect(palette.getByRole('option', { name: 'Settings', exact: true })).toHaveCount(0)
+  await memberPage.keyboard.press('Escape')
+  await expect(memberPage.getByRole('link', { name: 'Settings', exact: true })).toHaveCount(0)
+  await memberPage.goto('/settings/access-tokens')
+  await expect(memberPage.getByText('No access to Settings')).toBeVisible()
+  // An admin from Optiply has them.
+  await expect(page.getByRole('link', { name: 'Settings', exact: true })).toHaveCount(1)
+  expect((await trpcQuery<Me>(page, 'me', undefined)).settings).toBe(true)
 })
 
 test('someone with Use on an app gets the app, never the editor', async ({ page, browser }) => {
@@ -242,15 +252,16 @@ test('an admin lets a waiting person in, and invites someone from outside', asyn
   })
 
   await test.step('an invitation for an outside address, and withdrawn', async () => {
+    // Invite people is off for now (no email to send from yet): the button is there, disabled, and says why.
+    const invite = page.getByRole('button', { name: 'Invite people' })
+    await expect(invite).toBeDisabled()
+    await expect(page.getByTitle(/Not available yet/)).toContainText('Invite people')
+    // The invitation itself still works (made through the API), and can be withdrawn.
     const email = `guest-${stamp}@partner.example`
-    await page.getByRole('button', { name: 'Invite people' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Invite people' })
-    await dialog.getByLabel('Email').fill(email)
-    await dialog.getByLabel(`Newcomers ${stamp}`).check()
-    await dialog.getByRole('button', { name: 'Invite' }).click()
+    await trpcMutate(page, 'users.invite', { email, groupIds: [] })
+    await page.reload()
     const row = page.getByRole('row').filter({ hasText: email })
     await expect(row).toContainText('Invited')
-    await expect(row).toContainText(`Newcomers ${stamp}`)
     await row.getByRole('button', { name: 'Cancel invitation' }).click()
     await page.getByTestId('confirm-ok').click()
     await expect(row).toHaveCount(0)

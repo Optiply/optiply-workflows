@@ -1,20 +1,9 @@
 import { createSign, generateKeyPairSync, randomUUID } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
-import type { ServiceHandler } from './fake'
-import { jsonError } from './fake'
 
-// A fake of SNS for tests (M30): topics; PublishBatch (the query protocol's XML, or JSON, whichever the SDK sends);
-// HTTP subscriptions that are sent a signed SubscriptionConfirmation and, once confirmed through their SubscribeURL,
-// each message as a signed Notification, as SNS does. Its signing key's public half is served as the "certificate".
-
-export interface FakeSnsMessage {
-  topicArn: string
-  messageId: string
-  message: string
-  subject?: string
-  attributes: Record<string, string>
-  groupId?: string
-}
+// A fake of SNS's side of a webhook subscription for tests (M30, the webhook's SNS option): topics; HTTP subscriptions
+// that are sent a signed SubscriptionConfirmation and, once confirmed through their SubscribeURL, each published
+// message as a signed Notification, as SNS does. Its signing key's public half is served as the "certificate".
 
 export interface FakeSns {
   /** Where the signing key is served (`SigningCertURL`). */
@@ -24,7 +13,8 @@ export interface FakeSns {
   subscribe(topicArn: string, endpoint: string): Promise<void>
   /** Whether an endpoint confirmed (fetched its SubscribeURL). */
   confirmed(topicArn: string, endpoint: string): boolean
-  messages: FakeSnsMessage[]
+  /** Publishes a message to a topic: each confirmed subscription is posted it as a signed Notification. */
+  publish(topicArn: string, message: string, subject?: string): Promise<string>
   /** A signed envelope as SNS would send it, for tests that post it themselves (to tamper with it). */
   envelope(
     type: 'Notification' | 'SubscriptionConfirmation',
@@ -36,18 +26,13 @@ export interface FakeSns {
   route(path: string, res: ServerResponse): boolean
 }
 
-export function fakeSns(
-  handlers: Map<string, ServiceHandler>,
-  account: string,
-  baseUrl: () => string,
-): FakeSns {
+export function fakeSns(account: string, baseUrl: () => string): FakeSns {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const pem = publicKey.export({ type: 'spki', format: 'pem' }).toString()
   const topics = new Map<
     string,
     { subscriptions: { endpoint: string; token: string; confirmed: boolean }[] }
   >()
-  const messages: FakeSnsMessage[] = []
 
   const signed = (fields: Record<string, string>, version: '1' | '2') => {
     const keys =
@@ -99,109 +84,6 @@ export function fakeSns(
       body: JSON.stringify(body),
     }).catch(() => undefined)
 
-  const xml = (res: ServerResponse, status: number, text: string) => {
-    res.writeHead(status, { 'content-type': 'text/xml' })
-    res.end(text)
-  }
-
-  handlers.set('sns', async (req, res) => {
-    const json = typeof req.headers['x-amz-target'] === 'string'
-    const form = json ? null : new URLSearchParams(req.body.toString('utf8'))
-    const body = json ? (JSON.parse(req.body.toString('utf8') || '{}') as Record<string, unknown>) : {}
-    const action = json ? String(req.headers['x-amz-target']).split('.').pop() : form!.get('Action')
-    if (action !== 'PublishBatch')
-      return json
-        ? jsonError(res, 400, 'InvalidAction', `The fake doesn't do ${action}`)
-        : xml(
-            res,
-            400,
-            `<ErrorResponse><Error><Type>Sender</Type><Code>InvalidAction</Code><Message>${action}</Message></Error></ErrorResponse>`,
-          )
-    const topicArn = json ? String(body.TopicArn) : form!.get('TopicArn')!
-    if (!topics.has(topicArn))
-      return json
-        ? jsonError(res, 404, 'NotFound', 'Topic does not exist')
-        : xml(
-            res,
-            404,
-            '<ErrorResponse><Error><Type>Sender</Type><Code>NotFound</Code><Message>Topic does not exist</Message></Error><RequestId>r</RequestId></ErrorResponse>',
-          )
-    type Entry = {
-      Id: string
-      Message: string
-      Subject?: string
-      MessageGroupId?: string
-      MessageAttributes?: Record<string, { StringValue?: string }>
-    }
-    let entries: Entry[]
-    if (json) entries = (body.PublishBatchRequestEntries as Entry[]) ?? []
-    else {
-      entries = []
-      for (let n = 1; form!.has(`PublishBatchRequestEntries.member.${n}.Id`); n++) {
-        const p = `PublishBatchRequestEntries.member.${n}.`
-        const attributes: Record<string, { StringValue?: string }> = {}
-        for (let a = 1; form!.has(`${p}MessageAttributes.entry.${a}.Name`); a++)
-          attributes[form!.get(`${p}MessageAttributes.entry.${a}.Name`)!] = {
-            StringValue: form!.get(`${p}MessageAttributes.entry.${a}.Value.StringValue`) ?? '',
-          }
-        entries.push({
-          Id: form!.get(`${p}Id`)!,
-          Message: form!.get(`${p}Message`) ?? '',
-          ...(form!.get(`${p}Subject`) && { Subject: form!.get(`${p}Subject`)! }),
-          ...(form!.get(`${p}MessageGroupId`) && { MessageGroupId: form!.get(`${p}MessageGroupId`)! }),
-          MessageAttributes: attributes,
-        })
-      }
-    }
-    if (entries.length > 10) {
-      jsonError(res, 400, 'TooManyEntriesInBatchRequest', 'At most 10 entries')
-      return
-    }
-    const successful: { Id: string; MessageId: string }[] = []
-    for (const e of entries) {
-      const messageId = randomUUID()
-      messages.push({
-        topicArn,
-        messageId,
-        message: e.Message,
-        ...(e.Subject && { subject: e.Subject }),
-        ...(e.MessageGroupId && { groupId: e.MessageGroupId }),
-        attributes: Object.fromEntries(
-          Object.entries(e.MessageAttributes ?? {}).map(([k, v]) => [k, v.StringValue ?? '']),
-        ),
-      })
-      successful.push({ Id: e.Id, MessageId: messageId })
-      for (const s of topics.get(topicArn)!.subscriptions.filter((x) => x.confirmed)) {
-        const env = signed(
-          {
-            Type: 'Notification',
-            MessageId: messageId,
-            TopicArn: topicArn,
-            Message: e.Message,
-            Timestamp: new Date().toISOString(),
-            ...(e.Subject && { Subject: e.Subject }),
-          },
-          '2',
-        )
-        void post(s.endpoint, env)
-      }
-    }
-    if (json) {
-      res.writeHead(200, { 'content-type': 'application/x-amz-json-1.0' })
-      res.end(JSON.stringify({ Successful: successful, Failed: [] }))
-      return
-    }
-    xml(
-      res,
-      200,
-      `<PublishBatchResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/"><PublishBatchResult><Successful>${successful
-        .map((s) => `<member><Id>${s.Id}</Id><MessageId>${s.MessageId}</MessageId></member>`)
-        .join(
-          '',
-        )}</Successful><Failed/></PublishBatchResult><ResponseMetadata><RequestId>${randomUUID()}</RequestId></ResponseMetadata></PublishBatchResponse>`,
-    )
-  })
-
   return {
     get certUrl() {
       return `${baseUrl()}/sns-cert.pem`
@@ -225,7 +107,24 @@ export function fakeSns(
     confirmed(topicArn, endpoint) {
       return !!topics.get(topicArn)?.subscriptions.find((s) => s.endpoint === endpoint)?.confirmed
     },
-    messages,
+    async publish(topicArn, message, subject) {
+      const topic = topics.get(topicArn)
+      if (!topic) throw new Error(`no topic ${topicArn}`)
+      const messageId = randomUUID()
+      const env = signed(
+        {
+          Type: 'Notification',
+          MessageId: messageId,
+          TopicArn: topicArn,
+          Message: message,
+          Timestamp: new Date().toISOString(),
+          ...(subject && { Subject: subject }),
+        },
+        '2',
+      )
+      await Promise.all(topic.subscriptions.filter((x) => x.confirmed).map((x) => post(x.endpoint, env)))
+      return messageId
+    },
     envelope,
     route(path, res) {
       const url = new URL(path, 'http://x')

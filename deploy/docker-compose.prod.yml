@@ -1,0 +1,191 @@
+# Production on one small VM (session 54: Google Cloud's free e2-micro, 1 GB of memory; docs/runbooks/deploy.md).
+# The images come from Artifact Registry (built by Cloud Build, deploy/cloudbuild.yaml); secrets from .env, which
+# deploy.sh writes from Secret Manager. Caddy serves HTTPS (Let's Encrypt) and is the only thing with open ports.
+#
+# Sized for 1 GB: the API and the worker in one process (ROLE=all), no Kafka, Postgres tuned small, the runners
+# one job at a time with few warm jails, the JVM's heap capped. On a bigger machine raise WORKER_CONCURRENCY,
+# PYTHON_MAX_CONCURRENT, SDK_MAX_CONCURRENT and the JVM's -Xmx (or go back to separate api and worker services).
+
+x-app: &app
+  image: ${IMAGE_PREFIX:?}/app:${IMAGE_TAG:?}
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_URL: postgres://ow:ow@postgres:5432/optiply_workflows
+    PUBLIC_URL: ${PUBLIC_URL:?}
+    SESSION_SECRET: ${SESSION_SECRET:?}
+    ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?}
+    ENCRYPTION_KEY_CURRENT: ${ENCRYPTION_KEY_CURRENT:-}
+    OIDC_ISSUER: https://accounts.google.com
+    OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+    OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+    OIDC_ALLOWED_DOMAIN: ${OIDC_ALLOWED_DOMAIN:-optiply.nl}
+    LOCAL_LOGIN_ENABLED: ${LOCAL_LOGIN_ENABLED:-false}
+    TRUST_PROXY: "true"
+    LOG_LEVEL: info
+    # /metrics answers only with this Bearer token (set in ow-env); without one anyone could read the counters.
+    METRICS_TOKEN: ${METRICS_TOKEN:-}
+    RUN_RETENTION_DAYS: ${RUN_RETENTION_DAYS:-30}
+    GIT_POLL_SECONDS: ${GIT_POLL_SECONDS:-60}
+    WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    NODE_OPTIONS: --max-old-space-size=320
+    PYTHON_EXECUTOR_URL: http://code-executor:8080
+    PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:?}
+    SDK_RUNNER_URL: http://sdk-runner:8080
+    SDK_RUNNER_TOKEN: ${SDK_RUNNER_TOKEN:?}
+    JDBC_RUNNER_URL: http://jdbc-runner:8080
+    JDBC_RUNNER_TOKEN: ${JDBC_RUNNER_TOKEN:?}
+    JDBC_FORWARDER_PORT: 7070
+    PYTHON_BUILDER_URL: http://python-builder:8080
+    PYTHON_BUILDER_TOKEN: ${PYTHON_BUILDER_TOKEN:?}
+    GOOGLE_SERVER_IDENTITY: ${GOOGLE_SERVER_IDENTITY:-}
+    REST_API_PRIVATE_HOSTS: ${REST_API_PRIVATE_HOSTS:-}
+
+services:
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [app]
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ow
+      POSTGRES_PASSWORD: ow
+      POSTGRES_DB: optiply_workflows
+    command:
+      [postgres, -c, shared_buffers=48MB, -c, max_connections=40, -c, work_mem=2MB, -c, maintenance_work_mem=32MB,
+       -c, effective_cache_size=256MB]
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # On the VM's loopback only (the firewall opens nothing for it): a database app reaches it through an IAP SSH
+    # tunnel, as the read-only user ow_readonly (docs/runbooks/deploy.md, "Looking at the data").
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ow -d optiply_workflows"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  migrate:
+    <<: *app
+    restart: "no"
+    environment:
+      <<: *app-env
+      ROLE: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    environment:
+      <<: *app-env
+      ROLE: all
+    networks: [default, executor]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The runners: see docker-compose.yml for what each does and why it needs SYS_ADMIN and the seccomp profile.
+  code-executor:
+    image: ${IMAGE_PREFIX:?}/code-executor:${IMAGE_TAG:?}
+    restart: unless-stopped
+    environment:
+      PYTHON_EXECUTOR_TOKEN: ${PYTHON_EXECUTOR_TOKEN:?}
+      PYTHON_MEMORY_MB: 256
+      PYTHON_MAX_CONCURRENT: ${PYTHON_MAX_CONCURRENT:-1}
+      PYTHON_WARM_JAILS: 1
+      PYTHON_PREIMPORT: numpy,pandas
+      PYTHON_WARM_ENV_JAILS: 1
+      PYTHON_WARM_ENV_IDLE_SECONDS: 300
+      PYTHON_WARM_ENV_MAX_MB: 128
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=./seccomp.json
+      - apparmor=unconfined
+    pids_limit: 512
+    networks: [executor]
+    volumes:
+      - python-envs:/envs:ro
+    depends_on:
+      python-builder:
+        condition: service_started
+        required: false
+
+  python-builder:
+    image: ${IMAGE_PREFIX:?}/python-builder:${IMAGE_TAG:?}
+    restart: unless-stopped
+    environment:
+      PYTHON_BUILDER_TOKEN: ${PYTHON_BUILDER_TOKEN:?}
+      PYTHON_PACKAGE_INDEX_URL: https://pypi.org/simple
+      PYTHON_ENV_MAX_MB: 1024
+      PYTHON_ENV_KEEP_DAYS: 30
+      PYTHON_SDIST_MEMORY_MB: 768
+      PYTHON_SDIST_TIMEOUT_SECONDS: 300
+      PYTHON_MAX_SDISTS: 4
+    volumes:
+      - python-envs:/envs
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=./seccomp.json
+      - apparmor=unconfined
+    pids_limit: 512
+    networks: [executor, builder-egress]
+
+  sdk-runner:
+    image: ${IMAGE_PREFIX:?}/sdk-runner:${IMAGE_TAG:?}
+    restart: unless-stopped
+    environment:
+      SDK_RUNNER_TOKEN: ${SDK_RUNNER_TOKEN:?}
+      SDK_MEMORY_MB: 256
+      SDK_MAX_CONCURRENT: ${SDK_MAX_CONCURRENT:-1}
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=./seccomp.json
+      - apparmor=unconfined
+    pids_limit: 512
+    networks: [executor, sdk-egress]
+    volumes:
+      - python-envs:/envs:ro
+
+  jdbc-runner:
+    image: ${IMAGE_PREFIX:?}/jdbc-runner:${IMAGE_TAG:?}
+    restart: unless-stopped
+    environment:
+      JDBC_RUNNER_TOKEN: ${JDBC_RUNNER_TOKEN:?}
+      JDBC_MAX_CONCURRENT: 4
+      JDBC_MAX_POOLS: 10
+      JAVA_TOOL_OPTIONS: >-
+        -Xmx${JDBC_HEAP_MB:-128}m -XX:+UseSerialGC -XX:MaxMetaspaceSize=96m -Xss512k -Duser.timezone=UTC
+        -Duser.home=/tmp -Djava.io.tmpdir=/tmp --add-opens=java.base/java.nio=ALL-UNNAMED
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    networks: [executor, jdbc-egress]
+    volumes:
+      - jdbc-drivers:/drivers
+
+networks:
+  executor:
+    internal: true
+  builder-egress: {}
+  sdk-egress: {}
+  jdbc-egress: {}
+
+volumes:
+  pgdata:
+  python-envs:
+  jdbc-drivers:
+  caddy-data:
+  caddy-config:

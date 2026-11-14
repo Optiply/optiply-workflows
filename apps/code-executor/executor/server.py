@@ -100,7 +100,11 @@ class Jail:
     limits allow for the time it may wait in the pool (the runner lowers its CPU limit once the request arrives,
     and the server keeps the request's deadline)."""
 
-    def __init__(self, seconds, warm=False, env_site=None, preimport=PREIMPORT):
+    def __init__(
+        self, seconds, warm=False, env_site=None, preimport=PREIMPORT, config=None, extra_args=(), program=(), memory_mb=None
+    ):
+        """`config`, `extra_args`, `program` and `memory_mb` are the SDK runner's (M37, sdk_server.py): its own jail
+        config, mounts and environment, its runner after `--`, its memory per call."""
         self.warm = warm
         self.born = time.monotonic()
         self.result_r, result_w = os.pipe()
@@ -108,19 +112,22 @@ class Jail:
         self.result_fd = result_w  # its number inside the jail too
         args = [
             NSJAIL,
-            "--config", JAIL_CONFIG,
+            "--config", config or JAIL_CONFIG,
             "--quiet",
             "--log_fd", str(jail_log_w),
             "--pass_fd", str(result_w),
             "--time_limit", str(seconds),
             "--rlimit_cpu", str(seconds),
-            "--cgroup_mem_max", str(MEMORY_MB * 1024 * 1024),
+            "--cgroup_mem_max", str((memory_mb or MEMORY_MB) * 1024 * 1024),
+            *extra_args,
         ]
         if warm:
             args += ["--env", f"OW_WARM={result_w}", "--env", f"OW_PREIMPORT={preimport}"]
         if env_site:
             # The workflow's packages, ahead of the image's on sys.path (the runner puts them there).
             args += ["--bindmount_ro", f"{env_site}:/opt/env", "--env", "OW_ENV=/opt/env"]
+        if program:
+            args += ["--", *program]
         try:
             self.proc = subprocess.Popen(
                 args,

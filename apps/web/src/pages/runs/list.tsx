@@ -17,7 +17,7 @@ import {
   Th,
 } from '@/components/ui'
 import { timeAgo } from '@/lib/list-model'
-import { duration, pubsubMessage, queueMessageLine, runsApi } from '@/lib/runs-api'
+import { duration, runsApi } from '@/lib/runs-api'
 
 const STATUSES = ['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'] as const
 type StatusFilter = '' | (typeof STATUSES)[number]
@@ -114,12 +114,6 @@ export function RunsPage() {
                 <Td className="text-muted">
                   {run.targetBlocks ? `block ${run.targetBlocks.join(', ')}` : run.version} ·{' '}
                   {run.triggerType}
-                  {pubsubMessage(run) && (
-                    <span className="font-mono text-xs"> · message {pubsubMessage(run)!.messageId}</span>
-                  )}
-                  {run.triggerType !== 'pubsub' && queueMessageLine(run) && (
-                    <span className="font-mono text-xs"> · {queueMessageLine(run)}</span>
-                  )}
                 </Td>
                 <Td className="whitespace-nowrap text-muted" title={new Date(run.createdAt).toLocaleString()}>
                   {timeAgo(run.createdAt)}

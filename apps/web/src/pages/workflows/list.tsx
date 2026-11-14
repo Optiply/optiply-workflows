@@ -382,7 +382,7 @@ function WorkflowRow({
                   onClick={async () => {
                     if (
                       await confirmDialog(
-                        `Delete ${workflow.name} with its releases and runs? Its schedules, webhooks and queue triggers stop at once. This can't be undone.`,
+                        `Delete ${workflow.name} with its releases and runs? Its schedules and webhooks stop at once. This can't be undone.`,
                         { danger: true, confirm: 'Delete' },
                       )
                     ) {

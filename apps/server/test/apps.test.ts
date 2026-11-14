@@ -278,6 +278,31 @@ describe('apps: running queries', () => {
     expect(who).toMatchObject({ ok: true, data: [{ email: 'admin@optiply.nl' }] })
   })
 
+  it("gives current_user the person's groups, by name, on the server and in `me` (Retool's current_user.groups)", async () => {
+    const memberMe = data(await member.query('me'))
+    expect(memberMe.groups.map((g: { name: string }) => g.name)).toContain('Ops')
+    expect(memberMe.groups[0]).toEqual({ id: expect.any(String), name: expect.any(String) })
+    const adminGroups = (data(await admin.query('me')).groups as { name: string }[]).map((g) => g.name).sort()
+    const grouped = await appWith(
+      'groups-app',
+      crudApp({
+        queries: [
+          sqlQuery(
+            'mygroups',
+            "select {{ current_user.groups.map((g) => g.name).sort().join(',') }}::text as names",
+          ),
+        ],
+      }),
+    )
+    // Filled in on the server: what the browser sends for it is ignored.
+    const res = data(
+      await run(admin, grouped.id, 'mygroups', {
+        " current_user.groups.map((g) => g.name).sort().join(',') ": 'Admins,Hacked',
+      }),
+    )
+    expect(res).toMatchObject({ ok: true, data: [{ names: adminGroups.join(',') }] })
+  })
+
   it('fills in config vars on the server: secret ones only for the live release, scrubbed on the way out (M36)', async () => {
     const plain = data(await admin.mutate('configVars.create', { name: 'APP_REGION' }))
     const secret = data(await admin.mutate('configVars.create', { name: 'APP_TOKEN', isSecret: true }))

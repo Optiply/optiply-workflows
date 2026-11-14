@@ -1,0 +1,18 @@
+# What `gcloud builds submit` leaves out of the source it uploads (deploy/cloudbuild.yaml). Secrets never go.
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.vscode
+.claude
+**/node_modules
+**/dist
+**/.turbo
+**/target
+**/coverage
+**/test-results
+**/playwright-report
+**/__pycache__
+.data
+backups

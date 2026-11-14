@@ -1,6 +1,12 @@
-import { ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL } from '@ow/connectors/ai-models'
+import {
+  ANTHROPIC_MODELS,
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  GEMINI_MODELS,
+} from '@ow/connectors/ai-models'
 import { oauthPresets } from '@ow/connectors/oauth-presets'
 import { useQuery } from '@tanstack/react-query'
+import { getRouteApi } from '@tanstack/react-router'
 import { type ReactNode, useEffect, useState } from 'react'
 import { Field, Input, Select } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -391,6 +397,132 @@ export function SalesforceFields(props: FieldsProps & { resourceId: string }) {
   )
 }
 
+const appRoute = getRouteApi('/app')
+
+/**
+ * Gmail (M37): Google sign-in (one mailbox, shared or per person), or a Workspace service account with domain-wide
+ * delegation acting as a default mailbox (admins only: it reaches every mailbox of the domain).
+ */
+export function GmailFields(props: FieldsProps & { resourceId: string }) {
+  const { me } = appRoute.useRouteContext()
+  const auth = (props.config.auth ?? { type: 'oauth' }) as Auth & { mailbox?: string }
+  const delegation = auth.type === 'delegation'
+  return (
+    <>
+      <Field label="Sign in with">
+        <Select
+          value={auth.type}
+          disabled={props.disabled || (delegation && !me.isAdmin)}
+          data-testid="service-auth"
+          onChange={(e) => props.set('auth', { type: e.target.value })}
+        >
+          <option value="oauth">Google sign-in (one mailbox)</option>
+          <option value="delegation" disabled={!me.isAdmin}>
+            A Workspace service account (domain-wide delegation)
+          </option>
+        </Select>
+      </Field>
+      {delegation ? (
+        <>
+          <SecretInput
+            props={props}
+            name="serviceAccountKey"
+            label="Service account key"
+            placeholder='{ "type": "service_account", … }'
+            hint="Its client id needs domain-wide delegation for https://www.googleapis.com/auth/gmail.modify (Workspace admin console → Security → API controls)."
+          />
+          <Field label="Mailbox" hint="The address queries act as unless they name another.">
+            <Input
+              value={auth.mailbox ?? ''}
+              disabled={props.disabled}
+              placeholder="support@optiply.nl"
+              data-testid="gmail-mailbox"
+              onChange={(e) => props.set('auth', { ...auth, mailbox: e.target.value.trim() || undefined })}
+            />
+          </Field>
+          {!me.isAdmin && <p className="text-xs text-muted">Chosen by an admin.</p>}
+        </>
+      ) : (
+        <>
+          <OAuthApp
+            props={props}
+            auth={auth}
+            preset={{
+              ...oauthPresets.google,
+              scope: 'openid email https://www.googleapis.com/auth/gmail.modify',
+            }}
+            resourceId={props.resourceId}
+            scopeHint="Space-separated. gmail.modify reads, labels, drafts and sends; gmail.readonly only reads."
+          />
+          {!me.isAdmin && (
+            <p className="text-xs text-muted">
+              Only admins can choose a service account with domain-wide delegation.
+            </p>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
+/**
+ * Microsoft Teams (M37): Microsoft sign-in through an Entra ID app registration (its tenant, client id and secret;
+ * delegated permissions), or a channel's Workflows webhook (posting only).
+ */
+export function TeamsFields(props: FieldsProps & { resourceId: string }) {
+  const auth = (props.config.auth ?? { type: 'oauth' }) as Auth & { tenant?: string }
+  return (
+    <>
+      <Field label="Sign in with">
+        <Select
+          value={auth.type}
+          disabled={props.disabled}
+          data-testid="service-auth"
+          onChange={(e) => props.set('auth', { type: e.target.value })}
+        >
+          <option value="oauth">Microsoft sign-in (Graph: teams, channels, chats)</option>
+          <option value="webhook">A channel’s Workflows webhook (posting only)</option>
+        </Select>
+      </Field>
+      {auth.type === 'webhook' ? (
+        <SecretInput
+          props={props}
+          name="webhookUrl"
+          label="Webhook URL"
+          placeholder="https://….logic.azure.com/workflows/…"
+          hint="In the channel: ··· → Workflows → “Post to a channel when a webhook request is received”; copy its URL. Kept encrypted."
+        />
+      ) : (
+        <>
+          <Field
+            label="Tenant"
+            hint="Your Entra ID tenant id or domain (optiply.nl); organizations lets any work account sign in."
+          >
+            <Input
+              value={auth.tenant ?? ''}
+              disabled={props.disabled}
+              placeholder="organizations"
+              data-testid="teams-tenant"
+              onChange={(e) => props.set('auth', { ...auth, tenant: e.target.value.trim() || undefined })}
+            />
+          </Field>
+          <OAuthApp
+            props={props}
+            auth={auth}
+            preset={{
+              ...oauthPresets.microsoft,
+              scope:
+                'offline_access openid email User.Read User.ReadBasic.All Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send ChannelMessage.Read.All Chat.ReadWrite TeamMember.Read.All',
+            }}
+            resourceId={props.resourceId}
+            scopeHint="Delegated Graph permissions, space-separated; keep offline_access. ChannelMessage.Read.All needs an admin’s consent."
+          />
+        </>
+      )}
+    </>
+  )
+}
+
 export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) {
   const trpc = useTRPC()
   const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data
@@ -591,6 +723,167 @@ export function AnthropicFields(props: FieldsProps) {
         disabled={props.disabled}
         onChange={(v) => props.set('fallback', v)}
       />
+    </>
+  )
+}
+
+/**
+ * Gemini (M37): the Gemini API with an API key, or Vertex AI in a Google Cloud project with a service account's key or
+ * this server's Google identity (admins only); the default model, the budget and switches.
+ */
+export function GeminiFields(props: FieldsProps) {
+  const trpc = useTRPC()
+  const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data
+  const canChoose = !!server?.allowed && server.canChoose
+  const platform = String(props.config.platform ?? 'gemini')
+  const identity = String(props.config.identity ?? 'key')
+  return (
+    <>
+      <Field
+        label="Use"
+        hint="Google AI Studio’s Gemini API, or Vertex AI in a Google Cloud project (billing and data stay there)."
+      >
+        <Select
+          value={platform}
+          disabled={props.disabled}
+          data-testid="gemini-platform"
+          onChange={(e) => {
+            props.set('platform', e.target.value)
+            // A base URL is one platform's: the other's paths differ.
+            props.set('baseUrl', undefined)
+          }}
+        >
+          <option value="gemini">Gemini API (AI Studio)</option>
+          <option value="vertex">Vertex AI (a Google Cloud project)</option>
+        </Select>
+      </Field>
+      {platform === 'gemini' ? (
+        <SecretInput
+          props={props}
+          name="apiKey"
+          label="API key"
+          placeholder="AIza…"
+          hint="aistudio.google.com → Get API key. Kept encrypted; never sent to the browser."
+        />
+      ) : (
+        <>
+          <Field label="Sign in with">
+            <Select
+              value={identity}
+              disabled={props.disabled || (identity === 'server' && !canChoose)}
+              data-testid="gemini-identity"
+              onChange={(e) => props.set('identity', e.target.value)}
+            >
+              <option value="key">A service account key</option>
+              <option value="server" disabled={!canChoose}>
+                This server's Google identity
+              </option>
+            </Select>
+          </Field>
+          {identity === 'key' ? (
+            <SecretInput
+              props={props}
+              name="serviceAccountKey"
+              label="Service account key"
+              placeholder='{ "type": "service_account", … }'
+              hint="The JSON key file of a service account with the Vertex AI User role in the project."
+            />
+          ) : (
+            server && (
+              <div className="space-y-1 text-xs" data-testid="gemini-server-note">
+                {server.allowed ? (
+                  <>
+                    {server.identity && (
+                      <p className="text-muted">
+                        Signs in as <code className="text-ink">{server.identity}</code>: it needs the Vertex
+                        AI User role in the project.
+                      </p>
+                    )}
+                    {server.error && <p className="text-danger">{server.error}</p>}
+                    {!canChoose && <p className="text-muted">Chosen by an admin.</p>}
+                  </>
+                ) : (
+                  <p className="text-danger">
+                    This instance doesn't let resources use its own Google identity (any more): choose a
+                    service account key.
+                  </p>
+                )}
+              </div>
+            )
+          )}
+          {identity === 'key' && server && !canChoose && (
+            <p className="text-xs text-muted">
+              {server.allowed
+                ? "Only admins can choose this server's own Google identity."
+                : "This instance doesn't let resources use its own Google identity (GOOGLE_SERVER_IDENTITY)."}
+            </p>
+          )}
+          <Grid>
+            <Field
+              label="Project"
+              hint={
+                identity === 'server'
+                  ? 'The Google Cloud project id (required).'
+                  : "Optional: the key's own project when empty."
+              }
+            >
+              <Input
+                value={String(props.config.project ?? '')}
+                disabled={props.disabled}
+                placeholder="my-project"
+                data-testid="gemini-project"
+                onChange={(e) => props.set('project', e.target.value.trim() || undefined)}
+              />
+            </Field>
+            <Field label="Region" hint="global, or a region such as europe-west4 (keeps data in the EU).">
+              <Input
+                value={String(props.config.location ?? '')}
+                disabled={props.disabled}
+                placeholder="global"
+                data-testid="gemini-location"
+                onChange={(e) => props.set('location', e.target.value.trim() || undefined)}
+              />
+            </Field>
+          </Grid>
+        </>
+      )}
+      <Grid>
+        <Field
+          label="Default model"
+          hint="Blocks and queries that name no model use this one. Any model id works."
+        >
+          <Input
+            value={String(props.config.model ?? '')}
+            disabled={props.disabled}
+            placeholder={DEFAULT_GEMINI_MODEL}
+            onChange={(e) => props.set('model', e.target.value.trim() || undefined)}
+            list="gemini-models"
+            data-testid="ai-model"
+          />
+          <datalist id="gemini-models">
+            {GEMINI_MODELS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </Field>
+        <Field
+          label="Base URL"
+          hint="Optional: a proxy or gateway in front of Google's API (empty: Google's)."
+        >
+          <Input
+            value={String(props.config.baseUrl ?? '')}
+            disabled={props.disabled}
+            onChange={(e) => props.set('baseUrl', e.target.value.trim() || undefined)}
+            placeholder={
+              platform === 'gemini'
+                ? 'https://generativelanguage.googleapis.com/v1beta'
+                : 'https://aiplatform.googleapis.com/v1'
+            }
+            data-testid="ai-base-url"
+          />
+        </Field>
+      </Grid>
+      <AiCommonFields props={props} privateHint="For a proxy inside Optiply's network." />
     </>
   )
 }

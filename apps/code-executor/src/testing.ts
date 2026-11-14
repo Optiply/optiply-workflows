@@ -144,7 +144,69 @@ export async function startTestExecutor(
   return { ...(await waitForHealth(name)), token, container: name }
 }
 
+/** The SDK runner's image (the Dockerfile's `sdk-runner` target, M37), tagged like the executor's. */
+export function sdkRunnerImage(): string {
+  return sourcesImage('ow-sdk-runner', 'sdk-runner')
+}
+
+export interface TestSdkRunner {
+  url: string
+  token: string
+  container: string | null
+  stop(): Promise<void>
+}
+
+/**
+ * An SDK runner for tests (M37): `SDK_RUNNER_TEST_URL` and `SDK_RUNNER_TEST_TOKEN`, or a throwaway container of this
+ * checkout's `sdk-runner` target on a random local port. It reaches the host as `host.docker.internal` (a test's
+ * fake API: allow private networks for it); `envsVolume` mounts installed envs read-only at /envs.
+ */
+export async function startTestSdkRunner(
+  opts: { env?: Record<string, string>; envsVolume?: string } = {},
+): Promise<TestSdkRunner> {
+  if (process.env.SDK_RUNNER_TEST_URL) {
+    return {
+      url: process.env.SDK_RUNNER_TEST_URL.replace(/\/$/, ''),
+      token: process.env.SDK_RUNNER_TEST_TOKEN ?? '',
+      container: null,
+      stop: async () => {},
+    }
+  }
+  const image = sdkRunnerImage()
+  const token = randomBytes(24).toString('hex')
+  const name = `ow-sdk-runner-test-${randomBytes(4).toString('hex')}`
+  const env = Object.entries({ SDK_RUNNER_TOKEN: token, ...opts.env }).flatMap(([k, v]) => [
+    '-e',
+    `${k}=${v}`,
+  ])
+  execFileSync(
+    'docker',
+    [
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      name,
+      ...EXECUTOR_DOCKER_FLAGS,
+      '--add-host',
+      'host.docker.internal:host-gateway',
+      ...env,
+      ...(opts.envsVolume ? ['-v', `${opts.envsVolume}:/envs:ro`] : []),
+      '-p',
+      '127.0.0.1::8080',
+      image,
+    ],
+    { stdio: ['ignore', 'ignore', 'inherit'] },
+  )
+  return { ...(await waitForHealth(name)), token, container: name }
+}
+
 export { buildSdist, buildWheel, startTestIndex, type TestIndex, type TestPackage } from './test-index'
+export {
+  startTestRegistry,
+  type TestPackage as TestNpmPackage,
+  type TestRegistry,
+} from './test-npm-registry'
 
 export interface TestBuilder {
   url: string

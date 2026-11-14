@@ -103,7 +103,11 @@ test('an Anthropic resource made and tested in the UI', async ({ page }) => {
   await page.goto('/resources')
   await page.getByRole('button', { name: 'New resource' }).click()
   const type = page.getByRole('combobox', { name: 'Type' })
-  await expect(type.locator('optgroup[label="AI"] option')).toHaveText(['Anthropic', 'OpenAI-compatible'])
+  await expect(type.locator('optgroup[label="AI"] option')).toHaveText([
+    'Anthropic',
+    'OpenAI-compatible',
+    'Gemini',
+  ])
   await type.selectOption('anthropic')
   await page.getByLabel('Name').fill(`Claude ${stamp}`)
   await page.getByRole('button', { name: 'Create' }).click()

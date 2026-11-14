@@ -69,16 +69,14 @@ export const byEdge: Identity = (item) =>
 const blockPatterns = (patterns: readonly string[]) =>
   patterns.flatMap((p) => [`blocks.*.${p}`, `functions.*.blocks.*.${p}`])
 
-/** The connector query fields shown in Monaco: SQL, a REST call's JSON body, a Pub/Sub publish's messages. */
 /**
- * A query's strings that merge as people type: SQL, a REST JSON body, messages, and (M27) GraphQL's query and
+ * A query's strings that merge as people type: SQL, a REST JSON body, and (M27) GraphQL's query and
  * variables and the services' long and JSON fields. Only strings become text, so a key that's an object elsewhere
  * (REST's `body`) is safe to list.
  */
 const QUERY_TEXT_KEYS = [
   'sql',
   'body.json',
-  'messages',
   'query',
   'variables',
   'text',
@@ -109,11 +107,6 @@ export const workflowSpec: CollabSpec = defineSpec({
     ['functions.*.edges', byEdge],
     ['functions.*.params', byName],
     ['triggers.schedules', byName],
-    ['triggers.pubsub', byName],
-    ['triggers.sqs', byName],
-    ['triggers.kafka', byName],
-    ['triggers.rabbitmq', byName],
-    ['triggers.kinesis', byName],
     ...blockPatterns(['config.conditions']).map((p) => [p, byId] as const),
     ...blockPatterns(['config.fields']).map((p) => [p, byName] as const),
     ...blockPatterns(['config.outcomes']).map((p) => [p, byId] as const),
@@ -176,8 +169,8 @@ export const appSpec: CollabSpec = defineSpec({
 })
 
 /**
- * Library queries (M14; no shared editor yet, but merged in Git): parameters by name; the query's SQL, REST body and
- * Pub/Sub messages are text.
+ * Library queries (M14; no shared editor yet, but merged in Git): parameters by name; the query's SQL and REST body
+ * are text.
  */
 export const libraryQuerySpec: CollabSpec = defineSpec({
   identity: [['params', byName]],

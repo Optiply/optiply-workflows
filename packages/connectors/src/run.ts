@@ -9,6 +9,7 @@ import {
   type AnyConnector,
   ConnectorError,
   type CredentialSource,
+  type QueryContext,
   type QueryResult,
   type ResolvedResource,
 } from './types'
@@ -32,6 +33,8 @@ export interface RunOptions {
   credentials?: CredentialSource
   /** See `QueryContext.ai` (M35). */
   ai?: AiRunContext
+  /** See `QueryContext.log` (M37): lines are scrubbed of the resource's secrets and handed-out tokens first. */
+  log?: QueryContext['log']
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -78,6 +81,10 @@ export async function runQuery(
         ...(opts.untrustedValues && { untrustedValues: true }),
         ...(credentials && { credentials }),
         ...(opts.ai && { ai: opts.ai }),
+        ...(opts.log && {
+          log: (level: Parameters<NonNullable<QueryContext['log']>>[0], message: string) =>
+            opts.log!(level, scrubSecretsDeep(message, secrets) as string),
+        }),
       }),
     )
     countQuery(connector.type, query, 'ok')

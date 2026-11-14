@@ -9,7 +9,7 @@ import { countAiCall } from './stats'
 // What the two AI connectors share (M35, docs/architecture.md §2.38): the actions read from a query, turned into one
 // model call each (the agent: several, in ai/agent.ts), and their answers checked and described.
 
-export type AiProviderName = 'anthropic' | 'openai_compatible'
+export type AiProviderName = 'anthropic' | 'openai_compatible' | 'gemini'
 
 /** One call: a system prompt and a user prompt, optionally an answer as JSON matching `schema`. */
 export interface AiCompletionRequest {

@@ -47,6 +47,5 @@ describe('the Workflows page model', () => {
   it('names triggers with their counts', () => {
     expect(triggerLabel('schedule', 2)).toBe('2 schedules')
     expect(triggerLabel('webhook', 1)).toBe('1 webhook')
-    expect(triggerLabel('kafka', 1)).toBe('1 Kafka topic')
   })
 })

@@ -54,9 +54,44 @@ for every other server. A provider that doesn't support structured output fails 
 JSON, or doesn't match). Redirects are never followed (by either type): a base URL that answers 3xx fails `http`,
 naming where it pointed; use that address.
 
+## Setting up Gemini
+
+Resources → **New resource** → AI → **Gemini**, then **Use** one of two:
+
+- **Gemini API (an API key)**: create a key at [aistudio.google.com](https://aistudio.google.com) → Get API key and
+  paste it. Billing is the key's Google Cloud project's (paid tier for production: the free tier's prompts may be used
+  by Google). **Test connection** lists the models (`GET /v1beta/models`) and says whether the default model is among
+  them.
+- **Vertex AI (a Google Cloud project)**: enable the **Vertex AI API** in the project, then either
+  - **a service account key**: a service account with the **Vertex AI User** role (`roles/aiplatform.user`) in the
+    project; paste its JSON key. **Project** is optional (the key's own when empty);
+  - **this server's Google identity** (admins only, with `GOOGLE_SERVER_IDENTITY=allow`, as IAP's): the identity
+    needs the same role; **Project** is required.
+
+  **Region**: `global` (Google picks; the widest model choice) or a region such as `europe-west4` to keep requests in
+  the EU. **Test connection** counts a word's tokens with the default model (`:countTokens`, free), which checks the
+  identity, project, region and model at once.
+
+**Default model**: `gemini-3.8-flash`; the list offers Google's current text models (Gemini 4 Hydrogen, Carbon, Argon;
+3.8 Flash, 3.6 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite; 3.1 Pro preview). Any model id works. Gemini 2.5 Pro and Flash
+are deprecated: from 2026-12-01 Google answers them with newer models.
+
+How the actions map: the system prompt is `systemInstruction`; extract and classify use `responseMimeType:
+application/json` with `responseJsonSchema` (the answer is checked here again); the agent uses function calling
+(`functionDeclarations` with `parametersJsonSchema`), and the model's turns go back **unchanged** (Gemini needs its
+thought signatures back). **Effort** becomes `thinkingConfig.thinkingLevel` (`LOW`/`MEDIUM`/`HIGH`) on Gemini 3 and
+later only (2.5 refuses it); thinking tokens count as output. A blocked prompt (`promptFeedback.blockReason`) or a
+safety stop (`SAFETY`, `PROHIBITED_CONTENT`, `BLOCKLIST`, `SPII`, `RECITATION`…) fails `ai_refused` with the reason as
+its category. The key goes in the `x-goog-api-key` header, never the URL.
+
+**Prices** are Google's paid-tier list prices (2026-11-13), with their announced changes: Gemini 4 Carbon and Argon
+double on 2026-12-01, 3.8 and 3.6 Flash on 2027-01-01; 3.1 Pro and 2.5 Pro cost more past 200k prompt tokens. A model
+not in the table (`packages/connectors/src/ai/prices.ts`, `GEMINI_PRICES`) has an unknown cost. Batch, priority and
+Vertex's provisioned throughput prices aren't modelled.
+
 ## Budgets and costs
 
-- **Token budget per run** (both types): the input and output tokens (cache reads and writes included) a run's AI calls
+- **Token budget per run** (every type): the input and output tokens (cache reads and writes included) a run's AI calls
   may use **in all**, across its blocks, loops and function calls. Each call is checked **before** it's made against the
   tokens already spent: a call that would start over the budget fails `ai_budget` ("This run has used 1,234 AI tokens,
   over the resource's budget of 1,000 per run"). The call that crosses it isn't cut off; the next one is refused.
@@ -124,7 +159,9 @@ headers; OpenAI-compatible honouring `retry-after`, up to 30 s).
 
 ## Testing without a provider
 
-`startFakeAi()` (`@ow/connectors/testing`) serves fakes of both APIs; the e2e setup starts one (`E2E_AI`). Markers in
+`startFakeAi()` (`@ow/connectors/testing`) serves fakes of the four APIs (Anthropic, OpenAI-compatible, the Gemini
+API with `geminiKey`, Vertex AI taking any `ya29.` token); the e2e setup starts one (`E2E_AI`). Gemini's fake also
+knows `BLOCK_PROMPT` (a blocked prompt) and answers "(signature lost)" when an agent's thought signature didn't come back. Markers in
 the prompt steer it: `REFUSE_ME` (a refusal), `RATE_LIMIT_ONCE` (a 429, then success), `LABEL=<label>` (the label a
 classification picks). Its extract answers are samples of the schema; its agent calls the first tool once, then answers
 "Done: <the tool's result>".

@@ -79,7 +79,7 @@ M29 added S3, Stripe, Airtable, Jira, Notion, Salesforce and OpenAPI resources. 
 - **Service account key:** in Google Cloud, enable the **Google Sheets API** (and the **Google Drive API** to share new
   spreadsheets), make a service account and a JSON key, and paste it. Then **share each spreadsheet with the service
   account's email** (Editor to write). A spreadsheet it can't open fails with "Share the spreadsheet with …".
-- **This server's identity** (admins only, `GOOGLE_SERVER_IDENTITY=allow`, as Pub/Sub's): it is asked for the
+- **This server's identity** (admins only, `GOOGLE_SERVER_IDENTITY=allow`, as IAP's): it is asked for the
   `spreadsheets` and `drive.file` scopes. A service account key file in `GOOGLE_APPLICATION_CREDENTIALS` works as is; a
   `gcloud auth application-default login` needs those scopes asked for
   (`--scopes=openid,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive.file`),
@@ -90,10 +90,63 @@ M29 added S3, Stripe, Airtable, Jira, Notion, Salesforce and OpenAPI resources. 
   by key column** match objects to those names and refuse columns the sheet lacks. "As if typed" turns `"42"` into a
   number and `=SUM(…)` into a formula; "Stored as they are" doesn't.
 
+## Gmail
+
+- **Google sign-in** (any editor): in Google Cloud, enable the **Gmail API**, make an OAuth client (Web application)
+  with the resource's redirect URI, and paste its client id and secret. The scope is
+  `https://www.googleapis.com/auth/gmail.modify` (read, label, draft and send; nothing deleted for good; use
+  `gmail.readonly` to only read). Then **Connect** in the resource: one shared mailbox per environment, or each person
+  connects their own. Queries act as the connected account (`me`). `gmail.modify` is a **restricted** scope: an app
+  outside your Workspace (External) needs Google's verification; an **Internal** OAuth consent screen doesn't.
+- **A Workspace service account with domain-wide delegation** (admins only: one key reaches every mailbox of the
+  domain): make a service account and a JSON key in a project with the Gmail API enabled; then a Workspace super admin
+  opens **admin.google.com → Security → Access and data control → API controls → Manage domain-wide delegation**, adds
+  the service account's **client id** (the key's `client_id`, a number) with the scope
+  `https://www.googleapis.com/auth/gmail.modify`. Paste the key and a **Mailbox** (`support@optiply.nl`); a query's
+  own **Mailbox** field acts as another. A refused token says "is domain-wide delegation set up for its client id and
+  these scopes?"; it can take minutes to apply after adding.
+- **Send / Create a draft** build a MIME message: To/Cc/Bcc as a list or comma-separated (`Name <a@b>` works, names
+  in any language), a UTF-8 subject, text and/or HTML (both: the mail carries both), attachments as file objects
+  (`{base64, filename, contentType}`: a webhook's uploads, or **Get an attachment**'s result). **Reply to message**
+  (a message id) puts the reply in its thread with `In-Reply-To` and `References`, and fills an empty To with the
+  sender (or Reply-To) and an empty Subject with "Re: …". **From** must be one of the mailbox's send-as aliases.
+- **Search** takes Gmail's search box syntax (`from:… is:unread newer_than:2d`) and labels by id or name; each result
+  has its headers and snippet (one call per message; turn **With headers** off for ids only). **Get an email** decodes
+  the text and HTML bodies and lists attachments; **Change labels** takes names too (remove `UNREAD` to mark read).
+
+## Microsoft Teams
+
+- **Microsoft sign-in** (Graph: teams, channels, chats): in **entra.microsoft.com → App registrations → New
+  registration**, a web app with the resource's redirect URI; under **Certificates & secrets** a client secret (it
+  expires: note when); under **API permissions → Microsoft Graph → Delegated** add `User.Read`,
+  `User.ReadBasic.All`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `ChannelMessage.Send`,
+  `ChannelMessage.Read.All`, `Chat.ReadWrite`, `TeamMember.Read.All` and **Grant admin consent** (an Entra admin:
+  `ChannelMessage.Read.All` and `TeamMember.Read.All` need it). In the resource: **Tenant** (your tenant id or
+  `optiply.nl`; `organizations` takes any work account), the client id and secret, then **Connect**. Messages are
+  posted **as the connected person**: Graph lets an app post to channels only on someone's behalf. A shared account
+  posts as whoever connected it; "Each person connects their own" posts as the one running it.
+- **A channel's Workflows webhook** (posting only, nothing to register): in the channel, **··· → Workflows → "Post to
+  a channel when a webhook request is received"**, then copy its URL into **Webhook URL** (a secret: its signature is
+  in it). Only `https://…logic.azure.com/…`, `…api.powerplatform.com/…` and the old `…webhook.office.com/…` URLs are
+  taken. **Post through the webhook** sends the text as an Adaptive Card, or a whole card you give; the flow posts it
+  as the person who made the flow. Test connection sends nothing (it would post).
+- **Post to a channel / Reply in a thread / Send a chat message**: text (escaped) or HTML; **Mention** puts the people
+  (emails or ids, looked up for their names) at the start; **Adaptive Card** attaches a card (design one at
+  adaptivecards.io/designer); importance. A chat message goes to a chat id, or to a person's one-on-one chat (Graph
+  answers the existing one, or starts it). Ids: **List teams**, **List channels** (`19:…@thread.tacv2`), **List
+  chats**. Graph's errors keep its code and `request-id` (for Microsoft support).
+
 ## Amazon S3 (and S3-compatible stores)
 
-- **Credentials:** M26's AWS identity (an access key, a role to assume, or the server's own credentials where the
-  instance allows them: admins only). A policy for a reports bucket:
+- **Credentials:** M26's AWS identity, one of:
+  - **an access key** of an IAM user (the secret kept encrypted, never shown again);
+  - **a role to assume** with that key (or with the server's credentials): its ARN and, if its trust policy asks for
+    one, the external id; credentials are short-lived and renewed, and the role may be in another account;
+  - or **this server's own credentials** (the SDK's default chain: environment, `~/.aws`, SSO, web identity, ECS and
+    EC2 roles): off unless `AWS_SERVER_IDENTITY=allow`; only admins choose it, or change the region or role used with
+    it. With Docker Compose on a Mac, `docker-compose.aws.yml` mounts `~/.aws` read-only and opts in.
+
+  A policy for a reports bucket:
   `s3:ListBucket` on `arn:aws:s3:::bucket`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on `arn:aws:s3:::bucket/*`.
   Test connection runs `HeadBucket` on the default bucket (so `s3:ListBucket` on it), else `ListBuckets`.
 - **Other stores:** an admin sets the **Endpoint** (MinIO, Cloudflare R2 `https://<account>.r2.cloudflarestorage.com`,
@@ -181,5 +234,10 @@ look at what they were sent. Point a server at them with `SLACK_API_URL`, `HUBSP
 
 M29's fakes are on the same server: `/stripe`, `/airtable`, `/notion`, `/salesforce`, and Jira sites at `/jira-cloud`
 and `/jira-dc` (a resource's site URL). Point a server at them with `STRIPE_API_URL`, `AIRTABLE_API_URL`,
-`NOTION_API_URL` and `SALESFORCE_URL` (which replaces every Salesforce resource's My Domain). S3's tests run a real
+`NOTION_API_URL` and `SALESFORCE_URL` (which replaces every Salesforce resource's My Domain). M37's Gmail fake is at
+`/gmail/gmail/v1` (`GMAIL_API_URL`): mailboxes seeded with `fake.gmail.seed()`, sends kept as MIME in `fake.gmail.sent`;
+its tokens are the fake Google token endpoint's (a key acting as a mailbox through `sub`) or OAuth tokens given with
+`gmailTrust`. Teams' Graph fake is at `/graph/v1.0` (`MICROSOFT_GRAPH_URL`; the token `eyJ.fake-teams-token` is
+Ada's) and its Workflows webhooks at `/teams-webhook/flow-1` (`TEAMS_WEBHOOK_URL`, the prefix such URLs may have).
+S3's tests run a real
 S3-compatible store in Docker (`startTestS3`, Versity Gateway, which checks signatures).

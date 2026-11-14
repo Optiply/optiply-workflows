@@ -119,7 +119,6 @@ const executors: { [T in Block['type']]: Executor<T> } = {
         headers: input.headers ?? {},
         pathParams: input.pathParams ?? {},
         urlParams: input.urlParams ?? {},
-        ...(input.message ? { message: input.message } : {}),
       },
     }
   },
@@ -568,6 +567,8 @@ export async function runResourceQuery(
       timeoutMs: opts.timeoutMs ?? work.timeoutMs,
       ownTimeout: opts.ownTimeout ?? work.ownTimeout ?? false,
       ...(target.credentials && { credentials: target.credentials }),
+      // What an SDK resource's call prints (M37), in the run's log as it prints it.
+      log: (level, message) => work.log(level, message),
       ...(ctx.ai && {
         ai: {
           ...ctx.ai,

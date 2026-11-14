@@ -7,7 +7,7 @@ import {
   claimRuns,
   deleteOldRuns,
   enqueueRun,
-  PUBSUB_DELIVERY_DAYS,
+  QUEUE_DELIVERY_DAYS,
   RetentionJob,
 } from '../src'
 import { connect, wf } from './pg-harness'
@@ -304,8 +304,8 @@ describe('deleteOldRuns: webhook bookkeeping', () => {
   })
 })
 
-describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
-  it("deletes finished deliveries past Pub/Sub's longest retention, never one whose run is under way", async () => {
+describe('deleteOldRuns: queue deliveries left by the removed queue triggers (M19)', () => {
+  it('deletes finished deliveries past their retention, never one whose run is under way', async () => {
     const [trigger] = await db.execute<{ id: string }>(dsql`
       insert into workflow_triggers (id, workflow_id, release_id, kind, name)
       values (gen_random_uuid(), ${workflowId}, ${releaseId}, 'pubsub', 'orders') returning id`)
@@ -313,10 +313,10 @@ describe('deleteOldRuns: Pub/Sub deliveries (M19)', () => {
       db.execute(dsql`
         insert into queue_deliveries (trigger_id, message_id, runs, outcome, updated_at)
         values (${trigger!.id}, ${messageId}, 1, ${outcome}, now() - make_interval(days => ${daysAgo}))`)
-    await deliver('old-done', 'succeeded', PUBSUB_DELIVERY_DAYS + 1)
-    await deliver('old-failed', 'failed', PUBSUB_DELIVERY_DAYS + 1)
-    await deliver('old-running', null, PUBSUB_DELIVERY_DAYS + 1)
-    await deliver('recent', 'succeeded', PUBSUB_DELIVERY_DAYS - 1)
+    await deliver('old-done', 'succeeded', QUEUE_DELIVERY_DAYS + 1)
+    await deliver('old-failed', 'failed', QUEUE_DELIVERY_DAYS + 1)
+    await deliver('old-running', null, QUEUE_DELIVERY_DAYS + 1)
+    await deliver('recent', 'succeeded', QUEUE_DELIVERY_DAYS - 1)
     // `days` is the runs' horizon: deliveries keep their own.
     const result = await deleteOldRuns(db, { days: 1, pauseMs: 0 })
     expect(result.queueDeliveries).toBe(2)

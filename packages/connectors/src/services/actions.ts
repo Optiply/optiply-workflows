@@ -14,12 +14,15 @@ export const SERVICE_TYPES = [
   'jira',
   'notion',
   'salesforce',
-  'rabbitmq',
-  'sns',
-  'kinesis',
+  // M37: Gmail and Microsoft Teams.
+  'gmail',
+  'msteams',
+  // M37: a company SDK, Python or JavaScript, called in the SDK runner.
+  'sdk',
   // AI (M35): a language model's actions, through Anthropic's API or an OpenAI-compatible one.
   'anthropic',
   'openai_compatible',
+  'gemini',
 ] as const
 export type ServiceType = (typeof SERVICE_TYPES)[number]
 
@@ -1222,80 +1225,370 @@ const SALESFORCE: readonly ActionSpec[] = [
   },
 ]
 
-const RABBITMQ: readonly ActionSpec[] = [
+// Gmail (M37, docs/architecture.md §2.41): the mailbox is the signed-in account, or (delegation) the resource's default
+// mailbox unless a query names another.
+const GMAIL_MAILBOX: ActionField = {
+  key: 'mailbox',
+  label: 'Mailbox',
+  kind: 'text',
+  placeholder: 'support@optiply.nl',
+  hint: "Empty: the resource's mailbox (delegation) or the signed-in account.",
+}
+const GMAIL_MAIL: readonly ActionField[] = [
   {
-    id: 'publish',
-    label: 'Publish',
-    description: 'Messages to an exchange, confirmed by the broker; a message no queue takes is an error.',
+    key: 'to',
+    label: 'To',
+    kind: 'list',
+    placeholder: 'ada@example.com, Bob <bob@example.com>',
+    hint: 'A list, or comma-separated. Replying: empty answers the sender.',
+  },
+  { key: 'cc', label: 'Cc', kind: 'list' },
+  { key: 'bcc', label: 'Bcc', kind: 'list' },
+  { key: 'subject', label: 'Subject', kind: 'text', hint: 'Replying: empty is "Re: " and the original’s.' },
+  { key: 'text', label: 'Text', kind: 'long', language: 'plaintext' },
+  {
+    key: 'html',
+    label: 'HTML',
+    kind: 'long',
+    language: 'html',
+    hint: 'With text too, the mail carries both.',
+  },
+  {
+    key: 'attachments',
+    label: 'Attachments',
+    kind: 'value',
+    hint: 'A file object {base64, filename, contentType} or an array of them (a webhook’s uploads, a Gmail attachment).',
+  },
+  {
+    key: 'replyToMessage',
+    label: 'Reply to message',
+    kind: 'text',
+    placeholder: '18c2f…',
+    hint: 'A message id: the reply goes in its thread, with In-Reply-To and References.',
+  },
+  { key: 'threadId', label: 'Thread', kind: 'text', hint: 'Optional: a thread id to add the message to.' },
+  { key: 'from', label: 'From', kind: 'text', hint: 'Optional: one of the mailbox’s send-as aliases.' },
+  { key: 'replyTo', label: 'Reply-To', kind: 'text' },
+  GMAIL_MAILBOX,
+]
+
+const GMAIL: readonly ActionSpec[] = [
+  {
+    id: 'send',
+    label: 'Send an email',
+    description: 'users.messages.send: a MIME message built from the fields, attachments included.',
+    fields: GMAIL_MAIL,
+  },
+  {
+    id: 'search',
+    label: 'Search emails',
+    description: 'users.messages.list with Gmail’s search, then each message’s headers and snippet.',
     fields: [
       {
-        key: 'exchange',
-        label: 'Exchange',
+        key: 'q',
+        label: 'Search',
         kind: 'text',
-        hint: 'Empty: the default exchange, where the routing key is a queue.',
+        placeholder: 'from:orders@example.com is:unread newer_than:2d',
+        hint: 'Gmail’s search box syntax.',
       },
-      { key: 'routingKey', label: 'Routing key', kind: 'text', placeholder: 'orders' },
+      { key: 'labels', label: 'Labels', kind: 'list', placeholder: 'INBOX, Orders', hint: 'Ids or names.' },
+      { key: 'includeSpamTrash', label: 'Include spam and trash', kind: 'bool' },
       {
-        key: 'messages',
-        label: 'Messages',
-        kind: 'json',
-        language: 'json',
-        required: true,
-        initial: '{"body": {}}',
-        hint: 'One message or an array: {"body": …, "headers": {…}, "messageId": "…", "persistent": true, "priority": 0, "expiration": "60000"}. A body that isn’t a string is sent as JSON.',
+        key: 'details',
+        label: 'With headers',
+        kind: 'bool',
+        initial: 'true',
+        hint: 'Off: only ids (one call per page instead of one per message).',
       },
+      { ...MAX_FIELD, placeholder: '50', hint: 'Default 50, at most 500.' },
+      GMAIL_MAILBOX,
+    ],
+  },
+  {
+    id: 'getMessage',
+    label: 'Get an email',
+    description: 'users.messages.get: headers, the text and HTML bodies decoded, the attachments listed.',
+    fields: [{ key: 'id', label: 'Message id', kind: 'text', required: true }, GMAIL_MAILBOX],
+  },
+  {
+    id: 'getThread',
+    label: 'Get a thread',
+    description: 'users.threads.get: every message of the thread, decoded.',
+    fields: [{ key: 'id', label: 'Thread id', kind: 'text', required: true }, GMAIL_MAILBOX],
+  },
+  {
+    id: 'getAttachment',
+    label: 'Get an attachment',
+    description: 'users.messages.attachments.get: the bytes as a file object, to pass on.',
+    fields: [
+      { key: 'messageId', label: 'Message id', kind: 'text', required: true },
+      { key: 'attachmentId', label: 'Attachment id', kind: 'text', required: true },
+      { key: 'filename', label: 'File name', kind: 'text', hint: 'Optional: kept on the file object.' },
+      { key: 'contentType', label: 'Content type', kind: 'text', hint: 'Optional: kept on the file object.' },
+      GMAIL_MAILBOX,
+    ],
+  },
+  {
+    id: 'modifyLabels',
+    label: 'Change labels',
+    description: 'users.messages.modify: add and remove labels (remove UNREAD to mark it read).',
+    fields: [
+      { key: 'id', label: 'Message id', kind: 'text', required: true },
+      { key: 'add', label: 'Add', kind: 'list', placeholder: 'Orders, STARRED', hint: 'Ids or names.' },
+      { key: 'remove', label: 'Remove', kind: 'list', placeholder: 'UNREAD, INBOX' },
+      GMAIL_MAILBOX,
+    ],
+  },
+  {
+    id: 'trash',
+    label: 'Move to trash',
+    description: 'users.messages.trash (Gmail deletes it after 30 days).',
+    fields: [{ key: 'id', label: 'Message id', kind: 'text', required: true }, GMAIL_MAILBOX],
+  },
+  {
+    id: 'createDraft',
+    label: 'Create a draft',
+    description: 'users.drafts.create: the same fields as Send, left in Drafts.',
+    fields: GMAIL_MAIL,
+  },
+  {
+    id: 'listLabels',
+    label: 'List labels',
+    description: 'users.labels.list.',
+    fields: [GMAIL_MAILBOX],
+  },
+  {
+    id: 'api',
+    label: 'Call any Gmail API',
+    description: 'A call under gmail/v1/users/<mailbox>.',
+    fields: [
+      ...API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/settings/sendAs' } : f)),
+      GMAIL_MAILBOX,
     ],
   },
 ]
 
-const SNS: readonly ActionSpec[] = [
+// Microsoft Teams (M37): Graph with Microsoft sign-in; a Workflows webhook posts only.
+const TEAMS_TEAM: ActionField = {
+  key: 'teamId',
+  label: 'Team id',
+  kind: 'text',
+  required: true,
+  hint: 'From List teams (the id), or a team link’s groupId.',
+}
+const TEAMS_CHANNEL: ActionField = {
+  key: 'channelId',
+  label: 'Channel id',
+  kind: 'text',
+  required: true,
+  placeholder: '19:…@thread.tacv2',
+}
+const TEAMS_MESSAGE: readonly ActionField[] = [
+  { key: 'text', label: 'Message', kind: 'long', language: 'plaintext' },
   {
-    id: 'publish',
-    label: 'Publish',
-    description: 'Messages to a topic (10 per request); FIFO topics need a group id.',
+    key: 'format',
+    label: 'Format',
+    kind: 'select',
+    options: [
+      { value: 'text', label: 'Text' },
+      { value: 'html', label: 'HTML' },
+    ],
+    initial: 'text',
+  },
+  {
+    key: 'mentions',
+    label: 'Mention',
+    kind: 'list',
+    placeholder: 'ada@optiply.nl',
+    hint: 'People to @mention (emails or user ids), at the start of the message.',
+  },
+  {
+    key: 'card',
+    label: 'Adaptive Card',
+    kind: 'json',
+    language: 'json',
+    hint: 'Optional: a card ({"type": "AdaptiveCard", …}) sent with the message (adaptivecards.io/designer).',
+  },
+  {
+    key: 'importance',
+    label: 'Importance',
+    kind: 'select',
+    options: [
+      { value: 'normal', label: 'Normal' },
+      { value: 'high', label: 'High' },
+      { value: 'urgent', label: 'Urgent' },
+    ],
+    initial: 'normal',
+  },
+]
+
+const MSTEAMS: readonly ActionSpec[] = [
+  {
+    id: 'postChannelMessage',
+    label: 'Post to a channel',
+    description: 'Graph: a message in a team’s channel, as the signed-in person.',
+    fields: [TEAMS_TEAM, TEAMS_CHANNEL, ...TEAMS_MESSAGE, { key: 'subject', label: 'Subject', kind: 'text' }],
+  },
+  {
+    id: 'replyToMessage',
+    label: 'Reply in a thread',
+    description: 'Graph: a reply to a channel message.',
+    fields: [
+      TEAMS_TEAM,
+      TEAMS_CHANNEL,
+      { key: 'messageId', label: 'Message id', kind: 'text', required: true },
+      ...TEAMS_MESSAGE,
+    ],
+  },
+  {
+    id: 'postChatMessage',
+    label: 'Send a chat message',
+    description: 'Graph: to a chat, or to one person (their one-on-one chat, started if needed).',
+    fields: [
+      { key: 'chatId', label: 'Chat id', kind: 'text', placeholder: '19:…@unq.gbl.spaces' },
+      {
+        key: 'user',
+        label: 'Or a person',
+        kind: 'text',
+        placeholder: 'ada@optiply.nl',
+        hint: 'An email or user id.',
+      },
+      ...TEAMS_MESSAGE,
+    ],
+  },
+  {
+    id: 'postWebhook',
+    label: 'Post through the webhook',
+    description: 'Webhook sign-in only: the text, or a card, to the channel the Workflows webhook posts in.',
     fields: [
       {
-        key: 'topicArn',
-        label: 'Topic ARN',
+        key: 'text',
+        label: 'Message',
+        kind: 'long',
+        language: 'markdown',
+        hint: 'Shown as a card’s text (markdown works).',
+      },
+      {
+        key: 'card',
+        label: 'Adaptive Card',
+        kind: 'json',
+        language: 'json',
+        hint: 'Optional: a whole card instead.',
+      },
+    ],
+  },
+  {
+    id: 'listTeams',
+    label: 'List teams',
+    description: 'Graph: the teams the signed-in person is in.',
+    fields: [MAX_FIELD],
+  },
+  {
+    id: 'listChannels',
+    label: 'List channels',
+    description: 'Graph: a team’s channels.',
+    fields: [TEAMS_TEAM, MAX_FIELD],
+  },
+  {
+    id: 'listChannelMessages',
+    label: 'List channel messages',
+    description: 'Graph: a channel’s messages, newest first.',
+    fields: [
+      TEAMS_TEAM,
+      TEAMS_CHANNEL,
+      { key: 'replies', label: 'With replies', kind: 'bool' },
+      { ...MAX_FIELD, placeholder: '50', hint: 'Default 50, at most 1,000.' },
+    ],
+  },
+  {
+    id: 'listChats',
+    label: 'List chats',
+    description: 'Graph: the signed-in person’s chats, with their members.',
+    fields: [{ ...MAX_FIELD, placeholder: '50', hint: 'Default 50, at most 1,000.' }],
+  },
+  {
+    id: 'listMembers',
+    label: 'List members',
+    description: 'Graph: a team’s members, or a chat’s.',
+    fields: [
+      { ...TEAMS_TEAM, required: false },
+      { key: 'chatId', label: 'Or a chat id', kind: 'text' },
+      MAX_FIELD,
+    ],
+  },
+  {
+    id: 'api',
+    label: 'Call any Graph API',
+    description: 'A call under graph.microsoft.com/v1.0, as the signed-in person.',
+    fields: API_FIELDS.map((f) => (f.key === 'path' ? { ...f, placeholder: '/me/presence' } : f)),
+  },
+]
+
+// SDK resources (M37): the setup code makes `client`; a query calls one of its methods, runs a snippet, or lists them.
+const SDK_LIMIT: ActionField = {
+  key: 'limit',
+  label: 'At most',
+  kind: 'number',
+  placeholder: '1000',
+  hint: 'A paging iterator or generator is read up to this many items.',
+}
+
+const SDK: readonly ActionSpec[] = [
+  {
+    id: 'call',
+    label: 'Call a method',
+    description: "client.<method>(…): awaited if it's async; pages read up to the limit.",
+    fields: [
+      {
+        key: 'method',
+        label: 'Method',
         kind: 'text',
         required: true,
-        placeholder: 'arn:aws:sns:eu-west-1:123456789012:orders',
+        placeholder: 'items.list',
+        hint: 'A path on the client, dots between the names (see Describe the client).',
       },
       {
-        key: 'messages',
-        label: 'Messages',
+        key: 'args',
+        label: 'Arguments',
         kind: 'json',
         language: 'json',
-        required: true,
-        initial: '{"message": {}}',
-        hint: 'One message or an array: {"message": …, "subject": "…", "attributes": {…}, "groupId": "…", "deduplicationId": "…"}. A message that isn’t a string is sent as JSON.',
+        hint: 'A list: positional arguments. An object: keyword arguments (Python), or the one argument (JavaScript). Empty: none.',
       },
+      SDK_LIMIT,
     ],
   },
-]
-
-const KINESIS: readonly ActionSpec[] = [
   {
-    id: 'putRecords',
-    label: 'Put records',
-    description:
-      'Records into a stream (500 per request); a record without a partition key gets a random one.',
+    id: 'code',
+    label: 'Run code',
+    description: 'A function body with client, params and token; what it returns is the data.',
     fields: [
-      { key: 'stream', label: 'Stream', kind: 'text', required: true, placeholder: 'orders, or its ARN' },
       {
-        key: 'records',
-        label: 'Records',
+        key: 'code',
+        label: 'Code',
+        kind: 'long',
+        language: 'plaintext',
+        required: true,
+        hint: 'Python: return the value (an awaitable is awaited). JavaScript: an async function body, await works. Values come in through Parameters, not {{ }}.',
+      },
+      {
+        key: 'params',
+        label: 'Parameters',
         kind: 'json',
         language: 'json',
-        required: true,
-        initial: '{"data": {}, "partitionKey": ""}',
-        hint: 'One record or an array: {"data": …, "partitionKey": "…", "explicitHashKey": "…"}. Data that isn’t a string is sent as JSON; records with one key stay in order.',
+        hint: 'JSON with {{ }}: `params` in the code.',
       },
+      SDK_LIMIT,
     ],
+  },
+  {
+    id: 'describe',
+    label: 'Describe the client',
+    description: 'What the client offers: its methods with their signatures, its values, two levels deep.',
+    fields: [],
   },
 ]
 
-// AI (M35, docs/architecture.md §2.38): the same actions for both providers. Every answer's usage, model and cost
+// AI (M35, docs/architecture.md §2.38; Gemini M37): the same actions for every provider. Every answer's usage, model and cost
 // are the query's metadata; its data is the answer (text, the extracted JSON, the label).
 const AI_MODEL: ActionField = {
   key: 'model',
@@ -1308,7 +1601,7 @@ const AI_MAX_TOKENS: ActionField = {
   label: 'Max tokens',
   kind: 'number',
   placeholder: '16000',
-  hint: 'The most the answer may take, thinking included (Anthropic). The run’s budget is the resource’s.',
+  hint: 'The most the answer may take, thinking included (Anthropic, Gemini). The run’s budget is the resource’s.',
 }
 const AI_EFFORT: ActionField = {
   key: 'effort',
@@ -1321,7 +1614,7 @@ const AI_EFFORT: ActionField = {
     { value: 'high', label: 'High (thorough)' },
   ],
   initial: '',
-  hint: 'Anthropic: how much the model thinks. Ignored by OpenAI-compatible providers.',
+  hint: 'Anthropic and Gemini 3 or later: how much the model thinks. Ignored by OpenAI-compatible providers.',
 }
 
 export const AI_ACTIONS: readonly ActionSpec[] = [
@@ -1480,6 +1773,7 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   slack: SLACK,
   anthropic: AI_ACTIONS,
   openai_compatible: AI_ACTIONS,
+  gemini: AI_ACTIONS,
   hubspot: HUBSPOT,
   sendgrid: SENDGRID,
   googlesheets: GOOGLE_SHEETS,
@@ -1489,9 +1783,9 @@ export const SERVICE_ACTIONS: Readonly<Record<ServiceType, readonly ActionSpec[]
   jira: JIRA,
   notion: NOTION,
   salesforce: SALESFORCE,
-  rabbitmq: RABBITMQ,
-  sns: SNS,
-  kinesis: KINESIS,
+  gmail: GMAIL,
+  msteams: MSTEAMS,
+  sdk: SDK,
 }
 
 export function actionSpec(type: ServiceType, action: string): ActionSpec | undefined {

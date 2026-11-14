@@ -279,6 +279,8 @@ export async function insertGitObject(
   kind: ObjectKind,
   values: { slug: string; name: string; description: string | null; definition: unknown },
 ): Promise<GitObjectRow | undefined> {
+  // Unlike what people create here, an object arriving from Git is shared with nobody: an admin approves it and decides
+  // who may use it (the owner's choice, session 54).
   const row = {
     slug: values.slug,
     name: values.name,

@@ -71,11 +71,8 @@ describe('/metrics', () => {
       expect(value(text, 'ow_ssh_tunnels_open')).toBe(2)
       expect(value(text, 'ow_ssh_tunnel_reconnects_total')).toBe(5)
       expect(value(text, 'ow_iap_resumes_total')).toBe(3)
-      for (const kind of ['pubsub', 'sqs', 'kafka']) {
-        expect(text).toContain(`ow_queue_messages_total{kind="${kind}",outcome="acked"}`)
-        expect(value(text, `ow_queue_in_flight{kind="${kind}"}`)).toBe(0)
-        expect(value(text, `ow_queue_pull_errors_total{kind="${kind}"}`)).toBe(0)
-      }
+      // The queue triggers' metrics went with them (session 54).
+      expect(text).not.toContain('ow_queue_messages_total')
     } finally {
       Object.assign(sshTunnelStats, before)
     }

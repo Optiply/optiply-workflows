@@ -1,6 +1,7 @@
 import {
+  configureGemini,
+  configureGmail,
   configureIap,
-  configurePubSub,
   configureSheets,
   IAP_SCOPE,
   type ServerIdentity,
@@ -9,15 +10,12 @@ import {
 } from '@ow/connectors'
 import type { Config } from '../config'
 
-type GoogleConfig = Pick<
-  Config,
-  'GOOGLE_SERVER_IDENTITY' | 'GOOGLE_IAP_URL' | 'GOOGLE_PUBSUB_URL' | 'GOOGLE_TOKEN_URL'
->
+type GoogleConfig = Pick<Config, 'GOOGLE_SERVER_IDENTITY' | 'GOOGLE_IAP_URL' | 'GOOGLE_TOKEN_URL'>
 
 /**
- * This process's own Google identity, for Google Cloud IAP (M18) and Pub/Sub resources (M19); null unless
+ * This process's own Google identity, for Google Cloud IAP (M18) and the Google resources; null unless
  * GOOGLE_SERVER_IDENTITY=allow. Set up once at startup (the API and the worker both call `configureGoogle`), like
- * Python's executor. Its scope (`cloud-platform`) covers both.
+ * Python's executor. Its scope (`cloud-platform`) covers IAP and Vertex AI.
  */
 let identity: ServerIdentity | null = null
 
@@ -33,11 +31,10 @@ export function configureGoogle(config: GoogleConfig, env?: Record<string, strin
     ...(config.GOOGLE_IAP_URL ? { url: config.GOOGLE_IAP_URL } : {}),
     ...tokenUrl,
   })
-  configurePubSub({
-    ...(identity ? { serverIdentity: identity } : {}),
-    ...(config.GOOGLE_PUBSUB_URL ? { url: config.GOOGLE_PUBSUB_URL } : {}),
-    ...tokenUrl,
-  })
+  // Gemini on Vertex AI (M37): `cloud-platform` covers it, so the same identity.
+  configureGemini({ ...(identity ? { serverIdentity: identity } : {}), ...tokenUrl })
+  // Gmail (M37): a delegated service account's tokens come from the same endpoint.
+  configureGmail(tokenUrl)
   // Google Sheets (M27): the same credentials, asked for the Sheets and Drive scopes (`cloud-platform` covers neither).
   configureSheets({
     ...(identity
@@ -66,21 +63,32 @@ export async function serverIdentityView(user: { isAdmin: boolean }): Promise<Se
 }
 
 /**
- * Why a Pub/Sub resource's settings (M19) couldn't sign in, checked on save as an SSH tunnel's are (M17, M18): a key
- * for `identity: 'key'`; for the server's identity, the instance allowing it and a project named. Null when fine.
+ * Why a Gemini resource's settings (M37) couldn't sign in: the API key, or for Vertex the service account's key, or
+ * (the server's identity) the instance allowing it and a project named. Null when fine.
  */
-export function pubsubSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
-  const c = (config ?? {}) as { identity?: string; project?: string }
+export function geminiSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
+  const c = (config ?? {}) as { platform?: string; identity?: string; project?: string }
+  if ((c.platform ?? 'gemini') === 'gemini') return secrets.apiKey ? null : 'Add the Gemini API key'
   if (c.identity === 'server') {
     if (!identity)
       return "This instance doesn't let resources use its own Google identity; use a service account key"
-    if (!c.project) return "Name the project: the server's identity has none of its own"
-    return null
+    return c.project ? null : "Name the project: the server's identity has none of its own"
   }
   return secrets.serviceAccountKey ? null : 'Add the service account key'
 }
 
-/** Why a Google Sheets resource's settings (M27) couldn't sign in, checked on save like Pub/Sub's. */
+/**
+ * Why a Gmail resource's settings (M37) couldn't sign in: the OAuth app's client id and secret, or a delegated
+ * service account's key. Null when fine.
+ */
+export function gmailSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
+  const auth = ((config ?? {}) as { auth?: { type?: string; clientId?: string } }).auth ?? { type: 'oauth' }
+  if (auth.type === 'delegation') return secrets.serviceAccountKey ? null : 'Add the service account key'
+  if (!auth.clientId) return 'Add the OAuth app’s client id'
+  return secrets.clientSecret ? null : 'Add the OAuth app’s client secret'
+}
+
+/** Why a Google Sheets resource's settings (M27) couldn't sign in, checked on save as an SSH tunnel's are. */
 export function sheetsSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
   const auth = ((config ?? {}) as { auth?: { type?: string } }).auth?.type ?? 'serviceAccount'
   if (auth === 'server') {

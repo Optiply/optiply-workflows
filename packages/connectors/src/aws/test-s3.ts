@@ -8,7 +8,7 @@ const run = promisify(execFile)
 /** Versity Gateway (Apache-2.0): a real S3 server over a folder, checking SigV4 (MinIO's images are gone). */
 const IMAGE = 'versity/versitygw:v1.0.13'
 
-/** A throwaway S3-compatible store in Docker for tests (M29), as Kafka's: one root key, buckets on a tmpfs. */
+/** A throwaway S3-compatible store in Docker for tests (M29): one root key, buckets on a tmpfs. */
 export interface TestS3 {
   endpoint: string
   region: string
