@@ -73,8 +73,11 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # --async + polling: streaming the build's log would need a log-reading role.
+          # --async + polling: streaming the build's log would need a log-reading role. The staging folder is named:
+          # with Cloud Build's default one, gcloud first lists every bucket in the project (an ownership check),
+          # which gh-deployer may not; it has rights on this bucket only.
           id=$(gcloud builds submit --project "$PROJECT" --region "$REGION" --config deploy/cloudbuild.yaml \
+            --gcs-source-staging-dir "gs://optiply-workflows_cloudbuild/source" \
             --substitutions "_TAG=$TAG" --async --format='value(id)' .)
           echo "Build $id: https://console.cloud.google.com/cloud-build/builds;region=$REGION/$id?project=$PROJECT"
           for _ in $(seq 1 120); do
