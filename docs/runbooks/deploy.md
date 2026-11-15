@@ -71,7 +71,18 @@ payloads and the run logs with it). Then `deploy.sh`. The encryption keys in `ow
   `roles/cloudbuild.builds.editor` + `roles/serviceusage.serviceUsageConsumer` (project), `roles/storage.admin` on
   `gs://optiply-workflows_cloudbuild`, `roles/iam.serviceAccountUser` on the default compute SA (builds run as it) and on
   `ow-vm-prod`, `roles/compute.osAdminLogin` + `roles/compute.viewer` on `ow-prod`, `roles/iap.tunnelResourceAccessor`
-  on the project with the condition `destination.port == 22` (Google refuses that role on a single VM).
+  on the project with the condition `destination.port == 22` (Google refuses that role on a single VM), and the custom
+  role `owProjectReader` (only `compute.projects.get`) on the project: `gcloud compute ssh` reads the project's metadata
+  before it connects. Without it the deploy stops at "Copy deploy/ to the VM" (2026-11-15).
+  ```bash
+  gcloud iam roles create owProjectReader --project optiply-workflows \
+    --title "OW: read the project (gcloud compute ssh)" --permissions compute.projects.get --stage GA
+  gcloud projects add-iam-policy-binding optiply-workflows --condition=None \
+    --member serviceAccount:gh-deployer@optiply-workflows.iam.gserviceaccount.com \
+    --role projects/optiply-workflows/roles/owProjectReader
+  ```
+- **Flaky tests on `main`:** a red CI on `main` skips the automatic deploy. When the failure is a known flaky test and
+  the same code passed on its PR, deploy by hand instead of re-running CI again and again.
 - **Cost:** Cloud Build's free 2,500 minutes a month (~8 per deploy); GitHub's Actions minutes.
 - **A failed run:** its log links the Cloud Build log; a failed health check has already rolled back. Fix on a branch,
   merge again.

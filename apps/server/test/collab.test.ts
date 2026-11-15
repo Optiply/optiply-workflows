@@ -560,6 +560,13 @@ describe('library query documents (M21)', () => {
     await vi.waitFor(() => expect(watcher.sql()).toContain('"editor"'))
     await new Promise((r) => setTimeout(r, 100))
     expect(editor.sql()).toBe('select "editor"')
+    // Saved before the room closes: once both have left, an edit still on its way leaves no row for `settled` to see.
+    await vi.waitFor(
+      async () => expect((await stored(id)).draftDefinition.query.sql).toBe('select "editor"'),
+      {
+        timeout: 3000,
+      },
+    )
     await watcher.close()
     await editor.close()
     await settled(key)

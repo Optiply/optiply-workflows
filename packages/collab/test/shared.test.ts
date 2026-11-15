@@ -332,8 +332,9 @@ describe('SharedDefinition', () => {
     // CPUs with every other package's suite under `pnpm test`, measured 40 ms (2026-11-03), so CI gets more room:
     // the bound is there to catch a quadratic (a 500-block edit taking seconds), not to time the runner.
     expect(median).toBeLessThan(process.env.CI ? 150 : 20)
-    expect(loaded).toBeLessThan(500)
-    expect(firstRead).toBeLessThan(500)
+    // A busy runner took 604 ms to load (2026-11-15): seconds there still tell a quadratic apart.
+    expect(loaded).toBeLessThan(process.env.CI ? 3000 : 500)
+    expect(firstRead).toBeLessThan(process.env.CI ? 3000 : 500)
   })
 
   it('finds a text field by its path in the definition', () => {

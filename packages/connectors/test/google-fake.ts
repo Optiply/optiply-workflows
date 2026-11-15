@@ -54,7 +54,12 @@ export class FakeGoogle {
       req.on('data', (c) => (body += c))
       req.on('end', () => {
         const { status, json, text } = this.answer(req.method ?? '', req.url ?? '', req.headers, body)
-        res.writeHead(status, { 'content-type': text === undefined ? 'application/json' : 'text/plain' })
+        // A new connection per request: a kept-alive one that Node's server drops after 5 idle seconds could be reused
+        // just as it closes, failing a token request with ECONNRESET on a busy runner (CI, 2026-11-15).
+        res.writeHead(status, {
+          'content-type': text === undefined ? 'application/json' : 'text/plain',
+          connection: 'close',
+        })
         res.end(text ?? JSON.stringify(json))
       })
     })
