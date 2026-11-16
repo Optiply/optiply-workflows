@@ -1,9 +1,9 @@
-import { type Db, groupMembers, groups, sessions, users } from '@ow/db'
+import { type Db, groupMembers, groups, sessions, USER_ACCESS, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
-import { and, asc, count, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { loadAccess } from '../../services/permissions'
-import { systemGroupId } from '../../services/users'
+import { refuseAdminAndAppsOnly, systemGroupId } from '../../services/users'
 import { adminProcedure, authedProcedure, router } from '../init'
 
 const Id = z.string().uuid()
@@ -35,6 +35,8 @@ async function addToGroups(tx: Tx, userId: string, groupIds: string[]) {
     .onConflictDoNothing()
 }
 
+const Access = z.enum(USER_ACCESS)
+
 /** The person changed meanwhile (signed in, or another admin decided): nothing done, say so. */
 const stale = (email: string) =>
   new TRPCError({ code: 'CONFLICT', message: `${email} changed meanwhile: reload and look again` })
@@ -49,7 +51,8 @@ async function groupNames(db: Db, ids: string[]) {
 export const usersRouter = router({
   /**
    * Everyone who can sign in, by name: whom an owner can give access to. Only for those who can share something
-   * (admins and owners): an invited outsider with Use on one app mustn't get the staff list.
+   * (admins and owners): an invited outsider with Use on one app mustn't get the staff list. `appsOnly`: only grants on
+   * apps reach them (the share dialogs leave them out elsewhere).
    */
   directory: authedProcedure.query(async ({ ctx }) => {
     if (!(await loadAccess(ctx.db, ctx.user)).canShare) {
@@ -59,7 +62,12 @@ export const usersRouter = router({
       })
     }
     return ctx.db
-      .select({ id: users.id, name: users.name, email: users.email })
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        appsOnly: sql<boolean>`${users.access} = 'apps_only'`,
+      })
       .from(users)
       .where(and(isNull(users.disabledAt), eq(users.status, 'active')))
       .orderBy(asc(users.name))
@@ -78,6 +86,7 @@ export const usersRouter = router({
         lastLoginAt: users.lastLoginAt,
         createdAt: users.createdAt,
         status: users.status,
+        access: users.access,
         requestedAt: users.requestedAt,
         decidedAt: users.decidedAt,
         invitedBy: users.invitedBy,
@@ -103,17 +112,26 @@ export const usersRouter = router({
 
   /**
    * Lets a waiting (or earlier rejected) person in, in the chosen groups as well as All Users. They can sign in at
-   * once; their access is what those groups (and grants to them) give.
+   * once; their access is what those groups (and grants to them) give, on the whole platform or, `apps_only`, on
+   * apps alone.
    */
   approve: adminProcedure
-    .input(z.object({ userId: Id, groupIds: z.array(Id).max(50).default([]) }))
+    .input(
+      z.object({ userId: Id, groupIds: z.array(Id).max(50).default([]), access: Access.default('full') }),
+    )
     .mutation(async ({ ctx, input }) => {
       const user = await userWithStatus(ctx.db, input.userId, ['pending', 'rejected'])
       await ctx.db.transaction(async (tx) => {
+        await refuseAdminAndAppsOnly(tx, {
+          userId: user.id,
+          email: user.email,
+          access: input.access,
+          addGroupIds: input.groupIds,
+        })
         // The status in the update itself: a reject (or a second approve) meanwhile finds nothing to change.
         const changed = await tx
           .update(users)
-          .set({ status: 'active', decidedAt: new Date(), decidedBy: ctx.user.id })
+          .set({ status: 'active', access: input.access, decidedAt: new Date(), decidedBy: ctx.user.id })
           .where(and(eq(users.id, user.id), inArray(users.status, ['pending', 'rejected'])))
           .returning({ id: users.id })
         if (!changed.length) throw stale(user.email)
@@ -123,7 +141,11 @@ export const usersRouter = router({
         action: 'user.approved',
         objectType: 'user',
         objectId: user.id,
-        metadata: { email: user.email, groups: await groupNames(ctx.db, input.groupIds) },
+        metadata: {
+          email: user.email,
+          groups: await groupNames(ctx.db, input.groupIds),
+          access: input.access,
+        },
       })
     }),
 
@@ -154,6 +176,7 @@ export const usersRouter = router({
         email: z.string().trim().toLowerCase().email().max(320),
         name: z.string().trim().max(200).optional(),
         groupIds: z.array(Id).max(50).default([]),
+        access: Access.default('full'),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -171,12 +194,19 @@ export const usersRouter = router({
         throw new TRPCError({ code: 'CONFLICT', message: `${input.email} ${what}` })
       }
       const id = await ctx.db.transaction(async (tx) => {
+        await refuseAdminAndAppsOnly(tx, {
+          userId: null,
+          email: input.email,
+          access: input.access,
+          addGroupIds: input.groupIds,
+        })
         const [row] = await tx
           .insert(users)
           .values({
             email: input.email,
             name: input.name || input.email.split('@')[0]!,
             status: 'invited',
+            access: input.access,
             invitedBy: ctx.user.id,
           })
           .returning({ id: users.id })
@@ -187,7 +217,11 @@ export const usersRouter = router({
         action: 'user.invited',
         objectType: 'user',
         objectId: id,
-        metadata: { email: input.email, groups: await groupNames(ctx.db, input.groupIds) },
+        metadata: {
+          email: input.email,
+          groups: await groupNames(ctx.db, input.groupIds),
+          access: input.access,
+        },
       })
       return { id }
     }),
@@ -208,6 +242,34 @@ export const usersRouter = router({
       metadata: { email: user.email },
     })
   }),
+
+  /**
+   * The whole platform or only the apps shared with them, changed at any time. It counts from their next request
+   * (the session reads it each time); what is shared with them stays as it is. Not for admins, nor for oneself.
+   */
+  setAccess: adminProcedure
+    .input(z.object({ userId: Id, access: Access }))
+    .mutation(async ({ ctx, input }) => {
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'You cannot change your own access' })
+      }
+      const [user] = await ctx.db
+        .select({ id: users.id, email: users.email, access: users.access })
+        .from(users)
+        .where(eq(users.id, input.userId))
+      if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'Person not found' })
+      if (user.access === input.access) return
+      await ctx.db.transaction(async (tx) => {
+        await refuseAdminAndAppsOnly(tx, { userId: user.id, email: user.email, access: input.access })
+        await tx.update(users).set({ access: input.access }).where(eq(users.id, user.id))
+      })
+      await ctx.audit({
+        action: 'user.access_changed',
+        objectType: 'user',
+        objectId: user.id,
+        metadata: { email: user.email, from: user.access, to: input.access },
+      })
+    }),
 
   setDisabled: adminProcedure
     .input(z.object({ userId: z.string().uuid(), disabled: z.boolean() }))

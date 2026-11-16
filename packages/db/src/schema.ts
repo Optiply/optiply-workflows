@@ -54,6 +54,13 @@ const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
 export const USER_STATUSES = ['active', 'pending', 'invited', 'rejected'] as const
 export type UserStatus = (typeof USER_STATUSES)[number]
 
+/**
+ * What a person may reach: `full` is the platform (as far as their grants go); `apps_only` is only the apps shared with
+ * them, used through their own page, never the platform around them. Admins are always `full`.
+ */
+export const USER_ACCESS = ['full', 'apps_only'] as const
+export type UserAccess = (typeof USER_ACCESS)[number]
+
 export const users = pgTable(
   'users',
   {
@@ -70,6 +77,8 @@ export const users = pgTable(
     lastLoginAt: timestamp({ withTimezone: true }),
     /** Whether they may sign in yet: see `USER_STATUSES`. Accounts from before approval existed are `active`. */
     status: text({ enum: USER_STATUSES }).notNull().default('active'),
+    /** Platform or only their apps: see `USER_ACCESS`. */
+    access: text({ enum: USER_ACCESS }).notNull().default('full'),
     /** When a `pending` person first asked to get in. */
     requestedAt: timestamp({ withTimezone: true }),
     /** When an admin approved or rejected them, and who. */
@@ -84,6 +93,7 @@ export const users = pgTable(
     uniqueIndex('users_email_uq').on(t.email),
     uniqueIndex('users_oidc_subject_uq').on(t.oidcSubject),
     check('users_status_ck', sql`${t.status} in ('active', 'pending', 'invited', 'rejected')`),
+    check('users_access_ck', sql`${t.access} in ('full', 'apps_only')`),
   ],
 )
 

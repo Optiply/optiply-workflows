@@ -13,12 +13,24 @@ import { and, eq, gt, isNull, or, sql } from 'drizzle-orm'
 
 export const SESSION_COOKIE = 'ow_session'
 
+/**
+ * What someone whose access is apps only hears from anything that isn't one of their apps: tRPC outside
+ * `APPS_ONLY_PROCEDURES`, the REST API, the database's import and export, live collaboration. A route a signed-in
+ * person reaches refuses them with this unless a live app needs it (bundles, OAuth connect).
+ */
+export const APPS_ONLY_REFUSAL = 'Your account can only use the apps shared with you'
+
 export interface SessionUser {
   id: string
   email: string
   name: string
   avatarUrl: string | null
   isAdmin: boolean
+  /**
+   * Only the apps shared with them (`users.access`), never the platform around them: tRPC lets them call what using an
+   * app needs (`APPS_ONLY_PROCEDURES`), and their grants count only on apps (`loadAccess`). Never true for an admin.
+   */
+  appsOnly: boolean
   sessionId: string
 }
 
@@ -58,6 +70,10 @@ const isAdminSql = () => sql<boolean>`(exists (
   where gm.user_id = ${users.id} and g.system_kind = 'admins'
 ) and split_part(lower(${users.email}), '@', 2) = ${adminDomain})`
 
+/** `access` is apps only and they aren't an admin (an admin is never shut out of the platform by a stray value). */
+const appsOnlySql = (isAdmin: ReturnType<typeof isAdminSql>) =>
+  sql<boolean>`(${users.access} = 'apps_only' and not ${isAdmin})`
+
 export async function lookupSession(db: Db, token: string | undefined): Promise<SessionUser | null> {
   if (!token) return null
   const isAdmin = isAdminSql()
@@ -68,6 +84,7 @@ export async function lookupSession(db: Db, token: string | undefined): Promise<
       name: users.name,
       avatarUrl: users.avatarUrl,
       isAdmin,
+      appsOnly: appsOnlySql(isAdmin),
       sessionId: sessions.id,
     })
     .from(sessions)
@@ -115,6 +132,7 @@ export async function lookupAccessToken(db: Db, token: string): Promise<TokenUse
       name: users.name,
       avatarUrl: users.avatarUrl,
       isAdmin: isAdminSql(),
+      appsOnly: appsOnlySql(isAdminSql()),
       tokenId: personalAccessTokens.id,
       prefix: personalAccessTokens.prefix,
       scopes: personalAccessTokens.scopes,

@@ -6,9 +6,9 @@ export async function signIn(page: Page, email = E2E_EMAIL) {
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password').fill(E2E_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  // The first section they can reach (Workflows for admins), or the welcome page with none.
+  // The first section they can reach (Workflows for admins), the welcome page with none, or their apps (apps only).
   await expect(page).toHaveURL(
-    /\/(workflows|apps|library|modules|component-libraries|resources|database|runs|inbox|start)$/,
+    /\/(workflows|apps|library|modules|component-libraries|resources|database|runs|inbox|start|my-apps)$/,
   )
 }
 

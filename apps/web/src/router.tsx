@@ -12,7 +12,8 @@ import { createTRPCOptionsProxy, type TRPCOptionsProxy } from '@trpc/tanstack-re
 import { z } from 'zod'
 import { visibleSections } from './components/command-palette'
 import { ConfirmHost } from './components/confirm'
-import { queryClient, trpcClient } from './lib/trpc'
+import { appsOnlyMayOpen } from './lib/apps-only'
+import { queryClient, setAppsOnlyRefusalHandler, trpcClient } from './lib/trpc'
 import { AppShell } from './pages/app-shell'
 import { AppsPage } from './pages/apps/list'
 import { ComponentLibrariesPage } from './pages/component-libraries/list'
@@ -21,6 +22,7 @@ import { TaskPage } from './pages/inbox/task'
 import { LibraryPage } from './pages/library/list'
 import { LoginPage } from './pages/login'
 import { ModulesPage } from './pages/modules/list'
+import { MyAppsPage } from './pages/my-apps'
 import { ResourceDetailPage } from './pages/resources/detail'
 import { ResourcesPage } from './pages/resources/list'
 import { RunsPage } from './pages/runs/list'
@@ -69,7 +71,7 @@ const loginRoute = createRoute({
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'app',
-  beforeLoad: async ({ context }) => {
+  beforeLoad: async ({ context, location }) => {
     // Refreshed in the background now and then, so changed access shows on a later page without a reload.
     const me = await context.queryClient.ensureQueryData({
       ...context.trpc.me.queryOptions(),
@@ -77,6 +79,9 @@ const appRoute = createRoute({
       revalidateIfStale: true,
     })
     if (!me) throw redirect({ to: '/login' })
+    // Someone whose access is apps only: their apps and their own page, never the platform (the server refuses it
+    // anyway); anything else (an old link, a typed URL) takes them to their apps.
+    if (me.appsOnly && !appsOnlyMayOpen(location.pathname)) throw redirect({ to: '/my-apps' })
     return { me }
   },
   component: AppShell,
@@ -93,6 +98,13 @@ const indexRoute = createRoute({
 })
 
 const startRoute = createRoute({ getParentRoute: () => appRoute, path: '/start', component: StartPage })
+/** The apps shared with someone, on a page of its own (no platform around it): where people apps only land. */
+const myAppsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/my-apps',
+  staticData: { fullBleed: true, bare: true },
+  component: MyAppsPage,
+})
 
 /** The lists (workflows, resources, apps, library queries, modules) open one folder at a time: `folder` is its id. */
 const folderSearch = z.object({ folder: z.string().uuid().optional() })
@@ -310,6 +322,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     indexRoute,
     startRoute,
+    myAppsRoute,
     workflowsRoute,
     workflowEditorRoute,
     resourcesRoute,
@@ -363,12 +376,29 @@ function stringifySearch(search: Record<string, unknown>): string {
   return text ? `?${text}` : ''
 }
 
+const trpcOptions = createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient })
+
 export const router = createRouter({
   routeTree,
   parseSearch,
   stringifySearch,
-  context: { queryClient, trpc: createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient }) },
+  context: { queryClient, trpc: trpcOptions },
   defaultPreload: 'intent',
+})
+
+// An admin made them apps only while they were in the platform: the server refuses their next click, and they go to
+// their apps at once (the cached `me` would wait up to 30 seconds). One at a time: a page's refusals come in batches.
+let reReading = false
+setAppsOnlyRefusalHandler(async () => {
+  if (reReading) return
+  reReading = true
+  try {
+    const me = await queryClient.fetchQuery({ ...trpcOptions.me.queryOptions(), staleTime: 0 })
+    if (me?.appsOnly && !appsOnlyMayOpen(router.state.location.pathname))
+      await router.navigate({ to: '/my-apps' })
+  } finally {
+    reReading = false
+  }
 })
 
 declare module '@tanstack/react-router' {

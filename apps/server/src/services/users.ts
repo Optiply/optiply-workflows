@@ -1,10 +1,45 @@
-import { type Db, groupMembers, groups, type UserStatus, users } from '@ow/db'
+import { type Db, groupMembers, groups, type UserAccess, type UserStatus, users } from '@ow/db'
+import { TRPCError } from '@trpc/server'
 import { and, count, eq, or, sql } from 'drizzle-orm'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
 /** Arbitrary constant: serializes user provisioning so "first user becomes admin" can't race. */
 const PROVISION_LOCK_ID = 727_002
+/** Arbitrary constant: serializes changes to who is in Admins or apps only, so the rule between them can't race. */
+const ADMINS_APPS_ONLY_LOCK_ID = 727_003
+
+/**
+ * Admins always have the whole platform: someone apps only can't be in Admins. Checks the person as they'll be after a
+ * change (their access, set or kept; their groups, added to), inside the change's transaction and under a lock, so two
+ * admins changing the same person at once (one making them apps only, the other an admin) can't both pass.
+ */
+export async function refuseAdminAndAppsOnly(
+  tx: Tx,
+  change: { userId: string | null; email: string; access?: UserAccess; addGroupIds?: string[] },
+): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${ADMINS_APPS_ONLY_LOCK_ID})`)
+  const adminsId = await systemGroupId(tx, 'admins')
+  const [current] = change.userId
+    ? await tx.select({ access: users.access }).from(users).where(eq(users.id, change.userId))
+    : []
+  const access = change.access ?? current?.access ?? 'full'
+  if (access !== 'apps_only') return
+  const joining = (change.addGroupIds ?? []).includes(adminsId)
+  const [member] =
+    !joining && change.userId
+      ? await tx
+          .select({ userId: groupMembers.userId })
+          .from(groupMembers)
+          .where(and(eq(groupMembers.groupId, adminsId), eq(groupMembers.userId, change.userId)))
+      : []
+  if (joining || member) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${change.email} can't be in Admins and have access to apps only: admins always have the whole platform`,
+    })
+  }
+}
 
 export async function systemGroupId(db: Db | Tx, kind: 'admins' | 'all_users'): Promise<string> {
   const [row] = await db.select({ id: groups.id }).from(groups).where(eq(groups.systemKind, kind)).limit(1)
@@ -89,6 +124,8 @@ export async function provisionUser(
           oidcSubject: input.oidcSubject ?? existing.oidcSubject,
           passwordHash: input.passwordHash ?? existing.passwordHash,
           status,
+          // The CLI's break-glass admin always has the whole platform.
+          ...(opts.makeAdmin ? { access: 'full' as const } : {}),
           ...(status !== existing.status && existing.status !== 'invited' ? { decidedAt: new Date() } : {}),
         })
         .where(eq(users.id, id))

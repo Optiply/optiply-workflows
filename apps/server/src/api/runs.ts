@@ -16,7 +16,7 @@ import { and, asc, desc, eq, gt, inArray, lt, notLike, sql } from 'drizzle-orm'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
-import { lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
+import { APPS_ONLY_REFUSAL, lookupSession, SESSION_COOKIE, type SessionUser } from '../auth/sessions'
 import { apiKeyAllows, authenticateApiKey, presentedApiKey } from '../services/api-keys'
 import { openApiDocument } from '../services/openapi'
 import { type Access, atLeast, loadAccess } from '../services/permissions'
@@ -70,6 +70,8 @@ export const runsApi: FastifyPluginAsync<{
   app.decorateRequest('apiKey', null)
   app.addHook('preHandler', async (req, reply) => {
     const user = await lookupSession(db, req.cookies[SESSION_COOKIE])
+    // The REST API is the platform's: nothing in it is for someone whose access is apps only.
+    if (user?.appsOnly) return sendError(reply, new RunRequestError(403, 'forbidden', APPS_ONLY_REFUSAL))
     if (user) {
       req.user = user
       return

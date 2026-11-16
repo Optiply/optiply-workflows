@@ -66,7 +66,12 @@ export function AppShell() {
   const inEditor = useMatches({ select: (matches) => matches.some((m) => m.staticData.editor) })
   const bare = useMatches({ select: (matches) => matches.some((m) => m.staticData.bare) })
   const trpc = useTRPC()
-  const openTasks = useQuery({ ...trpc.tasks.openCount.queryOptions(), refetchInterval: 30_000 })
+  // Nobody apps only has an Inbox (the server refuses them anything but their apps).
+  const openTasks = useQuery({
+    ...trpc.tasks.openCount.queryOptions(),
+    refetchInterval: 30_000,
+    enabled: !me.appsOnly,
+  })
   // Editors fold the sidebar to icons by default (the canvas wants the width); each choice is remembered apart.
   const [listState, setListState] = useStoredChoice('ow-sidebar', isSidebarState, 'open')
   const [editorState, setEditorState] = useStoredChoice('ow-sidebar-editor', isSidebarState, 'collapsed')
@@ -79,7 +84,10 @@ export function AppShell() {
   const pathname = useLocation({ select: (l) => l.pathname })
   const blocked = SECTIONS.find((s) => s.to === pathname && !me.sections[s.key])
   const [palette, setPalette] = useState(false)
-  useGlobalPaletteShortcut(() => setPalette((p) => !p))
+  // ⌘K searches the platform: not for someone apps only.
+  useGlobalPaletteShortcut(() => {
+    if (!me.appsOnly) setPalette((p) => !p)
+  })
 
   const logout = useSignOut()
 
@@ -314,14 +322,16 @@ function AccountMenuItems({ onSignOut, children }: { onSignOut: () => void; chil
 }
 
 /**
- * The account for a page without the platform around it (a published app): the avatar, opening the same menu, plus
- * a way into the platform for people who have any of its sections.
+ * The account for a page without the platform around it (a published app, their apps): the avatar, opening the same
+ * menu, plus a way into the platform for people who have any of its sections; someone whose access is apps only gets
+ * their apps instead (the platform isn't theirs).
  */
 export function AccountButton() {
   const { me } = route.useRouteContext()
   const navigate = useNavigate()
   const logout = useSignOut()
-  const hasSections = visibleSections(me).length > 0
+  const onMyApps = useLocation({ select: (l) => l.pathname === '/my-apps' })
+  const hasSections = !me.appsOnly && visibleSections(me).length > 0
   return (
     <Menu
       label={`Account: ${me.name}, ${me.email}`}
@@ -340,14 +350,21 @@ export function AccountButton() {
       )}
     >
       <AccountMenuItems onSignOut={logout}>
-        {hasSections && (
+        {hasSections ? (
           <>
             <MenuItem icon={<LayoutGrid />} onClick={() => navigate({ to: '/' })}>
               Open Optiply Workflows
             </MenuItem>
             <MenuSeparator />
           </>
-        )}
+        ) : me.appsOnly && !onMyApps ? (
+          <>
+            <MenuItem icon={<LayoutGrid />} onClick={() => navigate({ to: '/my-apps' })}>
+              Your apps
+            </MenuItem>
+            <MenuSeparator />
+          </>
+        ) : null}
       </AccountMenuItems>
     </Menu>
   )

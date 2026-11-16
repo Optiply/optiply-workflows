@@ -2,6 +2,7 @@ import { type Db, groupMembers, groups, users } from '@ow/db'
 import { TRPCError } from '@trpc/server'
 import { and, asc, count, eq, inArray, isNull } from 'drizzle-orm'
 import { z } from 'zod'
+import { refuseAdminAndAppsOnly } from '../../services/users'
 import { adminProcedure, authedProcedure, router } from '../init'
 
 const GroupName = z.string().trim().min(1).max(80)
@@ -105,7 +106,16 @@ export const groupsRouter = router({
       if (group.systemKind === 'all_users') assertNotSystem(group, 'edited — every user is a member')
       const [user] = await ctx.db.select({ email: users.email }).from(users).where(eq(users.id, input.userId))
       if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' })
-      await ctx.db.insert(groupMembers).values(input).onConflictDoNothing()
+      await ctx.db.transaction(async (tx) => {
+        if (group.systemKind === 'admins') {
+          await refuseAdminAndAppsOnly(tx, {
+            userId: input.userId,
+            email: user.email,
+            addGroupIds: [group.id],
+          })
+        }
+        await tx.insert(groupMembers).values(input).onConflictDoNothing()
+      })
       await ctx.audit({
         action: 'group.member_added',
         objectType: 'group',

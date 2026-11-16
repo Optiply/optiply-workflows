@@ -1,4 +1,13 @@
-import { type Db, folders, groupMembers, PERMISSION_LEVELS, type PermissionLevel, permissions } from '@ow/db'
+import {
+  type Db,
+  folders,
+  groupMembers,
+  groups,
+  PERMISSION_LEVELS,
+  type PermissionLevel,
+  permissions,
+  users,
+} from '@ow/db'
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
 import { eq, inArray, or } from 'drizzle-orm'
@@ -214,15 +223,29 @@ export class Access {
   }
 }
 
+/**
+ * What one person may do. Someone whose access is apps only (`users.access`, read here so no caller can forget it)
+ * keeps only their grants on apps and app folders, at most Use, and not those All Users holds: the apps an admin gave
+ * them (or a group of theirs), and nothing of the platform's default sharing.
+ */
 export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean }): Promise<Access> {
   if (user.isAdmin) return new Access(true, [], new Map())
+  // Their access comes with their memberships (everyone is in All Users), in one round trip.
   const memberships = await db
-    .select({ groupId: groupMembers.groupId })
+    .select({ groupId: groupMembers.groupId, systemKind: groups.systemKind, access: users.access })
     .from(groupMembers)
+    .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+    .innerJoin(users, eq(users.id, groupMembers.userId))
     .where(eq(groupMembers.userId, user.id))
-  const groupIds = memberships.map((m) => m.groupId)
+  const [person] = memberships.length
+    ? memberships
+    : await db.select({ access: users.access }).from(users).where(eq(users.id, user.id))
+  const appsOnly = person?.access === 'apps_only'
+  const groupIds = memberships
+    .filter((m) => !(appsOnly && m.systemKind === 'all_users'))
+    .map((m) => m.groupId)
   // Their groups' grants and their own.
-  const grants = await db
+  const rows = await db
     .select({
       objectType: permissions.objectType,
       objectId: permissions.objectId,
@@ -235,17 +258,23 @@ export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean })
         ? or(inArray(permissions.groupId, groupIds), eq(permissions.userId, user.id))
         : eq(permissions.userId, user.id),
     )
-  const folderRows = grants.some((g) => g.objectType === 'folder')
+  const folderRows = rows.some((g) => g.objectType === 'folder')
     ? await db
         .select({ id: folders.id, parentId: folders.parentId, objectType: folders.objectType })
         .from(folders)
     : []
-  return new Access(
-    false,
-    grants,
-    new Map(folderRows.map((f) => [f.id, f.parentId])),
-    new Map(folderRows.map((f) => [f.id, f.objectType])),
-  )
+  const folderTypes = new Map(folderRows.map((f) => [f.id, f.objectType]))
+  const grants = appsOnly
+    ? rows
+        .filter(
+          (g) =>
+            g.environmentId === null &&
+            (g.objectType === 'app' ||
+              (g.objectType === 'folder' && g.objectId !== null && folderTypes.get(g.objectId) === 'app')),
+        )
+        .map((g) => ({ ...g, level: 'use' as const }))
+    : rows
+  return new Access(false, grants, new Map(folderRows.map((f) => [f.id, f.parentId])), folderTypes)
 }
 
 export function requireLevel(level: PermissionLevel | null, required: PermissionLevel, what: string): void {

@@ -1,7 +1,7 @@
 import { CLOSE_ACCESS_LOST } from '@ow/collab'
 import type { Db } from '@ow/db'
 import type { FastifyPluginAsync } from 'fastify'
-import { lookupSession, SESSION_COOKIE } from '../auth/sessions'
+import { APPS_ONLY_REFUSAL, lookupSession, SESSION_COOKIE } from '../auth/sessions'
 import type { CollabHub, CollabPeer, CollabRoom } from '../services/collab/rooms'
 import { type CollabTarget, resolveTarget } from '../services/collab/target'
 
@@ -19,6 +19,8 @@ async function admit(
 ): Promise<{ user: CollabPeer['user']; target: CollabTarget } | { refused: string }> {
   const user = await lookupSession(db, token)
   if (!user) return { refused: 'Not signed in' }
+  // Drafts are the platform's: someone apps only uses the live release, never watches the editor.
+  if (user.appsOnly) return { refused: APPS_ONLY_REFUSAL }
   const target = await resolveTarget(db, user, key)
   if (!target) return { refused: 'This draft is gone, or you no longer have access to it' }
   return { user: { id: user.id, name: user.name, avatarUrl: user.avatarUrl }, target }

@@ -2010,6 +2010,46 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 55 steps: access to apps only (away mode from step 2)
+
+The user (2026-11-16): people allowed only the apps shared with them must get those apps and nothing else, not even
+through the app's "Open Optiply Workflows"; they're still users, approved by an admin, whose access admins keep
+managing. Plan approved with "go" (decisions: All Users' sharing doesn't reach them; at most Use; no Inbox; approve
+defaults to the whole platform). Branch **`feat/apps-only-users`** from `main` `31dc1f6`, pushed; **no PR yet** (one PR
+when the user says). Architecture §2.43. Away mode from step 2 ("continue, I will be away").
+
+1. **Database and server** ✅ `19eda42`: `users.access` (migration **0050**), `SessionUser.appsOnly`, `loadAccess` keeps
+   only app grants at Use without All Users', capabilities none, tRPC allowlist (`APPS_ONLY_PROCEDURES`),
+   `users.setAccess` + access on approve/invite, Admins and apps only refused together.
+2. **Web: "Your apps"** ✅ `823ee06`: `/my-apps`, the layout's redirect (`lib/apps-only.ts`), the account menu's "Your
+   apps", no Inbox poll or ⌘K for them.
+3. **Admin UI** ✅ `98ce261`: `AccessTypePicker` in Approve/Invite and on a person's page, badge and tabs in Settings →
+   Users, only the Apps row in their Access.
+4. **E2E, docs, code review** ✅ (this commit): `apps-only.spec.ts`; manuals (admin guide "Access to apps only", user
+   guide), architecture §2.43; review (high) 10 found, 10 fixed: collab let them watch an app's draft (now refused with
+   the REST API and database export), the Admins rule locked in one place, a refusal re-reads `me` and sends them to
+   their apps, Use-only levels and "Doesn't count" on their page, not offered as share targets for non-apps, one query
+   in `loadAccess`, a way back from an unpublished app.
+
+Answered too: someone apps only runs every query of the app's **published** version (resource, workflow, library and
+module queries, its JavaScript; writes included), as anyone with Use: live apps run as the app, so no access to the
+resources is needed; never the draft, no queries of their own; `current_user` is them.
+
+**Manuals** (after the user started Docker): `settings-users`, `settings-user` and `my-apps` retaken with the demo
+data, both PDFs rebuilt. **API reference** (the user: the admin PDF had no API documentation): new chapter **A11** in
+`admin-guide.md`, written from `api/*.ts`: who signs in how (API key, signature, public, session, PAT, metrics token,
+Git secret), every endpoint, the webhook in full, the run and block objects, the session routes (runs, blocks, logs,
+iterations, events), database/audit/JDBC, health/metrics/Git webhook, curl examples; `/api/trpc` named as internal.
+Pointers from User Guide 8.5 and A5. Admin Guide 120 pages (was 110), User Guide 67.
+
+Checks: server 704 passed (38 skipped); web unit 160; full e2e on the step-3 build 177 passed (the 3 failures were the
+untracked local tours `zz-m37-tour`, `zz-retool-apps-tour`, `zz-retool-import-tour`, which need local files and
+services); after the review fixes the affected specs again (apps-only ×6, access, collab, library-collab, database,
+apps-list, folders, run-panel-order).
+
+Not touched: the local stack and production. **Merging deploys to production automatically** (migration 0050 runs
+there: one column with a default, instant).
+
 ## 14. Session 54 steps: two fixes, admins only, the queue features removed, production on Google Cloud
 
 The user (2026-11-14). Branch `feat/m37-connectors-sdk`; commits at the end (their word); **PR #26** (everything since `main` `256710d`).
@@ -2378,6 +2418,10 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 56 with (end of session 55, 2026-11-16):** access to apps only is built on **`feat/apps-only-users`**
+(pushed; §14 session 55; architecture §2.43). Next, the user's: look at it (the tour `apps/web/e2e/zz-walkthrough.spec.ts`
+is untracked and excluded; `SHOTS_PHASE=after` retakes the shots), then merge **PR #30** (opened 2026-11-16 after #29 was squash-merged as `92ad6bf` and `main` merged into the branch; merging deploys to production, migration 0050). The stack still runs `33506e2`; rebuilding it is their word. Ask what's next.
 
 **Start session 55 with (end of session 54, 2026-11-15):** **Production runs `main` `31dc1f6`** (https://104-196-197-26.sslip.io, healthy), deployed by the **first fully automatic deploy** (§14 session 54, steps 13–16): each merge to `main` now deploys by itself after a green CI (Actions → Deploy; build ~8 min, deploy, health check, rollback to `.previous-tag`). A red `main` from a known flaky test: deploy by hand (Run workflow, tag = the short hash, images already built) rather than re-running CI again and again. Default sharing is live (new objects: Use for All Users, Edit for a non-admin creator; Git sync's none). `main` is clean; PRs #26–#28 merged. The local stack still runs `33506e2`. Open, on the user's word: IAP access for `ow-vm-prod` on `bastion` (the user's boss decides: https://claude.ai/artifact/GYfENQmV6pMumcSZDaEUTE; then test one of the six resources from the server); `workflows.optiply.nl` (DNS owner unknown; also change `SITE` in deploy.yml); whether to share the objects made before default sharing with everyone (SQL only on the user's word); the manuals' untested steps (restore, break-glass admin, domain change); the five Retool steps the user left for after the deploy (secrets, config vars, Retool DB rows, publishing, access groups). Budget: €5 a month at most, always (more RAM costs past it). Ask what's next.
 

@@ -93,11 +93,14 @@ export function SubjectAccess({
   subject,
   name,
   everything = false,
+  appsOnly = false,
 }: {
   subject: { groupId: string } | { userId: string }
   name: string
   /** Admins: they can do everything, so grants don't matter. */
   everything?: boolean
+  /** A person whose access is apps only: only apps count (as Use), so only the Apps row shows. */
+  appsOnly?: boolean
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -128,6 +131,13 @@ export function SubjectAccess({
   const typeWideByEnv = (kind: Kind) =>
     grants.filter((g) => g.objectType === kind && g.objectId === null && g.environmentId !== null)
   const specific = grants.filter((g) => g.objectId !== null)
+  // Apps only: a grant counts on apps and app folders, for every environment, and as Use whatever its level.
+  const counts = (g: (typeof grants)[number]) =>
+    !appsOnly ||
+    (g.environmentId === null &&
+      (g.objectType === 'app' || (g.objectType === 'folder' && 'folderType' in g && g.folderType === 'app')))
+  const levelLabel = (level: Level, label: string) =>
+    appsOnly && level !== 'use' ? `${label} (counts as Use)` : label
   const envName = (id: string | null) =>
     id === null ? null : (environments?.find((e) => e.id === id)?.name ?? 'an environment')
 
@@ -136,13 +146,14 @@ export function SubjectAccess({
       <div>
         <SectionLabel>Access</SectionLabel>
         <p className="mt-1 text-sm text-muted">
-          What {name} can do with every workflow, app… (Edit also lets them create new ones), and the single
-          ones shared with them.
+          {appsOnly
+            ? `Which apps ${name} can use: every app, or the single ones shared with them. Grants on anything else don't count while their access is apps only.`
+            : `What ${name} can do with every workflow, app… (Edit also lets them create new ones), and the single ones shared with them.`}
         </p>
       </div>
       <ErrorNote error={set.error} />
       <Card className="divide-y divide-border/70">
-        {KINDS.map(({ kind, label, one }) => (
+        {(appsOnly ? KINDS.filter((k) => k.kind === 'app') : KINDS).map(({ kind, label, one }) => (
           <div key={kind} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
             <span className="min-w-40 flex-1 font-medium">{label}</span>
             {typeWideByEnv(kind).map((g) => (
@@ -165,11 +176,13 @@ export function SubjectAccess({
               }
             >
               <option value="">Only what's shared</option>
-              {ALL_LEVELS.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
+              {ALL_LEVELS.filter((l) => !appsOnly || l.value === 'use' || l.value === typeWide(kind)).map(
+                (l) => (
+                  <option key={l.value} value={l.value}>
+                    {levelLabel(l.value, l.label)}
+                  </option>
+                ),
+              )}
             </Select>
             <span className="sr-only">Every {one}</span>
           </div>
@@ -203,6 +216,13 @@ export function SubjectAccess({
                   <span className="ml-2 text-xs text-muted">in {envName(g.environmentId)}</span>
                 )}
               </span>
+              {!counts(g) && (
+                <Badge
+                  title={`${name}'s access is apps only: this grant does nothing until it's the whole platform again`}
+                >
+                  Doesn't count
+                </Badge>
+              )}
               <Select
                 aria-label={`Level on ${('name' in g && g.name) || 'it'}`}
                 value={g.level}
@@ -216,11 +236,13 @@ export function SubjectAccess({
                   })
                 }
               >
-                {(['use', 'edit', 'own'] as const).map((l) => (
-                  <option key={l} value={l}>
-                    {LEVEL_LABEL[l]}
-                  </option>
-                ))}
+                {(['use', 'edit', 'own'] as const)
+                  .filter((l) => !appsOnly || !counts(g) || l === 'use' || l === g.level)
+                  .map((l) => (
+                    <option key={l} value={l}>
+                      {counts(g) ? levelLabel(l, LEVEL_LABEL[l]) : LEVEL_LABEL[l]}
+                    </option>
+                  ))}
               </Select>
               <Button
                 size="icon"

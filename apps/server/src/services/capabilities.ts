@@ -30,25 +30,32 @@ export interface Capabilities {
 const ALL = (value: boolean) =>
   Object.fromEntries(SECTION_KEYS.map((k) => [k, value])) as Capabilities['sections']
 
+/** Every section and every New button, or none. */
+const everything = (value: boolean): Capabilities => ({
+  sections: ALL(value),
+  canCreate: {
+    workflows: value,
+    apps: value,
+    library: value,
+    modules: value,
+    componentLibraries: value,
+    resources: value,
+  },
+})
+
 /**
  * What one person can reach, for the sidebar, ⌘K and the New buttons: a section shows when any grant (theirs or
  * their groups', on one object, all of a kind, or a folder of that kind) reaches it. The server still checks every
- * object; this only keeps people from wandering into empty sections. Admins reach everything.
+ * object; this only keeps people from wandering into empty sections. Admins reach everything; someone whose access
+ * is apps only no section at all (their apps open from their own page, never the platform's Apps).
  */
-export async function capabilities(db: Db, user: { id: string; isAdmin: boolean }): Promise<Capabilities> {
-  if (user.isAdmin) {
-    return {
-      sections: ALL(true),
-      canCreate: {
-        workflows: true,
-        apps: true,
-        library: true,
-        modules: true,
-        componentLibraries: true,
-        resources: true,
-      },
-    }
-  }
+export async function capabilities(
+  db: Db,
+  user: { id: string; isAdmin: boolean; appsOnly?: boolean },
+): Promise<Capabilities> {
+  if (user.isAdmin) return everything(true)
+  // Their apps open from their own page, never the platform's sections (`appsOnly` is never true for an admin).
+  if (user.appsOnly) return everything(false)
   // `me` asks on every navigation now and then: the independent reads go together.
   const [access, builtIn, envRows, groupIds] = await Promise.all([
     loadAccess(db, user),

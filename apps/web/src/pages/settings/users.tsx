@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { Check, Mail, UserPlus, X } from 'lucide-react'
 import { useId, useState } from 'react'
+import { type AccessType, AccessTypePicker } from '@/components/access-type'
 import { confirmDialog } from '@/components/confirm'
 import {
   Avatar,
@@ -16,6 +17,7 @@ import {
   ListSkeleton,
   SectionLabel,
   Table,
+  Tabs,
   Td,
   Th,
 } from '@/components/ui'
@@ -54,10 +56,13 @@ function UsersTable() {
   const cancelInvite = useMutation(trpc.users.cancelInvite.mutationOptions({ onSuccess: refresh }))
   const [approving, setApproving] = useState<User | null>(null)
   const [inviting, setInviting] = useState(false)
+  const [shown, setShown] = useState<'all' | AccessType>('all')
 
   if (isLoading) return <ListSkeleton header={false} rows={4} />
   const pending = users?.filter((u) => u.status === 'pending') ?? []
-  const others = users?.filter((u) => u.status !== 'pending') ?? []
+  const decided = users?.filter((u) => u.status !== 'pending') ?? []
+  const others = shown === 'all' ? decided : decided.filter((u) => u.access === shown)
+  const appsOnlyCount = decided.filter((u) => u.access === 'apps_only').length
 
   return (
     <div className="space-y-5">
@@ -92,6 +97,16 @@ function UsersTable() {
         </section>
       )}
 
+      <Tabs
+        className="mb-0"
+        value={shown}
+        onChange={setShown}
+        tabs={[
+          { value: 'all', label: `Everyone (${decided.length})` },
+          { value: 'full', label: `Whole platform (${decided.length - appsOnlyCount})` },
+          { value: 'apps_only', label: `Apps only (${appsOnlyCount})` },
+        ]}
+      />
       <Table>
         <thead>
           <tr>
@@ -120,6 +135,11 @@ function UsersTable() {
                       {u.id === me.id && <span className="text-xs font-normal text-muted">(you)</span>}
                       {u.status === 'invited' && <Badge tone="accent">Invited</Badge>}
                       {u.status === 'rejected' && <Badge tone="danger">Not approved</Badge>}
+                      {u.access === 'apps_only' && (
+                        <Badge tone="warning" title="Only the apps shared with them">
+                          Apps only
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-xs text-muted">{u.email}</div>
                   </div>
@@ -173,6 +193,13 @@ function UsersTable() {
               </Td>
             </tr>
           ))}
+          {others.length === 0 && (
+            <tr>
+              <Td colSpan={5} className="py-6 text-center text-muted">
+                Nobody here.
+              </Td>
+            </tr>
+          )}
         </tbody>
       </Table>
       {approving && <ApproveDialog user={approving} onClose={() => setApproving(null)} />}
@@ -222,15 +249,27 @@ function PendingRow({ user, onApprove }: { user: User; onApprove: () => void }) 
   )
 }
 
-/** The groups a person goes into (All Users always): the access they start with. */
-function GroupPicker({ chosen, onChange }: { chosen: string[]; onChange: (ids: string[]) => void }) {
+/**
+ * The groups a person goes into (All Users always): the access they start with. Someone apps only can't be an admin
+ * (`noAdmins`), and All Users gives them nothing.
+ */
+function GroupPicker({
+  chosen,
+  onChange,
+  noAdmins = false,
+}: {
+  chosen: string[]
+  onChange: (ids: string[]) => void
+  noAdmins?: boolean
+}) {
   const trpc = useTRPC()
   const { data: groups } = useQuery(trpc.groups.list.queryOptions())
-  const pickable = groups?.filter((g) => g.systemKind !== 'all_users') ?? []
+  const pickable =
+    groups?.filter((g) => g.systemKind !== 'all_users' && !(noAdmins && g.systemKind === 'admins')) ?? []
   return (
     <fieldset className="space-y-2">
       <legend className="mb-1.5 text-sm font-medium">Groups</legend>
-      <Checkbox label="All Users" checked disabled />
+      <Checkbox label={noAdmins ? 'All Users (gives apps only nothing)' : 'All Users'} checked disabled />
       {pickable.map((g) => (
         <div key={g.id}>
           <Checkbox
@@ -251,10 +290,21 @@ function GroupPicker({ chosen, onChange }: { chosen: string[]; onChange: (ids: s
   )
 }
 
+/** The chosen groups and access type, Admins dropped when the access is apps only (they can't go together). */
+function useAccessChoice() {
+  const trpc = useTRPC()
+  const { data: groups } = useQuery(trpc.groups.list.queryOptions())
+  const [groupIds, setGroupIds] = useState<string[]>([])
+  const [access, setAccess] = useState<AccessType>('full')
+  const adminsId = groups?.find((g) => g.systemKind === 'admins')?.id
+  const chosen = access === 'apps_only' ? groupIds.filter((id) => id !== adminsId) : groupIds
+  return { groupIds: chosen, setGroupIds, access, setAccess }
+}
+
 function ApproveDialog({ user, onClose }: { user: User; onClose: () => void }) {
   const trpc = useTRPC()
   const refresh = useRefreshUsers()
-  const [groupIds, setGroupIds] = useState<string[]>([])
+  const { groupIds, setGroupIds, access, setAccess } = useAccessChoice()
   const approve = useMutation(
     trpc.users.approve.mutationOptions({
       onSuccess: async () => {
@@ -267,7 +317,7 @@ function ApproveDialog({ user, onClose }: { user: User; onClose: () => void }) {
     <Dialog
       title={`Let ${user.name} in`}
       onClose={onClose}
-      className="max-w-md"
+      className="max-w-xl"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -276,7 +326,7 @@ function ApproveDialog({ user, onClose }: { user: User; onClose: () => void }) {
           <Button
             variant="primary"
             loading={approve.isPending}
-            onClick={() => approve.mutate({ userId: user.id, groupIds })}
+            onClick={() => approve.mutate({ userId: user.id, groupIds, access })}
           >
             Approve
           </Button>
@@ -286,9 +336,10 @@ function ApproveDialog({ user, onClose }: { user: User; onClose: () => void }) {
       <div className="space-y-4">
         <p className="text-sm text-muted">
           {user.email} can sign in once approved. What they can see comes from their groups and anything
-          shared with them.
+          shared with them. You can change both later on their page.
         </p>
-        <GroupPicker chosen={groupIds} onChange={setGroupIds} />
+        <AccessTypePicker value={access} onChange={setAccess} />
+        <GroupPicker chosen={groupIds} onChange={setGroupIds} noAdmins={access === 'apps_only'} />
         <ErrorNote error={approve.error} />
       </div>
     </Dialog>
@@ -302,7 +353,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const formId = useId()
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
-  const [groupIds, setGroupIds] = useState<string[]>([])
+  const { groupIds, setGroupIds, access, setAccess } = useAccessChoice()
   const invite = useMutation(
     trpc.users.invite.mutationOptions({
       onSuccess: async () => {
@@ -337,7 +388,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          if (email.trim()) invite.mutate({ email, name: name || undefined, groupIds })
+          if (email.trim()) invite.mutate({ email, name: name || undefined, groupIds, access })
         }}
       >
         <p className="text-sm text-muted">
@@ -356,7 +407,8 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         <Field label="Name" hint="Optional: their Google name replaces it when they sign in.">
           <Input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <GroupPicker chosen={groupIds} onChange={setGroupIds} />
+        <AccessTypePicker value={access} onChange={setAccess} />
+        <GroupPicker chosen={groupIds} onChange={setGroupIds} noAdmins={access === 'apps_only'} />
         <ErrorNote error={invite.error} />
       </form>
     </Dialog>

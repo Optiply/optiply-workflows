@@ -699,6 +699,7 @@ describe('collab store and rooms', () => {
       name: user!.name,
       avatarUrl: null,
       isAdmin: true,
+      appsOnly: false,
       sessionId: 's',
     }
     return (await resolveTarget(env.db, session, key))!

@@ -8,7 +8,13 @@ import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify'
 import superjson from 'superjson'
 import type { AuditInput } from '../audit'
 import { recordAudit } from '../audit'
-import { lookupAccessToken, lookupSession, presentedAccessToken, SESSION_COOKIE } from '../auth/sessions'
+import {
+  APPS_ONLY_REFUSAL,
+  lookupAccessToken,
+  lookupSession,
+  presentedAccessToken,
+  SESSION_COOKIE,
+} from '../auth/sessions'
 import type { Config } from '../config'
 import type { AppWorkflowRuns } from '../services/app-workflow-query'
 import { asksForGitRetry, requestGitRetry } from '../services/git/deploy'
@@ -73,11 +79,27 @@ const TOKEN_PROCEDURES: Record<string, (path: string) => boolean> = {
     path.startsWith('componentLibraries.') || path === 'me' || path === 'folders.list',
 }
 
+/**
+ * All someone whose access is apps only may call: what opening and using a live app needs, and the list of their apps
+ * (their own page). Their grants reach only apps anyway (`loadAccess`); this keeps the rest of the platform shut too,
+ * the lists and settings everyone signed in may otherwise read. REST checks objects through `loadAccess` the same way.
+ */
+export const APPS_ONLY_PROCEDURES: ReadonlySet<string> = new Set([
+  'apps.list',
+  'apps.access',
+  'apps.open',
+  'apps.runQuery',
+  'environments.list',
+])
+
 export const authedProcedure = t.procedure.use(({ ctx, next, path }) => {
   if (ctx.badToken) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'This access token is unknown, revoked or expired' })
   }
   if (!ctx.user) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Not signed in' })
+  if (ctx.user.appsOnly && !APPS_ONLY_PROCEDURES.has(path)) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: APPS_ONLY_REFUSAL })
+  }
   if (ctx.token && !ctx.token.scopes.some((scope) => TOKEN_PROCEDURES[scope]?.(path))) {
     throw new TRPCError({
       code: 'FORBIDDEN',

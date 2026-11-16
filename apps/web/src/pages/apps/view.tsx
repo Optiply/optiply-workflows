@@ -85,6 +85,7 @@ export function AppViewPage() {
  * with Use are told it isn't published; anyone else that it isn't theirs (an app that doesn't exist reads the same).
  */
 function CannotOpen({ slug }: { slug: string }) {
+  const { me } = appRoute.useRouteContext()
   const trpc = useTRPC()
   const access = useQuery(trpc.apps.access.queryOptions({ slug }))
   if (!access.data)
@@ -114,6 +115,14 @@ function CannotOpen({ slug }: { slug: string }) {
           </EmptyState>
         )}
       </Centered>
+      {/* Someone apps only has no platform to go back to: their apps, whichever way the app didn't open. */}
+      {me.appsOnly && (
+        <div className="pb-10 text-center text-sm">
+          <Link to="/my-apps" className="font-medium text-accent hover:underline">
+            ← Your apps
+          </Link>
+        </div>
+      )}
     </div>
   )
 }

@@ -6,7 +6,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import postgres from 'postgres'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
-import { lookupSession, SESSION_COOKIE } from '../auth/sessions'
+import { APPS_ONLY_REFUSAL, lookupSession, SESSION_COOKIE } from '../auth/sessions'
 import { CsvError, CsvParser, type CsvRecord } from '../services/csv'
 import { authorizeManagedDb, ExistingName, ManagedDbError, withManagedDb } from '../services/managed-db'
 import { exportCsv, IMPORT_MAX_BYTES, ImportError, ImportSpec, importCsv } from '../services/managed-db-csv'
@@ -38,6 +38,7 @@ export const databaseApi: FastifyPluginAsync<{ db: Db; keyring: Keyring; pool: P
   app.post('/database/import', { bodyLimit: IMPORT_MAX_BYTES + MAX_SPEC_BYTES }, async (req, reply) => {
     const user = await lookupSession(db, req.cookies[SESSION_COOKIE])
     if (!user) return fail(reply, 401, 'Not signed in')
+    if (user.appsOnly) return fail(reply, 403, APPS_ONLY_REFUSAL)
     if (!req.headers['content-type']?.startsWith(IMPORT_CONTENT_TYPE)) {
       return fail(reply, 415, `Send the import as ${IMPORT_CONTENT_TYPE}`)
     }
@@ -78,6 +79,7 @@ export const databaseApi: FastifyPluginAsync<{ db: Db; keyring: Keyring; pool: P
   app.get('/database/export.csv', async (req, reply) => {
     const user = await lookupSession(db, req.cookies[SESSION_COOKIE])
     if (!user) return fail(reply, 401, 'Not signed in')
+    if (user.appsOnly) return fail(reply, 403, APPS_ONLY_REFUSAL)
     const parsed = z
       .object({
         environmentId: z.uuid(),

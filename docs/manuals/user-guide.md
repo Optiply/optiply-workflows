@@ -112,6 +112,13 @@ The sidebar on the left holds the sections, in three groups:
 see only **Apps**. **Runs** appears together with Workflows. **Inbox** appears with Workflows, or as soon as a task is
 assigned to you. **Database** appears when you may use the built-in database. **Settings** is only for admins.
 
+If an admin gave you access to **apps only**, there is no sidebar: you land on **Your apps**, the apps shared with you.
+
+![Your apps](images/my-apps.png)
+
+Click one to open it; the account menu in the app (your avatar, top right) has **Your apps** to come back. Other pages
+of the platform aren't open to you; ask an admin if you need more.
+
 If nothing has been shared with you yet, you see a welcome page saying so. Ask an admin for access to the workflows or
 apps you need. New access shows up on your next page change, or after a reload.
 
@@ -144,7 +151,7 @@ Click your avatar at the bottom of the sidebar.
 - **Sign out.**
 
 Inside a published app, the same menu is under your avatar at the top right, with an extra item to open Optiply
-Workflows.
+Workflows (or **Your apps**, if your access is to apps only).
 
 ### 2.6 Slugs, names and lists
 
@@ -1387,7 +1394,8 @@ The reply is `{ "run": { … } }`. Useful fields: `status` (`queued`, `running`,
 | `GET /api/v1/openapi.json` | An OpenAPI description of the webhooks this key may call |
 
 A key only sees runs of the workflows and environments it's limited to. Other parts of the API are used by the web app
-itself and need you to be signed in; they're not meant for scripts.
+itself and need you to be signed in; they're not meant for scripts. The full list, with every field, is in the Admin
+Guide's API reference (A11).
 
 ### 8.6 Idempotency: calling safely more than once
 

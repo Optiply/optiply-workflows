@@ -595,6 +595,20 @@ test('manual screenshots', async ({ page, browser }) => {
     await settle(page, 300)
     await save(page, 'account-menu')
   })
+  await shot(page, 'my-apps', async () => {
+    // The member, apps only for a moment: where they land, the apps shared with them.
+    await trpcMutate(page, 'users.setAccess', { userId: demo.users.member, access: 'apps_only' })
+    const { p, close } = await freshPage(browser)
+    try {
+      await signInAs(p, PEOPLE.member.email)
+      await expect(p.getByRole('heading', { name: 'Your apps' })).toBeVisible()
+      await settle(p)
+      await save(p, 'my-apps', p)
+    } finally {
+      await close()
+      await trpcMutate(page, 'users.setAccess', { userId: demo.users.member, access: 'full' })
+    }
+  })
 
   // ── Settings (admins) ───────────────────────────────────────────────────────────────────────────────────────────
   for (const [name, path] of [

@@ -357,11 +357,14 @@ export function AccessEditor({
             ))}
           </optgroup>
           <optgroup label="People">
-            {people?.map((u) => (
-              <option key={u.id} value={`u:${u.id}`}>
-                {u.name} ({u.email})
-              </option>
-            ))}
+            {/* Someone apps only can be given apps (or a folder of them), nothing else: it would do nothing. */}
+            {people
+              ?.filter((u) => !u.appsOnly || target.objectType === 'app' || target.objectType === 'folder')
+              .map((u) => (
+                <option key={u.id} value={`u:${u.id}`}>
+                  {u.name} ({u.email}){u.appsOnly ? ' · apps only' : ''}
+                </option>
+              ))}
           </optgroup>
         </Select>
         {perEnvironment && (

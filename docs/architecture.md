@@ -1427,3 +1427,54 @@ last driver's port.
 **Not checked against real services:** Entra and NTLM (no directory here; their tedious options are unit-tested), a
 real Snowflake (key pair, OAuth) and a real Oracle (wallets): tested up to what the drivers receive. ClickHouse and SQL
 Server are tested for real.
+
+## 2.43 Access to apps only (session 55)
+
+The user asked in session 55 (2026-11-16): people who may only use the apps shared with them should get those apps and
+nothing else of the platform, not even through the app's "Open Optiply Workflows"; they are still users of the
+installation, approved by an admin, whose access the admins keep managing. Their choices (the plan's defaults, taken
+with "go"): All Users' default sharing doesn't reach them; at most Use; no Inbox; approving defaults to the whole
+platform. Branch `feat/apps-only-users`.
+
+- **Data:** `users.access` (`full` | `apps_only`, default `full`, check `users_access_ck`), migration 0050. A column, not
+  a system group: membership grants access, this takes it away, and it must hold whatever groups say.
+- **Session:** `SessionUser.appsOnly` = `access = 'apps_only'` and not an admin, read with the session (and an access
+  token) on every request, so a switch counts at once. An admin is never apps only, whatever the column says.
+- **Grants:** `loadAccess` reads `users.access` itself (no caller can forget it). Apps only keeps only grants on apps
+  and app folders, for all environments, levelled down to Use, and drops those of All Users. Everything that checks
+  objects through `Access` (tRPC routers, REST runs and database, OAuth connect, collab, JS bundles) follows. Live app
+  queries run as the app (the publisher vouched for what they reach), so their Use on the app is all they need.
+- **tRPC allowlist:** `APPS_ONLY_PROCEDURES` in `trpc/init.ts` (`apps.list`, `apps.access`, `apps.open`,
+  `apps.runQuery`, `environments.list`); anything else from them is FORBIDDEN "Your account can only use the apps shared
+  with you". This shuts what doesn't go through grants (directories, lists, settings, tasks). `me` and `authConfig` are
+  public. Component bundles stay open to anyone signed in (content-addressed; apps need them).
+- **Capabilities:** no sections, nothing to create, so `me` hides the platform and `AccountButton` drops "Open Optiply
+  Workflows".
+- **Web:** `/my-apps` ("Your apps", bare like an app in use; anyone may open it) lists `apps.list`. The `/app` layout's
+  `beforeLoad` sends someone apps only there from anything but `/my-apps` and `/apps/<slug>[/<page>]`
+  (`lib/apps-only.ts`); the account menu offers "Your apps"; no Inbox poll or ⌘K palette for them.
+- **Admins:** `users.approve`/`users.invite` take `access` (default `full`); `users.setAccess` switches it (audited
+  `user.access_changed` with `from`/`to`); `users.list` returns it. Refused: apps only with Admins (approve, invite,
+  setAccess, `groups.addMember` to Admins) and changing your own. The CLI's break-glass admin is set back to `full`.
+  UI: `AccessTypePicker` in the Approve/Invite dialogs and on a person's page (confirmation before apps only), an "Apps
+  only" badge and tabs in Settings → Users, and only the Apps row in their Access section.
+- **Outside tRPC:** routes a signed-in person reaches refuse someone apps only (`APPS_ONLY_REFUSAL`, 403) unless a
+  live app needs them: the REST API (`/api/v1`, runs), the database's import and export, and live collaboration (an
+  app's draft is the editor's, even with Use). Open to them: component and JS bundles, OAuth connect through an app.
+  A new route for signed-in people should do the same.
+- **The rule between Admins and apps only** (`refuseAdminAndAppsOnly`, `services/users.ts`) runs inside each change's
+  transaction (approve, invite, setAccess, adding to Admins) under an advisory lock (727_003), so two admins changing
+  the same person at once can't leave an admin apps only.
+- **A switch while they're in the platform:** the web's query and mutation caches watch for the refusal; on it the
+  router re-reads `me` and sends them to `/my-apps` at once (the cached `me` would wait up to 30 seconds).
+- **Sharing:** `users.directory` says who is apps only; the share dialog offers them only on apps and folders, marked
+  "apps only". Their page's Access shows only the Apps row, Use only, and marks other grants "Doesn't count".
+- **Tests:** `apps/server/test/apps-only.test.ts` (12), `apps/web/src/lib/apps-only.test.ts`, e2e
+  `apps-only.spec.ts`.
+
+**Code review** (the `code-review` skill, high, on the branch): 10 found, 10 fixed. The worst: live collaboration let
+someone apps only with Use watch an app's unpublished draft (now refused, with the REST API and the database export);
+the Admins rule could race (now locked, in one place); after a switch the stale `me` kept the old pages for a click (now
+the refusal re-reads it). Also: Edit/Own offered for apps only, apps-only people offered as share targets for
+workflows and resources, an extra query per `loadAccess` (folded into the memberships'), a redundant redirect and a
+copied literal, no way back from an unpublished app.

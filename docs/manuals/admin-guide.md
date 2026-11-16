@@ -108,8 +108,10 @@ A sign-in lasts a week; then people sign in again.
 
 1. Open **Settings → Users**. People waiting are listed first, under **Waiting for approval (n)**, with when they
    asked.
-2. To let someone in, click **Approve…**. Choose the groups they go into. **All Users** is always ticked; tick
-   **Admins (can do everything)** only for colleagues who will administer the app. Click **Approve**.
+2. To let someone in, click **Approve…**. Choose their **Access**: **Whole platform** (the default) or **Apps only**
+   (see "Access to apps only" below). Then the groups they go into. **All Users** is always ticked; tick **Admins
+   (can do everything)** only for colleagues who will administer the app (it isn't offered with Apps only). Click
+   **Approve**.
 3. To turn someone down, click **Reject** and confirm. They can't sign in or ask again. They stay in the list as
    **Not approved**, with an **Approve** button if you change your mind.
 
@@ -144,11 +146,49 @@ Click a name in Settings → Users to open their page.
 
 It shows:
 
-- Their state, if it isn't simply active: **Disabled**, **Waiting for approval**, **Invited** or **Not approved**.
+- Their state, if it isn't simply active: **Disabled**, **Waiting for approval**, **Invited** or **Not approved**;
+  **Apps only** when that is their access.
 - Their email, how they sign in, and when they last signed in.
 - **Groups**: each one links to the group's page.
+- **Access type**: **Whole platform** or **Apps only**, which you can switch here at any time (see below).
 - **Access**: what is granted to this person themselves (see "Permissions" below). Grants to their groups apply as
-  well; the highest level wins. For an admin this section only says that admins can do everything.
+  well; the highest level wins. For an admin this section only says that admins can do everything. For someone with
+  access to apps only it shows only the **Apps** row.
+
+### Access to apps only
+
+Some people should use one or two apps and nothing else: no workflows, resources, library or settings, and no way
+into the platform from the app. Give them **Apps only**:
+
+- When you approve them: **Approve…** → **Access: Apps only**.
+- At any time later: open their page in Settings → Users and pick **Apps only** under **Access type** (you are asked
+  to confirm). **Whole platform** gives them back everything their groups and grants allow.
+
+Then share the apps with them as usual: the app's **Access** dialog, a group they're in, or **Apps** on their page.
+
+What changes for them:
+
+![Your apps, for someone with access to apps only](images/my-apps.png)
+
+- They land on **Your apps**, a page of their own listing the apps shared with them. There is no sidebar.
+- In an app, the account menu offers **Your apps** instead of **Open Optiply Workflows**. Typing any other address
+  (Workflows, Settings, an app's editor) takes them back to Your apps.
+- Only grants on **apps** (and app folders) count, and only as **Use**, even if Edit or Own was given. What **All
+  Users** holds doesn't count for them: they don't get every new app automatically, only the ones you give them or
+  their group.
+- The server refuses them everything else, so nothing outside their apps is reachable even by hand.
+
+What they can do inside an app: everything the app does. They run all the queries of the app's **published version**
+(resource queries, workflow queries, library and module queries, the app's JavaScript), writes included, because a
+published app runs its queries as the app: they don't need access to the resources or workflows behind it. They never
+see the draft or the editor, and they can't send queries of their own. `current_user` is them. For a resource that signs
+in per person (OAuth), the app asks them to connect their own account. So share an app only when everything its buttons
+do is fine for them.
+
+Rules: admins always have the whole platform, so someone in **Admins** can't be made Apps only (take them out of Admins
+first), and someone with Apps only can't be added to Admins. You can't change your own access. A change counts from
+the person's next click; it's recorded in the audit log as `user.access_changed`. Settings → Users has tabs to list
+**Whole platform** or **Apps only** people, and an **Apps only** badge on their row.
 
 ### Groups
 
@@ -272,7 +312,8 @@ one object, all of the kind, or a folder of that kind) reaches something in it:
 | Database | Use on the built-in Database resource, in some environment |
 | Settings | Admins only |
 
-Someone with Use on one app sees only **Apps**; opening the app's address runs it, with no way into the editor. An
+Someone with Use on one app sees only **Apps**; opening the app's address runs it, with no way into the editor. (To
+keep them out of the platform altogether, give them **Apps only**: they see no sidebar at all, only Your apps.) An
 app shared for Use but not yet published says "You can use this app once its owner publishes it".
 
 A section's address typed in by hand says "No access to …". Changes to access reach a person on their next page
@@ -285,6 +326,12 @@ A section's address typed in by hand says "No access to …". Changes to access 
 1. Make a group for the team (Settings → Groups) and add its members.
 2. Open the app in its editor, click **Access**, choose the group, level **Use**, **Grant**.
 3. Make sure the app is published (only owners and editors see drafts).
+
+**Let a partner use one app and nothing else**
+
+1. Approve them with **Access: Apps only** (or switch an existing person on their page).
+2. Share the app with them for **Use** (the app's **Access** dialog), or with a group they're in.
+3. Make sure the app is published. They find it on **Your apps** when they sign in.
 
 **Let someone build workflows**
 
@@ -309,6 +356,8 @@ level **Use**, **Grant**. The Database section appears in their sidebar.
 | …run a query against production? | The resource's Access tab | Their grant may be for Staging only |
 | …give access to a colleague? | Their level on the object | Only owners and admins can share |
 | …open Settings? | — | Settings is for admins only; do the change for them |
+| …see the sidebar, or anything but their apps? | Their page: **Access type** | They have **Apps only**: switch to **Whole platform** if they should |
+| …see an app shared with All Users? | Their page: **Access type** | Apps only ignores All Users: share it with them or a group of theirs |
 
 ## A3. Setting up resources
 
@@ -596,7 +645,7 @@ The table shows each key's **Name**, what it **Can call**, when it was **Last us
 Expired, Revoked). **Revoke** stops a key at once; there is no undo, so make a new one if needed.
 
 The OpenAPI document linked on the page describes the live webhooks; a caller with a key sees only the ones its key may
-call.
+call. Everything a key can call, and how, is in A11.
 
 > **Tip:** One key per calling system. When a partner's integration is retired or a key leaks, you revoke one key
 > without breaking the others.
@@ -732,6 +781,7 @@ Useful actions to filter on:
 |---|---|
 | `auth.login`, `auth.login_failed` | Sign-ins |
 | `user.requested`, `user.approved`, `user.rejected`, `user.disabled`, `user.enabled` | People coming in or being stopped |
+| `user.access_changed` | Someone switched between Whole platform and Apps only (`from`, `to`) |
 | `group.member_added`, `group.member_removed` | Group membership (including Admins) |
 | `permission.granted`, `permission.revoked` | Access changes |
 | `resource.config_saved`, `resource.oauth_connected` | A resource's settings or account changed |
@@ -1137,3 +1187,274 @@ restore replaces **everything** since that backup. Before restoring the whole se
   Apps).
 - **Git sync** (if set up) holds protected objects; reverting the commit deploys the old version.
 - Otherwise, follow A9, "Backups and restore", and tell everyone first: their work since the backup is lost.
+
+## A11. API reference
+
+Everything Optiply Workflows answers over HTTP, for admins and for the developers of systems that call it. Builders'
+step-by-step version (calling a workflow, waiting for the reply, idempotency) is chapter 8 of the User Guide; this
+chapter is the full list, with who may call what.
+
+### Basics
+
+- **Address:** every path below is relative to your instance, for example
+  `https://104-196-197-26.sslip.io/api/v1/runs/<runId>`. HTTPS only.
+- **Format:** JSON in and out, unless a section says otherwise (CSV exports, the live events stream, a JDBC jar).
+- **Errors** (the `/api/v1` paths) look like this, with an HTTP status that says what kind of problem it is:
+
+  ```json
+  { "error": { "code": "not_found", "message": "Run not found" } }
+  ```
+
+  `code` is stable (`invalid_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`,
+  `already_finished`, `body_too_large`, `unsupported_media_type`, `rate_limited`, `unavailable`…); `message` is for
+  people. Some errors add `details`.
+- **Ids** are UUIDs. Workflows are named in paths by their **slug** (lowercase, as in the editor's address).
+- **Environments** are named by slug (`production`, `staging`) in `?environment=`. Without it, the default
+  environment (Production) is used.
+
+### How callers sign in
+
+| Who calls | How it signs in | What it may call |
+|---|---|---|
+| **Another system** (a script, a scheduler, a partner) | An **API key** (`ow_…`, made by an admin, A5): the `X-Api-Key` header, or `Authorization: Bearer ow_…` | The webhooks of the workflows and environments the key is limited to, and the runs they started: the routes marked **API key** below |
+| **A service that signs its calls** (Stripe, GitHub, Slack, HubSpot, Shopify, Amazon SNS…) | The service's **signature**, checked with a signing secret kept in a secret config var | Only that workflow's webhook |
+| **Anyone** | Nothing: a webhook set to **Public** | Only that workflow's webhook. Use it only for workflows that are safe for anyone to start |
+| **A person in the browser** | A **session**: the `ow_session` cookie set when they sign in with Google | The routes marked **Session**, as far as their access goes. Not meant for scripts: in production sign-in is Google only, so a script can't get a session |
+| **The components tool** (`ow-components`) | A **personal access token** (`owpat_…`, A5): `Authorization: Bearer owpat_…` | Component libraries only, through the web app's internal API. It can't start workflows |
+| **Monitoring** | The **metrics token** (`METRICS_TOKEN` in `ow-env`): `Authorization: Bearer <token>` | `GET /metrics` only |
+| **GitHub / GitLab** | The Git webhook secret (Settings → Git) | `POST /api/git/webhook` only |
+
+People whose access is **apps only** (A2) get `403` with "Your account can only use the apps shared with you" from
+every Session route.
+
+### All endpoints
+
+| Method and path | Signs in with | What it does |
+|---|---|---|
+| `GET`, `POST`, `PUT`, `PATCH`, `DELETE` `/api/v1/workflows/<slug>/webhook` | API key, signature or public (the webhook's setting) | Start a run of the workflow's live release |
+| same methods, `/api/v1/hooks/<alias>` | as above | The same, through the webhook's alias |
+| `GET /api/v1/runs/<runId>` | API key or session | A run's status and result |
+| `POST /api/v1/runs/<runId>/cancel` | API key or session | Cancel a run |
+| `GET /api/v1/runs/<runId>/children` | API key or session | The runs this run started |
+| `GET /api/v1/openapi.json` | API key or session | An OpenAPI 3.1 description of the webhooks the caller may call |
+| `GET /api/v1/runs` | Session | Recent runs of every workflow you can see |
+| `GET /api/v1/workflows/<slug>/runs` | Session | One workflow's runs |
+| `POST /api/v1/workflows/<slug>/runs` | Session | Start a manual run (the draft or the live release) |
+| `POST /api/v1/workflows/<slug>/blocks/<block>/runs` | Session | Run one block of the draft (the editor's **Run block**) |
+| `GET /api/v1/runs/<runId>/blocks` | Session | Every block's status and timing |
+| `GET /api/v1/runs/<runId>/blocks/<key>` | Session | One block with its data |
+| `GET /api/v1/runs/<runId>/blocks/<loop>/iterations` | Session | A loop's iterations |
+| `GET /api/v1/runs/<runId>/logs` | Session | The run's logs |
+| `GET /api/v1/runs/<runId>/events` | Session | Live status, as server-sent events |
+| `GET /api/v1/database/export.csv` | Session (Use on the Database) | A managed table as CSV |
+| `POST /api/v1/database/import` | Session (Use on the Database) | Import a CSV into a managed table |
+| `GET /api/v1/audit/export.csv` | Session (admins) | The audit log as CSV |
+| `POST /api/v1/jdbc-drivers` | Session (admins) | Upload a JDBC driver jar |
+| `POST /api/git/webhook` | Git webhook secret | A push to the deploy branch starts a Git deploy |
+| `GET /api/health` | Nothing | `200 {"ok": true}` when the server and its database answer |
+| `GET /metrics` | Metrics token | Prometheus metrics |
+
+The web app itself talks to the server through an internal API at `/api/trpc` (and `/api/collab` for editing
+together, `/api/auth/…` for signing in, `/api/oauth/…` for connecting accounts). Those are not a public contract: they
+change with the app, so don't build on them.
+
+### Starting a run: the webhook
+
+`<METHOD> /api/v1/workflows/<slug>/webhook` (or `/api/v1/hooks/<alias>`).
+
+The workflow must be **published with its webhook enabled**. The webhook's settings (the workflow's trigger, User Guide
+4.11) decide the rest:
+
+- **Methods:** POST by default; GET, PUT, PATCH and DELETE when the webhook allows them. Others get `405` with an
+  `Allow` header.
+- **Alias:** `/api/v1/hooks/orders/:orderId` style. Parts starting with `:` become `startTrigger.pathParams`.
+- **Query:** `?environment=<slug>` picks the environment (if the webhook runs there); every other parameter arrives as
+  `startTrigger.urlParams`.
+- **Body:** up to 10 MB; JSON, `application/x-www-form-urlencoded`, `multipart/form-data` (files arrive with name,
+  type, size and base64 content) or plain text. It arrives as `startTrigger.data`; headers as `startTrigger.headers`
+  (without the API key). A **body schema** set on the webhook is checked first (`400` if the body doesn't match).
+- **Request headers:**
+
+| Header | Effect |
+|---|---|
+| `X-Api-Key: ow_…` (or `Authorization: Bearer ow_…`) | The API key, for webhooks that ask for one |
+| `Prefer: respond-async` | Answer `202` at once instead of waiting for the run |
+| `Idempotency-Key: <up to 255 characters>` | A repeat with the same key (same workflow and environment) gets the first run's reply instead of a new run, marked `Idempotent-Replayed: true`. Ignored by public webhooks |
+
+- **The reply:** the call waits up to the webhook's **Wait for the reply** (at most 5 minutes):
+
+| What happens | Status and body |
+|---|---|
+| A Response block runs | Its status, headers and body |
+| The run finishes without a Response block | `200 {"runId", "status": "succeeded"}` |
+| The run fails first | `500 {"runId", "status", "error": {"code", "message"}}`, or the error handler's Response |
+| It takes longer, pauses (a wait, a user task), or `Prefer: respond-async` | `202 {"runId", "status"}` with the run's address in `Location` |
+
+  Every reply has `X-Run-Id`. Follow a `202` with `GET /api/v1/runs/<runId>`.
+- **Limits:** a webhook can have a rate limit; past it, `429` with `Retry-After` (seconds).
+- **Errors:** `400` (body, schema, or a resource not set up in that environment), `401` (no key, a bad key, or a
+  signature that doesn't match), `403` (the key may not start this workflow in this environment), `404` (no live
+  webhook at that address, or no such environment), `405`, `413`, `415`, `429`, `500`. Every refusal is listed on the
+  webhook's **Refused calls** in the editor.
+
+### Following a run
+
+**`GET /api/v1/runs/<runId>`** (API key or session) answers `{ "run": { … } }`:
+
+| Field | Meaning |
+|---|---|
+| `id` | The run's id |
+| `workflow` | `{ id, slug, name }` |
+| `environment` | The environment's slug |
+| `version` | `live` (a release) or `draft` |
+| `status` | `queued`, `running`, `waiting` (a wait or a user task), `succeeded`, `failed`, `cancelled` |
+| `triggerType` | What started it: `webhook`, `manual`, `schedule`, `workflow` (another workflow), `app`, `git` |
+| `input` | What it started with (the webhook's `startTrigger`, or a manual run's input) |
+| `response` | The Response block's reply (`status`, `headers`, `body`), once there is one |
+| `error` | Why it failed: `{ code, message, … }` |
+| `parentRunId` | The run that started this one, if any |
+| `targetBlocks` | For a single-block run, the block(s) it ran |
+| `recoveries` | How many times it was picked up again after a server stopped mid-run (it fails after 3) |
+| `createdBy`, `apiKeyId` | Who started it: a person's id, or the API key's |
+| `createdAt`, `startedAt`, `finishedAt` | Timestamps (ISO 8601, UTC) |
+
+Secret values are hidden in `input`, `response` and block data. A key sees only runs of its own workflows and
+environments; a person only runs of workflows they can see. Anything else is `404`.
+
+Poll every few seconds until `status` is `succeeded`, `failed` or `cancelled`, or, in the browser, use the events
+stream below.
+
+**`POST /api/v1/runs/<runId>/cancel`** (API key or session): a queued or waiting run is cancelled at once (`200`,
+`status: cancelled`); a running one is stopped by the server running it (`202`, still `running`: follow it until
+`cancelled`). The runs it started are cancelled too. `409 already_finished` if it had finished. A person needs Edit on
+the workflow to cancel a draft run, Use for a live one.
+
+**`GET /api/v1/runs/<runId>/children`** (API key or session): `{ "runs": [ … ] }`, the runs this run started (Workflow
+blocks, loops that run a workflow, agent tool calls), oldest first, as far as the caller may see them.
+
+**`GET /api/v1/openapi.json`** (API key or session): an OpenAPI 3.1 document of the live webhooks the caller may call,
+with their methods, body schemas and sign-in. Import it into Postman, Insomnia or a code generator.
+
+### Runs in the browser (session)
+
+These answer a signed-in person, as far as their access goes. They're what the Runs page and the workflow editor use.
+
+**`GET /api/v1/runs?limit=50&before=<runId>&status=failed`**: recent runs of every workflow you can see, newest first.
+`limit` 1–200 (default 50); `status` one of the run statuses; `before` the `next` of the previous page. Answers
+`{ "runs": [ … ], "next": "<runId>" | null }`.
+
+**`GET /api/v1/workflows/<slug>/runs?limit=&before=`**: the same for one workflow.
+
+**`POST /api/v1/workflows/<slug>/runs?environment=staging`**: start a manual run. Body (all optional):
+
+```json
+{ "input": { "orderId": 123 }, "version": "live" }
+```
+
+`version` is `draft` (default, needs Edit) or `live` (needs Use); `draftId` runs a Git branch draft instead. Answers
+`202 { "run": { … } }`. Audited as `workflow.run_started`.
+
+**`POST /api/v1/workflows/<slug>/blocks/<block>/runs?environment=`**: run one block of the draft, reusing the results of
+the blocks before it from an earlier run. Body (optional): `fromRunId` (default: the latest finished run in that
+environment), `input`, `testInput`, `draftId`. Answers `202 { "run": { … } }`.
+
+**`GET /api/v1/runs/<runId>/blocks`**: `{ "blocks": [ … ] }`, every block without its data, in the order they started:
+
+| Field | Meaning |
+|---|---|
+| `key` | The block's name |
+| `status` | `pending`, `running`, `succeeded`, `errored` (failed, and the run went on through its error path), `failed`, `skipped`, `waiting`, `cancelled`, `interrupted` (its server stopped mid-block; it runs again) |
+| `attempt` | Which try (retries count up) |
+| `port` | The output it took (a branch's `true`/`false`, `error`…) |
+| `error` | Why it failed |
+| `metadata` | Block-specific details (rows affected, HTTP status, timings) |
+| `sizeBytes` | The size of its data |
+| `startedAt`, `finishedAt` | Timestamps |
+
+**`GET /api/v1/runs/<runId>/blocks/<key>`**: one block with its `data` (secrets hidden). `404` if it hasn't run.
+
+**`GET /api/v1/runs/<runId>/blocks/<loop>/iterations?offset=0&limit=100&status=failed`**: a loop's finished iterations
+in order, without data: `{ "iterations": [ { "index", "status", … } ], "total" }`. `limit` up to 1000; `status`
+`succeeded`, `errored` or `failed`. Read one iteration's data with `GET /api/v1/runs/<runId>/blocks/<loop>[<index>]`.
+
+**`GET /api/v1/runs/<runId>/logs?after=0&limit=500`**: `{ "logs": [ { "id", "blockKey", "level", "message", "at" } ],
+"next" }`, in order. Poll with `after` set to `next`. `limit` up to 1000.
+
+**`GET /api/v1/runs/<runId>/events`**: live status as server-sent events (`text/event-stream`):
+
+| Event | Data |
+|---|---|
+| `snapshot` | First: `{ run, blocks }`, as the two calls above |
+| `block` | `{ key, status, attempt, port }` when a block changes |
+| `iterations` | `{ key, count }` as a loop goes on |
+| `run` | `{ status }` when the run changes |
+| `end` | Once the run is final; then the stream closes |
+
+A comment line (`: ping`) every 15 seconds keeps the connection open. `503` if live events aren't available.
+
+### Database, audit log and drivers (session)
+
+**`GET /api/v1/database/export.csv?environmentId=<id>&table=<name>&selection=<json>`**: a managed table as CSV
+(`text/csv`, a download named after the table). `selection` is the Database page's sort and filters, as JSON (optional).
+Needs Use on the Database in that environment. Audited.
+
+**`POST /api/v1/database/import`**: the Database page's **Import**. The body (`Content-Type:
+application/x-ow-csv-import`) is one line of JSON saying where the rows go and how the columns map, a line break, then
+the CSV. All rows or none. It's shaped by the import wizard; use the wizard rather than building it by hand.
+
+**`GET /api/v1/audit/export.csv?action=&objectType=&objectId=&actorUserId=&since=&until=`**: the audit log as CSV,
+newest first, up to 100,000 rows. Admins only. `since` and `until` are dates or date-times (`until` is exclusive). The
+export itself is audited (`audit.exported`). Settings → Audit log's **Export CSV** builds this address from its filters.
+
+**`POST /api/v1/jdbc-drivers?name=<name>&className=<driver class>&fileName=<file>.jar`**: upload a JDBC driver, the jar
+as the body (`Content-Type: application/java-archive`, up to 100 MB). Admins only. Settings → JDBC drivers does this;
+listing and deleting are on that page.
+
+### Operations
+
+**`GET /api/health`**: `200 {"ok": true}` when the server runs and its database answers. No sign-in. The deploy's health
+check and any uptime monitor use it.
+
+**`GET /metrics`**: Prometheus metrics (`ow_http_requests_total`, run and block counts and durations, schedule fires,
+refused webhook calls, open SSH tunnels). `Authorization: Bearer <METRICS_TOKEN>`;
+without it, `401`.
+
+**`POST /api/git/webhook`**: for GitHub or GitLab, set up as described in A6. A push to the deploy branch starts a deploy
+(`202 {"deploy": "requested"}`); other events and branches are answered and ignored; `404` until a webhook secret is
+set.
+
+### Examples
+
+Start a run in Staging without waiting, then follow it:
+
+```sh
+curl -i -X POST 'https://<your address>/api/v1/workflows/sync-orders/webhook?environment=staging' \
+  -H 'X-Api-Key: <API key>' \
+  -H 'Prefer: respond-async' \
+  -H 'Content-Type: application/json' \
+  -d '{"orderId": 123}'
+# HTTP/1.1 202 … X-Run-Id: 0193…  {"runId": "0193…", "status": "queued"}
+
+curl 'https://<your address>/api/v1/runs/0193…' -H 'X-Api-Key: <API key>'
+# {"run": {"id": "0193…", "status": "succeeded", "response": {…}, …}}
+```
+
+Cancel it, and list what it started:
+
+```sh
+curl -X POST 'https://<your address>/api/v1/runs/0193…/cancel' -H 'X-Api-Key: <API key>'
+curl 'https://<your address>/api/v1/runs/0193…/children' -H 'X-Api-Key: <API key>'
+```
+
+Get the webhooks a key may call, as OpenAPI:
+
+```sh
+curl 'https://<your address>/api/v1/openapi.json' -H 'X-Api-Key: <API key>' -o optiply-workflows.json
+```
+
+Check that production is up, and read its metrics:
+
+```sh
+curl https://<your address>/api/health
+curl https://<your address>/metrics -H "Authorization: Bearer $METRICS_TOKEN"
+```

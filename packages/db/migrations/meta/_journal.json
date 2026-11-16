@@ -351,6 +351,13 @@
       "when": 1794658526956,
       "tag": "0049_jdbc_drivers",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794825324000,
+      "tag": "0050_users_access",
+      "breakpoints": true
     }
   ]
 }

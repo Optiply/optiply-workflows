@@ -65,6 +65,7 @@ demo data (never the production server). Rename or add one here first, then in t
 | `database-table` | One table open: rows, columns, edit |
 | **Your account and the API** | |
 | `account-menu` | The account menu (theme, sign out) |
+| `my-apps` | Your apps: where someone with access to apps only lands |
 | **Settings (admins)** | |
 | `settings-users` | Settings → Users: people, a waiting request, Invite people (disabled) |
 | `settings-user` | One person's page: groups, what's shared with them |
