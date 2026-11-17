@@ -185,7 +185,7 @@ export const runsApi: FastifyPluginAsync<{
       }),
       req.query,
     )
-    const { workflow } = await visibleWorkflow(req, slug)
+    const { access, workflow } = await visibleWorkflow(req, slug)
     const rows = await db
       .select({ run: workflowRuns, environment: environments.slug })
       .from(workflowRuns)
@@ -193,6 +193,8 @@ export const runsApi: FastifyPluginAsync<{
       .where(
         and(
           eq(workflowRuns.workflowId, workflow.id),
+          // Runs in an environment only admins may use (session 56: Staging) are theirs to see.
+          access.isAdmin ? undefined : eq(environments.adminOnly, false),
           query.before ? lt(workflowRuns.id, query.before) : undefined,
         ),
       )
@@ -225,6 +227,7 @@ export const runsApi: FastifyPluginAsync<{
       .where(
         and(
           access.isAdmin ? undefined : inArray(workflowRuns.workflowId, [...byId.keys()]),
+          access.isAdmin ? undefined : eq(environments.adminOnly, false),
           query.status ? eq(workflowRuns.status, query.status) : undefined,
           query.before ? lt(workflowRuns.id, query.before) : undefined,
         ),
@@ -248,6 +251,7 @@ export const runsApi: FastifyPluginAsync<{
       publicUrl,
       visible: (w) =>
         key ? key.workflowIds === null || key.workflowIds.includes(w.id) : access!.workflowLevel(w) !== null,
+      adminOnlyEnvironments: key ? true : access!.isAdmin,
     })
   })
 
@@ -316,7 +320,7 @@ export const runsApi: FastifyPluginAsync<{
       runs: await runViews(
         rows.filter((r) =>
           access
-            ? access.workflowLevel(r.workflow) !== null
+            ? access.workflowLevel(r.workflow) !== null && access.canUseEnvironment(r.run.environmentId)
             : apiKeyAllows(req.apiKey!, r.workflow.id, r.run.environmentId),
         ),
       ),
@@ -509,11 +513,12 @@ export const runsApi: FastifyPluginAsync<{
       .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
       .innerJoin(environments, eq(environments.id, workflowRuns.environmentId))
       .where(eq(workflowRuns.id, id))
+    const access = row && !req.apiKey ? await loadAccess(db, req.user!) : null
     const visible =
       row &&
-      (req.apiKey
-        ? apiKeyAllows(req.apiKey, row.run.workflowId, row.run.environmentId)
-        : (await loadAccess(db, req.user!)).workflowLevel(row.workflow) !== null)
+      (access
+        ? access.workflowLevel(row.workflow) !== null && access.canUseEnvironment(row.run.environmentId)
+        : apiKeyAllows(req.apiKey!, row.run.workflowId, row.run.environmentId))
     if (!row || !visible) throw new RunRequestError(404, 'not_found', 'Run not found')
     return row
   }

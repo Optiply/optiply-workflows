@@ -18,10 +18,28 @@ async function freePort(): Promise<number> {
 }
 
 /**
+ * Migrated and seeded; Staging is for everyone unless `adminOnlyStaging` (session 56 made it admins-only): most
+ * tests use it as just a second environment, the tests of admins-only environments keep it as seeded.
+ */
+async function prepare(url: string, adminOnlyStaging: boolean): Promise<void> {
+  await runMigrations(url)
+  if (adminOnlyStaging) return
+  const sql = postgres(url, { max: 1, onnotice: () => {} })
+  try {
+    await sql`update environments set admin_only = false where slug = 'staging'`
+  } finally {
+    await sql.end()
+  }
+}
+
+/**
  * A fresh, migrated database for a test file. Uses TEST_DATABASE_URL (a server we create a throwaway database
  * on) when set — e.g. in CI with a service container — otherwise boots an embedded Postgres in a temp dir.
  */
-export async function startTestDatabase(): Promise<{ url: string; stop: () => Promise<void> }> {
+export async function startTestDatabase(
+  opts: { adminOnlyStaging?: boolean } = {},
+): Promise<{ url: string; stop: () => Promise<void> }> {
+  const adminOnlyStaging = opts.adminOnlyStaging ?? false
   const external = process.env.TEST_DATABASE_URL
   if (external) {
     const name = `ow_test_${uuidv7().replaceAll('-', '')}`
@@ -29,7 +47,7 @@ export async function startTestDatabase(): Promise<{ url: string; stop: () => Pr
     await admin.unsafe(`create database ${name}`)
     const url = new URL(external)
     url.pathname = `/${name}`
-    await runMigrations(url.toString())
+    await prepare(url.toString(), adminOnlyStaging)
     return {
       url: url.toString(),
       stop: async () => {
@@ -46,7 +64,7 @@ export async function startTestDatabase(): Promise<{ url: string; stop: () => Pr
     database: 'test',
     persistent: false,
   })
-  await runMigrations(pg.url)
+  await prepare(pg.url, adminOnlyStaging)
   return {
     url: pg.url,
     stop: async () => {

@@ -153,9 +153,17 @@ export const environments = pgTable(
     name: text().notNull(),
     color: text().notNull().default('#64748b'),
     isDefault: boolean().notNull().default(false),
+    /**
+     * Only admins may use it (session 56: Staging). Everyone else doesn't see it and is refused it: no runs, app
+     * queries or credentials there. The default environment can't be admins-only, so everyone always has one.
+     */
+    adminOnly: boolean().notNull().default(false),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('environments_slug_uq').on(t.slug)],
+  (t) => [
+    uniqueIndex('environments_slug_uq').on(t.slug),
+    check('environments_default_not_admin_only_ck', sql`not (${t.isDefault} and ${t.adminOnly})`),
+  ],
 )
 
 // ── Organisation ────────────────────────────────────────────────────────────

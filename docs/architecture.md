@@ -1478,3 +1478,42 @@ the Admins rule could race (now locked, in one place); after a switch the stale 
 the refusal re-reads it). Also: Edit/Own offered for apps only, apps-only people offered as share targets for
 workflows and resources, an extra query per `loadAccess` (folded into the memberships'), a redundant redirect and a
 copied literal, no way back from an unpublished app.
+
+## 2.44 Staging for admins only (session 56)
+
+The user asked in session 56 (2026-11-17), after checking that nothing used Staging: keep it, keep Production the
+default, and let only admins use Staging. Branch `feat/staging-admins-only`.
+
+- **Data:** `environments.admin_only` (default false; check `environments_default_not_admin_only_ck`: the default
+  environment can't be admins-only, so everyone always has one), migration 0051, which also sets it on `staging`; the
+  seed creates Staging admins-only on new installations.
+- **One rule in `Access`:** `canUseEnvironment(id)` (admins: every one). `level()` is null in an admins-only environment
+  for everyone else, whatever their grants say, so everything that checks resources per environment follows (credentials,
+  draft queries, the Database, OAuth connect). `levelEverywhere()` counts only the environments the person may use, so
+  "every environment" (releasing, deleting, managing access, Git) isn't blocked by Staging. `loadAccess` reads the
+  admins-only ids with the memberships.
+- **Explicit refusals** where live content runs as its publisher, without a resource check: `requireEnvironment` in
+  `runAppQuery`, `runModuleDraftQuery`, `runLibraryDraft` (FORBIDDEN "Only admins can use this environment"); manual and
+  block runs in `prepareRun` (403 "Only admins can run in Staging"); resource grants naming the environment.
+- **Hidden:** `environments.list`, the Database's environments, the resources list, runs (`/api/v1/runs`, a workflow's
+  runs, a run and its children: 404), a workflow's triggers and webhook rejections, the OpenAPI document's environments
+  (API keys still see them) and Inbox tasks (list, badge, open, complete) leave admins-only environments out for
+  everyone else.
+- **Resource-wide changes:** deleting a resource, or putting it in Git or taking it out, is refused to non-admins when it
+  has settings in an admins-only environment (`requireNoAdminOnlySettings`): those would reach settings only admins may
+  touch, though "Own in every environment" no longer counts Staging.
+- **Unattended runs:** `webhookEnvironments` leaves admins-only environments out of `all`; a webhook runs there only when
+  it names them. Publishing a schedule or a webhook that names one is refused to non-admins (Git deploys, without a
+  person, aren't). A non-admin can't republish a workflow whose schedule or webhook an admin pointed at Staging.
+- **Web:** Settings → Environments shows "Admins only"; the workflow editor opens on the default environment every time
+  (it kept the last choice when reopening the same workflow); the webhook help no longer suggests `?environment=staging`.
+- **Tests:** `apps/server/test/admin-only-environments.test.ts` (11). The test database opens Staging to everyone by
+  default (`startTestDatabase({ adminOnlyStaging })`), since most tests use it as just a second environment.
+- **Also fixed on the way:** a resource's "Saved." stayed on screen after a new edit, so `e2e/mssql.spec.ts` reloaded
+  before its last save landed (it failed on `main` too); an edit now clears "Saved.".
+
+**Code review** (the `code-review` skill, medium): 9 found, 5 fixed (deleting or Git-protecting a resource with Staging
+settings; Staging tasks, triggers, rejections and OpenAPI environments shown to non-admins; one admin check through
+`req.user`). Not changed: `all` webhooks losing Staging (the point; production had none in use), refusing a non-admin's
+republish of an admin's Staging schedule (intended), one more small query per `loadAccess`, and a grant for every
+environment that would reach Staging if its flag were ever turned off (the flag isn't editable).

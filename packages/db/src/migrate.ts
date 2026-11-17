@@ -34,7 +34,7 @@ async function seed(db: ReturnType<typeof createDb>['db']) {
     .insert(environments)
     .values([
       { slug: 'production', name: 'Production', color: '#16a34a', isDefault: true },
-      { slug: 'staging', name: 'Staging', color: '#d97706' },
+      { slug: 'staging', name: 'Staging', color: '#d97706', adminOnly: true },
     ])
     .onConflictDoNothing({ target: environments.slug })
 

@@ -18,7 +18,7 @@ import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { z } from 'zod'
 import { kindTitle } from '../../services/git/kinds'
-import { loadAccess, type ObjectKind, requireLevel } from '../../services/permissions'
+import { loadAccess, type ObjectKind, requireEnvironment, requireLevel } from '../../services/permissions'
 import { adminProcedure, authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
@@ -242,6 +242,9 @@ export const permissionsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await assertCanManage(ctx, input)
+      // An environment only admins may use: only they may grant anything in it (it would never count for others).
+      if (input.environmentId !== null)
+        requireEnvironment(await loadAccess(ctx.db, ctx.user), input.environmentId)
       if (input.objectType !== 'resource' && input.objectType !== 'folder' && input.environmentId !== null) {
         const what = kindTitle(input.objectType)
         throw new TRPCError({ code: 'BAD_REQUEST', message: `${what} access applies to every environment` })

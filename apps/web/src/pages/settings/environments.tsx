@@ -12,6 +12,7 @@ export function EnvironmentsPage() {
       <ErrorNote error={error} />
       <p className="text-sm text-muted">
         Each resource gets separate credentials per environment. Workflows pick the environment per run.
+        Admins-only environments are hidden from everyone else, who can't run, query or set credentials there.
       </p>
       <Card className="divide-y divide-border">
         {environments?.map((env) => (
@@ -20,6 +21,7 @@ export function EnvironmentsPage() {
             <span className="font-medium">{env.name}</span>
             <code className="text-xs text-muted">{env.slug}</code>
             {env.isDefault && <Badge tone="accent">default</Badge>}
+            {env.adminOnly && <Badge tone="warning">Admins only</Badge>}
           </div>
         ))}
       </Card>

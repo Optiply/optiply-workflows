@@ -207,14 +207,16 @@ export function resolveWebhookSettings(webhook: WebhookTrigger): ResolvedWebhook
 
 /**
  * The environments a webhook runs in, out of `envs`: all of them, the default one, or the listed ones in their order
- * (slugs no environment has are left out). The runtime check, the publish check and the OpenAPI document all use it.
+ * (slugs no environment has are left out). `all` leaves out the environments only admins may use (session 56:
+ * Staging): a webhook runs there only when it names them. The runtime check, the publish check and the OpenAPI
+ * document all use it.
  */
-export function webhookEnvironments<E extends { slug: string; isDefault: boolean }>(
+export function webhookEnvironments<E extends { slug: string; isDefault: boolean; adminOnly?: boolean }>(
   webhook: Pick<ResolvedWebhook, 'environments'>,
   envs: readonly E[],
 ): E[] {
   const allowed = webhook.environments
-  if (allowed === 'all') return [...envs]
+  if (allowed === 'all') return envs.filter((e) => !e.adminOnly)
   if (allowed === 'default') return envs.filter((e) => e.isDefault)
   return allowed.flatMap((slug) => envs.filter((e) => e.slug === slug))
 }

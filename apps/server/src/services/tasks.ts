@@ -102,6 +102,8 @@ export function taskAccess(
   groupIds: readonly string[],
   access: Access,
 ): { see: boolean; complete: boolean } {
+  // A run in an environment only admins may use (session 56: Staging): its tasks are theirs alone.
+  if (!access.canUseEnvironment(row.task.environmentId)) return { see: false, complete: false }
   const assigned =
     access.isAdmin ||
     row.task.assigneeUserIds.includes(user.id) ||

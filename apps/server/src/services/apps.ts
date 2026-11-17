@@ -37,7 +37,7 @@ import { componentLibraryInfos } from './component-libraries'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
 import { libraryEvaluator, libraryInfos, renderParams, resolveLibraryRelease } from './library-queries'
 import { moduleInfos, walkInstancePath } from './modules'
-import { type Access, atLeast } from './permissions'
+import { type Access, atLeast, requireEnvironment } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
 import { groupsOf } from './tasks'
@@ -424,6 +424,7 @@ export async function runAppQuery(
   /** For a module instance's query: the module release that ran. */
   module: { slug: string; version: string } | null
 }> {
+  requireEnvironment(access, opts.environmentId)
   const { db } = deps
   const { app } = opts
   let definition: AppDefinition

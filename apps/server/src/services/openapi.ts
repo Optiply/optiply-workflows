@@ -16,7 +16,12 @@ import { and, eq, isNotNull } from 'drizzle-orm'
  */
 export async function openApiDocument(
   db: Db,
-  opts: { publicUrl: string; visible: (workflow: Workflow) => boolean },
+  opts: {
+    publicUrl: string
+    visible: (workflow: Workflow) => boolean
+    /** Whether to show environments only admins may use (session 56: Staging): to admins and API keys. */
+    adminOnlyEnvironments: boolean
+  },
 ): Promise<Record<string, unknown>> {
   const rows = await db
     .select({ workflow: workflows, trigger: workflowTriggers })
@@ -31,7 +36,7 @@ export async function openApiDocument(
     )
     .orderBy(workflows.slug)
   const envs = await db
-    .select({ slug: environments.slug, isDefault: environments.isDefault })
+    .select({ slug: environments.slug, isDefault: environments.isDefault, adminOnly: environments.adminOnly })
     .from(environments)
 
   const paths: Record<string, Record<string, unknown>> = {}
@@ -46,7 +51,9 @@ export async function openApiDocument(
         ...webhook.bodySchema,
       }
     }
-    const allowed = webhookEnvironments(webhook, envs).map((e) => e.slug)
+    const allowed = webhookEnvironments(webhook, envs)
+      .filter((e) => opts.adminOnlyEnvironments || !e.adminOnly)
+      .map((e) => e.slug)
 
     const routes: { path: string; params: string[]; id: string }[] = [
       { path: `/workflows/${workflow.slug}/webhook`, params: [], id: workflow.slug },

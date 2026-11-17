@@ -233,12 +233,19 @@ export function SettingsPanel({
   const test = useMutation(trpc.resources.test.mutationOptions())
   const remove = useMutation(trpc.resources.deleteConfig.mutationOptions({ onSuccess: refresh }))
 
+  // An edit after saving: "Saved." no longer describes what's on screen.
   const props: FieldsProps = {
     config,
-    set: (key, value) => setConfig((c) => ({ ...c, [key]: value })),
+    set: (key, value) => {
+      if (save.isSuccess) save.reset()
+      setConfig((c) => ({ ...c, [key]: value }))
+    },
     secrets: (stored?.secrets as Mask) ?? null,
     edits,
-    setEdit: (key, edit) => setEdits((e) => ({ ...e, [key]: edit })),
+    setEdit: (key, edit) => {
+      if (save.isSuccess) save.reset()
+      setEdits((e) => ({ ...e, [key]: edit }))
+    },
     disabled: !canEdit,
     sshKeys: (stored?.sshKeys as Record<string, SshKeyInfo> | null | undefined) ?? null,
     iapKeys: (stored?.iapKeys as Record<string, IapKeyInfo> | null | undefined) ?? null,

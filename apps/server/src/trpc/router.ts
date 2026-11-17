@@ -1,5 +1,5 @@
 import { environments } from '@ow/db'
-import { asc, desc } from 'drizzle-orm'
+import { asc, desc, eq } from 'drizzle-orm'
 import { capabilities } from '../services/capabilities'
 import { groupsOf } from '../services/tasks'
 import { authedProcedure, publicProcedure, router } from './init'
@@ -46,8 +46,13 @@ export const appRouter = router({
   }),
 
   environments: router({
+    /** The environments the caller may use: those only admins may use (session 56: Staging) are left out for others. */
     list: authedProcedure.query(({ ctx }) =>
-      ctx.db.select().from(environments).orderBy(desc(environments.isDefault), asc(environments.name)),
+      ctx.db
+        .select()
+        .from(environments)
+        .where(ctx.user.isAdmin ? undefined : eq(environments.adminOnly, false))
+        .orderBy(desc(environments.isDefault), asc(environments.name)),
     ),
   }),
 

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { AlertCircle, History, LayoutGrid, Play, Tag, Users, X } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
 import { GitBar } from '@/components/git-bar'
 import { PresenceAvatars } from '@/components/presence-avatars'
@@ -181,10 +181,13 @@ function EditorLayout({
   const { run: runFromUrl } = route.useSearch()
   const panelOpen = useRun((s) => s.panelOpen)
 
+  // Opening the editor starts on the default environment (Production), even on the workflow last open (session 56).
+  const opened = useRef(false)
   useEffect(() => {
     const current = useRun.getState()
-    // Keep the chosen environment while staying on the same workflow.
-    current.init(slug, current.slug === slug ? current.environment : null)
+    // Keep the chosen environment while staying on the same workflow (opening one of its runs, say).
+    current.init(slug, opened.current && current.slug === slug ? current.environment : null)
+    opened.current = true
     if (runFromUrl) useRun.getState().open(runFromUrl)
   }, [slug, runFromUrl])
   // biome-ignore lint/correctness/useExhaustiveDependencies: `slug` re-picks the default after `init` cleared it

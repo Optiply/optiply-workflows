@@ -25,7 +25,7 @@ import type { CodeRuntime } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
 import { type AnyColumn, and, eq, inArray, type SQL, sql } from 'drizzle-orm'
 import { type Dependent, dependents } from './dependents'
-import { type Access, atLeast } from './permissions'
+import { type Access, atLeast, requireEnvironment } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 import { type QueryOutcome, type QueryRunDeps, runStoredQuery } from './resource-query'
 
@@ -288,6 +288,7 @@ export async function runLibraryDraft(
     signal?: AbortSignal
   },
 ): Promise<QueryOutcome> {
+  requireEnvironment(access, opts.environmentId)
   if (!atLeast(access.libraryQueryLevel(opts.query), 'edit')) {
     throw new TRPCError({
       code: 'FORBIDDEN',

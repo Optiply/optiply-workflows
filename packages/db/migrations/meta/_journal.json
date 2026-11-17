@@ -358,6 +358,13 @@
       "when": 1794825324000,
       "tag": "0050_users_access",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794942945418,
+      "tag": "0051_environments_admin_only",
+      "breakpoints": true
     }
   ]
 }

@@ -117,14 +117,17 @@ export const databaseRouter = router({
     return {
       resourceId: resource?.id ?? null,
       resourceSlug: resource?.slug ?? null,
-      environments: rows.map((r) => ({
-        id: r.environment.id,
-        slug: r.environment.slug,
-        name: r.environment.name,
-        color: r.environment.color,
-        ready: Boolean(resource && r.schemaName),
-        canUse: Boolean(resource && atLeast(access.level(resource, r.environment.id), 'use')),
-      })),
+      // The environments only admins may use don't show for anyone else.
+      environments: rows
+        .filter((r) => access.canUseEnvironment(r.environment.id))
+        .map((r) => ({
+          id: r.environment.id,
+          slug: r.environment.slug,
+          name: r.environment.name,
+          color: r.environment.color,
+          ready: Boolean(resource && r.schemaName),
+          canUse: Boolean(resource && atLeast(access.level(resource, r.environment.id), 'use')),
+        })),
     }
   }),
 

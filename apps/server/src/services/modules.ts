@@ -17,7 +17,7 @@ import { z } from 'zod'
 import { type AppQueryDeps, type AppQueryOutcome, checkVouched, runDefinitionQuery } from './apps'
 import { type Dependent, dependents } from './dependents'
 import { checkLiveNesting, loadNesting } from './module-nesting'
-import { type Access, atLeast } from './permissions'
+import { type Access, atLeast, requireEnvironment } from './permissions'
 import { nextReleaseVersion } from './release-versions'
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -438,6 +438,7 @@ export async function runModuleDraftQuery(
     signal?: AbortSignal
   },
 ): Promise<{ outcome: AppQueryOutcome; manual: boolean }> {
+  requireEnvironment(access, opts.environmentId)
   if (!atLeast(access.moduleLevel(opts.module), 'edit')) {
     throw new TRPCError({
       code: 'FORBIDDEN',

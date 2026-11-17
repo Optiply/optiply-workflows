@@ -213,7 +213,7 @@ function WebhookSection({ webhook, testInput }: { webhook: WebhookTrigger | unde
                   ? `The sender signs each call with the secret; you only give it the URL. `
                   : 'Anyone with the URL can call it. '}
               Calls reach the live release once you publish. Add{' '}
-              <code className="font-mono">?environment=staging</code> to pick an environment.{' '}
+              <code className="font-mono">?environment=</code> and an environment’s slug to pick one.{' '}
               <a className={linkClass} href="/api/v1/openapi.json" target="_blank" rel="noreferrer">
                 OpenAPI document
               </a>{' '}

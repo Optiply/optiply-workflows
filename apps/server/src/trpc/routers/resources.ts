@@ -59,7 +59,13 @@ import {
   deleteTokens,
   disconnectAccount,
 } from '../../services/oauth-tokens'
-import { type Access, atLeast, loadAccess, requireLevel } from '../../services/permissions'
+import {
+  type Access,
+  atLeast,
+  loadAccess,
+  requireLevel,
+  requireNoAdminOnlySettings,
+} from '../../services/permissions'
 import { errorView, toJson } from '../../services/query-results'
 import {
   applyOverrides,
@@ -298,7 +304,8 @@ export const resourcesRouter = router({
 
   list: authedProcedure.query(async ({ ctx }) => {
     const access = await loadAccess(ctx.db, ctx.user)
-    const envIds = await environmentIds(ctx.db)
+    // The environments only admins may use don't show for anyone else.
+    const envIds = (await environmentIds(ctx.db)).filter((e) => access.canUseEnvironment(e))
     const [all, configs] = await Promise.all([
       // People's own resources first (the editor offers the first one for new queries), then built-in ones.
       ctx.db.select().from(resources).orderBy(sql`${resources.systemKind} is not null`, asc(resources.name)),
@@ -450,6 +457,7 @@ export const resourcesRouter = router({
     const { access, resource, envIds } = await visibleResource(ctx, input.id)
     requireLevel(access.levelEverywhere(resource, envIds), 'own', 'this resource in every environment')
     assertNotBuiltIn(resource)
+    await requireNoAdminOnlySettings(ctx.db, access, resource.id, 'delete')
     if (resource.gitProtected) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',

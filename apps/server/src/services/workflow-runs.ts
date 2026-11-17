@@ -200,6 +200,8 @@ async function prepareRun(
   if (level === null) throw new RunRequestError(404, 'not_found', 'Workflow not found')
   const [env] = await db.select().from(environments).where(eq(environments.id, environmentId))
   if (!env) throw new RunRequestError(404, 'not_found', 'Environment not found')
+  if (!access.canUseEnvironment(env.id))
+    throw new RunRequestError(403, 'forbidden', `Only admins can run in ${env.name}`)
 
   let definition: WorkflowDefinition
   let source: { releaseId: string } | { draftSnapshotId: string }
