@@ -9,7 +9,12 @@ import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { useGraphqlApiSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
-import { DEFAULT_GRAPHQL_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
+import {
+  DEFAULT_GRAPHQL_QUERY,
+  DEFAULT_GRAPHQLAPI_QUERY,
+  PLACEHOLDERS,
+  queryKind,
+} from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -48,7 +53,7 @@ const EMPTY: Draft = {
     auth: { type: 'none' },
   },
   graphql: { ...DEFAULT_GRAPHQL_QUERY, headers: [] },
-  graphqlapi: { ...DEFAULT_GRAPHQL_QUERY, headers: [], url: 'https://', auth: { type: 'none' } },
+  graphqlapi: { ...structuredClone(DEFAULT_GRAPHQLAPI_QUERY), headers: [] },
   openapi: { operationId: '', parameters: '{}', body: '', contentType: '' },
   services: {},
   scope: '{\n  \n}',
@@ -132,6 +137,7 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     kind === 'graphqlapi' ? resource : undefined,
     { url: draft.graphqlapi.url, auth: draft.graphqlapi.auth, headers: draft.graphqlapi.headers },
     scope ?? {},
+    environmentId,
   )
   const serviceQuery =
     kind === 'service' && isServiceType(resource.type)

@@ -983,9 +983,10 @@ export const resourcesRouter = router({
     }),
   /**
    * The built-in GraphQL resource's schema for one query's endpoint (session 57), asked with the query's own URL,
-   * headers and auth, for the editor's completions. Needs Use. Its templates get what the playground's do: the
-   * editor's scope and the non-secret config vars (a secret one could otherwise be sent to any host). Kept 10 minutes
-   * per person, environment and query.
+   * headers and auth, for the editor's completions. Needs Use. A mutation (POST), as Run: the query's credentials stay
+   * out of URLs and access logs. Its templates get what the playground's do: the editor's scope, `current_user` and the
+   * non-secret config vars (a secret one could otherwise be sent to any host). Kept 10 minutes per person,
+   * environment and query, in a small cache of its own; audited, as Run is (it reaches a host the editor chose).
    */
   graphqlApiSchema: authedProcedure
     .input(
@@ -997,7 +998,7 @@ export const resourcesRouter = router({
         refresh: z.boolean().default(false),
       }),
     )
-    .query(async ({ ctx, input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { access, resource } = await visibleResource(ctx, input.resourceId)
       requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
       if (resource.type !== graphqlApiConnector.type) {
@@ -1017,25 +1018,32 @@ export const resourcesRouter = router({
       if (!parsed.success) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'The URL, headers or auth are not valid' })
       }
-      const configVars = await publicConfigVars(ctx.db, input.environmentId)
+      const scope = {
+        ...input.scope,
+        configVars: await publicConfigVars(ctx.db, input.environmentId),
+        current_user: {
+          id: ctx.user.id,
+          email: ctx.user.email,
+          name: ctx.user.name,
+          groups: await groupsOf(ctx.db, ctx.user.id),
+        },
+      }
       const key = createHash('sha256')
         .update(
           canonicalJson([
-            ctx.user.id,
             input.environmentId,
             parsed.data.url,
             parsed.data.auth,
             parsed.data.headers,
-            input.scope,
-            configVars,
-          ]),
+            scope,
+          ] as never),
         )
         .digest('hex')
-      const cached = graphqlSchemas.get(key)
+      const cached = graphqlApiSchemas.get(key)
       if (cached && !input.refresh && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
         return { ok: true as const, schema: cached.schema }
       }
-      const scope = { ...input.scope, configVars }
+      let outcome: { ok: true; schema: unknown } | { ok: false; error: ReturnType<typeof errorView> }
       try {
         const schema = toJson(
           await runOperation(
@@ -1052,13 +1060,23 @@ export const resourcesRouter = router({
             { timeoutMs: GRAPHQL_API_SCHEMA_TIMEOUT_MS },
           ),
         )
-        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
-        graphqlSchemas.set(key, { at: Date.now(), schema })
-        return { ok: true as const, schema }
+        if (graphqlApiSchemas.size >= GRAPHQL_API_SCHEMAS_KEPT) {
+          graphqlApiSchemas.delete(graphqlApiSchemas.keys().next().value!)
+        }
+        graphqlApiSchemas.set(key, { at: Date.now(), schema })
+        outcome = { ok: true, schema }
       } catch (err) {
         if (!(err instanceof ConnectorError)) throw err
-        return { ok: false as const, error: errorView(err) }
+        outcome = { ok: false, error: errorView(err) }
       }
+      await ctx.audit({
+        action: 'resource.graphql_schema_read',
+        objectType: 'resource',
+        objectId: resource.id,
+        environmentId: input.environmentId,
+        metadata: { ok: outcome.ok, ...(!outcome.ok && { errorCode: outcome.error.code }) },
+      })
+      return outcome
     }),
 
   /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
@@ -1224,3 +1242,6 @@ const GRAPHQL_SCHEMA_TTL_MS = 10 * 60_000
  * oldest dropped past 200.
  */
 const graphqlSchemas = new Map<string, { at: number; schema: unknown }>()
+/** The built-in GraphQL resource's schemas (session 57), apart: their keys are what editors type, so fewer are kept. */
+const graphqlApiSchemas = new Map<string, { at: number; schema: unknown }>()
+const GRAPHQL_API_SCHEMAS_KEPT = 30

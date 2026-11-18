@@ -48,7 +48,7 @@ export function GraphqlApiTargetFields({
           type="button"
           size="sm"
           loading={schema.status === 'loading'}
-          disabled={!/^https?:\/\/\S/i.test(url.trim())}
+          disabled={!url.trim() || /^https?:\/\/$/i.test(url.trim())}
           data-testid="graphql-api-load-schema"
           onClick={onLoadSchema}
         >

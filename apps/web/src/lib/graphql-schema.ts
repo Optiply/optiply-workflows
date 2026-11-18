@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import type { IntrospectionQuery } from 'graphql'
 import { useState } from 'react'
 import { useTRPC } from './trpc'
@@ -47,41 +47,40 @@ export type GraphqlApiSchemaState =
   | { status: 'failed'; message: string }
 
 /**
- * The built-in GraphQL resource's schema for one query's endpoint (session 57), read when asked (Load schema), in
- * the default environment, with the query's URL, auth and headers. Its templates get the non-secret config vars and
- * `scope` (the playground's test values). Changing the URL, auth or headers asks again only on the next Load.
+ * The built-in GraphQL resource's schema for one query's endpoint (session 57), read when asked (Load schema), with
+ * the query's URL, auth and headers: in `environmentId` (the playground's), else the default environment. Its
+ * templates get the non-secret config vars and `scope` (the playground's test values). Sent as a POST (the auth stays
+ * out of URLs); a Load of the target already loaded asks the endpoint again. The result is kept until the next Load.
  */
 export function useGraphqlApiSchema(
   resource: { id: string; type: string } | undefined,
   target: GraphqlApiTarget,
   scope: Record<string, unknown> = {},
+  environmentId?: string,
 ): { state: GraphqlApiSchemaState; schema: IntrospectionQuery | null; load: () => void } {
   const trpc = useTRPC()
   const environments = useQuery(trpc.environments.list.queryOptions()).data
-  const environmentId = environments?.find((e) => e.isDefault)?.id ?? environments?.[0]?.id
-  const [asked, setAsked] = useState<{ key: string; refresh: boolean; target: GraphqlApiTarget } | null>(null)
-  const key = JSON.stringify([target.url, target.auth, target.headers, scope])
-  const enabled = resource?.type === 'graphqlapi' && !!environmentId && !!asked
-  const input = {
-    resourceId: resource?.id ?? '',
-    environmentId: environmentId ?? '',
-    query: asked?.target ?? target,
-    scope,
-    refresh: asked?.refresh ?? false,
+  const envId = environmentId ?? environments?.find((e) => e.isDefault)?.id ?? environments?.[0]?.id
+  const read = useMutation(trpc.resources.graphqlApiSchema.mutationOptions())
+  const [lastKey, setLastKey] = useState<string | null>(null)
+  const key = JSON.stringify([envId, target.url, target.auth, target.headers, scope])
+  const load = () => {
+    if (resource?.type !== 'graphqlapi' || !envId) return
+    read.mutate({
+      resourceId: resource.id,
+      environmentId: envId,
+      query: target,
+      scope,
+      refresh: lastKey === key,
+    })
+    setLastKey(key)
   }
-  const { data, isFetching, error } = useQuery({
-    ...trpc.resources.graphqlApiSchema.queryOptions(input),
-    enabled,
-    staleTime: 5 * 60_000,
-    retry: false,
-  })
-  const load = () => setAsked({ key, refresh: asked?.key === key, target })
   let state: GraphqlApiSchemaState = { status: 'idle' }
-  if (asked && isFetching) state = { status: 'loading' }
-  else if (asked && error) state = { status: 'failed', message: error.message }
-  else if (asked && data && !data.ok) state = { status: 'failed', message: data.error.message }
-  else if (asked && data?.ok) {
-    const schema = data.schema as IntrospectionQuery
+  if (read.isPending) state = { status: 'loading' }
+  else if (read.error) state = { status: 'failed', message: read.error.message }
+  else if (read.data && !read.data.ok) state = { status: 'failed', message: read.data.error.message }
+  else if (read.data?.ok) {
+    const schema = read.data.schema as IntrospectionQuery
     state = {
       status: 'loaded',
       schema,

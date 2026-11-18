@@ -1,5 +1,6 @@
 import { startTestGraphql, type TestGraphql } from '@ow/connectors/testing'
-import { createDb, GRAPHQL_RESOURCE_SLUG, REST_API_RESOURCE_SLUG } from '@ow/db'
+import { auditEvents, createDb, GRAPHQL_RESOURCE_SLUG, REST_API_RESOURCE_SLUG } from '@ow/db'
+import { eq } from 'drizzle-orm'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startWorker } from '../src/worker'
@@ -128,15 +129,21 @@ describe('the built-in GraphQL resource', () => {
     await configVar('GQL_PUBLIC_TOKEN', false, TOKEN)
     await configVar('GQL_SECRET_TOKEN', true, TOKEN)
     const schema = (token: string, refresh = false) =>
-      member.query('resources.graphqlApiSchema', {
+      member.mutate('resources.graphqlApiSchema', {
         resourceId: builtInId,
         environmentId: prodId,
-        query: { url: gql.url, auth: { type: 'bearer', token }, headers: [] },
+        query: {
+          url: gql.url,
+          auth: { type: 'bearer', token },
+          headers: [{ key: 'x-who', value: '{{ current_user.email }}' }],
+        },
         refresh,
       })
     const ok = data(await schema('{{ configVars.GQL_PUBLIC_TOKEN }}'))
     expect(ok.ok).toBe(true)
     expect(ok.schema.__schema.types.map((t: { name: string }) => t.name)).toContain('Order')
+    // The playground's scope: current_user too.
+    expect(gql.requests.at(-1)!.headers['x-who']).toBe('member@example.com')
     const asked = gql.requests.length
     data(await schema('{{ configVars.GQL_PUBLIC_TOKEN }}'))
     expect(gql.requests.length).toBe(asked) // kept for a while
@@ -151,12 +158,20 @@ describe('the built-in GraphQL resource', () => {
     const restApi = data(await member.query('resources.list')).resources.find(
       (r: { slug: string }) => r.slug === REST_API_RESOURCE_SLUG,
     )
-    const wrongType = await member.query('resources.graphqlApiSchema', {
+    const wrongType = await member.mutate('resources.graphqlApiSchema', {
       resourceId: restApi.id,
       environmentId: prodId,
       query: { url: gql.url, auth: { type: 'none' }, headers: [] },
     })
     expect(wrongType.body.error?.message).toContain('Only the built-in GraphQL resource')
+
+    // Each read is audited, as a query run is (it reaches a host the editor chose).
+    const reads = await env.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'resource.graphql_schema_read'))
+    // Two reads, one refresh and the secret one; the cached one isn't a read, the refused one never started.
+    expect(reads.map((r) => (r.metadata as { ok: boolean }).ok)).toEqual([true, true, false])
   })
 
   it('runs in a released workflow with a secret config var as its token, which stays out of the run', async () => {
