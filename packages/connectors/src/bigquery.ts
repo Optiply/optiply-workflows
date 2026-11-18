@@ -104,12 +104,19 @@ export function createBigQueryConnector(
     secretsSchema,
     querySchema,
 
-    // The default dataset's columns, else the whole region's (the resource's location, else US). A small catalog
-    // read, billed to the resource's project like any query.
+    // The default dataset's columns, else the whole region's (the resource's location). A small catalog read, billed
+    // to the resource's project like any query. Without either it can't know where to look (a guessed region would
+    // just show no tables).
     schemaSql: (config, limit) => {
+      if (!config.defaultDataset && !config.location) {
+        throw new ConnectorError(
+          'invalid_config',
+          "Set the resource's location (e.g. EU) or a default dataset to list its tables",
+        )
+      }
       const from = config.defaultDataset
         ? `\`${config.defaultDataset}\`.INFORMATION_SCHEMA.COLUMNS`
-        : `\`region-${(config.location ?? 'us').toLowerCase()}\`.INFORMATION_SCHEMA.COLUMNS`
+        : `\`region-${config.location!.toLowerCase()}\`.INFORMATION_SCHEMA.COLUMNS`
       return `SELECT table_schema AS s, table_name AS t, column_name AS c, data_type AS d, is_nullable AS n
 FROM ${from}
 ORDER BY table_schema, table_name, ordinal_position

@@ -47,6 +47,9 @@ test('the tables panel and SQL completions, in a workflow block and the playgrou
     await panel.getByTestId('sql-schema-toggle').click()
     await panel.getByLabel('Search tables and columns').fill(table)
     await expect(panel.getByRole('button', { name: table, exact: true })).toBeVisible()
+    // A table found by its name stays closed until opened; one found by a column opens.
+    await expect(panel.getByText('integer')).toHaveCount(0)
+    await panel.getByRole('button', { name: `Show owdb_production.${table}’s columns` }).click()
     await expect(panel.getByText('integer')).toBeVisible()
 
     const editor = page.locator('[data-testid$="/find/query.sql"]')

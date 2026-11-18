@@ -26,6 +26,8 @@ export interface SqlSchema {
   tables: SqlSchemaTable[]
   /** More columns than were read: the browser and completions show what was. */
   truncated: boolean
+  /** How many columns were read at most (20,000, or fewer under the resource's own row limit). */
+  limit: number
 }
 
 /**
@@ -57,7 +59,7 @@ export function groupSchema(rows: Record<string, unknown>[], limit: number): Sql
         ['YES', 'Y', '1', 'TRUE'].includes(String(nullable).toUpperCase()),
     })
   }
-  return { tables, truncated: rows.length > limit }
+  return { tables, truncated: rows.length > limit, limit }
 }
 
 /**
@@ -72,9 +74,11 @@ export async function describeSqlSchema(
 ): Promise<SqlSchema | null> {
   if (!connector.schemaSql) return null
   const config = connector.configSchema.parse(resource.config) as { maxRows?: number }
-  // One more than shown, to tell a cut-short schema; never past the resource's own row limit (it would fail).
-  const limit = Math.min(SQL_SCHEMA_COLUMNS, Math.max(1, (config.maxRows ?? Number.POSITIVE_INFINITY) - 1))
-  const sql = connector.schemaSql(config, limit + 1)
+  // One more than shown, to tell a cut-short schema; never past the resource's own row limit (it would fail). Under a
+  // limit of one row there's no room for the extra one: what's read is shown.
+  const fetch = Math.min(SQL_SCHEMA_COLUMNS + 1, Math.max(1, config.maxRows ?? Number.POSITIVE_INFINITY))
+  const limit = fetch > 1 ? fetch - 1 : 1
+  const sql = connector.schemaSql(config, fetch)
   if (!sql) return null
   const result = await runQuery(
     pool,

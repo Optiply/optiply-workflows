@@ -1,10 +1,10 @@
 import { ChevronDown, ChevronRight, RefreshCw, Table2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Button, Input } from '@/components/ui'
-import type { SqlSchemaState } from '@/lib/sql-schema'
+import { isUsualSchema, type SqlSchemaState, sqlTableName } from '@/lib/sql-schema'
 
-/** Schemas tables are usually in, written without it. */
-const USUAL = new Set(['public', 'dbo', 'main'])
+/** At most this many tables are listed at once: a search narrows them. */
+const SHOWN_TABLES = 200
 
 /**
  * A SQL resource's tables and their columns (session 57), beside the SQL editor: searchable, a name clicked goes into
@@ -21,7 +21,9 @@ export function SqlSchemaPanel({
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  // Opened and closed by hand; while searching, tables with a matching column open unless closed.
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const schema = state.status === 'loaded' ? state.schema : null
   const several = new Set(schema?.tables.map((t) => t.schema)).size > 1
   const shown = useMemo(() => {
@@ -36,15 +38,23 @@ export function SqlSchemaPanel({
     )
   }, [schema, search])
   if (state.status === 'none') return null
-  const nameOf = (t: { schema: string; name: string }) =>
-    several && !USUAL.has(t.schema.toLowerCase()) ? `${t.schema}.${t.name}` : t.name
-  const toggle = (key: string) =>
-    setExpanded((s) => {
+  const nameOf = (t: { schema: string; name: string }) => sqlTableName(t, several)
+  const q = search.trim().toLowerCase()
+  const columnMatch = (t: { columns: { name: string }[] }) =>
+    !!q && t.columns.some((c) => c.name.toLowerCase().includes(q))
+  const isOpen = (key: string, t: { columns: { name: string }[] }) =>
+    expanded.has(key) || (columnMatch(t) && !collapsed.has(key))
+  const flip = (set: (f: (s: Set<string>) => Set<string>) => void, key: string, on: boolean) =>
+    set((s) => {
       const next = new Set(s)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      if (on) next.add(key)
+      else next.delete(key)
       return next
     })
+  const toggle = (key: string, open: boolean) => {
+    flip(setExpanded, key, !open)
+    flip(setCollapsed, key, open)
+  }
 
   return (
     <div className="rounded-md border border-border" data-testid="sql-schema">
@@ -61,7 +71,7 @@ export function SqlSchemaPanel({
           Tables
           <span className="truncate font-normal text-muted" data-testid="sql-schema-summary">
             {state.status === 'loaded'
-              ? `${state.schema.tables.length}${state.schema.truncated ? '+' : ''}`
+              ? `${state.schema.tables.length}${state.schema.truncated ? '+' : ''}${state.refreshing ? ' · reading…' : ''}`
               : state.status === 'loading'
                 ? 'reading…'
                 : state.status === 'unsupported'
@@ -75,7 +85,7 @@ export function SqlSchemaPanel({
           variant="ghost"
           title="Read the tables again"
           aria-label="Refresh tables"
-          loading={state.status === 'loading'}
+          loading={state.status === 'loading' || (state.status === 'loaded' && state.refreshing)}
           onClick={onRefresh}
         >
           <RefreshCw className="size-3.5" />
@@ -102,23 +112,25 @@ export function SqlSchemaPanel({
                 onChange={(e) => setSearch(e.target.value)}
               />
               {schema.truncated && (
-                <p className="text-xs text-muted">Only the first 20,000 columns are listed.</p>
+                <p className="text-xs text-muted">
+                  Only the first {schema.limit.toLocaleString('en')} columns are listed.
+                </p>
               )}
               <ul className="max-h-72 overflow-auto text-xs" data-testid="sql-schema-tables">
                 {shown.length === 0 && <li className="px-1 py-1 text-muted">No tables match.</li>}
-                {shown.map((t) => {
+                {shown.slice(0, SHOWN_TABLES).map((t) => {
                   const key = `${t.schema}.${t.name}`
-                  const isOpen = expanded.has(key) || !!search.trim()
+                  const open = isOpen(key, t)
                   return (
                     <li key={key}>
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
                           className="rounded p-0.5 text-muted hover:bg-canvas"
-                          aria-label={isOpen ? `Hide ${key}’s columns` : `Show ${key}’s columns`}
-                          onClick={() => toggle(key)}
+                          aria-label={open ? `Hide ${key}’s columns` : `Show ${key}’s columns`}
+                          onClick={() => toggle(key, open)}
                         >
-                          {isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
                         </button>
                         <button
                           type="button"
@@ -128,11 +140,9 @@ export function SqlSchemaPanel({
                         >
                           {nameOf(t)}
                         </button>
-                        {several && USUAL.has(t.schema.toLowerCase()) && (
-                          <span className="text-muted">{t.schema}</span>
-                        )}
+                        {several && isUsualSchema(t.schema) && <span className="text-muted">{t.schema}</span>}
                       </div>
-                      {isOpen && (
+                      {open && (
                         <ul className="ml-6 border-l border-border pl-2">
                           {t.columns.map((c) => (
                             <li key={c.name} className="flex items-center gap-2">
@@ -156,6 +166,11 @@ export function SqlSchemaPanel({
                   )
                 })}
               </ul>
+              {shown.length > SHOWN_TABLES && (
+                <p className="text-xs text-muted">
+                  {(shown.length - SHOWN_TABLES).toLocaleString('en')} more tables: search to narrow them.
+                </p>
+              )}
             </>
           )}
         </div>

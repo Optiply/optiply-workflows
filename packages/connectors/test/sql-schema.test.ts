@@ -40,6 +40,7 @@ describe('grouping a catalog’s rows', () => {
     ]
     expect(groupSchema(rows, 10)).toEqual({
       truncated: false,
+      limit: 10,
       tables: [
         {
           schema: 'public',
@@ -122,7 +123,18 @@ describe('Postgres', () => {
       resource({ ...base, maxRows: 4 }, { password }, 'b'),
     )
     expect(schema!.truncated).toBe(true)
+    expect(schema!.limit).toBe(3)
     expect(schema!.tables.flatMap((t) => t.columns)).toHaveLength(3)
+  })
+
+  it('reads what it can under a limit of one row, rather than failing', async () => {
+    const schema = await describeSqlSchema(
+      pool,
+      postgresConnector,
+      resource({ ...base, maxRows: 1 }, { password }, 'c'),
+    )
+    expect(schema!.tables.flatMap((t) => t.columns)).toHaveLength(1)
+    expect(schema!.limit).toBe(1)
   })
 })
 
@@ -210,6 +222,10 @@ describe('BigQuery', () => {
     expect(sent()).toContain('`region-eu`.INFORMATION_SCHEMA.COLUMNS')
     await describeSqlSchema(pool, bigquery, bq({ defaultDataset: 'other-project.shop' }, 'd'))
     expect(sent()).toContain('`other-project.shop`.INFORMATION_SCHEMA.COLUMNS')
+    // Neither: it can't know where to look, and says so (a guessed region would show no tables).
+    await expect(describeSqlSchema(pool, bigquery, bq({ location: undefined }, 'n'))).rejects.toThrow(
+      "Set the resource's location",
+    )
   })
 })
 

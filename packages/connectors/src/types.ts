@@ -115,7 +115,7 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
   /**
    * A SQL connector's catalog query (session 57, `sql-schema.ts`): read-only, in its dialect, at most `limit` rows of
    * `s`, `t`, `c`, `d`, `n` (schema, table, column, type, nullable), ordered by table and column position. Null when
-   * this resource's dialect is unknown.
+   * this resource's dialect is unknown; throws a ConnectorError when its settings don't say where to look.
    */
   schemaSql?(config: Config, limit: number): string | null
   testConnection(

@@ -1,3 +1,4 @@
+import { isUsualSchema, sqlTableName } from '@/lib/sql-schema'
 import { monaco } from './monaco'
 
 // SQL completions from a database resource's tables and columns (session 57), per model: table names (with their
@@ -9,8 +10,6 @@ export interface EditorSqlSchema {
 }
 
 const schemas = new Map<string, EditorSqlSchema>()
-/** Schemas tables are usually in, written without it. */
-const USUAL = new Set(['public', 'dbo', 'main'])
 
 let registered = false
 
@@ -20,8 +19,10 @@ const lower = (s: string) => s.toLowerCase()
 function referencedTables(text: string, schema: EditorSqlSchema) {
   const byName = new Map<string, EditorSqlSchema['tables'][number]>()
   for (const t of schema.tables) {
-    byName.set(lower(t.name), t)
     byName.set(lower(`${t.schema}.${t.name}`), t)
+    // An unqualified name means the usual schema's table (search_path, dbo) when two schemas have one.
+    const bare = byName.get(lower(t.name))
+    if (!bare || (!isUsualSchema(bare.schema) && isUsualSchema(t.schema))) byName.set(lower(t.name), t)
   }
   const aliases = new Map<string, EditorSqlSchema['tables'][number]>()
   const referenced = new Set<EditorSqlSchema['tables'][number]>()
@@ -44,7 +45,7 @@ function register(): void {
   if (registered) return
   registered = true
   monaco.languages.registerCompletionItemProvider('sql', {
-    triggerCharacters: ['.', ' '],
+    triggerCharacters: ['.'],
     provideCompletionItems(model, position) {
       const schema = schemas.get(model.uri.toString())
       if (!schema) return { suggestions: [] }
@@ -54,8 +55,13 @@ function register(): void {
         endLineNumber: position.lineNumber,
         endColumn: position.column,
       })
-      // Inside a `{{ }}`: the template's completions.
+      // Inside a `{{ }}`: the template's completions. Inside a string or a comment: none.
       if (before.lastIndexOf('{{') > before.lastIndexOf('}}')) return { suggestions: [] }
+      const line = before.slice(before.lastIndexOf('\n') + 1)
+      if ((line.split("'").length - 1) % 2 === 1 || line.replace(/'[^']*'/g, '').includes('--')) {
+        return { suggestions: [] }
+      }
+      if (before.lastIndexOf('/*') > before.lastIndexOf('*/')) return { suggestions: [] }
       const word = model.getWordUntilPosition(position)
       const range = new monaco.Range(
         position.lineNumber,
@@ -87,10 +93,9 @@ function register(): void {
           })),
         }
       }
-      const schemasUsed = new Set(schema.tables.map((t) => t.schema))
+      const several = new Set(schema.tables.map((t) => t.schema)).size > 1
       const tables = schema.tables.map((t) => {
-        const qualified =
-          schemasUsed.size > 1 && !USUAL.has(lower(t.schema)) ? `${t.schema}.${t.name}` : t.name
+        const qualified = sqlTableName(t, several)
         return {
           label: qualified,
           kind: monaco.languages.CompletionItemKind.Struct,
