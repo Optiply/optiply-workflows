@@ -2047,6 +2047,12 @@ keeps Staging for admins only), in a separate worktree `~/optiply-workflows-fixe
 8. **Green locally with Docker** (started for it; the user's Compose stack came up with it): biome ci, typecheck;
    definition 198, connectors 422, server 749 passed (the real builder and runner tests ran, `sdk-resources` too),
    the builder's index tests 8, e2e `m32-done-when`. Screenshots before/after of the index form (session scratchpad).
+9. **Deployed by hand** ✅ (the user's word): branch pushed; no active runs (last started 17 Nov 20:13); dump on the VM
+   `/var/backups/ow/ow-2026-11-18T0849-pre-ec08e57.dump` (1.4 MB, root 600); Cloud Build
+   `7719d92b-2afc-499f-ad5e-c38171bfbc1c` (7 min 18 s) from the worktree at `ec08e57` (clean: nothing untracked;
+   deploy/ unchanged, not copied), then `deploy.sh ec08e57`: **production runs `ec08e57`** (previous `8f33ad9`), no new
+   migration, health 200, 0 restarts, no errors. Then two versions kept: `8448c87` deleted from the registry and the VM.
+   Rollback: `sudo /opt/ow/deploy.sh 8f33ad9`.
 
 **The SDK setup session (2026-11-16/17, no code, recorded here):** the Optiply SDK (`optiply-sdk-external` 0.3.1,
 import `optiply`, github.com/Optiply/optiply-sdk-external) is published to Artifact Registry `optiply-python` (Python,
@@ -2491,12 +2497,11 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `8f33ad9`** (branch
-`feat/staging-admins-only`). Three fixes are committed on **`fix/sdk-setup-papercuts`** (§14 session 57; worktree
-`~/optiply-workflows-fixes`), based on that branch: CSV import out of memory, SDK Test on a first install, the Python
-index Test on Artifact Registry. Next, on the user's word: push, then **deploy by hand** (dump on the VM, Cloud Build
-`_TAG` from a clean worktree, `deploy.sh <tag>`, health, then keep two versions in the registry and on the VM), and try
-B1–B3 in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply Python" with `optiply-sdk-external`).
+**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `ec08e57`** from branch
+**`fix/sdk-setup-papercuts`** (pushed; worktree `~/optiply-workflows-fixes`; based on `feat/staging-admins-only`, so
+Staging stays admins-only; §14 session 57): CSV import out of memory, SDK Test on a first install, the Python index
+Test on Artifact Registry. The user tries them in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply
+Python" with `optiply-sdk-external`). Delete the VM's `ow-2026-11-18T0849-pre-ec08e57.dump` when happy.
 Open, the user's: check this month's spend and the €5 alert in the console (we can't read billing); optionally the
 registry's cleanup policy to keep 2 instead of 3 (~$0.08 a month less). **End of November:** GitHub billing, then one PR
 for both branches. Then the items waiting on others (IAP for the prod Postgres resources, `workflows.optiply.nl`, the
