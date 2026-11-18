@@ -11,3 +11,10 @@ onlyBuiltDependencies:
   - "@embedded-postgres/darwin-x64"
   - "@embedded-postgres/linux-x64"
   - "@embedded-postgres/linux-arm64"
+
+# Security fixes for pinned transitive packages (2026-11-18, `pnpm audit`): monaco-editor pins dompurify 3.4.15 even in
+# its latest release; drizzle-kit's deprecated @esbuild-kit loader pins esbuild 0.18 (dev-only: migrations). Drop each
+# when its parent moves on.
+overrides:
+  dompurify@3.4.15: 3.4.18
+  "@esbuild-kit/core-utils>esbuild": 0.25.12
