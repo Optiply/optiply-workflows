@@ -28,9 +28,20 @@ const ConfigSchema = z
       .positive()
       .default(24 * 7),
     TRUST_PROXY: bool,
+    /** The sign-in provider (Google, or Optiply's Auth0, session 58: https://optiply.eu.auth0.com/). */
     OIDC_ISSUER: z.string().url().default('https://accounts.google.com'),
     OIDC_CLIENT_ID: z.string().optional(),
+    /** Absent: a public client (an Auth0 single-page app has none), its code exchange protected by PKCE alone. */
     OIDC_CLIENT_SECRET: z.string().optional(),
+    /**
+     * Where the provider sends the sign-in back: our own path, or `/` where the provider's app allows only the site's
+     * root (Optiply's Auth0 app, session 58).
+     */
+    OIDC_CALLBACK_PATH: z.enum(['/api/auth/oidc/callback', '/']).default('/api/auth/oidc/callback'),
+    /** The login button's words: "Continue with <name>" (Google, Optiply). */
+    OIDC_PROVIDER_NAME: z.string().min(1).default('Google'),
+    /** A provider on plain http (tests, a local Auth0 stand-in). Never in production. */
+    OIDC_ALLOW_HTTP: bool,
     /** Only emails from this domain may sign in via SSO. */
     OIDC_ALLOWED_DOMAIN: z.string().default('optiply.nl'),
     /** Break-glass email/password login for local admins (created via the create-admin CLI). */
@@ -194,7 +205,8 @@ const ConfigSchema = z
     return {
       ...c,
       keyring,
-      oidcEnabled: Boolean(c.OIDC_CLIENT_ID && c.OIDC_CLIENT_SECRET),
+      // Google's clients need their secret; a public client (Auth0's single-page app) needs only its id.
+      oidcEnabled: Boolean(c.OIDC_CLIENT_ID && (c.OIDC_CLIENT_SECRET || !isGoogle(c.OIDC_ISSUER))),
       secureCookies: c.PUBLIC_URL.startsWith('https://'),
     }
   })
@@ -218,4 +230,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration:\n${issues}`)
   }
   return parsed.data
+}
+
+/** Whether the sign-in provider is Google (its `hd` hint and its required client secret). */
+export function isGoogle(issuer: string): boolean {
+  return new URL(issuer).hostname === 'accounts.google.com'
 }

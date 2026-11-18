@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import * as oidc from 'openid-client'
 import { z } from 'zod'
 import { recordAudit } from '../audit'
-import type { Config } from '../config'
+import { type Config, isGoogle } from '../config'
 import { notifyAdminsOfRequest, provisionUser, SignInRefused, signInDecision } from '../services/users'
 import { verifyPassword } from './password'
 import { createSession, deleteSession, SESSION_COOKIE } from './sessions'
@@ -13,12 +13,21 @@ const OIDC_STATE_COOKIE = 'ow_oidc'
 
 const LocalLoginBody = z.object({ email: z.string().email(), password: z.string().min(1).max(500) })
 
-/** OIDC discovery is lazy and memoized so the API boots even when the IdP is unreachable. */
+/**
+ * OIDC discovery is lazy and memoized so the API boots even when the IdP is unreachable. Without a client secret it's
+ * a public client (Auth0's single-page app, session 58): the code exchange is protected by PKCE alone.
+ */
 function oidcClient(config: Config) {
   let discovered: Promise<oidc.Configuration> | undefined
   return () => {
     discovered ??= oidc
-      .discovery(new URL(config.OIDC_ISSUER), config.OIDC_CLIENT_ID!, config.OIDC_CLIENT_SECRET!)
+      .discovery(
+        new URL(config.OIDC_ISSUER),
+        config.OIDC_CLIENT_ID!,
+        config.OIDC_CLIENT_SECRET || undefined,
+        config.OIDC_CLIENT_SECRET ? undefined : oidc.None(),
+        config.OIDC_ALLOW_HTTP ? { execute: [oidc.allowInsecureRequests] } : undefined,
+      )
       .catch((err) => {
         discovered = undefined
         throw err
@@ -27,9 +36,45 @@ function oidcClient(config: Config) {
   }
 }
 
+/**
+ * Where signing out sends the browser so the provider's own session ends too (else Sign in lets the person straight
+ * back in): its end_session_endpoint (OIDC RP-initiated logout), or Auth0's /v2/logout; none for Google.
+ */
+async function providerLogoutUrl(
+  config: Config,
+  getOidc: () => Promise<oidc.Configuration>,
+): Promise<string | null> {
+  if (isGoogle(config.OIDC_ISSUER)) return null
+  // The site's root (it sends a signed-out person on to /login): what Auth0 apps allow as their logout URL.
+  const returnTo = new URL('/', config.PUBLIC_URL).toString()
+  try {
+    const client = await getOidc()
+    if (client.serverMetadata().end_session_endpoint) {
+      return oidc
+        .buildEndSessionUrl(client, { client_id: config.OIDC_CLIENT_ID!, post_logout_redirect_uri: returnTo })
+        .toString()
+    }
+  } catch {
+    // The provider unreachable: its session stays, ours is gone anyway.
+    return null
+  }
+  if (/\.auth0\.com$/.test(new URL(config.OIDC_ISSUER).hostname)) {
+    const url = new URL('/v2/logout', config.OIDC_ISSUER)
+    url.searchParams.set('client_id', config.OIDC_CLIENT_ID!)
+    url.searchParams.set('returnTo', returnTo)
+    return url.toString()
+  }
+  return null
+}
+
 export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: Config }) {
   const { db, config } = opts
-  const redirectUri = new URL('/api/auth/oidc/callback', config.PUBLIC_URL).toString()
+  // Where the provider sends the browser back: our own path, or the site's root where the provider's app allows only
+  // that (Optiply's Auth0 app, session 58); there a request with `code` and `state` is the sign-in coming back.
+  const callbackPath = config.OIDC_CALLBACK_PATH
+  const redirectUri = new URL(callbackPath, config.PUBLIC_URL).toString()
+  /** The sign-in's state cookie goes where the callback is. */
+  const stateCookiePath = callbackPath === '/' ? '/' : '/api/auth/oidc'
   const getOidc = config.oidcEnabled ? oidcClient(config) : undefined
 
   const cookieBase = {
@@ -60,20 +105,19 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
       code_challenge_method: 'S256',
       state,
       nonce,
-      // Google-specific hint; the domain is still verified on the callback.
-      hd: config.OIDC_ALLOWED_DOMAIN,
-      prompt: 'select_account',
+      // Google's hint (its account picker shows the domain's); the domain is still verified on the callback.
+      ...(isGoogle(config.OIDC_ISSUER) && { hd: config.OIDC_ALLOWED_DOMAIN, prompt: 'select_account' }),
     })
     reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify({ verifier, state, nonce }), {
       ...cookieBase,
-      path: '/api/auth/oidc',
+      path: stateCookiePath,
       maxAge: 600,
       signed: true,
     })
     return reply.redirect(url.toString())
   })
 
-  app.get('/api/auth/oidc/callback', async (req, reply) => {
+  async function oidcCallback(req: FastifyRequest, reply: FastifyReply) {
     if (!getOidc) return reply.code(404).send({ error: 'SSO is not configured' })
     const fail = (reason: string) => {
       req.log.warn({ reason }, 'OIDC login rejected')
@@ -81,7 +125,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
     }
 
     const raw = req.cookies[OIDC_STATE_COOKIE]
-    reply.clearCookie(OIDC_STATE_COOKIE, { ...cookieBase, path: '/api/auth/oidc' })
+    reply.clearCookie(OIDC_STATE_COOKIE, { ...cookieBase, path: stateCookiePath })
     const unsigned = raw ? req.unsignCookie(raw) : undefined
     if (!unsigned?.valid || !unsigned.value) return fail('Login session expired, please try again')
     const { verifier, state, nonce } = JSON.parse(unsigned.value) as Record<string, string>
@@ -151,7 +195,19 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
     if (user.status !== 'active') return fail('Your request to use Optiply Workflows was not approved')
     await startSession(req, reply, user.id, 'oidc')
     return reply.redirect('/')
-  })
+  }
+
+  app.get('/api/auth/oidc/callback', oidcCallback)
+  if (callbackPath === '/') {
+    // The provider comes back to the root: answered here, before the web app (its static files) would be.
+    app.addHook('onRequest', async (req, reply) => {
+      if (req.method !== 'GET') return
+      const url = new URL(req.url, config.PUBLIC_URL)
+      if (url.pathname !== '/' || !url.searchParams.has('state')) return
+      if (!url.searchParams.has('code') && !url.searchParams.has('error')) return
+      return oidcCallback(req, reply)
+    })
+  }
 
   app.post('/api/auth/local', async (req, reply) => {
     if (!config.LOCAL_LOGIN_ENABLED) return reply.code(404).send({ error: 'Local login is disabled' })
@@ -184,6 +240,11 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
   app.post('/api/auth/logout', async (req, reply) => {
     await deleteSession(db, req.cookies[SESSION_COOKIE])
     reply.clearCookie(SESSION_COOKIE, cookieBase)
-    return { ok: true }
+    // The browser goes on to the provider's sign-out (Auth0's), which comes back to /login.
+    const redirect = getOidc ? await providerLogoutUrl(config, getOidc) : null
+    return { ok: true, redirect }
   })
 }
+// Not encapsulated (what fastify-plugin marks): the root callback's hook above must see `GET /`, which the web app's
+// static files answer outside this plugin. It acts only on `/` with `state` and `code` (or `error`).
+;(authRoutes as unknown as Record<symbol, boolean>)[Symbol.for('skip-override')] = true

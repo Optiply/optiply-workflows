@@ -33,8 +33,18 @@ Run from the repo on a machine with `gcloud` signed in as a project owner. `P=op
 5. **The VM's identity:** a service account `ow-vm-prod` (IDs need 6+ characters) with `roles/artifactregistry.reader`, `roles/secretmanager.secretAccessor` (on `ow-env`) and `roles/storage.objectCreator` and `roles/storage.objectViewer` (both on the backups bucket: `backup.sh` streams the dump, and a streamed upload also reads the object, so Creator alone fails with 403; neither can delete a backup), plus `roles/logging.logWriter`.
 6. **Address and VM:** a static IP `ow-prod-ip` in `us-east1`; the VM `ow-prod` (`e2-micro`, `us-east1-b`, Debian 12, 30 GB **pd-standard**, service account `ow-vm-prod`, scope `cloud-platform`, tag `ow-prod`). Firewall (target tag `ow-prod`): `ow-allow-web` 80 and 443 from anywhere; `ow-allow-iap-ssh` 22 from IAP's range `35.235.240.0/20` (priority 800); `ow-deny-admin-ports` 22 and 3389 from anywhere (priority 900, over the default network's open SSH/RDP rules). SSH: `gcloud compute ssh ow-prod --zone us-east1-b --tunnel-through-iap`.
 7. **The backups bucket:** `gs://optiply-workflows-backups` in `us-east1`, standard class, uniform access, lifecycle "delete after 30 days".
-8. **Google sign-in:** Google Cloud console → APIs & Services → OAuth consent screen: **Internal**; Credentials → OAuth client ID, type Web application, redirect URI `https://<SITE_ADDRESS>/api/auth/oidc/callback`.
-9. **The secret `ow-env`:** a `.env` with `PUBLIC_URL=https://<SITE_ADDRESS>`, `SITE_ADDRESS`, `SESSION_SECRET` (new), `ENCRYPTION_KEYS` and `ENCRYPTION_KEY_CURRENT` (**the same as the data's**: the resources' credentials are encrypted with them), `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_ALLOWED_DOMAIN=optiply.nl`, the four runner tokens and `METRICS_TOKEN` (new, random; without it `/metrics` is public), `GOOGLE_SERVER_IDENTITY` if used. `gcloud secrets create ow-env --data-file=… --replication-policy=user-managed --locations=us-east1`; delete the local file after.
+8. **Sign-in, Optiply's Auth0** (session 58, as the feedback app): the Auth0 application "Optiply Workflows" (single-page
+   app, no client secret) allows `https://<SITE_ADDRESS>` as its callback and logout URL, so the sign-in comes back to
+   the site's root (`OIDC_CALLBACK_PATH=/`; the server answers `/` with `code` and `state` before the web app) and
+   signing out returns there. (Checked 2026-11-19: Auth0 answered 403 to `/api/auth/oidc/callback`, 302 to the root;
+   `/v2/logout` refused `returnTo=…/login`.) In `ow-env`: `OIDC_ISSUER=https://optiply.eu.auth0.com/`,
+   `OIDC_CLIENT_ID=<its client id>`, `OIDC_PROVIDER_NAME=Optiply`, `OIDC_CALLBACK_PATH=/`, and **no**
+   `OIDC_CLIENT_SECRET` (with one, the code exchange sends it, and Auth0 refuses a secret for a public client).
+   The rules stay the server's: a verified email, `@optiply.nl` or invited, an admin's approval the first time; people
+   are matched by email, so existing accounts carry over. (Before: Google: Google Cloud console → APIs & Services →
+   OAuth consent screen **Internal**; an OAuth client ID, Web application, redirect URI
+   `https://<SITE_ADDRESS>/api/auth/oidc/callback`; `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`, issuer the default.)
+9. **The secret `ow-env`:** a `.env` with `PUBLIC_URL=https://<SITE_ADDRESS>`, `SITE_ADDRESS`, `SESSION_SECRET` (new), `ENCRYPTION_KEYS` and `ENCRYPTION_KEY_CURRENT` (**the same as the data's**: the resources' credentials are encrypted with them), the sign-in's `OIDC_*` (step 8), `OIDC_ALLOWED_DOMAIN=optiply.nl`, the four runner tokens and `METRICS_TOKEN` (new, random; without it `/metrics` is public), `GOOGLE_SERVER_IDENTITY` if used. `gcloud secrets create ow-env --data-file=… --replication-policy=user-managed --locations=us-east1`; delete the local file after.
 10. **On the VM:** copy `deploy/*` and `apps/code-executor/seccomp.json` to `/opt/ow`, then `sudo bash /opt/ow/vm-setup.sh`.
 11. **The data:** see "Moving the data" below. Then `sudo /opt/ow/deploy.sh <tag>`.
 12. **Check:** `https://<SITE_ADDRESS>/api/health` gives 200; sign in with Google; approve colleagues in Settings → Users.

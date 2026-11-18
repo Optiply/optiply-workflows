@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Hourglass } from 'lucide-react'
+import { Hourglass, KeyRound } from 'lucide-react'
 import { type FormEvent, useState } from 'react'
 import { Button, buttonVariants, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
@@ -81,8 +81,8 @@ export function LoginPage() {
               href="/api/auth/oidc/start"
               className={cn(buttonVariants({ variant: 'tertiary', size: 'lg' }), 'w-full text-ink')}
             >
-              <GoogleMark />
-              Continue with Google
+              {config.oidcProvider === 'Google' ? <GoogleMark /> : <KeyRound className="size-4" />}
+              Continue with {config.oidcProvider}
             </a>
           )}
 
@@ -133,8 +133,8 @@ export function LoginPage() {
 
           {config && !config.oidcEnabled && !config.localLoginEnabled && (
             <p className="text-sm text-muted">
-              No sign-in method is configured. Set <code>OIDC_CLIENT_ID</code>/<code>OIDC_CLIENT_SECRET</code>{' '}
-              or <code>LOCAL_LOGIN_ENABLED=true</code>.
+              No sign-in method is configured. Set <code>OIDC_ISSUER</code>/<code>OIDC_CLIENT_ID</code> or{' '}
+              <code>LOCAL_LOGIN_ENABLED=true</code>.
             </p>
           )}
         </Card>

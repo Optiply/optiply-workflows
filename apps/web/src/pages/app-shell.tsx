@@ -283,9 +283,12 @@ function useSignOut() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   return useCallback(async () => {
-    await fetch('/api/auth/logout', { method: 'POST' })
+    const res = await fetch('/api/auth/logout', { method: 'POST' })
+    const body = (await res.json().catch(() => null)) as { redirect?: string | null } | null
     queryClient.clear()
-    await navigate({ to: '/login' })
+    // The provider's own sign-out (Auth0's) too, which comes back to /login: else Sign in lets you straight back in.
+    if (body?.redirect) window.location.assign(body.redirect)
+    else await navigate({ to: '/login' })
   }, [navigate, queryClient])
 }
 

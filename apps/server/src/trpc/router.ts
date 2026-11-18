@@ -32,6 +32,7 @@ export const appRouter = router({
   /** What the login page needs to render. */
   authConfig: publicProcedure.query(({ ctx }) => ({
     oidcEnabled: ctx.config.oidcEnabled,
+    oidcProvider: ctx.config.OIDC_PROVIDER_NAME,
     localLoginEnabled: ctx.config.LOCAL_LOGIN_ENABLED,
     allowedDomain: ctx.config.OIDC_ALLOWED_DOMAIN,
   })),
