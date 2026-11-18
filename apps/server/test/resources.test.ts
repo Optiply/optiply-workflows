@@ -386,10 +386,10 @@ describe('permissions', () => {
   let groupId: string
 
   it('hides resources from users without a grant', async () => {
-    // Only the built-in REST API resource (M27), which All Users may use.
+    // Only the built-in REST API (M27) and GraphQL (session 57) resources, which All Users may use.
     const visible = data(await member.query('resources.list'))
     expect(visible.canCreate).toBe(false)
-    expect(visible.resources.map((r: { slug: string }) => r.slug)).toEqual(['rest_api'])
+    expect(visible.resources.map((r: { slug: string }) => r.slug)).toEqual(['graphql', 'rest_api'])
     expect((await member.query('resources.get', { id: pgId })).status).toBe(404)
     expect(
       (

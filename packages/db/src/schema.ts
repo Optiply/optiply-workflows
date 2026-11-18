@@ -256,7 +256,7 @@ export const resources = pgTable(
     description: text(),
     folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
     /** Built-in resources the platform provisions and keeps up to date; their settings can't be edited. */
-    systemKind: text({ enum: ['database', 'rest'] }),
+    systemKind: text({ enum: ['database', 'rest', 'graphql'] }),
     /** Kept in the Git repo (M22): its settings change through Git, its secrets and overrides here. */
     gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),

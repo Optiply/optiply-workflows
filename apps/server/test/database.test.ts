@@ -261,6 +261,7 @@ describe('the built-in resource', () => {
     const list = await admin.query('resources.list')
     expect(list.body.result?.data.resources.map((r: { slug: string }) => r.slug)).toEqual([
       'shop_db',
+      'graphql',
       'optiply_db',
       'rest_api',
     ])

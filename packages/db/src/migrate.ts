@@ -8,6 +8,9 @@ import { environments, groups, permissions, resourceConfigs, resources } from '.
 /** The built-in REST API resource (M27): any public URL, no settings; workflows and apps name it by this slug. */
 export const REST_API_RESOURCE_SLUG = 'rest_api'
 
+/** The built-in GraphQL resource (session 57): any public GraphQL endpoint, no settings. */
+export const GRAPHQL_RESOURCE_SLUG = 'graphql'
+
 /** Arbitrary constant so concurrent `migrate` containers serialize instead of racing. */
 const MIGRATION_LOCK_ID = 727_001
 
@@ -46,32 +49,49 @@ async function seed(db: ReturnType<typeof createDb>['db']) {
     ])
     .onConflictDoNothing()
 
-  await seedRestApi(db)
+  await seedBuiltIn(db, {
+    systemKind: 'rest',
+    slug: REST_API_RESOURCE_SLUG,
+    name: 'REST API',
+    type: 'restapi',
+    description:
+      'Any public URL, without setting up a resource. Each query gives its full URL and its own auth.',
+  })
+  await seedBuiltIn(db, {
+    systemKind: 'graphql',
+    slug: GRAPHQL_RESOURCE_SLUG,
+    name: 'GraphQL',
+    type: 'graphqlapi',
+    description:
+      'Any public GraphQL endpoint, without setting up a resource. Each query gives its endpoint URL and its own auth.',
+  })
 }
 
 /**
- * The built-in REST API resource, with a config in every environment. Made once, with Use for All Users (admins may
- * narrow that afterwards, so it isn't granted again); a user's own resource with the slug blocks it.
+ * A built-in resource (REST API, GraphQL), with a config in every environment. Made once, with Use for All Users
+ * (admins may narrow that afterwards, so it isn't granted again); a user's own resource with the slug blocks it.
  */
-async function seedRestApi(db: ReturnType<typeof createDb>['db']) {
-  let [resource] = await db.select().from(resources).where(eq(resources.systemKind, 'rest'))
+async function seedBuiltIn(
+  db: ReturnType<typeof createDb>['db'],
+  spec: { systemKind: 'rest' | 'graphql'; slug: string; name: string; type: string; description: string },
+) {
+  let [resource] = await db.select().from(resources).where(eq(resources.systemKind, spec.systemKind))
   if (!resource) {
-    const [taken] = await db.select().from(resources).where(eq(resources.slug, REST_API_RESOURCE_SLUG))
+    const [taken] = await db.select().from(resources).where(eq(resources.slug, spec.slug))
     if (taken) {
       console.warn(
-        `A resource already has the slug "${REST_API_RESOURCE_SLUG}", which the built-in REST API resource needs: it isn't created. Give that resource another slug, then migrate again.`,
+        `A resource already has the slug "${spec.slug}", which the built-in ${spec.name} resource needs: it isn't created. Give that resource another slug, then migrate again.`,
       )
       return
     }
     ;[resource] = await db
       .insert(resources)
       .values({
-        slug: REST_API_RESOURCE_SLUG,
-        name: 'REST API',
-        type: 'restapi',
-        systemKind: 'rest',
-        description:
-          'Any public URL, without setting up a resource. Each query gives its full URL and its own auth.',
+        slug: spec.slug,
+        name: spec.name,
+        type: spec.type,
+        systemKind: spec.systemKind,
+        description: spec.description,
       })
       .returning()
     const [allUsers] = await db.select().from(groups).where(eq(groups.systemKind, 'all_users'))

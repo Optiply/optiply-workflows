@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   ConnectorError,
   connectors,
@@ -5,6 +6,7 @@ import {
   destroyHttpClient,
   exampleOf,
   getConnector,
+  graphqlApiConnector,
   graphqlConnector,
   graphqlIntrospect,
   type HttpClient,
@@ -12,6 +14,7 @@ import {
   httpRequest,
   hubspotConnector,
   hubspotProperties,
+  introspectGraphqlApi,
   OPENAPI_MAX_SPEC,
   openApiDocument,
   restApiConnector,
@@ -24,6 +27,7 @@ import {
 import {
   type Db,
   environments,
+  GRAPHQL_RESOURCE_SLUG,
   oauthTokens,
   permissions,
   REST_API_RESOURCE_SLUG,
@@ -218,6 +222,8 @@ function requireAdminForServerIdentity(
 
 /** Each `{{ }}` in the playground gets this long in the sandbox. */
 const EXPRESSION_TIMEOUT_MS = 5_000
+/** How long the built-in GraphQL resource's schema may take (an introspection answer can be large). */
+const GRAPHQL_API_SCHEMA_TIMEOUT_MS = 30_000
 
 type AuthedContext = Context & { user: NonNullable<Context['user']> }
 
@@ -295,10 +301,10 @@ function levelsByEnv(access: Access, resource: Resource, envIds: string[]) {
 
 export const resourcesRouter = router({
   /** Connector types a resource can have. */
-  /** The types people can create, grouped for the picker (M27); the built-in REST API's isn't one of them. */
+  /** The types people can create, grouped for the picker (M27); the built-in REST API's and GraphQL's aren't. */
   types: authedProcedure.query(() =>
     Object.values(connectors)
-      .filter((c) => c.type !== restApiConnector.type)
+      .filter((c) => c.type !== restApiConnector.type && c.type !== graphqlApiConnector.type)
       .map((c) => ({ type: c.type, label: c.label, group: TYPE_GROUPS[c.type] ?? 'APIs' })),
   ),
 
@@ -410,6 +416,12 @@ export const resourcesRouter = router({
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: `The REST API resource is built in: use ${REST_API_RESOURCE_SLUG}`,
+        })
+      }
+      if (input.type === graphqlApiConnector.type) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `The GraphQL resource for any endpoint is built in: use ${GRAPHQL_RESOURCE_SLUG}`,
         })
       }
       const [resource] = await uniqueOr('A resource with that slug already exists', () =>
@@ -969,6 +981,86 @@ export const resourcesRouter = router({
         return { ok: false as const, error: errorView(err) }
       }
     }),
+  /**
+   * The built-in GraphQL resource's schema for one query's endpoint (session 57), asked with the query's own URL,
+   * headers and auth, for the editor's completions. Needs Use. Its templates get what the playground's do: the
+   * editor's scope and the non-secret config vars (a secret one could otherwise be sent to any host). Kept 10 minutes
+   * per person, environment and query.
+   */
+  graphqlApiSchema: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        query: z.object({ url: z.string(), auth: z.unknown(), headers: z.unknown() }),
+        scope: z.record(z.string(), z.unknown()).default({}),
+        refresh: z.boolean().default(false),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      if (resource.type !== graphqlApiConnector.type) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Only the built-in GraphQL resource reads a schema per query',
+        })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const parsed = graphqlApiConnector.querySchema.safeParse({ ...input.query, query: '' })
+      if (!parsed.success) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'The URL, headers or auth are not valid' })
+      }
+      const configVars = await publicConfigVars(ctx.db, input.environmentId)
+      const key = createHash('sha256')
+        .update(
+          canonicalJson([
+            ctx.user.id,
+            input.environmentId,
+            parsed.data.url,
+            parsed.data.auth,
+            parsed.data.headers,
+            input.scope,
+            configVars,
+          ]),
+        )
+        .digest('hex')
+      const cached = graphqlSchemas.get(key)
+      if (cached && !input.refresh && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, schema: cached.schema }
+      }
+      const scope = { ...input.scope, configVars }
+      try {
+        const schema = toJson(
+          await runOperation(
+            ctx.services.pool,
+            graphqlApiConnector,
+            toResolved(ctx.config.keyring, row),
+            (client, opts) =>
+              introspectGraphqlApi(client as HttpClient, parsed.data, {
+                ...opts,
+                timeoutMs: GRAPHQL_API_SCHEMA_TIMEOUT_MS,
+                evaluate: (code) =>
+                  ctx.services.sandbox.evalExpression(code, scope, { timeoutMs: EXPRESSION_TIMEOUT_MS }),
+              }),
+            { timeoutMs: GRAPHQL_API_SCHEMA_TIMEOUT_MS },
+          ),
+        )
+        if (graphqlSchemas.size >= 200) graphqlSchemas.delete(graphqlSchemas.keys().next().value!)
+        graphqlSchemas.set(key, { at: Date.now(), schema })
+        return { ok: true as const, schema }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
+
   /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
   openapiOperations: authedProcedure
     .input(z.object({ resourceId: Id, environmentId: Id }))
