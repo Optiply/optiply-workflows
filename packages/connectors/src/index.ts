@@ -4,6 +4,7 @@ import { openaiCompatibleConnector } from './ai/openai'
 import { s3Connector } from './aws/s3'
 import { bigqueryConnector } from './bigquery'
 import { graphqlConnector } from './graphql'
+import { graphqlApiConnector } from './graphql-api'
 import { jdbcConnector } from './jdbc/connector'
 import { mssqlConnector } from './mssql/connector'
 import { mysqlConnector } from './mysql'
@@ -69,6 +70,7 @@ export {
   serverIdentity,
 } from './google-auth'
 export { type GraphqlQuery, graphqlConnector, graphqlIntrospect } from './graphql'
+export { type GraphqlApiQuery, graphqlApiConnector, introspectGraphqlApi } from './graphql-api'
 export {
   buildBody,
   createHttpClient,
@@ -237,6 +239,7 @@ export const connectors: Readonly<Record<string, AnyConnector>> = {
   [restConnector.type]: restConnector,
   [restApiConnector.type]: restApiConnector,
   [graphqlConnector.type]: graphqlConnector,
+  [graphqlApiConnector.type]: graphqlApiConnector,
   [openapiConnector.type]: openapiConnector,
   [slackConnector.type]: slackConnector,
   [hubspotConnector.type]: hubspotConnector,

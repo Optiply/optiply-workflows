@@ -3,11 +3,17 @@ import { GraphQLError, getIntrospectionQuery, type IntrospectionQuery, parse } f
 import { z } from 'zod'
 import { createHttpClient, destroyHttpClient, type HttpClient, httpError, httpRequest } from './http-core'
 import { keyValues, renderHeaders, responseMetadata, restConfigSchema, restSecretsSchema } from './rest'
-import { type Connector, ConnectorError, type CredentialSource, type QueryResult } from './types'
+import {
+  type Connector,
+  ConnectorError,
+  type CredentialSource,
+  type QueryContext,
+  type QueryResult,
+} from './types'
 
 // GraphQL (M27): a REST resource's settings (the endpoint is the base URL), queries posted as `{query, variables}`.
 
-const querySchema = z.object({
+export const graphqlQuerySchema = z.object({
   /** The operation text; no `{{ }}` (values go in variables, so nothing is pasted into GraphQL). */
   query: z.string().default(''),
   /** JSON with `{{ }}`, or empty. */
@@ -19,7 +25,7 @@ const querySchema = z.object({
 
 type Config = z.output<typeof restConfigSchema>
 type Secrets = z.output<typeof restSecretsSchema>
-type Query = z.output<typeof querySchema>
+type Query = z.output<typeof graphqlQuerySchema>
 export type GraphqlQuery = Query
 
 interface GraphqlResponse {
@@ -33,7 +39,7 @@ export const graphqlConnector: Connector<Config, Secrets, Query, HttpClient> = {
   label: 'GraphQL',
   configSchema: restConfigSchema,
   secretsSchema: restSecretsSchema,
-  querySchema,
+  querySchema: graphqlQuerySchema,
   scrubResultData: true,
 
   createClient({ config, secrets }) {
@@ -59,64 +65,87 @@ export const graphqlConnector: Connector<Config, Secrets, Query, HttpClient> = {
     }
   },
 
-  validateQuery(query) {
-    const errors: TemplateError[] = []
-    const at = query.query.indexOf('{{')
-    if (at >= 0) {
-      errors.push(
-        new TemplateError(
-          'Put values in the variables ($name in the query), not {{ }} in the query',
-          at,
-          at + 2,
-        ),
-      )
-    } else if (query.query.trim()) {
-      try {
-        parse(query.query)
-      } catch (err) {
-        if (!(err instanceof GraphQLError)) throw err
-        const pos = err.positions?.[0] ?? 0
-        errors.push(new TemplateError(err.message.replace(/^Syntax Error: /, ''), pos, pos + 1))
-      }
-    }
-    for (const template of [query.variables, ...query.headers.map((h) => h.value)]) {
-      try {
-        parseTemplate(template)
-      } catch (err) {
-        if (err instanceof TemplateError) errors.push(err)
-        else throw err
-      }
-    }
-    return errors
-  },
+  validateQuery: (query) => validateGraphql(query),
 
   async execute(client, query, ctx): Promise<QueryResult> {
-    if (!query.query.trim()) throw new ConnectorError('invalid_query', 'Write a query')
-    const variables = query.variables.trim() ? await renderJson(query.variables, ctx.evaluate) : undefined
-    if (
-      variables !== undefined &&
-      (variables === null || typeof variables !== 'object' || Array.isArray(variables))
-    ) {
-      throw new ConnectorError('invalid_query', 'Variables must be a JSON object')
-    }
-    const { body, res } = await post(
-      client,
-      {
-        query: query.query,
-        ...(variables !== undefined && { variables }),
-        ...(query.operationName.trim() && { operationName: query.operationName.trim() }),
-      },
-      await renderHeaders(query, ctx),
-      ctx,
-    )
-    return {
-      data: body.data ?? null,
-      metadata: {
-        ...responseMetadata(res),
-        ...(body.extensions !== undefined && { extensions: body.extensions }),
-      },
-    }
+    return executeGraphql(client, query, ctx, await renderHeaders(query, ctx))
   },
+}
+
+/** The operation (no `{{ }}`, parsable), the variables and the headers' templates (also the built-in resource's). */
+export function validateGraphql(query: Query): TemplateError[] {
+  const errors: TemplateError[] = []
+  const at = query.query.indexOf('{{')
+  if (at >= 0) {
+    errors.push(
+      new TemplateError(
+        'Put values in the variables ($name in the query), not {{ }} in the query',
+        at,
+        at + 2,
+      ),
+    )
+  } else if (query.query.trim()) {
+    try {
+      parse(query.query)
+    } catch (err) {
+      if (!(err instanceof GraphQLError)) throw err
+      const pos = err.positions?.[0] ?? 0
+      errors.push(new TemplateError(err.message.replace(/^Syntax Error: /, ''), pos, pos + 1))
+    }
+  }
+  for (const template of [query.variables, ...query.headers.map((h) => h.value)]) {
+    try {
+      parseTemplate(template)
+    } catch (err) {
+      if (err instanceof TemplateError) errors.push(err)
+      else throw err
+    }
+  }
+  return errors
+}
+
+/** Runs an operation: its variables rendered and checked, posted, its data and the response's metadata. */
+export async function executeGraphql(
+  client: HttpClient,
+  query: Query,
+  ctx: QueryContext,
+  headers: [string, string][],
+  to: Target = {},
+): Promise<QueryResult> {
+  if (!query.query.trim()) throw new ConnectorError('invalid_query', 'Write a query')
+  const variables = query.variables.trim() ? await renderJson(query.variables, ctx.evaluate) : undefined
+  if (
+    variables !== undefined &&
+    (variables === null || typeof variables !== 'object' || Array.isArray(variables))
+  ) {
+    throw new ConnectorError('invalid_query', 'Variables must be a JSON object')
+  }
+  const { body, res } = await post(
+    client,
+    {
+      query: query.query,
+      ...(variables !== undefined && { variables }),
+      ...(query.operationName.trim() && { operationName: query.operationName.trim() }),
+    },
+    headers,
+    ctx,
+    to,
+  )
+  return {
+    data: body.data ?? null,
+    metadata: {
+      ...responseMetadata(res),
+      ...(body.extensions !== undefined && { extensions: body.extensions }),
+    },
+  }
+}
+
+/** Where an operation goes when it isn't the resource's base URL (the built-in resource's own URL and auth). */
+export interface Target {
+  url?: URL
+  params?: [string, string][]
+  /** Headers kept out of what's reported (the request's own credentials). */
+  sensitive?: string[]
 }
 
 /**
@@ -128,12 +157,15 @@ async function post(
   payload: { query: string; variables?: unknown; operationName?: string },
   headers: [string, string][],
   ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
+  to: Target = {},
 ) {
   const res = await httpRequest(
     client,
     {
       method: 'POST',
-      url: new URL(client.config.baseUrl),
+      url: to.url ?? new URL(client.config.baseUrl),
+      ...(to.params?.length && { params: to.params }),
+      ...(to.sensitive?.length && { sensitive: to.sensitive }),
       headers: [['accept', 'application/graphql-response+json, application/json'], ...headers],
       body: JSON.stringify(payload),
       contentType: 'application/json',
@@ -166,8 +198,16 @@ async function post(
 export async function graphqlIntrospect(
   client: HttpClient,
   ctx: { signal: AbortSignal; credentials?: CredentialSource | undefined },
+  headers: [string, string][] = [],
+  to: Target = {},
 ): Promise<IntrospectionQuery> {
-  const { body } = await post(client, { query: getIntrospectionQuery({ descriptions: true }) }, [], ctx)
+  const { body } = await post(
+    client,
+    { query: getIntrospectionQuery({ descriptions: true }) },
+    headers,
+    ctx,
+    to,
+  )
   const schema = body.data as IntrospectionQuery | undefined
   if (!schema?.__schema?.types)
     throw new ConnectorError('query', 'The endpoint answered introspection without a schema')
