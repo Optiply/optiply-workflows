@@ -2010,6 +2010,25 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 58 steps: the repo copies, and signing in through Optiply's Auth0
+
+1. **Repos** ✅ (the user's choices): a **copy** of this repo at `github.com/Optiply/optiply-workflows` (private, all 57
+   branches, default `main`; local `origin` is still the personal repo, so the copy falls behind until the user
+   decides); a copy of the private `Optiply/optiply-feedback` at `FabioAlexandreCeriaco/optiply-feedback` (private, 36
+   branches).
+2. **Sign-in through Auth0** ✅ `c178e0d` on **`feat/auth0-login`** (from `feat/sql-schema`), as optiply-feedback does:
+   the Auth0 application "Optiply Workflows" (`optiply.eu.auth0.com`, a single-page app: client id, no secret). A
+   public client with PKCE; `OIDC_CALLBACK_PATH=/` because that Auth0 app allows only the site's root (checked: 403 to
+   `/api/auth/oidc/callback`, 302 to `/`; `/v2/logout` refused `returnTo=…/login`), the server answering `/` with
+   `state` and `code` before the web app; sign-out at Auth0 (`/v2/logout`, back to the root); "Continue with Optiply".
+   The rules are unchanged (verified email, @optiply.nl or invited, approval); matched by email, so accounts carry
+   over. Tests: `auth0-login.test.ts` (a fake Auth0), config. **Production:** `ow-env` **version 3** (Auth0 issuer and
+   client id, provider name, callback `/`, no Google secret; version 2 is Google's), compose copied (old one kept as
+   `/opt/ow/docker-compose.prod.yml.pre-c178e0d`), dump `/var/backups/ow/ow-2026-11-18T1733-pre-c178e0d.dump`, Cloud
+   Build `fd9a9d86-cf2d-4f1f-aca0-425e53c42bf7`, `deploy.sh c178e0d`: **production runs `c178e0d`** (previous
+   `7b887fe`), health 200, `/api/auth/oidc/start` goes to Auth0 and Auth0 answers with its login page. `e75c8e6`
+   removed. Rollback: the old compose back, a new `ow-env` version with version 2's contents, `deploy.sh 7b887fe`.
+
 ## 14. Session 57 steps: cost check, cleanups, three fixes from the SDK setup
 
 The user (2026-11-18): plan and checklist for what was left open, **everything within the €5 a month cap**, the SDK
@@ -2530,6 +2549,12 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 59 with (end of session 58):** **Production runs `c178e0d`** from **`feat/auth0-login`** (pushed;
+worktree `~/optiply-workflows-fixes`; it holds `feat/sql-schema` and the branches below it): sign-in through Optiply's
+Auth0 (§14 session 58). The user confirms their own sign-in works. Repo copies: `Optiply/optiply-workflows` (behind
+until the user decides which remote is the main one) and the personal `optiply-feedback`. The end-of-November PR is
+now `feat/auth0-login`. Ask what's next.
 
 **Start session 58 with (end of session 57, 2026-11-18):** **Production runs `7b887fe`** from branch
 **`feat/sql-schema`** (pushed; worktree `~/optiply-workflows-fixes`), which stacks on `feat/graphql-builtin`,
