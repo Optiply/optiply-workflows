@@ -2074,6 +2074,19 @@ keeps Staging for admins only), in a separate worktree `~/optiply-workflows-fixe
     `deploy.sh e75c8e6`: **production runs `e75c8e6`** (previous `531d19d`), "GraphQL" created (both environments,
     All Users: use), health 200 after ~45 s of startup (502 meanwhile), 0 restarts. `ec08e57` removed (tags read
     first). Next agreed: SQL schema loading for every database resource, as its own project.
+12. **SQL schema loading** ✅ on **`feat/sql-schema`** (from `feat/graphql-builtin`): `adb7b41` every SQL connector's
+    catalog query (`Connector.schemaSql`; Postgres and the managed Database, MySQL, SQL Server, BigQuery's default
+    dataset or region, JDBC's Snowflake/Oracle/ClickHouse; none for an uploaded driver), run through the connector
+    (`describeSqlSchema`, 20,000 columns, under the resource's maxRows); `4248856` `resources.sqlSchema` (Use; 10 min
+    per settings version, the managed Database read every time); `083e210` the Tables panel under the SQL editor
+    (workflow block, app query, playground: search, columns with types, a name clicked in at the cursor, Refresh)
+    and Monaco SQL completions (tables, a table's or alias's columns after `name.`); `7b887fe` review (10 found, 9
+    fixed: Refresh a one-off so later reads keep the server's cache; the list kept while read again; BigQuery without
+    a location says so; search opens only tables with a matching column, 200 listed; no completions on space or in
+    strings and comments). Tests: connectors 7, server 3, e2e `sql-schema.spec.ts`; full e2e 176/176. Deployed by
+    hand: dump `/var/backups/ow/ow-2026-11-18T1334-pre-7b887fe.dump`, Cloud Build
+    `a6e284bf-32ef-4634-a8a1-763040800180`, `deploy.sh 7b887fe`: **production runs `7b887fe`** (previous `e75c8e6`),
+    health 200 after ~40 s, 0 restarts; `531d19d` removed (tags read first).
 
 **The SDK setup session (2026-11-16/17, no code, recorded here):** the Optiply SDK (`optiply-sdk-external` 0.3.1,
 import `optiply`, github.com/Optiply/optiply-sdk-external) is published to Artifact Registry `optiply-python` (Python,
@@ -2518,12 +2531,12 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `e75c8e6`** from branch
-**`feat/graphql-builtin`** (pushed; worktree `~/optiply-workflows-fixes`), which stacks on `fix/sdk-setup-papercuts`
-and `feat/staging-admins-only` (§14 session 57): Staging admins-only, CSV import out of memory, SDK Test on a first
-install, the Python index Test on Artifact Registry (its package saved, migration 0052), and the built-in GraphQL
-resource. Next agreed with the user: SQL schema loading (tables and columns, completions) for every database resource.
-The end-of-November PR covers all three branches. The user tries them in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply
+**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `7b887fe`** from branch
+**`feat/sql-schema`** (pushed; worktree `~/optiply-workflows-fixes`), which stacks on `feat/graphql-builtin`,
+`fix/sdk-setup-papercuts` and `feat/staging-admins-only` (§14 session 57): Staging admins-only, CSV import out of
+memory, SDK Test on a first install, the Python index Test on Artifact Registry (its package saved, migration 0052),
+the built-in GraphQL resource, and SQL schema loading. The end-of-November PR covers all four branches (merge
+`feat/sql-schema`: it holds the others). Ask what's next. The user tries them in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply
 Python": its package to test with is now saved, `optiply-sdk-external` saved once). B1 and B2 checked by the user.
 Delete the VM's two dumps of 18 Nov (`…T0849-pre-ec08e57`, `…T0954-pre-531d19d`) when happy.
 Open, the user's: check this month's spend and the €5 alert in the console (we can't read billing); optionally the
