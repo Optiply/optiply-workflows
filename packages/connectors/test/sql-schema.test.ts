@@ -210,7 +210,7 @@ describe('BigQuery', () => {
       resource({ location: 'EU', ...config }, { serviceAccountKey: fake.keyJson }, version)
     const sent = () =>
       (
-        fake.requests.findLast((r) => r.method === 'POST' && r.path.endsWith('/jobs'))?.body as {
+        fake.requests.findLast((r) => r.method === 'POST' && r.path.endsWith('/jobs'))!.body as {
           configuration: { query: { query: string } }
         }
       ).configuration.query.query
