@@ -54,6 +54,15 @@ export const postgresConnector: Connector<Config, Secrets, Query, Client> = {
   secretsSchema,
   querySchema,
 
+  // Every schema but the system's; a column the user can't read isn't listed (information_schema checks grants).
+  schemaSql: (_config, limit) => `select c.table_schema as "s", c.table_name as "t", c.column_name as "c",
+  case when c.data_type in ('USER-DEFINED', 'ARRAY') then c.udt_name else c.data_type end as "d",
+  c.is_nullable as "n"
+from information_schema.columns c
+where c.table_schema not in ('pg_catalog', 'information_schema') and c.table_schema not like 'pg\\_%'
+order by c.table_schema, c.table_name, c.ordinal_position
+limit ${limit}`,
+
   createClient({ config, secrets }) {
     const tunnel = tunnelFor(config, secrets)
     const sql = postgres({

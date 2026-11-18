@@ -104,6 +104,18 @@ export function createBigQueryConnector(
     secretsSchema,
     querySchema,
 
+    // The default dataset's columns, else the whole region's (the resource's location, else US). A small catalog
+    // read, billed to the resource's project like any query.
+    schemaSql: (config, limit) => {
+      const from = config.defaultDataset
+        ? `\`${config.defaultDataset}\`.INFORMATION_SCHEMA.COLUMNS`
+        : `\`region-${(config.location ?? 'us').toLowerCase()}\`.INFORMATION_SCHEMA.COLUMNS`
+      return `SELECT table_schema AS s, table_name AS t, column_name AS c, data_type AS d, is_nullable AS n
+FROM ${from}
+ORDER BY table_schema, table_name, ordinal_position
+LIMIT ${limit}`
+    },
+
     createClient({ config, secrets }) {
       const key = parseServiceAccountKey(secrets.serviceAccountKey, 'serviceAccountKey')
       const agent = new Agent({ connections: 16 })

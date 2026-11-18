@@ -199,6 +199,14 @@ export { salesforceConnector } from './services/salesforce'
 export { sendgridConnector } from './services/sendgrid'
 export { slackConnector } from './services/slack'
 export { stripeConnector, stripeForm } from './services/stripe'
+export {
+  describeSqlSchema,
+  groupSchema,
+  SQL_SCHEMA_COLUMNS,
+  type SqlSchema,
+  type SqlSchemaColumn,
+  type SqlSchemaTable,
+} from './sql-schema'
 export { checkSshIap, configureIap, IAP_SCOPE, type IapDefaults } from './ssh/client'
 export { IapError, type IapErrorCode, type IapTarget } from './ssh/iap'
 export { readPrivateKey, type SshKey, SshKeyError, type SshKeyErrorCode } from './ssh/keys'

@@ -112,6 +112,12 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
    * fails with a ConnectorError that says it was this step.
    */
   prepareTest?(client: Client): Promise<string | undefined>
+  /**
+   * A SQL connector's catalog query (session 57, `sql-schema.ts`): read-only, in its dialect, at most `limit` rows of
+   * `s`, `t`, `c`, `d`, `n` (schema, table, column, type, nullable), ordered by table and column position. Null when
+   * this resource's dialect is unknown.
+   */
+  schemaSql?(config: Config, limit: number): string | null
   testConnection(
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },

@@ -56,6 +56,17 @@ export const mysqlConnector: Connector<Config, Secrets, Query, Client> = {
   secretsSchema,
   querySchema,
 
+  // The database the resource connects to.
+  schemaSql: (
+    _config,
+    limit,
+  ) => `select table_schema as s, table_name as t, column_name as c, column_type as d,
+  is_nullable as n
+from information_schema.columns
+where table_schema = database()
+order by table_schema, table_name, ordinal_position
+limit ${limit}`,
+
   createClient({ config, secrets }) {
     const tunnel = tunnelFor(config, secrets)
     const connectionOptions: mysql.ConnectionOptions = {
