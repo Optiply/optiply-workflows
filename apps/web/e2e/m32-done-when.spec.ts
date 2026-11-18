@@ -61,6 +61,12 @@ test("M32's done-when", async ({ page }) => {
     await page.getByLabel('Password config var').selectOption(secretName)
     await page.getByRole('button', { name: 'Test', exact: true }).click()
     await expect(page.getByTestId('python-index-test')).toHaveText('The index answered and took the sign-in.')
+    // A package to test with (for indexes that list nothing at their root, as Artifact Registry): its page.
+    await page.getByLabel('Package to test with').fill('owtest-private')
+    await page.getByRole('button', { name: 'Test', exact: true }).click()
+    await expect(page.getByTestId('python-index-test')).toHaveText(
+      'The index answered, took the sign-in and has owtest-private.',
+    )
     await page.getByRole('button', { name: 'Add index' }).click()
     const row = page.getByTestId(`python-index-private-${stamp}`)
     await expect(row).toContainText(indexName)

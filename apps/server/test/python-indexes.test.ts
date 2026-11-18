@@ -207,6 +207,16 @@ describe.skipIf(!available)('package indexes on the server', { timeout: 120_000 
         await admin.mutate('pythonIndexes.test', indexFields({ username: null, passwordConfigVar: null })),
       ),
     ).toMatchObject({ ok: false, status: 401 })
+    // With a package to test with (for indexes that list nothing at their root): its page, not the root.
+    expect(
+      data(await admin.mutate('pythonIndexes.test', { ...indexFields(), testPackage: 'owtest_private' })),
+    ).toMatchObject({ ok: true, status: 200 })
+    expect(
+      data(await admin.mutate('pythonIndexes.test', { ...indexFields(), testPackage: 'owtest-absent' })),
+    ).toMatchObject({ ok: false, status: 404, message: expect.stringContaining('no package owtest-absent') })
+    expect(
+      (await admin.mutate('pythonIndexes.test', { ...indexFields(), testPackage: '../simple' })).status,
+    ).toBe(400)
 
     const { id } = data(await admin.mutate('pythonIndexes.create', { slug: 'private', ...indexFields() }))
     expect(

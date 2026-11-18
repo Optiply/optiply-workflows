@@ -41,6 +41,17 @@ const Fields = z.object({
 })
 type FieldsInput = z.infer<typeof Fields>
 
+/**
+ * A package Test looks for instead of the index's root page (not saved): some indexes, Google's Artifact Registry
+ * among them, list nothing at their root and answer 404 there.
+ */
+const TestPackage = z
+  .string()
+  .trim()
+  .max(200)
+  .regex(/^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)?$/, "A package's name (e.g. requests)")
+  .nullish()
+
 /** The fields as stored: blanks as null, the URL without a trailing slash; the password's config var checked. */
 async function checked(db: Db, input: FieldsInput) {
   const username = input.username || null
@@ -158,7 +169,7 @@ export const pythonIndexesRouter = router({
   }),
 
   /** Whether the builder reaches the index and it takes the sign-in, for fields saved or not. */
-  test: adminProcedure.input(Fields).mutation(async ({ ctx, input }) => {
+  test: adminProcedure.input(Fields.extend({ testPackage: TestPackage })).mutation(async ({ ctx, input }) => {
     const client = pythonBuilder()
     if (!client) {
       return { ok: false, status: null, message: "There's no package builder here (PYTHON_BUILDER_URL)" }
@@ -172,7 +183,7 @@ export const pythonIndexesRouter = router({
         updatedAt: new Date(),
         ...fields,
       })
-      return await client.checkIndex(index)
+      return await client.checkIndex(index, input.testPackage)
     } catch (err) {
       if (err instanceof BlockFailure) return { ok: false, status: null, message: err.message }
       throw err

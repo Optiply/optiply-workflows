@@ -107,11 +107,12 @@ export class PythonBuilderClient {
     return this.post('/build-npm', { dependencies, registries }) as Promise<NpmBuildAnswer>
   }
 
-  /** Whether a package index answers and takes its sign-in (M32, Settings → Python's Test). */
-  async checkIndex(index: BuilderIndex): Promise<CheckIndexAnswer> {
-    const answer = (await this.post('/check-index', { index })) as unknown as
-      | CheckIndexAnswer
-      | Extract<BuildAnswer, { ok: false }>
+  /** Whether a package index answers and takes its sign-in (M32, Settings → Python's Test); at a package's page. */
+  async checkIndex(index: BuilderIndex, testPackage?: string | null): Promise<CheckIndexAnswer> {
+    const answer = (await this.post('/check-index', {
+      index,
+      ...(testPackage && { package: testPackage }),
+    })) as unknown as CheckIndexAnswer | Extract<BuildAnswer, { ok: false }>
     if ('error' in answer) return { ok: false, status: null, message: answer.error.message }
     return answer
   }

@@ -7,7 +7,8 @@ the code executor reads, so its Python blocks can import them. It alone has netw
                  -> {"ok": true, "lock": {...}, "envId": "...", "sizeBytes": n, "cached": bool, "log": "..."}
   POST /install  {"lock": {...}}  (a lock /build gave: installs exactly it, without resolving)
                  -> {"ok": true, "envId": "...", "sizeBytes": n, "cached": bool, "log": "..."}
-  POST /check-index {"index": {...}}  (M32: whether an index answers, and takes its sign-in)
+  POST /check-index {"index": {...}, "package"?: "name"}  (M32: whether an index answers, and takes its sign-in;
+                 with a package, its page instead of the root, for indexes that list nothing there)
                  -> {"ok": true, "status": 200} or {"ok": false, "status": 401, "message": "..."}
   POST /build-npm {"dependencies": {"acme-sdk": "^2.1.0"}, "registries": [{"scope": "@acme" | null, "url", "token"?}]}
                  (M37: an SDK resource's JavaScript packages) -> {"ok": true, "envId", "lock": {"node", "dependencies",
@@ -637,10 +638,12 @@ def index_page(index, name, deadline, strict=False):
         raise BuildError("resolve", f"Package index {index['name']}'s page for {name} couldn't be read: {reason}") from None
 
 
-def probe(index, deadline):
-    """The index's root page, signed in: (ok, status, message) for Test and for a failed build."""
+def probe(index, deadline, package=None):
+    """The index's root page, or a package's page on it, signed in: (ok, status, message) for Test and for a failed
+    build. A package's page is for indexes that list nothing at their root (Google's Artifact Registry)."""
+    url = index["url"] + "/" + (normalize(package) + "/" if package else "")
     try:
-        with index_request(index, index["url"] + "/", deadline) as res:
+        with index_request(index, url, deadline) as res:
             status = res.status
     except urllib.error.HTTPError as exc:
         status = exc.code
@@ -650,11 +653,17 @@ def probe(index, deadline):
         if index["username"] is None:
             return False, status, "The index wants a sign-in: add a username and password"
         return False, status, "The index refused the sign-in: check the username and password"
+    if status == 404 and package:
+        return False, status, (
+            f"The index has no package {package}: check its name and the URL (and the sign-in: some indexes, "
+            "GitLab's among them, answer 404 when it's wrong)"
+        )
     if status == 404:
-        # Some indexes list nothing at their root; others (GitLab's) answer 404 to a wrong sign-in.
+        # Some indexes list nothing at their root (Artifact Registry); others (GitLab's) answer 404 to a wrong sign-in.
         return False, status, (
             "The index answered 404 at its root: check the URL (and the sign-in: some indexes, GitLab's among them, "
-            "answer 404 when it's wrong)"
+            "answer 404 when it's wrong). Some indexes, Google's Artifact Registry among them, list nothing at their "
+            "root: test with a package you know is on it"
         )
     if status >= 400:
         return False, status, f"The index answered {status}"
@@ -1137,12 +1146,15 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def check_index(self, body):
-        """POST /check-index: the index's root page, signed in; what its answer means for the Settings page."""
+        """POST /check-index: the index's root page (or `package`'s page), signed in; what it means for Settings."""
         try:
             index = check_indexes([body.get("index")])[0]
         except BuildError as exc:
             return self.refuse(HTTPStatus.BAD_REQUEST, str(exc))
-        ok, status, message = probe(index, time.monotonic() + 20)
+        package = body.get("package")
+        if package is not None and (not isinstance(package, str) or len(package) > 200 or not NAME.match(package)):
+            return self.refuse(HTTPStatus.BAD_REQUEST, "A package to test with is a package's name (e.g. requests)")
+        ok, status, message = probe(index, time.monotonic() + 20, package)
         answer = {"ok": ok, "status": status}
         if message:
             answer["message"] = hide(scrub(message), body)

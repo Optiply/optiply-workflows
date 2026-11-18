@@ -214,6 +214,8 @@ export async function startTestIndex(
     auth?: { username: string; password: string }
     /** Files (not pages) answer a 302 to this base URL's `/files/<name>` (another host, in tests). */
     redirectFilesTo?: string
+    /** The root page answers 404, as Google's Artifact Registry's does: only packages' pages are there. */
+    noRootListing?: boolean
   } = {},
 ): Promise<TestIndex> {
   const expected = opts.auth
@@ -254,7 +256,7 @@ export async function startTestIndex(
       }, delay)
       return
     }
-    if (path === '/simple/' || path === '/simple') {
+    if ((path === '/simple/' || path === '/simple') && !opts.noRootListing) {
       res.writeHead(200, { 'content-type': 'text/html' })
       res.end(
         `<!doctype html><html><body>${[...links.keys()].map((n) => `<a href="/simple/${n}/">${n}</a>`).join('')}</body></html>`,
