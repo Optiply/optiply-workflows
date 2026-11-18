@@ -3,6 +3,7 @@ import {
   ConnectorError,
   connectors,
   createHttpClient,
+  describeSqlSchema,
   destroyHttpClient,
   exampleOf,
   getConnector,
@@ -21,6 +22,7 @@ import {
   restConfigSchema,
   runOperation,
   runQuery,
+  type SqlSchema,
   SshSettingsError,
   testResource,
 } from '@ow/connectors'
@@ -1079,6 +1081,56 @@ export const resourcesRouter = router({
       return outcome
     }),
 
+  /**
+   * A SQL resource's tables and columns (session 57), by its connector's catalog query, for the editor's browser and
+   * completions. Needs Use; read as any query of the resource is (its tunnels, sign-in, read-only mode). Kept 10
+   * minutes per settings version (and per person, where each signs in with their own account). `supported: false`
+   * for a resource whose dialect has no catalog query (an uploaded JDBC driver).
+   */
+  sqlSchema: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, refresh: z.boolean().default(false) }))
+    .query(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'use', 'this resource in this environment')
+      const connector = connectorFor(resource.type)
+      if (!connector.schemaSql) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Only database resources have tables to list' })
+      }
+      const row = await getConfigRow(ctx.db, resource.id, input.environmentId)
+      if (!row) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This resource is not configured in this environment',
+        })
+      }
+      const resolved = toResolved(ctx.config.keyring, row)
+      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
+      const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
+      const cached = sqlSchemas.get(key)
+      if (cached && !input.refresh && cached.at > Date.now() - SQL_SCHEMA_TTL_MS) {
+        return { ok: true as const, supported: true as const, schema: cached.schema }
+      }
+      const credentials = credentialsFor(
+        { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+        resource.type,
+        resolved,
+        ctx.user.id,
+      )
+      try {
+        const schema = await describeSqlSchema(ctx.services.pool, connector, resolved, {
+          timeoutMs: SQL_SCHEMA_TIMEOUT_MS,
+          ...(credentials && { credentials }),
+        })
+        if (!schema) return { ok: true as const, supported: false as const, schema: null }
+        if (sqlSchemas.size >= SQL_SCHEMAS_KEPT) sqlSchemas.delete(sqlSchemas.keys().next().value!)
+        sqlSchemas.set(key, { at: Date.now(), schema })
+        return { ok: true as const, supported: true as const, schema }
+      } catch (err) {
+        if (!(err instanceof ConnectorError)) throw err
+        return { ok: false as const, error: errorView(err) }
+      }
+    }),
+
   /** An OpenAPI resource's operations, from its saved document (M29), for the query form. Needs Use. */
   openapiOperations: authedProcedure
     .input(z.object({ resourceId: Id, environmentId: Id }))
@@ -1245,3 +1297,9 @@ const graphqlSchemas = new Map<string, { at: number; schema: unknown }>()
 /** The built-in GraphQL resource's schemas (session 57), apart: their keys are what editors type, so fewer are kept. */
 const graphqlApiSchemas = new Map<string, { at: number; schema: unknown }>()
 const GRAPHQL_API_SCHEMAS_KEPT = 30
+/** SQL resources' tables and columns (session 57); up to 20,000 columns each, so fewer are kept than GraphQL's. */
+const sqlSchemas = new Map<string, { at: number; schema: SqlSchema }>()
+const SQL_SCHEMAS_KEPT = 50
+const SQL_SCHEMA_TTL_MS = 10 * 60_000
+/** A catalog read of a large database (or one far away through a tunnel) can take a while. */
+const SQL_SCHEMA_TIMEOUT_MS = 60_000
