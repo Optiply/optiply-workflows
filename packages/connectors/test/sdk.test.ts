@@ -211,6 +211,8 @@ describe('the SDK connector', () => {
       expect(sent[0]!.envId).toBe('f'.repeat(32))
       expect(sent[0]!.timeoutMs).toBeGreaterThan(900)
       expect(sent[0]!.timeoutMs).toBeLessThanOrEqual(1000)
+      // The duration is the test's own, not the install's.
+      expect(result.ok && result.durationMs).toBeLessThan(1000)
     })
 
     it('says when it was the install that failed', async () => {
@@ -229,6 +231,27 @@ describe('the SDK connector', () => {
         },
       })
       expect(sent).toEqual([])
+
+      // The builder's own timeout is still the install's (not taken for the test's wait).
+      configureSdkEnvs(async () => {
+        throw new ConnectorError('timeout', 'The package builder timed out')
+      })
+      expect(await testResource(sdkConnector, sdk({ packages: ['acme==9'] }))).toMatchObject({
+        ok: false,
+        error: {
+          code: 'timeout',
+          message: "Installing the SDK's packages failed: The package builder timed out",
+        },
+      })
+    })
+
+    it('says the setup code is missing before installing anything', async () => {
+      const installs = slowInstall(10)
+      expect(await testResource(sdkConnector, sdk({ packages: ['acme==1'], setup: ' ' }))).toMatchObject({
+        ok: false,
+        error: { code: 'invalid_config', message: expect.stringContaining('Write the setup code') },
+      })
+      expect(installs()).toBe(0)
     })
 
     it('stops waiting for an install after a few minutes, which goes on in the background', async () => {

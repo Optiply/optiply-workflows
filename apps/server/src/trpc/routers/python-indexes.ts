@@ -1,5 +1,5 @@
 import { configVars, type Db, pythonEnvs, pythonIndexes, workflowReleases, workflows } from '@ow/db'
-import { PYTHON_INDEX_SLUG } from '@ow/definition'
+import { PACKAGE_NAME, PYTHON_INDEX_SLUG } from '@ow/definition'
 import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { asc, eq, or, sql } from 'drizzle-orm'
@@ -49,7 +49,7 @@ const TestPackage = z
   .string()
   .trim()
   .max(200)
-  .regex(/^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)?$/, "A package's name (e.g. requests)")
+  .refine((v) => !v || PACKAGE_NAME.test(v), "A package's name (e.g. requests)")
   .nullish()
 
 /** The fields as stored: blanks as null, the URL without a trailing slash; the password's config var checked. */

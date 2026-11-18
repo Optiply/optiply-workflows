@@ -104,11 +104,13 @@ describe('the CSV parser', () => {
     expect(error).toMatchObject({ line: 2, reason: 'a field is longer than 16,000,000 characters' })
   })
 
-  it('keeps a big file about its own size in memory, not a chain of characters', () => {
+  it('keeps a big file about its own size in memory, not a chain of pieces', () => {
     // 2026-11-17: fields grown a character at a time took ~32 bytes a character; a 26 MB file ran production's
-    // 320 MB heap out. 20 MB of 25,000-character fields, read in 64 KB chunks and all kept, as the import does.
-    const cell = `"{""k"":""${'v'.repeat(25_000)}""}"`
-    const text = `id,doc\n${Array.from({ length: 800 }, (_, i) => `${i},${cell}`).join('\n')}\n`
+    // 320 MB heap out. Then (review): grown a piece at a time, JSON's escaped quotes made a piece every few
+    // characters. 20 MB of JSON documents full of quotes, read in 64 KB chunks and all kept, as the import does.
+    const doc = JSON.stringify(Array.from({ length: 1800 }, (_, i) => ({ id: `a${i}`, n: i })))
+    const cell = `"${doc.replaceAll('"', '""')}"`
+    const text = `id,doc\n${Array.from({ length: 400 }, (_, i) => `${i},${cell}`).join('\n')}\n`
     expect(text.length).toBeGreaterThan(20_000_000)
     const before = process.memoryUsage().heapUsed
     const parser = new CsvParser(',')
@@ -116,9 +118,9 @@ describe('the CSV parser', () => {
     for (let at = 0; at < text.length; at += 65_536) records.push(...parser.push(text.slice(at, at + 65_536)))
     records.push(...parser.end())
     const grown = process.memoryUsage().heapUsed - before
-    expect(records).toHaveLength(801)
-    expect(records[800]!.fields[1]).toBe(`{"k":"${'v'.repeat(25_000)}"}`)
-    expect(grown).toBeLessThan(200 * 1024 * 1024)
+    expect(records).toHaveLength(401)
+    expect(records[400]!.fields[1]).toBe(doc)
+    expect(grown).toBeLessThan(100 * 1024 * 1024)
   })
 
   it('gives the same records however the text is split into chunks', () => {

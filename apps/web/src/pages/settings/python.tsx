@@ -280,7 +280,10 @@ function IndexForm({
           <Input
             className="font-mono"
             value={testPackage}
-            onChange={(e) => setTestPackage(e.target.value)}
+            onChange={(e) => {
+              setTestPackage(e.target.value)
+              setTested(null)
+            }}
             placeholder="my-package"
             autoComplete="off"
           />

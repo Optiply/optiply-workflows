@@ -18,7 +18,8 @@ export interface Requirement {
   specifiers: string[]
 }
 
-const NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/
+/** A Python package's name (PEP 508), as the package builder checks it. */
+export const PACKAGE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/
 const SPECIFIER = /^(~=|===|==|!=|<=|>=|<|>)([A-Za-z0-9.*+!_-]+)$/
 
 export function normalizePackageName(name: string): string {
@@ -39,12 +40,12 @@ export function parseRequirement(text: string): { requirement: Requirement } | {
   if (/[/\\]/.test(line)) return { error: 'Only packages from the index: no paths' }
   const match = /^([^[\s<>=!~,]+)\s*(?:\[([^\]]*)\])?\s*(.*)$/.exec(line)
   const name = match?.[1] ?? ''
-  if (!NAME.test(name)) return { error: `"${name || line}" isn't a package name` }
+  if (!PACKAGE_NAME.test(name)) return { error: `"${name || line}" isn't a package name` }
   const extras = (match?.[2] ?? '')
     .split(',')
     .map((e) => e.trim())
     .filter(Boolean)
-  const badExtra = extras.find((e) => !NAME.test(e))
+  const badExtra = extras.find((e) => !PACKAGE_NAME.test(e))
   if (badExtra !== undefined) return { error: `"${badExtra}" isn't an extra's name` }
   const rest = (match?.[3] ?? '').trim()
   const specifiers: string[] = []

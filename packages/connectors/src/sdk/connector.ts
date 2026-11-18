@@ -233,27 +233,26 @@ export const sdkConnector: Connector<Config, Secrets, typeof querySchema._output
 
   async prepareTest(client) {
     if (!client.config.packages.length) return undefined
+    // What the test would say anyway, before minutes of install.
+    if (!client.config.setup.trim()) {
+      throw new ConnectorError('invalid_config', 'Write the setup code that makes the SDK’s client')
+    }
     const started = Date.now()
     // The install goes on if the test stops waiting: the builder caches it, so the next test finds it.
     const install = sdkEnvs()(envSpec(client))
     install.catch(() => {})
     let timer: ReturnType<typeof setTimeout> | undefined
+    const waited = new ConnectorError(
+      'timeout',
+      `Installing the SDK's packages takes more than ${SDK_TEST_INSTALL_MS / 60_000} minutes. It goes on in the background: test again in a few minutes`,
+    )
     const tooLong = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new ConnectorError(
-              'timeout',
-              `Installing the SDK's packages takes more than ${SDK_TEST_INSTALL_MS / 60_000} minutes. It goes on in the background: test again in a few minutes`,
-            ),
-          ),
-        SDK_TEST_INSTALL_MS,
-      )
+      timer = setTimeout(() => reject(waited), SDK_TEST_INSTALL_MS)
     })
     try {
       client.installed = await Promise.race([install, tooLong])
     } catch (err) {
-      if (err instanceof ConnectorError && err.code !== 'timeout') {
+      if (err instanceof ConnectorError && err !== waited) {
         throw new ConnectorError(
           err.code,
           `Installing the SDK's packages failed: ${err.message}`,
