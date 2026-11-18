@@ -2053,6 +2053,14 @@ keeps Staging for admins only), in a separate worktree `~/optiply-workflows-fixe
    deploy/ unchanged, not copied), then `deploy.sh ec08e57`: **production runs `ec08e57`** (previous `8f33ad9`), no new
    migration, health 200, 0 restarts, no errors. Then two versions kept: `8448c87` deleted from the registry and the VM.
    Rollback: `sudo /opt/ow/deploy.sh 8f33ad9`.
+10. **The index remembers its test package** ✅ `531d19d` (the user: "I always need to use optiply-sdk-external"):
+    `python_indexes.test_package`, **migration 0052**; saved with the index, filled in when opened, listed for admins;
+    saving an index drops its envs only when the URL, sign-in or mode changed. Deployed by hand: dump
+    `/var/backups/ow/ow-2026-11-18T0954-pre-531d19d.dump`, Cloud Build `1c84c70d-a613-4454-85e4-9e7309b83643`,
+    `deploy.sh 531d19d`: **production runs `531d19d`** (previous `ec08e57`), 53 migrations, health 200, 0 restarts.
+    Two versions kept (`8f33ad9` deleted; on the VM `ec08e57` was removed by mistake first and pulled back).
+    Rollback: `sudo /opt/ow/deploy.sh ec08e57` (0052 only adds a column). The user saves `optiply-sdk-external` once on
+    "Optiply Python".
 
 **The SDK setup session (2026-11-16/17, no code, recorded here):** the Optiply SDK (`optiply-sdk-external` 0.3.1,
 import `optiply`, github.com/Optiply/optiply-sdk-external) is published to Artifact Registry `optiply-python` (Python,
@@ -2497,11 +2505,12 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `ec08e57`** from branch
+**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `531d19d`** (migration 0052) from branch
 **`fix/sdk-setup-papercuts`** (pushed; worktree `~/optiply-workflows-fixes`; based on `feat/staging-admins-only`, so
 Staging stays admins-only; §14 session 57): CSV import out of memory, SDK Test on a first install, the Python index
 Test on Artifact Registry. The user tries them in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply
-Python" with `optiply-sdk-external`). Delete the VM's `ow-2026-11-18T0849-pre-ec08e57.dump` when happy.
+Python": its package to test with is now saved, `optiply-sdk-external` saved once). B1 and B2 checked by the user.
+Delete the VM's two dumps of 18 Nov (`…T0849-pre-ec08e57`, `…T0954-pre-531d19d`) when happy.
 Open, the user's: check this month's spend and the €5 alert in the console (we can't read billing); optionally the
 registry's cleanup policy to keep 2 instead of 3 (~$0.08 a month less). **End of November:** GitHub billing, then one PR
 for both branches. Then the items waiting on others (IAP for the prod Postgres resources, `workflows.optiply.nl`, the
