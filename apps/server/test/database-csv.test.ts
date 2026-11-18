@@ -7,6 +7,8 @@ import { eq } from 'drizzle-orm'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { IMPORT_CONTENT_TYPE } from '../src/api/database'
+import { CsvParser } from '../src/services/csv'
+import { IMPORT_BATCH_CHARS, ImportSpec, importCsv as importRows } from '../src/services/managed-db-csv'
 import { createLocalUser, login, startTestApp, type TestEnv, trpc } from './helpers'
 
 let env: TestEnv
@@ -314,6 +316,61 @@ describe('importing', () => {
     )
     expect(outsider.statusCode).toBe(403)
   })
+
+  it('splits wide rows into batches by size, and still names the line of a bad value in a later batch', async () => {
+    // 40 rows of 100,000-character JSON documents: 4 million characters, so at least two batches by size alone.
+    const doc = (i: number) => JSON.stringify({ i, pad: 'z'.repeat(100_000) })
+    const file = (bad?: number) =>
+      `name,doc\n${Array.from({ length: 40 }, (_, i) => `row${i},"${(i === bad ? '{"i":' : doc(i)).replaceAll('"', '""')}"`).join('\n')}\n`
+    const spec = {
+      mode: 'create',
+      table: 'wide_docs',
+      columns: [
+        { source: 0, name: 'name', type: 'text' },
+        { source: 1, name: 'doc', type: 'json' },
+      ],
+    }
+    const refused = await importCsv(spec, file(35))
+    expect(refused.statusCode).toBe(400)
+    expect(refused.json().error.problems).toEqual([expect.objectContaining({ line: 37, column: 'doc' })])
+    expect(await tableExists('wide_docs')).toBe(false)
+
+    const res = await importCsv(spec, file())
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().rows).toBe(40)
+    const got =
+      await superSql`select name, doc->>'i' as i, length(doc->>'pad') as pad from owdb_production.wide_docs order by id`
+    expect(got.map((r) => [r.name, r.i, r.pad])).toEqual(
+      Array.from({ length: 40 }, (_, i) => [`row${i}`, String(i), 100_000]),
+    )
+
+    // Each batch is one savepoint. A batch goes once it reaches IMPORT_BATCH_CHARS (2 million): 40 rows of ~100,000
+    // characters are two batches of 20 (one, by the row count alone).
+    let batches = 0
+    await superSql
+      .begin(async (tx) => {
+        const savepoint = tx.savepoint.bind(tx)
+        tx.savepoint = ((fn: never) => {
+          batches++
+          return savepoint(fn)
+        }) as typeof tx.savepoint
+        const parser = new CsvParser(',')
+        const records = (async function* () {
+          yield* parser.push(file())
+          yield* parser.end()
+        })()
+        await importRows(
+          tx,
+          'owdb_production',
+          ImportSpec.parse({ ...spec, environmentId: production, delimiter: ',', mode: 'append' }),
+          records,
+        )
+        throw new Error('roll back')
+      })
+      .catch((err) => expect(err.message).toBe('roll back'))
+    expect(IMPORT_BATCH_CHARS).toBe(2_000_000)
+    expect(batches).toBe(2)
+  }, 60_000)
 
   it('streams a larger file in batches', async () => {
     const lines = ['n,label']

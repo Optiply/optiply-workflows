@@ -63,6 +63,26 @@ export class CsvParser {
       this.started = true
       if (text.charCodeAt(0) === 0xfeff) i = 1
     }
+    // Characters go into the field as stretches of `text` (one slice each), never one by one: a string grown a
+    // character at a time is kept as a chain of about 32 bytes a character, and a 26 MB file took 800 MB that way.
+    let run = -1
+    const take = (at: number) => {
+      if (run < 0) {
+        run = at
+        this.dirty = true
+      }
+      if (this.field.length + at + 1 - run > MAX_FIELD_CHARS) {
+        throw new CsvError(
+          `a field is longer than ${MAX_FIELD_CHARS.toLocaleString('en')} characters`,
+          this.recordLine,
+        )
+      }
+    }
+    const flush = (end: number) => {
+      if (run < 0) return
+      this.field += text.slice(run, end)
+      run = -1
+    }
     for (; i < text.length; i++) {
       const ch = text[i]!
       if (this.afterCr) {
@@ -73,38 +93,44 @@ export class CsvParser {
         if (this.quoteSeen) {
           this.quoteSeen = false
           if (ch === '"') {
-            this.append('"')
+            // `""`: the first quote was left out of the stretch, this one starts the next.
+            take(i)
             continue
           }
           this.quoted = false
           // Falls through: the character after a closing quote is read as outside quotes.
         } else {
-          if (ch === '"') this.quoteSeen = true
-          else {
+          if (ch === '"') {
+            flush(i)
+            this.quoteSeen = true
+          } else {
             // A CRLF is one line break, even split between chunks.
             if (ch === '\r' || (ch === '\n' && !this.quotedCr)) this.line++
             this.quotedCr = ch === '\r'
-            this.append(ch)
+            take(i)
           }
           continue
         }
       }
-      if (ch === '"' && !this.field.length) {
+      if (ch === '"' && !this.field.length && run < 0) {
         this.quoted = true
         this.quotedCr = false
         this.dirty = true
       } else if (ch === this.delimiter) {
+        flush(i)
         this.endField()
       } else if (ch === '\n' || ch === '\r') {
+        flush(i)
         const record = this.endRecord()
         if (record) out.push(record)
         this.line++
         this.recordLine = this.line
         if (ch === '\r') this.afterCr = true
       } else {
-        this.append(ch)
+        take(i)
       }
     }
+    flush(text.length)
     return out
   }
 
@@ -115,17 +141,6 @@ export class CsvParser {
     this.quoteSeen = false
     const record = this.endRecord()
     return record ? [record] : []
-  }
-
-  private append(ch: string) {
-    this.dirty = true
-    this.field += ch
-    if (this.field.length > MAX_FIELD_CHARS) {
-      throw new CsvError(
-        `a field is longer than ${MAX_FIELD_CHARS.toLocaleString('en')} characters`,
-        this.recordLine,
-      )
-    }
   }
 
   private endField() {
