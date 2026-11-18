@@ -6,6 +6,7 @@ import { ActionQueryForm, type RequestAuth, RequestAuthFields } from '@/componen
 import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { OpenApiQueryForm } from '@/components/openapi-query'
+import { SqlSchemaPanel } from '@/components/sql-schema-panel'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { useGraphqlApiSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
@@ -15,6 +16,7 @@ import {
   PLACEHOLDERS,
   queryKind,
 } from '@/lib/resource-types'
+import { useSqlSchema } from '@/lib/sql-schema'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -127,6 +129,18 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
       execute()
     }
   }
+  const sqlSchema = useSqlSchema(kind === 'sql' ? resource : undefined, environmentId)
+  /** A table or column name clicked in the tables panel, at the SQL's cursor. */
+  const insertSql = (text: string) => {
+    const area = document.getElementById('playground-sql') as HTMLTextAreaElement | null
+    const start = area?.selectionStart ?? draft.sql.length
+    const end = area?.selectionEnd ?? start
+    setDraft((d) => ({ ...d, sql: d.sql.slice(0, start) + text + d.sql.slice(end) }))
+    requestAnimationFrame(() => {
+      area?.focus()
+      area?.setSelectionRange(start + text.length, start + text.length)
+    })
+  }
   const setRest = (patch: Partial<Draft['rest']>) =>
     setDraft((d) => ({ ...d, rest: { ...d.rest, ...patch } }))
   const setRestApi = (patch: Partial<Draft['restapi']>) =>
@@ -157,19 +171,23 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="space-y-4 p-4 lg:col-span-2">
           {kind === 'sql' ? (
-            <Field
-              label="SQL"
-              hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
-            >
-              <Textarea
-                rows={10}
-                spellCheck={false}
-                className="font-mono text-[13px]"
-                value={draft.sql}
-                onKeyDown={onKeyDown}
-                onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
-              />
-            </Field>
+            <>
+              <Field
+                label="SQL"
+                hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
+              >
+                <Textarea
+                  id="playground-sql"
+                  rows={10}
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                  value={draft.sql}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
+                />
+              </Field>
+              <SqlSchemaPanel state={sqlSchema.state} onRefresh={sqlSchema.refresh} onInsert={insertSql} />
+            </>
           ) : kind === 'service' && isServiceType(resource.type) ? (
             <ActionQueryForm
               type={resource.type}

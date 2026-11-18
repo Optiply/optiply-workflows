@@ -1084,7 +1084,8 @@ export const resourcesRouter = router({
   /**
    * A SQL resource's tables and columns (session 57), by its connector's catalog query, for the editor's browser and
    * completions. Needs Use; read as any query of the resource is (its tunnels, sign-in, read-only mode). Kept 10
-   * minutes per settings version (and per person, where each signs in with their own account). `supported: false`
+   * minutes per settings version (and per person, where each signs in with their own account); the built-in Database's
+   * is read every time. `supported: false`
    * for a resource whose dialect has no catalog query (an uploaded JDBC driver).
    */
   sqlSchema: authedProcedure
@@ -1106,7 +1107,9 @@ export const resourcesRouter = router({
       const resolved = toResolved(ctx.config.keyring, row)
       const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
       const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
-      const cached = sqlSchemas.get(key)
+      // The built-in Database's tables change on the Database page: read every time (a quick local query).
+      const keep = resource.systemKind !== 'database'
+      const cached = keep ? sqlSchemas.get(key) : undefined
       if (cached && !input.refresh && cached.at > Date.now() - SQL_SCHEMA_TTL_MS) {
         return { ok: true as const, supported: true as const, schema: cached.schema }
       }
@@ -1122,8 +1125,10 @@ export const resourcesRouter = router({
           ...(credentials && { credentials }),
         })
         if (!schema) return { ok: true as const, supported: false as const, schema: null }
-        if (sqlSchemas.size >= SQL_SCHEMAS_KEPT) sqlSchemas.delete(sqlSchemas.keys().next().value!)
-        sqlSchemas.set(key, { at: Date.now(), schema })
+        if (keep) {
+          if (sqlSchemas.size >= SQL_SCHEMAS_KEPT) sqlSchemas.delete(sqlSchemas.keys().next().value!)
+          sqlSchemas.set(key, { at: Date.now(), schema })
+        }
         return { ok: true as const, supported: true as const, schema }
       } catch (err) {
         if (!(err instanceof ConnectorError)) throw err

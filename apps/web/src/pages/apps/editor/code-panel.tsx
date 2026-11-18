@@ -28,16 +28,27 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { ActionQueryForm, type RequestAuth } from '@/components/action-query'
+import { insertIntoEditor } from '@/components/code/sql-schema'
 import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { OpenApiQueryForm } from '@/components/openapi-query'
+import { SqlSchemaPanel } from '@/components/sql-schema-panel'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
 import { useGraphqlApiSchema, useGraphqlSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
+import { useSqlSchema } from '@/lib/sql-schema'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { useAppHostContext, useAppHostState, useAppValue } from '../runtime/react'
-import { AppCodeField, EditorField, NameField, problemsAt, useParsedText, ValuePreview } from './fields'
+import {
+  AppCodeField,
+  appCodePath,
+  EditorField,
+  NameField,
+  problemsAt,
+  useParsedText,
+  ValuePreview,
+} from './fields'
 import { HandlersEditor } from './handlers'
 import { PageSelect } from './inspector'
 import { AddLibraryQueryDialog, LibraryQueryBody, LibraryQueryHeader } from './library'
@@ -285,6 +296,8 @@ function QueryEditor({ query }: { query: AppQuery }) {
   })
   const graphqlSchema = kind === 'graphqlapi' ? graphqlApi.schema : resourceGraphqlSchema
   const openapi = useOpenApiOperations(kind === 'openapi' ? resource : undefined)
+  const sqlSchema = useSqlSchema(sql && resource ? resource : undefined)
+  const appId = useAppEditor((s) => s.appId)
   const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
     edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
   /** Sets or (empty) removes an optional field. */
@@ -375,16 +388,24 @@ function QueryEditor({ query }: { query: AppQuery }) {
 
       {query.kind === 'resource' ? (
         sql ? (
-          <AppCodeField
-            path={[...base, 'query', 'sql']}
-            language="sql"
-            height={140}
-            value={String(query.query.sql ?? '')}
-            problems={problemsAt(diagnostics, [...base, 'query'])}
-            onChange={(text) =>
-              edit((q) => (q.kind === 'resource' ? { ...q, query: { ...q.query, sql: text } } : q))
-            }
-          />
+          <>
+            <AppCodeField
+              path={[...base, 'query', 'sql']}
+              language="sql"
+              height={140}
+              sqlSchema={sqlSchema.schema}
+              value={String(query.query.sql ?? '')}
+              problems={problemsAt(diagnostics, [...base, 'query'])}
+              onChange={(text) =>
+                edit((q) => (q.kind === 'resource' ? { ...q, query: { ...q.query, sql: text } } : q))
+              }
+            />
+            <SqlSchemaPanel
+              state={sqlSchema.state}
+              onRefresh={sqlSchema.refresh}
+              onInsert={(text) => insertIntoEditor(appCodePath(appId, [...base, 'query', 'sql']), text)}
+            />
+          </>
         ) : kind === 'service' && resource && isServiceType(resource.type) ? (
           <ActionQueryForm
             type={resource.type}

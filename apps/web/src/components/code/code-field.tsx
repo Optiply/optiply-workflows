@@ -5,6 +5,7 @@ import { useTheme } from '@/lib/theme'
 import { attachGraphqlSchema } from './graphql'
 import { monaco, optiplyTheme, setScope } from './monaco'
 import { showCursors } from './remote-cursors'
+import { attachSqlSchema, type EditorSqlSchema } from './sql-schema'
 import { bindText, type TextBinding } from './text-binding'
 
 export interface FieldProblem {
@@ -42,6 +43,8 @@ export interface CodeFieldProps {
   binding?: TextBinding | null
   /** A GraphQL field's schema (M27, a resource's introspection): completions, hover and checks from it. */
   graphqlSchema?: IntrospectionQuery | null
+  /** A SQL resource's tables and columns (session 57): completions in `sql`. */
+  sqlSchema?: EditorSqlSchema | null
 }
 
 /** What completions know: declarations for the JavaScript service, sample values for `{{ }}` in SQL and text. */
@@ -66,6 +69,7 @@ export default function CodeField({
   binding,
   scope,
   graphqlSchema,
+  sqlSchema,
 }: CodeFieldProps & { scope?: CodeScope }) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -115,6 +119,13 @@ export default function CodeField({
     if (!mounted || !model || language !== 'graphql' || !graphqlSchema) return
     return attachGraphqlSchema(model, graphqlSchema)
   }, [mounted, language, graphqlSchema, path])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `path` switches the editor's model
+  useEffect(() => {
+    const model = editorRef.current?.getModel()
+    if (!mounted || !model || language !== 'sql' || !sqlSchema) return
+    return attachSqlSchema(model, sqlSchema)
+  }, [mounted, language, sqlSchema, path])
 
   // The model (one per path) follows the bound text while both last.
   const text = binding?.text

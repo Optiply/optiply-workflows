@@ -108,6 +108,16 @@ describe('SQL schema loading', () => {
     const schema = data(
       await admin.query('resources.sqlSchema', { resourceId: builtIn.id, environmentId: prodId }),
     ).schema
+    // Read every time: a table made on the Database page is there at once.
+    await admin.mutate('database.createTable', {
+      environmentId: prodId,
+      name: 'later',
+      columns: [{ name: 'note', type: 'text' }],
+    })
+    const again = data(
+      await admin.query('resources.sqlSchema', { resourceId: builtIn.id, environmentId: prodId }),
+    ).schema
+    expect(tableNames(again)).toEqual(['owdb_production.later', 'owdb_production.stock'])
     expect(schema.tables).toEqual([
       expect.objectContaining({
         schema: 'owdb_production',

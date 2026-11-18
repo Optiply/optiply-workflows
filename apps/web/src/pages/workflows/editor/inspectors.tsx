@@ -21,13 +21,16 @@ import { Link } from '@tanstack/react-router'
 import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X, Zap } from 'lucide-react'
 import { createContext, lazy, type ReactNode, Suspense, useContext, useEffect, useState } from 'react'
 import { ActionQueryForm, type RequestAuth, RequestAuthFields } from '@/components/action-query'
+import { insertIntoEditor } from '@/components/code/sql-schema'
 import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { OpenApiQueryForm } from '@/components/openapi-query'
+import { SqlSchemaPanel } from '@/components/sql-schema-panel'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
 import { useGraphqlApiSchema, useGraphqlSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { defaultQuery, type QueryKind, queryKind } from '@/lib/resource-types'
+import { useSqlSchema } from '@/lib/sql-schema'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -549,6 +552,7 @@ function QueryEditor({
               ? 'graphql'
               : 'rest'
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
+  const sqlSchema = useSqlSchema(kind === 'sql' ? current : undefined)
 
   return (
     <div className="flex flex-col gap-4">
@@ -580,17 +584,28 @@ function QueryEditor({
         </Select>
       </Field>
       {kind === 'sql' ? (
-        <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
-          <Code
-            path={ctx.modelPath(`${models}query.sql`)}
-            language="sql"
-            height={200}
-            value={String(query.sql ?? '')}
-            problems={ctx.problemsAt(...at, 'query', 'sql')}
-            text={ctx.text(...at, 'query', 'sql')}
-            onChange={(sql) => setQuery({ sql })}
+        <>
+          <EditorField
+            label="SQL"
+            hint="{{ }} values are sent as bind parameters, never pasted into the SQL."
+          >
+            <Code
+              path={ctx.modelPath(`${models}query.sql`)}
+              language="sql"
+              height={200}
+              sqlSchema={sqlSchema.schema}
+              value={String(query.sql ?? '')}
+              problems={ctx.problemsAt(...at, 'query', 'sql')}
+              text={ctx.text(...at, 'query', 'sql')}
+              onChange={(sql) => setQuery({ sql })}
+            />
+          </EditorField>
+          <SqlSchemaPanel
+            state={sqlSchema.state}
+            onRefresh={sqlSchema.refresh}
+            onInsert={(text) => insertIntoEditor(ctx.modelPath(`${models}query.sql`), text)}
           />
-        </EditorField>
+        </>
       ) : kind === 'service' && current && isServiceType(current.type) ? (
         <ActionQueryForm
           type={current.type}
