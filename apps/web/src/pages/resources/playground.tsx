@@ -2,10 +2,12 @@ import { defaultActionQuery, isServiceType } from '@ow/connectors/actions'
 import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
-import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
+import { ActionQueryForm, type RequestAuth, RequestAuthFields } from '@/components/action-query'
+import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { useGraphqlApiSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { DEFAULT_GRAPHQL_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -24,6 +26,8 @@ interface Draft {
   /** The built-in REST API's request (M27): a full URL and its own sign-in. */
   restapi: Draft['rest'] & { url: string; auth: { type: string; [key: string]: string } }
   graphql: { query: string; variables: string; operationName: string; headers: KeyValue[] }
+  /** The built-in GraphQL resource's query (session 57): GraphQL's, with the endpoint's URL and its own sign-in. */
+  graphqlapi: Draft['graphql'] & { url: string; auth: RequestAuth }
   /** An OpenAPI resource's operation call (M29). */
   openapi: { operationId: string; parameters: string; body: string; contentType: string }
   /** A service's action query (M27), per type. */
@@ -44,6 +48,7 @@ const EMPTY: Draft = {
     auth: { type: 'none' },
   },
   graphql: { ...DEFAULT_GRAPHQL_QUERY, headers: [] },
+  graphqlapi: { ...DEFAULT_GRAPHQL_QUERY, headers: [], url: 'https://', auth: { type: 'none' } },
   openapi: { operationId: '', parameters: '{}', body: '', contentType: '' },
   services: {},
   scope: '{\n  \n}',
@@ -102,11 +107,13 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
           ? (({ path: _path, ...rest }) => rest)(draft.restapi)
           : kind === 'graphql'
             ? draft.graphql
-            : kind === 'openapi'
-              ? draft.openapi
-              : kind === 'service'
-                ? serviceQuery
-                : draft.rest
+            : kind === 'graphqlapi'
+              ? draft.graphqlapi
+              : kind === 'openapi'
+                ? draft.openapi
+                : kind === 'service'
+                  ? serviceQuery
+                  : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -119,6 +126,13 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
     setDraft((d) => ({ ...d, rest: { ...d.rest, ...patch } }))
   const setRestApi = (patch: Partial<Draft['restapi']>) =>
     setDraft((d) => ({ ...d, restapi: { ...d.restapi, ...patch } }))
+  const setGraphqlApi = (patch: Partial<Draft['graphqlapi']>) =>
+    setDraft((d) => ({ ...d, graphqlapi: { ...d.graphqlapi, ...patch } }))
+  const graphqlApi = useGraphqlApiSchema(
+    kind === 'graphqlapi' ? resource : undefined,
+    { url: draft.graphqlapi.url, auth: draft.graphqlapi.auth, headers: draft.graphqlapi.headers },
+    scope ?? {},
+  )
   const serviceQuery =
     kind === 'service' && isServiceType(resource.type)
       ? (draft.services[resource.type] ?? defaultActionQuery(resource.type))
@@ -200,6 +214,18 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
               setGraphql={(patch) => setDraft((d) => ({ ...d, graphql: { ...d.graphql, ...patch } }))}
               onKeyDown={onKeyDown}
             />
+          ) : kind === 'graphqlapi' ? (
+            <>
+              <GraphqlApiTargetFields
+                url={draft.graphqlapi.url}
+                onUrl={(url) => setGraphqlApi({ url })}
+                auth={draft.graphqlapi.auth}
+                onAuth={(auth) => setGraphqlApi({ auth })}
+                schema={graphqlApi.state}
+                onLoadSchema={graphqlApi.load}
+              />
+              <GraphqlDraft graphql={draft.graphqlapi} setGraphql={setGraphqlApi} onKeyDown={onKeyDown} />
+            </>
           ) : kind === 'restapi' ? (
             <>
               <RestQueryEditor

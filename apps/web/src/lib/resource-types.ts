@@ -10,15 +10,16 @@ export function isSqlType(type: string | undefined): boolean {
   return type !== undefined && SQL_TYPES.has(type)
 }
 
-export type QueryKind = 'sql' | 'rest' | 'restapi' | 'graphql' | 'openapi' | 'service'
+export type QueryKind = 'sql' | 'rest' | 'restapi' | 'graphql' | 'graphqlapi' | 'openapi' | 'service'
 
 /**
  * The shape of a resource type's queries: SQL, REST's request, the built-in REST API's (a full URL and its
- * own auth, M27), GraphQL's, or a service's action (Slack, HubSpot, SendGrid, Google Sheets, M27).
+ * own auth, M27), GraphQL's, the built-in GraphQL's (GraphQL's with a URL and auth, session 57), or a service's
+ * action (Slack, HubSpot, SendGrid, Google Sheets, M27).
  */
 export function queryKind(type: string | undefined): QueryKind {
   if (isSqlType(type)) return 'sql'
-  if (type === 'restapi' || type === 'graphql' || type === 'openapi') return type
+  if (type === 'restapi' || type === 'graphql' || type === 'graphqlapi' || type === 'openapi') return type
   return isServiceType(type) ? 'service' : 'rest'
 }
 
@@ -35,6 +36,13 @@ export const DEFAULT_RESTAPI_QUERY = {
 /** A GraphQL resource's new query (M27). */
 export const DEFAULT_GRAPHQL_QUERY = { query: '{\n  \n}', variables: '', operationName: '', headers: [] }
 
+/** The built-in GraphQL resource's new query (session 57): GraphQL's, with the endpoint's URL and its own auth. */
+export const DEFAULT_GRAPHQLAPI_QUERY = {
+  url: 'https://',
+  auth: { type: 'none' },
+  ...DEFAULT_GRAPHQL_QUERY,
+}
+
 /** A fresh query for a resource of `type` (switching kinds of resource starts one). */
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
 
@@ -43,6 +51,7 @@ export function defaultQuery(type: string | undefined, sql = 'select 1'): { [key
   if (kind === 'sql') return { sql }
   if (kind === 'restapi') return structuredClone(DEFAULT_RESTAPI_QUERY)
   if (kind === 'graphql') return { ...DEFAULT_GRAPHQL_QUERY, headers: [] }
+  if (kind === 'graphqlapi') return structuredClone(DEFAULT_GRAPHQLAPI_QUERY)
   if (kind === 'openapi') return { operationId: '', parameters: '{}', body: '', contentType: '' }
   if (kind === 'service' && isServiceType(type)) return defaultActionQuery(type)
   return { method: 'GET', path: '', params: [], headers: [], body: { type: 'none' } }
@@ -67,6 +76,7 @@ export const TYPE_BADGES: Record<string, { label: string; className: string }> =
   rest: { label: 'API', className: 'bg-op-orange-1 text-op-orange-4' },
   restapi: { label: 'API', className: 'bg-op-orange-2 text-op-orange-4' },
   graphql: { label: 'GQL', className: 'bg-op-red-1 text-op-red-4' },
+  graphqlapi: { label: 'GQL', className: 'bg-op-red-2 text-op-red-4' },
   slack: { label: 'SL', className: 'bg-op-purple-1 text-op-purple-4' },
   hubspot: { label: 'HS', className: 'bg-op-orange-1 text-op-orange-4' },
   sendgrid: { label: 'SG', className: 'bg-op-blue-1 text-op-blue-4' },

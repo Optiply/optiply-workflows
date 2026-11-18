@@ -27,10 +27,11 @@ import {
   Workflow,
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
-import { ActionQueryForm } from '@/components/action-query'
+import { ActionQueryForm, type RequestAuth } from '@/components/action-query'
+import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { OpenApiQueryForm } from '@/components/openapi-query'
 import { Button, Checkbox, Input, Select, sectionLabelClass } from '@/components/ui'
-import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useGraphqlApiSchema, useGraphqlSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { defaultQuery, isSqlType, queryKind } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
@@ -276,7 +277,13 @@ function QueryEditor({ query }: { query: AppQuery }) {
   const sql = query.kind === 'resource' && (resource ? isSqlType(resource.type) : 'sql' in query.query)
   // M27: a service's action form, or GraphQL's query and variables; other HTTP queries are edited as JSON.
   const kind = resource ? queryKind(resource.type) : null
-  const graphqlSchema = useGraphqlSchema(kind === 'graphql' ? resource : undefined)
+  const resourceGraphqlSchema = useGraphqlSchema(kind === 'graphql' ? resource : undefined)
+  const graphqlApi = useGraphqlApiSchema(kind === 'graphqlapi' ? resource : undefined, {
+    url: query.kind === 'resource' ? String(query.query.url ?? '') : '',
+    auth: query.kind === 'resource' ? (query.query.auth ?? { type: 'none' }) : { type: 'none' },
+    headers: query.kind === 'resource' ? (query.query.headers ?? []) : [],
+  })
+  const graphqlSchema = kind === 'graphqlapi' ? graphqlApi.schema : resourceGraphqlSchema
   const openapi = useOpenApiOperations(kind === 'openapi' ? resource : undefined)
   const editResourceQuery = (change: (q: Record<string, JsonValue>) => Record<string, JsonValue>) =>
     edit((q) => (q.kind === 'resource' ? { ...q, query: change(q.query) } : q))
@@ -421,8 +428,20 @@ function QueryEditor({ query }: { query: AppQuery }) {
               />
             )}
           />
-        ) : kind === 'graphql' ? (
+        ) : kind === 'graphql' || kind === 'graphqlapi' ? (
           <>
+            {kind === 'graphqlapi' && (
+              <GraphqlApiTargetFields
+                url={String(query.query.url ?? '')}
+                onUrl={(url) => editResourceQuery((q) => ({ ...q, url }))}
+                auth={query.query.auth as RequestAuth | undefined}
+                onAuth={(auth) => editResourceQuery((q) => ({ ...q, auth: auth as JsonValue }))}
+                schema={graphqlApi.state}
+                onLoadSchema={graphqlApi.load}
+                urlPlaceholder="https://api.example.com/graphql"
+                secretsHint="Read secrets from secret config vars, e.g. {{ configVars.API_TOKEN }}, in a {{ }} of their own: published apps get them (drafts don't), and they're kept out of what the browser receives."
+              />
+            )}
             <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
               <AppCodeField
                 path={[...base, 'query', 'query']}
