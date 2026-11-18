@@ -2010,7 +2010,7 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
-## 14. Session 58 steps: the repo copies, and signing in through Optiply's Auth0
+## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
 1. **Repos** ✅ (the user's choices): a **copy** of this repo at `github.com/Optiply/optiply-workflows` (private, all 57
    branches, default `main`; local `origin` is still the personal repo, so the copy falls behind until the user
@@ -2028,6 +2028,20 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    Build `fd9a9d86-cf2d-4f1f-aca0-425e53c42bf7`, `deploy.sh c178e0d`: **production runs `c178e0d`** (previous
    `7b887fe`), health 200, `/api/auth/oidc/start` goes to Auth0 and Auth0 answers with its login page. `e75c8e6`
    removed. Rollback: the old compose back, a new `ow-env` version with version 2's contents, `deploy.sh 7b887fe`.
+
+3. **Security fixes** ✅ (a parallel session, now stopped): `fix/dependency-alerts` = what Dependabot couldn't fix and the
+   rest of `pnpm audit` (pnpm `overrides:`); rebased onto `feat/auth0-login` (`4e784a3`, green, audit clean). In the
+   Optiply repo, PR #2 (the same on the old `main`) squash-merged as `9dfda65` (44 Dependabot alerts → 0); Dependabot's
+   PR #1 (undici) closed as covered.
+4. **The Optiply repo is home** ✅ (the user): local `origin` = `Optiply/optiply-workflows`, `personal` = the old
+   personal repo (a backup, not pushed to by default); all branches track `origin`. Google Cloud's deploy trust moved
+   (I ran it, on the user's word): provider `github-actions` condition `assertion.repository == 'Optiply/optiply-workflows'
+   && assertion.ref == 'refs/heads/main'`; `gh-deployer`'s workloadIdentityUser for the Optiply repo only (the
+   personal repo's removed). PR **#3** (`fix/dependency-alerts` → `main`, 23 commits) CI green → merged with a merge
+   commit as **`159906b`** → CI on `main` → the **first automatic deploy from the Optiply repo**: production runs
+   `159906b` (previous `c178e0d`), health 200, Auth0 sign-in as before. `7b887fe` removed; the merged
+   `fix/dependency-alerts` and `fix/dependency-alerts-main` deleted. GitHub Actions run on Optiply's plan (no billing
+   block): the "one PR at the end of November" is done (#3).
 
 ## 14. Session 57 steps: cost check, cleanups, three fixes from the SDK setup
 
@@ -2550,11 +2564,11 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 59 with (end of session 58):** **Production runs `c178e0d`** from **`feat/auth0-login`** (pushed;
-worktree `~/optiply-workflows-fixes`; it holds `feat/sql-schema` and the branches below it): sign-in through Optiply's
-Auth0 (§14 session 58). The user confirms their own sign-in works. Repo copies: `Optiply/optiply-workflows` (behind
-until the user decides which remote is the main one) and the personal `optiply-feedback`. The end-of-November PR is
-now `feat/auth0-login`. Ask what's next.
+**Start session 59 with (end of session 58, 2026-11-18):** Work happens in **`github.com/Optiply/optiply-workflows`**
+(local `origin`; `personal` is the old repo, a backup). **Production runs its `main` (`159906b`)**, deployed
+automatically after CI (§14 session 58): Staging admins-only, the SDK fixes, the built-in GraphQL resource, SQL schema
+loading, Auth0 sign-in, the dependency fixes. New work: a branch from `main`, a PR in the Optiply repo, merge = deploy.
+Ask what's next.
 
 **Start session 58 with (end of session 57, 2026-11-18):** **Production runs `7b887fe`** from branch
 **`feat/sql-schema`** (pushed; worktree `~/optiply-workflows-fixes`), which stacks on `feat/graphql-builtin`,

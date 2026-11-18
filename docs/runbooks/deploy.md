@@ -36,7 +36,7 @@ Run from the repo on a machine with `gcloud` signed in as a project owner. `P=op
 8. **Sign-in, Optiply's Auth0** (session 58, as the feedback app): the Auth0 application "Optiply Workflows" (single-page
    app, no client secret) allows `https://<SITE_ADDRESS>` as its callback and logout URL, so the sign-in comes back to
    the site's root (`OIDC_CALLBACK_PATH=/`; the server answers `/` with `code` and `state` before the web app) and
-   signing out returns there. (Checked 2026-11-19: Auth0 answered 403 to `/api/auth/oidc/callback`, 302 to the root;
+   signing out returns there. (Checked 2026-11-18: Auth0 answered 403 to `/api/auth/oidc/callback`, 302 to the root;
    `/v2/logout` refused `returnTo=…/login`.) In `ow-env`: `OIDC_ISSUER=https://optiply.eu.auth0.com/`,
    `OIDC_CLIENT_ID=<its client id>`, `OIDC_PROVIDER_NAME=Optiply`, `OIDC_CALLBACK_PATH=/`, and **no**
    `OIDC_CLIENT_SECRET` (with one, the code exchange sends it, and Auth0 refuses a secret for a public client).
@@ -78,14 +78,18 @@ payloads and the run logs with it). Then `deploy.sh`. The encryption keys in `ow
 
 ## Automatic deploys (GitHub Actions)
 
-`.github/workflows/deploy.yml` deploys `main` once CI has passed on it: Cloud Build builds the images (tag = the commit's
+**From `github.com/Optiply/optiply-workflows`** (since 2026-11-18; before, the personal repo, whose trust was
+removed). `.github/workflows/deploy.yml` deploys `main` once CI has passed on it: Cloud Build builds the images (tag = the commit's
 7-character hash), `deploy/` is copied to the VM, `deploy.sh <tag>` runs (migrations included), then
 `/api/health` must answer 200 within 3 minutes, or it rolls back to `.previous-tag` and the run fails.
 
 - **By hand:** Actions → Deploy → Run workflow (on `main`). Leave "tag" empty to build and deploy `main`'s head; give an
   already-built tag (a short hash, or `s54a`) to deploy that version, e.g. to roll back. Only `main` can deploy.
+- **Docs only:** put `[skip ci]` in the commit (and the merge commit's) message: no CI, so no rebuild and restart.
+- **Old images:** the workflow doesn't remove them: keep two versions (see "Everyday").
 - **Sign-in without a key:** Workload Identity pool `github`, provider `github-actions` (condition: repository
-  `FabioAlexandreCeriaco/optiply-workflows` and ref `refs/heads/main`), service account `gh-deployer`:
+  `Optiply/optiply-workflows` and ref `refs/heads/main`), service account `gh-deployer` (workloadIdentityUser for that
+  repository's principalSet only):
   `roles/cloudbuild.builds.editor` + `roles/serviceusage.serviceUsageConsumer` (project), `roles/storage.admin` on
   `gs://optiply-workflows_cloudbuild`, `roles/iam.serviceAccountUser` on the default compute SA (builds run as it) and on
   `ow-vm-prod`, `roles/compute.osAdminLogin` + `roles/compute.viewer` on `ow-prod`, `roles/iap.tunnelResourceAccessor`
