@@ -91,9 +91,50 @@ describe('the CSV parser', () => {
     expect(() => parseCsv(','.repeat(MAX_FIELDS + 1))).toThrow(/more than 1000 fields/)
   })
 
+  it('refuses a field longer than the limit when it arrives in many chunks', () => {
+    const parser = new CsvParser(',')
+    parser.push('a\n"')
+    const chunk = 'y'.repeat(1_000_000)
+    let error: unknown
+    try {
+      for (let i = 0; i <= MAX_FIELD_CHARS / chunk.length; i++) parser.push(chunk)
+    } catch (err) {
+      error = err
+    }
+    expect(error).toMatchObject({ line: 2, reason: 'a field is longer than 16,000,000 characters' })
+  })
+
+  it('keeps a big file about its own size in memory, not a chain of pieces', () => {
+    // 2026-11-17: fields grown a character at a time took ~32 bytes a character; a 26 MB file ran production's
+    // 320 MB heap out. Then (review): grown a piece at a time, JSON's escaped quotes made a piece every few
+    // characters. 20 MB of JSON documents full of quotes, read in 64 KB chunks and all kept, as the import does.
+    const doc = JSON.stringify(Array.from({ length: 1800 }, (_, i) => ({ id: `a${i}`, n: i })))
+    const cell = `"${doc.replaceAll('"', '""')}"`
+    const text = `id,doc\n${Array.from({ length: 400 }, (_, i) => `${i},${cell}`).join('\n')}\n`
+    expect(text.length).toBeGreaterThan(20_000_000)
+    const before = process.memoryUsage().heapUsed
+    const parser = new CsvParser(',')
+    const records = []
+    for (let at = 0; at < text.length; at += 65_536) records.push(...parser.push(text.slice(at, at + 65_536)))
+    records.push(...parser.end())
+    const grown = process.memoryUsage().heapUsed - before
+    expect(records).toHaveLength(401)
+    expect(records[400]!.fields[1]).toBe(doc)
+    expect(grown).toBeLessThan(100 * 1024 * 1024)
+  })
+
   it('gives the same records however the text is split into chunks', () => {
-    const text = '﻿id;name;note\r\n1;"Ada; ""the first""";"multi\r\nline"\r\n2;Bob;\r\n3;"";x'
+    const text =
+      '﻿id;name;note\r\n1;"Ada; ""the first""";"multi\r\nline"\r\n2;Bob;\r\n3;"";x\n4;12" pipe;"a"b\n5;"""";"x"""'
     const whole = parseCsv(text, ';')
+    expect(whole.map((r) => r.fields)).toEqual([
+      ['id', 'name', 'note'],
+      ['1', 'Ada; "the first"', 'multi\r\nline'],
+      ['2', 'Bob', ''],
+      ['3', '', 'x'],
+      ['4', '12" pipe', 'ab'],
+      ['5', '"', 'x"'],
+    ])
     for (let size = 1; size <= text.length; size++) {
       const parser = new CsvParser(';')
       const got = []

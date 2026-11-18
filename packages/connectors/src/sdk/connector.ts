@@ -4,7 +4,7 @@ import { clientCredentialsToken } from '../oauth'
 import { type RestConfig, restAuthSchema, restConfigSchema } from '../rest'
 import { actionQuerySchema, fieldReader, limitOf, validateActionQuery } from '../services/common'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from '../types'
-import { type SdkOutcome, type SdkRunRequest, sdkEnvs, sdkRunner } from './runner'
+import { type SdkEnvProvider, type SdkOutcome, type SdkRunRequest, sdkEnvs, sdkRunner } from './runner'
 
 // SDK resources (M37, docs/architecture.md §2.41): a company SDK, Python or JavaScript, installed from its registry by
 // the package builder, its client made by the resource's setup code with the resource's token (pasted, OAuth client
@@ -87,6 +87,23 @@ interface Client {
   secrets: Secrets
   /** Client credentials' token, until a minute before it expires. */
   cached?: { token: string; expiresAt: number }
+  /** The env a test installed first (`prepareTest`), outside its time limit; a test's client is its own. */
+  installed?: SdkEnv
+}
+
+type SdkEnv = Awaited<ReturnType<SdkEnvProvider>>
+
+/** How long Test connection waits for a first install before saying it goes on in the background. */
+export const SDK_TEST_INSTALL_MS = 3 * 60_000
+
+function envSpec(client: Client) {
+  const { config } = client
+  return {
+    resourceId: client.resourceId,
+    language: config.language,
+    packages: config.packages,
+    pythonIndex: config.pythonIndex,
+  }
 }
 
 type Ctx = QueryContext
@@ -132,14 +149,7 @@ async function callSdk(
   if (!config.setup.trim()) {
     throw new ConnectorError('invalid_config', 'Write the setup code that makes the SDK’s client')
   }
-  const env = config.packages.length
-    ? await sdkEnvs()({
-        resourceId: client.resourceId,
-        language: config.language,
-        packages: config.packages,
-        pythonIndex: config.pythonIndex,
-      })
-    : null
+  const env = config.packages.length ? (client.installed ?? (await sdkEnvs()(envSpec(client)))) : null
   const tokens: string[] = []
   // The query's whole budget covers the install, the token and every attempt: each call gets what's left, so the
   // runner reports its own timeout (with the prints) before the query's abort cuts it off.
@@ -220,6 +230,41 @@ export const sdkConnector: Connector<Config, Secrets, typeof querySchema._output
   },
 
   async destroyClient() {},
+
+  async prepareTest(client) {
+    if (!client.config.packages.length) return undefined
+    // What the test would say anyway, before minutes of install.
+    if (!client.config.setup.trim()) {
+      throw new ConnectorError('invalid_config', 'Write the setup code that makes the SDK’s client')
+    }
+    const started = Date.now()
+    // The install goes on if the test stops waiting: the builder caches it, so the next test finds it.
+    const install = sdkEnvs()(envSpec(client))
+    install.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const waited = new ConnectorError(
+      'timeout',
+      `Installing the SDK's packages takes more than ${SDK_TEST_INSTALL_MS / 60_000} minutes. It goes on in the background: test again in a few minutes`,
+    )
+    const tooLong = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(waited), SDK_TEST_INSTALL_MS)
+    })
+    try {
+      client.installed = await Promise.race([install, tooLong])
+    } catch (err) {
+      if (err instanceof ConnectorError && err !== waited) {
+        throw new ConnectorError(
+          err.code,
+          `Installing the SDK's packages failed: ${err.message}`,
+          err.details,
+        )
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
+    return `installing the SDK's packages (${Math.round((Date.now() - started) / 1000)} s)`
+  },
 
   httpConfig,
 

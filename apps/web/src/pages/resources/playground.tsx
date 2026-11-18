@@ -2,12 +2,21 @@ import { defaultActionQuery, isServiceType } from '@ow/connectors/actions'
 import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useState } from 'react'
-import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
+import { ActionQueryForm, type RequestAuth, RequestAuthFields } from '@/components/action-query'
+import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { OpenApiQueryForm } from '@/components/openapi-query'
+import { SqlSchemaPanel } from '@/components/sql-schema-panel'
 import { Badge, Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { useGraphqlApiSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
-import { DEFAULT_GRAPHQL_QUERY, PLACEHOLDERS, queryKind } from '@/lib/resource-types'
+import {
+  DEFAULT_GRAPHQL_QUERY,
+  DEFAULT_GRAPHQLAPI_QUERY,
+  PLACEHOLDERS,
+  queryKind,
+} from '@/lib/resource-types'
+import { useSqlSchema } from '@/lib/sql-schema'
 import { useTRPC } from '@/lib/trpc'
 import { ConnectorErrorNote, type KeyValue, KeyValueEditor, type ResourceDetail, ResultView } from './shared'
 
@@ -24,6 +33,8 @@ interface Draft {
   /** The built-in REST API's request (M27): a full URL and its own sign-in. */
   restapi: Draft['rest'] & { url: string; auth: { type: string; [key: string]: string } }
   graphql: { query: string; variables: string; operationName: string; headers: KeyValue[] }
+  /** The built-in GraphQL resource's query (session 57): GraphQL's, with the endpoint's URL and its own sign-in. */
+  graphqlapi: Draft['graphql'] & { url: string; auth: RequestAuth }
   /** An OpenAPI resource's operation call (M29). */
   openapi: { operationId: string; parameters: string; body: string; contentType: string }
   /** A service's action query (M27), per type. */
@@ -44,6 +55,7 @@ const EMPTY: Draft = {
     auth: { type: 'none' },
   },
   graphql: { ...DEFAULT_GRAPHQL_QUERY, headers: [] },
+  graphqlapi: { ...structuredClone(DEFAULT_GRAPHQLAPI_QUERY), headers: [] },
   openapi: { operationId: '', parameters: '{}', body: '', contentType: '' },
   services: {},
   scope: '{\n  \n}',
@@ -102,11 +114,13 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
           ? (({ path: _path, ...rest }) => rest)(draft.restapi)
           : kind === 'graphql'
             ? draft.graphql
-            : kind === 'openapi'
-              ? draft.openapi
-              : kind === 'service'
-                ? serviceQuery
-                : draft.rest
+            : kind === 'graphqlapi'
+              ? draft.graphqlapi
+              : kind === 'openapi'
+                ? draft.openapi
+                : kind === 'service'
+                  ? serviceQuery
+                  : draft.rest
     run.mutate({ resourceId: resource.id, environmentId, query, scope })
   }
   const onKeyDown = (e: KeyboardEvent) => {
@@ -115,10 +129,30 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
       execute()
     }
   }
+  const sqlSchema = useSqlSchema(kind === 'sql' ? resource : undefined, environmentId)
+  /** A table or column name clicked in the tables panel, at the SQL's cursor. */
+  const insertSql = (text: string) => {
+    const area = document.getElementById('playground-sql') as HTMLTextAreaElement | null
+    const start = area?.selectionStart ?? draft.sql.length
+    const end = area?.selectionEnd ?? start
+    setDraft((d) => ({ ...d, sql: d.sql.slice(0, start) + text + d.sql.slice(end) }))
+    requestAnimationFrame(() => {
+      area?.focus()
+      area?.setSelectionRange(start + text.length, start + text.length)
+    })
+  }
   const setRest = (patch: Partial<Draft['rest']>) =>
     setDraft((d) => ({ ...d, rest: { ...d.rest, ...patch } }))
   const setRestApi = (patch: Partial<Draft['restapi']>) =>
     setDraft((d) => ({ ...d, restapi: { ...d.restapi, ...patch } }))
+  const setGraphqlApi = (patch: Partial<Draft['graphqlapi']>) =>
+    setDraft((d) => ({ ...d, graphqlapi: { ...d.graphqlapi, ...patch } }))
+  const graphqlApi = useGraphqlApiSchema(
+    kind === 'graphqlapi' ? resource : undefined,
+    { url: draft.graphqlapi.url, auth: draft.graphqlapi.auth, headers: draft.graphqlapi.headers },
+    scope ?? {},
+    environmentId,
+  )
   const serviceQuery =
     kind === 'service' && isServiceType(resource.type)
       ? (draft.services[resource.type] ?? defaultActionQuery(resource.type))
@@ -137,19 +171,23 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="space-y-4 p-4 lg:col-span-2">
           {kind === 'sql' ? (
-            <Field
-              label="SQL"
-              hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
-            >
-              <Textarea
-                rows={10}
-                spellCheck={false}
-                className="font-mono text-[13px]"
-                value={draft.sql}
-                onKeyDown={onKeyDown}
-                onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
-              />
-            </Field>
+            <>
+              <Field
+                label="SQL"
+                hint={`{{ expression }} becomes a bind parameter (${PLACEHOLDERS[resource.type] ?? '$1'}); values are never pasted into the SQL.`}
+              >
+                <Textarea
+                  id="playground-sql"
+                  rows={10}
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                  value={draft.sql}
+                  onKeyDown={onKeyDown}
+                  onChange={(e) => setDraft({ ...draft, sql: e.target.value })}
+                />
+              </Field>
+              <SqlSchemaPanel state={sqlSchema.state} onRefresh={sqlSchema.refresh} onInsert={insertSql} />
+            </>
           ) : kind === 'service' && isServiceType(resource.type) ? (
             <ActionQueryForm
               type={resource.type}
@@ -200,6 +238,18 @@ export function Playground({ resource, environmentId }: { resource: ResourceDeta
               setGraphql={(patch) => setDraft((d) => ({ ...d, graphql: { ...d.graphql, ...patch } }))}
               onKeyDown={onKeyDown}
             />
+          ) : kind === 'graphqlapi' ? (
+            <>
+              <GraphqlApiTargetFields
+                url={draft.graphqlapi.url}
+                onUrl={(url) => setGraphqlApi({ url })}
+                auth={draft.graphqlapi.auth}
+                onAuth={(auth) => setGraphqlApi({ auth })}
+                schema={graphqlApi.state}
+                onLoadSchema={graphqlApi.load}
+              />
+              <GraphqlDraft graphql={draft.graphqlapi} setGraphql={setGraphqlApi} onKeyDown={onKeyDown} />
+            </>
           ) : kind === 'restapi' ? (
             <>
               <RestQueryEditor

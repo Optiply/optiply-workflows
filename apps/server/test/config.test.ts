@@ -31,6 +31,18 @@ describe('loadConfig', () => {
     expect(config.GIT_POLL_SECONDS).toBe(60)
   })
 
+  it('signs in with Google only with its secret, and with Auth0 as a public client (session 58)', () => {
+    expect(loadConfig({ ...base, OIDC_CLIENT_ID: 'g' }).oidcEnabled).toBe(false)
+    expect(loadConfig({ ...base, OIDC_CLIENT_ID: 'g', OIDC_CLIENT_SECRET: 's' }).oidcEnabled).toBe(true)
+    const auth0 = loadConfig({
+      ...base,
+      OIDC_ISSUER: 'https://optiply.eu.auth0.com/',
+      OIDC_CLIENT_ID: 'AGivjzIbhX2X7XDJWyxxPUZ4eDNbhAQT',
+      OIDC_PROVIDER_NAME: 'Optiply',
+    })
+    expect(auth0).toMatchObject({ oidcEnabled: true, OIDC_PROVIDER_NAME: 'Optiply', OIDC_ALLOW_HTTP: false })
+  })
+
   it('turns Python off, with a warning, when the URL comes without its token', () => {
     const config = loadConfig({ ...base, PYTHON_EXECUTOR_URL: 'http://code-executor:8080' })
     expect(configurePython(config)).toBeNull()

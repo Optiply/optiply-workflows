@@ -174,16 +174,22 @@ function IndexForm({
   const [mode, setMode] = useState<'primary' | 'extra'>(index?.mode ?? 'extra')
   const [username, setUsername] = useState(index?.username ?? '')
   const [passwordConfigVar, setPasswordConfigVar] = useState(index?.passwordConfigVar ?? '')
-  const [tested, setTested] = useState<TestAnswer | null>(null)
+  const [testPackage, setTestPackage] = useState(index?.testPackage ?? '')
+  const [tested, setTested] = useState<(TestAnswer & { testPackage?: string }) | null>(null)
   const create = useMutation(trpc.pythonIndexes.create.mutationOptions({ onSuccess: onDone }))
   const update = useMutation(trpc.pythonIndexes.update.mutationOptions({ onSuccess: onDone }))
-  const test = useMutation(trpc.pythonIndexes.test.mutationOptions({ onSuccess: setTested }))
+  const test = useMutation(
+    trpc.pythonIndexes.test.mutationOptions({
+      onSuccess: (answer, input) => setTested({ ...answer, testPackage: input.testPackage ?? undefined }),
+    }),
+  )
   const fields = {
     name: name.trim(),
     url: url.trim(),
     mode,
     username: username.trim() || null,
     passwordConfigVar: passwordConfigVar || null,
+    testPackage: testPackage.trim() || null,
   }
   const effectiveSlug = index ? index.slug : slugTouched ? slug : slugify(name)
 
@@ -268,13 +274,30 @@ function IndexForm({
             </Select>
           </Field>
         </div>
+        <Field
+          label="Package to test with"
+          hint="Optional, saved with the index. Test looks for this package's page instead of the index's root: some indexes, Google's Artifact Registry among them, list nothing at their root."
+        >
+          <Input
+            className="font-mono"
+            value={testPackage}
+            onChange={(e) => {
+              setTestPackage(e.target.value)
+              setTested(null)
+            }}
+            placeholder="my-package"
+            autoComplete="off"
+          />
+        </Field>
         {tested && (
           <p
             className={tested.ok ? 'text-sm text-success-strong' : 'text-sm text-danger'}
             data-testid="python-index-test"
           >
             {tested.ok
-              ? 'The index answered and took the sign-in.'
+              ? tested.testPackage
+                ? `The index answered, took the sign-in and has ${tested.testPackage}.`
+                : 'The index answered and took the sign-in.'
               : (tested.message ?? 'The index refused.')}
           </p>
         )}

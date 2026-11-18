@@ -332,3 +332,75 @@ test('the GraphQL editor completes fields from the schema and marks unknown ones
     await expect(page.locator('.suggest-widget').getByText('customer')).toBeVisible()
   })
 })
+
+test('the built-in GraphQL resource: an endpoint’s URL and auth, and its schema loaded for completions', async ({
+  page,
+}) => {
+  await signIn(page)
+  const stamp = Date.now().toString(36)
+  const { resources } = await trpcQuery<{ resources: { id: string; slug: string }[] }>(
+    page,
+    'resources.list',
+    undefined,
+  )
+  const builtIn = resources.find((r) => r.slug === 'graphql')!
+
+  await test.step('the playground: no settings; URL, auth, Load schema, Run', async () => {
+    await page.goto(`/resources/${builtIn.id}`)
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await expect(page.getByTestId('built-in-graphql')).toContainText('GraphQL endpoint’s full URL')
+    await page.getByRole('button', { name: 'Query', exact: true }).click()
+    await page.getByTestId('graphql-api-url').fill(graphql.url)
+    await page.getByTestId('request-auth').selectOption('bearer')
+    await page.getByTestId('request-auth-token').fill(graphql.token)
+    await page.getByTestId('graphql-api-load-schema').click()
+    await expect(page.getByTestId('graphql-api-schema-status')).toContainText('Schema loaded')
+    await page.getByTestId('graphql-query').fill('{ order(id: "1") { id customer } }')
+    await page.getByRole('button', { name: 'Run' }).click()
+    await expect(page.getByText('Success')).toBeVisible()
+    await expect(page.getByText('acme')).toBeVisible()
+  })
+
+  await test.step('a workflow block: Load schema, then unknown fields marked and fields completed', async () => {
+    const flow = await trpcMutate<{ id: string }>(page, 'workflows.create', {
+      slug: `gql-builtin-${stamp}`,
+      name: 'GQL built-in',
+    })
+    await trpcMutate(page, 'workflows.saveDraft', {
+      id: flow.id,
+      revision: 1,
+      definition: {
+        schemaVersion: 1,
+        blocks: [
+          { name: 'startTrigger', type: 'startTrigger' },
+          {
+            name: 'orders',
+            type: 'resourceQuery',
+            config: {
+              resource: 'graphql',
+              query: {
+                url: graphql.url,
+                auth: { type: 'bearer', token: graphql.token },
+                query: '{ order(id: "1") { nope } }',
+                variables: '',
+              },
+            },
+          },
+        ],
+        edges: [{ from: 'startTrigger', port: 'out', to: 'orders' }],
+      },
+    })
+    await page.goto(`/workflows/${flow.id}`)
+    await block(page, 'orders').click()
+    await expect(page.getByTestId('graphql-api-url')).toHaveValue(graphql.url)
+    await page.getByTestId('graphql-api-load-schema').click()
+    await expect(page.getByTestId('graphql-api-schema-status')).toContainText('Schema loaded')
+    const editor = page.locator('[data-testid$="/orders/query.query"]')
+    await expect(editor.locator('.squiggly-error')).toBeVisible()
+    await editor.locator('.view-line').first().click()
+    await page.keyboard.press('ControlOrMeta+A')
+    await page.keyboard.type('{ order(id: "1") { cu')
+    await page.keyboard.press('Control+Space')
+    await expect(page.locator('.suggest-widget').getByText('customer')).toBeVisible()
+  })
+})

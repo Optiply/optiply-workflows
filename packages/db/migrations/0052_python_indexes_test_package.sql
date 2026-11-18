@@ -1,0 +1,1 @@
+ALTER TABLE "python_indexes" ADD COLUMN "test_package" text;

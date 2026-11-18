@@ -20,13 +20,17 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertCircle, ArrowDown, ArrowUp, ExternalLink, Play, Plus, Trash2, X, Zap } from 'lucide-react'
 import { createContext, lazy, type ReactNode, Suspense, useContext, useEffect, useState } from 'react'
-import { ActionQueryForm, RequestAuthFields } from '@/components/action-query'
+import { ActionQueryForm, type RequestAuth, RequestAuthFields } from '@/components/action-query'
+import { insertIntoEditor } from '@/components/code/sql-schema'
+import { GraphqlApiTargetFields } from '@/components/graphql-api-target'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { OpenApiQueryForm } from '@/components/openapi-query'
+import { SqlSchemaPanel } from '@/components/sql-schema-panel'
 import { Button, Field, Input, Select, Textarea } from '@/components/ui'
-import { useGraphqlSchema } from '@/lib/graphql-schema'
+import { useGraphqlApiSchema, useGraphqlSchema } from '@/lib/graphql-schema'
 import { useOpenApiOperations } from '@/lib/openapi-operations'
 import { defaultQuery, type QueryKind, queryKind } from '@/lib/resource-types'
+import { useSqlSchema } from '@/lib/sql-schema'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 import { removeFrom } from './canvas'
@@ -541,11 +545,14 @@ function QueryEditor({
         : typeof query.operationId === 'string'
           ? 'openapi'
           : typeof query.url === 'string'
-            ? 'restapi'
+            ? typeof query.query === 'string'
+              ? 'graphqlapi'
+              : 'restapi'
             : typeof query.query === 'string'
               ? 'graphql'
               : 'rest'
   const setQuery = (patch: Record<string, unknown>) => onChange({ resource, query: { ...query, ...patch } })
+  const sqlSchema = useSqlSchema(kind === 'sql' ? current : undefined)
 
   return (
     <div className="flex flex-col gap-4">
@@ -577,17 +584,28 @@ function QueryEditor({
         </Select>
       </Field>
       {kind === 'sql' ? (
-        <EditorField label="SQL" hint="{{ }} values are sent as bind parameters, never pasted into the SQL.">
-          <Code
-            path={ctx.modelPath(`${models}query.sql`)}
-            language="sql"
-            height={200}
-            value={String(query.sql ?? '')}
-            problems={ctx.problemsAt(...at, 'query', 'sql')}
-            text={ctx.text(...at, 'query', 'sql')}
-            onChange={(sql) => setQuery({ sql })}
+        <>
+          <EditorField
+            label="SQL"
+            hint="{{ }} values are sent as bind parameters, never pasted into the SQL."
+          >
+            <Code
+              path={ctx.modelPath(`${models}query.sql`)}
+              language="sql"
+              height={200}
+              sqlSchema={sqlSchema.schema}
+              value={String(query.sql ?? '')}
+              problems={ctx.problemsAt(...at, 'query', 'sql')}
+              text={ctx.text(...at, 'query', 'sql')}
+              onChange={(sql) => setQuery({ sql })}
+            />
+          </EditorField>
+          <SqlSchemaPanel
+            state={sqlSchema.state}
+            onRefresh={sqlSchema.refresh}
+            onInsert={(text) => insertIntoEditor(ctx.modelPath(`${models}query.sql`), text)}
           />
-        </EditorField>
+        </>
       ) : kind === 'service' && current && isServiceType(current.type) ? (
         <ActionQueryForm
           type={current.type}
@@ -620,7 +638,7 @@ function QueryEditor({
           models={models}
           resource={current}
         />
-      ) : kind === 'graphql' ? (
+      ) : kind === 'graphql' || kind === 'graphqlapi' ? (
         <GraphqlQueryForm
           query={query}
           setQuery={setQuery}
@@ -628,6 +646,7 @@ function QueryEditor({
           at={at}
           models={models}
           resource={current}
+          builtIn={kind === 'graphqlapi'}
         />
       ) : (
         <RestQueryForm
@@ -683,7 +702,8 @@ function OpenApiInspector({
 
 /**
  * A GraphQL query (M27): the operation, its variables as JSON with `{{ }}` (values go there, never into the query),
- * the operation to run when there are several, and headers.
+ * the operation to run when there are several, and headers. The built-in resource's (session 57) also has its
+ * endpoint's URL and sign-in, and reads that endpoint's schema when asked.
  */
 function GraphqlQueryForm({
   query,
@@ -692,6 +712,7 @@ function GraphqlQueryForm({
   at,
   models,
   resource,
+  builtIn = false,
 }: {
   query: Record<string, unknown>
   setQuery: (patch: Record<string, unknown>) => void
@@ -699,10 +720,28 @@ function GraphqlQueryForm({
   at: (string | number)[]
   models: string
   resource: Parameters<typeof useGraphqlSchema>[0]
+  builtIn?: boolean
 }) {
-  const schema = useGraphqlSchema(resource)
+  const resourceSchema = useGraphqlSchema(builtIn ? undefined : resource)
+  const api = useGraphqlApiSchema(builtIn ? resource : undefined, {
+    url: String(query.url ?? ''),
+    auth: query.auth ?? { type: 'none' },
+    headers: query.headers ?? [],
+  })
+  const schema = builtIn ? api.schema : resourceSchema
   return (
     <div className="flex flex-col gap-4">
+      {builtIn && (
+        <GraphqlApiTargetFields
+          url={String(query.url ?? '')}
+          onUrl={(url) => setQuery({ url })}
+          auth={query.auth as RequestAuth | undefined}
+          onAuth={(auth) => setQuery({ auth })}
+          schema={api.state}
+          onLoadSchema={api.load}
+          secretsHint="Read secrets from secret config vars, e.g. {{ configVars.API_TOKEN }}: they reach live runs only, and are kept out of logs."
+        />
+      )}
       <EditorField label="Query" hint="Values go in the variables as $name, not {{ }} in the query.">
         <Code
           path={ctx.modelPath(`${models}query.query`)}

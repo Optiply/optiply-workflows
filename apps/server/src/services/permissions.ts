@@ -1,16 +1,18 @@
 import {
   type Db,
+  environments,
   folders,
   groupMembers,
   groups,
   PERMISSION_LEVELS,
   type PermissionLevel,
   permissions,
+  resourceConfigs,
   users,
 } from '@ow/db'
 import { KIND_LABELS, type ObjectKind } from '@ow/git-format'
 import { TRPCError } from '@trpc/server'
-import { eq, inArray, or } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import { systemGroupId } from './users'
 
 const RANK: Record<PermissionLevel, number> = { use: 1, edit: 2, own: 3 }
@@ -48,11 +50,19 @@ export class Access {
     private readonly folderParents: Map<string, string | null>,
     /** Each folder's object type: a folder grant only reaches objects of its folder's type. */
     private readonly folderTypes: Map<string, string> = new Map(),
+    /** Environments only admins may use (session 56: Staging); everyone else has no access to anything in them. */
+    private readonly adminOnlyEnvironmentIds: ReadonlySet<string> = new Set(),
   ) {}
+
+  /** Whether the user may use an environment at all: admins every one, everyone else all but the admins-only ones. */
+  canUseEnvironment(environmentId: string): boolean {
+    return this.isAdmin || !this.adminOnlyEnvironmentIds.has(environmentId)
+  }
 
   /** The user's level on a resource in one environment, or null for no access. */
   level(resource: { id: string; folderId: string | null }, environmentId: string): PermissionLevel | null {
     if (this.isAdmin) return 'own'
+    if (!this.canUseEnvironment(environmentId)) return null
     const folderIds = this.ancestors(resource.folderId)
     let best: PermissionLevel | null = null
     for (const g of this.grants) {
@@ -65,17 +75,21 @@ export class Access {
     return best
   }
 
-  /** The level the user holds in *every* environment (what resource-wide actions like delete require). */
+  /**
+   * The level the user holds in *every* environment they may use (what resource-wide actions like delete require):
+   * the admins-only ones don't count for everyone else, who can't hold anything there.
+   */
   levelEverywhere(
     resource: { id: string; folderId: string | null },
     environmentIds: string[],
   ): PermissionLevel | null {
     if (this.isAdmin) return 'own'
-    let lowest: PermissionLevel | null = 'own'
+    let lowest: PermissionLevel | null = null
     for (const envId of environmentIds) {
+      if (!this.canUseEnvironment(envId)) continue
       const level = this.level(resource, envId)
       if (level === null) return null
-      if (RANK[level] < RANK[lowest!]) lowest = level
+      if (lowest === null || RANK[level] < RANK[lowest]) lowest = level
     }
     return lowest
   }
@@ -230,13 +244,17 @@ export class Access {
  */
 export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean }): Promise<Access> {
   if (user.isAdmin) return new Access(true, [], new Map())
-  // Their access comes with their memberships (everyone is in All Users), in one round trip.
-  const memberships = await db
-    .select({ groupId: groupMembers.groupId, systemKind: groups.systemKind, access: users.access })
-    .from(groupMembers)
-    .innerJoin(groups, eq(groups.id, groupMembers.groupId))
-    .innerJoin(users, eq(users.id, groupMembers.userId))
-    .where(eq(groupMembers.userId, user.id))
+  // Their access comes with their memberships (everyone is in All Users), in one round trip; with it, the
+  // environments only admins may use.
+  const [memberships, adminOnly] = await Promise.all([
+    db
+      .select({ groupId: groupMembers.groupId, systemKind: groups.systemKind, access: users.access })
+      .from(groupMembers)
+      .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+      .innerJoin(users, eq(users.id, groupMembers.userId))
+      .where(eq(groupMembers.userId, user.id)),
+    db.select({ id: environments.id }).from(environments).where(eq(environments.adminOnly, true)),
+  ])
   const [person] = memberships.length
     ? memberships
     : await db.select({ access: users.access }).from(users).where(eq(users.id, user.id))
@@ -274,7 +292,45 @@ export async function loadAccess(db: Db, user: { id: string; isAdmin: boolean })
         )
         .map((g) => ({ ...g, level: 'use' as const }))
     : rows
-  return new Access(false, grants, new Map(folderRows.map((f) => [f.id, f.parentId])), folderTypes)
+  return new Access(
+    false,
+    grants,
+    new Map(folderRows.map((f) => [f.id, f.parentId])),
+    folderTypes,
+    new Set(adminOnly.map((e) => e.id)),
+  )
+}
+
+/**
+ * A resource with settings in an environment only admins may use: changes to all of it at once (deleting it, putting it
+ * in Git or taking it out) are theirs, since they'd reach settings nobody else may touch.
+ */
+export async function requireNoAdminOnlySettings(
+  db: Db,
+  access: Access,
+  resourceId: string,
+  action: string,
+): Promise<void> {
+  if (access.isAdmin) return
+  const [hidden] = await db
+    .select({ name: environments.name })
+    .from(resourceConfigs)
+    .innerJoin(environments, eq(environments.id, resourceConfigs.environmentId))
+    .where(and(eq(resourceConfigs.resourceId, resourceId), eq(environments.adminOnly, true)))
+    .limit(1)
+  if (hidden) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: `Only admins can ${action} this resource: it has settings in ${hidden.name}`,
+    })
+  }
+}
+
+/** Refuses an environment only admins may use (session 56: Staging) to everyone else. */
+export function requireEnvironment(access: Access, environmentId: string): void {
+  if (!access.canUseEnvironment(environmentId)) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Only admins can use this environment' })
+  }
 }
 
 export function requireLevel(level: PermissionLevel | null, required: PermissionLevel, what: string): void {

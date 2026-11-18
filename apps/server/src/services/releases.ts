@@ -359,11 +359,17 @@ async function checkReleasable(
         message: `Schedule "${schedule.name}" runs in environment "${schedule.environment}", which doesn't exist`,
       })
     }
+    if (access && !access.canUseEnvironment(env.id)) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `Schedule "${schedule.name}" runs in ${env.name}, which only admins can use`,
+      })
+    }
     scheduleEnvironments.set(schedule.name, env.id)
   }
 
   const webhook = definition.triggers?.webhook
-  if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs)
+  if (webhook?.enabled) await checkWebhookSettings(db, resolveWebhookSettings(webhook), envs, access)
 
   let aliasShape: string | null = null
   if (webhook?.enabled && webhook.alias !== undefined) {
@@ -412,13 +418,28 @@ async function checkReleasable(
  * A live webhook's environments exist, and a signed one's secret is a secret config var with a value in each
  * environment the webhook runs in (its value isn't read here).
  */
-async function checkWebhookSettings(db: Db, webhook: ResolvedWebhook, envs: Environment[]) {
+async function checkWebhookSettings(
+  db: Db,
+  webhook: ResolvedWebhook,
+  envs: Environment[],
+  access: Access | null,
+) {
   if (typeof webhook.environments !== 'string') {
     const unknown = webhook.environments.find((slug) => !envs.some((e) => e.slug === slug))
     if (unknown) {
       throw new TRPCError({
         code: 'BAD_REQUEST',
         message: `The webhook runs in environment "${unknown}", which doesn't exist`,
+      })
+    }
+    // Named by slug is the only way an admins-only environment gets a webhook ('all' leaves it out): theirs to name.
+    const adminOnly = envs.find(
+      (e) => webhook.environments.includes(e.slug) && access?.canUseEnvironment(e.id) === false,
+    )
+    if (adminOnly) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: `The webhook runs in ${adminOnly.name}, which only admins can use`,
       })
     }
   }

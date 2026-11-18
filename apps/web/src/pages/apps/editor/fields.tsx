@@ -61,10 +61,15 @@ export function AppCodeField({
         // A protected app on main (M22): shown, not edited.
         readOnly={props.readOnly || readOnly}
         binding={binding}
-        path={`file:///app/${appId}/${props.path.join('/')}`}
+        path={appCodePath(appId, props.path)}
       />
     </Suspense>
   )
+}
+
+/** The Monaco model path of an app's code field at `path` (also to find its editor, e.g. to insert a table name). */
+export function appCodePath(appId: string | null, path: (string | number)[]): string {
+  return `file:///app/${appId}/${path.join('/')}`
 }
 
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)

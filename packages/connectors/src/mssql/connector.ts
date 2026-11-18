@@ -108,6 +108,12 @@ export const mssqlConnector: Connector<Config, Secrets, Query, Client> = {
   secretsSchema,
   querySchema,
 
+  // The database the resource connects to, every schema in it.
+  schemaSql: (_config, limit) => `SELECT TOP ${limit} TABLE_SCHEMA AS s, TABLE_NAME AS t, COLUMN_NAME AS c,
+  DATA_TYPE AS d, IS_NULLABLE AS n
+FROM INFORMATION_SCHEMA.COLUMNS
+ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`,
+
   createClient({ config, secrets }) {
     const tunnel = tunnelFor(config, secrets)
     const settings = connectionSettings(config, secrets, tunnel)

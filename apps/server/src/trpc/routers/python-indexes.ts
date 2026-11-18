@@ -1,5 +1,5 @@
 import { configVars, type Db, pythonEnvs, pythonIndexes, workflowReleases, workflows } from '@ow/db'
-import { PYTHON_INDEX_SLUG } from '@ow/definition'
+import { PACKAGE_NAME, PYTHON_INDEX_SLUG } from '@ow/definition'
 import { BlockFailure } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { asc, eq, or, sql } from 'drizzle-orm'
@@ -32,12 +32,24 @@ const Url = z
       return false
     }
   }, 'An http(s) URL of a simple index (PEP 503), without credentials, query or fragment (e.g. https://pypi.example.com/simple)')
+/**
+ * A package Test looks for instead of the index's root page, saved with the index: some indexes, Google's Artifact
+ * Registry among them, list nothing at their root and answer 404 there. Only Test reads it.
+ */
+const TestPackage = z
+  .string()
+  .trim()
+  .max(200)
+  .refine((v) => !v || PACKAGE_NAME.test(v), "A package's name (e.g. requests)")
+  .nullish()
+
 const Fields = z.object({
   name: z.string().trim().min(1).max(100),
   url: Url,
   username: z.string().trim().max(1000).nullish(),
   passwordConfigVar: z.string().trim().max(200).nullish(),
   mode: z.enum(['primary', 'extra']),
+  testPackage: TestPackage,
 })
 type FieldsInput = z.infer<typeof Fields>
 
@@ -60,6 +72,7 @@ async function checked(db: Db, input: FieldsInput) {
     username,
     passwordConfigVar,
     mode: input.mode,
+    testPackage: input.testPackage || null,
   }
 }
 
@@ -93,7 +106,11 @@ export const pythonIndexesRouter = router({
       name: row.name,
       url: row.url,
       mode: row.mode,
-      ...(ctx.user.isAdmin && { username: row.username, passwordConfigVar: row.passwordConfigVar }),
+      ...(ctx.user.isAdmin && {
+        username: row.username,
+        passwordConfigVar: row.passwordConfigVar,
+        testPackage: row.testPackage,
+      }),
       signedIn: !!row.username,
     }))
   }),
@@ -117,16 +134,24 @@ export const pythonIndexesRouter = router({
       return { id: created!.id }
     }),
 
-  /** The slug stays (workflows and locks name it). Envs resolved from it are resolved again on their next run. */
+  /**
+   * The slug stays (workflows and locks name it). Envs resolved from it are resolved again on their next run, when
+   * what they install from changed (not its name or the package Test uses).
+   */
   update: adminProcedure.input(Fields.extend({ id: Id })).mutation(async ({ ctx, input }) => {
     const fields = await checked(ctx.db, input)
+    const [before] = await ctx.db.select().from(pythonIndexes).where(eq(pythonIndexes.id, input.id))
+    if (!before) throw new TRPCError({ code: 'NOT_FOUND', message: 'No such package index' })
     const [updated] = await ctx.db
       .update(pythonIndexes)
       .set({ ...fields, updatedAt: new Date() })
       .where(eq(pythonIndexes.id, input.id))
       .returning()
     if (!updated) throw new TRPCError({ code: 'NOT_FOUND', message: 'No such package index' })
-    await ctx.db.delete(pythonEnvs).where(eq(pythonEnvs.indexId, input.id))
+    const installsFrom = (r: typeof fields) => [r.url, r.username, r.passwordConfigVar, r.mode].join('\n')
+    if (installsFrom(before) !== installsFrom(fields)) {
+      await ctx.db.delete(pythonEnvs).where(eq(pythonEnvs.indexId, input.id))
+    }
     await ctx.audit({
       action: 'python.index_updated',
       objectType: 'python_index',
@@ -172,7 +197,7 @@ export const pythonIndexesRouter = router({
         updatedAt: new Date(),
         ...fields,
       })
-      return await client.checkIndex(index)
+      return await client.checkIndex(index, fields.testPackage)
     } catch (err) {
       if (err instanceof BlockFailure) return { ok: false, status: null, message: err.message }
       throw err

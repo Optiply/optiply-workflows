@@ -139,12 +139,15 @@ export async function testResource(
   | { ok: true; message?: string; durationMs: number; ssh?: SshTestStep[] }
   | { ok: false; error: ConnectorError; ssh?: SshTestStep[] }
 > {
-  const started = performance.now()
+  let started = performance.now()
   const timeoutMs = opts.timeoutMs ?? 15_000
-  const signal = AbortSignal.timeout(timeoutMs)
+  let signal = AbortSignal.timeout(timeoutMs)
   const { credentials, secrets } = scrubbing(resource, opts.credentials)
   let client: unknown
   let ssh: SshTestStep[] | undefined
+  /** What the connector's slow first-time work did (`prepareTest`), while it's running and after. */
+  let preparing = false
+  let prepared: string | undefined
   try {
     const parsed = parseResource(connector, resource)
     // Through an SSH tunnel (M17): each hop first, reported on its own; the resource only once they all work.
@@ -165,6 +168,15 @@ export async function testResource(
       }
     }
     client = await connector.createClient(parsed)
+    if (connector.prepareTest) {
+      // Its own time limit (an SDK's first install takes minutes); the test's starts after it.
+      preparing = true
+      prepared = await connector.prepareTest(client)
+      preparing = false
+      // The test's time (its limit and the duration it reports) starts now.
+      signal = AbortSignal.timeout(timeoutMs)
+      started = performance.now()
+    }
     const result = await connector.testConnection(client, {
       signal,
       timeoutMs,
@@ -175,7 +187,13 @@ export async function testResource(
   } catch (err) {
     return {
       ok: false,
-      error: toConnectorError(err, { timedOut: signal.aborted, timeoutMs, aborted: signal.aborted, secrets }),
+      error: toConnectorError(err, {
+        timedOut: !preparing && signal.aborted,
+        timeoutMs,
+        aborted: !preparing && signal.aborted,
+        secrets,
+        ...(prepared && { notCounting: prepared }),
+      }),
       ...(ssh ? { ssh } : {}),
     }
   } finally {
@@ -240,10 +258,23 @@ function wrapEvaluate(evaluate: Evaluate): Evaluate {
 
 function toConnectorError(
   err: unknown,
-  ctx: { timedOut: boolean; timeoutMs: number; aborted: boolean; secrets: string[] },
+  ctx: {
+    timedOut: boolean
+    timeoutMs: number
+    aborted: boolean
+    secrets: string[]
+    /** A test's work done before its time started (`prepareTest`): the timeout says it wasn't counted. */
+    notCounting?: string
+  },
 ): ConnectorError {
   let error: ConnectorError
-  if (ctx.timedOut) {
+  if (ctx.timedOut && ctx.notCounting) {
+    error = new ConnectorError(
+      'timeout',
+      `The test timed out after ${ctx.timeoutMs} ms, not counting ${ctx.notCounting}`,
+      err instanceof ConnectorError ? err.details : undefined,
+    )
+  } else if (ctx.timedOut) {
     error = new ConnectorError('timeout', `The query timed out after ${ctx.timeoutMs} ms`)
   } else if (err instanceof ConnectorError) {
     error = err

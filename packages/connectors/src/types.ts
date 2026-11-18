@@ -106,6 +106,18 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
   readonly scrubResultData?: boolean
   createClient(resource: ResolvedResource<Config, Secrets>): Client | Promise<Client>
   destroyClient(client: Client): Promise<void>
+  /**
+   * Slow first-time work a test needs before it connects (an SDK's packages installed), done before the test's own
+   * time limit starts, within a limit of its own. Says what it did ("installing …"), for the test's timeout message;
+   * fails with a ConnectorError that says it was this step.
+   */
+  prepareTest?(client: Client): Promise<string | undefined>
+  /**
+   * A SQL connector's catalog query (session 57, `sql-schema.ts`): read-only, in its dialect, at most `limit` rows of
+   * `s`, `t`, `c`, `d`, `n` (schema, table, column, type, nullable), ordered by table and column position. Null when
+   * this resource's dialect is unknown; throws a ConnectorError when its settings don't say where to look.
+   */
+  schemaSql?(config: Config, limit: number): string | null
   testConnection(
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },

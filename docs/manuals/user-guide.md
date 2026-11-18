@@ -33,7 +33,8 @@ them from workflows and apps.
 **Environments.** The platform has two environments: **Production** (the default) and **Staging**. A resource has
 separate settings for each environment, for example a staging database and a production database. When a workflow
 runs, or an app is opened, you choose the environment, and every resource it uses connects to that environment's
-settings. This lets you try things on staging data first.
+settings. This lets you try things on staging data first. **Staging is for admins only:** if you aren't an admin,
+you don't see it and everything you do runs in Production.
 
 **Drafts and published versions.** Workflows and apps have a **draft**, which is what you edit, and **releases**,
 which are published versions with a number such as `v1.2.0`. One release is **live**. Webhooks, schedules and the

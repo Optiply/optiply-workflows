@@ -153,9 +153,17 @@ export const environments = pgTable(
     name: text().notNull(),
     color: text().notNull().default('#64748b'),
     isDefault: boolean().notNull().default(false),
+    /**
+     * Only admins may use it (session 56: Staging). Everyone else doesn't see it and is refused it: no runs, app
+     * queries or credentials there. The default environment can't be admins-only, so everyone always has one.
+     */
+    adminOnly: boolean().notNull().default(false),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('environments_slug_uq').on(t.slug)],
+  (t) => [
+    uniqueIndex('environments_slug_uq').on(t.slug),
+    check('environments_default_not_admin_only_ck', sql`not (${t.isDefault} and ${t.adminOnly})`),
+  ],
 )
 
 // ── Organisation ────────────────────────────────────────────────────────────
@@ -248,7 +256,7 @@ export const resources = pgTable(
     description: text(),
     folderId: uuid().references(() => folders.id, { onDelete: 'set null' }),
     /** Built-in resources the platform provisions and keeps up to date; their settings can't be edited. */
-    systemKind: text({ enum: ['database', 'rest'] }),
+    systemKind: text({ enum: ['database', 'rest', 'graphql'] }),
     /** Kept in the Git repo (M22): its settings change through Git, its secrets and overrides here. */
     gitProtected: boolean().notNull().default(false),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
@@ -1757,6 +1765,11 @@ export const pythonIndexes = pgTable(
     passwordConfigVar: text(),
     /** `primary` replaces the builder's default index; `extra` is searched with it. */
     mode: text().$type<'primary' | 'extra'>().notNull(),
+    /**
+     * A package Test asks for instead of the root page (session 57): some indexes, Google's Artifact Registry among
+     * them, list nothing at their root and answer 404 there. Only Test reads it.
+     */
+    testPackage: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

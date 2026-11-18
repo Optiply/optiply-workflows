@@ -151,6 +151,55 @@ describe.skipIf(!available)("the package builder's indexes", () => {
     expect(away).toMatchObject({ ok: false, message: expect.stringContaining("Couldn't reach") })
   })
 
+  it('tests an index that lists nothing at its root (Artifact Registry) with a package on it', async () => {
+    const registry = await startTestIndex(
+      [{ name: 'Optiply_SDK', version: '0.3.1', files: { 'optiply/__init__.py': 'X = 1\n' } }],
+      { auth: { username: '_json_key_base64', password: PASSWORD }, noRootListing: true },
+    )
+    try {
+      const index = {
+        name: 'optiply',
+        url: registry.url,
+        mode: 'extra',
+        username: '_json_key_base64',
+        password: PASSWORD,
+      }
+      const root = await call('/check-index', { index })
+      expect(root).toMatchObject({
+        ok: false,
+        status: 404,
+        message: expect.stringContaining('test with a package'),
+      })
+      // Any spelling of the name: the page is the normalized one (PEP 503).
+      expect(await call('/check-index', { index, package: 'optiply.sdk' })).toMatchObject({
+        ok: true,
+        status: 200,
+      })
+      expect(await call('/check-index', { index, package: 'nope' })).toMatchObject({
+        ok: false,
+        status: 404,
+        message: expect.stringContaining('The index has no package nope'),
+      })
+      expect(
+        await call('/check-index', { index: { ...index, password: 'wrong' }, package: 'optiply-sdk' }),
+      ).toMatchObject({
+        ok: false,
+        status: 403,
+        message: expect.stringContaining('refused the sign-in'),
+      })
+      for (const bad of ['../etc', 'a b', 7, 'x'.repeat(201)]) {
+        const res = await fetch(`${builder.url}/check-index`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${builder.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ index, package: bad }),
+        })
+        expect(res.status, String(bad)).toBe(400)
+      }
+    } finally {
+      await registry.stop()
+    }
+  })
+
   it('refuses indexes that are not what it expects', async () => {
     const bad = [
       [{ ...priv('extra'), url: `http://ci:pw@${new URL(privateIndex.url).host}/simple` }],

@@ -22,10 +22,11 @@ import {
 } from './rest'
 import { type Connector, ConnectorError, type QueryContext, type QueryResult } from './types'
 
-// The built-in REST API resource (M27, `rest_api`): no settings, any public URL, auth typed per request.
+// The built-in REST API resource (M27, `rest_api`): no settings, any public URL, auth typed per request. Its URL,
+// auth and client are shared with the built-in GraphQL resource (`graphql-api.ts`).
 
 /** A request's own credentials; every value is a template (a workflow reads secrets as `{{ configVars.NAME }}`). */
-const requestAuthSchema = z
+export const requestAuthSchema = z
   .discriminatedUnion('type', [
     z.object({ type: z.literal('none') }),
     z.object({ type: z.literal('bearer'), token: z.string().default('') }),
@@ -62,7 +63,23 @@ export function configureRestApi(opts: { privateHosts: readonly string[] }): voi
 /** Nothing here is used to reach anything: requests name their own hosts. */
 const CONFIG: RestConfig = restConfigSchema.parse({ baseUrl: 'https://rest-api.invalid' })
 
-function authTemplates(auth: Query['auth']): string[] {
+/** The built-in resources' client: any public host, plus the instance's `REST_API_PRIVATE_HOSTS`. */
+export function builtInHttpClient(): HttpClient {
+  return createHttpClient(CONFIG, restSecretsSchema.parse({}), { anyPublicHost: true, privateHosts })
+}
+
+/** A request's failure with its own credentials scrubbed (they aren't the resource's, which `runQuery` scrubs). */
+export function scrubbedFailure(err: ConnectorError, secrets: string[]): ConnectorError {
+  return new ConnectorError(
+    err.code,
+    scrubSecrets(err.message, secrets),
+    err.details && (scrubSecretsDeep(err.details, secrets) as Record<string, unknown>),
+  )
+}
+
+export type RequestAuth = z.output<typeof requestAuthSchema>
+
+export function authTemplates(auth: RequestAuth): string[] {
   switch (auth.type) {
     case 'none':
       return []
@@ -86,9 +103,7 @@ export const restApiConnector: Connector<Record<string, never>, Record<string, n
   querySchema,
   scrubResultData: true,
 
-  createClient() {
-    return createHttpClient(CONFIG, restSecretsSchema.parse({}), { anyPublicHost: true, privateHosts })
-  },
+  createClient: builtInHttpClient,
 
   destroyClient: destroyHttpClient,
 
@@ -119,39 +134,7 @@ export const restApiConnector: Connector<Record<string, never>, Record<string, n
     const url = await buildUrl(query.url, ctx)
     const params = await renderParams(query.params, ctx)
     const headers = await renderHeaders(query, ctx)
-    const sensitive: string[] = []
-    // The request's own credentials: kept out of what comes back (a resource's secrets are scrubbed by `runQuery`;
-    // these aren't the resource's), e.g. an API key in the URL `metadata.url` reports.
-    const credentials: string[] = []
-    const auth = query.auth
-    if (auth.type === 'bearer') {
-      const token = await renderText(auth.token, ctx.evaluate)
-      headers.push(['authorization', `Bearer ${token}`])
-      sensitive.push('authorization')
-      credentials.push(token)
-    } else if (auth.type === 'basic') {
-      const user = await renderText(auth.username, ctx.evaluate)
-      const password = await renderText(auth.password, ctx.evaluate)
-      const basic = Buffer.from(`${user}:${password}`).toString('base64')
-      headers.push(['authorization', `Basic ${basic}`])
-      sensitive.push('authorization')
-      credentials.push(password, basic)
-    } else if (auth.type === 'apiKey') {
-      const name = (await renderText(auth.name, ctx.evaluate)).trim()
-      if (!name) throw new ConnectorError('invalid_query', 'Name the API key’s header or parameter')
-      const value = await renderText(auth.value, ctx.evaluate)
-      if (auth.in === 'query') params.push([name, value])
-      else {
-        headers.push([name, value])
-        sensitive.push(name)
-      }
-      credentials.push(
-        value,
-        encodeURIComponent(value),
-        new URLSearchParams({ k: value }).toString().slice(2),
-      )
-    }
-    const secrets = credentials.filter((c) => c.length >= 4)
+    const { sensitive, secrets } = await applyRequestAuth(query.auth, ctx, headers, params)
     try {
       const res = await httpRequest(
         client,
@@ -164,20 +147,55 @@ export const restApiConnector: Connector<Record<string, never>, Record<string, n
       return scrubSecretsDeep({ data: res.data, metadata: responseMetadata(res) }, secrets) as QueryResult
     } catch (err) {
       if (!(err instanceof ConnectorError)) throw err
-      throw new ConnectorError(
-        err.code,
-        scrubSecrets(err.message, secrets),
-        err.details && (scrubSecretsDeep(err.details, secrets) as Record<string, unknown>),
-      )
+      throw scrubbedFailure(err, secrets)
     }
   },
+}
+
+/**
+ * A request's own credentials (the built-in REST API's and GraphQL's), added to its headers or parameters. Returns the
+ * headers to hide in what's reported and the values to scrub from results and errors: a resource's secrets are
+ * scrubbed by `runQuery`, these aren't the resource's (e.g. an API key in the URL `metadata.url` reports).
+ */
+export async function applyRequestAuth(
+  auth: RequestAuth,
+  ctx: QueryContext,
+  headers: [string, string][],
+  params: [string, string][],
+): Promise<{ sensitive: string[]; secrets: string[] }> {
+  const sensitive: string[] = []
+  const credentials: string[] = []
+  if (auth.type === 'bearer') {
+    const token = await renderText(auth.token, ctx.evaluate)
+    headers.push(['authorization', `Bearer ${token}`])
+    sensitive.push('authorization')
+    credentials.push(token)
+  } else if (auth.type === 'basic') {
+    const user = await renderText(auth.username, ctx.evaluate)
+    const password = await renderText(auth.password, ctx.evaluate)
+    const basic = Buffer.from(`${user}:${password}`).toString('base64')
+    headers.push(['authorization', `Basic ${basic}`])
+    sensitive.push('authorization')
+    credentials.push(password, basic)
+  } else if (auth.type === 'apiKey') {
+    const name = (await renderText(auth.name, ctx.evaluate)).trim()
+    if (!name) throw new ConnectorError('invalid_query', 'Name the API key’s header or parameter')
+    const value = await renderText(auth.value, ctx.evaluate)
+    if (auth.in === 'query') params.push([name, value])
+    else {
+      headers.push([name, value])
+      sensitive.push(name)
+    }
+    credentials.push(value, encodeURIComponent(value), new URLSearchParams({ k: value }).toString().slice(2))
+  }
+  return { sensitive, secrets: credentials.filter((c) => c.length >= 4) }
 }
 
 /**
  * The query's URL. An app viewer's values (`untrustedValues`) can't choose the host: the scheme and host must be typed
  * out in the query, and each value fills one encoded segment, as in a REST resource's paths.
  */
-async function buildUrl(template: string, ctx: QueryContext): Promise<URL> {
+export async function buildUrl(template: string, ctx: QueryContext): Promise<URL> {
   if (ctx.untrustedValues) {
     const first = parseTemplate(template).find((p) => p.type === 'expression')
     if (first && !LITERAL_ORIGIN.test(template.slice(0, first.start).trim())) {

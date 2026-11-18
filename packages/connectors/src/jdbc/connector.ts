@@ -51,6 +51,34 @@ export const jdbcConnector: Connector<JdbcConfig, JdbcSecrets, Query, Client> = 
   configSchema: jdbcConfigSchema,
   secretsSchema: jdbcSecretsSchema,
   querySchema,
+
+  // Per built-in driver's dialect; an uploaded driver's is unknown (null). Quoted aliases keep Oracle's and
+  // Snowflake's column names lowercase.
+  schemaSql: (config, limit) => {
+    switch (config.driver) {
+      case 'snowflake':
+        return `SELECT table_schema AS "s", table_name AS "t", column_name AS "c", data_type AS "d", is_nullable AS "n"
+FROM information_schema.columns
+WHERE table_schema <> 'INFORMATION_SCHEMA'
+ORDER BY table_schema, table_name, ordinal_position
+LIMIT ${limit}`
+      case 'oracle':
+        return `SELECT owner AS "s", table_name AS "t", column_name AS "c", data_type AS "d", nullable AS "n"
+FROM all_tab_columns
+WHERE owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+ORDER BY table_name, column_id
+FETCH FIRST ${limit} ROWS ONLY`
+      case 'clickhouse':
+        return `SELECT database AS s, table AS t, name AS c, type AS d,
+  if(startsWith(type, 'Nullable('), 'YES', 'NO') AS n
+FROM system.columns
+WHERE database = currentDatabase()
+ORDER BY database, table, position
+LIMIT ${limit}`
+      default:
+        return null
+    }
+  },
   httpConfig: jdbcHttpConfig,
 
   async createClient({ id, version, config, secrets }) {

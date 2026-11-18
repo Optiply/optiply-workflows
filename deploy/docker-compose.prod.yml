@@ -15,9 +15,12 @@ x-app: &app
     SESSION_SECRET: ${SESSION_SECRET:?}
     ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?}
     ENCRYPTION_KEY_CURRENT: ${ENCRYPTION_KEY_CURRENT:-}
-    OIDC_ISSUER: https://accounts.google.com
+    # Sign-in: Optiply's Auth0 (session 58; a public client, no secret) or Google (with its secret).
+    OIDC_ISSUER: ${OIDC_ISSUER:-https://accounts.google.com}
     OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
     OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+    OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-Google}
+    OIDC_CALLBACK_PATH: ${OIDC_CALLBACK_PATH:-/api/auth/oidc/callback}
     OIDC_ALLOWED_DOMAIN: ${OIDC_ALLOWED_DOMAIN:-optiply.nl}
     LOCAL_LOGIN_ENABLED: ${LOCAL_LOGIN_ENABLED:-false}
     TRUST_PROXY: "true"

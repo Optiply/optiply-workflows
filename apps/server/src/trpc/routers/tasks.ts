@@ -1,4 +1,4 @@
-import { userTasks } from '@ow/db'
+import { environments, userTasks } from '@ow/db'
 import { completeTask } from '@ow/engine'
 import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, type SQL, sql } from 'drizzle-orm'
@@ -7,6 +7,12 @@ import { loadAccess } from '../../services/permissions'
 import { assignedTo, assigneeNames, groupIdsOf, loadTasks, taskAccess, taskView } from '../../services/tasks'
 import { invalidInput } from '../errors'
 import { authedProcedure, router } from '../init'
+
+/** Tasks of runs in an environment only admins may use (session 56: Staging) are theirs alone. */
+function usableEnvironment(isAdmin: boolean): SQL | undefined {
+  if (isAdmin) return undefined
+  return sql`${userTasks.environmentId} not in (select ${environments.id} from ${environments} where ${environments.adminOnly})`
+}
 
 const Id = z.uuid()
 
@@ -29,6 +35,8 @@ export const tasksRouter = router({
           : inArray(userTasks.status, ['completed', 'expired', 'cancelled']),
       ]
       if (input.scope === 'mine' || !ctx.user.isAdmin) filters.push(assignedTo(ctx.user.id, groupIds))
+      const usable = usableEnvironment(ctx.user.isAdmin)
+      if (usable) filters.push(usable)
       const rows = await loadTasks(ctx.db, and(...filters), input.status, input.limit)
       const [access, names] = await Promise.all([loadAccess(ctx.db, ctx.user), assigneeNames(ctx.db, rows)])
       return rows.map((row) => taskView(row, names, taskAccess(row, ctx.user, groupIds, access)))
@@ -40,7 +48,13 @@ export const tasksRouter = router({
     const [row] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
       .from(userTasks)
-      .where(and(eq(userTasks.status, 'open'), assignedTo(ctx.user.id, groupIds)))
+      .where(
+        and(
+          eq(userTasks.status, 'open'),
+          assignedTo(ctx.user.id, groupIds),
+          usableEnvironment(ctx.user.isAdmin),
+        ),
+      )
     return row?.n ?? 0
   }),
 

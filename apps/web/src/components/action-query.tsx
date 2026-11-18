@@ -173,7 +173,7 @@ function HubSpotPropertyHint({
   )
 }
 
-type RequestAuth = {
+export type RequestAuth = {
   type: string
   token?: string
   username?: string

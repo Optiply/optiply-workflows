@@ -33,7 +33,7 @@ import {
   settingsChanges,
   unprotectSettings,
 } from '../../services/git/settings-objects'
-import { loadAccess, requireLevel } from '../../services/permissions'
+import { loadAccess, requireLevel, requireNoAdminOnlySettings } from '../../services/permissions'
 import { adminProcedure, authedProcedure, type Context, router } from '../init'
 
 const Id = z.string().uuid()
@@ -79,6 +79,7 @@ async function settingsRow(
     required,
     `this resource in every environment to ${action} it`,
   )
+  await requireNoAdminOnlySettings(ctx.db, access, resource.id, action)
   return resource as SettingsRow
 }
 

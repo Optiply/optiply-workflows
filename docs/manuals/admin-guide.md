@@ -574,6 +574,13 @@ AI resources (Anthropic, OpenAI-compatible providers and Gemini) call a language
 The app has two environments: **Production** (the default) and **Staging**. They can't be added to or changed in the
 app.
 
+**Staging is for admins only** (the "Admins only" badge). Everyone else doesn't see it anywhere: not in the environment
+choices of workflows, apps and the Database, not on a resource's settings. They can't run, query or set credentials
+there, nor see the runs made there; a grant for "every environment" doesn't reach it. Only admins can grant anything in
+Staging, or publish a workflow whose schedule or webhook names it. A webhook that runs in every environment (an
+API-key webhook by default) runs in Production only; it runs in Staging only when its settings name it. Production is
+always the default, and the default environment can never be made admins-only.
+
 - Every resource has **separate settings per environment**: production credentials in Production, test credentials
   in Staging.
 - A workflow runs in one environment at a time (its settings choose it; User Guide, chapter Workflows), and its

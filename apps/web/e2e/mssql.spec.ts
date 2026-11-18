@@ -59,6 +59,8 @@ test('a SQL Server resource: the picker, each sign-in’s fields, and the checks
 
   await test.step('a named instance', async () => {
     await page.getByTestId('mssql-instance').fill('SQLEXPRESS')
+    // The edit clears the last save's "Saved.", so the one below is this save's.
+    await expect(page.getByText('Saved.')).toHaveCount(0)
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText('Saved.')).toBeVisible()
     await page.reload()

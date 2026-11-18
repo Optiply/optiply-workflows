@@ -99,6 +99,7 @@ export function ResourceDetailPage() {
         <Playground key={current.environmentId} resource={resource} environmentId={current.environmentId} />
       )}
       {current && tab === 'settings' && resource.systemKind === 'rest' && <BuiltInRestSettings />}
+      {current && tab === 'settings' && resource.systemKind === 'graphql' && <BuiltInGraphqlSettings />}
       {current && tab === 'settings' && resource.systemKind === 'database' && (
         <BuiltInSettings
           environmentSlug={environments?.find((e) => e.id === current.environmentId)?.slug}
@@ -144,6 +145,35 @@ function BuiltInRestSettings() {
         Each query signs in on its own: a bearer token, basic auth or an API key, typed in or read from a
         secret config var in workflows (<code className="text-xs">{'{{ configVars.API_TOKEN }}'}</code>). In
         apps, the URL’s host must be typed out: people using the app can only fill in its path and parameters.
+      </p>
+      <p className="text-muted">Who may use it is set on the Access tab; everyone may at first.</p>
+    </Card>
+  )
+}
+
+/** The built-in GraphQL resource (session 57): nothing to set; what it may reach, how queries sign in, the schema. */
+function BuiltInGraphqlSettings() {
+  return (
+    <Card className="space-y-3 p-5 text-sm" data-testid="built-in-graphql">
+      <h2 className="font-semibold">
+        Built-in{' '}
+        <Badge tone="accent" className="ml-1">
+          managed by the platform
+        </Badge>
+      </h2>
+      <p className="text-muted">
+        Queries give a GraphQL endpoint’s full URL, any public address, without setting up a resource first.
+        Private addresses (this network, localhost) are refused, unless the instance names them in
+        REST_API_PRIVATE_HOSTS.
+      </p>
+      <p className="text-muted">
+        Each query signs in on its own: a bearer token, basic auth or an API key, typed in or read from a
+        secret config var (<code className="text-xs">{'{{ configVars.API_TOKEN }}'}</code>). In apps, the
+        URL’s host must be typed out.
+      </p>
+      <p className="text-muted">
+        Load schema reads the endpoint’s schema for the editor’s completions, with the query’s URL and
+        sign-in. Secret config vars aren’t filled in there: the editor could send them anywhere.
       </p>
       <p className="text-muted">Who may use it is set on the Access tab; everyone may at first.</p>
     </Card>

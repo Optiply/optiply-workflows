@@ -19,6 +19,13 @@ import { cast, type RowSelection, readExpression, selectionSql, writeError } fro
 /** Per import: the most rows, and the most bytes (checked by the route as the file streams in). */
 export const IMPORT_MAX_ROWS = 500_000
 export const IMPORT_MAX_BYTES = 50 * 1024 * 1024
+/**
+ * A batch also goes in once its values reach this many characters, not only at its row count: a batch is held a few
+ * times over while it's sent (the values, the statement's parameters, the driver's message, and Postgres's copy), so
+ * 1,000 rows of big JSON documents would make one statement of tens of MB on a 1 GB server. A bigger row goes alone.
+ * (The 26 MB file that crashed production on 2026-11-17 ran out of memory in the parser: see `CsvParser.push`.)
+ */
+export const IMPORT_BATCH_CHARS = 2_000_000
 /** Problems reported at once: enough to fix a file in one go, not so many the message is useless. */
 const MAX_REPORTED = 20
 
@@ -148,10 +155,12 @@ export async function importCsv(
   let expected: number | undefined
   let count = 0
   let batch: { line: number; values: (string | null)[] }[] = []
+  let batchChars = 0
   const flush = async () => {
     if (!batch.length) return
     const rows = batch
     batch = []
+    batchChars = 0
     try {
       await tx.savepoint((sp) => insertWith(sp, rows))
     } catch (err) {
@@ -203,11 +212,10 @@ export async function importCsv(
         `The file has more than ${IMPORT_MAX_ROWS.toLocaleString('en')} rows: split it into smaller files`,
       )
     }
-    batch.push({
-      line: record.line,
-      values: targets.map((t) => toValue(record.fields[t.source], t.column, spec)),
-    })
-    if (batch.length >= batchSize) await flush()
+    const values = targets.map((t) => toValue(record.fields[t.source], t.column, spec))
+    batch.push({ line: record.line, values })
+    for (const v of values) batchChars += v?.length ?? 0
+    if (batch.length >= batchSize || batchChars >= IMPORT_BATCH_CHARS) await flush()
   }
   await flush()
   if (first) throw new ManagedDbError('invalid', 'The file is empty')

@@ -12,7 +12,7 @@ anything, check its price; the budget alert (step 2) warns at €5 but doesn't s
 |---|---|---|
 | The whole stack (app, Postgres, the runners, Caddy for HTTPS) | VM `ow-prod`, **e2-micro** (2 shared vCPUs, 1 GB), Debian 12, `us-east1-b`, 30 GB standard disk | Free tier (one e2-micro, 30 GB standard disk, US regions only) |
 | Its public address | Static IP `ow-prod-ip` | Possibly ~$3.65 a month (Google's pages disagree whether the free tier covers it) |
-| Images | Artifact Registry `us-east1-docker.pkg.dev/optiply-workflows/ow`, the last 3 versions kept | 0.5 GB free, then ~$0.10/GB a month |
+| Images | Artifact Registry `us-east1-docker.pkg.dev/optiply-workflows/ow`, the last 3 versions kept (cleanup policy) | 0.5 GB free, then ~$0.10/GB a month. **A version (the 5 images) is ~0.8 GB**: builds share few layers, so even one version is over the free 0.5 GB. Two versions (current + rollback) ≈ 1.5 GB ≈ $0.10 a month; three ≈ $0.18 (2026-11-18) |
 | Image builds | Cloud Build, default machine | 2,500 build-minutes a month free |
 | Settings and secrets | Secret Manager: `ow-env` (the whole `.env`), `ow-db-readonly` (the read-only database user's password) | Free (up to 6 active versions) |
 | Backups | Bucket `gs://optiply-workflows-backups` (`us-east1`), nightly `pg_dump`, deleted after 30 days | Free (5 GB in US regions) |
@@ -30,11 +30,21 @@ Run from the repo on a machine with `gcloud` signed in as a project owner. `P=op
 2. **Budget alert at €5** (Billing → Budgets & alerts, or `gcloud billing budgets create`): 50 %, 90 %, 100 %.
 3. **Registry:** `gcloud artifacts repositories create ow --repository-format=docker --location=us-east1 --project $P`, with a cleanup policy keeping the 3 newest versions.
 4. **Build the images:** `gcloud builds submit --project $P --region us-east1 --config deploy/cloudbuild.yaml --substitutions _TAG=$(git rev-parse --short HEAD) .` (uploads the source without `.env`: `.gcloudignore`).
-5. **The VM's identity:** a service account `ow-vm-prod` (IDs need 6+ characters) with `roles/artifactregistry.reader`, `roles/secretmanager.secretAccessor` (on `ow-env`) and `roles/storage.objectCreator` (on the backups bucket), plus `roles/logging.logWriter`.
+5. **The VM's identity:** a service account `ow-vm-prod` (IDs need 6+ characters) with `roles/artifactregistry.reader`, `roles/secretmanager.secretAccessor` (on `ow-env`) and `roles/storage.objectCreator` and `roles/storage.objectViewer` (both on the backups bucket: `backup.sh` streams the dump, and a streamed upload also reads the object, so Creator alone fails with 403; neither can delete a backup), plus `roles/logging.logWriter`.
 6. **Address and VM:** a static IP `ow-prod-ip` in `us-east1`; the VM `ow-prod` (`e2-micro`, `us-east1-b`, Debian 12, 30 GB **pd-standard**, service account `ow-vm-prod`, scope `cloud-platform`, tag `ow-prod`). Firewall (target tag `ow-prod`): `ow-allow-web` 80 and 443 from anywhere; `ow-allow-iap-ssh` 22 from IAP's range `35.235.240.0/20` (priority 800); `ow-deny-admin-ports` 22 and 3389 from anywhere (priority 900, over the default network's open SSH/RDP rules). SSH: `gcloud compute ssh ow-prod --zone us-east1-b --tunnel-through-iap`.
 7. **The backups bucket:** `gs://optiply-workflows-backups` in `us-east1`, standard class, uniform access, lifecycle "delete after 30 days".
-8. **Google sign-in:** Google Cloud console → APIs & Services → OAuth consent screen: **Internal**; Credentials → OAuth client ID, type Web application, redirect URI `https://<SITE_ADDRESS>/api/auth/oidc/callback`.
-9. **The secret `ow-env`:** a `.env` with `PUBLIC_URL=https://<SITE_ADDRESS>`, `SITE_ADDRESS`, `SESSION_SECRET` (new), `ENCRYPTION_KEYS` and `ENCRYPTION_KEY_CURRENT` (**the same as the data's**: the resources' credentials are encrypted with them), `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_ALLOWED_DOMAIN=optiply.nl`, the four runner tokens and `METRICS_TOKEN` (new, random; without it `/metrics` is public), `GOOGLE_SERVER_IDENTITY` if used. `gcloud secrets create ow-env --data-file=… --replication-policy=user-managed --locations=us-east1`; delete the local file after.
+8. **Sign-in, Optiply's Auth0** (session 58, as the feedback app): the Auth0 application "Optiply Workflows" (single-page
+   app, no client secret) allows `https://<SITE_ADDRESS>` as its callback and logout URL, so the sign-in comes back to
+   the site's root (`OIDC_CALLBACK_PATH=/`; the server answers `/` with `code` and `state` before the web app) and
+   signing out returns there. (Checked 2026-11-19: Auth0 answered 403 to `/api/auth/oidc/callback`, 302 to the root;
+   `/v2/logout` refused `returnTo=…/login`.) In `ow-env`: `OIDC_ISSUER=https://optiply.eu.auth0.com/`,
+   `OIDC_CLIENT_ID=<its client id>`, `OIDC_PROVIDER_NAME=Optiply`, `OIDC_CALLBACK_PATH=/`, and **no**
+   `OIDC_CLIENT_SECRET` (with one, the code exchange sends it, and Auth0 refuses a secret for a public client).
+   The rules stay the server's: a verified email, `@optiply.nl` or invited, an admin's approval the first time; people
+   are matched by email, so existing accounts carry over. (Before: Google: Google Cloud console → APIs & Services →
+   OAuth consent screen **Internal**; an OAuth client ID, Web application, redirect URI
+   `https://<SITE_ADDRESS>/api/auth/oidc/callback`; `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`, issuer the default.)
+9. **The secret `ow-env`:** a `.env` with `PUBLIC_URL=https://<SITE_ADDRESS>`, `SITE_ADDRESS`, `SESSION_SECRET` (new), `ENCRYPTION_KEYS` and `ENCRYPTION_KEY_CURRENT` (**the same as the data's**: the resources' credentials are encrypted with them), the sign-in's `OIDC_*` (step 8), `OIDC_ALLOWED_DOMAIN=optiply.nl`, the four runner tokens and `METRICS_TOKEN` (new, random; without it `/metrics` is public), `GOOGLE_SERVER_IDENTITY` if used. `gcloud secrets create ow-env --data-file=… --replication-policy=user-managed --locations=us-east1`; delete the local file after.
 10. **On the VM:** copy `deploy/*` and `apps/code-executor/seccomp.json` to `/opt/ow`, then `sudo bash /opt/ow/vm-setup.sh`.
 11. **The data:** see "Moving the data" below. Then `sudo /opt/ow/deploy.sh <tag>`.
 12. **Check:** `https://<SITE_ADDRESS>/api/health` gives 200; sign in with Google; approve colleagues in Settings → Users.
@@ -55,6 +65,14 @@ payloads and the run logs with it). Then `deploy.sh`. The encryption keys in `ow
   Migrations run by themselves (`migrate`).
 - **Roll back:** `sudo /opt/ow/deploy.sh $(cat /opt/ow/.previous-tag)`. Migrations only add things, so an older image
   runs on the newer schema; for a migration that doesn't, restore the backup taken before.
+- **After a deploy, keep only two versions** (the current tag and `.previous-tag`, for a rollback), in both places:
+  - **The registry** (each version ~0.8 GB, billed past 0.5 GB): for each image (`app`, `code-executor`,
+    `jdbc-runner`, `python-builder`, `sdk-runner`), `gcloud artifacts docker images list
+    us-east1-docker.pkg.dev/$P/ow/<image> --include-tags`, then for an older tag `gcloud artifacts docker images delete
+    us-east1-docker.pkg.dev/$P/ow/<image>@<digest> --delete-tags --quiet`. The cleanup policy alone keeps three.
+  - **The VM's disk** (each version ~3.3 GB unpacked; `deploy.sh` only prunes images older than 7 days, so frequent
+    deploys pile up): `sudo docker rmi us-east1-docker.pkg.dev/$P/ow/<image>:<old tag>` for each image and older tag.
+    Not `docker image prune -a`: Postgres runs from an untagged image when `postgres:18` was pulled anew.
 - **Logs:** `docker compose -f docker-compose.prod.yml logs --since 1h app`.
 - **Memory:** `free -m`, `docker stats --no-stream`. Lots of swap in use means the VM is too small (see "Bigger").
 

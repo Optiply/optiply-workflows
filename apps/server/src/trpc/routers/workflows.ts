@@ -24,7 +24,7 @@ import { checkBodySchema } from '@ow/definition/body-schema'
 import { BlockFailure } from '@ow/engine'
 import { SandboxError } from '@ow/sandbox'
 import { TRPCError } from '@trpc/server'
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, or, type SQL, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { dependents, inUseMessage } from '../../services/dependents'
 import { requireGitRepo, requireUnprotected } from '../../services/git/protection'
@@ -101,6 +101,11 @@ interface LastRun {
   environment: string | null
   createdAt: Date
   finishedAt: Date | null
+}
+
+/** Rows of an environment only admins may use (session 56: Staging) are theirs; rows of none are everyone's. */
+function visibleEnvironment(access: Access): SQL | undefined {
+  return access.isAdmin ? undefined : or(isNull(environments.id), eq(environments.adminOnly, false))
 }
 
 export const workflowsRouter = router({
@@ -207,13 +212,17 @@ export const workflowsRouter = router({
 
   /** The live release's triggers as projected for the scheduler and webhooks, with their next fire times. */
   triggers: authedProcedure.input(z.object({ id: Id })).query(async ({ ctx, input }) => {
-    const { workflow } = await visibleWorkflow(ctx, input.id)
+    const { access, workflow } = await visibleWorkflow(ctx, input.id)
     const rows = await ctx.db
       .select({ trigger: workflowTriggers, environment: environments.slug })
       .from(workflowTriggers)
       .leftJoin(environments, eq(environments.id, workflowTriggers.environmentId))
       .where(
-        and(eq(workflowTriggers.workflowId, workflow.id), inArray(workflowTriggers.kind, LIVE_TRIGGER_KINDS)),
+        and(
+          eq(workflowTriggers.workflowId, workflow.id),
+          inArray(workflowTriggers.kind, LIVE_TRIGGER_KINDS),
+          visibleEnvironment(access),
+        ),
       )
       .orderBy(asc(workflowTriggers.kind), asc(workflowTriggers.name))
     return rows.map(({ trigger, environment }) => ({
@@ -250,7 +259,13 @@ export const workflowsRouter = router({
       .from(webhookRejections)
       .innerJoin(workflowTriggers, eq(workflowTriggers.id, webhookRejections.triggerId))
       .leftJoin(environments, eq(environments.id, webhookRejections.environmentId))
-      .where(and(eq(workflowTriggers.workflowId, workflow.id), eq(workflowTriggers.kind, 'webhook')))
+      .where(
+        and(
+          eq(workflowTriggers.workflowId, workflow.id),
+          eq(workflowTriggers.kind, 'webhook'),
+          visibleEnvironment(access),
+        ),
+      )
       .orderBy(desc(webhookRejections.createdAt), desc(webhookRejections.id))
       .limit(50)
   }),

@@ -16,8 +16,11 @@ export interface TestEnv {
   stop: () => Promise<void>
 }
 
-export async function startTestApp(overrides: Record<string, string> = {}): Promise<TestEnv> {
-  const pg = await startTestDatabase()
+export async function startTestApp(
+  overrides: Record<string, string> = {},
+  opts: { adminOnlyStaging?: boolean } = {},
+): Promise<TestEnv> {
+  const pg = await startTestDatabase(opts)
   const config = loadConfig({
     DATABASE_URL: pg.url,
     SESSION_SECRET: 'test-secret-test-secret-test-secret-1234',

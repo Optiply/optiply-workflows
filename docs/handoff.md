@@ -2010,6 +2010,137 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 58 steps: the repo copies, and signing in through Optiply's Auth0
+
+1. **Repos** ✅ (the user's choices): a **copy** of this repo at `github.com/Optiply/optiply-workflows` (private, all 57
+   branches, default `main`; local `origin` is still the personal repo, so the copy falls behind until the user
+   decides); a copy of the private `Optiply/optiply-feedback` at `FabioAlexandreCeriaco/optiply-feedback` (private, 36
+   branches).
+2. **Sign-in through Auth0** ✅ `c178e0d` on **`feat/auth0-login`** (from `feat/sql-schema`), as optiply-feedback does:
+   the Auth0 application "Optiply Workflows" (`optiply.eu.auth0.com`, a single-page app: client id, no secret). A
+   public client with PKCE; `OIDC_CALLBACK_PATH=/` because that Auth0 app allows only the site's root (checked: 403 to
+   `/api/auth/oidc/callback`, 302 to `/`; `/v2/logout` refused `returnTo=…/login`), the server answering `/` with
+   `state` and `code` before the web app; sign-out at Auth0 (`/v2/logout`, back to the root); "Continue with Optiply".
+   The rules are unchanged (verified email, @optiply.nl or invited, approval); matched by email, so accounts carry
+   over. Tests: `auth0-login.test.ts` (a fake Auth0), config. **Production:** `ow-env` **version 3** (Auth0 issuer and
+   client id, provider name, callback `/`, no Google secret; version 2 is Google's), compose copied (old one kept as
+   `/opt/ow/docker-compose.prod.yml.pre-c178e0d`), dump `/var/backups/ow/ow-2026-11-18T1733-pre-c178e0d.dump`, Cloud
+   Build `fd9a9d86-cf2d-4f1f-aca0-425e53c42bf7`, `deploy.sh c178e0d`: **production runs `c178e0d`** (previous
+   `7b887fe`), health 200, `/api/auth/oidc/start` goes to Auth0 and Auth0 answers with its login page. `e75c8e6`
+   removed. Rollback: the old compose back, a new `ow-env` version with version 2's contents, `deploy.sh 7b887fe`.
+
+## 14. Session 57 steps: cost check, cleanups, three fixes from the SDK setup
+
+The user (2026-11-18): plan and checklist for what was left open, **everything within the €5 a month cap**, the SDK
+setup last (it needs the developers' help); **no PR until the end of November** (GitHub usage used up): deploys by
+hand meanwhile. Branch **`fix/sdk-setup-papercuts`** from `feat/staging-admins-only` (`da9f8a1`, so a hand deploy
+keeps Staging for admins only), in a separate worktree `~/optiply-workflows-fixes` (the main checkout stays on
+`feat/staging-admins-only`).
+
+1. **Cost baseline** ✅ (read-only): Cloud Build 7 builds, ~46 of 2,500 free minutes this month; backups bucket 2.7 MB;
+   the VM's disk 16 of 30 GB; memory tight (969 MB, ~294 MB available, 360 MB swap used). **The registry `ow`: ~1.5 GB**,
+   over its free 0.5 GB (~$0.10 a month): a version of the 5 images is ~0.8 GB (builds share few layers), so even the
+   2 versions kept are over; its cleanup policy keeps 3. **Spend and the €5 budget alert couldn't be read**: the user's
+   account can't view billing account `011F7B-CA7146-ADDB02` (theirs to check in the console). gcloud's sign-in had
+   expired: the user ran `gcloud auth login`.
+2. **Backups** ✅: the nightly run worked (`ow-2026-11-18T0300.dump`, 1.4 MB, 03:00:22 UTC).
+3. **Cleanups on the user's word** ✅: the VM's pre-0051 dump deleted; the registry's `92ad6bf` versions deleted
+   (left: `8448c87` rollback, `8f33ad9` current); 20 old images removed from the VM by tag (`92ad6bf`, `31dc1f6`,
+   `9fb9ea8`, `s54a`): disk 16 → 8.7 GB. Not `docker image prune -a`: Postgres runs from an untagged image (the
+   `postgres:18` tag was pulled anew). Runbook deploy.md "Everyday": keep two versions in both places.
+4. **B1 CSV import out of memory** ✅ `b5dfe02`: the two 502s of 17 Nov (16:23, 16:24: Caddy "connection reset" ~6 s
+   into `POST /api/v1/database/import`, the app process gone) were the app's 320 MB heap running out, reproduced
+   locally under the same cap. The cause was the parser (`CsvParser.push` grew a field a character at a time: ~32 bytes
+   a character; a 26 MB file ~800 MB), not the batch size. Stretches are sliced, and (review) joined once at the
+   field's end: JSON's `""` made a piece every few characters. A batch also goes at 2M characters
+   (`IMPORT_BATCH_CHARS`).
+5. **B2 SDK Test connection timing out on a first install** ✅ `26d0db0`: connectors may have `prepareTest`, run by
+   `testResource` before the test's 15 s start; the SDK's installs there (3-minute limit `SDK_TEST_INSTALL_MS`, then
+   "it goes on in the background: test again"); messages say which step failed.
+6. **B3 Python index Test 404 on Artifact Registry** ✅ `64d5706`: an optional "Package to test with" (not saved) in
+   Settings → Python; the builder's `/check-index` takes `package` and asks for its page; a 404 at the root hints at it.
+7. **Review (medium)** ✅ `8ddc7f6`: 8 found, 7 fixed (above, plus: setup code checked before the install, the
+   builder's own timeout keeps the install's prefix, the test's duration without the install, details kept, the
+   shared `PACKAGE_NAME`, the result cleared when the package changes). Not changed: Test holds its request up to
+   3 minutes (no proxy here limits it).
+8. **Green locally with Docker** (started for it; the user's Compose stack came up with it): biome ci, typecheck;
+   definition 198, connectors 422, server 749 passed (the real builder and runner tests ran, `sdk-resources` too),
+   the builder's index tests 8, e2e `m32-done-when`. Screenshots before/after of the index form (session scratchpad).
+9. **Deployed by hand** ✅ (the user's word): branch pushed; no active runs (last started 17 Nov 20:13); dump on the VM
+   `/var/backups/ow/ow-2026-11-18T0849-pre-ec08e57.dump` (1.4 MB, root 600); Cloud Build
+   `7719d92b-2afc-499f-ad5e-c38171bfbc1c` (7 min 18 s) from the worktree at `ec08e57` (clean: nothing untracked;
+   deploy/ unchanged, not copied), then `deploy.sh ec08e57`: **production runs `ec08e57`** (previous `8f33ad9`), no new
+   migration, health 200, 0 restarts, no errors. Then two versions kept: `8448c87` deleted from the registry and the VM.
+   Rollback: `sudo /opt/ow/deploy.sh 8f33ad9`.
+10. **The index remembers its test package** ✅ `531d19d` (the user: "I always need to use optiply-sdk-external"):
+    `python_indexes.test_package`, **migration 0052**; saved with the index, filled in when opened, listed for admins;
+    saving an index drops its envs only when the URL, sign-in or mode changed. Deployed by hand: dump
+    `/var/backups/ow/ow-2026-11-18T0954-pre-531d19d.dump`, Cloud Build `1c84c70d-a613-4454-85e4-9e7309b83643`,
+    `deploy.sh 531d19d`: **production runs `531d19d`** (previous `ec08e57`), 53 migrations, health 200, 0 restarts.
+    Two versions kept (`8f33ad9` deleted; on the VM `ec08e57` was removed by mistake first and pulled back).
+    Rollback: `sudo /opt/ow/deploy.sh ec08e57` (0052 only adds a column). The user saves `optiply-sdk-external` once on
+    "Optiply Python".
+11. **The built-in GraphQL resource** ✅ on **`feat/graphql-builtin`** (from `fix/sdk-setup-papercuts`; the user: "a
+    GraphQL resource where I can make requests to any endpoint, like REST API", with schema loading; name "GraphQL"):
+    `b696297` the `graphqlapi` connector (GraphQL's query with the REST API's URL and auth per request; REST API and
+    GraphQL helpers shared, not copied), `665c03e` the resource (`seedBuiltIn` makes "GraphQL", slug `graphql`,
+    systemKind `graphql`, Use for All Users; no migration) and `resources.graphqlApiSchema`, `cd73bb8` the editors
+    (workflow block, app query, playground: URL, auth, Load schema for completions), `e75c8e6` review (10 found, 9
+    fixed: the schema read is a POST so a typed token stays out of URLs; its own cache; audited; current_user; the
+    playground's environment). Schema loading fills in only non-secret config vars (as the playground's Run). Tests:
+    connector 6, server 3, e2e (connectors.spec) 1; full e2e 175/175. Deployed by hand: dump
+    `/var/backups/ow/ow-2026-11-18T1156-pre-e75c8e6.dump`, Cloud Build `1d92d852-0d51-49db-a60a-2a6aa5520f0a`,
+    `deploy.sh e75c8e6`: **production runs `e75c8e6`** (previous `531d19d`), "GraphQL" created (both environments,
+    All Users: use), health 200 after ~45 s of startup (502 meanwhile), 0 restarts. `ec08e57` removed (tags read
+    first). Next agreed: SQL schema loading for every database resource, as its own project.
+12. **SQL schema loading** ✅ on **`feat/sql-schema`** (from `feat/graphql-builtin`): `adb7b41` every SQL connector's
+    catalog query (`Connector.schemaSql`; Postgres and the managed Database, MySQL, SQL Server, BigQuery's default
+    dataset or region, JDBC's Snowflake/Oracle/ClickHouse; none for an uploaded driver), run through the connector
+    (`describeSqlSchema`, 20,000 columns, under the resource's maxRows); `4248856` `resources.sqlSchema` (Use; 10 min
+    per settings version, the managed Database read every time); `083e210` the Tables panel under the SQL editor
+    (workflow block, app query, playground: search, columns with types, a name clicked in at the cursor, Refresh)
+    and Monaco SQL completions (tables, a table's or alias's columns after `name.`); `7b887fe` review (10 found, 9
+    fixed: Refresh a one-off so later reads keep the server's cache; the list kept while read again; BigQuery without
+    a location says so; search opens only tables with a matching column, 200 listed; no completions on space or in
+    strings and comments). Tests: connectors 7, server 3, e2e `sql-schema.spec.ts`; full e2e 176/176. Deployed by
+    hand: dump `/var/backups/ow/ow-2026-11-18T1334-pre-7b887fe.dump`, Cloud Build
+    `a6e284bf-32ef-4634-a8a1-763040800180`, `deploy.sh 7b887fe`: **production runs `7b887fe`** (previous `e75c8e6`),
+    health 200 after ~40 s, 0 restarts; `531d19d` removed (tags read first).
+
+**The SDK setup session (2026-11-16/17, no code, recorded here):** the Optiply SDK (`optiply-sdk-external` 0.3.1,
+import `optiply`, github.com/Optiply/optiply-sdk-external) is published to Artifact Registry `optiply-python` (Python,
+`us-east1`), read by the service account `sdk-index-reader` (repository reader). Settings → Python: index "Optiply
+Python", username `_json_key_base64`, password the secret config var `OPTIPLY_PYPI_KEY`. Production's SDK resource
+"Optiply SDK": a pasted personal token (it expires), read-only setup code (`allow_writes=False,
+allow_destructive=False`), the webshop passed per call in `path_params`. Planned with the developers: machine-to-machine
+sign-in (login.optiply.com, the internal audience) for runs. The three bugs it found are B1–B3 above.
+
+## 14. Session 56 steps: Staging for admins only, deployed by hand; backups fixed
+
+The user (2026-11-17) asked what Staging is for; a read-only check of production (as `ow_readonly`) found nothing using
+it (no runs, triggers, API keys, grants; only the two built-in resources' automatic configs, an empty `owdb_staging`
+schema and a copy of `OPTIPLY_PYPI_KEY` the user set). Decision: keep it, Production always the default, **only admins
+may use Staging**. Branch **`feat/staging-admins-only`** from `main` `8448c87`, pushed; **no PR** (the user: GitHub usage
+is used up). Architecture §2.44. Away mode ("commit and push, deploy directly to production once everything is green").
+
+1. **Built** ✅ `8f33ad9`: migration **0051** (`environments.admin_only`, check: the default can't be admins-only; set on
+   staging), `Access.canUseEnvironment`, refusals and hiding (§2.44), web badge, the editor opening on the default
+   environment, "Saved." cleared on edit (fixes `e2e/mssql.spec.ts`, which failed on `main` too). Review (medium) 9
+   found, 5 fixed. Tests: `admin-only-environments.test.ts` (11).
+2. **Green locally with Docker** (started for it; the user's Compose stack came up with it): biome ci, typecheck,
+   every unit suite (server 83 files / 746 tests), full e2e **174/174** (the tracked specs only; `m36-done-when` was
+   flaky once under load and passed alone). The SQL Server server tests skip on Apple silicon (`MSSQL_TESTS=1`).
+3. **Deployed by hand** ✅ (GitHub Actions blocked): production had no active runs; dump on the VM
+   `/var/backups/ow/ow-2026-11-17T2015-pre-0051.dump` (1.4 MB, 62 tables' data, root 600); Cloud Build
+   `867073a0-9a4e-4020-b94e-febfed7612b1` from a clean worktree at `8f33ad9` (`_TAG=8f33ad9`), then `deploy.sh 8f33ad9`
+   (deploy/ unchanged since `8448c87`, not copied): **production runs `8f33ad9`** (previous `8448c87`), 52 migrations,
+   staging `admin_only`, healthy, 0 restarts, no errors. Rollback: `sudo /opt/ow/deploy.sh 8448c87` (0051 only adds a
+   column and a check; harmless on the old image).
+4. **Backups had never worked** ✅ fixed: the bucket was empty; the nightly `backup.sh` failed with 403 on 15–17 Nov
+   (`ow-vm-prod` had only Storage Object Creator; a streamed `gcloud storage cp -` also reads the object). The user
+   granted **Storage Object Viewer** on `gs://optiply-workflows-backups` (still can't delete); a run by hand stored
+   `ow-2026-11-17T2019.dump` (1.4 MB). Runbook deploy.md step 5 updated. Free tier (≈42 MB kept for 30 days).
+
 ## 14. Session 55 steps: access to apps only (away mode from step 2)
 
 The user (2026-11-16): people allowed only the apps shared with them must get those apps and nothing else, not even
@@ -2418,6 +2549,33 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 59 with (end of session 58):** **Production runs `c178e0d`** from **`feat/auth0-login`** (pushed;
+worktree `~/optiply-workflows-fixes`; it holds `feat/sql-schema` and the branches below it): sign-in through Optiply's
+Auth0 (§14 session 58). The user confirms their own sign-in works. Repo copies: `Optiply/optiply-workflows` (behind
+until the user decides which remote is the main one) and the personal `optiply-feedback`. The end-of-November PR is
+now `feat/auth0-login`. Ask what's next.
+
+**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `7b887fe`** from branch
+**`feat/sql-schema`** (pushed; worktree `~/optiply-workflows-fixes`), which stacks on `feat/graphql-builtin`,
+`fix/sdk-setup-papercuts` and `feat/staging-admins-only` (§14 session 57): Staging admins-only, CSV import out of
+memory, SDK Test on a first install, the Python index Test on Artifact Registry (its package saved, migration 0052),
+the built-in GraphQL resource, and SQL schema loading. The end-of-November PR covers all four branches (merge
+`feat/sql-schema`: it holds the others). Ask what's next. The user tries them in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply
+Python": its package to test with is now saved, `optiply-sdk-external` saved once). B1 and B2 checked by the user.
+Delete the VM's two dumps of 18 Nov (`…T0849-pre-ec08e57`, `…T0954-pre-531d19d`) when happy.
+Open, the user's: check this month's spend and the €5 alert in the console (we can't read billing); optionally the
+registry's cleanup policy to keep 2 instead of 3 (~$0.08 a month less). **End of November:** GitHub billing, then one PR
+for both branches. Then the items waiting on others (IAP for the prod Postgres resources, `workflows.optiply.nl`, the
+Retool go-live) and, last, the SDK's M2M sign-in with the developers.
+
+**Start session 57 with (end of session 56, 2026-11-17):** **Production runs `8f33ad9`** from branch
+**`feat/staging-admins-only`** (pushed, not on `main`; §14 session 56; architecture §2.44): Staging is for admins only.
+`main` is still `8448c87` (its CI red only because GitHub refused the jobs). Open, the user's: fix GitHub Actions billing,
+then one PR for `feat/staging-admins-only` (merging re-deploys the same code; no new migration); the nightly backup now
+works (check `/var/log/ow-backup.log` and the bucket after 03:00 UTC); delete the VM's dump in `/var/backups/ow/` when
+happy. Still open from before: IAP access for the prod Postgres resources (the boss), `workflows.optiply.nl`, the Retool
+go-live steps. The local stack still runs `33506e2`. Ask what's next.
 
 **Start session 56 with (end of session 55, 2026-11-16):** access to apps only is built on **`feat/apps-only-users`**
 (pushed; §14 session 55; architecture §2.43). Next, the user's: look at it (the tour `apps/web/e2e/zz-walkthrough.spec.ts`
