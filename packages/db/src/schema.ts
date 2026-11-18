@@ -1765,6 +1765,11 @@ export const pythonIndexes = pgTable(
     passwordConfigVar: text(),
     /** `primary` replaces the builder's default index; `extra` is searched with it. */
     mode: text().$type<'primary' | 'extra'>().notNull(),
+    /**
+     * A package Test asks for instead of the root page (session 57): some indexes, Google's Artifact Registry among
+     * them, list nothing at their root and answer 404 there. Only Test reads it.
+     */
+    testPackage: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

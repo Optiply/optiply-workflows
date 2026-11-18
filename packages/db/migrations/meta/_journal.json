@@ -365,6 +365,13 @@
       "when": 1794942945418,
       "tag": "0051_environments_admin_only",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794994742790,
+      "tag": "0052_python_indexes_test_package",
+      "breakpoints": true
     }
   ]
 }

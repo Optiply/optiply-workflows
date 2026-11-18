@@ -174,7 +174,7 @@ function IndexForm({
   const [mode, setMode] = useState<'primary' | 'extra'>(index?.mode ?? 'extra')
   const [username, setUsername] = useState(index?.username ?? '')
   const [passwordConfigVar, setPasswordConfigVar] = useState(index?.passwordConfigVar ?? '')
-  const [testPackage, setTestPackage] = useState('')
+  const [testPackage, setTestPackage] = useState(index?.testPackage ?? '')
   const [tested, setTested] = useState<(TestAnswer & { testPackage?: string }) | null>(null)
   const create = useMutation(trpc.pythonIndexes.create.mutationOptions({ onSuccess: onDone }))
   const update = useMutation(trpc.pythonIndexes.update.mutationOptions({ onSuccess: onDone }))
@@ -189,6 +189,7 @@ function IndexForm({
     mode,
     username: username.trim() || null,
     passwordConfigVar: passwordConfigVar || null,
+    testPackage: testPackage.trim() || null,
   }
   const effectiveSlug = index ? index.slug : slugTouched ? slug : slugify(name)
 
@@ -275,7 +276,7 @@ function IndexForm({
         </div>
         <Field
           label="Package to test with"
-          hint="Optional, not saved. Test looks for this package's page instead of the index's root: some indexes, Google's Artifact Registry among them, list nothing at their root."
+          hint="Optional, saved with the index. Test looks for this package's page instead of the index's root: some indexes, Google's Artifact Registry among them, list nothing at their root."
         >
           <Input
             className="font-mono"
@@ -311,11 +312,7 @@ function IndexForm({
             disabled={!fields.url}
             onClick={() => {
               setTested(null)
-              test.mutate({
-                ...fields,
-                name: fields.name || 'test',
-                testPackage: testPackage.trim() || null,
-              })
+              test.mutate({ ...fields, name: fields.name || 'test' })
             }}
           >
             Test

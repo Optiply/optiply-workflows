@@ -61,7 +61,7 @@ test("M32's done-when", async ({ page }) => {
     await page.getByLabel('Password config var').selectOption(secretName)
     await page.getByRole('button', { name: 'Test', exact: true }).click()
     await expect(page.getByTestId('python-index-test')).toHaveText('The index answered and took the sign-in.')
-    // A package to test with (for indexes that list nothing at their root, as Artifact Registry): its page.
+    // A package to test with (for indexes that list nothing at their root, as Artifact Registry): its page; saved.
     await page.getByLabel('Package to test with').fill('owtest-private')
     await page.getByRole('button', { name: 'Test', exact: true }).click()
     await expect(page.getByTestId('python-index-test')).toHaveText(
@@ -71,6 +71,14 @@ test("M32's done-when", async ({ page }) => {
     const row = page.getByTestId(`python-index-private-${stamp}`)
     await expect(row).toContainText(indexName)
     await expect(row).toContainText(secretName)
+    // The package to test with is saved with the index: editing it again, it's there, and Test uses it.
+    await row.getByRole('button', { name: 'Edit' }).click()
+    await expect(page.getByLabel('Package to test with')).toHaveValue('owtest-private')
+    await page.getByRole('button', { name: 'Test', exact: true }).click()
+    await expect(page.getByTestId('python-index-test')).toHaveText(
+      'The index answered, took the sign-in and has owtest-private.',
+    )
+    await page.getByRole('button', { name: 'Cancel' }).click()
   })
 
   let slug = ''

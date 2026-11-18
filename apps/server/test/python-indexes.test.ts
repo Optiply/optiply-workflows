@@ -227,6 +227,10 @@ describe.skipIf(!available)('package indexes on the server', { timeout: 120_000 
       { id, slug: 'private', name: 'Private PyPI', url: privateIndex.url, mode: 'extra', signedIn: true },
     ])
     expect(JSON.stringify(data(await admin.query('pythonIndexes.list')))).not.toContain(PASSWORD)
+    // An admin sees the package Test uses (none saved yet); members don't (above).
+    expect(data(await admin.query('pythonIndexes.list'))).toEqual([
+      expect.objectContaining({ id, username: 'ci', testPackage: null }),
+    ])
     const audited = await env.db
       .select()
       .from(auditEvents)
@@ -310,6 +314,26 @@ describe.skipIf(!available)('package indexes on the server', { timeout: 120_000 
       status: 'failed',
       error: { code: 'python_packages', message: expect.stringContaining('"nowhere"') },
     })
+
+    // The package Test uses is saved with the index; saving only it keeps the envs resolved from the index.
+    expect(await run('idx-draft')).toMatchObject({ status: 'succeeded' })
+    const envsBefore = await env.db.select().from(pythonEnvs).where(eq(pythonEnvs.indexId, id))
+    expect(envsBefore.length).toBeGreaterThan(0)
+    data(
+      await admin.mutate('pythonIndexes.update', { id, ...indexFields({ testPackage: 'owtest-private' }) }),
+    )
+    expect(
+      (data(await admin.query('pythonIndexes.list')) as { id: string; testPackage: string }[]).find(
+        (i) => i.id === id,
+      ),
+    ).toMatchObject({ testPackage: 'owtest-private' })
+    expect(await env.db.select().from(pythonEnvs).where(eq(pythonEnvs.indexId, id))).toHaveLength(
+      envsBefore.length,
+    )
+    expect(
+      failure(await admin.mutate('pythonIndexes.update', { id, ...indexFields({ testPackage: 'a b' }) }))
+        .message,
+    ).toContain("A package's name")
 
     // Its password moved to a var without a value: the run says which.
     data(await admin.mutate('configVars.create', { name: 'EMPTY_SECRET', isSecret: true }))
