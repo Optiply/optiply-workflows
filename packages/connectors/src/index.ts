@@ -165,7 +165,7 @@ export {
 } from './rest'
 export { configureRestApi, type RestApiQuery, restApiConnector } from './restapi'
 export { queryStats, type RunOptions, runOperation, runQuery, testResource } from './run'
-export { sdkAllowedHosts, sdkConnector } from './sdk/connector'
+export { SDK_TEST_INSTALL_MS, sdkAllowedHosts, sdkConnector } from './sdk/connector'
 export {
   configureSdkEnvs,
   configureSdkRunner,

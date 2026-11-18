@@ -106,6 +106,12 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
   readonly scrubResultData?: boolean
   createClient(resource: ResolvedResource<Config, Secrets>): Client | Promise<Client>
   destroyClient(client: Client): Promise<void>
+  /**
+   * Slow first-time work a test needs before it connects (an SDK's packages installed), done before the test's own
+   * time limit starts, within a limit of its own. Says what it did ("installing …"), for the test's timeout message;
+   * fails with a ConnectorError that says it was this step.
+   */
+  prepareTest?(client: Client): Promise<string | undefined>
   testConnection(
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },

@@ -141,10 +141,13 @@ export async function testResource(
 > {
   const started = performance.now()
   const timeoutMs = opts.timeoutMs ?? 15_000
-  const signal = AbortSignal.timeout(timeoutMs)
+  let signal = AbortSignal.timeout(timeoutMs)
   const { credentials, secrets } = scrubbing(resource, opts.credentials)
   let client: unknown
   let ssh: SshTestStep[] | undefined
+  /** What the connector's slow first-time work did (`prepareTest`), while it's running and after. */
+  let preparing = false
+  let prepared: string | undefined
   try {
     const parsed = parseResource(connector, resource)
     // Through an SSH tunnel (M17): each hop first, reported on its own; the resource only once they all work.
@@ -165,6 +168,13 @@ export async function testResource(
       }
     }
     client = await connector.createClient(parsed)
+    if (connector.prepareTest) {
+      // Its own time limit (an SDK's first install takes minutes); the test's starts after it.
+      preparing = true
+      prepared = await connector.prepareTest(client)
+      preparing = false
+      signal = AbortSignal.timeout(timeoutMs)
+    }
     const result = await connector.testConnection(client, {
       signal,
       timeoutMs,
@@ -175,7 +185,18 @@ export async function testResource(
   } catch (err) {
     return {
       ok: false,
-      error: toConnectorError(err, { timedOut: signal.aborted, timeoutMs, aborted: signal.aborted, secrets }),
+      error:
+        prepared && signal.aborted
+          ? new ConnectorError(
+              'timeout',
+              `The test timed out after ${timeoutMs} ms, not counting ${prepared}`,
+            )
+          : toConnectorError(err, {
+              timedOut: !preparing && signal.aborted,
+              timeoutMs,
+              aborted: !preparing && signal.aborted,
+              secrets,
+            }),
       ...(ssh ? { ssh } : {}),
     }
   } finally {
