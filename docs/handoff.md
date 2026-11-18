@@ -2010,6 +2010,52 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 57 steps: cost check, cleanups, three fixes from the SDK setup
+
+The user (2026-11-18): plan and checklist for what was left open, **everything within the €5 a month cap**, the SDK
+setup last (it needs the developers' help); **no PR until the end of November** (GitHub usage used up): deploys by
+hand meanwhile. Branch **`fix/sdk-setup-papercuts`** from `feat/staging-admins-only` (`da9f8a1`, so a hand deploy
+keeps Staging for admins only), in a separate worktree `~/optiply-workflows-fixes` (the main checkout stays on
+`feat/staging-admins-only`).
+
+1. **Cost baseline** ✅ (read-only): Cloud Build 7 builds, ~46 of 2,500 free minutes this month; backups bucket 2.7 MB;
+   the VM's disk 16 of 30 GB; memory tight (969 MB, ~294 MB available, 360 MB swap used). **The registry `ow`: ~1.5 GB**,
+   over its free 0.5 GB (~$0.10 a month): a version of the 5 images is ~0.8 GB (builds share few layers), so even the
+   2 versions kept are over; its cleanup policy keeps 3. **Spend and the €5 budget alert couldn't be read**: the user's
+   account can't view billing account `011F7B-CA7146-ADDB02` (theirs to check in the console). gcloud's sign-in had
+   expired: the user ran `gcloud auth login`.
+2. **Backups** ✅: the nightly run worked (`ow-2026-11-18T0300.dump`, 1.4 MB, 03:00:22 UTC).
+3. **Cleanups on the user's word** ✅: the VM's pre-0051 dump deleted; the registry's `92ad6bf` versions deleted
+   (left: `8448c87` rollback, `8f33ad9` current); 20 old images removed from the VM by tag (`92ad6bf`, `31dc1f6`,
+   `9fb9ea8`, `s54a`): disk 16 → 8.7 GB. Not `docker image prune -a`: Postgres runs from an untagged image (the
+   `postgres:18` tag was pulled anew). Runbook deploy.md "Everyday": keep two versions in both places.
+4. **B1 CSV import out of memory** ✅ `b5dfe02`: the two 502s of 17 Nov (16:23, 16:24: Caddy "connection reset" ~6 s
+   into `POST /api/v1/database/import`, the app process gone) were the app's 320 MB heap running out, reproduced
+   locally under the same cap. The cause was the parser (`CsvParser.push` grew a field a character at a time: ~32 bytes
+   a character; a 26 MB file ~800 MB), not the batch size. Stretches are sliced, and (review) joined once at the
+   field's end: JSON's `""` made a piece every few characters. A batch also goes at 2M characters
+   (`IMPORT_BATCH_CHARS`).
+5. **B2 SDK Test connection timing out on a first install** ✅ `26d0db0`: connectors may have `prepareTest`, run by
+   `testResource` before the test's 15 s start; the SDK's installs there (3-minute limit `SDK_TEST_INSTALL_MS`, then
+   "it goes on in the background: test again"); messages say which step failed.
+6. **B3 Python index Test 404 on Artifact Registry** ✅ `64d5706`: an optional "Package to test with" (not saved) in
+   Settings → Python; the builder's `/check-index` takes `package` and asks for its page; a 404 at the root hints at it.
+7. **Review (medium)** ✅ `8ddc7f6`: 8 found, 7 fixed (above, plus: setup code checked before the install, the
+   builder's own timeout keeps the install's prefix, the test's duration without the install, details kept, the
+   shared `PACKAGE_NAME`, the result cleared when the package changes). Not changed: Test holds its request up to
+   3 minutes (no proxy here limits it).
+8. **Green locally with Docker** (started for it; the user's Compose stack came up with it): biome ci, typecheck;
+   definition 198, connectors 422, server 749 passed (the real builder and runner tests ran, `sdk-resources` too),
+   the builder's index tests 8, e2e `m32-done-when`. Screenshots before/after of the index form (session scratchpad).
+
+**The SDK setup session (2026-11-16/17, no code, recorded here):** the Optiply SDK (`optiply-sdk-external` 0.3.1,
+import `optiply`, github.com/Optiply/optiply-sdk-external) is published to Artifact Registry `optiply-python` (Python,
+`us-east1`), read by the service account `sdk-index-reader` (repository reader). Settings → Python: index "Optiply
+Python", username `_json_key_base64`, password the secret config var `OPTIPLY_PYPI_KEY`. Production's SDK resource
+"Optiply SDK": a pasted personal token (it expires), read-only setup code (`allow_writes=False,
+allow_destructive=False`), the webshop passed per call in `path_params`. Planned with the developers: machine-to-machine
+sign-in (login.optiply.com, the internal audience) for runs. The three bugs it found are B1–B3 above.
+
 ## 14. Session 56 steps: Staging for admins only, deployed by hand; backups fixed
 
 The user (2026-11-17) asked what Staging is for; a read-only check of production (as `ow_readonly`) found nothing using
@@ -2444,6 +2490,17 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 58 with (end of session 57, 2026-11-18):** **Production runs `8f33ad9`** (branch
+`feat/staging-admins-only`). Three fixes are committed on **`fix/sdk-setup-papercuts`** (§14 session 57; worktree
+`~/optiply-workflows-fixes`), based on that branch: CSV import out of memory, SDK Test on a first install, the Python
+index Test on Artifact Registry. Next, on the user's word: push, then **deploy by hand** (dump on the VM, Cloud Build
+`_TAG` from a clean worktree, `deploy.sh <tag>`, health, then keep two versions in the registry and on the VM), and try
+B1–B3 in production (the 26 MB file; Test on "Optiply SDK"; Test on "Optiply Python" with `optiply-sdk-external`).
+Open, the user's: check this month's spend and the €5 alert in the console (we can't read billing); optionally the
+registry's cleanup policy to keep 2 instead of 3 (~$0.08 a month less). **End of November:** GitHub billing, then one PR
+for both branches. Then the items waiting on others (IAP for the prod Postgres resources, `workflows.optiply.nl`, the
+Retool go-live) and, last, the SDK's M2M sign-in with the developers.
 
 **Start session 57 with (end of session 56, 2026-11-17):** **Production runs `8f33ad9`** from branch
 **`feat/staging-admins-only`** (pushed, not on `main`; §14 session 56; architecture §2.44): Staging is for admins only.
