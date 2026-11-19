@@ -31,6 +31,11 @@ export interface SshKey {
 /** The most a `.ppk` file may ask Argon2 for: it runs in the server, on every read of the key. */
 const ARGON2_MAX_MEMORY_KIB = 256 * 1024
 const ARGON2_MAX_PASSES = 256
+/**
+ * The most bcrypt rounds an encrypted OpenSSH key may ask for (`ssh-keygen -a`; 16 by default, 100 is common). The key
+ * sets them itself, and opening it is synchronous: a key asking for millions would hold the server for hours.
+ */
+const BCRYPT_MAX_ROUNDS = 128
 
 export type SshKeyErrorCode = 'passphrase_needed' | 'wrong_passphrase' | 'unreadable' | 'unsupported'
 
@@ -67,6 +72,11 @@ function readOpenSsh(key: string, passphrase: string | undefined): SshKey {
   if (!(plain instanceof Error)) return describe(plain, key, 'openssh')
   if (!/no passphrase given/.test(plain.message))
     throw new SshKeyError('unreadable', `The key couldn't be read: ${plain.message}`)
+  const rounds = bcryptRounds(key)
+  if (rounds !== undefined && rounds > BCRYPT_MAX_ROUNDS)
+    throw unsupported(
+      `This key's passphrase uses ${rounds} bcrypt rounds: at most ${BCRYPT_MAX_ROUNDS} are accepted (ssh-keygen -p -a 100 changes them)`,
+    )
   if (!passphrase) throw needed()
   const parsed = ssh2.utils.parseKey(key, passphrase)
   if (parsed instanceof Error) {
@@ -79,6 +89,34 @@ function readOpenSsh(key: string, passphrase: string | undefined): SshKey {
     { ...readPem(parsed.getPrivatePEM(), undefined), comment: parsed.comment ?? '' },
     'openssh',
   )
+}
+
+/**
+ * The bcrypt rounds an encrypted OpenSSH key's header asks for (`openssh-key-v1`: cipher, KDF name, KDF options =
+ * salt and rounds), read before anything costly; undefined when the header isn't that shape (ssh2 then says why).
+ */
+function bcryptRounds(key: string): number | undefined {
+  const body = /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]*?)-----END OPENSSH PRIVATE KEY-----/.exec(key)?.[1]
+  if (!body) return undefined
+  const blob = Buffer.from(body.replace(/\s+/g, ''), 'base64')
+  const magic = Buffer.from('openssh-key-v1\0')
+  if (!blob.subarray(0, magic.length).equals(magic)) return undefined
+  let at = magic.length
+  const next = () => {
+    if (at + 4 > blob.length) return undefined
+    const length = blob.readUInt32BE(at)
+    if (at + 4 + length > blob.length) return undefined
+    const value = blob.subarray(at + 4, at + 4 + length)
+    at += 4 + length
+    return value
+  }
+  next() // the cipher
+  const kdf = next()?.toString()
+  const options = next()
+  if (kdf !== 'bcrypt' || !options || options.length < 4) return undefined
+  const saltLength = options.readUInt32BE(0)
+  if (4 + saltLength + 4 > options.length) return undefined
+  return options.readUInt32BE(4 + saltLength)
 }
 
 /** A key's parts, enough to write it as an OpenSSH key. */

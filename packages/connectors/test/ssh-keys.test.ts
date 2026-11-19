@@ -78,6 +78,34 @@ describe('readPrivateKey', () => {
     expect(key.publicKey).toBe(fixture('openssh-rsa-encrypted.pub').trim())
   })
 
+  it('refuses an OpenSSH key asking for too many bcrypt rounds, before trying to open it', () => {
+    // The fixture (24 rounds) with its header's rounds changed: what an admin's key could ask for.
+    const lines = fixture('openssh-rsa-encrypted').trim().split('\n')
+    const withRounds = (rounds: number) => {
+      const blob = Buffer.from(lines.slice(1, -1).join(''), 'base64')
+      let at = 'openssh-key-v1\0'.length
+      at += 4 + blob.readUInt32BE(at) // the cipher
+      at += 4 + blob.readUInt32BE(at) // the KDF's name
+      const options = at + 4
+      blob.writeUInt32BE(rounds, options + 4 + blob.readUInt32BE(options))
+      const body = blob
+        .toString('base64')
+        .match(/.{1,70}/g)!
+        .join('\n')
+      return `${lines[0]}\n${body}\n${lines.at(-1)}\n`
+    }
+    const started = performance.now()
+    // A million rounds would take hours: refused at once, with or without the passphrase.
+    expect(errorOf(() => readPrivateKey(withRounds(1_000_000), PASS))).toBe('unsupported')
+    expect(errorOf(() => readPrivateKey(withRounds(129)))).toBe('unsupported')
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(() => readPrivateKey(withRounds(1_000_000), PASS)).toThrow(
+      "This key's passphrase uses 1000000 bcrypt rounds: at most 128 are accepted (ssh-keygen -p -a 100 changes them)",
+    )
+    // The header read is right: the fixture's own 24 rounds open as before.
+    expect(readPrivateKey(withRounds(24), PASS).type).toBe('ssh-rsa')
+  })
+
   it("checks a key against its own public half only (the check above isn't vacuous)", () => {
     const other = readPrivateKey(fixture('ppk3-rsa-encrypted.ppk'), PASS)
     expect(signsFor(other.privateKey, undefined, fixture('pem-rsa.pub'))).toBe(false)
