@@ -102,8 +102,11 @@ jobs:
           tag=$(git rev-parse --short=7 HEAD)
           if [ "$EVENT" = schedule ]; then
             # The daily run deploys only something new; by hand always deploys (e.g. to redo a failed deploy).
+            # Behind a marker: the runner's first gcloud compute ssh prints its new key's text on stdout too (it did,
+            # 2026-11-19), which made "already runs it" never match.
             current=$(gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
-              --command 'sudo cat /opt/ow/.current-tag' | tr -d '[:space:]')
+              --command 'echo "current-tag=$(sudo cat /opt/ow/.current-tag)"' | sed -n 's/^current-tag=//p' | tail -n 1 \
+              | tr -d '[:space:]')
             if [ "$current" = "$tag" ]; then
               echo "Production already runs $tag: nothing to deploy"
               echo "build=false" >> "$GITHUB_OUTPUT"
