@@ -11,14 +11,14 @@ import ssh2 from 'ssh2'
 
 /**
  * A private key for an SSH tunnel (M17), read from what an admin pasted or uploaded: OpenSSH (`BEGIN OPENSSH PRIVATE
- * KEY`, encrypted too), PEM or PKCS#8 (RSA, EC, Ed25519), or PuTTY's `.ppk` versions 2 and 3. `ssh2` reads OpenSSH keys
- * itself; everything else is turned into an unencrypted OpenSSH key here, in memory, since `ssh2` 1.17 reads neither
- * PKCS#8, an EC PEM key, nor a `.ppk` other than version 2 with RSA or DSA.
+ * KEY`, encrypted too), PEM or PKCS#8 (RSA, EC, Ed25519), or PuTTY's `.ppk` versions 2 and 3. An unencrypted OpenSSH
+ * key goes to `ssh2` as it is; everything else is turned into an unencrypted OpenSSH key here, in memory, since `ssh2`
+ * 1.17 reads neither PKCS#8, an EC PEM key, nor a `.ppk` other than version 2 with RSA or DSA, and since an encrypted
+ * OpenSSH key would cost its bcrypt rounds again on every connection.
  */
 export interface SshKey {
-  /** What `ssh2` is given (with `passphrase`, for an encrypted OpenSSH key). */
+  /** What `ssh2` is given: an unencrypted OpenSSH key (opened here when it came with a passphrase). */
   privateKey: string
-  passphrase?: string
   /** `ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`… */
   type: string
   /** `SHA256:` and the public key's hash, as `ssh-keygen -l` shows it. */
@@ -31,6 +31,11 @@ export interface SshKey {
 /** The most a `.ppk` file may ask Argon2 for: it runs in the server, on every read of the key. */
 const ARGON2_MAX_MEMORY_KIB = 256 * 1024
 const ARGON2_MAX_PASSES = 256
+/**
+ * The most bcrypt rounds an encrypted OpenSSH key may ask for (`ssh-keygen -a`; 16 by default, 100 is common). The key
+ * sets them itself, and opening it is synchronous: a key asking for millions would hold the server for hours.
+ */
+const BCRYPT_MAX_ROUNDS = 128
 
 export type SshKeyErrorCode = 'passphrase_needed' | 'wrong_passphrase' | 'unreadable' | 'unsupported'
 
@@ -61,13 +66,57 @@ export function readPrivateKey(text: string, passphrase?: string | null): SshKey
 }
 
 function readOpenSsh(key: string, passphrase: string | undefined): SshKey {
+  // Without the passphrase first: an unencrypted key reads as it is, and an encrypted one says so at once (before its
+  // bcrypt rounds).
+  const plain = ssh2.utils.parseKey(key)
+  if (!(plain instanceof Error)) return describe(plain, key, 'openssh')
+  if (!/no passphrase given/.test(plain.message))
+    throw new SshKeyError('unreadable', `The key couldn't be read: ${plain.message}`)
+  const rounds = bcryptRounds(key)
+  if (rounds !== undefined && rounds > BCRYPT_MAX_ROUNDS)
+    throw unsupported(
+      `This key's passphrase uses ${rounds} bcrypt rounds: at most ${BCRYPT_MAX_ROUNDS} are accepted (ssh-keygen -p -a 100 changes them)`,
+    )
+  if (!passphrase) throw needed()
   const parsed = ssh2.utils.parseKey(key, passphrase)
   if (parsed instanceof Error) {
-    if (/no passphrase given/.test(parsed.message)) throw needed()
     if (/bad passphrase/.test(parsed.message)) throw wrong()
     throw new SshKeyError('unreadable', `The key couldn't be read: ${parsed.message}`)
   }
-  return describe(parsed, key, passphrase, 'openssh')
+  // Opened once, here. Given the encrypted key and its passphrase, ssh2 ran the bcrypt rounds again on every
+  // connection: synchronous JavaScript (~0.3 s on a laptop, more on a small server) with the whole process waiting.
+  return fromParts(
+    { ...readPem(parsed.getPrivatePEM(), undefined), comment: parsed.comment ?? '' },
+    'openssh',
+  )
+}
+
+/**
+ * The bcrypt rounds an encrypted OpenSSH key's header asks for (`openssh-key-v1`: cipher, KDF name, KDF options =
+ * salt and rounds), read before anything costly; undefined when the header isn't that shape (ssh2 then says why).
+ */
+function bcryptRounds(key: string): number | undefined {
+  const body = /-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]*?)-----END OPENSSH PRIVATE KEY-----/.exec(key)?.[1]
+  if (!body) return undefined
+  const blob = Buffer.from(body.replace(/\s+/g, ''), 'base64')
+  const magic = Buffer.from('openssh-key-v1\0')
+  if (!blob.subarray(0, magic.length).equals(magic)) return undefined
+  let at = magic.length
+  const next = () => {
+    if (at + 4 > blob.length) return undefined
+    const length = blob.readUInt32BE(at)
+    if (at + 4 + length > blob.length) return undefined
+    const value = blob.subarray(at + 4, at + 4 + length)
+    at += 4 + length
+    return value
+  }
+  next() // the cipher
+  const kdf = next()?.toString()
+  const options = next()
+  if (kdf !== 'bcrypt' || !options || options.length < 4) return undefined
+  const saltLength = options.readUInt32BE(0)
+  if (4 + saltLength + 4 > options.length) return undefined
+  return options.readUInt32BE(4 + saltLength)
 }
 
 /** A key's parts, enough to write it as an OpenSSH key. */
@@ -84,21 +133,15 @@ function fromParts(parts: KeyParts, format: SshKey['format']): SshKey {
   const parsed = ssh2.utils.parseKey(key)
   if (parsed instanceof Error)
     throw new SshKeyError('unreadable', `The key couldn't be read: ${parsed.message}`)
-  return describe(parsed, key, undefined, format)
+  return describe(parsed, key, format)
 }
 
-function describe(
-  parsed: ssh2.ParsedKey,
-  privateKey: string,
-  passphrase: string | undefined,
-  format: SshKey['format'],
-): SshKey {
+function describe(parsed: ssh2.ParsedKey, privateKey: string, format: SshKey['format']): SshKey {
   const blob = parsed.getPublicSSH()
   const fingerprint = `SHA256:${createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')}`
   const publicKey = [parsed.type, blob.toString('base64'), parsed.comment].filter(Boolean).join(' ')
   return {
     privateKey,
-    ...(passphrase ? { passphrase } : {}),
     type: parsed.type,
     fingerprint,
     publicKey,
