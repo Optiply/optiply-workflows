@@ -264,7 +264,12 @@ describe('User Tasks', () => {
       ),
       input,
     )
-    await waitFor(async () => (await getRun(db, run.id)).status === 'waiting')
+    // The task is due in 1.2 s: on a busy machine the run can wait, expire and finish between two looks (CI,
+    // 2026-11-19), so a run already past waiting counts too. What follows proves the task expired.
+    await waitFor(async () => {
+      const { status } = await getRun(db, run.id)
+      return status === 'waiting' || status === 'succeeded' || status === 'failed'
+    })
     expect((await taskOf(run.id))!.dueAt).toBeInstanceOf(Date)
     const done = await waitForFinish(db, run.id, 10_000)
     expect(done.status).toBe('succeeded')
