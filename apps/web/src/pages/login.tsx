@@ -10,11 +10,19 @@ import { cn } from '@/lib/utils'
 const route = getRouteApi('/login')
 const OIDC_START = '/api/auth/oidc/start'
 
+/** A page of this site to go back to after a password sign-in (the provider's sign-in has the server check it). */
+function localNext(next: string | undefined) {
+  return next?.startsWith('/') && !next.startsWith('//') && !next.includes('\\') && !next.startsWith('/api/')
+    ? next
+    : undefined
+}
+
 export function LoginPage() {
   const trpc = useTRPC()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { error: ssoError, pending } = route.useSearch()
+  const { error: ssoError, pending, next } = route.useSearch()
+  const oidcStart = next ? `${OIDC_START}?next=${encodeURIComponent(next)}` : OIDC_START
   const { data: config, isLoading } = useQuery(trpc.authConfig.queryOptions())
   // Only the provider's sign-in (production: Optiply's Auth0) and nothing to tell the person: go straight there instead
   // of showing a page with one button. A waiting approval or a failed sign-in stays here, with its message and a button
@@ -23,8 +31,8 @@ export function LoginPage() {
   const straightToProvider = Boolean(config?.oidcEnabled && !config.localLoginEnabled && !message)
   useEffect(() => {
     // replace: the browser's Back from the provider's page doesn't land here and get sent on again.
-    if (straightToProvider) window.location.replace(OIDC_START)
-  }, [straightToProvider])
+    if (straightToProvider) window.location.replace(oidcStart)
+  }, [straightToProvider, oidcStart])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -40,7 +48,8 @@ export function LoginPage() {
     onSuccess: async () => {
       // The route guard reads `me` from the cache (where it's still null), so refetch before navigating.
       await queryClient.fetchQuery({ ...trpc.me.queryOptions(), staleTime: 0 })
-      await navigate({ to: '/' })
+      const back = localNext(next)
+      await (back ? navigate({ href: back }) : navigate({ to: '/' }))
     },
   })
 
@@ -96,7 +105,7 @@ export function LoginPage() {
 
           {config?.oidcEnabled && (
             <a
-              href={OIDC_START}
+              href={oidcStart}
               className={cn(buttonVariants({ variant: 'tertiary', size: 'lg' }), 'w-full text-ink')}
             >
               {config.oidcProvider === 'Google' ? <GoogleMark /> : <KeyRound className="size-4" />}

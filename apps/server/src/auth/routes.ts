@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { recordAudit } from '../audit'
 import { type Config, isGoogle } from '../config'
 import { notifyAdminsOfRequest, provisionUser, SignInRefused, signInDecision } from '../services/users'
+import { safeNextPath } from './next-path'
 import { verifyPassword } from './password'
 import { createSession, deleteSession, SESSION_COOKIE } from './sessions'
 
@@ -92,8 +93,10 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
     await recordAudit(db, { actorUserId: userId, action: 'auth.login', metadata: { method }, ...meta(req) })
   }
 
-  app.get('/api/auth/oidc/start', async (_req, reply) => {
+  app.get('/api/auth/oidc/start', async (req, reply) => {
     if (!getOidc) return reply.code(404).send({ error: 'SSO is not configured' })
+    // The page they opened, to go back to after signing in; kept in the signed state cookie, not sent to the provider.
+    const next = safeNextPath((req.query as { next?: unknown }).next, config.PUBLIC_URL)
     const client = await getOidc()
     const verifier = oidc.randomPKCECodeVerifier()
     const state = oidc.randomState()
@@ -108,7 +111,7 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
       // Google's hint (its account picker shows the domain's); the domain is still verified on the callback.
       ...(isGoogle(config.OIDC_ISSUER) && { hd: config.OIDC_ALLOWED_DOMAIN, prompt: 'select_account' }),
     })
-    reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify({ verifier, state, nonce }), {
+    reply.setCookie(OIDC_STATE_COOKIE, JSON.stringify({ verifier, state, nonce, next }), {
       ...cookieBase,
       path: stateCookiePath,
       maxAge: 600,
@@ -119,16 +122,27 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
 
   async function oidcCallback(req: FastifyRequest, reply: FastifyReply) {
     if (!getOidc) return reply.code(404).send({ error: 'SSO is not configured' })
+    // The page they opened (from the state cookie): where a sign-in ends, and kept on the sign-in page's messages so
+    // its Sign in again still goes back there.
+    let next: string | undefined
+    const keepNext = (path: string) => (next ? `${path}&next=${encodeURIComponent(next)}` : path)
     const fail = (reason: string) => {
       req.log.warn({ reason }, 'OIDC login rejected')
-      return reply.redirect(`/login?error=${encodeURIComponent(reason)}`)
+      return reply.redirect(keepNext(`/login?error=${encodeURIComponent(reason)}`))
     }
 
     const raw = req.cookies[OIDC_STATE_COOKIE]
     reply.clearCookie(OIDC_STATE_COOKIE, { ...cookieBase, path: stateCookiePath })
     const unsigned = raw ? req.unsignCookie(raw) : undefined
     if (!unsigned?.valid || !unsigned.value) return fail('Login session expired, please try again')
-    const { verifier, state, nonce } = JSON.parse(unsigned.value) as Record<string, string>
+    const saved = JSON.parse(unsigned.value) as {
+      verifier: string
+      state: string
+      nonce: string
+      next?: string
+    }
+    const { verifier, state, nonce } = saved
+    next = safeNextPath(saved.next, config.PUBLIC_URL)
 
     let claims: oidc.IDToken | undefined
     try {
@@ -190,11 +204,11 @@ export async function authRoutes(app: FastifyInstance, opts: { db: Db; config: C
         })
         notifyAdminsOfRequest(req.log, { email })
       }
-      return reply.redirect('/login?pending=1')
+      return reply.redirect(keepNext('/login?pending=1'))
     }
     if (user.status !== 'active') return fail('Your request to use Optiply Workflows was not approved')
     await startSession(req, reply, user.id, 'oidc')
-    return reply.redirect('/')
+    return reply.redirect(next ?? '/')
   }
 
   app.get('/api/auth/oidc/callback', oidcCallback)

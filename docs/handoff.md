@@ -2048,8 +2048,17 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    Sign-out: Auth0's `/v2/logout` → `/` → straight to Auth0's form. Test: `e2e/login-provider.spec.ts` (4: fakes
    production's `authConfig` and answers the start route; `/` and `/login` go on, pending and error stay, password
    page stays) green, `access.spec.ts` green. Manuals: no `login` shot any more (spec, `SCREENSHOTS.md`, `login.png`
-   removed), user guide 2.1/2.2 and admin guide reworded, `waiting-approval.png` retaken, PDFs rebuilt. Not done
-   (offered): after sign-in, back to the page someone opened (today always `/`).
+   removed), user guide 2.1/2.2 and admin guide reworded, `waiting-approval.png` retaken, PDFs rebuilt. PR **#6**
+   (steps 5–6) CI green → merged as **`0b5ce3c`** (the user's word), for the 18:00 deploy.
+7. **Back to the page someone opened** (the user's yes; branch **`feat/signin-return-to`**): the route guard sends a
+   signed-out visit to `/login?next=<the page>` (not for `/`); the sign-in page passes it on
+   (`/api/auth/oidc/start?next=…`, also behind **Sign in again**; a password sign-in navigates there itself, after a
+   light check). The server checks it with **`safeNextPath`** (`auth/next-path.ts`: a path on this site only; no
+   `//host`, backslashes, control characters, `/api/`, `/login`, or `/`; at most 2,000 characters), keeps it in the
+   signed `ow_oidc` state cookie (not sent to Auth0), checks it again on the callback, and redirects there (else `/`);
+   `?pending=1` and `?error=…` keep it as `&next=`. Tests: `next-path.test.ts` (3), `auth0-login.test.ts` (+2), e2e
+   `login-provider.spec.ts` (+2: the page goes with them to the provider; a password sign-in comes back to it);
+   sign-in/approval server tests 48/48, the e2e sign-in and access specs 10/10. User guide 2.1 says so; PDFs rebuilt.
 
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
