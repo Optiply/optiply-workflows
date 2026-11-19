@@ -644,19 +644,13 @@ describe('SSH tunnel settings (M17)', () => {
   })
 
   it('tests through a real SSH server hop by hop, trusts its host key, and then queries through it', async () => {
+    // An ed25519 key without a passphrase: the encrypted RSA key costs over a second of CPU per connection (its
+    // bcrypt rounds), and a busy CI runner then went past the Test's 15 s (2026-11-19). Encrypted keys are covered
+    // by the connectors' tests (ssh-keys, ssh-settings, ssh-sql).
+    const fixtureKey = (name: string) =>
+      readFileSync(new URL(`../../../packages/connectors/test/fixtures/ssh/${name}`, import.meta.url), 'utf8')
     const ssh = await startTestSshServer({
-      users: [
-        {
-          username: 'ow',
-          publicKey: readFileSync(
-            new URL(
-              '../../../packages/connectors/test/fixtures/ssh/openssh-rsa-encrypted.pub',
-              import.meta.url,
-            ),
-            'utf8',
-          ),
-        },
-      ],
+      users: [{ username: 'ow', publicKey: fixtureKey('openssh-ed25519.pub') }],
       hosts: { 'db.internal': String(pgConfig.host) },
     })
     try {
@@ -677,14 +671,14 @@ describe('SSH tunnel settings (M17)', () => {
         resourceId: viaId,
         environmentId: prodId,
         config: config(),
-        secrets: { password: PG_SECRET, ssh: { b: { privateKey: SSH_KEY, passphrase: SSH_PASSPHRASE } } },
+        secrets: { password: PG_SECRET, ssh: { b: { privateKey: fixtureKey('openssh-ed25519') } } },
       })
       // The key as the settings show it: its type, fingerprint and public half.
       expect(data(saved).sshKeys).toEqual({
         b: {
-          type: 'ssh-rsa',
+          type: 'ssh-ed25519',
           fingerprint: expect.stringMatching(/^SHA256:/),
-          publicKey: expect.stringMatching(/^ssh-rsa AAAA/),
+          publicKey: expect.stringMatching(/^ssh-ed25519 AAAA/),
         },
       })
 
