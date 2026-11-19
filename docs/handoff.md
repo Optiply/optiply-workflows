@@ -2079,7 +2079,24 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    merged as **`c9ec47f`** (its first CI attempt failed on GitHub's side: Maven Central, a Postgres ECONNRESET, e2e
    cancelled; rerun green). **Not done:** removing `c178e0d` (VM `docker rmi` + registry delete) was refused by the
    permission check while the user was away: the user's (disk 39%). CI flakes seen today: `loops-pg` (fixed),
-   `tasks-pg` (fixed), `scheduler` (a real bug, fixed), `resources.test.ts` SSH tunnel (not fixed).
+   `tasks-pg` (fixed), `scheduler` (a real bug, fixed), `resources.test.ts` SSH tunnel (fixed in step 10).
+10. **Evening** (the user back): **old images** `c178e0d` removed on the user's word (VM `docker rmi` of the five
+    images after re-reading `.current-tag` = `2ddb198`, `.previous-tag` = `159906b`; registry digests deleted with
+    tags): disk 39 % → 33 %; VM and registry keep `2ddb198` + `159906b`. **PR #11** merged as **`a1de5b2`**: the
+    SSH tunnel end-to-end test in `resources.test.ts` signs in with the ed25519 fixture (the encrypted RSA key cost
+    ~270 ms of CPU per opening, 5 openings per Test; second Test 1.4 s → 0.17 s idle, 7.6 s → 0.16 s with the CPU
+    3× oversubscribed). **PR #12** merged as **`656ac79`**, two fixes found on the way:
+    - `fd127ef`: `readOpenSsh` opens a passphrase-protected OpenSSH key **once** and hands ssh2 an unencrypted key in
+      memory (through the PEM path, comment kept), as PEM and `.ppk` keys already were; `SshKey` lost `passphrase`.
+      Before, ssh2 ran the bcrypt rounds (synchronous, the whole process waiting) on every connection. Storage and
+      what the settings show are unchanged. A Test through one hop: 5 openings → 3 (1.4 s → 0.84 s).
+    - `4b0191b`: keys asking for more than **128 bcrypt rounds** are refused from the header (`bcryptRounds()`), before
+      any work: a key with millions of rounds would freeze the server (anyone with Edit on a resource). PuTTY keys
+      already had Argon2 limits.
+    Production: 6 of 8 Postgres configs sign in to SSH with a key, all via IAP (a read-only count); whether those
+    keys have passphrases is in the encrypted secrets (not looked at): the resource's settings show it.
+    Note: a local CPU-load experiment left 16 busy shell loops running once (a hung `wait`); stopped at once, checked
+    none left; later load runs used self-ending `node -e` loops.
 
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
@@ -2637,12 +2654,12 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
-hand (Actions → Deploy → Run workflow) (§14 session 59). **Production runs `2ddb198`** (the first scheduled deploy):
-sign-in straight to Auth0, back to the page opened. Merged since, for the next 18:00 run: `cf83aa5` (queue schedules in
-order with two workers; flaky task test) and `c9ec47f` (the deploy's version check). Check that Deploy run: it should
-deploy `c9ec47f` (or the newest green), and a later run with nothing new should say "nothing to deploy". Then old
-images: keep two versions (`c178e0d` is still on the VM and in the registry: the cleanup was refused while the user
-was away). Open: the flaky SSH tunnel test in `resources.test.ts`. Ask what's next.
+hand (Actions → Deploy → Run workflow) (§14 session 59). **Production runs `2ddb198`** (the first scheduled deploy).
+Merged since, for the next 18:00 run (Fri 2026-11-20): `cf83aa5` (queue schedules in order; a flaky task test),
+`c9ec47f` (the deploy's version check), `a1de5b2` (SSH tunnel test), `656ac79` (SSH keys opened once; over 128 bcrypt
+rounds refused). Check that Deploy run (it should deploy `656ac79`, the newest green; the next with nothing new should
+say "nothing to deploy"), then remove the `159906b` images (keep two: re-read both tags first). Optional, the user's:
+whether the 6 production Postgres resources' SSH keys have passphrases. Ask what's next.
 
 **Start session 59 with (end of session 58, 2026-11-18):** Work happens in **`github.com/Optiply/optiply-workflows`**
 (local `origin`; `personal` is the old repo, a backup). **Production runs its `main` (`159906b`)**, deployed
