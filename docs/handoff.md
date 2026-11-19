@@ -2059,6 +2059,18 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    `?pending=1` and `?error=…` keep it as `&next=`. Tests: `next-path.test.ts` (3), `auth0-login.test.ts` (+2), e2e
    `login-provider.spec.ts` (+2: the page goes with them to the provider; a password sign-in comes back to it);
    sign-in/approval server tests 48/48, the e2e sign-in and access specs 10/10. User guide 2.1 says so; PDFs rebuilt.
+   PR **#7** (+ `be75070`: `loops-pg` bound 30 → 100, a CI flake) merged as **`2ddb198`** after a rerun of a flaky
+   job; `main` green → the first 18:00 run (17:00 UTC) deploys it. The 16:00 UTC run stopped at "Not 18:00 in
+   Amsterdam" as designed.
+8. **CI flakes, and a real bug behind one** (PR **#8**, `fix/flaky-task-expiry`): `tasks-pg` "expires when nobody
+   completes it in time" also accepts a run already finished (its task is due in 1.2 s; a busy runner missed
+   `waiting`). Then `scheduler` "runs a queue schedule one run at a time" failed: **a real ordering bug** in
+   `claimRuns` (`packages/engine/src/queue.ts`): worker A locks the 10:00 run, worker B skips it (SKIP LOCKED), locks
+   10:01, finds nothing running and starts it first. Fix (`0cf2952`): under the trigger's lock, a "queue" run is also
+   busy while an earlier due **queued** run of its schedule exists (compared as `(available_at, id)` against its own
+   row in SQL; `waiting` runs don't count, as before). Deterministic test: another connection holds the 10:00 row
+   `for update` while `claimRuns` runs (fails before, passes after). Engine suite 167/167 (+8 skipped), server
+   schedule tests 63/63.
 
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 

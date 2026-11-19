@@ -355,4 +355,40 @@ describe('claim gates', () => {
     expect(claimed.find((r) => r.status === 'running')!.scheduledFor).toEqual(at('2026-10-14T10:00:00Z'))
     expect(first).toBeDefined()
   })
+
+  it('keeps a "queue" schedule in order while another worker holds its earliest run', async () => {
+    // The race behind a CI failure (2026-11-19): worker A has locked the 10:00 run, worker B skips it (SKIP LOCKED),
+    // locks 10:01 and, finding nothing running yet, must not start it ahead of 10:00.
+    const { trigger } = await schedule(
+      { cron: '* * * * *', timezone: 'UTC', overlap: 'queue' },
+      { nextFireAt: at('2026-10-14T10:00:00Z') },
+    )
+    await tickSchedules(db, { now: at('2026-10-14T10:00:00Z') })
+    await tickSchedules(db, { now: at('2026-10-14T10:01:00Z') })
+    const [earliest, later] = await runsOf(trigger.id)
+    expect(earliest!.scheduledFor).toEqual(at('2026-10-14T10:00:00Z'))
+
+    let release!: () => void
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    let locked!: () => void
+    const isLocked = new Promise<void>((r) => {
+      locked = r
+    })
+    const workerA = other.transaction(async (tx) => {
+      await tx.execute(dsql`select id from workflow_runs where id = ${earliest!.id} for update`)
+      locked()
+      await held
+    })
+    await isLocked
+    const workerB = await claimRuns(db, 'worker-b', 5, 60_000)
+    release()
+    await workerA
+    expect(workerB.map((c) => c.runId)).not.toContain(later!.id)
+
+    // Once nobody holds it, the earliest goes first.
+    const next = await claimRuns(db, 'worker-a', 5, 60_000)
+    expect(next.map((c) => c.runId)).toEqual([earliest!.id])
+  })
 })

@@ -102,7 +102,9 @@ export async function enqueueRun(
  *
  * Two gates hold runs back without blocking the runs behind them:
  * - a workflow's `max_concurrent_runs` (every run of the workflow counts, editor runs included);
- * - a schedule with overlap `queue` runs one run at a time, in order.
+ * - a schedule with overlap `queue` runs one run at a time, in order: a run waits while an earlier due run of its
+ *   schedule is still queued, also when another worker has that one locked (SKIP LOCKED would otherwise hand this
+ *   worker the later run first).
  * Gated candidates are re-checked under transaction-scoped advisory locks (one per workflow or trigger, taken in
  * sorted order so workers can't deadlock), so two workers can't both take the last slot. A run held back stays
  * queued; a finishing run wakes the workers (`finishRun`) so it's picked up promptly.
@@ -146,7 +148,11 @@ export async function claimRuns(db: Db, workerId: string, limit: number, leaseMs
                     select count(*) from workflow_runs
                     where workflow_id = ${c.workflow_id} and status = 'running') >= ${c.max_concurrent_runs}::int)
               or (${c.serial} and exists (
-                    select 1 from workflow_runs where trigger_id = ${c.trigger_id} and status = 'running')) as busy`)
+                    select 1 from workflow_runs where trigger_id = ${c.trigger_id} and status = 'running'))
+              or (${c.serial} and exists (
+                    select 1 from workflow_runs e, workflow_runs me
+                    where me.id = ${c.id} and e.trigger_id = me.trigger_id and e.status = 'queued'
+                      and e.available_at <= now() and (e.available_at, e.id) < (me.available_at, me.id))) as busy`)
         if (gate!.busy) continue
       }
       const [claimed] = await tx.execute<{ id: string; epoch: number }>(sql`
