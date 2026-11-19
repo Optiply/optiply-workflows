@@ -11,14 +11,14 @@ import ssh2 from 'ssh2'
 
 /**
  * A private key for an SSH tunnel (M17), read from what an admin pasted or uploaded: OpenSSH (`BEGIN OPENSSH PRIVATE
- * KEY`, encrypted too), PEM or PKCS#8 (RSA, EC, Ed25519), or PuTTY's `.ppk` versions 2 and 3. `ssh2` reads OpenSSH keys
- * itself; everything else is turned into an unencrypted OpenSSH key here, in memory, since `ssh2` 1.17 reads neither
- * PKCS#8, an EC PEM key, nor a `.ppk` other than version 2 with RSA or DSA.
+ * KEY`, encrypted too), PEM or PKCS#8 (RSA, EC, Ed25519), or PuTTY's `.ppk` versions 2 and 3. An unencrypted OpenSSH
+ * key goes to `ssh2` as it is; everything else is turned into an unencrypted OpenSSH key here, in memory, since `ssh2`
+ * 1.17 reads neither PKCS#8, an EC PEM key, nor a `.ppk` other than version 2 with RSA or DSA, and since an encrypted
+ * OpenSSH key would cost its bcrypt rounds again on every connection.
  */
 export interface SshKey {
-  /** What `ssh2` is given (with `passphrase`, for an encrypted OpenSSH key). */
+  /** What `ssh2` is given: an unencrypted OpenSSH key (opened here when it came with a passphrase). */
   privateKey: string
-  passphrase?: string
   /** `ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`… */
   type: string
   /** `SHA256:` and the public key's hash, as `ssh-keygen -l` shows it. */
@@ -61,13 +61,24 @@ export function readPrivateKey(text: string, passphrase?: string | null): SshKey
 }
 
 function readOpenSsh(key: string, passphrase: string | undefined): SshKey {
+  // Without the passphrase first: an unencrypted key reads as it is, and an encrypted one says so at once (before its
+  // bcrypt rounds).
+  const plain = ssh2.utils.parseKey(key)
+  if (!(plain instanceof Error)) return describe(plain, key, 'openssh')
+  if (!/no passphrase given/.test(plain.message))
+    throw new SshKeyError('unreadable', `The key couldn't be read: ${plain.message}`)
+  if (!passphrase) throw needed()
   const parsed = ssh2.utils.parseKey(key, passphrase)
   if (parsed instanceof Error) {
-    if (/no passphrase given/.test(parsed.message)) throw needed()
     if (/bad passphrase/.test(parsed.message)) throw wrong()
     throw new SshKeyError('unreadable', `The key couldn't be read: ${parsed.message}`)
   }
-  return describe(parsed, key, passphrase, 'openssh')
+  // Opened once, here. Given the encrypted key and its passphrase, ssh2 ran the bcrypt rounds again on every
+  // connection: synchronous JavaScript (~0.3 s on a laptop, more on a small server) with the whole process waiting.
+  return fromParts(
+    { ...readPem(parsed.getPrivatePEM(), undefined), comment: parsed.comment ?? '' },
+    'openssh',
+  )
 }
 
 /** A key's parts, enough to write it as an OpenSSH key. */
@@ -84,21 +95,15 @@ function fromParts(parts: KeyParts, format: SshKey['format']): SshKey {
   const parsed = ssh2.utils.parseKey(key)
   if (parsed instanceof Error)
     throw new SshKeyError('unreadable', `The key couldn't be read: ${parsed.message}`)
-  return describe(parsed, key, undefined, format)
+  return describe(parsed, key, format)
 }
 
-function describe(
-  parsed: ssh2.ParsedKey,
-  privateKey: string,
-  passphrase: string | undefined,
-  format: SshKey['format'],
-): SshKey {
+function describe(parsed: ssh2.ParsedKey, privateKey: string, format: SshKey['format']): SshKey {
   const blob = parsed.getPublicSSH()
   const fingerprint = `SHA256:${createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')}`
   const publicKey = [parsed.type, blob.toString('base64'), parsed.comment].filter(Boolean).join(' ')
   return {
     privateKey,
-    ...(passphrase ? { passphrase } : {}),
     type: parsed.type,
     fingerprint,
     publicKey,

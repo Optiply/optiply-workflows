@@ -360,10 +360,7 @@ export class SshTunnel {
       })
       const credential =
         'key' in hop.credential
-          ? {
-              privateKey: hop.credential.key.privateKey,
-              ...(hop.credential.key.passphrase ? { passphrase: hop.credential.key.passphrase } : {}),
-            }
+          ? { privateKey: hop.credential.key.privateKey }
           : { password: hop.credential.password }
       client.connect({
         ...(sock ? { sock } : { host: hop.host, port: hop.port }),

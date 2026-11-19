@@ -64,11 +64,19 @@ describe('readPrivateKey', () => {
       expect(key.type).toBe(expected.type)
       expect(key.fingerprint).toBe(expected.fingerprint)
       expect(publicOf(key.publicKey).blob.equals(expected.blob)).toBe(true)
-      expect(signsFor(key.privateKey, key.passphrase, fixture(pubFile))).toBe(true)
-      // Only an OpenSSH key goes to ssh2 still encrypted; the others are opened here.
-      expect(key.passphrase).toBe(format === 'openssh' && encrypted ? PASS : undefined)
+      // Every key goes to ssh2 opened (an encrypted OpenSSH key too: else ssh2 runs its bcrypt rounds per connection).
+      expect(signsFor(key.privateKey, undefined, fixture(pubFile))).toBe(true)
+      expect(key).not.toHaveProperty('passphrase')
     })
   }
+
+  it('opens an encrypted OpenSSH key once: what ssh2 gets needs no passphrase and keeps the comment', () => {
+    const key = readPrivateKey(fixture('openssh-rsa-encrypted'), PASS)
+    expect(key.privateKey).toContain('-----BEGIN OPENSSH PRIVATE KEY-----')
+    // ssh2 reads it without a passphrase: no bcrypt rounds on each connection.
+    expect(ssh2.utils.parseKey(key.privateKey)).not.toBeInstanceOf(Error)
+    expect(key.publicKey).toBe(fixture('openssh-rsa-encrypted.pub').trim())
+  })
 
   it("checks a key against its own public half only (the check above isn't vacuous)", () => {
     const other = readPrivateKey(fixture('ppk3-rsa-encrypted.ppk'), PASS)
