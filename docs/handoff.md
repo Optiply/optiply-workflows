@@ -2071,6 +2071,15 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    row in SQL; `waiting` runs don't count, as before). Deterministic test: another connection holds the 10:00 row
    `for update` while `claimRuns` runs (fails before, passes after). Engine suite 167/167 (+8 skipped), server
    schedule tests 63/63.
+   PR #8 merged as **`cf83aa5`** (after one rerun: a flaky SSH tunnel test in `resources.test.ts`).
+9. **The first 18:00 deploy** ✅ (17:00 UTC, run 44572687282): production runs **`2ddb198`** (previous `159906b`),
+   health 200, `/api/auth/oidc/start?next=…` → Auth0 (the page not in Auth0's URL), the new bundle served. Its log
+   showed a bug: the runner's first `gcloud compute ssh` prints its new key's text on stdout, so "already runs it"
+   could never match (a daily rebuild of the same version). PR **#9** (`current-tag=` marker, read with `sed -n`)
+   merged as **`c9ec47f`** (its first CI attempt failed on GitHub's side: Maven Central, a Postgres ECONNRESET, e2e
+   cancelled; rerun green). **Not done:** removing `c178e0d` (VM `docker rmi` + registry delete) was refused by the
+   permission check while the user was away: the user's (disk 39%). CI flakes seen today: `loops-pg` (fixed),
+   `tasks-pg` (fixed), `scheduler` (a real bug, fixed), `resources.test.ts` SSH tunnel (not fixed).
 
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
@@ -2628,11 +2637,12 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
-hand (Actions → Deploy → Run workflow) (§14 session 59). Production ran `159906b` at the end of the session; the first
-scheduled run (2026-11-19 18:00) should deploy the newest green commit on `main` (`ddd1d90`, or the merge of
-`feat/auth0-direct-signin`'s PR if its CI on `main` finished by then: then check the sign-in goes straight to Auth0): check the Deploy run, then clean old images (keep two versions: the one before `.previous-tag` goes). New work: a branch from
-`main` and a draft PR (only `check` runs), seen on the local stack or `pnpm dev`, marked ready and merged at the end.
-Ask what's next.
+hand (Actions → Deploy → Run workflow) (§14 session 59). **Production runs `2ddb198`** (the first scheduled deploy):
+sign-in straight to Auth0, back to the page opened. Merged since, for the next 18:00 run: `cf83aa5` (queue schedules in
+order with two workers; flaky task test) and `c9ec47f` (the deploy's version check). Check that Deploy run: it should
+deploy `c9ec47f` (or the newest green), and a later run with nothing new should say "nothing to deploy". Then old
+images: keep two versions (`c178e0d` is still on the VM and in the registry: the cleanup was refused while the user
+was away). Open: the flaky SSH tunnel test in `resources.test.ts`. Ask what's next.
 
 **Start session 59 with (end of session 58, 2026-11-18):** Work happens in **`github.com/Optiply/optiply-workflows`**
 (local `origin`; `personal` is the old repo, a backup). **Production runs its `main` (`159906b`)**, deployed
