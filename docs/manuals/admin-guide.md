@@ -86,13 +86,13 @@ To take admin powers away, open the Admins group and click the **×** next to th
 
 ### How people get in
 
-Everyone signs in with **Continue with Optiply**: Optiply's own sign-in (Auth0, as Optiply's other internal tools).
-What happens next depends on who they are:
+Everyone signs in through Optiply's own sign-in (Auth0, as Optiply's other internal tools): opening the app while
+signed out goes straight there. What happens next depends on who they are:
 
 1. **Someone new from Optiply** (an @optiply.nl account) asks to get in by signing in the first time. They
    don't get a session; the sign-in page says "Waiting for an admin's approval". Signing in again while waiting
    doesn't ask again.
-2. **An admin approves them** (below). They sign in again and are in.
+2. **An admin approves them** (below). They click **Sign in again** on that page (or open the app again) and are in.
 3. **Someone outside Optiply** is refused with "Only @optiply.nl accounts or invited people can sign in", unless an
    admin invited them (invitations are switched off for now; see below).
 
@@ -1160,7 +1160,7 @@ sudo docker compose -f /opt/ow/docker-compose.prod.yml exec app \
 ```
 
 It asks for a password (at least 12 characters). The person is made an active member of Admins, also over a waiting or
-rejected account. Password sign-in is off in production, so they then sign in with **Continue with Optiply** as usual. Use an
+rejected account. Password sign-in is off in production, so they then sign in through Optiply's sign-in as usual. Use an
 @optiply.nl address: other addresses get no admin powers.
 
 ### A resource can't connect
@@ -1238,7 +1238,7 @@ chapter is the full list, with who may call what.
 | **Another system** (a script, a scheduler, a partner) | An **API key** (`ow_…`, made by an admin, A5): the `X-Api-Key` header, or `Authorization: Bearer ow_…` | The webhooks of the workflows and environments the key is limited to, and the runs they started: the routes marked **API key** below |
 | **A service that signs its calls** (Stripe, GitHub, Slack, HubSpot, Shopify, Amazon SNS…) | The service's **signature**, checked with a signing secret kept in a secret config var | Only that workflow's webhook |
 | **Anyone** | Nothing: a webhook set to **Public** | Only that workflow's webhook. Use it only for workflows that are safe for anyone to start |
-| **A person in the browser** | A **session**: the `ow_session` cookie set when they sign in (Continue with Optiply) | The routes marked **Session**, as far as their access goes. Not meant for scripts: in production sign-in is through Auth0 only, so a script can't get a session |
+| **A person in the browser** | A **session**: the `ow_session` cookie set when they sign in (through Optiply's Auth0) | The routes marked **Session**, as far as their access goes. Not meant for scripts: in production sign-in is through Auth0 only, so a script can't get a session |
 | **The components tool** (`ow-components`) | A **personal access token** (`owpat_…`, A5): `Authorization: Bearer owpat_…` | Component libraries only, through the web app's internal API. It can't start workflows |
 | **Monitoring** | The **metrics token** (`METRICS_TOKEN` in `ow-env`): `Authorization: Bearer <token>` | `GET /metrics` only |
 | **GitHub / GitLab** | The Git webhook secret (Settings → Git) | `POST /api/git/webhook` only |

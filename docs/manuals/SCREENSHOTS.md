@@ -8,7 +8,6 @@ demo data (never the production server). Rename or add one here first, then in t
 | Name | What it shows |
 |---|---|
 | **Getting started** | |
-| `login` | The sign-in page ("Continue with Optiply") |
 | `waiting-approval` | The page a new person sees while waiting for an admin's approval |
 | `home-sidebar` | The app's frame: the sidebar with its sections, the Workflows list as the page |
 | `command-palette` | ⌘K open, searching for a workflow |

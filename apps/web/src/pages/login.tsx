@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Hourglass, KeyRound } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { Button, buttonVariants, Card, ErrorNote, Input, Label, Spinner } from '@/components/ui'
 import { Wordmark } from '@/components/wordmark'
 import { useTRPC } from '@/lib/trpc'
 import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/login')
+const OIDC_START = '/api/auth/oidc/start'
 
 export function LoginPage() {
   const trpc = useTRPC()
@@ -15,6 +16,15 @@ export function LoginPage() {
   const queryClient = useQueryClient()
   const { error: ssoError, pending } = route.useSearch()
   const { data: config, isLoading } = useQuery(trpc.authConfig.queryOptions())
+  // Only the provider's sign-in (production: Optiply's Auth0) and nothing to tell the person: go straight there instead
+  // of showing a page with one button. A waiting approval or a failed sign-in stays here, with its message and a button
+  // to try again, so nobody bounces between this page and the provider without seeing why.
+  const message = Boolean(pending || ssoError)
+  const straightToProvider = Boolean(config?.oidcEnabled && !config.localLoginEnabled && !message)
+  useEffect(() => {
+    // replace: the browser's Back from the provider's page doesn't land here and get sent on again.
+    if (straightToProvider) window.location.replace(OIDC_START)
+  }, [straightToProvider])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -39,6 +49,15 @@ export function LoginPage() {
     localLogin.mutate()
   }
 
+  // Also while the settings load, so production doesn't flash the card before going on.
+  if (isLoading || straightToProvider) {
+    return (
+      <div className="flex min-h-full items-center justify-center" data-testid="to-provider">
+        <Spinner />
+      </div>
+    )
+  }
+
   return (
     // A calm page with a soft glow of the brand's blue behind the card.
     <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-10">
@@ -56,7 +75,6 @@ export function LoginPage() {
             <h1 className="text-xl font-bold tracking-tight">Sign in</h1>
             <p className="text-sm text-muted">to Optiply Workflows</p>
           </div>
-          {isLoading && <Spinner />}
           {pending ? (
             <div
               role="status"
@@ -78,11 +96,13 @@ export function LoginPage() {
 
           {config?.oidcEnabled && (
             <a
-              href="/api/auth/oidc/start"
+              href={OIDC_START}
               className={cn(buttonVariants({ variant: 'tertiary', size: 'lg' }), 'w-full text-ink')}
             >
               {config.oidcProvider === 'Google' ? <GoogleMark /> : <KeyRound className="size-4" />}
-              Continue with {config.oidcProvider}
+              {message && !config.localLoginEnabled
+                ? 'Sign in again'
+                : `Continue with ${config.oidcProvider}`}
             </a>
           )}
 

@@ -8,7 +8,7 @@ import { type Demo, dashboardDefinition, PEOPLE, seed, seedDatabase } from './de
  * The manuals' screenshots (docs/manuals/SCREENSHOTS.md is the contract: the names and what each shows). Fills the
  * e2e's throwaway server with demo data (./demo-data.ts) and saves each screenshot to docs/manuals/images/<name>.png.
  * From apps/web, after a fresh build: `npx playwright test -c playwright.manual.config.ts`.
- * `SHOTS=login,apps-list` takes only those (the demo data is made all the same).
+ * `SHOTS=waiting-approval,apps-list` takes only those (the demo data is made all the same).
  */
 
 const OUT = fileURLToPath(new URL('../../../docs/manuals/images/', import.meta.url))
@@ -159,33 +159,7 @@ test('manual screenshots', async ({ page, browser }) => {
   }
 
   // ── Getting started ─────────────────────────────────────────────────────────────────────────────────────────────
-  await shot(page, 'login', async () => {
-    const { p, close } = await freshPage(browser)
-    // Production signs in with Optiply's Auth0 only (no local login): the page as it shows there.
-    await p.route('**/api/trpc/**', async (route) => {
-      if (!route.request().url().includes('authConfig')) return route.continue()
-      const res = await route.fetch()
-      const body = await res.json()
-      const patch = (r: { result?: { data?: { json?: Record<string, unknown> } } }) => {
-        if (r.result?.data?.json && 'oidcEnabled' in r.result.data.json) {
-          r.result.data.json = {
-            ...r.result.data.json,
-            oidcEnabled: true,
-            oidcProvider: 'Optiply',
-            localLoginEnabled: false,
-          }
-        }
-      }
-      if (Array.isArray(body)) body.forEach(patch)
-      else patch(body)
-      await route.fulfill({ response: res, json: body })
-    })
-    await p.goto('/login')
-    await expect(p.getByText('Continue with Optiply')).toBeVisible()
-    await settle(p)
-    await save(p, 'login', p)
-    await close()
-  })
+  // No 'login' shot: in production the sign-in page goes straight on to Optiply's Auth0 (e2e/login-provider.spec.ts).
   await shot(page, 'waiting-approval', async () => {
     const { p, close } = await freshPage(browser)
     await p.route('**/api/trpc/**', async (route) => {
