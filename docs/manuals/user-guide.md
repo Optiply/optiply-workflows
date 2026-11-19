@@ -4,7 +4,7 @@
 
 Optiply Workflows is Optiply's own platform for internal tools. With it you can connect to databases and APIs, automate
 back-office processes, build small web apps on top of your data, and keep simple tables, all in one place and all
-behind your Optiply Google account.
+behind your Optiply account.
 
 If you have used Retool, much of it will feel familiar: the ideas are the same, and Retool workflows and apps can be
 imported.
@@ -81,10 +81,9 @@ nested. Access given on a folder applies to everything inside it.
 Open your Optiply Workflows address in your browser. At the time of writing that is
 `https://104-196-197-26.sslip.io`; it will later move to `workflows.optiply.nl`.
 
-1. Click **Continue with Google**.
-2. Choose your **@optiply.nl** Google account.
-
-![The sign-in page](images/login.png)
+Your browser goes straight to **Optiply's sign-in page**, the same as for Optiply's other internal tools. Sign in with
+your **@optiply.nl** account and you come back to Optiply Workflows by yourself. If you're already signed in there (in
+another Optiply tool, say), you go straight in.
 
 Only @optiply.nl accounts (and people an admin has invited) can sign in. Your session lasts a week; after that you
 sign in again.
@@ -96,7 +95,7 @@ The first time you sign in, you don't get in straight away. Your request goes to
 
 ![Waiting for an admin's approval](images/waiting-approval.png)
 
-When an admin approves you, sign in again on the same page. No email is sent, so if it's urgent, let an admin know
+When an admin approves you, click **Sign in again** on that page. No email is sent, so if it's urgent, let an admin know
 you're waiting. Signing in again while you wait doesn't send a second request.
 
 ### 2.3 Finding your way around

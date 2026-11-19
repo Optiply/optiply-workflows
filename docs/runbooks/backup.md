@@ -9,7 +9,7 @@ How to back up Optiply Workflows, restore it, and prove the restore works. Every
 | **The Postgres database** | `optiply_workflows` | Everything: workflows, drafts and releases, resources (credentials encrypted), config vars, users and groups, permissions, API keys (hashed), run history, User Tasks, the audit log, and the managed database's tables (the `owdb_<environment>` schemas, M7). |
 | **`ENCRYPTION_KEYS`** | the deployment's secrets (`.env` here) | Decrypts resource credentials and secret config vars. **A database backup without its keys has no usable secrets**, and the keys can't be recovered from the database. |
 | `SESSION_SECRET` | same | Signs session cookies. Losing it only signs everyone out. |
-| `OIDC_CLIENT_SECRET` | same | Google sign-in. Can be re-issued in Google Cloud Console. |
+| `OIDC_CLIENT_SECRET` | same | Only with a sign-in that uses a secret (Google's, before 2026-11-18). Production's Auth0 sign-in has none: `OIDC_ISSUER` and `OIDC_CLIENT_ID` come from the Auth0 application. |
 
 Nothing else holds state: the `api` and `worker` containers are stateless, and the image is rebuilt from Git.
 

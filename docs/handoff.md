@@ -2010,6 +2010,47 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 59 steps (2026-11-19): deploy once a day, lighter CI
+
+1. **Daily deploy** ✅ (the user's choice: weekdays **18:00 Amsterdam**): PR **#5** (`ci/daily-deploy`, one commit
+   `1d632f9`) merged with a merge commit as **`ddd1d90`** after CI was green (the user: "merge it when CI is green").
+   **Merging to `main` no longer deploys.** `deploy.yml`: `schedule` cron `0 16 * * 1-5` and `0 17 * * 1-5` (UTC; the
+   first step "Pick the commit" goes on only for the one that is 18:00 in `Europe/Amsterdam`, +0200 summer, +0100
+   winter), then the **latest push to `main` whose CI passed** (`gh run list … --status success`, so `actions: read`);
+   "Choose the version" reads `/opt/ow/.current-tag` over IAP SSH and stops when production already runs it. "Run
+   workflow" by hand unchanged (main's head, or a tag to roll back). Health check and rollback unchanged. Nothing needs
+   the user's PC: GitHub, Cloud Build and the VM do it all; a failed scheduled run emails the user.
+2. **Lighter CI** ✅ `ci.yml`: `paths-ignore` `docs/**` and `**/*.md` (no code or test reads them; `main` has no
+   required checks, so docs PRs don't hang); **draft PRs run only `check`**, e2e and docker from `ready_for_review` on
+   (new trigger type) and on `main`; `concurrency` cancels a PR branch's older run (runs on `main` finish).
+   Verified on PR #5 itself: as a draft only `check` ran (e2e, docker skipped); marked ready → the draft run cancelled,
+   check 8 min, docker 4 min, e2e 23 min, all green. The merge started CI on `main` and **no Deploy run**. Not run:
+   actionlint (its download was refused here); every `run:` block passed `bash -n`, "Pick the commit" was run locally
+   for each trigger.
+3. **Rhythm** (agreed): one branch + draft PR per session; the user sees the work during the day on the local stack
+   (`localhost:3000`, rebuilt from the branch at the end of a step, with the usual care: it's shared, dump before a
+   migration) or `pnpm dev` (`:5173`); marked ready and merged at the end; live at 18:00. Urgent: Run workflow.
+   Runbook: `docs/runbooks/deploy.md` → "Automatic deploys". The repo is **public**: GitHub switches schedules off
+   after 60 days without activity (Actions → Deploy → Enable workflow).
+4. Tidy: `ci/daily-deploy` (local and remote) and the merged `docs/session-58-optiply` deleted.
+5. **Manuals and runbooks** ✅ (branch `docs/session-59-daily-deploy`): admin guide "Deploys" (18:00 daily, by hand for
+   urgent fixes and rollbacks, the 60-day switch-off, the domain change deploys by hand); and **sign-in through
+   Auth0**, missed in session 58: user guide 2.1 ("Continue with Optiply"), admin guide (how people get in, the
+   invitations note, domain change step 3 = Auth0's Allowed Callback/Logout URLs, sign-in troubleshooting:
+   "Callback URL mismatch", no `OIDC_CLIENT_SECRET`), runbooks `access.md`, `backup.md`, `deploy.md`. The screenshot
+   spec fakes `oidcProvider: 'Optiply'`; `login.png` retaken (`SHOTS=login`), both PDFs rebuilt. Because the spec is
+   under `apps/`, this PR runs CI and its merge is deployed at 18:00 like code (same app, rebuilt).
+6. **Straight to Auth0** (the user: two sign-in pages make no sense; branch **`feat/auth0-direct-signin`**, which also
+   holds steps 5's commits, renamed from `docs/session-59-daily-deploy`, never pushed): `pages/login.tsx` goes on to
+   `/api/auth/oidc/start` (`location.replace`) when the provider is the only sign-in (`oidcEnabled` and not
+   `localLoginEnabled`) and there's nothing to say; with `?pending=1` or `?error=…` it stays, the button reads **Sign in
+   again**; a bare spinner while the settings load (no flash of the card). Password sign-in on (dev, e2e): unchanged.
+   Sign-out: Auth0's `/v2/logout` → `/` → straight to Auth0's form. Test: `e2e/login-provider.spec.ts` (4: fakes
+   production's `authConfig` and answers the start route; `/` and `/login` go on, pending and error stay, password
+   page stays) green, `access.spec.ts` green. Manuals: no `login` shot any more (spec, `SCREENSHOTS.md`, `login.png`
+   removed), user guide 2.1/2.2 and admin guide reworded, `waiting-approval.png` retaken, PDFs rebuilt. Not done
+   (offered): after sign-in, back to the page someone opened (today always `/`).
+
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
 1. **Repos** ✅ (the user's choices): a **copy** of this repo at `github.com/Optiply/optiply-workflows` (private, all 57
@@ -2563,6 +2604,14 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
+no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
+hand (Actions → Deploy → Run workflow) (§14 session 59). Production ran `159906b` at the end of the session; the first
+scheduled run (2026-11-19 18:00) should deploy the newest green commit on `main` (`ddd1d90`, or the merge of
+`feat/auth0-direct-signin`'s PR if its CI on `main` finished by then: then check the sign-in goes straight to Auth0): check the Deploy run, then clean old images (keep two versions: the one before `.previous-tag` goes). New work: a branch from
+`main` and a draft PR (only `check` runs), seen on the local stack or `pnpm dev`, marked ready and merged at the end.
+Ask what's next.
 
 **Start session 59 with (end of session 58, 2026-11-18):** Work happens in **`github.com/Optiply/optiply-workflows`**
 (local `origin`; `personal` is the old repo, a backup). **Production runs its `main` (`159906b`)**, deployed

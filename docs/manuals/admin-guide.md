@@ -86,12 +86,13 @@ To take admin powers away, open the Admins group and click the **×** next to th
 
 ### How people get in
 
-Everyone signs in with **Sign in with Google**. What happens next depends on who they are:
+Everyone signs in through Optiply's own sign-in (Auth0, as Optiply's other internal tools): opening the app while
+signed out goes straight there. What happens next depends on who they are:
 
-1. **Someone new from Optiply** (an @optiply.nl Google account) asks to get in by signing in the first time. They
+1. **Someone new from Optiply** (an @optiply.nl account) asks to get in by signing in the first time. They
    don't get a session; the sign-in page says "Waiting for an admin's approval". Signing in again while waiting
    doesn't ask again.
-2. **An admin approves them** (below). They sign in again and are in.
+2. **An admin approves them** (below). They click **Sign in again** on that page (or open the app again) and are in.
 3. **Someone outside Optiply** is refused with "Only @optiply.nl accounts or invited people can sign in", unless an
    admin invited them (invitations are switched off for now; see below).
 
@@ -124,9 +125,8 @@ The **Invite people** button on Settings → Users is greyed out: "Not available
 to be sent from". Invitations were made for people outside Optiply (partners, customers), who can't ask to get in by
 themselves. The app has no email address to send them from yet, so the button is off until it does.
 
-> **Note:** The Google sign-in in production is set up for Optiply's own Google Workspace only (an "Internal" consent
-> screen). Even with invitations back on, Google would refuse accounts from outside Optiply until that is changed in
-> the Google Cloud console.
+> **Note:** Sign-in goes through Optiply's Auth0. Whether someone from outside Optiply can sign in there at all
+> depends on how Optiply's Auth0 is set up: check that with whoever manages it before switching invitations back on.
 
 ### Disabling and enabling people
 
@@ -851,23 +851,34 @@ sudo docker compose -f /opt/ow/docker-compose.prod.yml ps
 
 #### Automatic deploys
 
-Every merge into `main` on GitHub deploys itself, once CI has passed on it. The **Deploy** workflow in GitHub Actions:
+Production is updated **once a day, on weekdays at 18:00 Amsterdam time**. Merging into `main` doesn't deploy by
+itself: everything merged during the day goes out together at 18:00 (it may start a few minutes late). Nobody's
+computer needs to be on: it all runs in GitHub and Google Cloud. The **Deploy** workflow in GitHub Actions:
 
-1. builds the images on Cloud Build, tagged with the commit's 7-character hash (about 8 minutes);
-2. copies the deployment files to the VM;
-3. runs `/opt/ow/deploy.sh <tag>` there, which fetches the settings from Secret Manager, pulls the images, runs the
+1. takes the newest commit on `main` whose CI (the tests) passed. If production already runs it, it stops: nothing new
+   to deploy. Changes to the documentation alone never run CI, so they never cause a deploy;
+2. builds the images on Cloud Build, tagged with the commit's 7-character hash (about 8 minutes);
+3. copies the deployment files to the VM;
+4. runs `/opt/ow/deploy.sh <tag>` there, which fetches the settings from Secret Manager, pulls the images, runs the
    database migrations and restarts what changed;
-4. checks `https://104-196-197-26.sslip.io/api/health` for up to 3 minutes. If it doesn't answer 200, it **rolls back**
+5. checks `https://104-196-197-26.sslip.io/api/health` for up to 3 minutes. If it doesn't answer 200, it **rolls back**
    to the previous version and the run fails.
 
 Deploys run one at a time; a newer one waits for the running one. GitHub signs in to Google Cloud without a stored
-key, and only the `main` branch may deploy.
+key, and only the `main` branch may deploy. When a scheduled deploy fails, GitHub emails the person who last changed
+the schedule; production has already rolled back by then.
+
+> **Note:** the repository is public, so GitHub switches the schedule off after 60 days without any activity in it.
+> If production stops updating, check **Actions** → **Deploy**: if it says the workflow is disabled, click **Enable
+> workflow**.
 
 #### Deploying or rolling back by hand
 
-In GitHub: the repository's **Actions** tab → **Deploy** → **Run workflow** (on `main`).
+For an urgent fix that can't wait for 18:00, or to roll back. In GitHub: the repository's **Actions** tab →
+**Deploy** → **Run workflow** (on `main`).
 
-- Leave **tag** empty to build and deploy the head of `main`.
+- Leave **tag** empty to build and deploy the head of `main`. This doesn't wait for CI: check that CI on `main` is
+  green first.
 - Enter a tag to deploy a version that was already built, for example to roll back. Tags are 7-character commit hashes
   (the first production version is `s54a`).
 
@@ -1023,12 +1034,13 @@ Planned; not done yet. Whoever manages optiply.nl's DNS must take part.
 1. Add a DNS **A record** `workflows.optiply.nl` → `104.196.197.26` (the static IP `ow-prod-ip`).
 2. Change two lines in `ow-env` (see "Changing a server setting"): `SITE_ADDRESS=workflows.optiply.nl` and
    `PUBLIC_URL=https://workflows.optiply.nl`.
-3. In the Google Cloud console → **APIs & Services → Credentials**, open the app's OAuth client and add the redirect
-   URI `https://workflows.optiply.nl/api/auth/oidc/callback`.
+3. In Optiply's Auth0 (`optiply.eu.auth0.com`) → **Applications** → **Optiply Workflows**, add
+   `https://workflows.optiply.nl` to **Allowed Callback URLs** and **Allowed Logout URLs** (the app signs in and out at
+   the site's root). Whoever manages Optiply's Auth0 does this.
 4. Change the health check address in the repository's `.github/workflows/deploy.yml` (the `SITE` line) to
-   `https://workflows.optiply.nl`, and merge it. Otherwise the next automatic deploy checks the old address, fails and
-   rolls back.
-5. Deploy the current version again. Caddy gets a certificate for the new name by itself.
+   `https://workflows.optiply.nl`, and merge it. Otherwise the next deploy checks the old address, fails and rolls
+   back.
+5. Deploy by hand (**Run workflow**, tag empty) rather than waiting for 18:00. Caddy gets a certificate for the new name by itself.
 6. Afterwards: everyone signs in again; webhook URLs given to other systems change; every **OAuth resource's redirect
    URI** changes, so register the new one with each provider and reconnect accounts if asked.
 
@@ -1129,13 +1141,13 @@ For problems builders meet (a query that fails, a run that stops), see the User 
 
 | Message or symptom | Cause | Fix |
 |---|---|---|
-| Google says `redirect_uri_mismatch` | The OAuth client doesn't list `https://<address>/api/auth/oidc/callback` | Add it in Google Cloud → APIs & Services → Credentials |
+| Auth0 says "Callback URL mismatch" | The Auth0 application doesn't list the site's address | Add `https://<address>` to **Allowed Callback URLs** and **Allowed Logout URLs** in Auth0 → Applications → Optiply Workflows |
 | "Only @optiply.nl accounts or invited people can sign in" | A personal Gmail or a partner's account | Sign in with the @optiply.nl account |
 | "Waiting for an admin's approval" | New person | Approve them in Settings → Users |
 | "Your request to use Optiply Workflows was not approved" | They were rejected | **Approve** on their row |
 | "Your account has been disabled" | Disabled | **Enable** on their row |
 | "Login session expired, please try again" | The sign-in took too long, or cookies are blocked | Try again; allow cookies for the site |
-| "Sign-in failed" | The server couldn't complete the sign-in with Google | The app's log says "OIDC code exchange failed": check `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` in `ow-env` against the OAuth client |
+| "Sign-in failed" | The server couldn't complete the sign-in with Auth0 | The app's log says "OIDC code exchange failed": check `OIDC_ISSUER` and `OIDC_CLIENT_ID` in `ow-env` against the Auth0 application. `OIDC_CLIENT_SECRET` must **not** be set: Auth0 refuses a secret for this kind of application |
 | Everyone is signed out at once | Normal after a change of address or of `SESSION_SECRET` | Sign in again |
 
 ### Nobody can administer the app
@@ -1148,7 +1160,7 @@ sudo docker compose -f /opt/ow/docker-compose.prod.yml exec app \
 ```
 
 It asks for a password (at least 12 characters). The person is made an active member of Admins, also over a waiting or
-rejected account. Password sign-in is off in production, so they then sign in with Google as usual. Use an
+rejected account. Password sign-in is off in production, so they then sign in through Optiply's sign-in as usual. Use an
 @optiply.nl address: other addresses get no admin powers.
 
 ### A resource can't connect
@@ -1226,7 +1238,7 @@ chapter is the full list, with who may call what.
 | **Another system** (a script, a scheduler, a partner) | An **API key** (`ow_…`, made by an admin, A5): the `X-Api-Key` header, or `Authorization: Bearer ow_…` | The webhooks of the workflows and environments the key is limited to, and the runs they started: the routes marked **API key** below |
 | **A service that signs its calls** (Stripe, GitHub, Slack, HubSpot, Shopify, Amazon SNS…) | The service's **signature**, checked with a signing secret kept in a secret config var | Only that workflow's webhook |
 | **Anyone** | Nothing: a webhook set to **Public** | Only that workflow's webhook. Use it only for workflows that are safe for anyone to start |
-| **A person in the browser** | A **session**: the `ow_session` cookie set when they sign in with Google | The routes marked **Session**, as far as their access goes. Not meant for scripts: in production sign-in is Google only, so a script can't get a session |
+| **A person in the browser** | A **session**: the `ow_session` cookie set when they sign in (through Optiply's Auth0) | The routes marked **Session**, as far as their access goes. Not meant for scripts: in production sign-in is through Auth0 only, so a script can't get a session |
 | **The components tool** (`ow-components`) | A **personal access token** (`owpat_…`, A5): `Authorization: Bearer owpat_…` | Component libraries only, through the web app's internal API. It can't start workflows |
 | **Monitoring** | The **metrics token** (`METRICS_TOKEN` in `ow-env`): `Authorization: Bearer <token>` | `GET /metrics` only |
 | **GitHub / GitLab** | The Git webhook secret (Settings → Git) | `POST /api/git/webhook` only |

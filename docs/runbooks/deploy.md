@@ -47,7 +47,7 @@ Run from the repo on a machine with `gcloud` signed in as a project owner. `P=op
 9. **The secret `ow-env`:** a `.env` with `PUBLIC_URL=https://<SITE_ADDRESS>`, `SITE_ADDRESS`, `SESSION_SECRET` (new), `ENCRYPTION_KEYS` and `ENCRYPTION_KEY_CURRENT` (**the same as the data's**: the resources' credentials are encrypted with them), the sign-in's `OIDC_*` (step 8), `OIDC_ALLOWED_DOMAIN=optiply.nl`, the four runner tokens and `METRICS_TOKEN` (new, random; without it `/metrics` is public), `GOOGLE_SERVER_IDENTITY` if used. `gcloud secrets create ow-env --data-file=… --replication-policy=user-managed --locations=us-east1`; delete the local file after.
 10. **On the VM:** copy `deploy/*` and `apps/code-executor/seccomp.json` to `/opt/ow`, then `sudo bash /opt/ow/vm-setup.sh`.
 11. **The data:** see "Moving the data" below. Then `sudo /opt/ow/deploy.sh <tag>`.
-12. **Check:** `https://<SITE_ADDRESS>/api/health` gives 200; sign in with Google; approve colleagues in Settings → Users.
+12. **Check:** `https://<SITE_ADDRESS>/api/health` gives 200; sign in (straight to Auth0); approve colleagues in Settings → Users.
 
 Until `workflows.optiply.nl` exists, `SITE_ADDRESS` is the IP as an sslip.io name, e.g. `34-75-1-2.sslip.io`.
 
