@@ -88,8 +88,10 @@ it('commits iterations in batches as they finish, with progress events', async (
 
   const progress = events.filter((e) => e.runId === run.id && e.type === 'iterations')
   expect(progress.reduce((n, e) => n + (e.type === 'iterations' ? e.count : 0), 0)).toBe(450)
-  // Batches of up to 200 (or whatever finished within 250 ms), not one write per iteration.
-  expect(progress.length).toBeLessThan(30)
+  // Batches of up to 200 (or whatever finished within 250 ms), not one write per iteration (that would be 450). How
+  // many batches depends on the machine's speed: 34 on a busy CI runner (2026-11-19), so the bound only rules out
+  // writing per iteration.
+  expect(progress.length).toBeLessThan(100)
 })
 
 it('commits a failed iteration that the loop continues past as errored', async () => {
