@@ -5,14 +5,14 @@ finding out why someone can't see or open something.
 
 ## Who gets in
 
-- **Everyone new waits for an admin.** The first Google sign-in of anyone (@optiply.nl included) makes an account
+- **Everyone new waits for an admin.** The first sign-in of anyone (@optiply.nl included; through Optiply's Auth0 in production since 2026-11-18) makes an account
   that **waits for approval**: no session, the sign-in page says "Waiting for an admin's approval". Signing in again
   while waiting doesn't ask again.
 - **Admins see who waits** in Settings → Users ("Waiting for approval (n)"), with a count on Settings in the sidebar
   and on the Users tab. **Approve…** asks which groups they go into (All Users always); **Reject** keeps them out
   (they can't sign in or ask again; Approve still works later).
 - **People outside Optiply come in only by invitation.** Settings → Users → **Invite people**: an email from any
-  domain, a name (optional), groups. They sign in with the Google account of that address and are in at once, in those
+  domain, a name (optional), groups. They sign in with an account of that address and are in at once, in those
   groups ("Invited" until then; **Cancel invitation** withdraws it). Anyone else outside @optiply.nl is refused: "Only
   @optiply.nl accounts or invited people can sign in".
 - **No email is sent yet** (the user's choice, 2026-11-11): admins see requests in the app; tell invited people
@@ -56,7 +56,7 @@ finding out why someone can't see or open something.
 ## Why can't someone…
 
 - **…sign in?** Their state in Settings → Users: waiting (approve them), not approved (approve them), invited (they must
-  use the Google account of exactly that address), disabled (enable them). Outside @optiply.nl without an invitation:
+  use an account of exactly that address), disabled (enable them). Outside @optiply.nl without an invitation:
   invite them.
 - **…see a section?** Nothing of that kind reaches them. Look at their page's Access and their groups' pages.
 - **…open an app they were given?** It isn't published yet, or the grant went to another group. The app's Access lists

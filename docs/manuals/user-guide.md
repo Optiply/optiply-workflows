@@ -4,7 +4,7 @@
 
 Optiply Workflows is Optiply's own platform for internal tools. With it you can connect to databases and APIs, automate
 back-office processes, build small web apps on top of your data, and keep simple tables, all in one place and all
-behind your Optiply Google account.
+behind your Optiply account.
 
 If you have used Retool, much of it will feel familiar: the ideas are the same, and Retool workflows and apps can be
 imported.
@@ -81,8 +81,9 @@ nested. Access given on a folder applies to everything inside it.
 Open your Optiply Workflows address in your browser. At the time of writing that is
 `https://104-196-197-26.sslip.io`; it will later move to `workflows.optiply.nl`.
 
-1. Click **Continue with Google**.
-2. Choose your **@optiply.nl** Google account.
+1. Click **Continue with Optiply**.
+2. Sign in on Optiply's sign-in page with your **@optiply.nl** account, the same one as for Optiply's other internal
+   tools. You come back to Optiply Workflows by yourself.
 
 ![The sign-in page](images/login.png)
 

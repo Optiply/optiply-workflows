@@ -2033,6 +2033,13 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    Runbook: `docs/runbooks/deploy.md` → "Automatic deploys". The repo is **public**: GitHub switches schedules off
    after 60 days without activity (Actions → Deploy → Enable workflow).
 4. Tidy: `ci/daily-deploy` (local and remote) and the merged `docs/session-58-optiply` deleted.
+5. **Manuals and runbooks** ✅ (branch `docs/session-59-daily-deploy`): admin guide "Deploys" (18:00 daily, by hand for
+   urgent fixes and rollbacks, the 60-day switch-off, the domain change deploys by hand); and **sign-in through
+   Auth0**, missed in session 58: user guide 2.1 ("Continue with Optiply"), admin guide (how people get in, the
+   invitations note, domain change step 3 = Auth0's Allowed Callback/Logout URLs, sign-in troubleshooting:
+   "Callback URL mismatch", no `OIDC_CLIENT_SECRET`), runbooks `access.md`, `backup.md`, `deploy.md`. The screenshot
+   spec fakes `oidcProvider: 'Optiply'`; `login.png` retaken (`SHOTS=login`), both PDFs rebuilt. Because the spec is
+   under `apps/`, this PR runs CI and its merge is deployed at 18:00 like code (same app, rebuilt).
 
 ## 14. Session 58 steps (2026-11-18, later the same day): the repo copies, Auth0 sign-in, the Optiply repo as home
 
@@ -2591,8 +2598,8 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
 hand (Actions → Deploy → Run workflow) (§14 session 59). Production ran `159906b` at the end of the session; the first
-scheduled run (2026-11-19 18:00) should deploy `ddd1d90` (CI-only change) if its CI on `main` is green: check the
-Deploy run, then clean old images (keep two versions: the one before `.previous-tag` goes). New work: a branch from
+scheduled run (2026-11-19 18:00) should deploy the newest green commit on `main` (`ddd1d90`, or the docs PR's merge if
+its CI on `main` finished by then): check the Deploy run, then clean old images (keep two versions: the one before `.previous-tag` goes). New work: a branch from
 `main` and a draft PR (only `check` runs), seen on the local stack or `pnpm dev`, marked ready and merged at the end.
 Ask what's next.
 
