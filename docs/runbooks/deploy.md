@@ -79,13 +79,24 @@ payloads and the run logs with it). Then `deploy.sh`. The encryption keys in `ow
 ## Automatic deploys (GitHub Actions)
 
 **From `github.com/Optiply/optiply-workflows`** (since 2026-11-18; before, the personal repo, whose trust was
-removed). `.github/workflows/deploy.yml` deploys `main` once CI has passed on it: Cloud Build builds the images (tag = the commit's
-7-character hash), `deploy/` is copied to the VM, `deploy.sh <tag>` runs (migrations included), then
-`/api/health` must answer 200 within 3 minutes, or it rolls back to `.previous-tag` and the run fails.
+removed). **Once a day, weekdays at 18:00 Amsterdam time** (since 2026-11-19; before, every merge deployed),
+`.github/workflows/deploy.yml` deploys the latest commit on `main` that passed CI, unless production already runs it
+(`/opt/ow/.current-tag`): Cloud Build builds the images (tag = the commit's 7-character hash), `deploy/` is copied to
+the VM, `deploy.sh <tag>` runs (migrations included), then `/api/health` must answer 200 within 3 minutes, or it rolls
+back to `.previous-tag` and the run fails. Merging to `main` doesn't deploy: several merges a day go out together.
 
-- **By hand:** Actions → Deploy → Run workflow (on `main`). Leave "tag" empty to build and deploy `main`'s head; give an
+- **The schedule:** GitHub's cron is UTC, so it fires at 16:00 and 17:00 UTC; the run that isn't 18:00 in Amsterdam
+  (summer +0200, winter +0100) stops at "Pick the commit". GitHub can start scheduled runs some minutes late. In a public
+  repository GitHub switches schedules off after 60 days without activity (Actions → Deploy → Enable workflow).
+- **By hand:** Actions → Deploy → Run workflow (on `main`), for an urgent fix or anything that can't wait for 18:00.
+  Leave "tag" empty to build and deploy `main`'s head (it doesn't wait for CI: check it's green first); give an
   already-built tag (a short hash, or `s54a`) to deploy that version, e.g. to roll back. Only `main` can deploy.
-- **Docs only:** put `[skip ci]` in the commit (and the merge commit's) message: no CI, so no rebuild and restart.
+- **Docs only:** changes only under `docs/` or to `*.md` files run no CI (`paths-ignore`), so they're never deployed.
+  For a mixed change that still shouldn't rebuild, `[skip ci]` in the commit (and the merge commit's) message.
+- **Pull requests:** a draft PR runs only `check` (lint, types, unit tests); e2e and the image builds run once it's
+  marked ready for review, and on every push after that. A new push cancels the branch's older run. Usual rhythm: one
+  branch and draft PR per working session, seen during the day on the local stack (`localhost:3000`) or `pnpm dev`,
+  marked ready and merged at the end; it goes live at 18:00.
 - **Old images:** the workflow doesn't remove them: keep two versions (see "Everyday").
 - **Sign-in without a key:** Workload Identity pool `github`, provider `github-actions` (condition: repository
   `Optiply/optiply-workflows` and ref `refs/heads/main`), service account `gh-deployer` (workloadIdentityUser for that
@@ -103,8 +114,9 @@ removed). `.github/workflows/deploy.yml` deploys `main` once CI has passed on it
     --member serviceAccount:gh-deployer@optiply-workflows.iam.gserviceaccount.com \
     --role projects/optiply-workflows/roles/owProjectReader
   ```
-- **Flaky tests on `main`:** a red CI on `main` skips the automatic deploy. When the failure is a known flaky test and
-  the same code passed on its PR, deploy by hand instead of re-running CI again and again.
+- **Flaky tests on `main`:** the daily deploy takes the latest *green* commit, so a red CI on `main` holds the newest
+  merge back (an older green one may still go out). When the failure is a known flaky test and the same code passed on
+  its PR, deploy by hand instead of re-running CI again and again.
 - **Cost:** Cloud Build's free 2,500 minutes a month (~8 per deploy); GitHub's Actions minutes.
 - **A failed run:** its log links the Cloud Build log; a failed health check has already rolled back. Fix on a branch,
   merge again.
