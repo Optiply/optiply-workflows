@@ -82,7 +82,8 @@ Open your Optiply Workflows address in your browser. At the time of writing that
 `https://104-196-197-26.sslip.io`; it will later move to `workflows.optiply.nl`.
 
 Your browser goes straight to **Optiply's sign-in page**, the same as for Optiply's other internal tools. Sign in with
-your **@optiply.nl** account and you come back to Optiply Workflows by yourself. If you're already signed in there (in
+your **@optiply.nl** account and you come back to Optiply Workflows by yourself, on the page you opened (a link to an
+app, say). If you're already signed in there (in
 another Optiply tool, say), you go straight in.
 
 Only @optiply.nl accounts (and people an admin has invited) can sign in. Your session lasts a week; after that you
