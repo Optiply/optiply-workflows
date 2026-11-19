@@ -1,15 +1,17 @@
-# Deploys main to production (docs/runbooks/deploy.md) once CI has passed on it, or by hand ("Run workflow"): builds
-# the images on Cloud Build, copies deploy/ to the VM, runs deploy.sh (migrations included), checks health and rolls
+# Deploys main to production (docs/runbooks/deploy.md) once a day, weekdays at 18:00 Amsterdam time: the latest commit
+# on main that passed CI, unless production already runs it. Merging doesn't deploy. By hand ("Run workflow") any time:
+# main's head, or an already-built tag (e.g. to roll back). Builds the images on Cloud Build, copies deploy/ to the VM, runs deploy.sh (migrations included), checks health and rolls
 # back to the previous version when the app doesn't come up.
 # GitHub signs in to Google Cloud without a stored key (Workload Identity Federation): the provider trusts only this
 # repository's main branch, as the service account gh-deployer (Cloud Builds, SSH to ow-prod through IAP).
 name: Deploy
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  schedule:
+    # Cron runs in UTC: 16:00 UTC is 18:00 in Amsterdam in summer time, 17:00 UTC in winter time. Both fire; the
+    # "Pick the commit" step lets only the one that is 18:00 in Amsterdam go on. GitHub may start them some minutes late.
+    - cron: '0 16 * * 1-5'
+    - cron: '0 17 * * 1-5'
   workflow_dispatch:
     inputs:
       tag:
@@ -23,6 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read # gh run list: which commits passed CI
   contents: read
   id-token: write
 
@@ -35,38 +38,83 @@ env:
 
 jobs:
   deploy:
-    # A push to main whose CI passed (not a pull request's run), or a run by hand on main.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Pick the commit
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT" != schedule ]; then
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          offset=$(TZ=Europe/Amsterdam date +%z)
+          case "$SCHEDULE $offset" in
+            "0 16 * * 1-5 +0200" | "0 17 * * 1-5 +0100") ;;
+            *) echo "Not 18:00 in Amsterdam (UTC offset there: $offset): the other schedule deploys"
+               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          # The latest push to main whose CI passed. Docs-only merges run no CI, so they are never picked.
+          sha=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --status success \
+            --limit 1 --json headSha --jq '.[0].headSha // empty')
+          if [ -z "$sha" ]; then
+            echo "::warning::No commit on main has passed CI: nothing to deploy"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "The latest commit on main that passed CI: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.pick.outputs.go == 'true'
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.pick.outputs.sha }}
 
       - uses: google-github-actions/auth@v2
+        if: steps.pick.outputs.go == 'true'
         with:
           workload_identity_provider: projects/961583540192/locations/global/workloadIdentityPools/github/providers/github-actions
           service_account: gh-deployer@optiply-workflows.iam.gserviceaccount.com
 
       - uses: google-github-actions/setup-gcloud@v2
+        if: steps.pick.outputs.go == 'true'
 
       - name: Choose the version
         id: version
+        if: steps.pick.outputs.go == 'true'
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
         run: |
           if [ -n "$INPUT_TAG" ]; then
             # Only a tag's characters: it ends up in a command on the VM.
             [[ "$INPUT_TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::Not a valid image tag: $INPUT_TAG"; exit 1; }
             echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
             echo "build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
-            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          tag=$(git rev-parse --short=7 HEAD)
+          if [ "$EVENT" = schedule ]; then
+            # The daily run deploys only something new; by hand always deploys (e.g. to redo a failed deploy).
+            current=$(gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+              --command 'sudo cat /opt/ow/.current-tag' | tr -d '[:space:]')
+            if [ "$current" = "$tag" ]; then
+              echo "Production already runs $tag: nothing to deploy"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Production runs ${current:-?}; deploying $tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the images (Cloud Build)
         if: steps.version.outputs.build == 'true'
@@ -91,6 +139,7 @@ jobs:
           echo "::error::The build took longer than 40 minutes"; exit 1
 
       - name: Copy deploy/ to the VM
+        if: steps.version.outputs.deploy == 'true'
         run: |
           mkdir -p /tmp/ow && cp deploy/* apps/code-executor/seccomp.json /tmp/ow/
           gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
@@ -101,6 +150,7 @@ jobs:
 
       - name: Deploy
         id: deploy
+        if: steps.version.outputs.deploy == 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |

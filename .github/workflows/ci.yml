@@ -1,9 +1,19 @@
 name: CI
 
+# Docs-only changes don't run CI (and so never reach the daily deploy, see deploy.yml). A draft PR runs only `check`;
+# e2e and the image builds start once it's marked ready for review (ready_for_review) and on main.
 on:
   push:
     branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ['docs/**', '**/*.md']
+
+# A new push to a PR's branch cancels its older run; runs on main are left to finish (the deploy picks green ones).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -32,6 +42,7 @@ jobs:
 
   # Playwright against the bundled server serving the built web app (see apps/web/e2e/global-setup.ts).
   e2e:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     # One worker, 176 specs by M36: ~40 min on the runner, plus the build and Playwright's install here.
     timeout-minutes: 90
@@ -58,6 +69,7 @@ jobs:
           retention-days: 7
 
   docker:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
