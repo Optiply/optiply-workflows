@@ -95,9 +95,12 @@ const cookieFrom = (setCookie: string | string[] | undefined, name: string) =>
     .map((c) => c.split(';')[0]!)
     .find((c) => c.startsWith(`${name}=`))
 
-/** /start, then the provider's answer for `claims`, then /callback: the callback's response. */
-async function signIn(claims: Record<string, unknown>) {
-  const start = await env.app.inject({ method: 'GET', url: '/api/auth/oidc/start' })
+/** /start (with the page opened, `next`), then the provider's answer for `claims`, then /callback: its response. */
+async function signIn(claims: Record<string, unknown>, next?: string) {
+  const start = await env.app.inject({
+    method: 'GET',
+    url: `/api/auth/oidc/start${next === undefined ? '' : `?next=${encodeURIComponent(next)}`}`,
+  })
   expect(start.statusCode).toBe(302)
   const authorize = new URL(start.headers.location as string)
   fake.claims = { ...claims, nonce: authorize.searchParams.get('nonce') }
@@ -179,6 +182,42 @@ describe('signing in through Auth0', () => {
     expect(decodeURIComponent(unverified.callback.headers.location as string)).toContain(
       'Your email address is not verified',
     )
+  })
+})
+
+describe('back to the page someone opened', () => {
+  it('ends the sign-in on that page; the provider never sees it', async () => {
+    await createLocalUser(env.db, 'returning@optiply.nl')
+    const claims = { sub: 'auth0|returning', email: 'returning@optiply.nl', email_verified: true }
+    const { authorize, callback } = await signIn(claims, '/apps/abc?page=orders#top')
+    expect(callback.headers.location).toBe('/apps/abc?page=orders#top')
+    expect(authorize.toString()).not.toContain('apps')
+    // Without one, or with one that isn't a page of ours, the home page as before.
+    expect((await signIn(claims)).callback.headers.location).toBe('/')
+    for (const next of [
+      'https://evil.example.com/',
+      '//evil.example.com',
+      '/\\evil.example.com',
+      '/api/auth/logout',
+    ]) {
+      expect((await signIn(claims, next)).callback.headers.location, next).toBe('/')
+    }
+  })
+
+  it('keeps it on the sign-in page’s messages, so Sign in again goes back there too', async () => {
+    const waiting = await signIn(
+      { sub: 'auth0|w', email: 'waiting@optiply.nl', email_verified: true },
+      '/apps/abc',
+    )
+    expect(waiting.callback.headers.location).toBe('/login?pending=1&next=%2Fapps%2Fabc')
+    const outsider = await signIn(
+      { sub: 'auth0|o', email: 'other@example.com', email_verified: true },
+      '/apps/abc',
+    )
+    const back = new URL(outsider.callback.headers.location as string, 'http://x')
+    expect(back.pathname).toBe('/login')
+    expect(back.searchParams.get('error')).toBe('Only @optiply.nl accounts or invited people can sign in')
+    expect(back.searchParams.get('next')).toBe('/apps/abc')
   })
 })
 

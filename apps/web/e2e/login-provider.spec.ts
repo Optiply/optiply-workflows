@@ -1,10 +1,14 @@
 import { expect, type Page, test } from '@playwright/test'
+import { E2E_EMAIL, E2E_PASSWORD } from './global-setup'
 
 /**
  * Production signs in only through the provider (Optiply's Auth0): the sign-in page goes straight there, unless it has
  * something to say (a waiting approval, a failed sign-in). The test server signs in with passwords, so its sign-in
  * settings are faked as production's, and the provider's start is answered here instead of leaving for Auth0.
  */
+/** The provider's start, with or without the page to go back to. */
+const START = /\/api\/auth\/oidc\/start(\?.*)?$/
+
 async function asProduction(page: Page) {
   await page.route('**/api/trpc/**', async (route) => {
     if (!route.request().url().includes('authConfig')) return route.continue()
@@ -22,7 +26,7 @@ async function asProduction(page: Page) {
     }
     await route.fulfill({ response: res, json: body })
   })
-  await page.route('**/api/auth/oidc/start', (route) =>
+  await page.route(START, (route) =>
     route.fulfill({
       contentType: 'text/html',
       body: '<!doctype html><meta charset="utf-8"><h1>Provider sign-in</h1>',
@@ -67,4 +71,25 @@ test('with password sign-in on, the page stays as it is', async ({ page }) => {
   await expect(page.getByLabel('Password')).toBeVisible()
   await page.waitForTimeout(500)
   await expect(page).toHaveURL(/\/login$/)
+})
+
+test('the page someone opened goes with them to the provider’s sign-in', async ({ page }) => {
+  await asProduction(page)
+  await page.goto('/workflows?folder=x')
+  await expect(page).toHaveURL(/\/api\/auth\/oidc\/start\?next=%2Fworkflows%3Ffolder%3Dx$/)
+  // And on a message, Sign in again keeps it.
+  await page.goto('/login?pending=1&next=%2Fresources')
+  await expect(page.getByRole('link', { name: 'Sign in again' })).toHaveAttribute(
+    'href',
+    '/api/auth/oidc/start?next=%2Fresources',
+  )
+})
+
+test('a password sign-in goes back to the page someone opened', async ({ page }) => {
+  await page.goto('/resources')
+  await expect(page).toHaveURL(/\/login\?next=%2Fresources$/)
+  await page.getByLabel('Email').fill(E2E_EMAIL)
+  await page.getByLabel('Password').fill(E2E_PASSWORD)
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await expect(page).toHaveURL(/\/resources$/)
 })

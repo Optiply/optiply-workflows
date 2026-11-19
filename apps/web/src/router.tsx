@@ -63,7 +63,12 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({ component: Root 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
-  validateSearch: z.object({ error: z.string().optional(), pending: z.coerce.number().optional() }),
+  validateSearch: z.object({
+    error: z.string().optional(),
+    pending: z.coerce.number().optional(),
+    // The page someone opened before signing in, to go back to (the server checks it's one of ours).
+    next: z.string().optional(),
+  }),
   component: LoginPage,
 })
 
@@ -78,7 +83,7 @@ const appRoute = createRoute({
       staleTime: 30_000,
       revalidateIfStale: true,
     })
-    if (!me) throw redirect({ to: '/login' })
+    if (!me) throw redirect({ to: '/login', search: location.href === '/' ? {} : { next: location.href } })
     // Someone whose access is apps only: their apps and their own page, never the platform (the server refuses it
     // anyway); anything else (an old link, a typed URL) takes them to their apps.
     if (me.appsOnly && !appsOnlyMayOpen(location.pathname)) throw redirect({ to: '/my-apps' })
