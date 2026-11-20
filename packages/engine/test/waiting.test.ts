@@ -133,10 +133,14 @@ describe('waiting', () => {
     const pausedBlocks = await blocksOf(db, waiting.id)
     expect(pausedBlocks.pause!.status).toBe('waiting')
 
-    // The only slot is free while it waits.
+    // The only slot is free while it waits: another run starts before the wait ends. (Checked by when it started, not
+    // by the first run still waiting once the other finished: on a slow CI runner the other run once outlasted the
+    // 2 s wait, and the first had rightly resumed by then.)
+    const until = new Date((rows.find((r) => r.blockKey === 'pause')!.metadata as { until: string }).until)
     const other = await queueRun(db, wf([hit('a')], [['startTrigger', 'a']]))
-    expect((await waitForFinish(db, other.id)).status).toBe('succeeded')
-    expect((await getRun(db, waiting.id)).status).toBe('waiting')
+    const otherDone = await waitForFinish(db, other.id)
+    expect(otherDone.status).toBe('succeeded')
+    expect(otherDone.startedAt!.getTime()).toBeLessThan(until.getTime())
 
     const done = await waitForFinish(db, waiting.id)
     expect(done.status).toBe('succeeded')
