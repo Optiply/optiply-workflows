@@ -1517,3 +1517,30 @@ settings; Staging tasks, triggers, rejections and OpenAPI environments shown to 
 `req.user`). Not changed: `all` webhooks losing Staging (the point; production had none in use), refusing a non-admin's
 republish of an admin's Staging schedule (intended), one more small query per `loadAccess`, and a grant for every
 environment that would reach Staging if its flag were ever turned off (the flag isn't editable).
+
+## 2.45 BigQuery with Google OAuth sign-in (session 60)
+
+Asked by the user on 2026-11-20 ("BigQuery resource should have as well the possibility to connect with OAuth/auth0?").
+Auth0 can't sign in to BigQuery: BigQuery takes only Google-issued tokens (Optiply's SDK resource works with Auth0
+because Optiply's API trusts Auth0). So: **Google OAuth through M9's sign-in**, as Google Sheets has. Branch
+`feat/bigquery-oauth`.
+
+- **Config:** `auth: { type: 'serviceAccount' } | { type: 'oauth', clientId, scope, tokens: 'shared' | 'perUser' }`,
+  default `serviceAccount`, so resources saved before keep their key. Secrets: `serviceAccountKey` (now optional) and
+  `clientSecret`. OAuth needs `projectId` (no key to take it from).
+- **Connector:** `httpConfig` gives M9 Google's endpoints (offline access, consent, PKCE) with the BigQuery scope and
+  `bigquery.googleapis.com` as the only host; every API call (dry run, insert, poll, pages, cancel, the table list)
+  takes its token from a token source: the key's JWT tokens, or `ctx.credentials.accessToken` (a 401 forces one fresh
+  token). Nothing in the server's OAuth code changed: connecting, storing, per-person tokens, "nobody behind this run"
+  and the per-person table cache already worked for any type whose `httpConfig` uses the authorization code.
+- **Save check** (`bigquerySettingsProblem`): a key for `serviceAccount`; the client id and secret and the project for
+  OAuth. `needsSecrets` for a resource from Git also asks it (`secretsMissing`), since an empty secrets object now
+  parses.
+- **Web:** BigQuery's form has **Sign in with** (`BigQuerySignIn`, next to Google Sheets' form): the key, or M27's
+  `OAuthApp` fields with the BigQuery scope and a note on roles and unattended runs; the project's hint says it's
+  required with OAuth.
+- **Not done:** the server's own Google identity for BigQuery (it could reuse `google-auth.ts` as Sheets does); showing
+  the connected account's email in Test connection (it says "your Google account" / "the connected Google account").
+- **Tests:** connectors `bigquery.test.ts` "OAuth sign-in" (7), server `oauth-connect.test.ts` (the save check and the
+  redirect to Google), e2e `bigquery.spec.ts` (the form, saving, connecting is asked for). The consent and token
+  exchange at Google aren't driven in e2e (no fake Google consent or BigQuery API there).

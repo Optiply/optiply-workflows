@@ -16,6 +16,7 @@ import { SDK_TEMPLATES, SdkFields } from './sdk-settings'
 import {
   AirtableFields,
   AnthropicFields,
+  BigQuerySignIn,
   GeminiFields,
   GmailFields,
   GoogleSheetsFields,
@@ -291,7 +292,7 @@ export function SettingsPanel({
       )}
       <Card className="space-y-5 p-5">
         {resource.type === 'bigquery' ? (
-          <BigQueryFields {...props} />
+          <BigQueryFields {...props} resourceId={resource.id} />
         ) : resource.type === 's3' ? (
           <S3Fields {...props} />
         ) : resource.type === 'slack' ? (
@@ -694,7 +695,9 @@ function MssqlSignIn({ config, set, secrets, edits, setEdit, disabled }: FieldsP
 
 const GIB = 1024 ** 3
 
-function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: FieldsProps) {
+function BigQueryFields(props: FieldsProps & { resourceId: string }) {
+  const { config, set, disabled } = props
+  const oauth = (config.auth as { type?: string } | undefined)?.type === 'oauth'
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -713,21 +716,17 @@ function BigQueryFields({ config, set, secrets, edits, setEdit, disabled }: Fiel
   const bytes = config.maximumBytesBilled as number | undefined
   return (
     <>
-      <Field
-        label="Service account key"
-        hint="Paste the service account's JSON key file. It needs the BigQuery Job User role, plus Data Viewer (or Editor) on the datasets it queries."
-      >
-        <SecretField
-          isSet={isSet(secrets, 'serviceAccountKey')}
-          edit={edits.serviceAccountKey as SecretEdit}
-          onChange={(e) => setEdit('serviceAccountKey', e)}
-          disabled={disabled}
-          placeholder='{ "type": "service_account", … }'
-        />
-      </Field>
+      <BigQuerySignIn {...props} />
       <Grid>
-        <Field label="Project" hint="Where queries run and are billed. Defaults to the key's project.">
-          <Input {...text('projectId')} placeholder="optiply-analytics" />
+        <Field
+          label="Project"
+          hint={
+            oauth
+              ? 'Where queries run and are billed. Required with OAuth sign-in.'
+              : "Where queries run and are billed. Defaults to the key's project."
+          }
+        >
+          <Input {...text('projectId')} placeholder="optiply-analytics" data-testid="bigquery-project" />
         </Field>
         <Field
           label="Location"

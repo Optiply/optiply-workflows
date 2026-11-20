@@ -402,7 +402,7 @@ Passwords, tokens, keys and client secrets are **write-only**:
 ### OAuth sign-in resources
 
 Some resources sign in through the service's own consent screen (OAuth): Google Sheets, Gmail, Slack, HubSpot,
-Microsoft Teams, Salesforce, Snowflake (JDBC), SDK resources and generic REST APIs.
+Microsoft Teams, Salesforce, BigQuery, Snowflake (JDBC), SDK resources and generic REST APIs.
 
 1. Register an OAuth app (client) with the provider.
 2. In the resource, fill in the client ID, the client secret and the scopes.
@@ -421,6 +421,13 @@ Microsoft Teams, Salesforce, Snowflake (JDBC), SDK resources and generic REST AP
 > **Tip:** For a shared account, connect a team mailbox or service user rather than your own account, so nothing
 > breaks when you leave. A Google OAuth client for Optiply's own use should have an **Internal** consent screen: no
 > Google review is needed then.
+
+**BigQuery with each person's Google account.** Set **Sign in with** to **OAuth sign-in (a Google account)** and fill in
+the **Project** (where queries run and are billed: it's required here, as there's no key to take it from). The scopes
+are `openid email https://www.googleapis.com/auth/bigquery`. Each person's account needs the **BigQuery Job User** role
+in that project and access to the datasets it queries; queries then see only what that person may see, and BigQuery's
+job history and costs show who ran them. Workflows that run on their own (schedules, webhooks) need a resource with a
+shared account or a service account key.
 
 ### SSH tunnels
 

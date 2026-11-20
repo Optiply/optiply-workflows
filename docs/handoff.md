@@ -2010,6 +2010,26 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
+
+The user asked whether BigQuery should connect with OAuth/Auth0: Auth0 can't (BigQuery takes only Google-issued tokens),
+Google OAuth can; the user said build it on its own branch (architecture §2.45).
+
+1. **Connector and server** ✅ `7788923`: `auth` = service account key (default; old resources unchanged) or Google
+   OAuth (shared or each person's own; `projectId` required); every API call's token from the key or the query's
+   connected account; `httpConfig` for M9's sign-in; save check `bigquerySettingsProblem`; `needsSecrets` for Git
+   deploys fixed (`secretsMissing`). Tests: connectors `bigquery.test.ts` 26/26 (+7), server `oauth-connect.test.ts`.
+2. **Form, e2e, docs** (this step): **Sign in with** in BigQuery's settings (`BigQuerySignIn` in
+   `service-settings.tsx`, M27's `OAuthApp` with the BigQuery scope and a roles note; the project hint says it's
+   required with OAuth). Test connection before connecting shows the server's "Connect your account to this resource to
+   use it." e2e `bigquery.spec.ts` (3 repeats green; with `connectors.spec.ts` and `m27-done-when.spec.ts`: 27 passed).
+   Screens (scratchpad, gone after the session): the form before, and after: key, OAuth fields, saved, "Your account".
+   Docs: user guide 3.5, admin guide "OAuth sign-in resources" (a BigQuery paragraph), runbook `connectors.md`
+   "BigQuery's sign-in", architecture §2.45; PDFs rebuilt.
+3. **To use it in production:** a Google OAuth client (Web application, **Internal** consent screen) with the site's
+   `/api/oauth/callback` as redirect URI; each account needs BigQuery Job User in the resource's project. Not done:
+   the server's own Google identity for BigQuery; the connected account's email in Test connection.
+
 ## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
 
 1. **The SDK resource signs in as each person** ✅ (the user's choice over client credentials: "credentials from the
