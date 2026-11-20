@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   type AnyConnector,
   ConnectorError,
+  type CredentialSource,
   createBigQueryConnector,
+  httpConfigFor,
   PoolManager,
   type ResolvedResource,
   runQuery,
@@ -395,6 +397,149 @@ describe('testResource', () => {
     const result = await testResource(connector, res)
     expect(result.ok).toBe(false)
     expect(JSON.stringify(result)).not.toContain('PRIVATE KEY')
+  })
+})
+
+describe('OAuth sign-in', () => {
+  const oauth = (tokens: 'shared' | 'perUser' = 'perUser', config: Record<string, unknown> = {}) =>
+    resource(
+      {
+        location: 'EU',
+        projectId: 'optiply-dw',
+        auth: { type: 'oauth', clientId: 'cid', tokens },
+        ...config,
+      },
+      { clientSecret: 'shh' },
+      String(++version),
+    )
+  /** A connected account: hands out `first`, then `fresh` when asked to force a new one; records each ask. */
+  const account = (first: string, fresh = `${first}-fresh`) => {
+    const asks: boolean[] = []
+    const credentials: CredentialSource = {
+      async accessToken({ force }) {
+        asks.push(force === true)
+        return force ? fresh : first
+      },
+    }
+    fake.allowToken(first)
+    fake.allowToken(fresh)
+    return { credentials, asks }
+  }
+
+  it("runs jobs with the connected account's token, in the resource's project, and no service account", async () => {
+    const before = fake.tokensIssued
+    const { credentials } = account('ya29.alice')
+    const result = await runQuery(
+      pool,
+      connector,
+      oauth(),
+      { sql: 'SELECT 1' },
+      {
+        evaluate: scopeEvaluator({}),
+        credentials,
+      },
+    )
+    expect(result.data).toBeDefined()
+    expect(fake.apiCalls().length).toBeGreaterThan(0)
+    expect(fake.apiCalls().every((r) => r.authorization === 'Bearer ya29.alice')).toBe(true)
+    expect(insertBody().jobReference.projectId).toBe('optiply-dw')
+    expect(fake.tokensIssued).toBe(before) // no JWT exchange
+  })
+
+  it('asks the account for a fresh token once when BigQuery refuses one', async () => {
+    const { credentials, asks } = account('ya29.old', 'ya29.new')
+    fake.rejectNextToken = true
+    await runQuery(
+      pool,
+      connector,
+      oauth(),
+      { sql: 'SELECT 1' },
+      { evaluate: scopeEvaluator({}), credentials },
+    )
+    expect(asks.slice(0, 2)).toEqual([false, true])
+    expect(fake.apiCalls().at(-1)!.authorization).toBe('Bearer ya29.new')
+  })
+
+  it('asks for a connected account when the query has none, before calling BigQuery', async () => {
+    const err = await failure(
+      runQuery(pool, connector, oauth(), { sql: 'SELECT 1' }, { evaluate: scopeEvaluator({}) }),
+    )
+    expect(err).toMatchObject({
+      code: 'auth_required',
+      message: expect.stringMatching(/Connect a Google account/),
+    })
+    expect(fake.apiCalls()).toHaveLength(0)
+  })
+
+  it('needs the project (there is no key to take it from), not a service account key', async () => {
+    const { credentials } = account('ya29.bob')
+    const result = await testResource(connector, oauth('shared', { projectId: undefined }), { credentials })
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_config', details: { issues: [{ path: 'projectId' }] } },
+    })
+  })
+
+  it("cancels a job with the same account's token", async () => {
+    const { credentials } = account('ya29.carol')
+    fake.script('SELECT slow', { pending: Number.POSITIVE_INFINITY })
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 300)
+    const err = await failure(
+      runQuery(
+        pool,
+        connector,
+        oauth(),
+        { sql: 'SELECT slow' },
+        {
+          evaluate: scopeEvaluator({}),
+          credentials,
+          signal: controller.signal,
+        },
+      ),
+    )
+    expect(err.code).toBe('aborted')
+    const jobId = insertBody().jobReference.jobId
+    await expect.poll(() => fake.jobs.get(jobId)?.cancelled).toBe(true)
+    expect(fake.apiCalls('cancel').at(-1)!.authorization).toBe('Bearer ya29.carol')
+  })
+
+  it('Test connection dry-runs as the connected account and says whose', async () => {
+    const mine = account('ya29.dave')
+    expect(await testResource(connector, oauth('perUser'), { credentials: mine.credentials })).toMatchObject({
+      ok: true,
+      message: 'BigQuery project optiply-dw as your Google account',
+    })
+    expect(fake.apiCalls('dryRun').at(-1)!.authorization).toBe('Bearer ya29.dave')
+    const shared = account('ya29.team')
+    expect(await testResource(connector, oauth('shared'), { credentials: shared.credentials })).toMatchObject(
+      {
+        ok: true,
+        message: 'BigQuery project optiply-dw as the connected Google account',
+      },
+    )
+  })
+
+  it("gives the server's OAuth sign-in Google's endpoints and the BigQuery scope; none for a service account", () => {
+    const http = httpConfigFor('bigquery', { projectId: 'p', auth: { type: 'oauth', clientId: 'cid' } })
+    expect(http).toMatchObject({
+      baseUrl: 'https://bigquery.googleapis.com/',
+      allowedHosts: [],
+      auth: {
+        type: 'oauth2AuthorizationCode',
+        provider: 'google',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        clientId: 'cid',
+        scope: 'openid email https://www.googleapis.com/auth/bigquery',
+        tokens: 'shared',
+        pkce: true,
+        authorizeParams: expect.arrayContaining([{ key: 'access_type', value: 'offline' }]),
+      },
+    })
+    // Resources saved before OAuth (no `auth`) keep signing in with their key.
+    expect(httpConfigFor('bigquery', { projectId: 'p' })?.auth).toEqual({ type: 'none' })
+    expect(httpConfigFor('bigquery', { auth: { type: 'serviceAccount' } })?.auth).toEqual({ type: 'none' })
   })
 })
 

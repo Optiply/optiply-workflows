@@ -11,10 +11,13 @@ import {
   serviceAccountTokens,
 } from './google-auth'
 import { networkError, readBody } from './http'
+import { oauthPresets } from './oauth-presets'
+import { type RestConfig, restConfigSchema } from './rest'
 import { resolveFragments } from './sql-fragments'
 import {
   type Connector,
   ConnectorError,
+  type CredentialSource,
   type QueryContext,
   type QueryResult,
   statementTimeoutMs,
@@ -26,8 +29,25 @@ const labelKey = z
   .regex(/^[a-z][a-z0-9_-]{0,62}$/, 'Lowercase letters, digits, _ and -; start with a letter')
 const labelValue = z.string().regex(/^[a-z0-9_-]{0,63}$/, 'Lowercase letters, digits, _ and -')
 
+const SCOPE = 'https://www.googleapis.com/auth/bigquery'
+
 const configSchema = z.object({
-  /** The project jobs run (and are billed) in. Defaults to the service account's project. */
+  /**
+   * How it signs in: a service account key (the default, as before), or a Google account through OAuth sign-in (M9):
+   * one shared account per environment, or each person's own, so queries run with that person's BigQuery access.
+   */
+  auth: z
+    .discriminatedUnion('type', [
+      z.object({ type: z.literal('serviceAccount') }),
+      z.object({
+        type: z.literal('oauth'),
+        clientId: z.string().trim().min(1),
+        scope: z.string().default(`openid email ${SCOPE}`),
+        tokens: z.enum(['shared', 'perUser']).default('shared'),
+      }),
+    ])
+    .default({ type: 'serviceAccount' }),
+  /** The project jobs run (and are billed) in. Defaults to the service account's project; needed with OAuth. */
   projectId: z.string().min(1).optional(),
   /** Where jobs run, e.g. `EU` or `europe-west4`; BigQuery infers it from the tables when left out. */
   location: z.string().min(1).optional(),
@@ -54,7 +74,10 @@ const secretsSchema = z.object({
   serviceAccountKey: z
     .string()
     .min(1)
-    .refine(isServiceAccountKey, 'Paste the JSON key file of a service account'),
+    .refine(isServiceAccountKey, 'Paste the JSON key file of a service account')
+    .optional(),
+  /** OAuth: the Google OAuth client's secret. */
+  clientSecret: z.string().optional(),
 })
 
 const querySchema = z.object({ sql: z.string().min(1) })
@@ -65,12 +88,17 @@ type Query = z.output<typeof querySchema>
 
 interface Client {
   config: Config
-  key: ServiceAccountKey
   projectId: string
   agent: Agent
   endpoints: BigQueryEndpoints
-  tokens: GoogleTokens
+  /** The service account's tokens; null with OAuth, whose token comes with each query (`ctx.credentials`). */
+  tokens: GoogleTokens | null
+  /** Who it signs in as, for Test connection: the key's email (null with OAuth). */
+  key: ServiceAccountKey | null
 }
+
+/** An access token for one API call; `force` gets a fresh one (the API refused the last). */
+type TokenSource = (signal: AbortSignal, force: boolean) => Promise<string>
 
 export interface BigQueryEndpoints {
   /** The BigQuery v2 REST API. */
@@ -83,16 +111,16 @@ const GOOGLE: BigQueryEndpoints = {
   apiUrl: 'https://bigquery.googleapis.com/bigquery/v2',
   tokenUrl: GOOGLE_TOKEN_URL,
 }
-const SCOPE = 'https://www.googleapis.com/auth/bigquery'
 /** How long one API call may wait for a job before we poll again. */
 const POLL_MS = 10_000
 const PAGE_ROWS = 10_000
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 /**
- * BigQuery over its REST API: a service account signs a JWT for an access token, queries run as jobs with named
- * parameters (`@p1`, `@p2`, … from `{{ }}`), a `maximumBytesBilled` limit and labels, and results are paged in.
- * Cancelling or timing out cancels the job. `endpoints` exists for tests (a fake API).
+ * BigQuery over its REST API: a service account signs a JWT for an access token (or, with OAuth, the connected Google
+ * account's token comes with each query), queries run as jobs with named parameters (`@p1`, `@p2`, … from `{{ }}`), a
+ * `maximumBytesBilled` limit and labels, and results are paged in. Cancelling or timing out cancels the job.
+ * `endpoints` exists for tests (a fake API).
  */
 export function createBigQueryConnector(
   endpoints: BigQueryEndpoints = GOOGLE,
@@ -124,6 +152,28 @@ LIMIT ${limit}`
     },
 
     createClient({ config, secrets }) {
+      if (config.auth.type === 'oauth') {
+        if (!config.projectId) {
+          throw new ConnectorError(
+            'invalid_config',
+            'Set the project queries run in (with OAuth sign-in there is no key to take it from)',
+            { issues: [{ path: 'projectId', message: 'Required with OAuth sign-in' }] },
+          )
+        }
+        return {
+          config,
+          projectId: config.projectId,
+          agent: new Agent({ connections: 16 }),
+          endpoints,
+          tokens: null,
+          key: null,
+        }
+      }
+      if (!secrets.serviceAccountKey) {
+        throw new ConnectorError('invalid_config', 'Add the service account key (serviceAccountKey)', {
+          issues: [{ path: 'serviceAccountKey', message: 'Required' }],
+        })
+      }
       const key = parseServiceAccountKey(secrets.serviceAccountKey, 'serviceAccountKey')
       const agent = new Agent({ connections: 16 })
       return {
@@ -145,15 +195,30 @@ LIMIT ${limit}`
       await agent.close()
     },
 
-    async testConnection(client, { signal }) {
+    // OAuth sign-in (M9) works from these: Google's endpoints, the BigQuery scope, tokens only for BigQuery's host.
+    httpConfig: (config) => bigQueryHttpConfig(config, endpoints),
+
+    async testConnection(client, { signal, credentials }) {
       // A dry run is free and checks the credentials, the project and the permission to run jobs.
-      await api(client, 'POST', `/projects/${enc(client.projectId)}/queries`, signal, {
-        query: 'SELECT 1',
-        useLegacySql: false,
-        dryRun: true,
-        ...(client.config.location && { location: client.config.location }),
-      })
-      return { message: `BigQuery project ${client.projectId} as ${client.key.client_email}` }
+      await api(
+        client,
+        tokenSource(client, credentials),
+        'POST',
+        `/projects/${enc(client.projectId)}/queries`,
+        signal,
+        {
+          query: 'SELECT 1',
+          useLegacySql: false,
+          dryRun: true,
+          ...(client.config.location && { location: client.config.location }),
+        },
+      )
+      const who = client.key
+        ? client.key.client_email
+        : client.config.auth.type === 'oauth' && client.config.auth.tokens === 'perUser'
+          ? 'your Google account'
+          : 'the connected Google account'
+      return { message: `BigQuery project ${client.projectId} as ${who}` }
     },
 
     validateQuery(query) {
@@ -173,6 +238,43 @@ LIMIT ${limit}`
 }
 
 export const bigqueryConnector = createBigQueryConnector()
+
+/** The REST-shaped settings the server's OAuth sign-in works from; no OAuth for a service account. */
+function bigQueryHttpConfig(config: Config, endpoints: BigQueryEndpoints): RestConfig {
+  const google = oauthPresets.google
+  return restConfigSchema.parse({
+    baseUrl: `${new URL(endpoints.apiUrl).origin}/`,
+    allowedHosts: [],
+    auth:
+      config.auth.type === 'oauth'
+        ? {
+            type: 'oauth2AuthorizationCode',
+            provider: 'google',
+            authorizeUrl: google.authorizeUrl,
+            tokenUrl: google.tokenUrl,
+            revokeUrl: google.revokeUrl,
+            clientId: config.auth.clientId,
+            scope: config.auth.scope,
+            authorizeParams: google.authorizeParams,
+            clientAuth: google.clientAuth,
+            pkce: google.pkce,
+            tokens: config.auth.tokens,
+          }
+        : { type: 'none' },
+  })
+}
+
+/** Where a call's token comes from: the service account's, or the query's connected Google account. */
+function tokenSource(client: Client, credentials: CredentialSource | undefined): TokenSource {
+  const { tokens } = client
+  if (tokens) return (signal, force) => tokens.token(signal, force)
+  return (signal, force) => {
+    if (!credentials?.accessToken) {
+      throw new ConnectorError('auth_required', 'Connect a Google account to this resource first')
+    }
+    return credentials.accessToken({ signal, force })
+  }
+}
 
 interface JobReference {
   projectId: string
@@ -222,6 +324,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
   const statementTimeout = AbortSignal.timeout(statementTimeoutMs(ctx, config.statementTimeoutMs))
   const signal = AbortSignal.any([ctx.signal, statementTimeout])
   const project = enc(client.projectId)
+  const token = tokenSource(client, ctx.credentials)
 
   // Our own job id, so a cancel always knows which job to stop (even one still being created), and a retried
   // insert can't start a second job.
@@ -232,7 +335,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
   }
 
   try {
-    const inserted = await api<InsertResponse>(client, 'POST', `/projects/${project}/jobs`, signal, {
+    const inserted = await api<InsertResponse>(client, token, 'POST', `/projects/${project}/jobs`, signal, {
       jobReference: job,
       configuration: {
         query: {
@@ -260,6 +363,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
       if (pageToken) params.set('pageToken', pageToken)
       return api<JobResponse>(
         client,
+        token,
         'GET',
         `/projects/${project}/queries/${enc(job.jobId)}?${params}`,
         signal,
@@ -306,7 +410,7 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
       },
     }
   } catch (err) {
-    if (signal.aborted) void cancelJob(client, job)
+    if (signal.aborted) void cancelJob(client, token, job)
     if (statementTimeout.aborted && !ctx.signal.aborted) {
       throw new ConnectorError('timeout', 'The query hit the statement timeout')
     }
@@ -315,10 +419,11 @@ async function executeQuery(client: Client, query: Query, ctx: QueryContext): Pr
 }
 
 /** Best effort: the job keeps running (and billing) on BigQuery's side unless it's cancelled. */
-async function cancelJob(client: Client, job: JobReference): Promise<void> {
+async function cancelJob(client: Client, token: TokenSource, job: JobReference): Promise<void> {
   const location = job.location ? `?location=${enc(job.location)}` : ''
   await api(
     client,
+    token,
     'POST',
     `/projects/${enc(job.projectId)}/jobs/${enc(job.jobId)}/cancel${location}`,
     AbortSignal.timeout(10_000),
@@ -451,9 +556,10 @@ function toValue(v: unknown, field: Field): unknown {
   }
 }
 
-/** One call to the API with the service account's token; a 401 refreshes the token once. */
+/** One call to the API with the client's token (a service account's or the connected account's); a 401 refreshes it once. */
 async function api<T = unknown>(
   client: Client,
+  tokens: TokenSource,
   method: 'GET' | 'POST',
   path: string,
   signal: AbortSignal,
@@ -461,7 +567,7 @@ async function api<T = unknown>(
   retried = false,
 ): Promise<T> {
   const url = new URL(client.endpoints.apiUrl + path)
-  const token = await client.tokens.token(signal, retried)
+  const token = await tokens(signal, retried)
   let res: Awaited<ReturnType<typeof fetch>>
   try {
     res = await fetch(url, {
@@ -479,7 +585,7 @@ async function api<T = unknown>(
   }
   if (res.status === 401 && !retried) {
     await res.body?.cancel()
-    return api<T>(client, method, path, signal, body, true)
+    return api<T>(client, tokens, method, path, signal, body, true)
   }
   const text = (await readBody(res, MAX_RESPONSE_BYTES)).toString('utf8')
   if (!res.ok) throw apiError(res.status, text)

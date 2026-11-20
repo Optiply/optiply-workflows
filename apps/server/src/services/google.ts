@@ -88,6 +88,20 @@ export function gmailSettingsProblem(config: unknown, secrets: Record<string, un
   return secrets.clientSecret ? null : 'Add the OAuth app’s client secret'
 }
 
+/**
+ * Why a BigQuery resource's settings couldn't sign in, checked on save: a service account needs its key; OAuth sign-in
+ * needs the Google OAuth client (id and secret) and the project queries run in (there's no key to take it from).
+ */
+export function bigquerySettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
+  const c = (config ?? {}) as { auth?: { type?: string; clientId?: string }; projectId?: string }
+  if ((c.auth?.type ?? 'serviceAccount') === 'serviceAccount') {
+    return secrets.serviceAccountKey ? null : 'Add the service account key'
+  }
+  if (!c.auth?.clientId?.trim()) return 'Add the OAuth app’s client id'
+  if (!secrets.clientSecret) return 'Add the OAuth app’s client secret'
+  return c.projectId?.trim() ? null : 'Set the project queries run in'
+}
+
 /** Why a Google Sheets resource's settings (M27) couldn't sign in, checked on save as an SSH tunnel's are. */
 export function sheetsSettingsProblem(config: unknown, secrets: Record<string, unknown>): string | null {
   const auth = ((config ?? {}) as { auth?: { type?: string } }).auth?.type ?? 'serviceAccount'

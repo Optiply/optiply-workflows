@@ -45,6 +45,7 @@ import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import {
+  bigquerySettingsProblem,
   geminiSettingsProblem,
   gmailSettingsProblem,
   serverIdentityView,
@@ -117,11 +118,22 @@ function sshSettled<T>(settle: () => T): T {
 }
 
 /**
+ * Whether a resource configured without secrets (deployed from Git, M22) needs some before it can sign in: its
+ * connector requires them, or (BigQuery, whose key is optional since OAuth sign-in needs none) the sign-in it uses
+ * does.
+ */
+function secretsMissing(type: string, config: unknown): boolean {
+  if (!connectorFor(type).secretsSchema.safeParse({}).success) return true
+  return type === 'bigquery' && bigquerySettingsProblem(config, {}) !== null
+}
+
+/**
  * Why a resource's settings couldn't sign in, checked on save (M26, M27): an AWS identity (S3), a service's token
  * or OAuth client secret, Google Sheets' key or the server's identity. Null when fine, or for other types.
  */
 function settingsProblem(type: string, config: unknown, secrets: Record<string, unknown>): string | null {
   if (type === 'googlesheets') return sheetsSettingsProblem(config, secrets)
+  if (type === 'bigquery') return bigquerySettingsProblem(config, secrets)
   if (type === 'gemini') return geminiSettingsProblem(config, secrets)
   if (type === 'gmail') return gmailSettingsProblem(config, secrets)
   if (type === 'sdk') {
@@ -371,8 +383,7 @@ export const resourcesRouter = router({
             overrides: row ? row.overrides : null,
             /** Configured from Git without the secrets its connector needs yet (M22): an admin fills them in. */
             secretsSet: !!row?.secrets,
-            needsSecrets:
-              !!row && !row.secrets && !connectorFor(resource.type).secretsSchema.safeParse({}).success,
+            needsSecrets: !!row && !row.secrets && secretsMissing(resource.type, effectiveConfig(row)),
             secrets: secrets ? maskSecrets(secrets) : null,
             sshKeys: secrets ? sshKeyInfo(secrets) : null,
             iapKeys: secrets ? iapKeyInfo(secrets) : null,

@@ -673,6 +673,62 @@ describe('refusals before the provider', () => {
   })
 })
 
+describe('BigQuery with Google OAuth sign-in', () => {
+  const base = {
+    location: 'EU',
+    maximumBytesBilled: 10 * 1024 ** 3,
+    maxRows: 1000,
+    statementTimeoutMs: 60_000,
+    labels: {},
+  }
+  const save = (resourceId: string, config: Record<string, unknown>, secrets: Record<string, unknown> = {}) =>
+    admin.mutate('resources.saveConfig', { resourceId, environmentId: prodId, config, secrets })
+
+  it('checks the sign-in on save, then sends each person to Google for the BigQuery scope', async () => {
+    const id = data(
+      await admin.mutate('resources.create', { type: 'bigquery', name: 'Warehouse', slug: 'warehouse' }),
+    ).id as string
+    const oauth = { type: 'oauth', clientId: 'bq-client.apps.googleusercontent.com', tokens: 'perUser' }
+    for (const [config, secrets, message] of [
+      [base, {}, 'Add the service account key'],
+      [
+        { ...base, projectId: 'optiply-dw', auth: { ...oauth, clientId: ' ' } },
+        { clientSecret: CLIENT_SECRET },
+        'auth.clientId',
+      ],
+      [{ ...base, projectId: 'optiply-dw', auth: oauth }, {}, 'client secret'],
+      [{ ...base, auth: oauth }, { clientSecret: CLIENT_SECRET }, 'Set the project'],
+    ] as const) {
+      const refused = await save(id, config, secrets)
+      expect(refused.status, message).toBe(400)
+      expect(refused.body.error?.message).toContain(message)
+    }
+    expect(
+      (await save(id, { ...base, projectId: 'optiply-dw', auth: oauth }, { clientSecret: CLIENT_SECRET }))
+        .status,
+    ).toBe(200)
+    const [all] = await env.db.select().from(groups).where(eq(groups.systemKind, 'all_users'))
+    await env.db
+      .insert(permissions)
+      .values({ groupId: all!.id, objectType: 'resource', objectId: id, environmentId: prodId, level: 'use' })
+
+    const { res, location } = await start(memberCookie, id, 'mine')
+    expect(res.statusCode).toBe(302)
+    expect(location!.origin + location!.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth')
+    expect(Object.fromEntries(location!.searchParams)).toMatchObject({
+      response_type: 'code',
+      client_id: 'bq-client.apps.googleusercontent.com',
+      redirect_uri: 'http://localhost:5173/api/oauth/callback',
+      scope: 'openid email https://www.googleapis.com/auth/bigquery',
+      access_type: 'offline',
+      prompt: 'consent',
+      code_challenge_method: 'S256',
+    })
+    // Each person connects their own: there is no shared account to connect.
+    expect((await start(adminCookie, id, 'shared')).res.statusCode).toBe(400)
+  })
+})
+
 describe('secrets', () => {
   it('never sends a token or the client secret in any response', async () => {
     // Tokens were issued (and stored) during this file's flows.

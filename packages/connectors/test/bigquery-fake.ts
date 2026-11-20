@@ -51,6 +51,11 @@ export class FakeBigQuery {
   private server?: Server
   private validTokens = new Set<string>()
 
+  /** An access token the API accepts, as if Google had issued it to a connected account (OAuth). */
+  allowToken(value: string): void {
+    this.validTokens.add(value)
+  }
+
   constructor() {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
     this.publicKey = publicKey.export({ type: 'spki', format: 'pem' }).toString()
