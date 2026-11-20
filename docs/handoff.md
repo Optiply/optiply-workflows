@@ -2819,10 +2819,13 @@ read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, the
   Cloud Build bucket locked); the rest is accepted or skipped for the cap (step 6). The page may take a day to clear.
 - **Specialist Project:** the folder is current; the user re-uploads `00-instructions.md`, `01-setup-notes.md`,
   `10-platform-user-guide.md`, `11-platform-admin-guide.md`, `20-runbook-connectors.md` if not done yet.
-- **BigQuery resource in production:** being set up by the user (§14 "Session 60, later" step 10): the new Google
-  OAuth client's ID and a **new** secret (the first one leaked), Location `EU`, then Connect and Test connection. The
-  Accounts choice (shared vs each person) was the user's to make. When it works: add it to the specialist folder's
-  `01-setup-notes.md`.
+- **BigQuery resource in production: working** ("Google BigQuery"): Google OAuth through the client "Optiply
+  Workflows BigQuery" (`optiply-workflows`; the leaked first secret deleted, a new one in the resource), **each person
+  connects their own**, project `clear-veld-186016`, Location `EU`, default dataset `optiply_application_v2`. The user
+  connected and tested it. Colleagues need BigQuery Job User in `clear-veld-186016` and Data Viewer on the dataset.
+  Scheduled workflows can't use it (per person). The specialist folder's `01-setup-notes.md` §9 describes it (tables,
+  partitions, costs: `LIMIT` doesn't lower bytes read: `SELECT * … LIMIT 10` on `buy_orders` ≈ 5.4 GB, a filtered
+  query ≈ 0.3 MB by dry run).
 - **Offered, not done (the user's call):** BigQuery follow-ups (the server's own Google identity; the account's email
   in Test connection; a project change forcing a reconnect).
 
