@@ -2078,6 +2078,23 @@ Google OAuth can; the user said build it on its own branch (architecture §2.45)
    (`docs/session-54-handoff`, `feat/apps-only-users`, `feat/m37-connectors-sdk`, `fix/csv-field-limit`,
    `fix/deploy-build-bucket`, `fix/flaky-timing-tests`: their content was in `main`; personal-repo PRs #26–#30). ~50
    older branches remain, all merged by history.
+10. **Later the same night** (the user: "do the three"): **`2ddb198` removed** from the VM and the registry (both tags
+    read first: current `da8961b`, previous `656ac79`; each registry digest held only that tag); disk 44 % → 36 %.
+    **PR #19** (`fix/deploy-final-ssh-retry`, merged as **`ea83663`**): the Deploy step reads the unit's log and result
+    in a read-only SSH call tried up to 5 times, then stops and resets the unit in a separate best-effort call (a
+    reset clears a failed result, so it never comes before a successful read); if all 5 reads fail it says so. Checked
+    with a stub `vm()` (refused reads, replies without the marker, a failed unit, a refused cleanup); the next deploy is
+    its real test. **PR #20** (`fix/flaky-waiting-test`, merged as **`efefd2a`**): the waiting test checks the other run
+    *started* before the wait's `until` (the slot was freed) instead of the first run still waiting once the other
+    finished; a 2 s window remains (a few small transactions; a 4 s pause if it ever flakes). Both reviewed by both
+    agents (no findings) and green in CI. **The BigQuery resource** in production ("Google BigQuery", project
+    `clear-veld-186016`, dataset `optiply_application_v2` in **EU**): the user is setting it up with a new Google OAuth
+    client "Optiply Workflows BigQuery" in `optiply-workflows` (the existing "optiply-workflows local" client left
+    alone); its first client secret was pasted into the Default dataset field and shown in a screenshot, so the user
+    was told to add a new secret and delete that one. Read-only checks: the BigQuery API is on in
+    `optiply-workflows`, the consent screen "Optiply Workflows" is Internal, and the user's account can list that
+    dataset and dry-run queries in `clear-veld-186016`. Queries are billed to `clear-veld-186016` (not the €5 project;
+    max 10 GiB billed per query).
 
 ## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
 
@@ -2789,8 +2806,9 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 deploys weekdays at 18:00 Amsterdam when something new passed CI (or by hand: Actions → Deploy → Run workflow).
 **Production runs `da8961b`** (rollback `656ac79`), deployed by hand on 2026-11-20 with PR #14's detached `deploy.sh`
 (it worked; the run shows red only because its last SSH call has no retry: §14 "Session 60, later" step 5). The VM and
-the registry still hold `2ddb198` as well: removing it (keep two, read both tags first) waits for the user's word.
-Monday 18:00 finds nothing new unless something is merged before then.
+the registry hold just `da8961b` and `656ac79` (`2ddb198` removed). **Monday 18:00 deploys `efefd2a`** (PRs #19 and
+#20, merged after the deploy; the app's code is the same as `da8961b`): it's the first real run of the Deploy step's
+read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, then remove `656ac79` (keep two).
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
@@ -2801,9 +2819,12 @@ Monday 18:00 finds nothing new unless something is merged before then.
   Cloud Build bucket locked); the rest is accepted or skipped for the cap (step 6). The page may take a day to clear.
 - **Specialist Project:** the folder is current; the user re-uploads `00-instructions.md`, `01-setup-notes.md`,
   `10-platform-user-guide.md`, `11-platform-admin-guide.md`, `20-runbook-connectors.md` if not done yet.
-- **Offered, not done (the user's call):** retry the Deploy step's last SSH call (`deploy.yml`, a PR); fix the
-  `waiting.test.ts:139` flake; remove `2ddb198`; BigQuery follow-ups (the server's own Google identity; the account's
-  email in Test connection; a project change forcing a reconnect).
+- **BigQuery resource in production:** being set up by the user (§14 "Session 60, later" step 10): the new Google
+  OAuth client's ID and a **new** secret (the first one leaked), Location `EU`, then Connect and Test connection. The
+  Accounts choice (shared vs each person) was the user's to make. When it works: add it to the specialist folder's
+  `01-setup-notes.md`.
+- **Offered, not done (the user's call):** BigQuery follow-ups (the server's own Google identity; the account's email
+  in Test connection; a project change forcing a reconnect).
 
 Ask what's next.
 
