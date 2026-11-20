@@ -2809,6 +2809,8 @@ deploys weekdays at 18:00 Amsterdam when something new passed CI (or by hand: Ac
 the registry hold just `da8961b` and `656ac79` (`2ddb198` removed). **Monday 18:00 deploys `efefd2a`** (PRs #19 and
 #20, merged after the deploy; the app's code is the same as `da8961b`): it's the first real run of the Deploy step's
 read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, then remove `656ac79` (keep two).
+At the end of the session `main`'s CI on `ea83663` was running and on `efefd2a` queued: check both went green
+(Monday deploys the newest green one; if neither is, nothing new is deployed).
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
@@ -2817,8 +2819,13 @@ read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, the
   Google OAuth client (Internal) with the site's `/api/oauth/callback` and BigQuery Job User per account.
 - **Security & compliance:** the four free fixes are done (two default firewall rules deleted, project OS Login, the
   Cloud Build bucket locked); the rest is accepted or skipped for the cap (step 6). The page may take a day to clear.
-- **Specialist Project:** the folder is current; the user re-uploads `00-instructions.md`, `01-setup-notes.md`,
-  `10-platform-user-guide.md`, `11-platform-admin-guide.md`, `20-runbook-connectors.md` if not done yet.
+- **Specialist Project:** the folder is current (last: `01-setup-notes.md` §9 BigQuery, with "not PostgreSQL: no
+  `ILIKE`, use `LOWER(col) LIKE`; the table is `webshops`; `SELECT *` on `webshops` reads ~1.3 GB"). The user replaces 5
+  files in the Project: `00-instructions.md`, `01-setup-notes.md`, `10-platform-user-guide.md`,
+  `11-platform-admin-guide.md`, `20-runbook-connectors.md` (the other 13 unchanged), then tests it in a new chat with
+  questions only the new files answer (the `ILIKE` query, `LIMIT` not lowering cost, Connect your account for BigQuery
+  and the SDK, "nobody is behind this run", Auth0 sign-in, 18:00 deploys), and that it says when columns aren't listed
+  instead of guessing.
 - **BigQuery resource in production: working** ("Google BigQuery"): Google OAuth through the client "Optiply
   Workflows BigQuery" (`optiply-workflows`; the leaked first secret deleted, a new one in the resource), **each person
   connects their own**, project `clear-veld-186016`, Location `EU`, default dataset `optiply_application_v2`. The user
