@@ -2010,6 +2010,36 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
+
+1. **The SDK resource signs in as each person** ✅ (the user's choice over client credentials: "credentials from the
+   connected user"). Production's "Optiply SDK" → **OAuth 2.0 sign-in, each person's own account**: provider custom,
+   authorize/token/revoke on **`https://login.optiply.com/…`** (the SDK's default token host: Optiply's gateway accepts a
+   token by its **issuer**, not its audience — `~/optiply-sdk/README.md`), client ID = the "Optiply Workflows" SPA
+   (`AGivjzIbhX2X7XDJWyxxPUZ4eDNbhAQT`, 7th character a capital **I**; public, **no secret**: the stored one was
+   cleared), scopes `openid profile email offline_access`, consent parameter **`audience=https://api.optiply.com/internal`**
+   (`DEFAULT_AUDIENCE` in `~/optiply-sdk/optiply/auth.py`), PKCE on, body. Base URL stays `https://api.optiply.com` (never
+   `/internal`). The setup code is unchanged (read-only). The developer changed Auth0: `…/api/oauth/callback` in the
+   app's Allowed Callback URLs, Refresh Token Rotation + the Refresh Token grant, Allow Offline Access on the API.
+   Checks along the way: GET `/authorize` with each `redirect_uri` (403 = not allowed, 302 = allowed); one "Unknown
+   client" from a hand-typed ID with a lowercase L (the saved one was right). **The user connected; `Run code`
+   `return client.call("WebshopService_findAll").to_dict()` returned their webshops.** Each colleague connects once.
+   Workflows using it can't be published (a second, client-credentials resource would be needed for that: an M2M
+   application in Auth0; the SPA has no secret). Unexplained: a `/workflows/01a1d414-…` entry in the app's callback list.
+2. **The scheduled deploy of `656ac79`** (Fri 17:02 UTC): pulling five images at once put the 1 GB VM deep in swap; the
+   app exited and was restarted at 17:13 (a minute of 502, while the user was connecting) and the IAP SSH session running
+   `deploy.sh` dropped, so the run failed — **but `deploy.sh` kept running on the VM** and switched to `656ac79` at
+   ~17:30, unchecked. I wrongly reported it as cut off halfway (seen at 17:26, mid-pull) and, on the user's word, ran it
+   by hand (Run workflow, tag `656ac79`): nothing changed except `.previous-tag`, overwritten with `656ac79`. Fixed by
+   hand on the user's word (`.previous-tag` = `2ddb198`, its images checked first). **`159906b` removed** (VM + registry):
+   both keep `656ac79` + `2ddb198`; disk 37 %. **PR #14** merged as **`5986873`**: `deploy.sh` pulls first (from
+   `.env.new`, one image at a time) and only then changes `.env` and the tags; the same tag again keeps `.previous-tag`;
+   the workflow runs `deploy.sh` as a systemd unit (`ow-deploy-<run>-<attempt>`, log in `/var/log/`) and polls it, so a
+   dropped connection can't cut it loose and the health check follows the real end. Tested with stubs (dry runs of
+   `deploy.sh`, a simulated Deploy step); not yet a real run, nor the 25-minute timeout.
+3. **"Deploy only on days with merges"** (the user): it already deploys only when something new passed CI since the last
+   deploy ("nothing to deploy" otherwise); Friday deployed Thursday evening's merges. Kept as it is (the user).
+
 ## 14. Session 59 steps (2026-11-19): deploy once a day, lighter CI
 
 1. **Daily deploy** ✅ (the user's choice: weekdays **18:00 Amsterdam**): PR **#5** (`ci/daily-deploy`, one commit
@@ -2651,6 +2681,14 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Progress:** step 0 `11b334b` (with `122e32a` before it: the CLI's `login` no longer echoes the token, found when the user signed in on their stack). Step 1 `4b69a9b`: AI resources. **Plan change (step 1):** the AI resources are **M27's service connectors** (`SERVICE_TYPES` `anthropic`, `openai_compatible`; `AI_ACTIONS` in `services/actions.ts`), so the "AI block" is the **existing resource query block** on an AI resource and the app's AI query the existing resource query: no `type: 'ai'` block. The answer is the query's data (text, the extracted JSON, `{label|labels, reason}`), usage/model/cost/prompts its metadata. Code: `packages/connectors/src/ai/` (`core.ts` the actions and checks, `anthropic.ts` the SDK, `openai.ts` chat completions, `prices.ts`, `fake.ts`); `QueryContext.ai` (`AiRunContext`: `budget {spent, add}`, `tools` for the agent) and the `ai_*` error codes; `RunOptions.ai`. Found: SDK 1.x sends the key as `Authorization: Bearer` (not `x-api-key`); the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the environment unless given everything (we pass the key, base URL and `authToken: null`); undici's `fetch` doesn't take the SDK's `Headers` (plain headers passed); a private IP written in the base URL skips the guarded lookup (`checkBaseUrl`). Tests: `packages/connectors/test/ai.test.ts` (12), `apps/server/test/ai-resources.test.ts` (2). Steps 2–4 `2d3c660` (one commit: step 3's provider changes landed in `core.ts` before step 2 was committed): the run's budget (`RunAiBudget`, per execution, shared with function calls, from the checkpoints on resume), the run log line per AI call, `ow_ai_calls_total`/`ow_ai_tokens_total`/`ow_ai_cost_usd_total` (counted in the connectors: playground and apps too); the agent (`ai/agent.ts`; tools described and run by the engine's `aiToolHost` as child runs; tools are called workflows for permissions and the validator); apps already worked (no budget, no agent). Tests: connectors 396, engine 214, definition 195, app-runtime 41, server 631 + 1 skipped. Step 5 `974fe13`: the web (forms, the AI group, typed data in completions, the run view's AI section, the tools picker) and `m35-done-when.spec.ts` (2 passed); web unit 133; shots light and dark in session 39's scratchpad `m35-shots/` (`/private/tmp/claude-501/-Users-optiply-optiply-workflows/5a62e40c-a0f6-4e48-ae2d-a938c7c2f9b9/scratchpad/m35-shots/`). Step 6: the runbook `docs/runbooks/ai.md`, §2.38 "As built", §9ac. Step 7 `ac807b3`: the review (`code-review`, high): 10 found, 10 fixed (§2.38 "As built" lists them; the worst: redirects were followed past the private-network guard; OpenAI's API got `max_tokens` and `strict` schemas it refuses; a repeated tool-call id shared one child run). **Full e2e (before the fixes): 151 passed, 1 failed** in 33.5 min: `webhook-settings` (completions, the known flake from M32/M33; passes alone on the fixed build with `m35-done-when`, `editor`, `connectors`: 9 passed). Final suites on `ac807b3`: connectors 400, engine 214, definition 195, app-runtime 41, web 133, server 631 + 1 skipped; biome ci, typecheck, builds. **M35 is done** except the check by hand against Anthropic (§12 #44).
 
 ## 15. How to start the next session
+
+**Start session 61 with (end of session 60, 2026-11-20):** Work happens in **`Optiply/optiply-workflows`**; deploys
+weekdays at 18:00 Amsterdam when something new passed CI (or by hand). **Production runs `656ac79`** (rollback
+`2ddb198`; VM and registry hold just those two). The next deploy is the **first with PR #14's detached `deploy.sh`**:
+check its log shows "Started ow-deploy-…" and the unit's output, and that `.current-tag`/`.previous-tag` are right after
+it; then remove the oldest images (keep two, read both tags first). The **SDK resource works** per person (§14 session
+60): colleagues connect once. Note: the main checkout was on `chore/review-subagents` with uncommitted `AGENTS.md` and
+`.claude/` (not mine; this handoff was written from a temporary worktree). Ask what's next.
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
