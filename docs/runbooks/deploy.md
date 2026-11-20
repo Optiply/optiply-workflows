@@ -97,6 +97,13 @@ back to `.previous-tag` and the run fails. Merging to `main` doesn't deploy: sev
   marked ready for review, and on every push after that. A new push cancels the branch's older run. Usual rhythm: one
   branch and draft PR per working session, seen during the day on the local stack (`localhost:3000`) or `pnpm dev`,
   marked ready and merged at the end; it goes live at 18:00.
+- **On the VM** (since 2026-11-20): the workflow starts `deploy.sh` as its own systemd unit (`ow-deploy-<run id>-<attempt>`)
+  and follows it with short SSH calls, so a dropped connection can't cut it off; its output is in
+  `/var/log/ow-deploy-<run id>-<attempt>.log` (and in the run's log at the end). `deploy.sh` pulls every image first
+  (one at a time, from `.env.new`), and only then changes `.env`, `.current-tag` and `.previous-tag`: a deploy that fails
+  while pulling leaves the server as it was. Deploying the running tag again keeps `.previous-tag`. Why: on 2026-11-20
+  the 1 GB VM went deep into swap pulling five images at once, the app restarted, and the SSH session running
+  `deploy.sh` dropped after it had already rewritten `.env` and `.previous-tag`.
 - **Old images:** the workflow doesn't remove them: keep two versions (see "Everyday").
 - **Sign-in without a key:** Workload Identity pool `github`, provider `github-actions` (condition: repository
   `Optiply/optiply-workflows` and ref `refs/heads/main`), service account `gh-deployer` (workloadIdentityUser for that

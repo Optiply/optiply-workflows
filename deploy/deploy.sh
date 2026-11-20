@@ -4,8 +4,10 @@
 # Writes .env from Secret Manager (the secret `ow-env`: every setting and secret the stack reads), pulls the
 # images, runs the migrations and recreates what changed. The previous tag is kept in .previous-tag for a rollback
 # (`deploy.sh $(cat .previous-tag)`).
+# Nothing in /opt/ow changes until every image is pulled: a deploy cut off while pulling (it happened on 2026-11-20,
+# the 1 GB VM in swap) leaves .env, .current-tag and .previous-tag as they were.
 set -euo pipefail
-cd /opt/ow
+cd "${OW_DIR:-/opt/ow}"
 
 TAG=${1:?usage: deploy.sh <image tag>}
 PROJECT=optiply-workflows
@@ -18,10 +20,13 @@ umask 077
   echo "IMAGE_PREFIX=$PREFIX"
   echo "IMAGE_TAG=$TAG"
 } >.env.new
-mv .env.new .env
 
-[ -f .current-tag ] && cp .current-tag .previous-tag
-docker compose -f docker-compose.prod.yml pull --quiet
+# One image at a time: pulling them all at once pushed the 1 GB VM deep into swap.
+COMPOSE_PARALLEL_LIMIT=1 docker compose -f docker-compose.prod.yml --env-file .env.new pull --quiet
+
+mv .env.new .env
+# Deploying the running version again keeps the version before it as the rollback.
+if [ -f .current-tag ] && [ "$(cat .current-tag)" != "$TAG" ]; then cp .current-tag .previous-tag; fi
 docker compose -f docker-compose.prod.yml up -d --remove-orphans
 echo "$TAG" >.current-tag
 
