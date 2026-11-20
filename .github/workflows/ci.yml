@@ -39,6 +39,8 @@ jobs:
       - run: pnpm --filter @ow/server bench:webhooks
       # M0's isolate target (a fresh context in under 10 ms), also measured alone.
       - run: pnpm --filter @ow/sandbox bench
+      # The review agents' command guard (.claude/hooks/): outside the workspaces, so turbo's test task never runs it.
+      - run: node --test .claude/hooks/*.test.mjs
 
   # Playwright against the bundled server serving the built web app (see apps/web/e2e/global-setup.ts).
   e2e:

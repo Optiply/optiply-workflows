@@ -13,3 +13,9 @@ __pycache__/
 
 # PDF manuals: the intermediate HTML (docs/manuals/.build)
 docs/manuals/.build/
+
+# Claude Code: personal settings stay local (the shared agents in .claude/agents/ are committed)
+.claude/settings.local.json
+
+# Editor settings
+.vscode/

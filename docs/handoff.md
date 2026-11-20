@@ -2039,6 +2039,40 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    `deploy.sh`, a simulated Deploy step); not yet a real run, nor the 25-minute timeout.
 3. **"Deploy only on days with merges"** (the user): it already deploys only when something new passed CI since the last
    deploy ("nothing to deploy" otherwise); Friday deployed Thursday evening's merges. Kept as it is (the user).
+4. **Two review subagents, report only** (the user: "on demand and before each PR, report only"; branch
+   **`chore/review-subagents`**, PR **#16**, open, Markdown only so no CI and no deploy). `.claude/agents/`:
+   **`security-auditor`** (diff vs `origin/main` by default, one area, or "full"; a table of where the risk lives:
+   auth/sessions, API keys/permissions, secrets/crypto, connectors (SQL injection, SSRF via `net-guard.ts`), OAuth,
+   webhooks, SSH tunnels, sandbox/code executor, managed DB/CSV, web XSS, audit log, Docker/deploy, `pnpm audit`; a
+   finding must name a concrete attack; Critical/High/Medium/Low/Needs check) and **`bug-hunter`** (`biome ci`,
+   `typecheck`, `turbo run test --filter='...[origin/main]'`, a failure re-run once for flakiness, no e2e unless asked;
+   then reads the changed code; a finding must give a concrete scenario). Both have only Read, Grep, Glob and Bash (no
+   Edit or Write) and carry the project's rules (no prod, no write SQL/HTTP, no `docker compose`, no secret values,
+   not the Retool exports). **`AGENTS.md`** gains a section after the turbo-managed block: before opening a PR (or
+   marking a draft ready), run both in parallel in diff mode, show the user both reports and wait; the user decides
+   what gets fixed. PR #16 was opened before this rule could apply; the branch was rebased onto `a21e720` (PR #15).
+5. **The agents' first runs, on PR #16 itself** (the user: "commit, push and run both agents", then "fix both finds"):
+   the auditor found no Critical/High/Medium; the bug hunter found that **both agents' `pnpm` commands could not run**
+   (no pnpm on PATH: now `corepack pnpm` with a shim in the agent's scratchpad), and that diff-mode tests run nothing
+   for a root-config-only change while saying "pass" (root config → the full suite; "0 tests ran" / "could not run"
+   are reported as such). The auditor's Lows: `.gitignore` now has `.claude/settings.local.json` and `.vscode/`; and
+   "read-only" rested on words only → **`.claude/hooks/review-agent-guard.mjs`**, a PreToolUse hook in both agents'
+   frontmatter (matcher `Bash|Read|Grep|Glob`, `onFailure: block`; frontmatter hooks run only while that agent runs,
+   so the main session is not affected). The first version listed forbidden commands; a second bug-hunter run found
+   ~25 ways past it (`for`/`if`, `\` line breaks, `| sh`, scripts by path, `pnpm db:migrate`, `curl -sX PUT`, `mv`
+   out of the repo, `grep -r` reading the root `.env`, `/tmp/../`), so it is now an **allow-list**: it parses the
+   command (pipes, `;`, `&&`, keywords, `$(…)`, backticks, `$'…'`, `bash -c`, `xargs`, wrappers, redirections,
+   heredocs) and lets through only read-only commands used read-only (git read subcommands, grep/rg/cat/sed -n/find,
+   `corepack pnpm` typecheck/test/lint/build/biome without --write/turbo test|typecheck|build|lint/audit/why, curl
+   GET/HEAD with read-only options, gh pr view/diff…, docker ps/images/logs); writes only to the scratch space (paths
+   resolved, `..` and variables not trusted); no .env, keys, credential files, Retool exports, `printenv`; a recursive
+   grep over a folder holding a `.env` needs `--exclude='.env*'`. Not a sandbox: code the agents may run (tests,
+   `node -e`, scratchpad scripts) is not inspected. `review-agent-guard.test.mjs` (65 allowed, 127 blocked, paths,
+   the hook's exit codes and cwd), run in CI's `check` job (`node --test .claude/hooks/*.test.mjs`; turbo never
+   would). **Not yet seen firing inside an agent:** this session's agents still had the definitions from before the
+   `hooks:` were added (their prompt lacked the guard paragraph), so a live test blocked nothing; fed the same calls
+   directly, the script blocks them all. Workspace trust is accepted, Claude Code is 2.1.296 (`onFailure` needs
+   2.1.295+).
 
 ## 14. Session 59 steps (2026-11-19): deploy once a day, lighter CI
 
@@ -2687,8 +2721,12 @@ weekdays at 18:00 Amsterdam when something new passed CI (or by hand). **Product
 `2ddb198`; VM and registry hold just those two). The next deploy is the **first with PR #14's detached `deploy.sh`**:
 check its log shows "Started ow-deploy-…" and the unit's output, and that `.current-tag`/`.previous-tag` are right after
 it; then remove the oldest images (keep two, read both tags first). The **SDK resource works** per person (§14 session
-60): colleagues connect once. Note: the main checkout was on `chore/review-subagents` with uncommitted `AGENTS.md` and
-`.claude/` (not mine; this handoff was written from a temporary worktree). Ask what's next.
+60): colleagues connect once. **Review subagents** (§14 session 60 steps 4–5): `security-auditor` and `bug-hunter` in
+`.claude/agents/`, with a command guard (`.claude/hooks/review-agent-guard.mjs`), PR **#16** (open; merge on the
+user's word). Before every PR, run both in parallel on the diff against `origin/main`, show the reports, wait for the
+user (`AGENTS.md`). **First thing in session 61:** check the guard fires inside an agent: start a `bug-hunter` and have
+it run `git push --dry-run origin HEAD`, `docker compose version` and `curl -s -X POST http://127.0.0.1:9/ --max-time
+2` (harmless if not blocked): all three must come back "Blocked by the review-agent guard". Ask what's next.
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
