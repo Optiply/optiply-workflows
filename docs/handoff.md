@@ -2039,6 +2039,19 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
    `deploy.sh`, a simulated Deploy step); not yet a real run, nor the 25-minute timeout.
 3. **"Deploy only on days with merges"** (the user): it already deploys only when something new passed CI since the last
    deploy ("nothing to deploy" otherwise); Friday deployed Thursday evening's merges. Kept as it is (the user).
+4. **Two review subagents, report only** (the user: "on demand and before each PR, report only"; branch
+   **`chore/review-subagents`**, PR **#16**, open, Markdown only so no CI and no deploy). `.claude/agents/`:
+   **`security-auditor`** (diff vs `origin/main` by default, one area, or "full"; a table of where the risk lives:
+   auth/sessions, API keys/permissions, secrets/crypto, connectors (SQL injection, SSRF via `net-guard.ts`), OAuth,
+   webhooks, SSH tunnels, sandbox/code executor, managed DB/CSV, web XSS, audit log, Docker/deploy, `pnpm audit`; a
+   finding must name a concrete attack; Critical/High/Medium/Low/Needs check) and **`bug-hunter`** (`biome ci`,
+   `typecheck`, `turbo run test --filter='...[origin/main]'`, a failure re-run once for flakiness, no e2e unless asked;
+   then reads the changed code; a finding must give a concrete scenario). Both have only Read, Grep, Glob and Bash (no
+   Edit or Write) and carry the project's rules (no prod, no write SQL/HTTP, no `docker compose`, no secret values,
+   not the Retool exports). **`AGENTS.md`** gains a section after the turbo-managed block: before opening a PR (or
+   marking a draft ready), run both in parallel in diff mode, show the user both reports and wait; the user decides
+   what gets fixed. Not yet run for real (agents load when a session starts). PR #16 was opened before this rule could
+   apply; the branch was rebased onto `a21e720` (PR #15) afterwards.
 
 ## 14. Session 59 steps (2026-11-19): deploy once a day, lighter CI
 
@@ -2687,8 +2700,10 @@ weekdays at 18:00 Amsterdam when something new passed CI (or by hand). **Product
 `2ddb198`; VM and registry hold just those two). The next deploy is the **first with PR #14's detached `deploy.sh`**:
 check its log shows "Started ow-deploy-…" and the unit's output, and that `.current-tag`/`.previous-tag` are right after
 it; then remove the oldest images (keep two, read both tags first). The **SDK resource works** per person (§14 session
-60): colleagues connect once. Note: the main checkout was on `chore/review-subagents` with uncommitted `AGENTS.md` and
-`.claude/` (not mine; this handoff was written from a temporary worktree). Ask what's next.
+60): colleagues connect once. **Review subagents** (§14 session 60 step 4): `security-auditor` and `bug-hunter` in
+`.claude/agents/`, PR **#16** (open; merge on the user's word). Before every PR, run both in parallel on the diff
+against `origin/main`, show the reports, wait for the user (`AGENTS.md`). Their first real run is a good check of the
+agents themselves. Ask what's next.
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
