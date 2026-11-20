@@ -2809,8 +2809,7 @@ deploys weekdays at 18:00 Amsterdam when something new passed CI (or by hand: Ac
 the registry hold just `da8961b` and `656ac79` (`2ddb198` removed). **Monday 18:00 deploys `efefd2a`** (PRs #19 and
 #20, merged after the deploy; the app's code is the same as `da8961b`): it's the first real run of the Deploy step's
 read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, then remove `656ac79` (keep two).
-At the end of the session `main`'s CI on `ea83663` was running and on `efefd2a` queued: check both went green
-(Monday deploys the newest green one; if neither is, nothing new is deployed).
+`main`'s CI on `ea83663` and `efefd2a` both finished **green** (2026-11-20, late), so Monday deploys `efefd2a`.
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
