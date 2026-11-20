@@ -109,7 +109,12 @@ describe('dispatcher', () => {
       leaseOwner: null,
       response: { status: 200, headers: {}, body: { v: 42 } },
     })
-    expect(done.deadlineAt!.getTime() - done.startedAt!.getTime()).toBeCloseTo(15 * 60_000, -3)
+    // The run's 15-minute deadline is set when it starts executing, a moment after the claim stamped startedAt (both by
+    // the database's clock): at least 15 minutes after the start, and not much more. A busy CI runner once took 545 ms
+    // between the two, past `toBeCloseTo`'s ±500 ms.
+    const deadlineAfterStart = done.deadlineAt!.getTime() - done.startedAt!.getTime()
+    expect(deadlineAfterStart).toBeGreaterThanOrEqual(15 * 60_000)
+    expect(deadlineAfterStart).toBeLessThan(15 * 60_000 + 10_000)
     expect(await blocksOf(db, run.id)).toEqual({
       startTrigger: { status: 'succeeded', epoch: 1, attempt: 1, port: 'out' },
       load: { status: 'succeeded', epoch: 1, attempt: 1, port: 'out' },
