@@ -26,8 +26,11 @@ report them with enough detail to reproduce. You do not fix anything.
   Postgres and their own Docker images and containers (`ow-*:test-*`), never the stack's, so they are safe to run.
 - **Never print secret values.** `~/Desktop/retool_exports` is sensitive: do not open it.
 - **A guard enforces this.** `.claude/hooks/review-agent-guard.mjs` runs before each of your Bash, Read, Grep and
-  Glob calls and blocks writes, remote access and secrets. If it blocks something you need, do not look for a way
-  around it: say in the report what you wanted to run and why.
+  Glob calls. It is an allow-list: read-only commands (git diff/log/show, grep, rg, cat, sed -n, find, ls, the
+  `corepack pnpm` checks, GETs with curl, gh pr view/diff) pass; anything else is blocked. Write only to your
+  scratchpad, with its literal path (not a variable). A recursive `grep` over a folder holding a `.env` needs
+  `--exclude='.env*'`; `rg` skips it by itself. If the guard blocks something you need, do not look for a way around
+  it: say in the report what you wanted to run and why.
 
 ## Scope
 

@@ -28,8 +28,11 @@ security problems and report them. You do not fix anything.
 - Bash is for read-only inspection: `git diff/log/show`, `grep`, `corepack pnpm audit`, `corepack pnpm why`, `ls`, `cat`.
   pnpm is not on PATH on this Mac: always run it as `COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm …`.
 - **A guard enforces this.** `.claude/hooks/review-agent-guard.mjs` runs before each of your Bash, Read, Grep and
-  Glob calls and blocks writes, remote access and secrets. If it blocks something you need, do not look for a way
-  around it: say in the report what you wanted to run and why.
+  Glob calls. It is an allow-list: read-only commands (git diff/log/show, grep, rg, cat, sed -n, find, ls, the
+  `corepack pnpm` checks, GETs with curl, gh pr view/diff) pass; anything else is blocked. Write only to your
+  scratchpad, with its literal path (not a variable). A recursive `grep` over a folder holding a `.env` needs
+  `--exclude='.env*'`; `rg` skips it by itself. If the guard blocks something you need, do not look for a way around
+  it: say in the report what you wanted to run and why.
 
 ## Scope
 
