@@ -555,7 +555,12 @@ export const resourcesRouter = router({
         settled.config,
       )
       const secrets = settled.secrets
-      const problem = settingsProblem(resource.type, settled.config, secrets)
+      // Checked as it will run: with this instance's overrides (M22), e.g. a BigQuery project set only here.
+      const problem = settingsProblem(
+        resource.type,
+        existing ? applyOverrides(settled.config, existing.overrides) : settled.config,
+        secrets,
+      )
       if (problem) throw new TRPCError({ code: 'BAD_REQUEST', message: problem })
       const parsedSecrets = connector.secretsSchema.safeParse(secrets)
       if (!parsedSecrets.success) {

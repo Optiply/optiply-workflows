@@ -369,3 +369,37 @@ describe('deploying resources (M22)', () => {
     expect((await resourceView('orders_db')).at('production').config).toMatchObject({ host: 'db2.internal' })
   })
 })
+
+describe('BigQuery from Git with OAuth sign-in (PR #17 review)', () => {
+  it("takes the client secret when the project comes from this instance's override", async () => {
+    await pushMain('Add the OAuth warehouse', [
+      resource(
+        'dw_oauth',
+        { production: { auth: { type: 'oauth', clientId: 'bq-client', tokens: 'perUser' } } },
+        { type: 'bigquery' },
+      ),
+    ])
+    expect(outcomes(await deploy())).toMatchObject({ 'resource:dw_oauth': 'created' })
+    const { view, at } = await resourceView('dw_oauth')
+    expect(at('production').needsSecrets).toBe(true)
+    data(
+      await admin.mutate('resources.setOverrides', {
+        resourceId: view.id,
+        environmentId: envId('production'),
+        overrides: { projectId: 'optiply-dw' },
+      }),
+    )
+    // What the settings page sends for a protected resource: Git's config as stored, plus the secret.
+    const saved = await admin.mutate('resources.saveConfig', {
+      resourceId: view.id,
+      environmentId: envId('production'),
+      config: at('production').config,
+      secrets: { clientSecret: 'bq-client-secret' },
+    })
+    expect(saved.status, JSON.stringify(saved.body.error ?? null)).toBe(200)
+    expect((await resourceView('dw_oauth')).at('production')).toMatchObject({
+      secretsSet: true,
+      needsSecrets: false,
+    })
+  })
+})

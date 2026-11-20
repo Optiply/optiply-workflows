@@ -2029,6 +2029,15 @@ Google OAuth can; the user said build it on its own branch (architecture §2.45)
 3. **To use it in production:** a Google OAuth client (Web application, **Internal** consent screen) with the site's
    `/api/oauth/callback` as redirect URI; each account needs BigQuery Job User in the resource's project. Not done:
    the server's own Google identity for BigQuery; the connected account's email in Test connection.
+4. **Draft PR #17**, then `main` merged in (`6b66261`, after PR #16) so the review agents could run on it; CI `check`
+   green. **Reviewed by both agents** (the first real review of a PR by them): security-auditor 0 findings (noted, not a
+   finding: someone with Edit can change the project without anyone reconnecting; the token still only goes to
+   BigQuery). bug-hunter: biome, typecheck 18/18, tests of the changed packages and dependents (connectors 402,
+   engine 167, server 735, web 160 passed; Docker suites skipped); **one Low, fixed**: `saveConfig`'s save check read
+   Git's config without this instance's overrides, so a BigQuery resource from Git whose project (or client id) is an
+   override couldn't take its client secret ("Set the project queries run in"). Now checked with
+   `applyOverrides(…, existing.overrides)`, as the consent check below it already was (all types: the check now sees
+   what will run). Test: `git-deploy-settings.test.ts` "BigQuery from Git with OAuth sign-in" (failed before, passes).
 
 ## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
 
@@ -2744,9 +2753,11 @@ it; then remove the oldest images (keep two, read both tags first). The **SDK re
 60): colleagues connect once. **Review subagents** (§14 session 60 steps 4–5): `security-auditor` and `bug-hunter` in
 `.claude/agents/`, with a command guard (`.claude/hooks/review-agent-guard.mjs`), PR **#16** (open; merge on the
 user's word). Before every PR, run both in parallel on the diff against `origin/main`, show the reports, wait for the
-user (`AGENTS.md`). **First thing in session 61:** check the guard fires inside an agent: start a `bug-hunter` and have
-it run `git push --dry-run origin HEAD`, `docker compose version` and `curl -s -X POST http://127.0.0.1:9/ --max-time
-2` (harmless if not blocked): all three must come back "Blocked by the review-agent guard". Ask what's next.
+user (`AGENTS.md`). PR #16 merged as **`e07e018`**; **the guard is verified live** (session 60, later: a `bug-hunter`'s
+`git push --dry-run`, `docker compose version`, `curl -X POST` and a `.env` Read were blocked; `git status` and
+`grep -rn gcloud deploy/` ran). **BigQuery OAuth: draft PR #17** (`feat/bigquery-oauth`, §14 "Session 60, later"):
+reviewed by both agents, its one finding fixed; next, the user marks it ready (e2e and docker then run) and merges.
+Ask what's next.
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by
