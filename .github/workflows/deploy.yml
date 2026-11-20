@@ -156,9 +156,37 @@ jobs:
         if: steps.version.outputs.deploy == 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          UNIT: ow-deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
-            --command "sudo /opt/ow/deploy.sh $TAG"
+          # deploy.sh runs on the VM as its own systemd unit, so a dropped SSH connection can't cut it off (one did on
+          # 2026-11-20: the 1 GB VM deep in swap while pulling). Short SSH calls follow it; one that fails is retried.
+          vm() {
+            gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet --command "$1"
+          }
+          vm "sudo systemd-run --unit=$UNIT --remain-after-exit --property=StandardOutput=append:/var/log/$UNIT.log \
+            --property=StandardError=append:/var/log/$UNIT.log /opt/ow/deploy.sh $TAG"
+          echo "Started $UNIT on $VM (its log: /var/log/$UNIT.log)"
+          deadline=$((SECONDS + 1500))
+          state=""
+          while [ "$state" != exited ] && [ "$state" != failed ]; do
+            if [ "$SECONDS" -gt "$deadline" ]; then
+              # Stopped before failing: the rollback that follows mustn't run alongside it.
+              vm "sudo systemctl stop $UNIT" || true
+              echo "::error::deploy.sh still running after 25 minutes: stopped"
+              exit 1
+            fi
+            sleep 15
+            # Behind a marker: the runner's first SSH call may print its new key's text too.
+            state=$(vm "echo \"unit-state=\$(systemctl show -p SubState --value $UNIT)\"" 2>/dev/null \
+              | sed -n 's/^unit-state=//p' | tail -n 1) || state=""
+          done
+          result=$(vm "sudo cat /var/log/$UNIT.log; echo \"unit-result=\$(systemctl show -p Result --value $UNIT)\"; \
+            sudo systemctl stop $UNIT; sudo systemctl reset-failed $UNIT 2>/dev/null || true")
+          printf '%s\n' "$result" | grep -v '^unit-result='
+          [ "$(printf '%s\n' "$result" | sed -n 's/^unit-result=//p' | tail -n 1)" = success ] || {
+            echo "::error::deploy.sh failed (its log above)"
+            exit 1
+          }
 
       - name: Check health, roll back if it fails
         # Also after a failed deploy step: whatever it left half done is checked, and rolled back when unhealthy.
