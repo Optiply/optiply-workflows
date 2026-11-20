@@ -2010,6 +2010,35 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
+
+The user asked whether BigQuery should connect with OAuth/Auth0: Auth0 can't (BigQuery takes only Google-issued tokens),
+Google OAuth can; the user said build it on its own branch (architecture §2.45).
+
+1. **Connector and server** ✅ `7788923`: `auth` = service account key (default; old resources unchanged) or Google
+   OAuth (shared or each person's own; `projectId` required); every API call's token from the key or the query's
+   connected account; `httpConfig` for M9's sign-in; save check `bigquerySettingsProblem`; `needsSecrets` for Git
+   deploys fixed (`secretsMissing`). Tests: connectors `bigquery.test.ts` 26/26 (+7), server `oauth-connect.test.ts`.
+2. **Form, e2e, docs** (this step): **Sign in with** in BigQuery's settings (`BigQuerySignIn` in
+   `service-settings.tsx`, M27's `OAuthApp` with the BigQuery scope and a roles note; the project hint says it's
+   required with OAuth). Test connection before connecting shows the server's "Connect your account to this resource to
+   use it." e2e `bigquery.spec.ts` (3 repeats green; with `connectors.spec.ts` and `m27-done-when.spec.ts`: 27 passed).
+   Screens (scratchpad, gone after the session): the form before, and after: key, OAuth fields, saved, "Your account".
+   Docs: user guide 3.5, admin guide "OAuth sign-in resources" (a BigQuery paragraph), runbook `connectors.md`
+   "BigQuery's sign-in", architecture §2.45; PDFs rebuilt.
+3. **To use it in production:** a Google OAuth client (Web application, **Internal** consent screen) with the site's
+   `/api/oauth/callback` as redirect URI; each account needs BigQuery Job User in the resource's project. Not done:
+   the server's own Google identity for BigQuery; the connected account's email in Test connection.
+4. **Draft PR #17**, then `main` merged in (`6b66261`, after PR #16) so the review agents could run on it; CI `check`
+   green. **Reviewed by both agents** (the first real review of a PR by them): security-auditor 0 findings (noted, not a
+   finding: someone with Edit can change the project without anyone reconnecting; the token still only goes to
+   BigQuery). bug-hunter: biome, typecheck 18/18, tests of the changed packages and dependents (connectors 402,
+   engine 167, server 735, web 160 passed; Docker suites skipped); **one Low, fixed**: `saveConfig`'s save check read
+   Git's config without this instance's overrides, so a BigQuery resource from Git whose project (or client id) is an
+   override couldn't take its client secret ("Set the project queries run in"). Now checked with
+   `applyOverrides(…, existing.overrides)`, as the consent check below it already was (all types: the check now sees
+   what will run). Test: `git-deploy-settings.test.ts` "BigQuery from Git with OAuth sign-in" (failed before, passes).
+
 ## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
 
 1. **The SDK resource signs in as each person** ✅ (the user's choice over client credentials: "credentials from the
@@ -2718,15 +2747,28 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 **Start session 61 with (end of session 60, 2026-11-20):** Work happens in **`Optiply/optiply-workflows`**; deploys
 weekdays at 18:00 Amsterdam when something new passed CI (or by hand). **Production runs `656ac79`** (rollback
-`2ddb198`; VM and registry hold just those two). The next deploy is the **first with PR #14's detached `deploy.sh`**:
-check its log shows "Started ow-deploy-…" and the unit's output, and that `.current-tag`/`.previous-tag` are right after
-it; then remove the oldest images (keep two, read both tags first). The **SDK resource works** per person (§14 session
-60): colleagues connect once. **Review subagents** (§14 session 60 steps 4–5): `security-auditor` and `bug-hunter` in
-`.claude/agents/`, with a command guard (`.claude/hooks/review-agent-guard.mjs`), PR **#16** (open; merge on the
-user's word). Before every PR, run both in parallel on the diff against `origin/main`, show the reports, wait for the
-user (`AGENTS.md`). **First thing in session 61:** check the guard fires inside an agent: start a `bug-hunter` and have
-it run `git push --dry-run origin HEAD`, `docker compose version` and `curl -s -X POST http://127.0.0.1:9/ --max-time
-2` (harmless if not blocked): all three must come back "Blocked by the review-agent guard". Ask what's next.
+`2ddb198`; VM and registry hold just those two). The next deploy (Mon 2026-11-23, 18:00) is the **first with PR #14's
+detached `deploy.sh`**: check its log shows "Started ow-deploy-…" and the unit's output, and that
+`.current-tag`/`.previous-tag` are right after it; then remove the oldest images (keep two, read both tags first). It
+deploys the newest green `main`: `e07e018` (PR #16, no app change; its CI was running at the end of the session), or
+PR #17's merge if that lands first.
+
+- **SDK resource:** works per person (§14 session 60); colleagues connect once.
+- **Review agents:** `security-auditor` and `bug-hunter` (`.claude/agents/`), PR #16 merged as **`e07e018`**, with the
+  allow-list command guard `.claude/hooks/review-agent-guard.mjs` (its tests in CI's `check`). **Verified live**: a
+  `bug-hunter`'s `git push --dry-run`, `docker compose version`, `curl -X POST` and a `.env` Read were blocked; `git
+  status` and `grep -rn gcloud deploy/` ran. Rule (`AGENTS.md`): before every PR (or marking a draft ready), run both in
+  parallel on the diff against `origin/main`, show the reports, and let the user decide what gets fixed. Their first
+  real review (PR #17) found one Low bug, fixed.
+- **BigQuery OAuth: PR #17** (`feat/bigquery-oauth`, §14 "Session 60, later"), head `b01cc78`; the user said to mark it
+  ready once its CI is green (then e2e and docker run). Then the user merges. Before use in production: a Google OAuth
+  client (Internal) with the site's `/api/oauth/callback`; BigQuery Job User per account.
+- **Tidied:** the merged `chore/review-subagents` branch deleted, local and remote (the user's word).
+- **Offered, not done (the user's call):** widen the flaky `dispatcher.test.ts:112` deadline check (545 ms off a 500 ms tolerance once in CI); BigQuery follow-ups (the
+  server's own Google identity; the account's email in Test connection; a project change forcing a reconnect, which
+  the auditor noted but didn't call a finding).
+
+Ask what's next.
 
 **Start session 60 with (end of session 59, 2026-11-19):** Work happens in **`Optiply/optiply-workflows`**. **Merging
 no longer deploys:** production updates **weekdays at 18:00 Amsterdam** with the latest green commit on `main`, or by

@@ -274,7 +274,7 @@ Things to know about the settings:
 ### 3.5 Resources that sign in with an account (OAuth)
 
 Some resources sign in as an account instead of using a key: Slack, HubSpot, Google Sheets, Gmail, Microsoft Teams,
-Salesforce, and REST, GraphQL, OpenAPI and SDK resources set to OAuth sign-in. They use one of two modes:
+Salesforce, and BigQuery, REST, GraphQL, OpenAPI and SDK resources set to OAuth sign-in. They use one of two modes:
 
 - **One shared account:** someone with Edit clicks **Connect account** once, and every query uses that account.
 - **Each person's own account:** everyone connects their own account with **Connect your account**. Queries then run as

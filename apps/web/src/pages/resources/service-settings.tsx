@@ -523,6 +523,56 @@ export function TeamsFields(props: FieldsProps & { resourceId: string }) {
   )
 }
 
+/**
+ * How a BigQuery resource signs in: a service account key (every query runs as that account), or a Google account
+ * through OAuth sign-in, one shared per environment or each person's own (queries run with that person's access).
+ */
+export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
+  const auth = (props.config.auth ?? { type: 'serviceAccount' }) as Auth
+  return (
+    <>
+      <Field label="Sign in with">
+        <Select
+          value={auth.type}
+          disabled={props.disabled}
+          data-testid="service-auth"
+          onChange={(e) => props.set('auth', { type: e.target.value })}
+        >
+          <option value="serviceAccount">A service account key</option>
+          <option value="oauth">OAuth sign-in (a Google account)</option>
+        </Select>
+      </Field>
+      {auth.type === 'oauth' ? (
+        <>
+          <OAuthApp
+            props={props}
+            auth={auth}
+            preset={{
+              ...oauthPresets.google,
+              scope: 'openid email https://www.googleapis.com/auth/bigquery',
+            }}
+            resourceId={props.resourceId}
+            scopeHint="Space-separated. bigquery runs queries with the account's own BigQuery access; openid email shows whose account is connected."
+          />
+          <p className="text-xs text-muted" data-testid="bigquery-oauth-note">
+            Each account needs the BigQuery Job User role in the project below, and access to the datasets it
+            queries. Workflows that run on their own (schedules, webhooks) need a shared account or a service
+            account key.
+          </p>
+        </>
+      ) : (
+        <SecretInput
+          props={props}
+          name="serviceAccountKey"
+          label="Service account key"
+          placeholder='{ "type": "service_account", … }'
+          hint="Paste the service account's JSON key file. It needs the BigQuery Job User role, plus Data Viewer (or Editor) on the datasets it queries."
+        />
+      )}
+    </>
+  )
+}
+
 export function GoogleSheetsFields(props: FieldsProps & { resourceId: string }) {
   const trpc = useTRPC()
   const server = useQuery(trpc.resources.serverIdentity.queryOptions()).data

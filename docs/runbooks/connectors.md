@@ -225,6 +225,24 @@ M29 added S3, Stripe, Airtable, Jira, Notion, Salesforce and OpenAPI resources. 
 - A query is an operation and its parameters by name as JSON (`query:name` where two places share a name); values go
   where the document says, by its styles. Binary uploads go through `multipart/form-data` with file objects.
 
+## BigQuery's sign-in
+
+BigQuery is a database resource (not HTTP through the core above), but it can sign in through OAuth too:
+
+- **Service account key** (the default; resources saved before have no `auth` and keep it): the key signs a JWT for a
+  token; every query runs as the service account. It needs **BigQuery Job User** in the project, plus Data Viewer (or
+  Editor) on the datasets.
+- **OAuth sign-in (a Google account)**: a Google OAuth client (Web application) in the Google Cloud console with the
+  **Redirect URI** from the form, an **Internal** consent screen, and the scope `https://www.googleapis.com/auth/bigquery`
+  (the default is `openid email` plus it). **Project** is required. Shared or each person's own; each account needs
+  BigQuery Job User in the project. The token is only ever sent to `bigquery.googleapis.com`.
+- **What fails how:** nobody connected → "Connect your account to this resource to use it." (Test connection and
+  queries, before any call to BigQuery); a scheduled run on a per-person resource → "nobody is behind this run"; an
+  account without the role → BigQuery's own `accessDenied` ("User does not have bigquery.jobs.create permission …");
+  a token BigQuery refuses is refreshed once; when Google refuses the refresh (access revoked, password changed),
+  the account shows **Needs reconnecting**.
+- The table list (the SQL editor's Tables panel) is read as the person who opens it, and cached per person.
+
 ## Testing against fakes
 
 `startFakeServices()` in `@ow/connectors/testing` serves fakes of all four services on one port (`/slack/api`,
