@@ -180,8 +180,25 @@ jobs:
             state=$(vm "echo \"unit-state=\$(systemctl show -p SubState --value $UNIT)\"" 2>/dev/null \
               | sed -n 's/^unit-state=//p' | tail -n 1) || state=""
           done
-          result=$(vm "sudo cat /var/log/$UNIT.log; echo \"unit-result=\$(systemctl show -p Result --value $UNIT)\"; \
-            sudo systemctl stop $UNIT; sudo systemctl reset-failed $UNIT 2>/dev/null || true")
+          # The unit's log and result: a read-only call, tried again when SSH refuses it (on 2026-11-20 this call got
+          # "Permission denied (publickey)" once, the VM low on memory, and failed a deploy that had worked). Stopping
+          # and resetting the unit is a separate call: a reset clears a failed result, so it mustn't come before a
+          # successful read.
+          result=""
+          for attempt in 1 2 3 4 5; do
+            if result=$(vm "sudo cat /var/log/$UNIT.log; echo \"unit-result=\$(systemctl show -p Result --value $UNIT)\""); then
+              printf '%s\n' "$result" | grep -q '^unit-result=' && break
+            fi
+            result=""
+            echo "Reading deploy.sh's result over SSH failed (attempt $attempt of 5)"
+            [ "$attempt" = 5 ] || sleep 15
+          done
+          # Best effort: a unit left behind only keeps its name, which is unique to this run and attempt.
+          vm "sudo systemctl stop $UNIT; sudo systemctl reset-failed $UNIT 2>/dev/null || true" || true
+          if [ -z "$result" ]; then
+            echo "::error::Couldn't read deploy.sh's result over SSH (5 tries); its log: /var/log/$UNIT.log on $VM"
+            exit 1
+          fi
           printf '%s\n' "$result" | grep -v '^unit-result='
           [ "$(printf '%s\n' "$result" | sed -n 's/^unit-result=//p' | tail -n 1)" = success ] || {
             echo "::error::deploy.sh failed (its log above)"
