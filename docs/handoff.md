@@ -2039,6 +2039,46 @@ Google OAuth can; the user said build it on its own branch (architecture §2.45)
    `applyOverrides(…, existing.overrides)`, as the consent check below it already was (all types: the check now sees
    what will run). Test: `git-deploy-settings.test.ts` "BigQuery from Git with OAuth sign-in" (failed before, passes).
 
+5. **Merged and deployed** (the user: "after all green merge both, and make a deploy"): PR #17 marked ready → full CI
+   green (e2e, docker) → merged as **`006fe73`**; PR **#18** (`fix/flaky-dispatcher-deadline`, `e69be5b`: the
+   `dispatcher.test.ts:112` deadline check one-sided, ≥ 15 min and < 15 min + 10 s, since `deadline_at` is set in a
+   later transaction than `started_at`; both agents found nothing) green after one rerun of a **second flake**
+   (`waiting.test.ts:139`: on a slow runner the other run outlasts the 2 s wait, so the first has already resumed;
+   better check: the other run finished before the wait's `until`; not fixed) → merged as **`da8961b`**. `main`'s CI on
+   `da8961b` green. **Deploy by hand** (run 44824203722, the first real run of PR #14's detached `deploy.sh`): built
+   `da8961b`, `Started ow-deploy-44824203722-1`, the unit ran to `result=success`; **production runs `da8961b`**
+   (`.previous-tag` `656ac79`), health 200, no new migration (still 0052), no dump needed. **But the run is red**: its
+   last SSH call (fetching the unit's log after it had finished) got "Permission denied (publickey)" (the VM at 78 MB
+   free, 341 MB swap: OS Login's key lookup likely timed out) and that call has no retry, unlike the polls. Bug in
+   `deploy.yml`'s Deploy step: retry the final `result=$(vm …)` call. Not fixed yet (a PR, on the user's word). Monday
+   18:00: `da8961b` is the newest green commit and production runs it → "nothing to deploy".
+6. **Security & compliance (Cloud Hub)**, from the user's screenshot. Checked read-only first: `ow-prod` was already
+   covered (`ow-deny-admin-ports` denies 22/3389 from anywhere at priority 900; `ow-allow-iap-ssh` 35.235.240.0/20 at
+   800; OS Login on the VM). **Done on the user's word, all free:** `default-allow-rdp` and `default-allow-ssh`
+   deleted (their YAML saved in that session's scratchpad); `enable-oslogin=TRUE` in project metadata; the
+   `optiply-workflows_cloudbuild` bucket on uniform access + public access prevention (`gh-deployer` has
+   `roles/storage.admin` on it, the build account `…-compute@` has Editor, so both keep access). Verified: IAP SSH
+   works, health 200, port 22 closed from the internet. **Accepted, not changed:** `ow-allow-web` 80/443 (the site),
+   the VM's public IP (a load balancer is over the cap), the `sdk-index-reader` key (the private index needs it;
+   rotate yearly), the default network and the org policy (the org admin's). **Skipped for the €5 cap:** VPC Flow Logs
+   (43 findings), container CVE scanning (~$0.26 an image). The Security Command Center API isn't enabled on the
+   project (enabling it would let `gcloud scc findings list` read them; the user's choice).
+7. **`AGENTS.md`: PRs or a direct push** (the user's choice, `7d138b5`, pushed straight to `main` after the deploy):
+   PRs, with both agents first, for anything that runs (code, config, tests, CI, deploy, `.claude/`, dependencies);
+   docs-only changes (`docs/`, `.md`) straight to `main` with a detailed message, not right before or during a deploy
+   by hand.
+8. **The specialist Project folder** (`~/Desktop/optiply-specialist-project`, the user re-uploads changed files to the
+   claude.ai Project "Optiply Workflows Specialist"; no tool here writes Projects): updated twice. First: 10/11 guides
+   from `main` (old copies said Google sign-in), 01-setup-notes rewritten (Auth0 sign-in, the SDK's per-person OAuth,
+   the 18 Nov fixes, new known errors, §8 "Still open"), 00-instructions + one bullet. After the deploy: 10, 11,
+   `20-runbook-connectors.md` re-copied (BigQuery OAuth), 01 §8's BigQuery line. Runbooks and SDK docs were current.
+   Standing rule (memory `specialist-project-folder`): keep it current whenever usage changes; list the files to
+   re-upload.
+9. **Tidied:** six old squash-merged branches deleted locally, on `origin` and on `personal`
+   (`docs/session-54-handoff`, `feat/apps-only-users`, `feat/m37-connectors-sdk`, `fix/csv-field-limit`,
+   `fix/deploy-build-bucket`, `fix/flaky-timing-tests`: their content was in `main`; personal-repo PRs #26–#30). ~50
+   older branches remain, all merged by history.
+
 ## 14. Session 60 steps (2026-11-20): the SDK with each person's Auth0 login; a deploy cut loose
 
 1. **The SDK resource signs in as each person** ✅ (the user's choice over client credentials: "credentials from the
@@ -2745,28 +2785,25 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 61 with (end of session 60, 2026-11-20):** Work happens in **`Optiply/optiply-workflows`**; deploys
-weekdays at 18:00 Amsterdam when something new passed CI (or by hand). **Production runs `656ac79`** (rollback
-`2ddb198`; VM and registry hold just those two). The next deploy (Mon 2026-11-23, 18:00) is the **first with PR #14's
-detached `deploy.sh`**: check its log shows "Started ow-deploy-…" and the unit's output, and that
-`.current-tag`/`.previous-tag` are right after it; then remove the oldest images (keep two, read both tags first). It
-deploys the newest green `main`: `e07e018` (PR #16, no app change; its CI was running at the end of the session), or
-PR #17's merge if that lands first.
+**Start session 61 with (end of session 60, 2026-11-20, late):** Work happens in **`Optiply/optiply-workflows`**;
+deploys weekdays at 18:00 Amsterdam when something new passed CI (or by hand: Actions → Deploy → Run workflow).
+**Production runs `da8961b`** (rollback `656ac79`), deployed by hand on 2026-11-20 with PR #14's detached `deploy.sh`
+(it worked; the run shows red only because its last SSH call has no retry: §14 "Session 60, later" step 5). The VM and
+the registry still hold `2ddb198` as well: removing it (keep two, read both tags first) waits for the user's word.
+Monday 18:00 finds nothing new unless something is merged before then.
 
-- **SDK resource:** works per person (§14 session 60); colleagues connect once.
-- **Review agents:** `security-auditor` and `bug-hunter` (`.claude/agents/`), PR #16 merged as **`e07e018`**, with the
-  allow-list command guard `.claude/hooks/review-agent-guard.mjs` (its tests in CI's `check`). **Verified live**: a
-  `bug-hunter`'s `git push --dry-run`, `docker compose version`, `curl -X POST` and a `.env` Read were blocked; `git
-  status` and `grep -rn gcloud deploy/` ran. Rule (`AGENTS.md`): before every PR (or marking a draft ready), run both in
-  parallel on the diff against `origin/main`, show the reports, and let the user decide what gets fixed. Their first
-  real review (PR #17) found one Low bug, fixed.
-- **BigQuery OAuth: PR #17** (`feat/bigquery-oauth`, §14 "Session 60, later"), head `b01cc78`; the user said to mark it
-  ready once its CI is green (then e2e and docker run). Then the user merges. Before use in production: a Google OAuth
-  client (Internal) with the site's `/api/oauth/callback`; BigQuery Job User per account.
-- **Tidied:** the merged `chore/review-subagents` branch deleted, local and remote (the user's word).
-- **Offered, not done (the user's call):** widen the flaky `dispatcher.test.ts:112` deadline check (545 ms off a 500 ms tolerance once in CI); BigQuery follow-ups (the
-  server's own Google identity; the account's email in Test connection; a project change forcing a reconnect, which
-  the auditor noted but didn't call a finding).
+- **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
+  straight to `main` (not right before or during a hand deploy).
+- **Live since tonight:** BigQuery sign-in with Google OAuth (PR #17), the save check with instance overrides; the
+  review agents and their guard (PR #16, verified live). No BigQuery resource is set up in production yet: it needs a
+  Google OAuth client (Internal) with the site's `/api/oauth/callback` and BigQuery Job User per account.
+- **Security & compliance:** the four free fixes are done (two default firewall rules deleted, project OS Login, the
+  Cloud Build bucket locked); the rest is accepted or skipped for the cap (step 6). The page may take a day to clear.
+- **Specialist Project:** the folder is current; the user re-uploads `00-instructions.md`, `01-setup-notes.md`,
+  `10-platform-user-guide.md`, `11-platform-admin-guide.md`, `20-runbook-connectors.md` if not done yet.
+- **Offered, not done (the user's call):** retry the Deploy step's last SSH call (`deploy.yml`, a PR); fix the
+  `waiting.test.ts:139` flake; remove `2ddb198`; BigQuery follow-ups (the server's own Google identity; the account's
+  email in Test connection; a project change forcing a reconnect).
 
 Ask what's next.
 
