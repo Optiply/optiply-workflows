@@ -2084,8 +2084,10 @@ with the review agents first.
      The right run, **Deploy on `main` with the tag empty (44957392695), is green**: built and deployed `9dc6fec`
      (`086423c` + the handoff, same app code), migrations ran, health 200, the site serves the new Sign-in card and
      dialog. **Production runs `9dc6fec`** (rollback `da8961b`). Monday 18:00 rebuilds `086423c` once (the newest
-     commit CI passed: `9dc6fec` is docs-only), harmless. **Left:** remove `656ac79` from the VM and the registry
-     (read both tags first; keep `9dc6fec` + `da8961b`): my local `gcloud` login had expired.
+     commit CI passed: `9dc6fec` is docs-only), harmless. **`656ac79` removed** (after the user signed in to `gcloud`
+     again): tags read first (current `9dc6fec`, previous `da8961b`; each `656ac79` registry digest held only that
+     tag), its 5 images removed from the VM (disk 42 % → 35 %) and the registry; both keep `9dc6fec` + `da8961b`;
+     health 200.
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 
@@ -2882,8 +2884,9 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
 Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is merged as `086423c` and **live**:
 **production runs `9dc6fec`** (rollback `da8961b`), deployed by hand after the user granted the Cloud Build bucket
-read (§14 "Session 61" step 4). Monday 18:00 rebuilds `086423c` once (harmless). **Left:** remove `656ac79` from the VM
-and the registry (read both tags first; keep two); re-upload `10-platform-user-guide.md` to the specialist Project.
+read (§14 "Session 61" step 4); `656ac79` removed (the VM and the registry keep `9dc6fec` + `da8961b`). Monday
+18:00 rebuilds `086423c` once (harmless). **Left for the user:** re-upload `10-platform-user-guide.md` to the
+specialist Project.
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
