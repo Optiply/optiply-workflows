@@ -2056,9 +2056,30 @@ with the review agents first.
      connectors, m9-done-when, bigquery, apps-only: 16 passed; web unit 160 passed. Screens in the scratchpad
      (`shots/3-*`). Docs: user guide "Resources that sign in with a custom auth flow" (3.5), architecture §2.12
      notes; PDFs rebuilt.
-4. **Before the PR** (the user away, 2026-11-21: "build, fix, run both subagents, commit, push, PR, merge, deploy,
-   all green"): security-auditor + bug-hunter on the branch, fixes, push, PR, CI green, merge, deploy by hand (a
-   Saturday: no 18:00 run), check the deploy.
+4. **PR, merge, deploy** (the user away, 2026-11-21: "build, fix, run both subagents, commit, push, PR, merge,
+   deploy, all green"):
+   - **Review agents** on the branch: security-auditor 0 critical/high, 1 medium (an Edit user could point a form
+     flow at their own host and collect passwords → form-flow sign-in changes are admin-only, the dialog names the
+     hosts), 2 low (a success reset a person's back-off → counted per hour, failures audited; free text of a person's
+     failure kept → step + status only). bug-hunter 2 medium (form-flow workflows could be released → refused, as
+     per-user OAuth; the card not refreshed after a save), 2 low (dialog: card not refreshed after a failure; double
+     Enter). All fixed in `8533879`, tests 26/26; full `pnpm test` 17/17; full e2e 179 passed + 1 (`editor.spec.ts`).
+   - **PR [#21](https://github.com/Optiply/optiply-workflows/pull/21)**: first CI red on two tests: `editor.spec.ts`
+     (my e2e resources sorted before global-setup's "Shop DB", which the workflow editor offers first for a new
+     query → renamed "Sign-in …") and `ssh-iap.test.ts` "can no longer be resumed" (a 400 ms window on a busy runner
+     → session forgotten before the drop, 3 s) — `31c2628`. Second CI green → **merged as `086423c`** (merge commit).
+     `main`'s CI on `086423c` **green**.
+   - **Deploy by hand FAILED at the build** (run 44954492240, 22:01 UTC): Cloud Build's source upload can't be read:
+     `961583540192-compute@developer.gserviceaccount.com does not have storage.objects.get access` on
+     `gs://optiply-workflows_cloudbuild`. Cause: session 60's "Security & compliance" step put that bucket on
+     **uniform access**, assuming the build account keeps access through its project Editor role; it doesn't (with
+     uniform access only bucket IAM counts). Nothing reached the VM: **production still runs `da8961b`**, health 200.
+     I couldn't fix it: the local `gcloud` login has expired (needs an interactive `gcloud auth login`), and an IAM
+     grant is the user's call anyway. **The fix (the user):**
+     `gcloud storage buckets add-iam-policy-binding gs://optiply-workflows_cloudbuild --project optiply-workflows --member=serviceAccount:961583540192-compute@developer.gserviceaccount.com --role=roles/storage.objectViewer`,
+     then Actions → Deploy → Run workflow (on `main`). **Until then every deploy fails at the build, Monday's 18:00 run
+     too.** After a green deploy: `.current-tag` `086423c`, `.previous-tag` `da8961b`; remove `656ac79` from the VM
+     and the registry (read both tags first; keep two).
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 
@@ -2852,14 +2873,14 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Start session 61 with (end of session 60, 2026-11-20, late):** Work happens in **`Optiply/optiply-workflows`**;
-deploys weekdays at 18:00 Amsterdam when something new passed CI (or by hand: Actions → Deploy → Run workflow).
-**Production runs `da8961b`** (rollback `656ac79`), deployed by hand on 2026-11-20 with PR #14's detached `deploy.sh`
-(it worked; the run shows red only because its last SSH call has no retry: §14 "Session 60, later" step 5). The VM and
-the registry hold just `da8961b` and `656ac79` (`2ddb198` removed). **Monday 18:00 deploys `efefd2a`** (PRs #19 and
-#20, merged after the deploy; the app's code is the same as `da8961b`): it's the first real run of the Deploy step's
-read retry (PR #19): check that run is green and `.current-tag` = `efefd2a`, then remove `656ac79` (keep two).
-`main`'s CI on `ea83663` and `efefd2a` both finished **green** (2026-11-20, late), so Monday deploys `efefd2a`.
+**Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
+Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is **merged as `086423c`**, `main`'s CI
+green. **Its deploy failed at the build** (§14 "Session 61" step 4): the build account can't read the Cloud Build
+bucket since it went to uniform access on 2026-11-20. **First:** run the one `gcloud … add-iam-policy-binding` there
+(`roles/storage.objectViewer` for `961583540192-compute@developer.gserviceaccount.com` on
+`gs://optiply-workflows_cloudbuild`), then Deploy → Run workflow on `main`, check it's green, `.current-tag` =
+`086423c`, health 200, then remove `656ac79` (keep `086423c` + `da8961b`). Until the grant, every deploy fails at the
+build (Monday 18:00 too). **Production runs `da8961b`** (rollback `656ac79`).
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
