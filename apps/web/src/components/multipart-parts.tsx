@@ -17,11 +17,14 @@ export function MultipartParts({
   parts,
   onChange,
   compact,
+  disabled = false,
 }: {
   parts: MultipartPart[]
   onChange: (parts: MultipartPart[]) => void
   /** Smaller inputs, for the workflow inspector. */
   compact?: boolean
+  /** Read only (people who may only view the settings). */
+  disabled?: boolean
 }) {
   const input = compact ? 'h-8 font-mono' : 'font-mono'
   const set = (i: number, part: MultipartPart) => onChange(parts.map((p, j) => (j === i ? part : p)))
@@ -35,6 +38,7 @@ export function MultipartParts({
               aria-label="Part type"
               className={compact ? 'h-8 w-24' : 'w-28'}
               value={part.kind}
+              disabled={disabled}
               onChange={(e) =>
                 set(
                   i,
@@ -52,16 +56,19 @@ export function MultipartParts({
               className={input}
               placeholder="name"
               value={part.key}
+              disabled={disabled}
               onChange={(e) => set(i, { ...part, key: e.target.value })}
             />
-            <Button
-              size="icon"
-              variant="ghost"
-              title="Remove"
-              onClick={() => onChange(parts.filter((_, j) => j !== i))}
-            >
-              <X className="size-4" />
-            </Button>
+            {!disabled && (
+              <Button
+                size="icon"
+                variant="ghost"
+                title="Remove"
+                onClick={() => onChange(parts.filter((_, j) => j !== i))}
+              >
+                <X className="size-4" />
+              </Button>
+            )}
           </div>
           {part.kind === 'text' ? (
             <Input
@@ -69,6 +76,7 @@ export function MultipartParts({
               className={input}
               placeholder="value or {{ }}"
               value={part.value}
+              disabled={disabled}
               onChange={(e) => set(i, { ...part, value: e.target.value })}
             />
           ) : (
@@ -78,6 +86,7 @@ export function MultipartParts({
                 className={input}
                 placeholder="{{ startTrigger.data.invoice }} or base64"
                 value={part.file}
+                disabled={disabled}
                 onChange={(e) => set(i, { ...part, file: e.target.value })}
               />
               <div className="flex gap-1.5">
@@ -87,6 +96,7 @@ export function MultipartParts({
                   placeholder="file name"
                   title="Optional: defaults to the uploaded file's name, else the part's name"
                   value={part.filename}
+                  disabled={disabled}
                   onChange={(e) => set(i, { ...part, filename: e.target.value })}
                 />
                 <Input
@@ -95,6 +105,7 @@ export function MultipartParts({
                   placeholder="content type"
                   title="Optional: defaults to the uploaded file's type, else application/octet-stream"
                   value={part.contentType}
+                  disabled={disabled}
                   onChange={(e) => set(i, { ...part, contentType: e.target.value })}
                 />
               </div>
@@ -102,14 +113,16 @@ export function MultipartParts({
           )}
         </div>
       ))}
-      <div className="flex gap-1.5">
-        <Button size="sm" variant="ghost" onClick={() => onChange([...parts, { ...TEXT_PART }])}>
-          <Plus className="size-3.5" /> Text
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => onChange([...parts, { ...FILE_PART }])}>
-          <Plus className="size-3.5" /> File
-        </Button>
-      </div>
+      {!disabled && (
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="ghost" onClick={() => onChange([...parts, { ...TEXT_PART }])}>
+            <Plus className="size-3.5" /> Text
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onChange([...parts, { ...FILE_PART }])}>
+            <Plus className="size-3.5" /> File
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

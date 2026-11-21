@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
+import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Checkbox, Field, Input, Select, Textarea } from '@/components/ui'
 import { type FieldsProps, SecretRecord } from './settings-forms'
 import { type KeyValue, KeyValueEditor } from './shared'
@@ -9,6 +10,7 @@ type Body =
   | { type: 'json'; json: string }
   | { type: 'form'; fields: KeyValue[] }
   | { type: 'raw'; raw: string; contentType?: string }
+  | { type: 'multipart'; parts: MultipartPart[] }
 type Step =
   | {
       type: 'request'
@@ -320,7 +322,7 @@ function RequestStep({
         <div className="space-y-2">
           <Select
             aria-label={`${at} body`}
-            className="w-40"
+            className="w-52"
             value={body.type}
             disabled={disabled}
             onChange={(e) => {
@@ -332,7 +334,9 @@ function RequestStep({
                     ? { type, fields: [] }
                     : type === 'raw'
                       ? { type, raw: '', contentType: 'text/plain' }
-                      : { type: 'none' }
+                      : type === 'multipart'
+                        ? { type, parts: [] }
+                        : { type: 'none' }
               onChange({ ...step, body: next })
             }}
           >
@@ -340,6 +344,7 @@ function RequestStep({
             <option value="json">JSON</option>
             <option value="form">Form</option>
             <option value="raw">Raw</option>
+            <option value="multipart">Multipart (form-data)</option>
           </Select>
           {body.type === 'json' && (
             <Textarea
@@ -367,6 +372,13 @@ function RequestStep({
               value={body.raw}
               disabled={disabled}
               onChange={(e) => onChange({ ...step, body: { ...body, raw: e.target.value } })}
+            />
+          )}
+          {body.type === 'multipart' && (
+            <MultipartParts
+              parts={body.parts}
+              onChange={(parts) => onChange({ ...step, body: { ...body, parts } })}
+              disabled={disabled}
             />
           )}
         </div>

@@ -2010,6 +2010,23 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
 
+## 14. Session 61 steps (2026-11-21): custom auth flow extras (branch `feat/custom-auth-extras`)
+
+The user asked for M9's three custom-auth gaps (§11 "OAuth and custom auth"), for REST and GraphQL alike (GraphQL
+uses REST's settings form and `httpConfig`). One step at a time, the user's word between steps; one PR at the end
+with the review agents first.
+
+1. **Multipart bodies in request steps** (this step): the step editor (`custom-auth.tsx`) offers Multipart
+   (form-data) with M15's `MultipartParts` (which got a `disabled` prop for view-only settings). The connector
+   already accepted it. Test: connectors `auth-flow.test.ts` "sends a multipart sign-in request" (11/11).
+2. **Status card** (next): on the resource page, per environment, whether the flow is signed in, since when, until
+   when, and the last failure; Sign in now and Sign out (Edit). The last failure goes in `oauth_tokens.last_error`
+   (the back-off is per process: the API can't see a worker's).
+3. **Form step** (after): a sign-in step that asks each person for values (username, password, …), so the flow's
+   variables are each person's own (`oauth_tokens.user_id`, no migration); a query without a signed-in person
+   fails `auth_required` with `account: 'user'`, and the UI opens the form in place of OAuth's popup. Form values
+   are never stored, only the variables; refresh steps can't have forms.
+
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 
 The user asked whether BigQuery should connect with OAuth/Auth0: Auth0 can't (BigQuery takes only Google-issued tokens),

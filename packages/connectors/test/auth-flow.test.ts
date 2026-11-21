@@ -47,6 +47,7 @@ beforeAll(async () => {
       if (user !== 'ada' || password !== 'pw-Secret-123') return json(401, { error: 'bad login' })
       return json(200, { session: validSession, expiresIn: 600 }, { 'x-csrf': 'csrf-1' })
     }
+    if (url.pathname === '/api/login-form') return json(200, { session: 'form-session' })
     if (url.pathname === '/api/data') {
       if (req.headers['x-session'] !== validSession) return json(401, { error: 'expired' })
       return json(200, { ok: true, session: req.headers['x-session'], key: url.searchParams.get('key') })
@@ -160,6 +161,44 @@ describe('runAuthFlow', () => {
       { sandbox, signal: AbortSignal.timeout(5000), previous: { session: 'old', csrf: 'c' } },
     )
     expect(variables).toEqual({ session: 'old-renewed' })
+  })
+
+  it('sends a multipart sign-in request', async () => {
+    const variables = await runAuthFlow(
+      { config: config(), secrets: secrets() },
+      [
+        {
+          type: 'request',
+          name: 'upload',
+          method: 'POST',
+          path: 'login-form',
+          params: [],
+          headers: [],
+          body: {
+            type: 'multipart',
+            parts: [
+              { kind: 'text', key: 'user', value: '{{ secrets.user }}' },
+              {
+                kind: 'file',
+                key: 'cert',
+                file: 'aGVsbG8=',
+                filename: 'cert.pem',
+                contentType: 'text/plain',
+              },
+            ],
+          },
+        },
+        { type: 'variable', name: 'session', value: '{{ upload.data.session }}', secret: true },
+      ],
+      { sandbox, signal: AbortSignal.timeout(5000) },
+    )
+    expect(variables).toEqual({ session: 'form-session' })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/)
+    expect(requests[0]!.body).toMatch(/name="user"\r\n\r\nada\r\n/)
+    expect(requests[0]!.body).toMatch(
+      /name="cert"; filename="cert.pem"\r\nContent-Type: text\/plain\r\n\r\nhello\r\n/,
+    )
   })
 
   it('keeps sign-in requests to the allowed hosts', async () => {
