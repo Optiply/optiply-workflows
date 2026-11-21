@@ -2016,12 +2016,20 @@ The user asked for M9's three custom-auth gaps (§11 "OAuth and custom auth"), f
 uses REST's settings form and `httpConfig`). One step at a time, the user's word between steps; one PR at the end
 with the review agents first.
 
-1. **Multipart bodies in request steps** (this step): the step editor (`custom-auth.tsx`) offers Multipart
+1. **Multipart bodies in request steps** ✅ `17bee67`: the step editor (`custom-auth.tsx`) offers Multipart
    (form-data) with M15's `MultipartParts` (which got a `disabled` prop for view-only settings). The connector
    already accepted it. Test: connectors `auth-flow.test.ts` "sends a multipart sign-in request" (11/11).
-2. **Status card** (next): on the resource page, per environment, whether the flow is signed in, since when, until
-   when, and the last failure; Sign in now and Sign out (Edit). The last failure goes in `oauth_tokens.last_error`
-   (the back-off is per process: the API can't see a worker's).
+2. **Status card** (this step): the **Sign-in** card under a custom-flow resource's settings (`CustomAuthStatus` in
+   `custom-auth.tsx`): state (not signed in, signed in, expired, settings changed, sign-in failed), signed in on,
+   signs in again (the TTL, or "when an API answers 401"), the variables' names, the last failure; **Sign in now**
+   and **Sign out** for Edit. Server: `customAuthStatus`, `customAuthSignIn`, `customAuthSignOut` in the resources
+   router (audit `resource.custom_auth_signed_in` / `_signed_out`); `custom-auth.ts` split into `customFlow` with
+   `signInCustomFlow` (skips the back-off, keeps the old variables if it fails), `customFlowStatus`,
+   `signOutCustomFlow`. A failed sign-in a query needed now marks the row `reconnect` with `last_error` (scrubbed of
+   the secret values and the old variables; `updated_at` kept, since refreshes compare it), so the next query
+   signs in again rather than reusing variables just refused; the lock returns the failure rather than throwing so
+   the write isn't rolled back. Tests: server `custom-auth.test.ts` 12/12 (+3), with oauth-*, resources 76 passed;
+   e2e `custom-auth.spec.ts` (new: multipart + the card), with `resource-secrets` and `connectors` ×3: 27 passed.
 3. **Form step** (after): a sign-in step that asks each person for values (username, password, …), so the flow's
    variables are each person's own (`oauth_tokens.user_id`, no migration); a query without a signed-in person
    fails `auth_required` with `account: 'user'`, and the UI opens the form in place of OAuth's popup. Form values

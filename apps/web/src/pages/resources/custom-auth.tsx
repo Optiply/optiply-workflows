@@ -1,8 +1,12 @@
-import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowDown, ArrowUp, KeyRound, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { confirmDialog } from '@/components/confirm'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
-import { Badge, Button, Checkbox, Field, Input, Select, Textarea } from '@/components/ui'
+import { Badge, Button, Card, Checkbox, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
+import { useTRPC } from '@/lib/trpc'
 import { type FieldsProps, SecretRecord } from './settings-forms'
-import { type KeyValue, KeyValueEditor } from './shared'
+import { type KeyValue, KeyValueEditor, type ResourceDetail } from './shared'
 
 type Auth = { type: string; [key: string]: unknown }
 type Body =
@@ -384,5 +388,145 @@ function RequestStep({
         </div>
       )}
     </div>
+  )
+}
+
+const STATE_BADGE = {
+  none: { label: 'Not signed in', tone: undefined },
+  signedIn: { label: 'Signed in', tone: 'success' },
+  expired: { label: 'Expired', tone: undefined },
+  settingsChanged: { label: 'Settings changed', tone: undefined },
+  failed: { label: 'Sign-in failed', tone: 'danger' },
+} as const
+
+const STATE_TEXT = {
+  none: 'Not signed in yet: the first query signs in.',
+  signedIn: null,
+  expired: 'The sign-in ran out: the next query signs in again.',
+  settingsChanged: 'The flow changed since it signed in: the next query signs in again.',
+  failed: 'The last sign-in a query needed failed. Queries try again (waiting longer after each failure).',
+} as const
+
+const when = (value: string | Date) => new Date(value).toLocaleString()
+
+/**
+ * A custom auth flow's sign-in in one environment: whether it's signed in, since and until when, the variables it
+ * defines, and the last failure. People with Edit sign in now (to check the flow, or after fixing a password) or
+ * sign out (the next query signs in again). Uses the saved settings.
+ */
+export function CustomAuthStatus({
+  resource,
+  environmentId,
+}: {
+  resource: ResourceDetail
+  environmentId: string
+}) {
+  const trpc = useTRPC()
+  const queryClient = useQueryClient()
+  const options = trpc.resources.customAuthStatus.queryOptions({ resourceId: resource.id })
+  const { data } = useQuery(options)
+  const env = data?.environments.find((e) => e.environmentId === environmentId)
+  const refresh = () => queryClient.invalidateQueries({ queryKey: options.queryKey })
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const signIn = useMutation(
+    trpc.resources.customAuthSignIn.mutationOptions({
+      onSuccess: async (result) => {
+        setMessage(result.ok ? { ok: true, text: 'Signed in.' } : { ok: false, text: result.error.message })
+        await refresh()
+      },
+    }),
+  )
+  const signOut = useMutation(
+    trpc.resources.customAuthSignOut.mutationOptions({
+      onSuccess: async () => {
+        setMessage(null)
+        await refresh()
+      },
+    }),
+  )
+  if (!env?.status) return null
+
+  const status = env.status
+  const badge = STATE_BADGE[status.state]
+  const text = STATE_TEXT[status.state]
+  return (
+    <Card className="space-y-4 p-5" role="region" aria-label="Sign-in status">
+      <div className="flex items-start gap-3">
+        <KeyRound className="mt-0.5 size-5 shrink-0 text-accent" />
+        <div className="flex-1 space-y-1">
+          <h2 className="font-semibold">Sign-in</h2>
+          <p className="text-sm text-muted">
+            The custom auth flow’s variables, shared by every query in this environment, including workflows
+            that run on their own.
+          </p>
+        </div>
+        <Badge tone={badge.tone}>{badge.label}</Badge>
+      </div>
+
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        {status.signedInAt && status.state !== 'none' && (
+          <>
+            <dt className="text-muted">Signed in on</dt>
+            <dd>{when(status.signedInAt)}</dd>
+          </>
+        )}
+        {status.state === 'signedIn' && (
+          <>
+            <dt className="text-muted">Signs in again</dt>
+            <dd>{status.expiresAt ? when(status.expiresAt) : 'When an API answers 401'}</dd>
+          </>
+        )}
+        <dt className="text-muted">Variables</dt>
+        <dd className="font-mono text-xs leading-5">
+          {env.variables.map((name) => `auth.${name}`).join(', ')}
+        </dd>
+      </dl>
+      {text && <p className="text-sm text-muted">{text}</p>}
+      {status.lastError && (
+        <p className="text-sm text-danger">
+          {status.state === 'failed' ? 'Why: ' : 'The last sign-in failed: '}
+          {status.lastError}
+        </p>
+      )}
+
+      {env.canSignIn && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="primary"
+            loading={signIn.isPending}
+            onClick={() => {
+              setMessage(null)
+              signIn.mutate({ resourceId: resource.id, environmentId })
+            }}
+          >
+            Sign in now
+          </Button>
+          {status.state !== 'none' && (
+            <Button
+              variant="danger"
+              loading={signOut.isPending}
+              onClick={async () => {
+                if (
+                  await confirmDialog('Sign out? The next query signs in again.', {
+                    confirm: 'Sign out',
+                    danger: true,
+                  })
+                ) {
+                  signOut.mutate({ resourceId: resource.id, environmentId })
+                }
+              }}
+            >
+              Sign out
+            </Button>
+          )}
+          <span className="text-xs text-muted">Uses the saved settings.</span>
+        </div>
+      )}
+      {/* A failure kept on the row shows above; one that left nothing to keep it on (not signed in yet) shows here. */}
+      {message && (message.ok || message.text !== status.lastError) && (
+        <p className={message.ok ? 'text-sm text-success' : 'text-sm text-danger'}>{message.text}</p>
+      )}
+      <ErrorNote error={signIn.error ?? signOut.error} />
+    </Card>
   )
 }

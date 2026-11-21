@@ -7,7 +7,7 @@ import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/compo
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { S3Fields } from './aws-settings'
-import { CustomAuthFields } from './custom-auth'
+import { CustomAuthFields, CustomAuthStatus } from './custom-auth'
 import { JdbcFields } from './jdbc-settings'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OpenApiSpecFields } from './openapi-settings'
@@ -427,6 +427,7 @@ export function SettingsPanel({
         </div>
       )}
       {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
+      {stored?.config && <CustomAuthStatus resource={resource} environmentId={environmentId} />}
       {savingToBranch && (
         <SaveToBranchDialog
           kind="resource"

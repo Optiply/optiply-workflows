@@ -12,6 +12,7 @@ import {
   graphqlIntrospect,
   type HttpClient,
   type HubSpotProperty,
+  httpConfigFor,
   httpRequest,
   hubspotConnector,
   hubspotProperties,
@@ -20,12 +21,14 @@ import {
   openApiDocument,
   restApiConnector,
   restConfigSchema,
+  restConnector,
   runOperation,
   runQuery,
   type SqlSchema,
   SshSettingsError,
   testResource,
 } from '@ow/connectors'
+import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import {
   type Db,
   environments,
@@ -43,6 +46,13 @@ import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
+import {
+  type CustomFlowStatus,
+  customFlowHash,
+  customFlowStatus,
+  signInCustomFlow,
+  signOutCustomFlow,
+} from '../../services/custom-auth'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import {
   bigquerySettingsProblem,
@@ -270,6 +280,17 @@ async function getConfigRow(db: Db, resourceId: string, environmentId: string) {
     .limit(1)
   return row
 }
+
+/** A resource's custom auth flow in one environment, from its saved settings; null when it signs in otherwise. */
+async function customFlowConfig(db: Db, resourceType: string, resourceId: string, environmentId: string) {
+  const row = await getConfigRow(db, resourceId, environmentId)
+  const http = row && httpConfigFor(resourceType, effectiveConfig(row))
+  if (!row || http?.auth.type !== 'custom') return null
+  return { row, http, auth: http.auth }
+}
+
+/** How long Sign in now may take (the flow's steps have 30 s each). */
+const SIGN_IN_NOW_TIMEOUT_MS = 120_000
 
 async function environmentSlug(db: Db, id: string): Promise<string> {
   const [env] = await db.select({ slug: environments.slug }).from(environments).where(eq(environments.id, id))
@@ -871,6 +892,118 @@ export const resourcesRouter = router({
         })
       }
       return { disconnected: removed > 0, ...(removed > 0 && revocation) }
+    }),
+
+  /**
+   * The status card of a resource signing in with a custom auth flow, per environment the user can see: the shared
+   * sign-in's state, since and until when, and the last failure (never the variables, only their names).
+   * `canSignIn` (Edit) offers Sign in now and Sign out. `status` is null where the resource signs in otherwise.
+   */
+  customAuthStatus: authedProcedure.input(z.object({ resourceId: Id })).query(async ({ ctx, input }) => {
+    const { access, resource, envIds } = await visibleResource(ctx, input.resourceId)
+    const environments: {
+      environmentId: string
+      status: CustomFlowStatus | null
+      variables: string[]
+      canSignIn: boolean
+    }[] = []
+    for (const environmentId of envIds) {
+      const level = access.level(resource, environmentId)
+      if (!level) continue
+      const flow = await customFlowConfig(ctx.db, resource.type, resource.id, environmentId)
+      if (!flow) {
+        environments.push({ environmentId, status: null, variables: [], canSignIn: false })
+        continue
+      }
+      environments.push({
+        environmentId,
+        status: await customFlowStatus(ctx.db, flow.row.id, customFlowHash(flow.http)),
+        variables: [...new Set(flow.auth.steps.filter((s) => s.type === 'variable').map((s) => s.name))],
+        canSignIn: atLeast(level, 'edit'),
+      })
+    }
+    return { environments }
+  }),
+
+  /**
+   * Sign in now (Edit): runs the saved flow's sign-in steps at once, even during a back-off, and stores the
+   * variables for the queries that follow. A failure comes back as `error` (secret values scrubbed) and is shown on
+   * the card; variables stored before stay in use.
+   */
+  customAuthSignIn: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      const flow = await customFlowConfig(ctx.db, resource.type, resource.id, input.environmentId)
+      if (!flow) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "This resource doesn't sign in with a custom auth flow in this environment",
+        })
+      }
+      const secrets = restConnector.secretsSchema.parse(decryptConfigSecrets(ctx.config.keyring, flow.row))
+      const signal = AbortSignal.timeout(SIGN_IN_NOW_TIMEOUT_MS)
+      try {
+        await signInCustomFlow(
+          { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+          {
+            resourceConfigId: flow.row.id,
+            environmentId: input.environmentId,
+            config: flow.http,
+            secrets,
+          },
+          signal,
+        )
+      } catch (err) {
+        const failure =
+          err instanceof ConnectorError
+            ? err
+            : signal.aborted
+              ? new ConnectorError(
+                  'timeout',
+                  `Signing in took longer than ${SIGN_IN_NOW_TIMEOUT_MS / 1000} s`,
+                )
+              : null
+        if (!failure) throw err
+        const scrub = secretStrings(secrets.values)
+        return {
+          ok: false as const,
+          error: errorView(
+            new ConnectorError(
+              failure.code,
+              scrubSecrets(failure.message, scrub),
+              failure.details && scrubSecretsDeep(failure.details, scrub),
+            ),
+          ),
+        }
+      }
+      await ctx.audit({
+        action: 'resource.custom_auth_signed_in',
+        objectType: 'resource',
+        objectId: resource.id,
+        environmentId: input.environmentId,
+      })
+      return { ok: true as const }
+    }),
+
+  /** Sign out (Edit): forgets the shared sign-in's variables; the next query signs in again. */
+  customAuthSignOut: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id }))
+    .mutation(async ({ ctx, input }) => {
+      const { access, resource } = await visibleResource(ctx, input.resourceId)
+      requireLevel(access.level(resource, input.environmentId), 'edit', 'this resource in this environment')
+      const flow = await customFlowConfig(ctx.db, resource.type, resource.id, input.environmentId)
+      const signedOut = flow ? await signOutCustomFlow(ctx.db, flow.row.id) : false
+      if (signedOut) {
+        await ctx.audit({
+          action: 'resource.custom_auth_signed_out',
+          objectType: 'resource',
+          objectId: resource.id,
+          environmentId: input.environmentId,
+        })
+      }
+      return { signedOut }
     }),
 
   /**

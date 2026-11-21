@@ -8,7 +8,7 @@ import {
   type RestSecrets,
   runAuthFlow,
 } from '@ow/connectors'
-import { type Keyring, secretStrings } from '@ow/crypto'
+import { type Keyring, scrubSecrets, secretStrings } from '@ow/crypto'
 import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
 import { and, eq, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
@@ -85,6 +85,17 @@ export function customFlowHash(config: RestConfig): string {
   return createHash('sha256').update(JSON.stringify(flow)).digest('base64url')
 }
 
+/** Which resource config a custom flow signs in for, and with what. */
+export interface CustomFlowTarget {
+  resourceConfigId: string
+  environmentId: string
+  config: RestConfig
+  secrets: RestSecrets
+}
+
+/** Failure messages kept on the row are cut to this length. */
+const LAST_ERROR_MAX = 1000
+
 /**
  * A custom auth flow's variables for one resource config, shared by every query (flows run without a person, so
  * there are no per-user variables).
@@ -97,20 +108,35 @@ export function customFlowHash(config: RestConfig): string {
  * variables are stored encrypted like OAuth tokens. Variables marked `secret: false` aren't scrubbed from results.
  *
  * A sign-in that fails backs off (`failures`): the next ones fail at once with its error for 5 s, then 10 s, …
- * up to 5 minutes, until one succeeds or the flow or its secrets change.
+ * up to 5 minutes, until one succeeds or the flow or its secrets change. It is also kept on the stored row
+ * (`last_error`, status `reconnect`) for the resource's status card, whichever process ran it.
  *
  * `store: false` keeps the variables in this source only (Test connection with unsaved settings).
  */
 export function customAuthCredentials(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
-  target: {
-    resourceConfigId: string
-    environmentId: string
-    config: RestConfig
-    secrets: RestSecrets
-    store: boolean
-  },
+  target: CustomFlowTarget & { store: boolean },
 ): CredentialSource {
+  return customFlow(deps, target).source
+}
+
+/**
+ * Signs the flow in now with its sign-in steps (the status card's Sign in now): without waiting out a back-off,
+ * and stored for the queries that follow. A failure is thrown and kept on the row as its last error, but variables
+ * stored before stay in use (they may still work).
+ */
+export function signInCustomFlow(
+  deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
+  target: CustomFlowTarget,
+  signal: AbortSignal,
+): Promise<void> {
+  return customFlow(deps, { ...target, store: true }).signInNow(signal)
+}
+
+function customFlow(
+  deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
+  target: CustomFlowTarget & { store: boolean },
+): { source: CredentialSource; signInNow: (signal: AbortSignal) => Promise<void> } {
   const { db, keyring, sandbox } = deps
   const auth = target.config.auth as CustomAuth
   const flowHash = customFlowHash(target.config)
@@ -155,16 +181,23 @@ export function customAuthCredentials(
     return runAuthFlow(resource, auth.steps, { sandbox, signal })
   }
 
+  const notStored = async () => {
+    throw new Error('Signing in now needs a stored flow')
+  }
+
   if (!target.store) {
     let memory: { variables: Record<string, unknown>; until: Date | null } | undefined
     return {
-      async authVariables({ signal, force }) {
-        const fresh = memory && (!memory.until || memory.until.getTime() > Date.now() + EXPIRY_MARGIN_MS)
-        if (!memory || force || !fresh) {
-          memory = { variables: await signIn(signal, memory?.variables, !!force), until: expiresAt() }
-        }
-        return view(memory.variables)
+      source: {
+        async authVariables({ signal, force }) {
+          const fresh = memory && (!memory.until || memory.until.getTime() > Date.now() + EXPIRY_MARGIN_MS)
+          if (!memory || force || !fresh) {
+            memory = { variables: await signIn(signal, memory?.variables, !!force), until: expiresAt() }
+          }
+          return view(memory.variables)
+        },
       },
+      signInNow: notStored,
     }
   }
 
@@ -177,6 +210,7 @@ export function customAuthCredentials(
     decryptForRow<StoredVariables>(keyring, 'oauth_tokens', row, row.tokens).variables
   /** When the variables this source last handed out were stored (`updated_at`): a refresh replaces only those. */
   let handedOut: number | undefined
+  const lock = `ow_custom_auth:${target.resourceConfigId}`
   const load = async (q: Db | Tx) => {
     const [row] = await q
       .select()
@@ -185,67 +219,165 @@ export function customAuthCredentials(
     return row
   }
 
+  /** Stores freshly signed-in variables (the row is created the first time); returns when, as `updated_at`. */
+  async function store(tx: Tx, row: OAuthToken | undefined, next: Record<string, unknown>) {
+    const now = new Date()
+    const values = {
+      expiresAt: expiresAt(),
+      status: 'active' as const,
+      lastError: null,
+      consentHash: flowHash,
+      refreshedAt: now,
+      updatedAt: now,
+    }
+    const id = row?.id ?? uuidv7()
+    const tokens = encryptForRow(keyring, 'oauth_tokens', { id, environmentId: target.environmentId }, {
+      variables: next,
+    } satisfies StoredVariables)
+    if (row) {
+      await tx
+        .update(oauthTokens)
+        .set({ ...values, tokens })
+        .where(eq(oauthTokens.id, row.id))
+    } else {
+      await tx.insert(oauthTokens).values({
+        id,
+        resourceConfigId: target.resourceConfigId,
+        environmentId: target.environmentId,
+        userId: null,
+        tokens,
+        ...values,
+      })
+    }
+    return now.getTime()
+  }
+
+  /**
+   * Keeps a failed sign-in on the row (when there is one) for the status card: the message without the secret
+   * values or the variables it held. `unusable` also stops queries using its variables (a query needed them signed
+   * in again). `updated_at` stays: it says when the variables were stored, which refreshes compare.
+   */
+  async function storeFailure(tx: Tx, row: OAuthToken | undefined, err: unknown, unusable: boolean) {
+    if (!row) return
+    const message = err instanceof Error ? err.message : String(err)
+    const scrub = [
+      ...secretStrings(target.secrets.values),
+      ...(row.consentHash === flowHash ? secretStrings(decrypt(row)) : []),
+    ]
+    await tx
+      .update(oauthTokens)
+      .set({
+        lastError: scrubSecrets(message, scrub).slice(0, LAST_ERROR_MAX),
+        ...(unusable && { status: 'reconnect' as const }),
+        updatedAt: row.updatedAt,
+      })
+      .where(eq(oauthTokens.id, row.id))
+  }
+
   return {
-    async authVariables({ signal, force }) {
-      if (!force) {
-        const seen = await load(db)
-        if (usable(seen)) {
-          handedOut = seen.updatedAt.getTime()
-          return view(decrypt(seen))
+    source: {
+      async authVariables({ signal, force }) {
+        if (!force) {
+          const seen = await load(db)
+          if (usable(seen)) {
+            handedOut = seen.updatedAt.getTime()
+            return view(decrypt(seen))
+          }
         }
-      }
 
-      const lock = `ow_custom_auth:${target.resourceConfigId}`
-      const variables = await withRefreshLock(db, lock, signal, async (tx) => {
+        // A failure is returned, not thrown, so what `storeFailure` wrote isn't rolled back.
+        const outcome = await withRefreshLock(db, lock, signal, async (tx) => {
+          const row = await load(tx)
+          // Someone signed in while this waited; for a refresh, someone already replaced the variables it used.
+          if (usable(row) && (!force || row.updatedAt.getTime() !== handedOut)) {
+            handedOut = row.updatedAt.getTime()
+            return { variables: decrypt(row) }
+          }
+
+          const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
+          checkBackoff(backoff)
+          let next: Record<string, unknown>
+          try {
+            next = await signIn(signal, previous, !!force)
+          } catch (err) {
+            if (signal.aborted) throw err
+            recordFailure(backoff, err)
+            await storeFailure(tx, row, err, true)
+            return { error: err }
+          }
+          failures.delete(backoff)
+          handedOut = await store(tx, row, next)
+          return { variables: next }
+        })
+        if ('error' in outcome) throw outcome.error
+        return view(outcome.variables)
+      },
+    },
+
+    async signInNow(signal) {
+      const outcome = await withRefreshLock(db, lock, signal, async (tx) => {
         const row = await load(tx)
-        // Someone signed in while this waited; for a refresh, someone already replaced the variables it used.
-        if (usable(row) && (!force || row.updatedAt.getTime() !== handedOut)) {
-          handedOut = row.updatedAt.getTime()
-          return decrypt(row)
-        }
-
-        const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
-        checkBackoff(backoff)
         let next: Record<string, unknown>
         try {
-          next = await signIn(signal, previous, !!force)
+          next = await runAuthFlow(resource, auth.steps, { sandbox, signal })
         } catch (err) {
-          if (!signal.aborted) recordFailure(backoff, err)
-          throw err
+          if (signal.aborted) throw err
+          await storeFailure(tx, row, err, false)
+          return { error: err }
         }
         failures.delete(backoff)
-        const now = new Date()
-        const values = {
-          expiresAt: expiresAt(),
-          status: 'active' as const,
-          lastError: null,
-          consentHash: flowHash,
-          refreshedAt: now,
-          updatedAt: now,
-        }
-        handedOut = now.getTime()
-        const id = row?.id ?? uuidv7()
-        const tokens = encryptForRow(keyring, 'oauth_tokens', { id, environmentId: target.environmentId }, {
-          variables: next,
-        } satisfies StoredVariables)
-        if (row) {
-          await tx
-            .update(oauthTokens)
-            .set({ ...values, tokens })
-            .where(eq(oauthTokens.id, row.id))
-        } else {
-          await tx.insert(oauthTokens).values({
-            id,
-            resourceConfigId: target.resourceConfigId,
-            environmentId: target.environmentId,
-            userId: null,
-            tokens,
-            ...values,
-          })
-        }
-        return next
+        await store(tx, row, next)
+        return { ok: true as const }
       })
-      return view(variables)
+      if ('error' in outcome) throw outcome.error
     },
   }
+}
+
+/**
+ * What the status card shows about a config's shared sign-in; never the variables. `state`: `none` (not signed in
+ * yet), `signedIn`, `expired` (its time ran out: the next query signs in), `settingsChanged` (the flow changed
+ * since: the next query signs in), or `failed` (the last sign-in a query needed failed: `lastError`). A failed
+ * Sign in now leaves the variables in use, with its `lastError`.
+ */
+export interface CustomFlowStatus {
+  state: 'none' | 'signedIn' | 'expired' | 'settingsChanged' | 'failed'
+  signedInAt: Date | null
+  expiresAt: Date | null
+  lastError: string | null
+}
+
+export async function customFlowStatus(
+  db: Db,
+  resourceConfigId: string,
+  flowHash: string,
+): Promise<CustomFlowStatus> {
+  const [row] = await db
+    .select()
+    .from(oauthTokens)
+    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), isNull(oauthTokens.userId)))
+  if (!row) return { state: 'none', signedInAt: null, expiresAt: null, lastError: null }
+  const state =
+    row.consentHash !== flowHash
+      ? 'settingsChanged'
+      : row.status !== 'active'
+        ? 'failed'
+        : row.expiresAt && row.expiresAt.getTime() <= Date.now()
+          ? 'expired'
+          : 'signedIn'
+  return {
+    state,
+    signedInAt: row.refreshedAt ?? row.createdAt,
+    expiresAt: row.expiresAt,
+    lastError: row.lastError,
+  }
+}
+
+/** Forgets a config's shared sign-in (Sign out): the next query signs in again. Returns whether there was one. */
+export async function signOutCustomFlow(db: Db, resourceConfigId: string): Promise<boolean> {
+  const removed = await db
+    .delete(oauthTokens)
+    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), isNull(oauthTokens.userId)))
+    .returning({ id: oauthTokens.id })
+  return removed.length > 0
 }

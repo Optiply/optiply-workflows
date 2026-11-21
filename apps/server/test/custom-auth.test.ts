@@ -1,7 +1,8 @@
 /**
  * Custom auth flows on the server: signing in on first use and storing the variables encrypted, reusing them,
  * signing in again when they run out, refreshing on a 401 (falling back to signing in), one sign-in at a time
- * across processes, and through the playground, Test connection and saving the settings.
+ * across processes, and through the playground, Test connection and saving the settings; the status card's state,
+ * Sign in now and Sign out, and the failures it shows.
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -258,6 +259,43 @@ describe('signing in', () => {
     expect(await vars.evaluate('auth.tenant')).toBe('acme-prod')
   })
 
+  it('keeps a failed sign-in on the row for the status card, scrubbed, and stops using its variables', async () => {
+    const { row } = await flowResource('flow_failure_kept')
+    await session(source(row))
+    const [before] = await stored(row.id)
+    // The same config, now with a step that fails and says the password.
+    const failing = customAuthCredentials(
+      { db: env.db, keyring: env.config.keyring, sandbox },
+      {
+        resourceConfigId: row.id,
+        environmentId: prodId,
+        config: restConnector.configSchema.parse(
+          flowConfig({
+            steps: [
+              ...signInSteps,
+              { type: 'code', name: 'check', code: 'throw new Error("refused for " + secrets.password)' },
+            ],
+          }),
+        ),
+        secrets: restConnector.secretsSchema.parse({ values: { user: 'ada', password: 'Pw-S3cret-777' } }),
+        store: true,
+      },
+    )
+    await expect(failing.authVariables!({ signal: AbortSignal.timeout(5000) })).rejects.toMatchObject({
+      code: 'auth_required',
+      details: { step: 'check' },
+    })
+    const [after] = await stored(row.id)
+    expect(after).toMatchObject({ status: 'reconnect', updatedAt: before!.updatedAt })
+    expect(after!.lastError).toBe('Signing in failed at step "check": refused for [REDACTED]')
+
+    // The working flow can't use those variables any more: it signs in, and the failure is cleared.
+    const loginsBefore = logins
+    expect(await session(source(row))).toMatch(/^Session-/)
+    expect(logins).toBe(loginsBefore + 1)
+    expect((await stored(row.id))[0]).toMatchObject({ status: 'active', lastError: null })
+  })
+
   it('keeps unsaved test sign-ins in memory', async () => {
     const { row } = await flowResource('flow_memory')
     const s = source(row, false)
@@ -342,5 +380,108 @@ describe('through the API', () => {
       ),
     )
     expect(await stored(row.id)).toEqual([])
+  })
+
+  it('shows the status card, signs in now, keeps the last failure and signs out', async () => {
+    const { id, row } = await flowResource('flow_card')
+    const status = async () =>
+      data(await admin.query('resources.customAuthStatus', { resourceId: id })).environments.find(
+        (e: { environmentId: string }) => e.environmentId === prodId,
+      )
+    const act = async (name: string) =>
+      data(await admin.mutate(name, { resourceId: id, environmentId: prodId }))
+
+    expect(await status()).toEqual({
+      environmentId: prodId,
+      status: { state: 'none', signedInAt: null, expiresAt: null, lastError: null },
+      variables: ['session', 'refresh'],
+      canSignIn: true,
+    })
+
+    const loginsBefore = logins
+    expect(await act('resources.customAuthSignIn')).toEqual({ ok: true })
+    expect(logins).toBe(loginsBefore + 1)
+    const signedIn = await status()
+    expect(signedIn.status).toMatchObject({ state: 'signedIn', lastError: null, expiresAt: null })
+    expect(Date.parse(signedIn.status.signedInAt)).toBeGreaterThan(Date.now() - 60_000)
+
+    // The password changes at the provider: Sign in now fails, but the variables stay in use.
+    data(
+      await admin.mutate('resources.saveConfig', {
+        resourceId: id,
+        environmentId: prodId,
+        config: flowConfig(),
+        secrets: { values: { user: 'ada', password: 'Wrong-Pass-4242' } },
+      }),
+    )
+    const failed = await act('resources.customAuthSignIn')
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { code: 'auth_required', details: { reason: 'flow_failed', step: 'login', status: 401 } },
+    })
+    expect(JSON.stringify(failed)).not.toContain('Wrong-Pass-4242')
+    expect((await status()).status).toMatchObject({
+      state: 'signedIn',
+      lastError: 'Signing in failed at step "login": HTTP 401 Unauthorized',
+    })
+    expect(
+      data(
+        await admin.mutate('resources.run', {
+          resourceId: id,
+          environmentId: prodId,
+          query: { path: 'data' },
+        }),
+      ),
+    ).toMatchObject({ ok: true })
+
+    // Once a query needs a new sign-in and it fails, the card says so.
+    await env.db
+      .update(oauthTokens)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(oauthTokens.resourceConfigId, row.id))
+    expect(
+      data(
+        await admin.mutate('resources.run', {
+          resourceId: id,
+          environmentId: prodId,
+          query: { path: 'data' },
+        }),
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'auth_required' } })
+    expect((await status()).status).toMatchObject({
+      state: 'failed',
+      lastError: 'Signing in failed at step "login": HTTP 401 Unauthorized',
+    })
+
+    expect(await act('resources.customAuthSignOut')).toEqual({ signedOut: true })
+    expect((await status()).status).toMatchObject({ state: 'none' })
+    expect(await act('resources.customAuthSignOut')).toEqual({ signedOut: false })
+  })
+
+  it('lets only people with Edit sign in or out', async () => {
+    const { id } = await flowResource('flow_card_access')
+    await createLocalUser(env.db, 'member-card@optiply.nl')
+    const member = trpc(env.app, await login(env.app, 'member-card@optiply.nl'))
+    const users = data(await admin.query('users.directory')) as { id: string; email: string }[]
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId: id,
+        userId: users.find((u) => u.email === 'member-card@optiply.nl')!.id,
+        environmentId: null,
+        level: 'use',
+      }),
+    )
+    const card = data(await member.query('resources.customAuthStatus', { resourceId: id }))
+    expect(
+      card.environments.find((e: { environmentId: string }) => e.environmentId === prodId),
+    ).toMatchObject({
+      status: { state: 'none' },
+      canSignIn: false,
+    })
+    for (const name of ['resources.customAuthSignIn', 'resources.customAuthSignOut']) {
+      const res = await member.mutate(name, { resourceId: id, environmentId: prodId })
+      expect(res.body.error?.data?.code).toBe('FORBIDDEN')
+    }
   })
 })
