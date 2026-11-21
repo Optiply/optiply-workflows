@@ -4,6 +4,7 @@ import {
   ConnectorError,
   type CredentialSource,
   type FlowSandbox,
+  flowAsksEachPerson,
   httpConfigFor,
   OAuthGrantError,
   type ResolvedResource,
@@ -408,8 +409,11 @@ export function credentialsFor(
   const http = httpConfigFor(type, resource.config)
   if (!http) return undefined
   if (http.auth.type === 'custom') {
-    // Only REST-shaped secrets have the values a flow reads (REST, GraphQL).
+    // Only REST-shaped secrets have the values a flow reads (REST, GraphQL). A flow with a form step keeps each
+    // person's own variables: the person behind the query's.
     return customAuthCredentials(deps, {
+      resourceId: resource.resourceId,
+      userId: flowAsksEachPerson(http.auth.steps) ? actingUserId : null,
       resourceConfigId: resource.id,
       environmentId: resource.environmentId,
       config: http,

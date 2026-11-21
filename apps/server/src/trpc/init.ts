@@ -90,6 +90,11 @@ export const APPS_ONLY_PROCEDURES: ReadonlySet<string> = new Set([
   'apps.open',
   'apps.runQuery',
   'environments.list',
+  // A live app's query on a resource whose custom auth flow asks each person to sign in (a form step): its viewers
+  // sign in through the app (`appId`); `customFlowAccess` lets them reach nothing else.
+  'resources.customAuthForm',
+  'resources.customAuthSignIn',
+  'resources.customAuthSignOut',
 ])
 
 export const authedProcedure = t.procedure.use(({ ctx, next, path }) => {

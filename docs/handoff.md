@@ -2019,7 +2019,7 @@ with the review agents first.
 1. **Multipart bodies in request steps** ✅ `17bee67`: the step editor (`custom-auth.tsx`) offers Multipart
    (form-data) with M15's `MultipartParts` (which got a `disabled` prop for view-only settings). The connector
    already accepted it. Test: connectors `auth-flow.test.ts` "sends a multipart sign-in request" (11/11).
-2. **Status card** (this step): the **Sign-in** card under a custom-flow resource's settings (`CustomAuthStatus` in
+2. **Status card** ✅ `19e1f46`: the **Sign-in** card under a custom-flow resource's settings (`CustomAuthStatus` in
    `custom-auth.tsx`): state (not signed in, signed in, expired, settings changed, sign-in failed), signed in on,
    signs in again (the TTL, or "when an API answers 401"), the variables' names, the last failure; **Sign in now**
    and **Sign out** for Edit. Server: `customAuthStatus`, `customAuthSignIn`, `customAuthSignOut` in the resources
@@ -2030,10 +2030,26 @@ with the review agents first.
    signs in again rather than reusing variables just refused; the lock returns the failure rather than throwing so
    the write isn't rolled back. Tests: server `custom-auth.test.ts` 12/12 (+3), with oauth-*, resources 76 passed;
    e2e `custom-auth.spec.ts` (new: multipart + the card), with `resource-secrets` and `connectors` ×3: 27 passed.
-3. **Form step** (after): a sign-in step that asks each person for values (username, password, …), so the flow's
-   variables are each person's own (`oauth_tokens.user_id`, no migration); a query without a signed-in person
-   fails `auth_required` with `account: 'user'`, and the UI opens the form in place of OAuth's popup. Form values
-   are never stored, only the variables; refresh steps can't have forms.
+3. **Form step**, split in two:
+   - **3a, server** (this step): a `form` step (`rest.ts`: `{ name, title, fields: [{ name, label, kind: text|password }] }`,
+     not in refresh steps; `flowAsksEachPerson`). A flow with one keeps **each person's own** variables
+     (`oauth_tokens.user_id`, no migration; changing the flow still deletes all). `runAuthFlow` takes `form` (what was
+     typed, by step then field, own properties only, scrubbed from failures; none → `form_needed`). `custom-auth.ts`:
+     queries use the person's row, renew it with the refresh steps, else fail `auth_required` with
+     `{ account: 'user', flow: 'form', reason: not_connected | expired | settings_changed | no_user }`; a refused
+     sign-in with nothing to renew it is marked failed; signing in backs off per person (checked again under the
+     lock). Router: `customAuthForm` (new), `customAuthSignIn` (`form`, `appId`), `customAuthSignOut` (`appId`),
+     `customAuthStatus` (`perUser`, `form`, `signedInPeople`); `customFlowAccess` mirrors `connectTarget` (own
+     sign-in: any access, or an app whose live release queries the resource); the three are open to apps-only users.
+     `liveAppQueries` now refuses environments only admins may use (OAuth's app route too). Schema caches (GraphQL,
+     the other schema lookup, HubSpot) are per person for form flows (`usesOwnCredentials`). Errors scrubbed of every
+     secret of the resource. Reviewed by a 4-angle workflow (12 findings, 8 confirmed, all fixed with tests; 4 of
+     the tests checked to fail without their fix). Tests: connectors `auth-flow.test.ts` 16/16, server
+     `custom-auth.test.ts` 23/23; with oauth-*, resources, graphql, connectors, apps-only, access: 124 passed;
+     connectors package 408 passed.
+   - **3b, web** (next): the form step in the step editor; the Sign-in card for per-person flows (your own
+     sign-in, the count for Edit); a sign-in dialog wherever a query asks (`AuthRequiredNote` opens the form for
+     `flow: 'form'`, in apps with `appId`); e2e and screenshots; user/admin guide.
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 

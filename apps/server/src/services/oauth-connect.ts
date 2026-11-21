@@ -66,7 +66,7 @@ export async function connectTarget(
     !level &&
     input.account === 'mine' &&
     !!input.appId &&
-    (await liveAppQueries(db, access, input.appId, resource.slug))
+    (await liveAppQueries(db, access, input.appId, resource.slug, input.environmentId))
   if (!resource || (!level && !throughApp)) throw new OAuthConnectError(404, 'Resource not found')
   if (!getConnector(resource.type)?.httpConfig) {
     throw new OAuthConnectError(400, "This kind of resource doesn't connect accounts")
@@ -110,11 +110,19 @@ export async function connectTarget(
 }
 
 /**
- * Whether the user may use the app and its live release queries the resource (by slug): in a resource query, through
- * a library query whose release (pinned, or live now) runs on it, or in a module instance's release, the same way
- * (M14).
+ * Whether the user may use the app in this environment and its live release queries the resource (by slug): in a
+ * resource query, through a library query whose release (pinned, or live now) runs on it, or in a module instance's
+ * release, the same way (M14). Environments only admins may use (Staging) are out for everyone else, as for the
+ * app's queries.
  */
-async function liveAppQueries(db: Db, access: Access, appId: string, resourceSlug: string): Promise<boolean> {
+export async function liveAppQueries(
+  db: Db,
+  access: Access,
+  appId: string,
+  resourceSlug: string,
+  environmentId: string,
+): Promise<boolean> {
+  if (!access.canUseEnvironment(environmentId)) return false
   const [app] = await db.select().from(apps).where(eq(apps.id, appId))
   if (!app?.liveReleaseId || !access.appLevel(app)) return false
   const [release] = await db.select().from(appReleases).where(eq(appReleases.id, app.liveReleaseId))

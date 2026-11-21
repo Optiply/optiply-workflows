@@ -1,16 +1,18 @@
 import { createHash } from 'node:crypto'
 import {
+  type AuthFormValues,
   type AuthVariables,
   ConnectorError,
   type CredentialSource,
   type FlowSandbox,
+  flowAsksEachPerson,
   type RestConfig,
   type RestSecrets,
   runAuthFlow,
 } from '@ow/connectors'
 import { type Keyring, scrubSecrets, secretStrings } from '@ow/crypto'
 import { type Db, type OAuthToken, oauthTokens } from '@ow/db'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, count, eq, isNotNull, isNull } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { type Tx, withRefreshLock } from './refresh-lock'
 import { decryptForRow, encryptForRow } from './secrets'
@@ -87,29 +89,44 @@ export function customFlowHash(config: RestConfig): string {
 
 /** Which resource config a custom flow signs in for, and with what. */
 export interface CustomFlowTarget {
+  resourceId: string
   resourceConfigId: string
   environmentId: string
   config: RestConfig
   secrets: RestSecrets
+  /**
+   * Whose variables: null for the shared ones. A flow with a form step (`flowAsksEachPerson`) keeps each person's
+   * own, so this is the person behind the query, and null means nobody is (a workflow running on its own).
+   */
+  userId: string | null
 }
 
 /** Failure messages kept on the row are cut to this length. */
 const LAST_ERROR_MAX = 1000
 
+/** Rows owned by `userId`: the shared one for null. */
+const ownedBy = (userId: string | null) =>
+  userId === null ? isNull(oauthTokens.userId) : eq(oauthTokens.userId, userId)
+
 /**
- * A custom auth flow's variables for one resource config, shared by every query (flows run without a person, so
- * there are no per-user variables).
+ * A custom auth flow's variables for one resource config: shared by every query, or (a flow with a form step) each
+ * person's own.
  *
- * Signed in on first use, again when `ttlSeconds` runs out, and refreshed when an API answers 401: the refresh steps
- * when there are some (starting from the current variables, merged over them), otherwise (or if they fail) the
- * sign-in steps. Signing in happens under an advisory lock per config (`withRefreshLock`: waiters hold no database
- * connection), so processes don't sign in at once; whoever waited uses what the other stored. A refresh after a
- * 401 is skipped when the stored variables are no longer the ones this query used (someone refreshed already). The
- * variables are stored encrypted like OAuth tokens. Variables marked `secret: false` aren't scrubbed from results.
+ * Shared variables are signed in for on first use, again when `ttlSeconds` runs out, and refreshed when an API
+ * answers 401: the refresh steps when there are some (starting from the current variables, merged over them),
+ * otherwise (or if they fail) the sign-in steps. Signing in happens under an advisory lock per config and owner
+ * (`withRefreshLock`: waiters hold no database connection), so processes don't sign in at once; whoever waited uses
+ * what the other stored. A refresh after a 401 is skipped when the stored variables are no longer the ones this
+ * query used (someone refreshed already). The variables are stored encrypted like OAuth tokens. Variables marked
+ * `secret: false` aren't scrubbed from results.
  *
- * A sign-in that fails backs off (`failures`): the next ones fail at once with its error for 5 s, then 10 s, …
- * up to 5 minutes, until one succeeds or the flow or its secrets change. It is also kept on the stored row
+ * A shared sign-in that fails backs off (`failures`): the next ones fail at once with its error for 5 s, then
+ * 10 s, … up to 5 minutes, until one succeeds or the flow or its secrets change. It is also kept on the stored row
  * (`last_error`, status `reconnect`) for the resource's status card, whichever process ran it.
+ *
+ * A person's own variables come only from them signing in (`signInCustomFlow` with what they typed; nothing they
+ * typed is stored). Queries use them, refresh them with the refresh steps when they run out or an API answers 401,
+ * and otherwise fail with `auth_required` (`account: 'user'`, `flow: 'form'`), which the UI answers with the form.
  *
  * `store: false` keeps the variables in this source only (Test connection with unsaved settings).
  */
@@ -121,26 +138,37 @@ export function customAuthCredentials(
 }
 
 /**
- * Signs the flow in now with its sign-in steps (the status card's Sign in now): without waiting out a back-off,
- * and stored for the queries that follow. A failure is thrown and kept on the row as its last error, but variables
- * stored before stay in use (they may still work).
+ * Signs the flow in now with its sign-in steps and stores the variables for the queries that follow: the shared
+ * ones (the status card's Sign in now: without waiting out a back-off), or a person's own with what they typed into
+ * the form (`form`; a failure starts a back-off for them, so passwords can't be tried quickly through here). A
+ * failure is thrown and kept on the row as its last error, but variables stored before stay in use (they may still
+ * work).
  */
 export function signInCustomFlow(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
   target: CustomFlowTarget,
   signal: AbortSignal,
+  form?: AuthFormValues,
 ): Promise<void> {
-  return customFlow(deps, { ...target, store: true }).signInNow(signal)
+  return customFlow(deps, { ...target, store: true }).signInNow(signal, form)
 }
 
 function customFlow(
   deps: { db: Db; keyring: Keyring; sandbox: FlowSandbox },
   target: CustomFlowTarget & { store: boolean },
-): { source: CredentialSource; signInNow: (signal: AbortSignal) => Promise<void> } {
+): {
+  source: CredentialSource
+  signInNow: (signal: AbortSignal, form?: AuthFormValues) => Promise<void>
+} {
   const { db, keyring, sandbox } = deps
   const auth = target.config.auth as CustomAuth
+  const perUser = flowAsksEachPerson(auth.steps)
   const flowHash = customFlowHash(target.config)
-  const backoff = backoffKey(target.resourceConfigId, flowHash, target.secrets)
+  // A person's back-off is theirs (and doesn't depend on the secrets: they type their own).
+  const backoff =
+    perUser && target.userId !== null
+      ? `${target.resourceConfigId}:${flowHash}:user:${target.userId}`
+      : backoffKey(target.resourceConfigId, flowHash, target.secrets)
   const resource = { config: target.config, secrets: target.secrets }
 
   // A variable defined anywhere in the flow as secret stays secret.
@@ -162,6 +190,16 @@ function customFlow(
     ),
   })
   const expiresAt = () => (auth.ttlSeconds ? new Date(Date.now() + auth.ttlSeconds * 1000) : null)
+
+  /** What the UI needs to ask the person to sign in: whose sign-in, why, and for which resource and environment. */
+  const needSignIn = (reason: string, message: string) =>
+    new ConnectorError('auth_required', message, {
+      reason,
+      account: 'user',
+      flow: 'form',
+      resourceId: target.resourceId,
+      environmentId: target.environmentId,
+    })
 
   /** Signs in again: the refresh steps from `previous` when asked and possible, else (or if they fail) the steps. */
   async function signIn(
@@ -186,6 +224,21 @@ function customFlow(
   }
 
   if (!target.store) {
+    if (perUser) {
+      // Test connection: nobody typed anything, and a person's stored sign-in belongs to the saved settings.
+      return {
+        source: {
+          async authVariables() {
+            throw new ConnectorError(
+              'auth_required',
+              'This flow asks each person to sign in: save it, then sign in on the Sign-in card to try it.',
+              { reason: 'form_needed' },
+            )
+          },
+        },
+        signInNow: notStored,
+      }
+    }
     let memory: { variables: Record<string, unknown>; until: Date | null } | undefined
     return {
       source: {
@@ -201,6 +254,23 @@ function customFlow(
     }
   }
 
+  if (perUser && target.userId === null) {
+    const nobody = needSignIn(
+      'no_user',
+      'This resource asks each person to sign in, and nobody is behind this run. Use a resource that signs in on its own in workflows that run on their own.',
+    )
+    return {
+      source: {
+        async authVariables() {
+          throw nobody
+        },
+      },
+      signInNow: async () => {
+        throw nobody
+      },
+    }
+  }
+
   const usable = (row: OAuthToken | undefined): row is OAuthToken =>
     !!row &&
     row.consentHash === flowHash &&
@@ -210,12 +280,12 @@ function customFlow(
     decryptForRow<StoredVariables>(keyring, 'oauth_tokens', row, row.tokens).variables
   /** When the variables this source last handed out were stored (`updated_at`): a refresh replaces only those. */
   let handedOut: number | undefined
-  const lock = `ow_custom_auth:${target.resourceConfigId}`
+  const lock = `ow_custom_auth:${target.resourceConfigId}:${target.userId ?? 'shared'}`
   const load = async (q: Db | Tx) => {
     const [row] = await q
       .select()
       .from(oauthTokens)
-      .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), isNull(oauthTokens.userId)))
+      .where(and(eq(oauthTokens.resourceConfigId, target.resourceConfigId), ownedBy(target.userId)))
     return row
   }
 
@@ -244,7 +314,7 @@ function customFlow(
         id,
         resourceConfigId: target.resourceConfigId,
         environmentId: target.environmentId,
-        userId: null,
+        userId: target.userId,
         tokens,
         ...values,
       })
@@ -254,14 +324,22 @@ function customFlow(
 
   /**
    * Keeps a failed sign-in on the row (when there is one) for the status card: the message without the secret
-   * values or the variables it held. `unusable` also stops queries using its variables (a query needed them signed
-   * in again). `updated_at` stays: it says when the variables were stored, which refreshes compare.
+   * values, what was typed or the variables it held. `unusable` also stops queries using its variables (a query
+   * needed them signed in again). `updated_at` stays: it says when the variables were stored, which refreshes
+   * compare.
    */
-  async function storeFailure(tx: Tx, row: OAuthToken | undefined, err: unknown, unusable: boolean) {
+  async function storeFailure(
+    tx: Tx,
+    row: OAuthToken | undefined,
+    err: unknown,
+    unusable: boolean,
+    typed: AuthFormValues = {},
+  ) {
     if (!row) return
     const message = err instanceof Error ? err.message : String(err)
     const scrub = [
-      ...secretStrings(target.secrets.values),
+      ...secretStrings(target.secrets),
+      ...secretStrings(typed),
       ...(row.consentHash === flowHash ? secretStrings(decrypt(row)) : []),
     ]
     await tx
@@ -272,6 +350,61 @@ function customFlow(
         updatedAt: row.updatedAt,
       })
       .where(eq(oauthTokens.id, row.id))
+  }
+
+  /**
+   * A person's variables when a query can't use the stored ones: renewed with the refresh steps when there are some
+   * and the last ones worked (a failed refresh marks them so queries stop trying), else they sign in again.
+   */
+  async function renewOwn(tx: Tx, row: OAuthToken | undefined, signal: AbortSignal, force: boolean) {
+    if (!row) {
+      return {
+        error: needSignIn('not_connected', 'Sign in to this resource with your own details to use it.'),
+      }
+    }
+    if (row.consentHash !== flowHash) {
+      return {
+        error: needSignIn(
+          'settings_changed',
+          'Sign in to this resource again: its sign-in settings changed since you signed in.',
+        ),
+      }
+    }
+    if (row.status !== 'active' || !auth.refreshSteps.length) {
+      // An API refused variables still in date: they're dead, so queries stop sending them and the card says so.
+      if (force && row.status === 'active') {
+        await storeFailure(tx, row, new Error('An API refused the stored sign-in.'), true)
+      }
+      return {
+        error: needSignIn(
+          'expired',
+          force
+            ? 'An API refused your sign-in to this resource: sign in again.'
+            : 'Your sign-in to this resource ran out: sign in again.',
+        ),
+      }
+    }
+    const previous = decrypt(row)
+    try {
+      const renewed = await runAuthFlow(resource, auth.refreshSteps, { sandbox, signal, previous })
+      const next = { ...previous, ...renewed }
+      handedOut = await store(tx, row, next)
+      return { variables: next }
+    } catch (err) {
+      if (signal.aborted) throw err
+      await storeFailure(tx, row, err, true)
+      // The refresh's error may quote the variables it started from (a refresh token): never in the query's error.
+      const why = scrubSecrets(err instanceof Error ? err.message : String(err), [
+        ...secretStrings(target.secrets),
+        ...secretStrings(previous),
+      ])
+      return {
+        error: needSignIn(
+          'expired',
+          `Your sign-in to this resource ran out and couldn't be renewed: sign in again. (${why})`,
+        ),
+      }
+    }
   }
 
   return {
@@ -293,6 +426,7 @@ function customFlow(
             handedOut = row.updatedAt.getTime()
             return { variables: decrypt(row) }
           }
+          if (perUser) return renewOwn(tx, row, signal, !!force)
 
           const previous = row && row.consentHash === flowHash ? decrypt(row) : undefined
           checkBackoff(backoff)
@@ -314,15 +448,28 @@ function customFlow(
       },
     },
 
-    async signInNow(signal) {
+    async signInNow(signal, form) {
+      if (perUser) checkBackoff(backoff)
       const outcome = await withRefreshLock(db, lock, signal, async (tx) => {
+        // Again under the lock: attempts that were waiting for it see a failure the one before them just had, so
+        // sending many at once doesn't try many passwords.
+        if (perUser) {
+          try {
+            checkBackoff(backoff)
+          } catch (err) {
+            return { error: err }
+          }
+        }
         const row = await load(tx)
         let next: Record<string, unknown>
         try {
-          next = await runAuthFlow(resource, auth.steps, { sandbox, signal })
+          next = await runAuthFlow(resource, auth.steps, { sandbox, signal, ...(perUser && { form }) })
         } catch (err) {
           if (signal.aborted) throw err
-          await storeFailure(tx, row, err, false)
+          // Not having typed anything isn't a failed attempt.
+          const attempted = !(err instanceof ConnectorError && err.details?.reason === 'form_needed')
+          if (perUser && attempted) recordFailure(backoff, err)
+          if (attempted) await storeFailure(tx, row, err, false, form)
           return { error: err }
         }
         failures.delete(backoff)
@@ -335,10 +482,10 @@ function customFlow(
 }
 
 /**
- * What the status card shows about a config's shared sign-in; never the variables. `state`: `none` (not signed in
- * yet), `signedIn`, `expired` (its time ran out: the next query signs in), `settingsChanged` (the flow changed
- * since: the next query signs in), or `failed` (the last sign-in a query needed failed: `lastError`). A failed
- * Sign in now leaves the variables in use, with its `lastError`.
+ * What the status card shows about one sign-in (the shared one, or a person's own); never the variables. `state`:
+ * `none` (not signed in yet), `signedIn`, `expired` (its time ran out: the next query signs in, or renews a
+ * person's), `settingsChanged` (the flow changed since), or `failed` (the last sign-in a query needed failed:
+ * `lastError`). A failed Sign in now leaves the variables in use, with its `lastError`.
  */
 export interface CustomFlowStatus {
   state: 'none' | 'signedIn' | 'expired' | 'settingsChanged' | 'failed'
@@ -351,11 +498,12 @@ export async function customFlowStatus(
   db: Db,
   resourceConfigId: string,
   flowHash: string,
+  userId: string | null = null,
 ): Promise<CustomFlowStatus> {
   const [row] = await db
     .select()
     .from(oauthTokens)
-    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), isNull(oauthTokens.userId)))
+    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), ownedBy(userId)))
   if (!row) return { state: 'none', signedInAt: null, expiresAt: null, lastError: null }
   const state =
     row.consentHash !== flowHash
@@ -373,11 +521,27 @@ export async function customFlowStatus(
   }
 }
 
-/** Forgets a config's shared sign-in (Sign out): the next query signs in again. Returns whether there was one. */
-export async function signOutCustomFlow(db: Db, resourceConfigId: string): Promise<boolean> {
+/** How many people have signed in with their own details (a flow with a form step), for people with Edit. */
+export async function countSignedInPeople(db: Db, resourceConfigId: string): Promise<number> {
+  const [counted] = await db
+    .select({ n: count() })
+    .from(oauthTokens)
+    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), isNotNull(oauthTokens.userId)))
+  return counted?.n ?? 0
+}
+
+/**
+ * Forgets a sign-in (Sign out): the shared one (the next query signs in again) or a person's own (they sign in
+ * again). Returns whether there was one.
+ */
+export async function signOutCustomFlow(
+  db: Db,
+  resourceConfigId: string,
+  userId: string | null = null,
+): Promise<boolean> {
   const removed = await db
     .delete(oauthTokens)
-    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), isNull(oauthTokens.userId)))
+    .where(and(eq(oauthTokens.resourceConfigId, resourceConfigId), ownedBy(userId)))
     .returning({ id: oauthTokens.id })
   return removed.length > 0
 }

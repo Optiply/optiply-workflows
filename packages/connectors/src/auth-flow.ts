@@ -1,5 +1,13 @@
+import { scrubSecrets, scrubSecretsDeep } from '@ow/crypto'
 import { type Evaluate, renderTemplate } from '@ow/expressions'
-import { type AuthFlowStep, type RestConfig, type RestSecrets, restConnector } from './rest'
+import {
+  type AuthFlowStep,
+  type AuthFormValues,
+  FORM_VALUE_MAX,
+  type RestConfig,
+  type RestSecrets,
+  restConnector,
+} from './rest'
 import { ConnectorError } from './types'
 
 /** What a custom auth flow needs from the sandbox (the server's `CodeRuntime`). */
@@ -24,12 +32,38 @@ const STEP_TIMEOUT_MS = 30_000
  * step's return value, a variable's value. Requests go through the REST connector against the resource's base URL,
  * allowed hosts and network settings, without its default headers and parameters (they may need `auth`) or auth.
  * A failing step fails the flow with `auth_required`, naming the step.
+ *
+ * A form step's result is what the person typed (`form`, by step name: each field a string, missing ones empty).
+ * Without values for every form step, the flow fails before any step runs (`reason: 'form_needed'`). Typed values
+ * are scrubbed from the failure (an API may echo them back).
  */
 export async function runAuthFlow(
   resource: { config: RestConfig; secrets: RestSecrets },
   steps: readonly AuthFlowStep[],
-  opts: { sandbox: FlowSandbox; signal: AbortSignal; previous?: Record<string, unknown> },
+  opts: {
+    sandbox: FlowSandbox
+    signal: AbortSignal
+    previous?: Record<string, unknown>
+    form?: AuthFormValues
+  },
 ): Promise<Record<string, unknown>> {
+  // Only what was sent: a step or field named like an Object member (`constructor`) mustn't read the prototype's.
+  const own = <T>(record: Record<string, T> | undefined, key: string): T | undefined =>
+    record && Object.hasOwn(record, key) ? record[key] : undefined
+  const typedValue = (step: string, field: string) =>
+    String(own(own(opts.form, step), field) ?? '').slice(0, FORM_VALUE_MAX)
+  const formSteps = steps.filter((s) => s.type === 'form')
+  const missing = formSteps.find((s) => {
+    const values = own(opts.form, s.name)
+    return !values || typeof values !== 'object'
+  })
+  if (missing) {
+    throw new ConnectorError('auth_required', 'Sign in with your own details to use this resource.', {
+      reason: 'form_needed',
+      step: missing.name,
+    })
+  }
+  const typed = formSteps.flatMap((s) => s.fields.map((f) => typedValue(s.name, f.name)))
   const variables: Record<string, unknown> = {}
   const scope: Record<string, unknown> = {
     secrets: { ...resource.secrets.values },
@@ -67,6 +101,11 @@ export async function runAuthFlow(
           case 'code':
             scope[step.name] = await opts.sandbox.runCode(step.code, scope, { timeoutMs: STEP_TIMEOUT_MS })
             break
+          case 'form':
+            scope[step.name] = Object.fromEntries(
+              step.fields.map((f) => [f.name, typedValue(step.name, f.name)]),
+            )
+            break
           case 'variable': {
             const value = await renderTemplate(step.value, evaluate)
             scope[step.name] = value
@@ -80,12 +119,12 @@ export async function runAuthFlow(
         const inner = err instanceof ConnectorError ? err : undefined
         throw new ConnectorError(
           'auth_required',
-          `Signing in failed at step "${step.name}": ${(err as Error).message}`,
+          scrubSecrets(`Signing in failed at step "${step.name}": ${(err as Error).message}`, typed),
           {
             reason: 'flow_failed',
             step: step.name,
             ...(inner?.details?.status !== undefined && { status: inner.details.status }),
-            ...(inner?.details?.body !== undefined && { body: inner.details.body }),
+            ...(inner?.details?.body !== undefined && { body: scrubSecretsDeep(inner.details.body, typed) }),
           },
         )
       }
