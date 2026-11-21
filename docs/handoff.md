@@ -2031,7 +2031,7 @@ with the review agents first.
    the write isn't rolled back. Tests: server `custom-auth.test.ts` 12/12 (+3), with oauth-*, resources 76 passed;
    e2e `custom-auth.spec.ts` (new: multipart + the card), with `resource-secrets` and `connectors` ×3: 27 passed.
 3. **Form step**, split in two:
-   - **3a, server** (this step): a `form` step (`rest.ts`: `{ name, title, fields: [{ name, label, kind: text|password }] }`,
+   - **3a, server** ✅ `308f078`: a `form` step (`rest.ts`: `{ name, title, fields: [{ name, label, kind: text|password }] }`,
      not in refresh steps; `flowAsksEachPerson`). A flow with one keeps **each person's own** variables
      (`oauth_tokens.user_id`, no migration; changing the flow still deletes all). `runAuthFlow` takes `form` (what was
      typed, by step then field, own properties only, scrubbed from failures; none → `form_needed`). `custom-auth.ts`:
@@ -2047,9 +2047,19 @@ with the review agents first.
      the tests checked to fail without their fix). Tests: connectors `auth-flow.test.ts` 16/16, server
      `custom-auth.test.ts` 23/23; with oauth-*, resources, graphql, connectors, apps-only, access: 124 passed;
      connectors package 408 passed.
-   - **3b, web** (next): the form step in the step editor; the Sign-in card for per-person flows (your own
-     sign-in, the count for Edit); a sign-in dialog wherever a query asks (`AuthRequiredNote` opens the form for
-     `flow: 'form'`, in apps with `appId`); e2e and screenshots; user/admin guide.
+   - **3b, web** (this step): the **Form** step in the step editor (sign-in steps only: title, fields with name,
+     label and Text/Password; default username + password); `CustomSignInDialog` (`components/custom-sign-in.tsx`:
+     the flow's fields, password fields as `SecretInput`, Enter signs in, the server's error shown);
+     `AuthRequiredNote` opens it for `flow: 'form'` (**Sign in** / **Sign in again**; with `appId` in apps, so the
+     app's queries run again after); the Sign-in card's per-person version (**Your sign-in**, Sign in / Sign in
+     again, Sign out, "N people have signed in here" for Edit). e2e `custom-auth.spec.ts` +2 (the editor; signing in
+     from a query's note with a wrong then right password, the card, Sign out, Enter) — with resource-secrets,
+     connectors, m9-done-when, bigquery, apps-only: 16 passed; web unit 160 passed. Screens in the scratchpad
+     (`shots/3-*`). Docs: user guide "Resources that sign in with a custom auth flow" (3.5), architecture §2.12
+     notes; PDFs rebuilt.
+4. **Before the PR** (the user away, 2026-11-21: "build, fix, run both subagents, commit, push, PR, merge, deploy,
+   all green"): security-auditor + bug-hunter on the branch, fixes, push, PR, CI green, merge, deploy by hand (a
+   Saturday: no 18:00 run), check the deploy.
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 

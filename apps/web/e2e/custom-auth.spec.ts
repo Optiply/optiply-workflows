@@ -112,3 +112,106 @@ test('the sign-in card signs in now, shows the last failure and signs out', asyn
   await expect(card).toContainText('Not signed in')
   await expect(card.getByRole('button', { name: 'Sign out' })).toHaveCount(0)
 })
+
+/** A flow asking each person for their own details: a form, the API's login with what they typed, the session. */
+const formConfig = () => ({
+  ...flowConfig(),
+  auth: {
+    type: 'custom',
+    steps: [
+      {
+        type: 'form',
+        name: 'signin',
+        title: 'Sign in with your Partner account',
+        fields: [
+          { name: 'username', label: 'Username', kind: 'text' },
+          { name: 'password', label: 'Password', kind: 'password' },
+        ],
+      },
+      {
+        type: 'request',
+        name: 'login',
+        method: 'POST',
+        path: 'login',
+        body: { type: 'json', json: '{"user": {{ signin.username }}, "password": {{ signin.password }}}' },
+      },
+      { type: 'variable', name: 'session', value: '{{ login.data.session }}' },
+    ],
+  },
+})
+
+async function formResource(page: Parameters<typeof signIn>[0]) {
+  const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type: 'rest',
+    name: 'Partner portal',
+    slug: `portal_${Date.now().toString(36)}`,
+  })
+  const environments = await trpcQuery<{ id: string; slug: string }[]>(page, 'environments.list', undefined)
+  await trpcMutate(page, 'resources.saveConfig', {
+    resourceId: resource.id,
+    environmentId: environments.find((e) => e.slug === 'production')!.id,
+    config: formConfig(),
+    secrets: { values: {} },
+  })
+  return resource
+}
+
+test('a form step can be added to the sign-in steps, not the refresh steps', async ({ page }) => {
+  await signIn(page)
+  const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
+    type: 'rest',
+    name: 'Form flow',
+    slug: `formflow_${Date.now().toString(36)}`,
+  })
+  await page.goto(`/resources/${resource.id}`)
+  await page.getByRole('combobox', { name: 'Authentication' }).selectOption('custom')
+  await page.getByRole('button', { name: 'Sign-in form' }).click()
+  await expect(page.getByLabel('Sign-in step 1 field 1 name')).toHaveValue('username')
+  await expect(page.getByLabel('Sign-in step 1 field 2 kind')).toHaveValue('password')
+  await page.getByLabel('Sign-in step 1 title').fill('Sign in with your Acme account')
+  await expect(page.getByRole('button', { name: 'Refresh form' })).toHaveCount(0)
+})
+
+test('each person signs in with the form: from the card, and when a query asks', async ({ page }) => {
+  password = 'Right-Pass-123'
+  await signIn(page)
+  const resource = await formResource(page)
+  await page.goto(`/resources/${resource.id}`)
+
+  // A query asks for the sign-in, and signing in from there lets it run.
+  await page.getByRole('button', { name: 'Run' }).click()
+  const note = page.getByRole('alert').filter({ hasText: 'Sign in to this resource with your own details' })
+  await expect(note).toBeVisible()
+  await note.getByRole('button', { name: 'Sign in' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Sign in to Partner portal')
+  await expect(dialog).toContainText('Sign in with your Partner account')
+  await dialog.getByLabel('Username').fill('ada')
+  await dialog.getByLabel('Password').fill('Wrong-Pass-000')
+  await dialog.getByRole('button', { name: 'Sign in' }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Signing in failed at step "login": HTTP 401')
+  await expect(dialog).not.toContainText('Wrong-Pass-000')
+  // Wait out the back-off a failed attempt starts (5 s), then the right password.
+  await page.waitForTimeout(5500)
+  await dialog.getByLabel('Password').fill('Right-Pass-123')
+  await dialog.getByRole('button', { name: 'Sign in' }).click()
+  await expect(dialog).toHaveCount(0)
+  await page.getByRole('button', { name: 'Run' }).click()
+  await expect(note).toHaveCount(0)
+
+  // The card: your own sign-in, how many people signed in, and signing out.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  const card = page.getByRole('region', { name: 'Sign-in status' })
+  await expect(card.getByRole('heading', { name: 'Your sign-in' })).toBeVisible()
+  await expect(card.getByText('Signed in', { exact: true })).toBeVisible()
+  await expect(card).toContainText('1 person has signed in here.')
+  await card.getByRole('button', { name: 'Sign out' }).click()
+  await page.getByTestId('confirm-ok').click()
+  await expect(card).toContainText('You haven’t signed in here yet.')
+  await card.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.getByRole('dialog').getByLabel('Username').fill('ada')
+  await page.getByRole('dialog').getByLabel('Password').fill('Right-Pass-123')
+  await page.getByRole('dialog').getByLabel('Password').press('Enter')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(card).toContainText('Signed in.')
+})

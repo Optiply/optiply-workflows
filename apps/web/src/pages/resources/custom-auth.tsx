@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, KeyRound, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { confirmDialog } from '@/components/confirm'
+import { CustomSignInDialog } from '@/components/custom-sign-in'
 import { type MultipartPart, MultipartParts } from '@/components/multipart-parts'
 import { Badge, Button, Card, Checkbox, ErrorNote, Field, Input, Select, Textarea } from '@/components/ui'
 import { useTRPC } from '@/lib/trpc'
@@ -27,6 +28,8 @@ type Step =
     }
   | { type: 'code'; name: string; code: string }
   | { type: 'variable'; name: string; value: string; secret?: boolean }
+  | { type: 'form'; name: string; title: string; fields: FormField[] }
+type FormField = { name: string; label: string; kind: 'text' | 'password' }
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
@@ -53,10 +56,31 @@ function newStep(type: Step['type'], name: string): Step {
       return { type, name, code: 'return ' }
     case 'variable':
       return { type, name, value: '', secret: true }
+    case 'form':
+      return {
+        type,
+        name,
+        title: '',
+        fields: [
+          { name: 'username', label: 'Username', kind: 'text' },
+          { name: 'password', label: 'Password', kind: 'password' },
+        ],
+      }
   }
 }
 
-const DEFAULT_NAMES: Record<Step['type'], string> = { request: 'login', code: 'result', variable: 'token' }
+const DEFAULT_NAMES: Record<Step['type'], string> = {
+  request: 'login',
+  code: 'result',
+  variable: 'token',
+  form: 'signin',
+}
+const STEP_LABELS: Record<Step['type'], string> = {
+  request: 'Request',
+  code: 'Code',
+  variable: 'Variable',
+  form: 'Form',
+}
 
 /**
  * A custom auth flow: secret values, the sign-in steps, optional refresh steps and how long the variables last.
@@ -97,9 +121,11 @@ export function CustomAuthFields({
       />
       <StepsEditor
         label="Sign-in steps"
+        hint="A Form step asks each person for their own details (e.g. {{ signin.username }}): the variables are then each person's own, and workflows that run on their own can't use the resource."
         steps={(auth.steps as Step[] | undefined) ?? []}
         onChange={(steps) => setAuth({ steps })}
         disabled={disabled}
+        allowForm
       />
       <StepsEditor
         label="Refresh steps"
@@ -133,13 +159,19 @@ function StepsEditor({
   steps,
   onChange,
   disabled,
+  allowForm = false,
 }: {
   label: string
   hint?: string
   steps: Step[]
   onChange: (steps: Step[]) => void
   disabled: boolean
+  /** Sign-in steps may ask for a form; refresh steps run with nobody there to fill one in. */
+  allowForm?: boolean
 }) {
+  const types: Step['type'][] = allowForm
+    ? ['request', 'code', 'variable', 'form']
+    : ['request', 'code', 'variable']
   const prefix = label.split(' ')[0]!
   const update = (i: number, step: Step) => onChange(steps.map((s, j) => (i === j ? step : s)))
   const move = (i: number, by: number) => {
@@ -168,9 +200,11 @@ function StepsEditor({
                 disabled={disabled}
                 onChange={(e) => update(i, newStep(e.target.value as Step['type'], step.name))}
               >
-                <option value="request">Request</option>
-                <option value="code">Code</option>
-                <option value="variable">Variable</option>
+                {types.map((type) => (
+                  <option key={type} value={type}>
+                    {STEP_LABELS[type]}
+                  </option>
+                ))}
               </Select>
               <Input
                 aria-label={`${at} name`}
@@ -223,6 +257,9 @@ function StepsEditor({
                 onChange={(e) => update(i, { ...step, code: e.target.value })}
               />
             )}
+            {step.type === 'form' && (
+              <FormStep at={at} step={step} onChange={(s) => update(i, s)} disabled={disabled} />
+            )}
             {step.type === 'variable' && (
               <div className="space-y-2">
                 <Input
@@ -246,7 +283,7 @@ function StepsEditor({
       })}
       {!disabled && (
         <div className="flex flex-wrap gap-1">
-          {(['request', 'code', 'variable'] as const).map((type) => (
+          {types.map((type) => (
             <Button
               key={type}
               size="sm"
@@ -259,6 +296,94 @@ function StepsEditor({
         </div>
       )}
     </section>
+  )
+}
+
+/** A form step: an optional title and the fields each person fills in (`{{ <step>.<field> }}` in later steps). */
+function FormStep({
+  at,
+  step,
+  onChange,
+  disabled,
+}: {
+  at: string
+  step: Extract<Step, { type: 'form' }>
+  onChange: (step: Step) => void
+  disabled: boolean
+}) {
+  const setField = (i: number, field: FormField) =>
+    onChange({ ...step, fields: step.fields.map((f, j) => (i === j ? field : f)) })
+  return (
+    <div className="space-y-3">
+      <Input
+        aria-label={`${at} title`}
+        placeholder="Title, e.g. Sign in with your Acme account (optional)"
+        value={step.title}
+        disabled={disabled}
+        onChange={(e) => onChange({ ...step, title: e.target.value })}
+      />
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-muted">Fields</p>
+        {step.fields.map((field, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: fields are edited in place; names change as people type
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <Input
+              aria-label={`${at} field ${i + 1} name`}
+              className="w-40 font-mono"
+              placeholder="username"
+              value={field.name}
+              disabled={disabled}
+              onChange={(e) => setField(i, { ...field, name: e.target.value })}
+            />
+            <Input
+              aria-label={`${at} field ${i + 1} label`}
+              className="min-w-40 flex-1"
+              placeholder="Label people see"
+              value={field.label}
+              disabled={disabled}
+              onChange={(e) => setField(i, { ...field, label: e.target.value })}
+            />
+            <Select
+              aria-label={`${at} field ${i + 1} kind`}
+              className="w-32"
+              value={field.kind}
+              disabled={disabled}
+              onChange={(e) => setField(i, { ...field, kind: e.target.value as FormField['kind'] })}
+            >
+              <option value="text">Text</option>
+              <option value="password">Password</option>
+            </Select>
+            {!disabled && (
+              <Button
+                size="icon"
+                variant="ghost"
+                title={`Remove field ${i + 1}`}
+                disabled={step.fields.length === 1}
+                onClick={() => onChange({ ...step, fields: step.fields.filter((_, j) => j !== i) })}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            )}
+          </div>
+        ))}
+        {!disabled && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              onChange({ ...step, fields: [...step.fields, { name: '', label: '', kind: 'text' }] })
+            }
+          >
+            <Plus className="size-4" /> Field
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-muted">
+        Later steps read the values as{' '}
+        <code>{`{{ ${step.name || 'signin'}.${step.fields[0]?.name || 'username'} }}`}</code>. What people
+        type is sent to sign in and never stored.
+      </p>
+    </div>
   )
 }
 
@@ -407,12 +532,22 @@ const STATE_TEXT = {
   failed: 'The last sign-in a query needed failed. Queries try again (waiting longer after each failure).',
 } as const
 
+/** The same, for a flow asking each person for their own details: only they can sign in again. */
+const OWN_STATE_TEXT = {
+  none: 'You haven’t signed in here yet.',
+  signedIn: null,
+  expired: 'Your sign-in ran out: queries renew it if the flow can, else sign in again.',
+  settingsChanged: 'The sign-in flow changed since you signed in: sign in again.',
+  failed: 'Your sign-in stopped working: sign in again.',
+} as const
+
 const when = (value: string | Date) => new Date(value).toLocaleString()
 
 /**
  * A custom auth flow's sign-in in one environment: whether it's signed in, since and until when, the variables it
  * defines, and the last failure. People with Edit sign in now (to check the flow, or after fixing a password) or
- * sign out (the next query signs in again). Uses the saved settings.
+ * sign out (the next query signs in again). Uses the saved settings. On a flow with a form step it's the viewer's own
+ * sign-in: they sign in with the form (and out), and people with Edit see how many people have.
  */
 export function CustomAuthStatus({
   resource,
@@ -428,6 +563,7 @@ export function CustomAuthStatus({
   const env = data?.environments.find((e) => e.environmentId === environmentId)
   const refresh = () => queryClient.invalidateQueries({ queryKey: options.queryKey })
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
   const signIn = useMutation(
     trpc.resources.customAuthSignIn.mutationOptions({
       onSuccess: async (result) => {
@@ -447,17 +583,19 @@ export function CustomAuthStatus({
   if (!env?.status) return null
 
   const status = env.status
+  const own = env.perUser
   const badge = STATE_BADGE[status.state]
-  const text = STATE_TEXT[status.state]
+  const text = (own ? OWN_STATE_TEXT : STATE_TEXT)[status.state]
   return (
     <Card className="space-y-4 p-5" role="region" aria-label="Sign-in status">
       <div className="flex items-start gap-3">
         <KeyRound className="mt-0.5 size-5 shrink-0 text-accent" />
         <div className="flex-1 space-y-1">
-          <h2 className="font-semibold">Sign-in</h2>
+          <h2 className="font-semibold">{own ? 'Your sign-in' : 'Sign-in'}</h2>
           <p className="text-sm text-muted">
-            The custom auth flow’s variables, shared by every query in this environment, including workflows
-            that run on their own.
+            {own
+              ? 'Each person signs in with their own details, and their queries here use their own sign-in. Workflows that run on their own can’t use this resource.'
+              : 'The custom auth flow’s variables, shared by every query in this environment, including workflows that run on their own.'}
           </p>
         </div>
         <Badge tone={badge.tone}>{badge.label}</Badge>
@@ -472,7 +610,7 @@ export function CustomAuthStatus({
         )}
         {status.state === 'signedIn' && (
           <>
-            <dt className="text-muted">Signs in again</dt>
+            <dt className="text-muted">{own ? 'Runs out' : 'Signs in again'}</dt>
             <dd>{status.expiresAt ? when(status.expiresAt) : 'When an API answers 401'}</dd>
           </>
         )}
@@ -482,6 +620,11 @@ export function CustomAuthStatus({
         </dd>
       </dl>
       {text && <p className="text-sm text-muted">{text}</p>}
+      {env.signedInPeople !== null && (
+        <p className="text-sm text-muted">
+          {env.signedInPeople === 1 ? '1 person has' : `${env.signedInPeople} people have`} signed in here.
+        </p>
+      )}
       {status.lastError && (
         <p className="text-sm text-danger">
           {status.state === 'failed' ? 'Why: ' : 'The last sign-in failed: '}
@@ -491,26 +634,40 @@ export function CustomAuthStatus({
 
       {env.canSignIn && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            loading={signIn.isPending}
-            onClick={() => {
-              setMessage(null)
-              signIn.mutate({ resourceId: resource.id, environmentId })
-            }}
-          >
-            Sign in now
-          </Button>
+          {own ? (
+            <Button
+              variant="primary"
+              onClick={() => {
+                setMessage(null)
+                setFormOpen(true)
+              }}
+            >
+              {status.state === 'none' ? 'Sign in' : 'Sign in again'}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              loading={signIn.isPending}
+              onClick={() => {
+                setMessage(null)
+                signIn.mutate({ resourceId: resource.id, environmentId })
+              }}
+            >
+              Sign in now
+            </Button>
+          )}
           {status.state !== 'none' && (
             <Button
               variant="danger"
               loading={signOut.isPending}
               onClick={async () => {
                 if (
-                  await confirmDialog('Sign out? The next query signs in again.', {
-                    confirm: 'Sign out',
-                    danger: true,
-                  })
+                  await confirmDialog(
+                    own
+                      ? 'Sign out? Your queries here will ask you to sign in again.'
+                      : 'Sign out? The next query signs in again.',
+                    { confirm: 'Sign out', danger: true },
+                  )
                 ) {
                   signOut.mutate({ resourceId: resource.id, environmentId })
                 }
@@ -521,6 +678,17 @@ export function CustomAuthStatus({
           )}
           <span className="text-xs text-muted">Uses the saved settings.</span>
         </div>
+      )}
+      {formOpen && (
+        <CustomSignInDialog
+          resourceId={resource.id}
+          environmentId={environmentId}
+          onClose={() => setFormOpen(false)}
+          onSignedIn={() => {
+            setFormOpen(false)
+            setMessage({ ok: true, text: 'Signed in.' })
+          }}
+        />
       )}
       {/* A failure kept on the row shows above; one that left nothing to keep it on (not signed in yet) shows here. */}
       {message && (message.ok || message.text !== status.lastError) && (
