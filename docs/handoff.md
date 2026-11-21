@@ -2885,8 +2885,8 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is merged as `086423c` and **live**:
 **production runs `9dc6fec`** (rollback `da8961b`), deployed by hand after the user granted the Cloud Build bucket
 read (§14 "Session 61" step 4); `656ac79` removed (the VM and the registry keep `9dc6fec` + `da8961b`). Monday
-18:00 rebuilds `086423c` once (harmless). **Left for the user:** re-upload `10-platform-user-guide.md` to the
-specialist Project.
+18:00 rebuilds `086423c` once (harmless). The specialist Project has the new `10-platform-user-guide.md` (the user
+re-uploaded it). Nothing is left open from session 61.
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
