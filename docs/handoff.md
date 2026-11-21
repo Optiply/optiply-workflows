@@ -2078,8 +2078,14 @@ with the review agents first.
      grant is the user's call anyway. **The fix (the user):**
      `gcloud storage buckets add-iam-policy-binding gs://optiply-workflows_cloudbuild --project optiply-workflows --member=serviceAccount:961583540192-compute@developer.gserviceaccount.com --role=roles/storage.objectViewer`,
      then Actions → Deploy → Run workflow (on `main`). **Until then every deploy fails at the build, Monday's 18:00 run
-     too.** After a green deploy: `.current-tag` `086423c`, `.previous-tag` `da8961b`; remove `656ac79` from the VM
-     and the registry (read both tags first; keep two).
+     too.**
+   - **Then (the user granted it):** a run with the tag field set to the full hash of `086423c` (44956486276) skipped
+     the build and found no images (that tag was never built; tags are 7 characters): nothing changed, health 200.
+     The right run, **Deploy on `main` with the tag empty (44957392695), is green**: built and deployed `9dc6fec`
+     (`086423c` + the handoff, same app code), migrations ran, health 200, the site serves the new Sign-in card and
+     dialog. **Production runs `9dc6fec`** (rollback `da8961b`). Monday 18:00 rebuilds `086423c` once (the newest
+     commit CI passed: `9dc6fec` is docs-only), harmless. **Left:** remove `656ac79` from the VM and the registry
+     (read both tags first; keep `9dc6fec` + `da8961b`): my local `gcloud` login had expired.
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 
@@ -2874,13 +2880,10 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 ## 15. How to start the next session
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
-Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is **merged as `086423c`**, `main`'s CI
-green. **Its deploy failed at the build** (§14 "Session 61" step 4): the build account can't read the Cloud Build
-bucket since it went to uniform access on 2026-11-20. **First:** run the one `gcloud … add-iam-policy-binding` there
-(`roles/storage.objectViewer` for `961583540192-compute@developer.gserviceaccount.com` on
-`gs://optiply-workflows_cloudbuild`), then Deploy → Run workflow on `main`, check it's green, `.current-tag` =
-`086423c`, health 200, then remove `656ac79` (keep `086423c` + `da8961b`). Until the grant, every deploy fails at the
-build (Monday 18:00 too). **Production runs `da8961b`** (rollback `656ac79`).
+Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is merged as `086423c` and **live**:
+**production runs `9dc6fec`** (rollback `da8961b`), deployed by hand after the user granted the Cloud Build bucket
+read (§14 "Session 61" step 4). Monday 18:00 rebuilds `086423c` once (harmless). **Left:** remove `656ac79` from the VM
+and the registry (read both tags first; keep two); re-upload `10-platform-user-guide.md` to the specialist Project.
 
 - **Rules now in `AGENTS.md`:** both review agents before every PR; PRs for anything that runs, docs-only changes
   straight to `main` (not right before or during a hand deploy).
