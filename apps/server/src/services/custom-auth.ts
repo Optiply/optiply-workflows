@@ -32,6 +32,11 @@ const EXPRESSION_TIMEOUT_MS = 5_000
 const BACKOFF_START_MS = 5_000
 const BACKOFF_MAX_MS = 5 * 60_000
 const BACKOFF_KEYS = 1000
+/**
+ * A person's own sign-in failures count until this long has passed without one, whatever succeeds in between: someone
+ * with their own working login can't sign in between guesses at another person's password to keep the wait at 5 s.
+ */
+const PERSONAL_WINDOW_MS = 60 * 60_000
 
 /**
  * Sign-in failures per flow, in this process: until `until`, sign-ins aren't tried again and fail with the last
@@ -39,7 +44,7 @@ const BACKOFF_KEYS = 1000
  * config, the flow and its secrets: a fixed password or a changed flow tries again at once. Test connection
  * (`store: false`) always tries.
  */
-const failures = new Map<string, { count: number; until: number; error: ConnectorError }>()
+const failures = new Map<string, { count: number; until: number; error: ConnectorError; personal: boolean }>()
 
 function backoffKey(resourceConfigId: string, flowHash: string, secrets: RestSecrets): string {
   const secretsHash = createHash('sha256').update(JSON.stringify(secrets)).digest('base64url')
@@ -53,13 +58,15 @@ function checkBackoff(key: string): void {
   const seconds = Math.ceil((failed.until - Date.now()) / 1000)
   throw new ConnectorError(
     failed.error.code,
-    `${failed.error.message} (failed ${failed.count} time${failed.count === 1 ? '' : 's'} in a row; signing in again in ${seconds} s)`,
+    `${failed.error.message} (failed ${failed.count} time${failed.count === 1 ? '' : 's'} ${failed.personal ? 'in the last hour' : 'in a row'}; signing in again in ${seconds} s)`,
     { ...failed.error.details, retryAt: new Date(failed.until).toISOString() },
   )
 }
 
-function recordFailure(key: string, err: unknown): void {
-  const previous = failures.get(key)
+/** `personal`: a person's own sign-in, whose failures count within `PERSONAL_WINDOW_MS` (a success doesn't reset them). */
+function recordFailure(key: string, err: unknown, personal = false): void {
+  const fresh = failures.get(key)
+  const previous = fresh && (!personal || Date.now() - fresh.until < PERSONAL_WINDOW_MS) ? fresh : undefined
   const count = (previous?.count ?? 0) + 1
   const error =
     err instanceof ConnectorError
@@ -71,6 +78,7 @@ function recordFailure(key: string, err: unknown): void {
     count,
     until: Date.now() + Math.min(BACKOFF_START_MS * 2 ** (count - 1), BACKOFF_MAX_MS),
     error,
+    personal,
   })
 }
 
@@ -336,7 +344,14 @@ function customFlow(
     typed: AuthFormValues = {},
   ) {
     if (!row) return
-    const message = err instanceof Error ? err.message : String(err)
+    // After a person typed their details, only which step failed and how: an API or a step may quote what they typed
+    // in a form no scrubbing matches (encoded, escaped, cut short), and this is kept.
+    const details = err instanceof ConnectorError ? err.details : undefined
+    const message = Object.keys(typed).length
+      ? `Signing in failed${typeof details?.step === 'string' ? ` at step "${details.step}"` : ''}${typeof details?.status === 'number' ? `: HTTP ${details.status}` : ''}`
+      : err instanceof Error
+        ? err.message
+        : String(err)
     const scrub = [
       ...secretStrings(target.secrets),
       ...secretStrings(typed),
@@ -468,11 +483,12 @@ function customFlow(
           if (signal.aborted) throw err
           // Not having typed anything isn't a failed attempt.
           const attempted = !(err instanceof ConnectorError && err.details?.reason === 'form_needed')
-          if (perUser && attempted) recordFailure(backoff, err)
+          if (perUser && attempted) recordFailure(backoff, err, true)
           if (attempted) await storeFailure(tx, row, err, false, form)
           return { error: err }
         }
-        failures.delete(backoff)
+        // A person's failures keep counting for the hour (see PERSONAL_WINDOW_MS); a shared flow's start over.
+        if (!perUser) failures.delete(backoff)
         await store(tx, row, next)
         return { ok: true as const }
       })

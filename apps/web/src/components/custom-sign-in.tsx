@@ -30,13 +30,14 @@ export function CustomSignInDialog({
   const signIn = useMutation(
     trpc.resources.customAuthSignIn.mutationOptions({
       onSuccess: async (result) => {
+        // A failure is kept on the person's sign-in too (the card's "last sign-in failed").
+        await queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthStatus.queryKey() })
+        await queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthForm.queryKey() })
         if (!result.ok) {
           setProblem(result.error.message)
           return
         }
         setValues({})
-        await queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthStatus.queryKey() })
-        await queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthForm.queryKey() })
         onSignedIn()
       },
     }),
@@ -46,6 +47,8 @@ export function CustomSignInDialog({
     setValues((v) => ({ ...v, [step]: { ...v[step], [field]: value } }))
   const submit = (e?: FormEvent) => {
     e?.preventDefault()
+    // One attempt at a time: a second would sign in again (or meet the back-off) behind the first.
+    if (signIn.isPending) return
     setProblem(null)
     // Every form step gets its values, empty ones included: the server asks again for any step left out.
     const typed = Object.fromEntries(steps.map((s) => [s.step, values[s.step] ?? {}]))
@@ -92,7 +95,14 @@ export function CustomSignInDialog({
         {/* Enter in a field signs in. */}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
         <p className="text-xs text-muted">
-          What you type is sent to sign in and not kept: only your sign-in is stored, for your own queries.
+          What you type is sent to sign in
+          {form.data?.sendsTo.length ? (
+            <>
+              {' '}
+              at <strong className="font-medium text-ink">{form.data.sendsTo.join(', ')}</strong>
+            </>
+          ) : null}{' '}
+          and not kept: only your sign-in is stored, for your own queries.
         </p>
         {problem && (
           <p role="alert" className="text-sm text-danger">

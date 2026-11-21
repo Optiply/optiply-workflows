@@ -597,6 +597,7 @@ describe('a form step: each person signs in with their own details', () => {
     )
     expect(form).toEqual({
       resourceName: 'form_people',
+      sendsTo: [new URL(origin).host],
       form: [
         {
           step: 'signin',
@@ -669,7 +670,9 @@ describe('a form step: each person signs in with their own details', () => {
     const refusedBefore = refusedLogins
     expect(await signInAs(a.api, id, typed)).toMatchObject({
       ok: false,
-      error: { message: expect.stringMatching(/failed 1 time in a row; signing in again in [1-5] s/) },
+      error: {
+        message: expect.stringMatching(/failed 1 time in the last hour; signing in again in [1-5] s/),
+      },
     })
     expect(refusedLogins).toBe(refusedBefore)
     // Someone else isn't held back.
@@ -1003,6 +1006,128 @@ describe('a form step: each person signs in with their own details', () => {
     } finally {
       await gql.stop()
     }
+  })
+
+  it('refuses to release a workflow on a resource that asks each person to sign in', async () => {
+    await formResource('form_release')
+    const created = data(
+      await admin.mutate('workflows.create', { slug: 'form-release', name: 'form-release' }),
+    )
+    const saved = data(
+      await admin.mutate('workflows.saveDraft', {
+        id: created.id,
+        revision: 1,
+        definition: {
+          schemaVersion: 1,
+          blocks: [
+            { name: 'startTrigger', type: 'startTrigger' },
+            {
+              name: 'feed',
+              type: 'resourceQuery',
+              config: { resource: 'form_release', query: { path: 'data' } },
+            },
+          ],
+          edges: [{ from: 'startTrigger', port: 'out', to: 'feed' }],
+        },
+      }),
+    )
+    const refused = await admin.mutate('releases.publish', {
+      workflowId: created.id,
+      draftRevision: saved.revision,
+    })
+    expect(refused.status).toBe(400)
+    expect(refused.body.error?.message).toBe(
+      'Resource "form_release" asks each person to sign in in production (its sign-in has a form step), which a live run (webhook, schedule) has no one to do. Give it a sign-in without a form to release this workflow.',
+    )
+  })
+
+  it('lets only admins set up or change the sign-in of a flow with a form step', async () => {
+    const { id } = await formResource('form_admin_only')
+    await createLocalUser(env.db, 'form-editor@optiply.nl')
+    const editor = trpc(env.app, await login(env.app, 'form-editor@optiply.nl'))
+    const editorId = (data(await admin.query('users.directory')) as { id: string; email: string }[]).find(
+      (u) => u.email === 'form-editor@optiply.nl',
+    )!.id
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId: id,
+        userId: editorId,
+        environmentId: null,
+        level: 'edit',
+      }),
+    )
+    const save = (config: unknown) =>
+      editor.mutate('resources.saveConfig', { resourceId: id, environmentId: prodId, config })
+    const forbidden =
+      'Only admins can set up or change the sign-in of a flow with a form step (its steps, base URL or allowed hosts): it sends what each person types'
+    // Another host, or another step: where what people type goes.
+    for (const config of [
+      { ...flowConfig({ steps: formSteps }), allowedHosts: ['collector.example.com'] },
+      flowConfig({
+        steps: [...formSteps, { type: 'variable', name: 'extra', value: '{{ signin.password }}' }],
+      }),
+    ]) {
+      const res = await save(config)
+      expect(res.body.error?.data?.code).toBe('FORBIDDEN')
+      expect(res.body.error?.message).toBe(forbidden)
+    }
+    // Other settings stay theirs.
+    data(
+      await save({
+        ...flowConfig({ steps: formSteps }),
+        headers: [
+          { key: 'x-session', value: '{{ auth.session }}' },
+          { key: 'x-extra', value: '1' },
+        ],
+      }),
+    )
+    // Nor can they turn a shared flow into one asking people for their details.
+    const { id: sharedId } = await flowResource('form_admin_only_shared')
+    data(
+      await admin.mutate('permissions.set', {
+        objectType: 'resource',
+        objectId: sharedId,
+        userId: editorId,
+        environmentId: null,
+        level: 'edit',
+      }),
+    )
+    const res = await editor.mutate('resources.saveConfig', {
+      resourceId: sharedId,
+      environmentId: prodId,
+      config: flowConfig({ steps: formSteps }),
+    })
+    expect(res.body.error?.message).toBe(forbidden)
+  })
+
+  it('counts a person’s failures for an hour whatever succeeds between, audits them, and keeps no typed text', async () => {
+    const { id, row, a } = await formResource('form_window')
+    expect(await signInAs(a.api, id)).toEqual({ ok: true })
+    const wrong = { signin: { user: 'ada', password: 'Wrong-Typed-7777' } }
+    expect(await signInAs(a.api, id, wrong)).toMatchObject({ ok: false })
+    expect((await stored(row.id))[0]!.lastError).toBe('Signing in failed at step "login": HTTP 401')
+
+    await new Promise((r) => setTimeout(r, 5_100))
+    expect(await signInAs(a.api, id)).toEqual({ ok: true })
+    expect(await signInAs(a.api, id, wrong)).toMatchObject({ ok: false })
+    // Signing in with a working login between didn't start the count over: the second failure waits 10 s.
+    expect(await signInAs(a.api, id)).toMatchObject({
+      ok: false,
+      error: {
+        message: expect.stringMatching(/failed 2 times in the last hour; signing in again in (9|10) s/),
+      },
+    })
+
+    const audit = [
+      ...(await env.db.execute<{ action: string; metadata: unknown }>(
+        sql`select action, metadata from audit_events where object_id = ${id} order by at`,
+      )),
+    ]
+    const failed = audit.filter((e) => e.action === 'resource.custom_auth_sign_in_failed')
+    expect(failed.length).toBeGreaterThanOrEqual(2)
+    expect(failed[0]).toMatchObject({ metadata: { account: 'user', step: 'login' } })
+    expect(JSON.stringify(audit)).not.toContain('Wrong-Typed-7777')
   })
 
   it('keeps a shared flow’s Sign in now for people with Edit', async () => {

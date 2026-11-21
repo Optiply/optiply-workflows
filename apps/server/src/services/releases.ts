@@ -30,7 +30,7 @@ import { TRPCError } from '@trpc/server'
 import { and, eq, inArray, ne, notInArray } from 'drizzle-orm'
 import { uniqueOr } from '../trpc/errors'
 import { type ReleaseJsBundle, releaseJsBundle } from './js-modules'
-import { authorizationCode } from './oauth-tokens'
+import { authorizationCode, usesOwnCredentials } from './oauth-tokens'
 import { type Access, atLeast } from './permissions'
 import { releaseLock } from './python-envs'
 import { nextReleaseVersion } from './release-versions'
@@ -314,17 +314,19 @@ async function checkReleasable(
           resources.map((r) => r.id),
         ),
       )
-    const perUser = configs.find(
-      (c) =>
-        authorizationCode(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c))?.tokens ===
-        'perUser',
+    // A per-user OAuth account, or a custom auth flow whose form step asks each person to sign in.
+    const perUser = configs.find((c) =>
+      usesOwnCredentials(resources.find((r) => r.id === c.resourceId)!.type, effectiveConfig(c)),
     )
     if (perUser) {
       const resource = resources.find((r) => r.id === perUser.resourceId)!
       const env = envs.find((e) => e.id === perUser.environmentId)
+      const where = env ? ` in ${env.slug}` : ''
       throw new TRPCError({
         code: 'BAD_REQUEST',
-        message: `Resource "${resource.slug}" uses each person's own account${env ? ` in ${env.slug}` : ''}, which a live run (webhook, schedule) has no one to use. Give it a shared account to release this workflow.`,
+        message: authorizationCode(resource.type, effectiveConfig(perUser))
+          ? `Resource "${resource.slug}" uses each person's own account${where}, which a live run (webhook, schedule) has no one to use. Give it a shared account to release this workflow.`
+          : `Resource "${resource.slug}" asks each person to sign in${where} (its sign-in has a form step), which a live run (webhook, schedule) has no one to do. Give it a sign-in without a form to release this workflow.`,
       })
     }
   }

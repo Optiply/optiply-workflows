@@ -221,6 +221,11 @@ export function SettingsPanel({
       queryClient.invalidateQueries({
         queryKey: trpc.resources.oauthConnections.queryKey({ resourceId: resource.id }),
       }),
+      // A changed custom flow signs everyone out, and adding or removing a form step changes whose sign-in it is.
+      queryClient.invalidateQueries({
+        queryKey: trpc.resources.customAuthStatus.queryKey({ resourceId: resource.id }),
+      }),
+      queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthForm.queryKey() }),
     ])
   const save = useMutation(
     trpc.resources.saveConfig.mutationOptions({

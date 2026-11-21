@@ -297,8 +297,10 @@ parameters use as `{{ auth.NAME }}`) and **Form**. Its settings show a **Sign-in
   that needs it shows **Sign in**, which opens a small form; apps do the same for the people using them. What you type
   is sent to sign in and never stored: only your sign-in is kept, for your own queries. The card shows **Your
   sign-in**, with **Sign in again** and **Sign out**; people with Edit also see how many people have signed in.
-  Workflows that run on their own can't use such a resource, because nobody is behind them. After a few wrong
-  passwords, signing in waits a little longer each time.
+  Workflows that run on their own can't use such a resource, because nobody is behind them (they can't be
+  released). After a few wrong passwords, signing in waits a little longer each time. Because the flow sends what
+  people type, **only admins** can set up or change its steps, base URL or allowed hosts; the sign-in form shows
+  where your details are sent.
 
 ### 3.6 The playground
 

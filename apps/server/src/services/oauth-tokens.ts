@@ -47,6 +47,17 @@ export function authFingerprint(type: string, config: unknown): string | null {
 }
 
 /**
+ * Whether queries on this config use each person's own credentials: a per-user OAuth account, or a custom flow with a
+ * form step. What's cached from them (a GraphQL schema, HubSpot's properties) is then per person, and a live run
+ * (nobody behind it) can't use the resource.
+ */
+export function usesOwnCredentials(type: string, config: unknown): boolean {
+  if (authorizationCode(type, config)?.tokens === 'perUser') return true
+  const http = httpConfigFor(type, config)
+  return http?.auth.type === 'custom' && flowAsksEachPerson(http.auth.steps)
+}
+
+/**
  * The authorization-code settings of an HTTP resource config (REST's, or what another type connects with; defaults
  * applied), or null for any other config.
  */

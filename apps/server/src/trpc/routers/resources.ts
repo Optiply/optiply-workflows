@@ -80,6 +80,7 @@ import {
   credentialsFor,
   deleteTokens,
   disconnectAccount,
+  usesOwnCredentials,
 } from '../../services/oauth-tokens'
 import {
   type Access,
@@ -237,6 +238,20 @@ function requireAdminForServerIdentity(
       code: 'FORBIDDEN',
       message: 'Only admins can point an S3 resource at another endpoint',
     })
+  // A custom flow with a form step sends what each person types (their own password) where its steps say: admins
+  // choose its steps and hosts, or someone with Edit could point it at their own server and collect them.
+  const formFlow = (c: unknown) => {
+    const http = c ? httpConfigFor(type, c) : null
+    return http?.auth.type === 'custom' && flowAsksEachPerson(http.auth.steps) ? customFlowHash(http) : null
+  }
+  const nextForm = formFlow(next)
+  if (nextForm && nextForm !== formFlow(stored) && !user.isAdmin) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message:
+        'Only admins can set up or change the sign-in of a flow with a form step (its steps, base URL or allowed hosts): it sends what each person types',
+    })
+  }
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
     throw new TRPCError({
@@ -292,16 +307,6 @@ async function customFlowConfig(db: Db, resourceType: string, resourceId: string
   const http = row && httpConfigFor(resourceType, effectiveConfig(row))
   if (!row || http?.auth.type !== 'custom') return null
   return { row, http, auth: http.auth }
-}
-
-/**
- * Whether queries on this config use each person's own credentials (a per-user OAuth account, or a custom flow with a
- * form step): what's cached from them (a GraphQL schema, HubSpot's properties) is then per person.
- */
-function usesOwnCredentials(type: string, config: unknown): boolean {
-  if (authorizationCode(type, config)?.tokens === 'perUser') return true
-  const http = httpConfigFor(type, config)
-  return http?.auth.type === 'custom' && flowAsksEachPerson(http.auth.steps)
 }
 
 /** What a form step asks for, as the sign-in dialog shows it. */
@@ -1043,6 +1048,13 @@ export const resourcesRouter = router({
       }
       return {
         resourceName: target.resource.name,
+        // Where what people type may go: the flow's requests reach only the base URL's host and the allowed hosts.
+        sendsTo: [
+          ...new Set([
+            new URL(target.flow.http.baseUrl).host,
+            ...target.flow.http.allowedHosts.map((h) => h.trim()),
+          ]),
+        ].filter(Boolean),
         form: formView(target.flow.auth.steps),
         status: await customFlowStatus(
           ctx.db,
@@ -1098,6 +1110,19 @@ export const resourcesRouter = router({
                 )
               : null
         if (!failure) throw err
+        // Failed attempts leave a trail (who, where, which step; never what was typed): guesses show in the audit.
+        if (failure.details?.reason !== 'form_needed') {
+          await ctx.audit({
+            action: 'resource.custom_auth_sign_in_failed',
+            objectType: 'resource',
+            objectId: resource.id,
+            environmentId: input.environmentId,
+            metadata: {
+              account: perUser ? 'user' : 'shared',
+              ...(typeof failure.details?.step === 'string' && { step: failure.details.step }),
+            },
+          })
+        }
         // Every secret of the resource: its secret headers go out with the flow's requests too, and an API may echo them.
         const scrub = [...secretStrings(secrets), ...secretStrings(input.form ?? {})]
         return {
