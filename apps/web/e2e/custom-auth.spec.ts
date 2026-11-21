@@ -7,6 +7,8 @@ import { signIn, trpcMutate, trpcQuery } from './helpers'
  * Custom auth flows in the browser: request steps with a multipart body, and the sign-in card (signed in, Sign in now,
  * the last failure, Sign out) against a small sign-in API started here.
  */
+// Resource names sort after "Shop DB": the workflow editor offers the first resource by name for a new query, and
+// editor.spec.ts (which runs after this file) expects that to be global-setup's Shop DB.
 let api: Server
 let origin: string
 let password = 'Right-Pass-123'
@@ -55,7 +57,7 @@ const flowConfig = () => ({
 async function flowResource(page: Parameters<typeof signIn>[0], secret: string) {
   const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'rest',
-    name: 'Partner API',
+    name: 'Sign-in partner API',
     slug: `partner_${Date.now().toString(36)}`,
   })
   const environments = await trpcQuery<{ id: string; slug: string }[]>(page, 'environments.list', undefined)
@@ -73,7 +75,7 @@ test('a request step can send a multipart body', async ({ page }) => {
   await signIn(page)
   const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'rest',
-    name: 'Multipart flow',
+    name: 'Sign-in multipart',
     slug: `multipart_${Date.now().toString(36)}`,
   })
   await page.goto(`/resources/${resource.id}`)
@@ -143,7 +145,7 @@ const formConfig = () => ({
 async function formResource(page: Parameters<typeof signIn>[0]) {
   const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'rest',
-    name: 'Partner portal',
+    name: 'Sign-in portal',
     slug: `portal_${Date.now().toString(36)}`,
   })
   const environments = await trpcQuery<{ id: string; slug: string }[]>(page, 'environments.list', undefined)
@@ -160,7 +162,7 @@ test('a form step can be added to the sign-in steps, not the refresh steps', asy
   await signIn(page)
   const resource = await trpcMutate<{ id: string }>(page, 'resources.create', {
     type: 'rest',
-    name: 'Form flow',
+    name: 'Sign-in form flow',
     slug: `formflow_${Date.now().toString(36)}`,
   })
   await page.goto(`/resources/${resource.id}`)
@@ -184,7 +186,7 @@ test('each person signs in with the form: from the card, and when a query asks',
   await expect(note).toBeVisible()
   await note.getByRole('button', { name: 'Sign in' }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog).toContainText('Sign in to Partner portal')
+  await expect(dialog).toContainText('Sign in to Sign-in portal')
   await expect(dialog).toContainText('Sign in with your Partner account')
   await dialog.getByLabel('Username').fill('ada')
   await dialog.getByLabel('Password').fill('Wrong-Pass-000')
