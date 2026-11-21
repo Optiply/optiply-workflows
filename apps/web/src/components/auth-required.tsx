@@ -1,12 +1,14 @@
 import { Link } from '@tanstack/react-router'
 import { KeyRound } from 'lucide-react'
 import { useState } from 'react'
+import { CustomSignInDialog } from '@/components/custom-sign-in'
 import { Button } from '@/components/ui'
 import { type AuthRequired, connectAccount } from '@/lib/oauth'
 
 /**
  * A query needs a connected account. On per-user resources the person can connect their own right here (a
- * popup), and `onConnected` runs once they have; the shared account is connected in the resource's settings.
+ * popup), and `onConnected` runs once they have; the shared account is connected in the resource's settings. A
+ * custom auth flow asking each person for their own details (`flow: 'form'`) signs in with its dialog instead.
  */
 export function AuthRequiredNote({
   need,
@@ -25,8 +27,14 @@ export function AuthRequiredNote({
 }) {
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
   const reconnect = need.reason !== 'not_connected' && need.reason !== 'no_user'
+  const form = need.flow === 'form'
   const connect = async () => {
+    if (form) {
+      setSigningIn(true)
+      return
+    }
     setBusy(true)
     setProblem(null)
     const outcome = await connectAccount({
@@ -51,7 +59,13 @@ export function AuthRequiredNote({
         </p>
         {need.account === 'user' && need.reason !== 'no_user' ? (
           <Button size="sm" variant="primary" loading={busy} onClick={connect}>
-            {reconnect ? 'Reconnect your account' : 'Connect your account'}
+            {form
+              ? reconnect
+                ? 'Sign in again'
+                : 'Sign in'
+              : reconnect
+                ? 'Reconnect your account'
+                : 'Connect your account'}
           </Button>
         ) : (
           <Link
@@ -64,6 +78,18 @@ export function AuthRequiredNote({
         )}
       </div>
       {problem && <p className="text-danger">{problem}</p>}
+      {signingIn && (
+        <CustomSignInDialog
+          resourceId={need.resourceId}
+          environmentId={need.environmentId}
+          {...(appId && { appId })}
+          onClose={() => setSigningIn(false)}
+          onSignedIn={() => {
+            setSigningIn(false)
+            onConnected?.()
+          }}
+        />
+      )}
     </div>
   )
 }

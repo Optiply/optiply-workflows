@@ -7,7 +7,7 @@ import { Button, Card, ErrorNote, Field, Input, Select, Textarea } from '@/compo
 import { isSqlType } from '@/lib/resource-types'
 import { useTRPC } from '@/lib/trpc'
 import { S3Fields } from './aws-settings'
-import { CustomAuthFields } from './custom-auth'
+import { CustomAuthFields, CustomAuthStatus } from './custom-auth'
 import { JdbcFields } from './jdbc-settings'
 import { OAuthCodeFields, OAuthConnections } from './oauth'
 import { OpenApiSpecFields } from './openapi-settings'
@@ -221,6 +221,11 @@ export function SettingsPanel({
       queryClient.invalidateQueries({
         queryKey: trpc.resources.oauthConnections.queryKey({ resourceId: resource.id }),
       }),
+      // A changed custom flow signs everyone out, and adding or removing a form step changes whose sign-in it is.
+      queryClient.invalidateQueries({
+        queryKey: trpc.resources.customAuthStatus.queryKey({ resourceId: resource.id }),
+      }),
+      queryClient.invalidateQueries({ queryKey: trpc.resources.customAuthForm.queryKey() }),
     ])
   const save = useMutation(
     trpc.resources.saveConfig.mutationOptions({
@@ -427,6 +432,7 @@ export function SettingsPanel({
         </div>
       )}
       {stored?.config && <OAuthConnections resource={resource} environmentId={environmentId} />}
+      {stored?.config && <CustomAuthStatus resource={resource} environmentId={environmentId} />}
       {savingToBranch && (
         <SaveToBranchDialog
           kind="resource"

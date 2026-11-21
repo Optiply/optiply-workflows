@@ -4,6 +4,7 @@ import {
   ConnectorError,
   type CredentialSource,
   type FlowSandbox,
+  flowAsksEachPerson,
   httpConfigFor,
   OAuthGrantError,
   type ResolvedResource,
@@ -43,6 +44,17 @@ export function authFingerprint(type: string, config: unknown): string | null {
   if (http.auth.type === 'oauth2AuthorizationCode') return consentHash({ ...http, auth: http.auth })
   if (http.auth.type === 'custom') return customFlowHash(http)
   return null
+}
+
+/**
+ * Whether queries on this config use each person's own credentials: a per-user OAuth account, or a custom flow with a
+ * form step. What's cached from them (a GraphQL schema, HubSpot's properties) is then per person, and a live run
+ * (nobody behind it) can't use the resource.
+ */
+export function usesOwnCredentials(type: string, config: unknown): boolean {
+  if (authorizationCode(type, config)?.tokens === 'perUser') return true
+  const http = httpConfigFor(type, config)
+  return http?.auth.type === 'custom' && flowAsksEachPerson(http.auth.steps)
 }
 
 /**
@@ -408,8 +420,11 @@ export function credentialsFor(
   const http = httpConfigFor(type, resource.config)
   if (!http) return undefined
   if (http.auth.type === 'custom') {
-    // Only REST-shaped secrets have the values a flow reads (REST, GraphQL).
+    // Only REST-shaped secrets have the values a flow reads (REST, GraphQL). A flow with a form step keeps each
+    // person's own variables: the person behind the query's.
     return customAuthCredentials(deps, {
+      resourceId: resource.resourceId,
+      userId: flowAsksEachPerson(http.auth.steps) ? actingUserId : null,
       resourceConfigId: resource.id,
       environmentId: resource.environmentId,
       config: http,

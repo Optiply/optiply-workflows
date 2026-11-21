@@ -1906,7 +1906,6 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 - Refused calls that fail before a webhook is found (404, body too large) are only counted in the metric, not listed.
 - **Body schema patterns run on RE2** (session 40; webhooks and AI extract schemas, set by the API and the worker at startup): lookarounds and backreferences are refused everywhere (`patternProblem`); other syntax JavaScript has and RE2 lacks (some `\p{…}` names) compiles in the editor but is refused by the server's check on save. `re2` downloads a prebuilt addon from GitHub on install (compiles with a C++ toolchain otherwise; `RE2_DOWNLOAD_MIRROR`).
 - No asymmetric signatures (ed25519, JWT-signed); secret rotation is one secret per line in the config var.
-- Custom auth flow steps don't offer the Multipart body in their editor (the connector accepts it).
 - Undici's `Response.formData` refuses valid bodies whose boundary text appears inside a part; webhooks use busboy, but REST query tests and the e2e read multipart back with undici (safe: fetch picks random boundaries).
 
 ### Resources and connectors
@@ -1921,7 +1920,7 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 - **SSH tunnels (M17, M18):** no SSH agent, certificates, keyboard-interactive/2FA, proxies or shared SSH profiles; no tunnels for BigQuery or the brokers; one pinned host key per hop; a forward to a host the SSH server can't reach waits for that server's TCP timeout (bounded for Postgres only by the query's timeout); PuTTY v3 keys run Argon2 synchronously; Test connection connects the chain twice; tunnels are per process; the server's OAuth authorization-code flows don't use a REST resource's tunnel. A bastion reached through a local `gcloud start-iap-tunnel` only works while that command runs on one person's machine (Optiply's production bastion is only reachable that way today).
 - **IAP (M18):** on a Mac the server's identity is a person's (`gcloud auth application-default login`); a service account is the lasting choice. No `nic0` choice, destination groups, private IPs or impersonation. The admin rule watches the server-identity hop's target only. `checkSshIap` builds a token source just to check settings.
 - **Revocation and back-off (session 40):** Disconnect revokes at the provider only with a revocation URL (RFC 7009 on the token URL's origin; Google, Slack and Salesforce have one, HubSpot's own `DELETE /oauth/v1/refresh-tokens/:token` and Microsoft aren't supported); accounts dropped because the consent settings changed aren't revoked. A custom flow's sign-in back-off is per process (each API and worker process tries once before backing off) and isn't shown in the resource's page.
-- **OAuth and custom auth (M9):** no per-user custom flows (a form step), no admin view of other people's connections (only a count), no status card for custom flows; the process refreshing holds a pooled connection (and the lock) while calling the provider; custom flows' code steps run in a sandbox shared by the process, not the run's.
+- **OAuth and custom auth (M9):** no admin view of other people's connections (only a count); the process refreshing holds a pooled connection (and the lock) while calling the provider; custom flows' code steps run in a sandbox shared by the process, not the run's.
 
 ### Queues and brokers (M19, M26, M30)
 - One worker takes every free trigger (no spreading); a trigger's messages are pulled by one worker at a time. Run ends are polled once a second per trigger; the editor's "in flight" can lag up to 5 s.
@@ -2009,6 +2008,57 @@ All eight fixed in session 40 (2026-11-05), one commit each on `feat/m35-ai-acti
 
 ### Tests not written
 - The OIDC callback logic (extract the claim checks into a pure function).
+
+## 14. Session 61 steps (2026-11-21): custom auth flow extras (branch `feat/custom-auth-extras`)
+
+The user asked for M9's three custom-auth gaps (§11 "OAuth and custom auth"), for REST and GraphQL alike (GraphQL
+uses REST's settings form and `httpConfig`). One step at a time, the user's word between steps; one PR at the end
+with the review agents first.
+
+1. **Multipart bodies in request steps** ✅ `17bee67`: the step editor (`custom-auth.tsx`) offers Multipart
+   (form-data) with M15's `MultipartParts` (which got a `disabled` prop for view-only settings). The connector
+   already accepted it. Test: connectors `auth-flow.test.ts` "sends a multipart sign-in request" (11/11).
+2. **Status card** ✅ `19e1f46`: the **Sign-in** card under a custom-flow resource's settings (`CustomAuthStatus` in
+   `custom-auth.tsx`): state (not signed in, signed in, expired, settings changed, sign-in failed), signed in on,
+   signs in again (the TTL, or "when an API answers 401"), the variables' names, the last failure; **Sign in now**
+   and **Sign out** for Edit. Server: `customAuthStatus`, `customAuthSignIn`, `customAuthSignOut` in the resources
+   router (audit `resource.custom_auth_signed_in` / `_signed_out`); `custom-auth.ts` split into `customFlow` with
+   `signInCustomFlow` (skips the back-off, keeps the old variables if it fails), `customFlowStatus`,
+   `signOutCustomFlow`. A failed sign-in a query needed now marks the row `reconnect` with `last_error` (scrubbed of
+   the secret values and the old variables; `updated_at` kept, since refreshes compare it), so the next query
+   signs in again rather than reusing variables just refused; the lock returns the failure rather than throwing so
+   the write isn't rolled back. Tests: server `custom-auth.test.ts` 12/12 (+3), with oauth-*, resources 76 passed;
+   e2e `custom-auth.spec.ts` (new: multipart + the card), with `resource-secrets` and `connectors` ×3: 27 passed.
+3. **Form step**, split in two:
+   - **3a, server** ✅ `308f078`: a `form` step (`rest.ts`: `{ name, title, fields: [{ name, label, kind: text|password }] }`,
+     not in refresh steps; `flowAsksEachPerson`). A flow with one keeps **each person's own** variables
+     (`oauth_tokens.user_id`, no migration; changing the flow still deletes all). `runAuthFlow` takes `form` (what was
+     typed, by step then field, own properties only, scrubbed from failures; none → `form_needed`). `custom-auth.ts`:
+     queries use the person's row, renew it with the refresh steps, else fail `auth_required` with
+     `{ account: 'user', flow: 'form', reason: not_connected | expired | settings_changed | no_user }`; a refused
+     sign-in with nothing to renew it is marked failed; signing in backs off per person (checked again under the
+     lock). Router: `customAuthForm` (new), `customAuthSignIn` (`form`, `appId`), `customAuthSignOut` (`appId`),
+     `customAuthStatus` (`perUser`, `form`, `signedInPeople`); `customFlowAccess` mirrors `connectTarget` (own
+     sign-in: any access, or an app whose live release queries the resource); the three are open to apps-only users.
+     `liveAppQueries` now refuses environments only admins may use (OAuth's app route too). Schema caches (GraphQL,
+     the other schema lookup, HubSpot) are per person for form flows (`usesOwnCredentials`). Errors scrubbed of every
+     secret of the resource. Reviewed by a 4-angle workflow (12 findings, 8 confirmed, all fixed with tests; 4 of
+     the tests checked to fail without their fix). Tests: connectors `auth-flow.test.ts` 16/16, server
+     `custom-auth.test.ts` 23/23; with oauth-*, resources, graphql, connectors, apps-only, access: 124 passed;
+     connectors package 408 passed.
+   - **3b, web** (this step): the **Form** step in the step editor (sign-in steps only: title, fields with name,
+     label and Text/Password; default username + password); `CustomSignInDialog` (`components/custom-sign-in.tsx`:
+     the flow's fields, password fields as `SecretInput`, Enter signs in, the server's error shown);
+     `AuthRequiredNote` opens it for `flow: 'form'` (**Sign in** / **Sign in again**; with `appId` in apps, so the
+     app's queries run again after); the Sign-in card's per-person version (**Your sign-in**, Sign in / Sign in
+     again, Sign out, "N people have signed in here" for Edit). e2e `custom-auth.spec.ts` +2 (the editor; signing in
+     from a query's note with a wrong then right password, the card, Sign out, Enter) — with resource-secrets,
+     connectors, m9-done-when, bigquery, apps-only: 16 passed; web unit 160 passed. Screens in the scratchpad
+     (`shots/3-*`). Docs: user guide "Resources that sign in with a custom auth flow" (3.5), architecture §2.12
+     notes; PDFs rebuilt.
+4. **Before the PR** (the user away, 2026-11-21: "build, fix, run both subagents, commit, push, PR, merge, deploy,
+   all green"): security-auditor + bug-hunter on the branch, fixes, push, PR, CI green, merge, deploy by hand (a
+   Saturday: no 18:00 run), check the deploy.
 
 ## 14. Session 60, later: BigQuery with Google OAuth sign-in (branch `feat/bigquery-oauth`)
 

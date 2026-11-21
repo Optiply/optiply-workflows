@@ -75,11 +75,31 @@ const stepName = z
   .regex(/^[A-Za-z_$][\w$]*$/, 'Use a JavaScript name: letters, digits, _ or $, not starting with a digit')
   .refine((name) => name !== 'auth' && name !== 'secrets', { message: '"auth" and "secrets" are taken' })
 
+/** A form field's name: a JS identifier, as later steps read it (`signin.username`). */
+const fieldName = z
+  .string()
+  .regex(/^[A-Za-z_$][\w$]*$/, 'Use a JavaScript name: letters, digits, _ or $, not starting with a digit')
+
+/** Each form field's value is cut to this length (a password, a one-time code, a tenant). */
+export const FORM_VALUE_MAX = 4096
+
+/**
+ * A form step's field. `password` fields are masked as people type; every value is a credential either way: never
+ * stored, and scrubbed from errors.
+ */
+const formField = z.object({
+  name: fieldName,
+  label: z.string().trim().min(1, 'Give the field a label').max(100),
+  kind: z.enum(['text', 'password']).default('text'),
+})
+
 /**
  * One step of a custom auth flow. A request is a REST request through the resource (base URL, allowed hosts and
  * network settings, but not its default headers and parameters, which may need `auth`); code runs in the sandbox;
- * a variable becomes `auth.<name>`. Each step's result is in scope for the next ones by its name, with `secrets`
- * (the resource's secret values) and, in a refresh flow, `auth` (the variables it refreshes).
+ * a variable becomes `auth.<name>`; a form asks the person signing in for its fields' values (Retool's "Form"
+ * step), which makes the flow's variables each person's own. Each step's result is in scope for the next ones by
+ * its name (a form's: `{ field: value }`), with `secrets` (the resource's secret values) and, in a refresh flow,
+ * `auth` (the variables it refreshes).
  */
 const flowStep = z.discriminatedUnion('type', [
   querySchema.extend({ type: z.literal('request'), name: stepName }),
@@ -91,8 +111,24 @@ const flowStep = z.discriminatedUnion('type', [
     /** Scrubbed from query results like other credentials; off for values that aren't secret (a tenant id). */
     secret: z.boolean().default(true),
   }),
+  z.object({
+    type: z.literal('form'),
+    name: stepName,
+    /** Shown above the fields, e.g. "Sign in to Acme with your Acme account". */
+    title: z.string().max(200).default(''),
+    fields: z.array(formField).min(1, 'Add at least one field'),
+  }),
 ])
 export type AuthFlowStep = z.output<typeof flowStep>
+export type AuthFlowFormStep = Extract<AuthFlowStep, { type: 'form' }>
+
+/** The values a person typed into a flow's form steps: by step name, then field name. */
+export type AuthFormValues = Record<string, Record<string, string>>
+
+/** Whether a flow asks each person to sign in (it has a form step): its variables are then each person's own. */
+export function flowAsksEachPerson(steps: readonly AuthFlowStep[]): boolean {
+  return steps.some((s) => s.type === 'form')
+}
 
 const flowSteps = z.array(flowStep).superRefine((steps, ctx) => {
   const seen = new Set<string>()
@@ -101,6 +137,19 @@ const flowSteps = z.array(flowStep).superRefine((steps, ctx) => {
       ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `Another step is named "${step.name}"` })
     }
     seen.add(step.name)
+    if (step.type === 'form') {
+      const fields = new Set<string>()
+      step.fields.forEach((field, j) => {
+        if (fields.has(field.name)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [i, 'fields', j, 'name'],
+            message: `Another field is named "${field.name}"`,
+          })
+        }
+        fields.add(field.name)
+      })
+    }
     if (
       step.type === 'request' &&
       (step.method === 'GET' || step.method === 'HEAD') &&
@@ -198,6 +247,16 @@ const authSchema = z
             message: 'Define at least one variable for the headers or parameters to use',
           })
         }
+        // Refreshing runs without anyone there to fill in a form: when it can't renew, the person signs in again.
+        auth.refreshSteps.forEach((step, i) => {
+          if (step.type === 'form') {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['refreshSteps', i],
+              message: "Refresh steps can't ask for a form: they run without anyone there to fill it in",
+            })
+          }
+        })
       }),
   ])
   .default({ type: 'none' })

@@ -12,6 +12,8 @@ export interface AuthRequired {
   account: 'shared' | 'user'
   resourceId: string
   environmentId: string
+  /** `form`: a custom auth flow asking each person for their own details (the sign-in dialog), not OAuth's popup. */
+  flow?: 'form'
 }
 
 export function authRequired(
@@ -25,6 +27,7 @@ export function authRequired(
     account: d.account === 'user' ? 'user' : 'shared',
     resourceId: d.resourceId,
     environmentId: d.environmentId,
+    ...((d as { flow?: unknown }).flow === 'form' && { flow: 'form' as const }),
   }
 }
 
