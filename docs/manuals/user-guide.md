@@ -284,6 +284,24 @@ Salesforce, and BigQuery, REST, GraphQL, OpenAPI and SDK resources set to OAuth 
 The account card shows **Connected**, **Needs reconnecting** or **Not connected**. If a provider stops accepting the
 connection, click **Reconnect**.
 
+#### Resources that sign in with a custom auth flow
+
+A REST or GraphQL resource set to **Custom auth flow** signs in with steps you define: **Request** (a call to the
+API, with a JSON, form, raw or **Multipart (form-data)** body), **Code**, **Variable** (what the resource's headers and
+parameters use as `{{ auth.NAME }}`) and **Form**. Its settings show a **Sign-in** card:
+
+- **Without a Form step** the sign-in is shared: every query in the environment uses it, workflows that run on their
+  own too. The card shows whether it's signed in, when, until when, and the last failure. People with Edit can click
+  **Sign in now** (to check the flow, or after fixing a password) and **Sign out** (the next query signs in again).
+- **With a Form step** each person signs in with their own details (a username and password, for example). A query
+  that needs it shows **Sign in**, which opens a small form; apps do the same for the people using them. What you type
+  is sent to sign in and never stored: only your sign-in is kept, for your own queries. The card shows **Your
+  sign-in**, with **Sign in again** and **Sign out**; people with Edit also see how many people have signed in.
+  Workflows that run on their own can't use such a resource, because nobody is behind them (they can't be
+  released). After a few wrong passwords, signing in waits a little longer each time. Because the flow sends what
+  people type, **only admins** can set up or change its steps, base URL or allowed hosts; the sign-in form shows
+  where your details are sent.
+
 ### 3.6 The playground
 
 The **Query** tab lets you try a query on the resource without building anything.

@@ -47,6 +47,7 @@ beforeAll(async () => {
       if (user !== 'ada' || password !== 'pw-Secret-123') return json(401, { error: 'bad login' })
       return json(200, { session: validSession, expiresIn: 600 }, { 'x-csrf': 'csrf-1' })
     }
+    if (url.pathname === '/api/login-form') return json(200, { session: 'form-session' })
     if (url.pathname === '/api/data') {
       if (req.headers['x-session'] !== validSession) return json(401, { error: 'expired' })
       return json(200, { ok: true, session: req.headers['x-session'], key: url.searchParams.get('key') })
@@ -162,6 +163,44 @@ describe('runAuthFlow', () => {
     expect(variables).toEqual({ session: 'old-renewed' })
   })
 
+  it('sends a multipart sign-in request', async () => {
+    const variables = await runAuthFlow(
+      { config: config(), secrets: secrets() },
+      [
+        {
+          type: 'request',
+          name: 'upload',
+          method: 'POST',
+          path: 'login-form',
+          params: [],
+          headers: [],
+          body: {
+            type: 'multipart',
+            parts: [
+              { kind: 'text', key: 'user', value: '{{ secrets.user }}' },
+              {
+                kind: 'file',
+                key: 'cert',
+                file: 'aGVsbG8=',
+                filename: 'cert.pem',
+                contentType: 'text/plain',
+              },
+            ],
+          },
+        },
+        { type: 'variable', name: 'session', value: '{{ upload.data.session }}', secret: true },
+      ],
+      { sandbox, signal: AbortSignal.timeout(5000) },
+    )
+    expect(variables).toEqual({ session: 'form-session' })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/)
+    expect(requests[0]!.body).toMatch(/name="user"\r\n\r\nada\r\n/)
+    expect(requests[0]!.body).toMatch(
+      /name="cert"; filename="cert.pem"\r\nContent-Type: text\/plain\r\n\r\nhello\r\n/,
+    )
+  })
+
   it('keeps sign-in requests to the allowed hosts', async () => {
     const err = await failure(
       runAuthFlow(
@@ -179,10 +218,148 @@ describe('runAuthFlow', () => {
   })
 })
 
+describe('form steps', () => {
+  const formSteps: AuthFlowStep[] = [
+    {
+      type: 'form',
+      name: 'signin',
+      title: 'Sign in to Acme',
+      fields: [
+        { name: 'user', label: 'Username', kind: 'text' },
+        { name: 'password', label: 'Password', kind: 'password' },
+      ],
+    },
+    {
+      type: 'request',
+      name: 'login',
+      method: 'POST',
+      path: 'login',
+      params: [],
+      headers: [],
+      body: { type: 'json', json: '{"user": {{ signin.user }}, "password": {{ signin.password }}}' },
+    },
+    { type: 'variable', name: 'session', value: '{{ login.data.session }}', secret: true },
+  ]
+
+  it('puts what the person typed in scope by step name', async () => {
+    const variables = await runAuthFlow({ config: config(), secrets: secrets({}) }, formSteps, {
+      sandbox,
+      signal: AbortSignal.timeout(5000),
+      form: { signin: { user: 'ada', password: 'pw-Secret-123', extra: 'ignored' } },
+    })
+    expect(variables).toEqual({ session: 'session-1' })
+    expect(JSON.parse(requests[0]!.body)).toEqual({ user: 'ada', password: 'pw-Secret-123' })
+  })
+
+  it('asks for the form before running any step', async () => {
+    const err = await failure(
+      runAuthFlow({ config: config(), secrets: secrets({}) }, formSteps, {
+        sandbox,
+        signal: AbortSignal.timeout(5000),
+      }),
+    )
+    expect(err).toMatchObject({ code: 'auth_required', details: { reason: 'form_needed', step: 'signin' } })
+    expect(requests).toHaveLength(0)
+  })
+
+  it('treats a missing field as empty and scrubs typed values from failures', async () => {
+    const err = await failure(
+      runAuthFlow(
+        { config: config(), secrets: secrets({}) },
+        [
+          formSteps[0]!,
+          {
+            type: 'code',
+            name: 'check',
+            code: 'throw new Error(`refused ${signin.password} for "${signin.user}"`)',
+          },
+        ],
+        { sandbox, signal: AbortSignal.timeout(5000), form: { signin: { password: 'Typed-Pass-999' } } },
+      ),
+    )
+    expect(err.message).toBe('Signing in failed at step "check": refused [REDACTED] for ""')
+  })
+
+  it('reads only what was sent, also for names an Object has (constructor, toString)', async () => {
+    const steps: AuthFlowStep[] = [
+      {
+        type: 'form',
+        name: 'constructor',
+        title: '',
+        fields: [{ name: 'toString', label: 'A', kind: 'text' }],
+      },
+      { type: 'variable', name: 'seen', value: '{{ JSON.stringify(constructor) }}', secret: false },
+    ]
+    const err = await failure(
+      runAuthFlow({ config: config(), secrets: secrets({}) }, steps, {
+        sandbox,
+        signal: AbortSignal.timeout(5000),
+        form: {},
+      }),
+    )
+    expect(err.details).toMatchObject({ reason: 'form_needed', step: 'constructor' })
+    const variables = await runAuthFlow({ config: config(), secrets: secrets({}) }, steps, {
+      sandbox,
+      signal: AbortSignal.timeout(5000),
+      form: { constructor: {} },
+    })
+    expect(variables).toEqual({ seen: '{"toString":""}' })
+  })
+})
+
 describe('the custom auth schema', () => {
   const parse = (auth: unknown) =>
     restConnector.configSchema.safeParse({ baseUrl: 'https://api.example.com', auth })
   const issues = (auth: unknown) => parse(auth).error?.issues.map((i) => [i.path.join('.'), i.message])
+
+  it('takes form steps with distinct JS field names, in the sign-in steps only', () => {
+    const form = {
+      type: 'form',
+      name: 'signin',
+      fields: [{ name: 'user', label: 'Username' }],
+    }
+    const variable = { type: 'variable', name: 'token', value: '{{ signin.user }}' }
+    const parsed = parse({ type: 'custom', steps: [form, variable] })
+    expect(parsed.success).toBe(true)
+    expect((parsed.data!.auth as { steps: unknown[] }).steps[0]).toEqual({
+      type: 'form',
+      name: 'signin',
+      title: '',
+      fields: [{ name: 'user', label: 'Username', kind: 'text' }],
+    })
+    expect(
+      issues({
+        type: 'custom',
+        steps: [
+          {
+            ...form,
+            fields: [
+              { name: 'user', label: 'A' },
+              { name: 'user', label: 'B' },
+              { name: '2fa', label: 'C' },
+              { name: 'code', label: ' ' },
+            ],
+          },
+          variable,
+        ],
+        refreshSteps: [form],
+      }),
+    ).toEqual([
+      [
+        'auth.steps.0.fields.2.name',
+        'Use a JavaScript name: letters, digits, _ or $, not starting with a digit',
+      ],
+      ['auth.steps.0.fields.3.label', 'Give the field a label'],
+      ['auth.steps.0.fields.1.name', 'Another field is named "user"'],
+      [
+        'auth.refreshSteps.0',
+        "Refresh steps can't ask for a form: they run without anyone there to fill it in",
+      ],
+    ])
+    expect(issues({ type: 'custom', steps: [{ ...form, fields: [] }, variable] })).toEqual([
+      ['auth.steps.0.fields', 'Add at least one field'],
+    ])
+  })
 
   it('needs a variable, distinct step names, JS names, valid templates and no GET bodies', () => {
     expect(parse({ type: 'custom', steps: loginSteps }).success).toBe(true)

@@ -155,7 +155,11 @@ export {
 export { PoolManager, type PoolOptions, parseResource } from './pool'
 export { postgresConnector } from './postgres'
 export {
+  type AuthFlowFormStep,
   type AuthFlowStep,
+  type AuthFormValues,
+  FORM_VALUE_MAX,
+  flowAsksEachPerson,
   type RestAuth,
   type RestConfig,
   type RestQuery,

@@ -299,11 +299,13 @@ describe('resuming', () => {
   })
 
   it('fails when the session can no longer be resumed', async () => {
-    const stream = await openIapStream(target(), options({ resumeDelayMs: 20, resumeWithinMs: 400 }))
+    // Room for the resume to reach the fake (a busy CI runner once took over 400 ms, so the connect timed out before
+    // IAP's answer), and the session forgotten before the drop, so the first resume always meets 4010.
+    const stream = await openIapStream(target(), options({ resumeDelayMs: 20, resumeWithinMs: 3000 }))
     const failed = new Promise<Error>((r) => stream.once('error', r))
     stream.resume()
-    iap.dropAll()
     iap.forgetSessions()
+    iap.dropAll()
     const err = await failed
     expect(err).toBeInstanceOf(IapError)
     expect((err as IapError).code).toBe('iap_connect')

@@ -1,17 +1,21 @@
 import { createHash } from 'node:crypto'
 import {
+  type AuthFlowStep,
   ConnectorError,
   connectors,
   createHttpClient,
   describeSqlSchema,
   destroyHttpClient,
   exampleOf,
+  FORM_VALUE_MAX,
+  flowAsksEachPerson,
   getConnector,
   graphqlApiConnector,
   graphqlConnector,
   graphqlIntrospect,
   type HttpClient,
   type HubSpotProperty,
+  httpConfigFor,
   httpRequest,
   hubspotConnector,
   hubspotProperties,
@@ -20,12 +24,14 @@ import {
   openApiDocument,
   restApiConnector,
   restConfigSchema,
+  restConnector,
   runOperation,
   runQuery,
   type SqlSchema,
   SshSettingsError,
   testResource,
 } from '@ow/connectors'
+import { scrubSecrets, scrubSecretsDeep, secretStrings } from '@ow/crypto'
 import {
   type Db,
   environments,
@@ -43,6 +49,14 @@ import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm'
 import { v7 as uuidv7 } from 'uuid'
 import { z } from 'zod'
 import { awsIdentityView, awsSettingsProblem } from '../../services/aws'
+import {
+  type CustomFlowStatus,
+  countSignedInPeople,
+  customFlowHash,
+  customFlowStatus,
+  signInCustomFlow,
+  signOutCustomFlow,
+} from '../../services/custom-auth'
 import { requireSettingsUnprotected } from '../../services/git/settings-objects'
 import {
   bigquerySettingsProblem,
@@ -54,6 +68,7 @@ import {
 import {
   type AccountKind,
   connectTarget,
+  liveAppQueries,
   OAuthConnectError,
   oauthRedirectUri,
 } from '../../services/oauth-connect'
@@ -65,6 +80,7 @@ import {
   credentialsFor,
   deleteTokens,
   disconnectAccount,
+  usesOwnCredentials,
 } from '../../services/oauth-tokens'
 import {
   type Access,
@@ -222,6 +238,20 @@ function requireAdminForServerIdentity(
       code: 'FORBIDDEN',
       message: 'Only admins can point an S3 resource at another endpoint',
     })
+  // A custom flow with a form step sends what each person types (their own password) where its steps say: admins
+  // choose its steps and hosts, or someone with Edit could point it at their own server and collect them.
+  const formFlow = (c: unknown) => {
+    const http = c ? httpConfigFor(type, c) : null
+    return http?.auth.type === 'custom' && flowAsksEachPerson(http.auth.steps) ? customFlowHash(http) : null
+  }
+  const nextForm = formFlow(next)
+  if (nextForm && nextForm !== formFlow(stored) && !user.isAdmin) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message:
+        'Only admins can set up or change the sign-in of a flow with a form step (its steps, base URL or allowed hosts): it sends what each person types',
+    })
+  }
   const target = serverIdentityTarget(next, type)
   if (target && target !== serverIdentityTarget(stored, type) && !user.isAdmin) {
     throw new TRPCError({
@@ -270,6 +300,80 @@ async function getConfigRow(db: Db, resourceId: string, environmentId: string) {
     .limit(1)
   return row
 }
+
+/** A resource's custom auth flow in one environment, from its saved settings; null when it signs in otherwise. */
+async function customFlowConfig(db: Db, resourceType: string, resourceId: string, environmentId: string) {
+  const row = await getConfigRow(db, resourceId, environmentId)
+  const http = row && httpConfigFor(resourceType, effectiveConfig(row))
+  if (!row || http?.auth.type !== 'custom') return null
+  return { row, http, auth: http.auth }
+}
+
+/** What a form step asks for, as the sign-in dialog shows it. */
+interface FormView {
+  step: string
+  title: string
+  fields: { name: string; label: string; kind: 'text' | 'password' }[]
+}
+
+const formView = (steps: readonly AuthFlowStep[]): FormView[] =>
+  steps.flatMap((s) =>
+    s.type === 'form'
+      ? [
+          {
+            step: s.name,
+            title: s.title,
+            fields: s.fields.map(({ name, label, kind }) => ({ name, label, kind })),
+          },
+        ]
+      : [],
+  )
+
+/** What a person typed into a flow's form steps: by step, then field (a handful of each, each value bounded). */
+const formValuesInput = z
+  .record(z.string().max(100), z.record(z.string().max(100), z.string().max(FORM_VALUE_MAX)))
+  .refine(
+    (form) => Object.keys(form).length <= 20 && Object.values(form).every((f) => Object.keys(f).length <= 50),
+    {
+      message: 'Too many form values',
+    },
+  )
+
+/**
+ * The custom flow a person may sign in (or out) of in one environment. A shared flow needs Edit (it acts for
+ * everyone). A flow with a form step is each person's own: any access to the resource, or through an app whose live
+ * release queries it (`appId`: app viewers run its queries without access to the resource, as with OAuth accounts).
+ */
+async function customFlowAccess(
+  ctx: AuthedContext,
+  input: { resourceId: string; environmentId: string; appId?: string | undefined },
+) {
+  const access = await loadAccess(ctx.db, ctx.user)
+  const resource = await getResource(ctx.db, input.resourceId).catch(() => null)
+  const level = resource ? access.level(resource, input.environmentId) : null
+  const flow = resource && (await customFlowConfig(ctx.db, resource.type, resource.id, input.environmentId))
+  const perUser = !!flow && flowAsksEachPerson(flow.auth.steps)
+  const throughApp =
+    !!resource &&
+    !level &&
+    perUser &&
+    !!input.appId &&
+    (await liveAppQueries(ctx.db, access, input.appId, resource.slug, input.environmentId))
+  if (!resource || (!level && !throughApp)) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Resource not found' })
+  }
+  if (!flow) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: "This resource doesn't sign in with a custom auth flow in this environment",
+    })
+  }
+  if (!perUser) requireLevel(level, 'edit', 'this resource in this environment')
+  return { resource, flow, perUser }
+}
+
+/** How long Sign in now may take (the flow's steps have 30 s each). */
+const SIGN_IN_NOW_TIMEOUT_MS = 120_000
 
 async function environmentSlug(db: Db, id: string): Promise<string> {
   const [env] = await db.select({ slug: environments.slug }).from(environments).where(eq(environments.id, id))
@@ -874,6 +978,196 @@ export const resourcesRouter = router({
     }),
 
   /**
+   * The Sign-in card of a resource signing in with a custom auth flow, per environment the user can see (never the
+   * variables, only their names). A shared flow shows its sign-in, and `canSignIn` (Edit) offers Sign in now and Sign
+   * out. A flow with a form step (`perUser`) shows the user's own sign-in, which anyone who sees the resource may
+   * sign in or out of, with the form's fields; people with Edit also see how many people signed in
+   * (`signedInPeople`). `status` is null where the resource signs in otherwise.
+   */
+  customAuthStatus: authedProcedure.input(z.object({ resourceId: Id })).query(async ({ ctx, input }) => {
+    const { access, resource, envIds } = await visibleResource(ctx, input.resourceId)
+    const environments: {
+      environmentId: string
+      status: CustomFlowStatus | null
+      variables: string[]
+      perUser: boolean
+      form: FormView[]
+      signedInPeople: number | null
+      canSignIn: boolean
+    }[] = []
+    for (const environmentId of envIds) {
+      const level = access.level(resource, environmentId)
+      if (!level) continue
+      const flow = await customFlowConfig(ctx.db, resource.type, resource.id, environmentId)
+      if (!flow) {
+        environments.push({
+          environmentId,
+          status: null,
+          variables: [],
+          perUser: false,
+          form: [],
+          signedInPeople: null,
+          canSignIn: false,
+        })
+        continue
+      }
+      const perUser = flowAsksEachPerson(flow.auth.steps)
+      environments.push({
+        environmentId,
+        status: await customFlowStatus(
+          ctx.db,
+          flow.row.id,
+          customFlowHash(flow.http),
+          perUser ? ctx.user.id : null,
+        ),
+        variables: [...new Set(flow.auth.steps.filter((s) => s.type === 'variable').map((s) => s.name))],
+        perUser,
+        form: formView(flow.auth.steps),
+        signedInPeople:
+          perUser && atLeast(level, 'edit') ? await countSignedInPeople(ctx.db, flow.row.id) : null,
+        canSignIn: perUser || atLeast(level, 'edit'),
+      })
+    }
+    return { environments }
+  }),
+
+  /**
+   * What the sign-in form asks for, and the user's own sign-in, on a resource whose custom flow has a form step:
+   * for the dialog a query's "sign in" opens, also for app viewers without access to the resource (`appId`, as
+   * connecting an OAuth account).
+   */
+  customAuthForm: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, appId: Id.optional() }))
+    .query(async ({ ctx, input }) => {
+      const target = await customFlowAccess(ctx, input)
+      if (!target.perUser) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "This resource's sign-in doesn't ask for a form",
+        })
+      }
+      return {
+        resourceName: target.resource.name,
+        // Where what people type may go: the flow's requests reach only the base URL's host and the allowed hosts.
+        sendsTo: [
+          ...new Set([
+            new URL(target.flow.http.baseUrl).host,
+            ...target.flow.http.allowedHosts.map((h) => h.trim()),
+          ]),
+        ].filter(Boolean),
+        form: formView(target.flow.auth.steps),
+        status: await customFlowStatus(
+          ctx.db,
+          target.flow.row.id,
+          customFlowHash(target.flow.http),
+          ctx.user.id,
+        ),
+      }
+    }),
+
+  /**
+   * Signs a custom flow in now and stores the variables for the queries that follow. A shared flow (Edit): its
+   * sign-in steps run at once, even during a back-off. A flow with a form step: the user's own sign-in, with what
+   * they typed (`form`, never stored or logged), by anyone who sees the resource or uses an app that queries it
+   * (`appId`); failures back off per person. A failure comes back as `error` (secret values and what was typed
+   * scrubbed) and shows on the card; variables stored before stay in use.
+   */
+  customAuthSignIn: authedProcedure
+    .input(
+      z.object({
+        resourceId: Id,
+        environmentId: Id,
+        appId: Id.optional(),
+        form: formValuesInput.optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { resource, flow, perUser } = await customFlowAccess(ctx, input)
+      const secrets = restConnector.secretsSchema.parse(decryptConfigSecrets(ctx.config.keyring, flow.row))
+      const signal = AbortSignal.timeout(SIGN_IN_NOW_TIMEOUT_MS)
+      try {
+        await signInCustomFlow(
+          { db: ctx.db, keyring: ctx.config.keyring, sandbox: ctx.services.sandbox },
+          {
+            resourceId: resource.id,
+            resourceConfigId: flow.row.id,
+            environmentId: input.environmentId,
+            config: flow.http,
+            secrets,
+            userId: perUser ? ctx.user.id : null,
+          },
+          signal,
+          perUser ? (input.form ?? {}) : undefined,
+        )
+      } catch (err) {
+        const failure =
+          err instanceof ConnectorError
+            ? err
+            : signal.aborted
+              ? new ConnectorError(
+                  'timeout',
+                  `Signing in took longer than ${SIGN_IN_NOW_TIMEOUT_MS / 1000} s`,
+                )
+              : null
+        if (!failure) throw err
+        // Failed attempts leave a trail (who, where, which step; never what was typed): guesses show in the audit.
+        if (failure.details?.reason !== 'form_needed') {
+          await ctx.audit({
+            action: 'resource.custom_auth_sign_in_failed',
+            objectType: 'resource',
+            objectId: resource.id,
+            environmentId: input.environmentId,
+            metadata: {
+              account: perUser ? 'user' : 'shared',
+              ...(typeof failure.details?.step === 'string' && { step: failure.details.step }),
+            },
+          })
+        }
+        // Every secret of the resource: its secret headers go out with the flow's requests too, and an API may echo them.
+        const scrub = [...secretStrings(secrets), ...secretStrings(input.form ?? {})]
+        return {
+          ok: false as const,
+          error: errorView(
+            new ConnectorError(
+              failure.code,
+              scrubSecrets(failure.message, scrub),
+              failure.details && scrubSecretsDeep(failure.details, scrub),
+            ),
+          ),
+        }
+      }
+      await ctx.audit({
+        action: 'resource.custom_auth_signed_in',
+        objectType: 'resource',
+        objectId: resource.id,
+        environmentId: input.environmentId,
+        metadata: { account: perUser ? 'user' : 'shared' },
+      })
+      return { ok: true as const }
+    }),
+
+  /**
+   * Sign out: forgets the shared sign-in (Edit; the next query signs in again), or on a flow with a form step the
+   * user's own (they sign in again).
+   */
+  customAuthSignOut: authedProcedure
+    .input(z.object({ resourceId: Id, environmentId: Id, appId: Id.optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { resource, flow, perUser } = await customFlowAccess(ctx, input)
+      const signedOut = await signOutCustomFlow(ctx.db, flow.row.id, perUser ? ctx.user.id : null)
+      if (signedOut) {
+        await ctx.audit({
+          action: 'resource.custom_auth_signed_out',
+          objectType: 'resource',
+          objectId: resource.id,
+          environmentId: input.environmentId,
+          metadata: { account: perUser ? 'user' : 'shared' },
+        })
+      }
+      return { signedOut }
+    }),
+
+  /**
    * The query playground: runs a query against one environment, evaluating `{{ }}` in the sandbox against the
    * caller's test values plus `configVars` (non-secret) and `current_user`.
    */
@@ -969,8 +1263,7 @@ export const resourcesRouter = router({
         })
       }
       const resolved = toResolved(ctx.config.keyring, row)
-      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
-      const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
+      const key = `${row.id}:${resolved.version}:${usesOwnCredentials(resource.type, resolved.config) ? ctx.user.id : ''}`
       const cached = graphqlSchemas.get(key)
       if (cached && !input.refresh && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
         return { ok: true as const, schema: cached.schema }
@@ -1121,8 +1414,7 @@ export const resourcesRouter = router({
         })
       }
       const resolved = toResolved(ctx.config.keyring, row)
-      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
-      const key = `${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}`
+      const key = `${row.id}:${resolved.version}:${usesOwnCredentials(resource.type, resolved.config) ? ctx.user.id : ''}`
       // The built-in Database's tables change on the Database page: read every time (a quick local query).
       const keep = resource.systemKind !== 'database'
       const cached = keep ? sqlSchemas.get(key) : undefined
@@ -1251,8 +1543,8 @@ export const resourcesRouter = router({
         })
       }
       const resolved = toResolved(ctx.config.keyring, row)
-      const perUser = authorizationCode(resource.type, resolved.config)?.tokens === 'perUser'
-      const key = `hubspot:${row.id}:${resolved.version}:${perUser ? ctx.user.id : ''}:${input.objectType}`
+      const own = usesOwnCredentials(resource.type, resolved.config)
+      const key = `hubspot:${row.id}:${resolved.version}:${own ? ctx.user.id : ''}:${input.objectType}`
       const cached = graphqlSchemas.get(key)
       if (cached && cached.at > Date.now() - GRAPHQL_SCHEMA_TTL_MS) {
         return { ok: true as const, properties: cached.schema as HubSpotProperty[] }
