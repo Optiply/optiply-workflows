@@ -609,6 +609,39 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
     expect(fake.stsCalls()[1]!.body).toMatchObject({ subject_token: 'optiply.frank' })
   })
 
+  it('shares one exchange between simultaneous queries; cancelling one leaves the others running', async () => {
+    const res = optiply()
+    const { credentials } = account('optiply.lena')
+    fake.exchangeDelayMs = 300
+    try {
+      const results = await Promise.all([
+        query(res, credentials),
+        query(res, credentials),
+        query(res, credentials),
+      ])
+      expect(results).toHaveLength(3)
+      expect(fake.stsCalls()).toHaveLength(1)
+
+      const other = account('optiply.mo')
+      fake.requests.length = 0
+      const controller = new AbortController()
+      const cancelled = runQuery(
+        pool,
+        connector,
+        res,
+        { sql: 'SELECT 1' },
+        { evaluate: scopeEvaluator({}), credentials: other.credentials, signal: controller.signal },
+      )
+      const kept = query(res, other.credentials)
+      setTimeout(() => controller.abort(), 50)
+      expect((await failure(cancelled)).code).toBe('aborted')
+      expect((await kept).data).toBeDefined()
+      expect(fake.stsCalls()).toHaveLength(1)
+    } finally {
+      fake.exchangeDelayMs = 0
+    }
+  })
+
   it('never keeps a Google token past the Optiply token it came from', async () => {
     const res = optiply()
     const soon = jwt(Math.floor(Date.now() / 1000) + 30, 'grace') // inside the minute's margin

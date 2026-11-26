@@ -147,6 +147,8 @@ interface Client {
   key: ServiceAccountKey | null
   /** Optiply sign-in: Google tokens from STS, by a hash of the Optiply token they came from. */
   federated: Map<string, { token: string; expiresAt: number }>
+  /** Optiply sign-in: exchanges under way, by the same key, so simultaneous queries share one. */
+  exchanging: Map<string, Promise<string>>
 }
 
 /** An access token for one API call; `force` gets a fresh one (the API refused the last). */
@@ -226,6 +228,7 @@ LIMIT ${limit}`
           tokens: null,
           key: null,
           federated: new Map(),
+          exchanging: new Map(),
         }
       }
       if (!secrets.serviceAccountKey) {
@@ -248,6 +251,7 @@ LIMIT ${limit}`
           dispatcher: agent,
         }),
         federated: new Map(),
+        exchanging: new Map(),
       }
     },
 
@@ -369,37 +373,63 @@ function tokenSource(client: Client, credentials: CredentialSource | undefined):
     }
     const accessToken = credentials.accessToken
     if (!optiply) return accessToken({ signal, force })
-    return federatedToken(client, (fresh) => accessToken({ signal, force: fresh }), signal, force)
+    return federatedToken(client, (fresh, s) => accessToken({ signal: s, force: fresh }), signal, force)
   }
 }
 
 /** Re-exchange this long before the Google token (or the Optiply token it came from) expires. */
 const FEDERATED_SKEW_MS = 60_000
 const FEDERATED_CACHE_MAX = 512
+/** How long a shared exchange (STS, and a fresh Optiply token if one is needed) may take. */
+const EXCHANGE_TIMEOUT_MS = 30_000
 
 /**
  * A Google token for the person behind the connected Optiply token, from Google STS (RFC 8693 token exchange),
  * cached per Optiply token. `force` (BigQuery refused the last one) asks for a fresh Optiply token and exchanges it
- * again. STS refusing a token that looked valid gets one fresh Optiply token and one more try.
+ * again. STS refusing the token itself (`invalid_grant`) gets one fresh Optiply token and one more try. Simultaneous
+ * calls for the same Optiply token share one exchange.
  */
 async function federatedToken(
   client: Client,
-  optiplyToken: (fresh: boolean) => Promise<string>,
+  optiplyToken: (fresh: boolean, signal: AbortSignal) => Promise<string>,
   signal: AbortSignal,
   force: boolean,
 ): Promise<string> {
   const { stsAudience } = client.endpoints
   const keyOf = (token: string) => createHash('sha256').update(`${stsAudience}\0${token}`).digest('hex')
-  const subject = await optiplyToken(force)
-  const hit = client.federated.get(keyOf(subject))
+  const subject = await optiplyToken(force, signal)
+  const key = keyOf(subject)
+  const hit = client.federated.get(key)
   if (!force && hit && hit.expiresAt - FEDERATED_SKEW_MS > Date.now()) return hit.token
 
+  // Simultaneous queries of the same person (an app page loading) share one exchange. It runs on a timeout of its
+  // own, not the first query's signal: cancelling that query mustn't fail the others; each waits with its own signal.
+  let shared = client.exchanging.get(key)
+  if (!shared) {
+    shared = exchange(client, keyOf, subject, optiplyToken, force).finally(() =>
+      client.exchanging.delete(key),
+    )
+    client.exchanging.set(key, shared)
+  }
+  return untilAborted(shared, signal)
+}
+
+/** The exchange `federatedToken` shares: STS, one fresh Optiply token if STS refused the token, then the cache. */
+async function exchange(
+  client: Client,
+  keyOf: (token: string) => string,
+  subject: string,
+  optiplyToken: (fresh: boolean, signal: AbortSignal) => Promise<string>,
+  force: boolean,
+): Promise<string> {
+  const { stsAudience } = client.endpoints
+  const signal = AbortSignal.timeout(EXCHANGE_TIMEOUT_MS)
   let exchanged = await exchangeAtSts(client, stsAudience, subject, signal)
   let source = subject
   // Only a refused token is worth a fresh one; a refresh can't fix a wrong app, a busy STS or an outage, and each one
   // spends the person's refresh token at Auth0.
   if (exchanged.refused !== null && exchanged.error === 'invalid_grant' && !force) {
-    source = await optiplyToken(true)
+    source = await optiplyToken(true, signal)
     exchanged = await exchangeAtSts(client, stsAudience, source, signal)
   }
   if (exchanged.refused !== null) throw stsError(exchanged)
@@ -413,6 +443,25 @@ async function federatedToken(
   }
   client.federated.set(keyOf(source), { token: exchanged.token, expiresAt })
   return exchanged.token
+}
+
+/** `promise`, or the signal's abort reason as soon as it aborts (the promise itself goes on for the others). */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
 }
 
 type StsResult =

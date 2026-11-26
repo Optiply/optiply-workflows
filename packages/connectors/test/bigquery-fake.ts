@@ -65,6 +65,8 @@ export class FakeBigQuery {
   refuseNextExchange = false
   /** The next STS exchanges answer this instead (a wrong audience, a busy or failing STS), `times` times. */
   failExchange: { status: number; body: unknown; times: number } | null = null
+  /** How long STS takes to answer (to have exchanges overlap). */
+  exchangeDelayMs = 0
   /** An Optiply (Auth0) token STS exchanges for a Google token. */
   allowOptiplyToken(value: string): void {
     this.optiplyTokens.add(value)
@@ -152,7 +154,10 @@ export class FakeBigQuery {
     })
 
     if (url.pathname === '/token') return this.token(body as Record<string, string>)
-    if (url.pathname === '/sts/v1/token') return this.exchange(body as Record<string, string>)
+    if (url.pathname === '/sts/v1/token') {
+      if (this.exchangeDelayMs) await new Promise((r) => setTimeout(r, this.exchangeDelayMs))
+      return this.exchange(body as Record<string, string>)
+    }
 
     const token = req.headers.authorization?.replace(/^Bearer /, '')
     if (!token || !this.validTokens.has(token) || this.rejectNextToken) {
