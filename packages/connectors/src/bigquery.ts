@@ -39,6 +39,28 @@ const SCOPE = 'https://www.googleapis.com/auth/bigquery'
 export const OPTIPLY_DATA_PLATFORM_POOL =
   '//iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/providers/auth0'
 
+/** Optiply's Auth0 sign-in domains: production, production by its Auth0 name, staging. */
+export const OPTIPLY_LOGIN_URLS = [
+  'https://login.optiply.com/',
+  'https://optiply.eu.auth0.com/',
+  'https://optiply-staging.eu.auth0.com/',
+] as const
+
+function isOptiplyLogin(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === '' &&
+      OPTIPLY_LOGIN_URLS.some((allowed) => new URL(allowed).host === url.host)
+    )
+  } catch {
+    return false
+  }
+}
+
 const configSchema = z.object({
   /**
    * How it signs in: a service account key (the default, as before), a Google account through OAuth sign-in (M9):
@@ -59,8 +81,14 @@ const configSchema = z.object({
         type: z.literal('optiply'),
         /** The Auth0 application people sign in with (its Allowed Callback URLs must hold this server's). */
         clientId: z.string().trim().min(1),
-        /** The Auth0 tenant's sign-in domain; only its origin is used. */
-        loginUrl: z.string().url().default('https://login.optiply.com/'),
+        /**
+         * Optiply's Auth0 sign-in domain: one of Optiply's own (production, the same tenant by its Auth0 name, or
+         * staging), so nobody with Edit can send people to a look-alike sign-in page. Only its origin is used.
+         */
+        loginUrl: z
+          .string()
+          .default(OPTIPLY_LOGIN_URLS[0])
+          .refine(isOptiplyLogin, `Use one of Optiply's sign-in domains: ${OPTIPLY_LOGIN_URLS.join(', ')}`),
         /** The API the Optiply token is for; the identity pool accepts this one. */
         audience: z.string().trim().min(1).default('https://api.optiply.com/internal'),
         scope: z.string().default('openid email offline_access'),

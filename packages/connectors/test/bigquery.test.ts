@@ -677,6 +677,31 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
     expect(fake.apiCalls('dryRun').at(-1)!.authorization).toMatch(/^Bearer fed-/)
   })
 
+  it("signs in only on Optiply's own Auth0 domains, over https", () => {
+    const loginOf = (loginUrl: string) => {
+      const http = httpConfigFor('bigquery', {
+        projectId: 'p',
+        auth: { type: 'optiply', clientId: 'c', loginUrl },
+      })
+      return http?.auth.type === 'oauth2AuthorizationCode' ? http.auth.authorizeUrl : null
+    }
+    expect(loginOf('https://optiply-staging.eu.auth0.com/')).toBe(
+      'https://optiply-staging.eu.auth0.com/authorize',
+    )
+    expect(loginOf('https://optiply.eu.auth0.com')).toBe('https://optiply.eu.auth0.com/authorize')
+    for (const bad of [
+      'https://login-optiply.example/', // a look-alike
+      'https://optiply-login.eu.auth0.com/', // someone else's Auth0 tenant
+      'http://login.optiply.com/',
+      'https://login.optiply.com:8443/',
+      'https://user@login.optiply.com/',
+      'mailto:x@login.optiply.com',
+      'not a url',
+    ]) {
+      expect(loginOf(bad), bad).toBeNull()
+    }
+  })
+
   it("always exchanges at the data platform's pool: a pool in the settings is ignored", async () => {
     const { credentials } = account('optiply.kim')
     const res = optiply({

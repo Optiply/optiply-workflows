@@ -579,10 +579,27 @@ export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
 
 /** The defaults the connector applies (packages/connectors/src/bigquery.ts), shown until changed. */
 const OPTIPLY_SIGN_IN = {
-  loginUrl: 'https://login.optiply.com/',
   audience: 'https://api.optiply.com/internal',
   scope: 'openid email offline_access',
 } as const
+
+/** Optiply's Auth0 sign-in domains, the only ones the connector accepts (packages/connectors/src/bigquery.ts). */
+const OPTIPLY_LOGINS = [
+  { url: 'https://login.optiply.com/', label: 'login.optiply.com (production)' },
+  { url: 'https://optiply.eu.auth0.com/', label: 'optiply.eu.auth0.com (production, by its Auth0 name)' },
+  { url: 'https://optiply-staging.eu.auth0.com/', label: 'optiply-staging.eu.auth0.com (staging)' },
+] as const
+
+/** The choice a saved sign-in domain is (by host; the default when none is saved). */
+function loginChoice(saved: string | undefined): string {
+  if (!saved) return OPTIPLY_LOGINS[0].url
+  try {
+    const host = new URL(saved).host
+    return OPTIPLY_LOGINS.find((l) => new URL(l.url).host === host)?.url ?? OPTIPLY_LOGINS[0].url
+  } catch {
+    return OPTIPLY_LOGINS[0].url
+  }
+}
 
 /**
  * Optiply sign-in for BigQuery: each person signs in to Optiply (Auth0) with the app below; their token is exchanged at
@@ -610,8 +627,19 @@ function OptiplyDataPlatformSignIn({ props, resourceId }: { props: FieldsProps; 
             onChange={(e) => setAuth('clientId', e.target.value)}
           />
         </Field>
-        <Field label="Sign-in domain" hint="Optiply's Auth0 sign-in domain.">
-          <Input {...text('loginUrl')} data-testid="optiply-login-url" />
+        <Field label="Sign-in domain" hint="Optiply's Auth0 sign-in domain: production or staging.">
+          <Select
+            value={loginChoice(auth.loginUrl)}
+            disabled={props.disabled}
+            data-testid="optiply-login-url"
+            onChange={(e) => setAuth('loginUrl', e.target.value)}
+          >
+            {OPTIPLY_LOGINS.map((login) => (
+              <option key={login.url} value={login.url}>
+                {login.label}
+              </option>
+            ))}
+          </Select>
         </Field>
       </Grid>
       <Grid>

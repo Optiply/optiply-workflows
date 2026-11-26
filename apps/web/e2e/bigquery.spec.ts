@@ -56,6 +56,11 @@ test('a BigQuery resource signs in with a key or with each person’s Google acc
     await page.getByTestId('service-auth').selectOption('optiply')
     await expect(page.getByLabel('Client secret')).toHaveCount(0)
     await expect(page.getByTestId('optiply-login-url')).toHaveValue('https://login.optiply.com/')
+    await expect(page.getByTestId('optiply-login-url').locator('option')).toHaveText([
+      'login.optiply.com (production)',
+      'optiply.eu.auth0.com (production, by its Auth0 name)',
+      'optiply-staging.eu.auth0.com (staging)',
+    ])
     await expect(page.getByLabel('Audience')).toHaveValue('https://api.optiply.com/internal')
     await expect(page.getByTestId('bigquery-optiply-note')).toContainText('data-platform-users')
     await expect(page.getByText('Redirect URI')).toBeVisible()

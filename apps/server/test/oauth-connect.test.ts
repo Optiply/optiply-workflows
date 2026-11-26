@@ -753,6 +753,14 @@ describe('BigQuery with Google OAuth sign-in', () => {
         'Add the Optiply app’s client id',
       ],
       [{ ...base, auth: optiply }, 'Set the project'],
+      [
+        {
+          ...base,
+          projectId: 'optiply-workflows',
+          auth: { ...optiply, loginUrl: 'https://login-optiply.example/' },
+        },
+        "Use one of Optiply's sign-in domains",
+      ],
     ] as const) {
       const refused = await save(id, config)
       expect(refused.status, message).toBe(400)
