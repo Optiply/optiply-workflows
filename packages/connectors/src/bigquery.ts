@@ -704,9 +704,11 @@ async function describeFunction(
   path: string,
   name: string,
 ): Promise<DescribedFunction> {
+  // Kept once read: a function whose dry run fails is still inserted with its arguments.
+  let args: DescribedFunction['args'] = []
   try {
     const routine = await api<Routine>(client, token, 'GET', path, signal)
-    const args = (routine.arguments ?? []).map((a, i) => ({
+    args = (routine.arguments ?? []).map((a, i) => ({
       name: a.name || `arg${i + 1}`,
       type: a.dataType?.typeKind ?? '',
     }))
@@ -749,7 +751,7 @@ async function describeFunction(
     }
   } catch (err) {
     if (signal.aborted) throw err
-    return { name, args: [], columns: [] }
+    return { name, args, columns: [] }
   }
 }
 

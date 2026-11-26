@@ -851,7 +851,10 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
       })
       expect(byName.history_at!.insert).toBe("`optiply-data-platform.agent_api.history_at`('<shop>', <at>)")
       // One the platform refuses to plan is still listed, without columns.
-      expect(byName.product_slevel).toMatchObject({ columns: [] })
+      expect(byName.product_slevel).toMatchObject({
+        columns: [],
+        insert: "`optiply-data-platform.agent_api.product_slevel`('<shop>')", // its arguments kept
+      })
       // Dry runs with typed NULLs, billed to the resource's project, as the person; no job was created.
       expect(fake.dryRuns).toContain(
         'SELECT * FROM `optiply-data-platform.agent_api.webshop_product`(CAST(NULL AS STRING))',
