@@ -271,7 +271,6 @@ export class FakeBigQuery {
     return { status: 200, body: { access_token: value, expires_in: 3599, token_type: 'Bearer' } }
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: request JSON
   private routine(
     project: string,
     dataset: string,
@@ -335,6 +334,7 @@ export class FakeBigQuery {
     }
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: request JSON
   private insert(body: Record<string, any>): { status: number; body: unknown } {
     if (body.configuration?.dryRun) return this.dryRun(body)
     const ref = body.jobReference

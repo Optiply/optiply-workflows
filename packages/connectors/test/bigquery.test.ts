@@ -790,8 +790,9 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
           { name: 'assembled', type: 'BOOLEAN' },
         ],
       })
+      // As live (2026-11-26): it takes the shop too, and declares what it returns (no dry run).
       fake.routines.set('data_freshness', {
-        args: [],
+        args: [{ name: 'shop', typeKind: 'STRING' }],
         declared: [
           { name: 'function_name', type: { typeKind: 'STRING' } },
           { name: 'loaded_at', type: { typeKind: 'TIMESTAMP' } },
@@ -842,7 +843,7 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
       })
       // A declared return type needs no dry run.
       expect(byName.data_freshness).toMatchObject({
-        insert: '`optiply-data-platform.agent_api.data_freshness`()',
+        insert: "`optiply-data-platform.agent_api.data_freshness`('<shop>')",
         columns: [
           { name: 'function_name', type: 'STRING' },
           { name: 'loaded_at', type: 'TIMESTAMP' },
