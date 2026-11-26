@@ -2036,7 +2036,17 @@ the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services
   `invalid_grant`; errors by cause), `35daa5d` (one shared exchange), `ee744d3` (Salesforce's "consumer key"),
   `172ed48` (placeholders). The "needs check" was settled by the data team and the Auth0 admin: the email claim
   comes only from verified, unique emails.
-- **Next:** push, then the PR. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
+- **Shipped (the user away, on their word):** PR #22 CI green on the first try (check 9m, docker 4m, e2e 22m) →
+  merged as `4a3963a` → CI on `main` green → Deploy run by hand (`gh workflow run Deploy --ref main`, after 18:00) →
+  **production runs `4a3963a`** (rollback `086423c`), health 200, the new sign-in choice in the live bundle. VM: the
+  `9dc6fec` and `da8961b` images removed, build cache pruned (disk 49% → 33%). **Registry: the same two versions
+  still to delete** (the permission check refused it while the user was away): `for t in 9dc6fec da8961b; do for i in
+  app code-executor jdbc-runner python-builder sdk-runner; do gcloud artifacts docker images delete
+  us-east1-docker.pkg.dev/optiply-workflows/ow/$i:$t --delete-tags --quiet; done; done`.
+- **Next (the user's):** the registry cleanup above; a production BigQuery resource "Optiply data platform" (Each
+  person's Optiply account, the Optiply Workflows app's client id, project `optiply-workflows`, location `EU`),
+  connect and run an `agent_api` query; Job User per colleague by email (runbook); tell the data team; re-copy
+  `10-`, `11-` and `20-runbook-connectors.md` into the specialist folder. After it's live: a production BigQuery resource "Optiply data platform" (client id of the
   "Optiply Workflows" app, project `optiply-workflows`, location `EU`), the user connects and runs an `agent_api`
   query; tell the data team we use their pool from a second app; the specialist folder's `20-runbook-connectors.md`
   and `11-platform-admin-guide.md`/`10-platform-user-guide.md` re-copied from `main`.
@@ -2914,8 +2924,9 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 ## 15. How to start the next session
 
 **Session 62 (2026-11-26):** BigQuery with each person's Optiply account (the Optiply data platform through Google
-STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): steps 1a–1c and the 7 review fixes
-committed, **not pushed**; next push and the PR. GCP: Job User for the user's data-platform identity and a 30 GiB
+STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): PR #22 merged as `4a3963a` and **live**
+(**production runs `4a3963a`**, rollback `086423c`, deployed by hand). Left for the user: deleting `9dc6fec` and
+`da8961b` from the registry (command in §14 "Session 62"), then setting up the production resource. GCP: Job User for the user's data-platform identity and a 30 GiB
 daily query quota on `optiply-workflows` (done). The notes for session 61 below still hold.
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
