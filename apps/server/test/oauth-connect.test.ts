@@ -694,7 +694,12 @@ describe('BigQuery with Google OAuth sign-in', () => {
       [
         { ...base, projectId: 'optiply-dw', auth: { ...oauth, clientId: ' ' } },
         { clientSecret: CLIENT_SECRET },
-        'auth.clientId',
+        'Add the OAuth app’s client id',
+      ],
+      [
+        { ...base, projectId: 'optiply-dw', auth: { type: 'oauth', tokens: 'perUser' } },
+        { clientSecret: CLIENT_SECRET },
+        'Add the OAuth app’s client id',
       ],
       [{ ...base, projectId: 'optiply-dw', auth: oauth }, {}, 'client secret'],
       [{ ...base, auth: oauth }, { clientSecret: CLIENT_SECRET }, 'Set the project'],
@@ -738,7 +743,14 @@ describe('BigQuery with Google OAuth sign-in', () => {
     ).id as string
     const optiply = { type: 'optiply', clientId: 'optiply-workflows-spa' }
     for (const [config, message] of [
-      [{ ...base, projectId: 'optiply-workflows', auth: { ...optiply, clientId: ' ' } }, 'auth.clientId'],
+      [
+        { ...base, projectId: 'optiply-workflows', auth: { ...optiply, clientId: ' ' } },
+        'Add the Optiply app’s client id',
+      ],
+      [
+        { ...base, projectId: 'optiply-workflows', auth: { type: 'optiply' } },
+        'Add the Optiply app’s client id',
+      ],
       [{ ...base, auth: optiply }, 'Set the project'],
     ] as const) {
       const refused = await save(id, config)

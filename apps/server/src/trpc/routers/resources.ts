@@ -144,6 +144,17 @@ function secretsMissing(type: string, config: unknown): boolean {
 }
 
 /**
+ * An OAuth sign-in saved without its app's client id says so in words, rather than as a schema error
+ * ("auth.clientId: Invalid input: expected string, received undefined"). Null for any other problem.
+ */
+function missingClientId(config: unknown, issues: { path: PropertyKey[] }[]): string | null {
+  const clientId = issues.some((i) => i.path.length === 2 && i.path[0] === 'auth' && i.path[1] === 'clientId')
+  if (!clientId) return null
+  const type = (config as { auth?: { type?: unknown } } | null)?.auth?.type
+  return type === 'optiply' ? 'Add the Optiply app’s client id' : 'Add the OAuth app’s client id'
+}
+
+/**
  * Why a resource's settings couldn't sign in, checked on save (M26, M27): an AWS identity (S3), a service's token
  * or OAuth client secret, Google Sheets' key or the server's identity. Null when fine, or for other types.
  */
@@ -627,7 +638,11 @@ export const resourcesRouter = router({
       const envSlug = await environmentSlug(ctx.db, input.environmentId)
 
       const config = connector.configSchema.safeParse(input.config)
-      if (!config.success) throw invalidInput('configuration', config.error.issues)
+      if (!config.success) {
+        const missing = missingClientId(input.config, config.error.issues)
+        if (missing) throw new TRPCError({ code: 'BAD_REQUEST', message: missing })
+        throw invalidInput('configuration', config.error.issues)
+      }
 
       const existing = await getConfigRow(ctx.db, resource.id, input.environmentId)
       // A protected resource's settings are Git's (M22): here only its secrets change (and overrides, apart).
