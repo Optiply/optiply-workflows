@@ -1,4 +1,4 @@
-import { isUsualSchema, sqlTableName } from '@/lib/sql-schema'
+import { isUsualSchema, sqlTableLabel, sqlTableName } from '@/lib/sql-schema'
 import { monaco } from './monaco'
 
 // SQL completions from a database resource's tables and columns (session 57), per model: table names (with their
@@ -6,7 +6,13 @@ import { monaco } from './monaco'
 // `schema.`, and the columns of the tables the query already names. Inside `{{ }}` the template completions answer.
 
 export interface EditorSqlSchema {
-  tables: { schema: string; name: string; columns: { name: string; type: string; nullable: boolean }[] }[]
+  tables: {
+    schema: string
+    name: string
+    columns: { name: string; type: string; nullable: boolean }[]
+    /** A table function's call, inserted instead of its name. */
+    insert?: string
+  }[]
 }
 
 const schemas = new Map<string, EditorSqlSchema>()
@@ -96,12 +102,13 @@ function register(): void {
       const several = new Set(schema.tables.map((t) => t.schema)).size > 1
       const tables = schema.tables.map((t) => {
         const qualified = sqlTableName(t, several)
+        const label = sqlTableLabel(t, several)
         return {
-          label: qualified,
+          label,
           kind: monaco.languages.CompletionItemKind.Struct,
           insertText: qualified,
-          detail: `table · ${t.columns.length} columns`,
-          sortText: `1${qualified}`,
+          detail: t.insert ? `function · ${t.columns.length} columns` : `table · ${t.columns.length} columns`,
+          sortText: `1${label}`,
           range,
         }
       })

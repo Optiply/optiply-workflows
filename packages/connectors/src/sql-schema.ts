@@ -1,5 +1,5 @@
 import type { PoolManager } from './pool'
-import { runQuery } from './run'
+import { runOperation, runQuery } from './run'
 import type { AnyConnector, CredentialSource, ResolvedResource } from './types'
 
 // SQL schema loading (session 57): a database resource's tables and columns for the editor's browser and completions.
@@ -20,6 +20,8 @@ export interface SqlSchemaTable {
   schema: string
   name: string
   columns: SqlSchemaColumn[]
+  /** What to insert for it when its name alone isn't how SQL reads it (a table function's call). */
+  insert?: string
 }
 
 export interface SqlSchema {
@@ -32,7 +34,8 @@ export interface SqlSchema {
 
 /**
  * A catalog query's rows as tables, in the order read. Rows carry `s`, `t`, `c`, `d`, `n` (schema, table, column, type,
- * nullable), in any case (Oracle and Snowflake fold unquoted names to capitals); nullable as YES/Y/1/true.
+ * nullable), in any case (Oracle and Snowflake fold unquoted names to capitals); nullable as YES/Y/1/true. Optional:
+ * `i`, what to insert for the table; a row without a column lists a table with none.
  */
 export function groupSchema(rows: Record<string, unknown>[], limit: number): SqlSchema {
   const tables: SqlSchemaTable[] = []
@@ -45,10 +48,11 @@ export function groupSchema(rows: Record<string, unknown>[], limit: number): Sql
     const key = `${schema}\u0000${name}`
     let table = byKey.get(key)
     if (!table) {
-      table = { schema, name, columns: [] }
+      table = { schema, name, columns: [], ...(row.i ? { insert: String(row.i) } : {}) }
       byKey.set(key, table)
       tables.push(table)
     }
+    if (row.c === undefined || row.c === null || row.c === '') continue
     const nullable = row.n
     table.columns.push({
       name: String(row.c ?? ''),
@@ -78,6 +82,20 @@ export async function describeSqlSchema(
   // limit of one row there's no room for the extra one: what's read is shown.
   const fetch = Math.min(SQL_SCHEMA_COLUMNS + 1, Math.max(1, config.maxRows ?? Number.POSITIVE_INFINITY))
   const limit = fetch > 1 ? fetch - 1 : 1
+  if (connector.schemaRows) {
+    const schemaRows = connector.schemaRows.bind(connector)
+    const rows = await runOperation(
+      pool,
+      connector,
+      resource,
+      (client, ctx) => schemaRows(client, { ...ctx, limit: fetch }),
+      {
+        ...(opts.timeoutMs !== undefined && { timeoutMs: opts.timeoutMs }),
+        ...(opts.credentials && { credentials: opts.credentials }),
+      },
+    )
+    if (rows) return groupSchema(rows, limit)
+  }
   const sql = connector.schemaSql(config, fetch)
   if (!sql) return null
   const result = await runQuery(

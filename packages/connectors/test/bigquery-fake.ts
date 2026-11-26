@@ -37,6 +37,17 @@ interface Job extends FakeJob {
  * bearer grant (signature and claims checked), jobs.insert, getQueryResults with paging and polling, jobs.cancel
  * and dry runs. Jobs are scripted by SQL text with `script()`.
  */
+export interface FakeRoutine {
+  type?: string
+  args: { name: string; typeKind?: string }[]
+  /** returnTableType's columns, when the function declares them. */
+  declared?: { name: string; type: { typeKind: string; arrayElementType?: { typeKind: string } } }[]
+  /** What a dry run says it returns. */
+  fields?: { name: string; type: string; mode?: string }[]
+  dryRunError?: string
+  getError?: string
+}
+
 export class FakeBigQuery {
   readonly requests: Recorded[] = []
   readonly keyJson: string
@@ -67,6 +78,13 @@ export class FakeBigQuery {
   failExchange: { status: number; body: unknown; times: number } | null = null
   /** How long STS takes to answer (to have exchanges overlap). */
   exchangeDelayMs = 0
+  /**
+   * The data platform's routines (`optiply-data-platform.agent_api`): what `routines.list`/`get` answer, and what a dry
+   * run of `SELECT * FROM fn(...)` says it returns (`fields`), or refuses (`dryRunError`).
+   */
+  readonly routines = new Map<string, FakeRoutine>()
+  /** The dry runs' SQL, in order. */
+  readonly dryRuns: string[] = []
   /** An Optiply (Auth0) token STS exchanges for a Google token. */
   allowOptiplyToken(value: string): void {
     this.optiplyTokens.add(value)
@@ -166,6 +184,12 @@ export class FakeBigQuery {
       return googleError(401, 'authError', 'Request had invalid authentication credentials.')
     }
 
+    const r = /^\/bigquery\/v2\/projects\/([^/]+)\/datasets\/([^/]+)\/routines(?:\/([^/]+))?$/.exec(
+      url.pathname,
+    )
+    if (r && req.method === 'GET')
+      return this.routine(r[1]!, r[2]!, r[3] && decodeURIComponent(r[3]), url.searchParams)
+
     const m = /^\/bigquery\/v2\/projects\/([^/]+)\/(jobs|queries)(?:\/([^/]+))?(?:\/(cancel))?$/.exec(
       url.pathname,
     )
@@ -247,7 +271,68 @@ export class FakeBigQuery {
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: request JSON
+  private routine(
+    project: string,
+    dataset: string,
+    id: string | undefined,
+    params: URLSearchParams,
+  ): { status: number; body: unknown } {
+    if (project !== 'optiply-data-platform' || dataset !== 'agent_api') {
+      return googleError(404, 'notFound', `Not found: Dataset ${project}:${dataset}`)
+    }
+    const ref = (routineId: string) => ({ projectId: project, datasetId: dataset, routineId })
+    if (id === undefined) {
+      // Pages of two, to have the connector follow nextPageToken.
+      const all = [...this.routines.keys()]
+      const start = Number(params.get('pageToken') ?? 0)
+      const page = all.slice(start, start + 2)
+      return {
+        status: 200,
+        body: {
+          routines: page.map((name) => ({
+            routineReference: ref(name),
+            routineType: this.routines.get(name)!.type ?? 'TABLE_VALUED_FUNCTION',
+          })),
+          ...(start + 2 < all.length && { nextPageToken: String(start + 2) }),
+        },
+      }
+    }
+    const routine = this.routines.get(id)
+    if (!routine) return googleError(404, 'notFound', `Not found: Routine ${project}:${dataset}.${id}`)
+    if (routine.getError) return googleError(403, 'accessDenied', routine.getError)
+    return {
+      status: 200,
+      body: {
+        routineReference: ref(id),
+        routineType: routine.type ?? 'TABLE_VALUED_FUNCTION',
+        arguments: routine.args.map((a) => ({ name: a.name, dataType: { typeKind: a.typeKind } })),
+        ...(routine.declared && {
+          returnTableType: { columns: routine.declared.map((c) => ({ name: c.name, type: c.type })) },
+        }),
+      },
+    }
+  }
+
+  // A dry run (jobs.insert with configuration.dryRun) of one of the data platform's functions: its columns, no job.
+  // biome-ignore lint/suspicious/noExplicitAny: request JSON
+  private dryRun(body: Record<string, any>): { status: number; body: unknown } {
+    const sql: string = body.configuration.query.query
+    this.dryRuns.push(sql)
+    const name = /`optiply-data-platform\.agent_api\.(\w+)`\(/.exec(sql)?.[1]
+    const routine = name ? this.routines.get(name) : undefined
+    if (!routine) return googleError(400, 'invalidQuery', `Unrecognized name in ${sql}`)
+    if (routine.dryRunError) return googleError(403, 'accessDenied', routine.dryRunError)
+    return {
+      status: 200,
+      body: {
+        status: { state: 'DONE' },
+        statistics: { query: { schema: { fields: routine.fields ?? [] } } },
+      },
+    }
+  }
+
   private insert(body: Record<string, any>): { status: number; body: unknown } {
+    if (body.configuration?.dryRun) return this.dryRun(body)
     const ref = body.jobReference
     const query = body.configuration.query
     const script = this.scripts.find((s) => s.match(query.query))?.job ?? { rows: [], schema: { fields: [] } }

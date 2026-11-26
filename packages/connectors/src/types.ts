@@ -118,6 +118,16 @@ export interface Connector<Config = unknown, Secrets = unknown, Query = unknown,
    * this resource's dialect is unknown; throws a ConnectorError when its settings don't say where to look.
    */
   schemaSql?(config: Config, limit: number): string | null
+  /**
+   * The tables to list when one catalog query can't say them (session 62: the Optiply data platform's table functions,
+   * whose columns only a dry run of each shows): rows as `schemaSql`'s (`s`, `t`, `c`, `d`, `n`), plus `i`, the text
+   * to insert for the table; a row without `c` lists a table with no columns. At most `limit` rows. Null for a
+   * resource whose tables `schemaSql` reads.
+   */
+  schemaRows?(
+    client: Client,
+    ctx: { signal: AbortSignal; credentials?: CredentialSource; limit: number },
+  ): Promise<Record<string, unknown>[] | null>
   testConnection(
     client: Client,
     ctx: { signal: AbortSignal; timeoutMs: number; credentials?: CredentialSource },

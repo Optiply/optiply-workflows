@@ -4,6 +4,7 @@ import {
   ConnectorError,
   type CredentialSource,
   createBigQueryConnector,
+  describeSqlSchema,
   httpConfigFor,
   PoolManager,
   type ResolvedResource,
@@ -771,6 +772,117 @@ describe('Optiply sign-in (the data platform, through STS)', () => {
     expect(fake.stsCalls().map((r) => (r.body as Record<string, string>).audience)).toEqual([
       fake.stsAudience,
     ])
+  })
+
+  describe("the Tables panel: the data platform's table functions", () => {
+    const setUp = () => {
+      fake.routines.clear()
+      fake.routines.set('webshop_product', {
+        args: [{ name: 'shop', typeKind: 'STRING' }],
+        fields: [
+          { name: 'uuid', type: 'STRING', mode: 'REQUIRED' },
+          { name: 'price', type: 'NUMERIC' },
+          { name: 'tags', type: 'STRING', mode: 'REPEATED' },
+          { name: 'meta', type: 'RECORD' },
+          // The REST API's legacy names (as Google answered on 2026-11-26), shown as standard SQL's.
+          { name: 'status', type: 'INTEGER' },
+          { name: 'demand', type: 'FLOAT' },
+          { name: 'assembled', type: 'BOOLEAN' },
+        ],
+      })
+      fake.routines.set('data_freshness', {
+        args: [],
+        declared: [
+          { name: 'function_name', type: { typeKind: 'STRING' } },
+          { name: 'loaded_at', type: { typeKind: 'TIMESTAMP' } },
+          { name: 'sources', type: { typeKind: 'ARRAY', arrayElementType: { typeKind: 'STRING' } } },
+        ],
+      })
+      fake.routines.set('product_slevel', {
+        args: [{ name: 'shop', typeKind: 'STRING' }],
+        dryRunError: 'Access Denied: Table optiply-data-platform:x.product_slevel',
+      })
+      fake.routines.set('shop_helper', { type: 'SCALAR_FUNCTION', args: [] })
+      fake.routines.set('history_at', {
+        args: [
+          { name: 'shop', typeKind: 'STRING' },
+          { name: 'at', typeKind: 'DATE' },
+        ],
+        fields: [{ name: 'id', type: 'INT64' }],
+      })
+    }
+
+    it('lists each function with the columns it returns, inserted as its call, read as the person', async () => {
+      setUp()
+      const { credentials } = account('optiply.nina')
+      const jobsBefore = fake.jobs.size
+      const schema = await describeSqlSchema(pool, connector, optiply(), { credentials })
+      expect(schema?.truncated).toBe(false)
+      // Table functions only (not the scalar one), sorted, across the routine list's pages.
+      expect(schema?.tables.map((t) => t.name)).toEqual([
+        'data_freshness',
+        'history_at',
+        'product_slevel',
+        'webshop_product',
+      ])
+      const byName = Object.fromEntries(schema!.tables.map((t) => [t.name, t]))
+      expect(byName.webshop_product).toEqual({
+        schema: 'optiply-data-platform.agent_api',
+        name: 'webshop_product',
+        insert: "`optiply-data-platform.agent_api.webshop_product`('<shop>')",
+        columns: [
+          { name: 'uuid', type: 'STRING', nullable: false },
+          { name: 'price', type: 'NUMERIC', nullable: true },
+          { name: 'tags', type: 'ARRAY<STRING>', nullable: true },
+          { name: 'meta', type: 'STRUCT', nullable: true },
+          { name: 'status', type: 'INT64', nullable: true },
+          { name: 'demand', type: 'FLOAT64', nullable: true },
+          { name: 'assembled', type: 'BOOL', nullable: true },
+        ],
+      })
+      // A declared return type needs no dry run.
+      expect(byName.data_freshness).toMatchObject({
+        insert: '`optiply-data-platform.agent_api.data_freshness`()',
+        columns: [
+          { name: 'function_name', type: 'STRING' },
+          { name: 'loaded_at', type: 'TIMESTAMP' },
+          { name: 'sources', type: 'ARRAY<STRING>' },
+        ],
+      })
+      expect(byName.history_at!.insert).toBe("`optiply-data-platform.agent_api.history_at`('<shop>', <at>)")
+      // One the platform refuses to plan is still listed, without columns.
+      expect(byName.product_slevel).toMatchObject({ columns: [] })
+      // Dry runs with typed NULLs, billed to the resource's project, as the person; no job was created.
+      expect(fake.dryRuns).toContain(
+        'SELECT * FROM `optiply-data-platform.agent_api.webshop_product`(CAST(NULL AS STRING))',
+      )
+      expect(fake.dryRuns).toContain(
+        'SELECT * FROM `optiply-data-platform.agent_api.history_at`(CAST(NULL AS STRING), CAST(NULL AS DATE))',
+      )
+      expect(fake.dryRuns.some((q) => q.includes('data_freshness'))).toBe(false)
+      expect(fake.jobs.size).toBe(jobsBefore)
+      expect(fake.apiCalls().every((r) => r.authorization?.startsWith('Bearer fed-'))).toBe(true)
+      expect(
+        fake
+          .apiCalls()
+          .filter((r) => r.method === 'POST')
+          .every((r) => r.path === '/bigquery/v2/projects/optiply-workflows/jobs'),
+      ).toBe(true)
+    })
+
+    it('stops at the row limit and says the list is cut short', async () => {
+      setUp()
+      const { credentials } = account('optiply.otto')
+      const schema = await describeSqlSchema(pool, connector, optiply({ maxRows: 3 }), { credentials })
+      expect(schema?.truncated).toBe(true)
+      expect(schema?.tables.flatMap((t) => t.columns)).toHaveLength(2)
+    })
+
+    it('asks for a connected account, as a query does', async () => {
+      setUp()
+      const err = await failure(describeSqlSchema(pool, connector, optiply()))
+      expect(err.code).toBe('auth_required')
+    })
   })
 
   it('needs the project jobs run in', async () => {

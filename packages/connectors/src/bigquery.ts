@@ -211,6 +211,12 @@ ORDER BY table_schema, table_name, ordinal_position
 LIMIT ${limit}`
     },
 
+    // Optiply sign-in lists the data platform's table functions instead of a catalog query (schemaSql is the rest's).
+    async schemaRows(client, { signal, credentials, limit }) {
+      if (client.config.auth.type !== 'optiply') return null
+      return dataPlatformSchema(client, tokenSource(client, credentials), signal, limit)
+    },
+
     createClient({ config, secrets }) {
       if (config.auth.type !== 'serviceAccount') {
         if (!config.projectId) {
@@ -599,6 +605,187 @@ interface Field {
   type: string
   mode?: 'NULLABLE' | 'REQUIRED' | 'REPEATED'
   fields?: Field[]
+}
+
+/** The Optiply data platform's functions: what Optiply sign-in's Tables panel lists. */
+export const OPTIPLY_DATA_PLATFORM = { project: 'optiply-data-platform', dataset: 'agent_api' } as const
+/** How many functions are described at once (each a routine read and, without a declared return type, a dry run). */
+const DESCRIBE_AT_ONCE = 8
+/** Argument types a dry run can pass as a typed NULL; any other (ANY TYPE, STRUCT, ARRAY) is a plain NULL. */
+const CASTABLE = new Set([
+  'STRING',
+  'BYTES',
+  'INT64',
+  'FLOAT64',
+  'NUMERIC',
+  'BIGNUMERIC',
+  'BOOL',
+  'DATE',
+  'DATETIME',
+  'TIME',
+  'TIMESTAMP',
+  'JSON',
+])
+
+interface StandardType {
+  typeKind?: string
+  arrayElementType?: StandardType
+}
+
+interface Routine {
+  routineReference?: { routineId?: string }
+  routineType?: string
+  arguments?: { name?: string; dataType?: StandardType }[]
+  returnTableType?: { columns?: { name?: string; type?: StandardType }[] }
+}
+
+interface DescribedFunction {
+  name: string
+  args: { name: string; type: string }[]
+  columns: { name: string; type: string; nullable: boolean }[]
+}
+
+/**
+ * The data platform's table functions as the Tables panel's rows (`schemaRows`): each function a "table" whose
+ * columns are what it returns, inserted as its call (`` `optiply-data-platform.agent_api.webshop_product`('<shop>') ``).
+ * Read as the person (their federated token): the routines API lists and describes them, and a function that declares
+ * no return type is dry-run (free, no job) with typed NULL arguments for its columns. One that can't be described is
+ * listed without columns rather than left out.
+ */
+async function dataPlatformSchema(
+  client: Client,
+  token: TokenSource,
+  signal: AbortSignal,
+  limit: number,
+): Promise<Record<string, unknown>[]> {
+  const { project, dataset } = OPTIPLY_DATA_PLATFORM
+  const routines = `/projects/${enc(project)}/datasets/${enc(dataset)}/routines`
+  const names: string[] = []
+  let pageToken: string | undefined
+  do {
+    const params = new URLSearchParams({ maxResults: '1000' })
+    if (pageToken) params.set('pageToken', pageToken)
+    const page = await api<{ routines?: Routine[]; nextPageToken?: string }>(
+      client,
+      token,
+      'GET',
+      `${routines}?${params}`,
+      signal,
+    )
+    for (const r of page.routines ?? []) {
+      const id = r.routineReference?.routineId
+      if (id && r.routineType === 'TABLE_VALUED_FUNCTION') names.push(id)
+    }
+    pageToken = page.nextPageToken
+  } while (pageToken)
+  names.sort()
+
+  const described = await inBatches(names, DESCRIBE_AT_ONCE, (name) =>
+    describeFunction(client, token, signal, `${routines}/${enc(name)}`, name),
+  )
+  const schema = `${project}.${dataset}`
+  const rows: Record<string, unknown>[] = []
+  for (const fn of described) {
+    const args = fn.args.map((a) => (a.type === 'STRING' ? `'<${a.name}>'` : `<${a.name}>`)).join(', ')
+    const insert = `\`${schema}.${fn.name}\`(${args})`
+    if (!fn.columns.length) rows.push({ s: schema, t: fn.name, i: insert })
+    for (const c of fn.columns)
+      rows.push({ s: schema, t: fn.name, c: c.name, d: c.type, n: c.nullable, i: insert })
+    if (rows.length >= limit) break
+  }
+  return rows.slice(0, limit)
+}
+
+/** One function's arguments and returned columns; no columns when it can't be read or dry-run (never throws, but on abort). */
+async function describeFunction(
+  client: Client,
+  token: TokenSource,
+  signal: AbortSignal,
+  path: string,
+  name: string,
+): Promise<DescribedFunction> {
+  try {
+    const routine = await api<Routine>(client, token, 'GET', path, signal)
+    const args = (routine.arguments ?? []).map((a, i) => ({
+      name: a.name || `arg${i + 1}`,
+      type: a.dataType?.typeKind ?? '',
+    }))
+    const declared = routine.returnTableType?.columns
+    if (declared?.length) {
+      return {
+        name,
+        args,
+        columns: declared.map((c) => ({
+          name: c.name ?? '',
+          type: standardTypeName(c.type),
+          nullable: true,
+        })),
+      }
+    }
+    const { project, dataset } = OPTIPLY_DATA_PLATFORM
+    const call = args.map((a) => (CASTABLE.has(a.type) ? `CAST(NULL AS ${a.type})` : 'NULL')).join(', ')
+    const planned = await api<{ statistics?: { query?: { schema?: { fields?: Field[] } } } }>(
+      client,
+      token,
+      'POST',
+      `/projects/${enc(client.projectId)}/jobs`,
+      signal,
+      {
+        jobReference: {
+          projectId: client.projectId,
+          ...(client.config.location && { location: client.config.location }),
+        },
+        configuration: {
+          dryRun: true,
+          query: { query: `SELECT * FROM \`${project}.${dataset}.${name}\`(${call})`, useLegacySql: false },
+        },
+      },
+    )
+    const fields = planned.statistics?.query?.schema?.fields ?? []
+    return {
+      name,
+      args,
+      columns: fields.map((f) => ({ name: f.name, type: fieldTypeName(f), nullable: f.mode !== 'REQUIRED' })),
+    }
+  } catch (err) {
+    if (signal.aborted) throw err
+    return { name, args: [], columns: [] }
+  }
+}
+
+/** A routine's declared type as SQL writes it (`ARRAY<STRING>`; a struct as `STRUCT`). */
+function standardTypeName(type: StandardType | undefined): string {
+  if (!type?.typeKind) return ''
+  if (type.typeKind === 'ARRAY') return `ARRAY<${standardTypeName(type.arrayElementType)}>`
+  return type.typeKind
+}
+
+/** The REST API's legacy type names, as standard SQL (and INFORMATION_SCHEMA, the panel's other source) writes them. */
+const STANDARD_TYPE: Record<string, string> = {
+  INTEGER: 'INT64',
+  FLOAT: 'FLOAT64',
+  BOOLEAN: 'BOOL',
+  RECORD: 'STRUCT',
+}
+
+/** A result field's type as SQL writes it (`ARRAY<INT64>`; a record as `STRUCT`). */
+function fieldTypeName(field: Field): string {
+  const base = STANDARD_TYPE[field.type] ?? field.type
+  return field.mode === 'REPEATED' ? `ARRAY<${base}>` : base
+}
+
+/** `work` over `items`, at most `size` at a time, results in the items' order. */
+async function inBatches<T, R>(items: T[], size: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await work(items[i] as T)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker))
+  return results
 }
 
 async function executeQuery(client: Client, query: Query, ctx: QueryContext): Promise<QueryResult> {
