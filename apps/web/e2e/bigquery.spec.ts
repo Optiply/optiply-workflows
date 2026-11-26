@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test'
 import { signIn, trpcMutate } from './helpers'
 
-// BigQuery's sign-in choice: a service account key, or Google OAuth with each person's own account. Connecting at
-// Google itself isn't driven here (no fake Google consent and BigQuery API in e2e): the connector and server tests
-// cover the token and the redirect.
+// BigQuery's sign-in choice: a service account key, Google OAuth with each person's own account, or each person's
+// Optiply account (the data platform, through Google STS). Connecting at Google or Optiply itself isn't driven here
+// (no fake consent, STS or BigQuery API in e2e): the connector and server tests cover the tokens and the redirect.
 
 test('a BigQuery resource signs in with a key or with each person’s Google account', async ({ page }) => {
   await signIn(page)
@@ -30,7 +30,7 @@ test('a BigQuery resource signs in with a key or with each person’s Google acc
       'openid email https://www.googleapis.com/auth/bigquery',
     )
     await expect(page.getByTestId('bigquery-oauth-note')).toContainText('BigQuery Job User')
-    await expect(page.getByText('Required with OAuth sign-in.')).toBeVisible()
+    await expect(page.getByText('Required with OAuth or Optiply sign-in.')).toBeVisible()
     await page.getByTestId('oauth-client-id').fill(`${stamp}.apps.googleusercontent.com`)
     await page.getByLabel('Client secret').fill(`GOCSPX-${stamp}-secret`)
     await page.getByLabel('Accounts').selectOption('perUser')
@@ -48,6 +48,23 @@ test('a BigQuery resource signs in with a key or with each person’s Google acc
     await page.getByRole('button', { name: 'Test connection' }).click()
     await expect(page.getByText('Connect your account to this resource to use it.')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Connect your account' }).first()).toBeVisible()
+  })
+
+  await test.step('each person’s Optiply account: the data platform’s defaults, no client secret', async () => {
+    await page.getByTestId('service-auth').selectOption('optiply')
+    await expect(page.getByLabel('Client secret')).toHaveCount(0)
+    await expect(page.getByTestId('optiply-login-url')).toHaveValue('https://login.optiply.com/')
+    await expect(page.getByLabel('Audience')).toHaveValue('https://api.optiply.com/internal')
+    await expect(page.getByTestId('optiply-sts-audience')).toHaveValue(
+      /workloadIdentityPools\/data-platform-users/,
+    )
+    await expect(page.getByText('Redirect URI')).toBeVisible()
+    await expect(page.getByTestId('bigquery-optiply-note')).toContainText('BigQuery Job User')
+    await page.getByTestId('oauth-client-id').fill(`optiply-spa-${stamp}`)
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Saved.')).toBeVisible()
+    await page.getByRole('button', { name: 'Test connection' }).click()
+    await expect(page.getByText('Connect your account to this resource to use it.')).toBeVisible()
   })
 
   await test.step('back to a key: its field returns, and saving without one says so', async () => {

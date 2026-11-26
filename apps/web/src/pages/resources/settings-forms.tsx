@@ -703,7 +703,9 @@ const GIB = 1024 ** 3
 
 function BigQueryFields(props: FieldsProps & { resourceId: string }) {
   const { config, set, disabled } = props
-  const oauth = (config.auth as { type?: string } | undefined)?.type === 'oauth'
+  // OAuth or Optiply sign-in: there's no key to take the project from.
+  const oauth =
+    ((config.auth as { type?: string } | undefined)?.type ?? 'serviceAccount') !== 'serviceAccount'
   const text = (key: string) => ({
     value: String(config[key] ?? ''),
     disabled,
@@ -728,7 +730,7 @@ function BigQueryFields(props: FieldsProps & { resourceId: string }) {
           label="Project"
           hint={
             oauth
-              ? 'Where queries run and are billed. Required with OAuth sign-in.'
+              ? 'Where queries run and are billed. Required with OAuth or Optiply sign-in.'
               : "Where queries run and are billed. Defaults to the key's project."
           }
         >

@@ -524,8 +524,9 @@ export function TeamsFields(props: FieldsProps & { resourceId: string }) {
 }
 
 /**
- * How a BigQuery resource signs in: a service account key (every query runs as that account), or a Google account
- * through OAuth sign-in, one shared per environment or each person's own (queries run with that person's access).
+ * How a BigQuery resource signs in: a service account key (every query runs as that account), a Google account
+ * through OAuth sign-in, one shared per environment or each person's own (queries run with that person's access), or
+ * each person's own Optiply account, exchanged at Google STS for the Optiply data platform.
  */
 export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
   const auth = (props.config.auth ?? { type: 'serviceAccount' }) as Auth
@@ -540,9 +541,12 @@ export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
         >
           <option value="serviceAccount">A service account key</option>
           <option value="oauth">OAuth sign-in (a Google account)</option>
+          <option value="optiply">Each person's Optiply account (the Optiply data platform)</option>
         </Select>
       </Field>
-      {auth.type === 'oauth' ? (
+      {auth.type === 'optiply' ? (
+        <OptiplyDataPlatformSignIn props={props} resourceId={props.resourceId} />
+      ) : auth.type === 'oauth' ? (
         <>
           <OAuthApp
             props={props}
@@ -570,6 +574,85 @@ export function BigQuerySignIn(props: FieldsProps & { resourceId: string }) {
         />
       )}
     </>
+  )
+}
+
+/** The defaults the connector applies (packages/connectors/src/bigquery.ts), shown until changed. */
+const OPTIPLY_SIGN_IN = {
+  loginUrl: 'https://login.optiply.com/',
+  audience: 'https://api.optiply.com/internal',
+  scope: 'openid email offline_access',
+  stsAudience:
+    '//iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/providers/auth0',
+} as const
+
+/**
+ * Optiply sign-in for BigQuery: each person signs in to Optiply (Auth0) with the app below; their token is exchanged at
+ * Google STS for a Google identity of the same person, which the data platform's functions check shop membership on.
+ */
+function OptiplyDataPlatformSignIn({ props, resourceId }: { props: FieldsProps; resourceId: string }) {
+  const auth = props.config.auth as Record<string, string | undefined>
+  const setAuth = (key: string, value: string) => props.set('auth', { ...auth, [key]: value || undefined })
+  const text = (key: keyof typeof OPTIPLY_SIGN_IN) => ({
+    value: auth[key] ?? OPTIPLY_SIGN_IN[key],
+    disabled: props.disabled,
+    onChange: (e: { target: { value: string } }) => setAuth(key, e.target.value),
+  })
+  return (
+    <div className="space-y-4">
+      <Grid>
+        <Field
+          label="Client ID"
+          hint="The Optiply app people sign in with (in Optiply's Auth0; it has no secret)."
+        >
+          <Input
+            value={auth.clientId ?? ''}
+            disabled={props.disabled}
+            data-testid="oauth-client-id"
+            onChange={(e) => setAuth('clientId', e.target.value)}
+          />
+        </Field>
+        <Field label="Sign-in domain" hint="Optiply's Auth0 sign-in domain.">
+          <Input {...text('loginUrl')} data-testid="optiply-login-url" />
+        </Field>
+      </Grid>
+      <Grid>
+        <Field label="Audience" hint="The Optiply API the token is for; the identity pool accepts it.">
+          <Input {...text('audience')} />
+        </Field>
+        <Field
+          label="Scopes"
+          hint="Space-separated. offline_access keeps people connected; email names them."
+        >
+          <Input {...text('scope')} />
+        </Field>
+      </Grid>
+      <Field
+        label="Identity pool"
+        hint="The workload identity pool provider Google STS exchanges the Optiply token at (the data platform's)."
+      >
+        <Input {...text('stsAudience')} data-testid="optiply-sts-audience" />
+      </Field>
+      <RedirectUri resourceId={resourceId} />
+      <div className="space-y-1 text-xs text-muted" data-testid="bigquery-optiply-note">
+        <p>
+          Each person connects their own Optiply account; queries see only the webshops they are a member of,
+          e.g.{' '}
+          <code className="text-ink">
+            SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('&lt;webshop uuid&gt;')
+          </code>
+          .
+        </p>
+        <p>
+          Each person also needs the BigQuery Job User role in the project below, granted to{' '}
+          <code className="text-ink">
+            principal://iam.googleapis.com/projects/429012531216/locations/global/workloadIdentityPools/data-platform-users/subject/&lt;their
+            Optiply email&gt;
+          </code>
+          . Workflows that run on their own (schedules, webhooks) can't use it.
+        </p>
+      </div>
+    </div>
   )
 }
 
