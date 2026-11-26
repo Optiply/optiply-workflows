@@ -292,6 +292,9 @@ in Optiply. The data platform's tables are functions that take the webshop's id:
 SELECT * FROM `optiply-data-platform.agent_api.webshop_product`('<webshop uuid>')
 ```
 
+The **Tables** panel next to the query lists these functions and the columns each returns; click one to insert its
+call, then replace `<shop>` with the webshop's id.
+
 If a query says you have no BigQuery Job User permission, ask an admin to grant it to your Optiply account.
 
 #### Resources that sign in with a custom auth flow

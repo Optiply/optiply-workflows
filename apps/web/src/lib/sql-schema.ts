@@ -4,7 +4,13 @@ import { isSqlType } from './resource-types'
 import { trpcClient, useTRPC } from './trpc'
 
 export interface SqlSchemaView {
-  tables: { schema: string; name: string; columns: { name: string; type: string; nullable: boolean }[] }[]
+  tables: {
+    schema: string
+    name: string
+    columns: { name: string; type: string; nullable: boolean }[]
+    /** What to insert when its name alone isn't how SQL reads it (a table function's call). */
+    insert?: string
+  }[]
   truncated: boolean
   /** How many columns were read at most. */
   limit: number
@@ -21,11 +27,24 @@ export type SqlSchemaState =
 const USUAL = new Set(['public', 'dbo', 'main'])
 
 /**
- * How a table is written in SQL: with its schema when the database has several and it isn't the usual one. The tables
- * panel inserts it and the editor's completions offer it, so both write the same name.
+ * How a table is written in SQL: its own insert text when it has one (a table function's call, e.g. the Optiply data
+ * platform's), else with its schema when the database has several and it isn't the usual one. The tables panel
+ * inserts it and the editor's completions offer it, so both write the same name.
  */
-export function sqlTableName(table: { schema: string; name: string }, several: boolean): string {
+export function sqlTableName(
+  table: { schema: string; name: string; insert?: string },
+  several: boolean,
+): string {
+  if (table.insert) return table.insert
   return several && !USUAL.has(table.schema.toLowerCase()) ? `${table.schema}.${table.name}` : table.name
+}
+
+/** How a table is labelled: its name for one with its own insert text (the call is long), else as it's written. */
+export function sqlTableLabel(
+  table: { schema: string; name: string; insert?: string },
+  several: boolean,
+): string {
+  return table.insert ? table.name : sqlTableName(table, several)
 }
 
 /** Whether a schema is one tables are usually in (an unqualified name means a table there). */

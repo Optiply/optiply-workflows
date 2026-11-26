@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, RefreshCw, Table2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Button, Input } from '@/components/ui'
-import { isUsualSchema, type SqlSchemaState, sqlTableName } from '@/lib/sql-schema'
+import { isUsualSchema, type SqlSchemaState, sqlTableLabel, sqlTableName } from '@/lib/sql-schema'
 
 /** At most this many tables are listed at once: a search narrows them. */
 const SHOWN_TABLES = 200
@@ -38,7 +38,8 @@ export function SqlSchemaPanel({
     )
   }, [schema, search])
   if (state.status === 'none') return null
-  const nameOf = (t: { schema: string; name: string }) => sqlTableName(t, several)
+  const nameOf = (t: { schema: string; name: string; insert?: string }) => sqlTableName(t, several)
+  const labelOf = (t: { schema: string; name: string; insert?: string }) => sqlTableLabel(t, several)
   const q = search.trim().toLowerCase()
   const columnMatch = (t: { columns: { name: string }[] }) =>
     !!q && t.columns.some((c) => c.name.toLowerCase().includes(q))
@@ -138,7 +139,7 @@ export function SqlSchemaPanel({
                           title={`Insert ${nameOf(t)}`}
                           onClick={() => onInsert(nameOf(t))}
                         >
-                          {nameOf(t)}
+                          {labelOf(t)}
                         </button>
                         {several && isUsualSchema(t.schema) && <span className="text-muted">{t.schema}</span>}
                       </div>

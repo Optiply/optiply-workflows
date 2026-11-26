@@ -2042,6 +2042,12 @@ the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services
   `9dc6fec` and `da8961b` images removed, build cache pruned (disk 49% → 33%). **Registry:** the same two versions deleted
   afterwards on the user's word (one untagged `code-executor` image removed by digest); it keeps 10 images (the 5
   of `4a3963a` and of `086423c`, 1.64 GB).
+- **Later the same session (branch `feat/bigquery-data-platform-tables`):** the user set up the production resource
+  "Optiply data platform" and connected (Google's audit log shows the jobs as their data-platform identity); its Tables
+  panel failed (it read `region-eu.INFORMATION_SCHEMA.COLUMNS` in the billing project). Built: the connector hook
+  `schemaRows` and BigQuery's listing of the `agent_api` functions with their columns (routines API, dry runs),
+  inserted as calls, completions for them (`architecture.md` §2.46 "Tables panel"). Live by hand with the real
+  connector: 64 functions, 1,132 columns, 5.5 s. Reviewed: 5 findings fixed, a commit each. Next: push and the PR.
 - **Next (the user's):** a production BigQuery resource "Optiply data platform" (Each
   person's Optiply account, the Optiply Workflows app's client id, project `optiply-workflows`, location `EU`),
   connect and run an `agent_api` query; Job User per colleague by email (runbook); tell the data team; re-copy
