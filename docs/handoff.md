@@ -2047,7 +2047,20 @@ the way optiply-agent does (cloned read-only at `~/optiply-agent`; `src/services
   panel failed (it read `region-eu.INFORMATION_SCHEMA.COLUMNS` in the billing project). Built: the connector hook
   `schemaRows` and BigQuery's listing of the `agent_api` functions with their columns (routines API, dry runs),
   inserted as calls, completions for them (`architecture.md` §2.46 "Tables panel"). Live by hand with the real
-  connector: 64 functions, 1,132 columns, 5.5 s. Reviewed: 5 findings fixed, a commit each. Next: push and the PR.
+  connector: 64 functions, 1,132 columns, 5.5 s. Reviewed: 5 findings fixed, a commit each. **PR #23 merged as
+  `cd7a111`**; CI on `main` failed once in `check` (the jdbc-runner test image's `mvn dependency:go-offline`, a
+  Maven Central download; nothing under `apps/jdbc-runner` changed), the re-run of the failed job passed; deployed by
+  hand → **production runs `cd7a111`** (rollback `4a3963a`), health 200, the new completion code in the live bundle.
+  VM and registry keep only `cd7a111` + `4a3963a` (`086423c` removed; disk 32%).
+- **Specialist Project folder** (`~/Desktop/optiply-specialist-project`): `00`/`01` cover **Optiply_Data_Platform**
+  (the resource's name in production), §9 is now that resource; new `33-data-platform-functions.md` (the 64 functions
+  and 1,132 columns, read live); everything about Google BigQuery / `optiply_application_v2` moved to
+  `90-google-bigquery-optiply-application-v2.md`, **held back** (not uploaded, the user's choice); `10`, `11`,
+  `20-runbook-connectors` re-copied from `main`. The user uploads 00, 01, 10, 11, 20-runbook-connectors and 33.
+- **Unattended runs:** a doc with the options for the SDK (A: Auth0 M2M app, recommended; B: shared service user)
+  and the data platform (C: a service account from the data team, recommended; B with a code change; A impossible,
+  STS refuses machine tokens): https://claude.ai/artifact/KGFV1MaswP6wBM9MueNSGQ, with requests for the Auth0
+  admin and the data team. Waiting for the user's choice.
 - **Next (the user's):** a production BigQuery resource "Optiply data platform" (Each
   person's Optiply account, the Optiply Workflows app's client id, project `optiply-workflows`, location `EU`),
   connect and run an `agent_api` query; Job User per colleague by email (runbook); tell the data team; re-copy
@@ -2928,11 +2941,11 @@ M35 (AI actions: AI resources for Anthropic and OpenAI-compatible providers, an 
 
 ## 15. How to start the next session
 
-**Session 62 (2026-11-26):** BigQuery with each person's Optiply account (the Optiply data platform through Google
-STS) on `feat/bigquery-optiply-signin` (§14 "Session 62", `architecture.md` §2.46): PR #22 merged as `4a3963a` and **live**
-(**production runs `4a3963a`**, rollback `086423c`, deployed by hand). VM and registry keep only `4a3963a` +
-`086423c`. Left for the user: setting up the production resource (§14 "Session 62", "Next"). GCP: Job User for the user's data-platform identity and a 30 GiB
-daily query quota on `optiply-workflows` (done). The notes for session 61 below still hold.
+**Session 62 (2026-11-26):** BigQuery with each person's Optiply account (PR #22, `4a3963a`) and its Tables panel
+for the data platform (PR #23, `cd7a111`) are **live: production runs `cd7a111`** (rollback `4a3963a`; VM and
+registry keep only those two). The production resource "Optiply_Data_Platform" is set up and connected. Open: the
+user's choice on unattended runs (doc linked in §14 "Session 62"); the specialist folder upload (00, 01, 10, 11,
+20-runbook-connectors, 33; 90 held back). The notes for session 61 below still hold.
 
 **Start session 62 with (end of session 61, 2026-11-21, late):** PR #21 (custom auth flows: multipart steps, the
 Sign-in card, a form step for each person's own sign-in; §14 "Session 61") is merged as `086423c` and **live**:
